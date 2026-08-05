@@ -4,6 +4,7 @@ Agent 注册表 + 运行时引擎
 Agent 广场的"发现层"——不依赖前端
 每个 Agent 的元数据、依赖关系、触发条件都在这里
 """
+
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
@@ -11,12 +12,13 @@ from dataclasses import dataclass
 @dataclass
 class AgentMeta:
     """Agent 元数据"""
+
     name: str
     description: str
-    layer: str          # 采集 / 处理 / 编译 / 看板 / 治理
-    schedule: str       # cron 表达式 或 "manual"
-    tools: List[str]    # 需要的工具集
-    inputs: List[str]   # 输入目录 / 上游 manifest
+    layer: str  # 采集 / 处理 / 编译 / 看板 / 治理
+    schedule: str  # cron 表达式 或 "manual"
+    tools: List[str]  # 需要的工具集
+    inputs: List[str]  # 输入目录 / 上游 manifest
     outputs: List[str]  # 输出目录
     depends_on: List[str] = None  # 上游 Agent
     token_budget: int = 50000
@@ -29,11 +31,11 @@ class AgentMeta:
 
 class AgentRegistry:
     """Agent 注册表——从配置文件读取，不依赖前端"""
-    
+
     def __init__(self):
         self._agents: Dict[str, AgentMeta] = {}
         self._load_builtins()
-    
+
     def _load_builtins(self):
         """加载内置 Agent"""
         builtins = [
@@ -125,36 +127,34 @@ class AgentRegistry:
         ]
         for a in builtins:
             self._agents[a.name] = a
-    
+
     # ---------- 查询接口 ----------
     def list_all(self) -> List[AgentMeta]:
         """列出所有 Agent"""
         return list(self._agents.values())
-    
+
     def list_by_layer(self, layer: str) -> List[AgentMeta]:
         """按层列出"""
         return [a for a in self._agents.values() if a.layer == layer]
-    
+
     def get_dependencies(self, name: str) -> List[str]:
         """获取上游依赖"""
         agent = self._agents.get(name)
         return agent.depends_on if agent else []
-    
+
     def get_downstream(self, name: str) -> List[str]:
         """获取下游消费者"""
-        return [
-            a.name for a in self._agents.values()
-            if name in a.depends_on
-        ]
-    
+        return [a.name for a in self._agents.values() if name in a.depends_on]
+
     def search(self, keyword: str) -> List[AgentMeta]:
         """按关键词搜索 Agent"""
         kw = keyword.lower()
         return [
-            a for a in self._agents.values()
+            a
+            for a in self._agents.values()
             if kw in a.name.lower() or kw in a.description.lower()
         ]
-    
+
     def export_for_tenant(self) -> Dict:
         """导出给租户看——不含内部配置"""
         return {

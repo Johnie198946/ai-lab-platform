@@ -7,6 +7,7 @@ Ingest → Diff → Synth → Distill
 - 轻量编译(每2h): Ingest + Diff
 - 深度编译(夜间): Synth + Distill
 """
+
 import json
 from datetime import datetime
 from typing import List, Dict, Optional
@@ -14,10 +15,10 @@ from typing import List, Dict, Optional
 
 class CompilerService:
     """知识库编译服务"""
-    
+
     def __init__(self, llm_client=None):
         self.llm = llm_client  # FastAPI 依赖注入
-    
+
     # ---------- Ingest: 原文 → 标准化 ----------
     async def ingest(self, article_id: int) -> Dict:
         """
@@ -27,7 +28,7 @@ class CompilerService:
         4. 创建来源卡片
         """
         pass  # 接入 LLM 后实现
-    
+
     # ---------- Diff: 对比已有知识 ----------
     async def diff(self, card_id: int) -> Dict:
         """
@@ -36,7 +37,7 @@ class CompilerService:
         3. 判断是否需要触发 Synth (同题 ≥3 条)
         """
         pass
-    
+
     # ---------- Synth: 综合撰写专题档案 ----------
     async def synth(self, topic_title: str) -> Dict:
         """
@@ -45,7 +46,7 @@ class CompilerService:
         3. 回链原卡片
         """
         pass
-    
+
     # ---------- Distill: MO 蒸馏 ----------
     async def distill(self, week: str) -> Dict:
         """
@@ -54,7 +55,7 @@ class CompilerService:
         3. 输出蒸馏简报
         """
         pass
-    
+
     # ---------- 辅助 ----------
     async def get_compile_status(self) -> Dict:
         """获取编译状态快照"""

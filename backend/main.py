@@ -1,6 +1,7 @@
 """
 FastAPI 主入口 — OpenAPI 文档配置
 """
+
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from backend.api.errors import register_error_handlers
@@ -21,8 +22,8 @@ app = FastAPI(
 使用 Authen 统一认证，所有接口需带 `Authorization: Bearer <token>`
     """,
     version="0.1.0",
-    docs_url="/docs",       # Swagger UI
-    redoc_url="/redoc",     # ReDoc
+    docs_url="/docs",  # Swagger UI
+    redoc_url="/redoc",  # ReDoc
     openapi_url="/openapi.json",
 )
 
@@ -49,5 +50,6 @@ def custom_openapi():
     )
     app.openapi_schema = schema
     return schema
+
 
 app.openapi = custom_openapi
