@@ -1,5 +1,5 @@
 """
-Unit tests verifying Auditor Agent fixes in AgentGuard, AgentRuntime, and Knowledge Matrix.
+Unit tests for Auditor Agent fixes in AgentGuard, AgentRuntime & Matrix.
 """
 
 import asyncio
@@ -18,9 +18,10 @@ class TestAuditorPatches(unittest.TestCase):
         """Verify AgentGuard exponential backoff retry logic."""
         guard = AgentGuard()
         agent_name = "轻量编译"
+        allowed_dirs = ["/Users/dengzhaoyu/Desktop/AI Lab/AI Lab/"]
 
         # Pre-check passes initially
-        passed, reason = guard.pre_check(agent_name, 1000, ["/Users/dengzhaoyu/Desktop/AI Lab/AI Lab/"])
+        passed, reason = guard.pre_check(agent_name, 1000, allowed_dirs)
         self.assertTrue(passed)
 
         # Record run and failure
@@ -28,7 +29,7 @@ class TestAuditorPatches(unittest.TestCase):
         guard.record_failure(agent_name)
 
         # Pre-check should trigger dynamic rate limit with backoff
-        passed, reason = guard.pre_check(agent_name, 1000, ["/Users/dengzhaoyu/Desktop/AI Lab/AI Lab/"])
+        passed, reason = guard.pre_check(agent_name, 1000, allowed_dirs)
         self.assertFalse(passed)
         self.assertIn("动态频率限制", reason)
         self.assertIn("退避倍率: 2x", reason)
