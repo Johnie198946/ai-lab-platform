@@ -7,6 +7,7 @@ Agent 守护层（AgentCare PEP）
 """
 
 from datetime import datetime, timedelta
+import os
 from typing import Dict, Optional
 
 
@@ -59,7 +60,7 @@ class AgentGuard:
         if base_cooldown and agent_name in self._last_run:
             retries = self._retry_counts.get(agent_name, 0)
             # 退避因子: 失败越多，等待越久 (最大 4 倍)
-            backoff_factor = min(2 ** retries, 4) if retries > 0 else 1
+            backoff_factor = min(2**retries, 4) if retries > 0 else 1
             effective_cooldown = base_cooldown * backoff_factor
 
             elapsed = (datetime.now() - self._last_run[agent_name]).total_seconds() / 60
@@ -106,7 +107,7 @@ class AgentGuard:
 
         # 3. 输出文件路径安全
         safe_prefixes = [
-            "/Users/dengzhaoyu/Desktop/AI Lab/AI Lab/",
+            os.environ.get("AI_LAB_HOME", "/app/vault"),
             "/tmp/",
         ]
         for f in result_files:
