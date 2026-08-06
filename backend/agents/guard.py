@@ -15,13 +15,23 @@ class AgentGuard:
 
     def __init__(self):
         self._last_run: Dict[str, datetime] = {}  # agent_name → last_run_time
-        self._rate_limits: Dict[str, int] = {  # agent_name → cooldown_minutes
+        self._retry_counts: Dict[str, int] = {}  # agent_name → failed_retries
+        self._rate_limits: Dict[str, int] = {  # agent_name → base_cooldown_minutes
             "轻量编译": 110,  # 每2h · 留10分钟余量
             "深度编译": 1380,  # 每23h
             "竞品情报": 1380,
             "Horizon": 1380,
             "空间清理": 10080,  # 每周
         }
+
+    def record_failure(self, agent_name: str):
+        """记录失败，增加重试退避计数"""
+        self._retry_counts[agent_name] = self._retry_counts.get(agent_name, 0) + 1
+
+    def record_success(self, agent_name: str):
+        """记录成功，重置退避计数"""
+        self._retry_counts[agent_name] = 0
+        self._last_run[agent_name] = datetime.now()
 
     # ---------- 执行前检查 ----------
     def pre_check(
@@ -44,13 +54,22 @@ class AgentGuard:
         if estimated_tokens > max_token_budget:
             return False, f"Token预算超限: {estimated_tokens} > {max_token_budget}"
 
-        # 2. 频率限制
-        cooldown = self._rate_limits.get(agent_name)
-        if cooldown and agent_name in self._last_run:
+        # 2. 动态频率限制 (结合指数退避 Exponential Backoff)
+        base_cooldown = self._rate_limits.get(agent_name)
+        if base_cooldown and agent_name in self._last_run:
+            retries = self._retry_counts.get(agent_name, 0)
+            # 退避因子: 失败越多，等待越久 (最大 4 倍)
+            backoff_factor = min(2 ** retries, 4) if retries > 0 else 1
+            effective_cooldown = base_cooldown * backoff_factor
+
             elapsed = (datetime.now() - self._last_run[agent_name]).total_seconds() / 60
-            if elapsed < cooldown:
-                remaining = int(cooldown - elapsed)
-                return False, f"频率限制: {agent_name} 需等待 {remaining} 分钟"
+            if elapsed < effective_cooldown:
+                remaining = int(effective_cooldown - elapsed)
+                msg = (
+                    f"动态频率限制: {agent_name} 需等待 {remaining} 分钟 "
+                    f"(退避倍率: {backoff_factor}x)"
+                )
+                return False, msg
 
         # 3. 权限边界
         forbidden = ["/etc", "/root", "/var", "~/.ssh", "~/.hermes/profiles"]
