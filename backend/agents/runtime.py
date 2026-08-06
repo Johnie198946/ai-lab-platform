@@ -73,9 +73,11 @@ class AgentRuntime:
         # 针对知识编译与矩阵更新，触发 knowledge_matrix 逻辑
         if agent.name in ["全量入库", "轻量编译", "深度编译"]:
             try:
-                script_path = (
-                    "/Users/dengzhaoyu/Desktop/AI Lab/ai-lab-platform/"
-                    "scripts/build_knowledge_matrix.py"
+                script_path = os.path.join(
+                    os.environ.get(
+                        "AI_LAB_HOME", os.path.dirname(os.path.dirname(__file__))
+                    ),
+                    "scripts/build_knowledge_matrix.py",
                 )
                 cmd = ["python3", script_path]
                 proc = await asyncio.create_subprocess_exec(
@@ -87,7 +89,7 @@ class AgentRuntime:
                 return {
                     "exit_code": proc.returncode,
                     "stdout": stdout.decode().strip(),
-                    "stderr": stderr.decode().strip()
+                    "stderr": stderr.decode().strip(),
                 }
             except Exception as e:
                 return {"error": str(e)}
