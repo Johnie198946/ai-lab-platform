@@ -1,37 +1,40 @@
-version: "3.8"
+# AI Lab Platform — 生产部署编排
+# 用法: docker compose up -d --build
+# 配置: 复制 .env.example 为 .env 后按需修改
 
 services:
-  # PostgreSQL — 知识库主库
+  # PostgreSQL — 知识库主库（仅内网，不对外暴露端口）
   postgres:
     image: postgres:16-alpine
+    restart: unless-stopped
     environment:
-      POSTGRES_DB: ai_lab
-      POSTGRES_USER: ailab
-      POSTGRES_PASSWORD: ailab_dev
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${POSTGRES_DB:-ai_lab}
+      POSTGRES_USER: ${POSTGRES_USER:-ailab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ailab_dev}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ailab -d ai_lab"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ailab} -d ${POSTGRES_DB:-ai_lab}"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
 
-  # Redis — 会话 / 缓存
+  # Redis — 会话 / 缓存（仅内网）
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
-      retries: 5
+      retries: 10
 
-  # API — 后端服务（先占位·等代码写完接）
+  # API — 后端服务
   api:
-    build: ./backend
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
     ports:
       - "8000:8000"
     depends_on:
@@ -40,13 +43,16 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: postgresql+asyncpg://ailab:ailab_dev@postgres:5432/ai_lab
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
       REDIS_URL: redis://redis:6379
-    volumes:
-      - ./backend:/app
-    command: ["echo", "API server placeholder — will start when backend is ready"]
-    profiles:
-      - full
+      AI_LAB_HOME: ${AI_LAB_HOME:-/app/vault}
+      AI_LAB_WIKI: ${AI_LAB_WIKI:-wiki}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
 volumes:
   pgdata:

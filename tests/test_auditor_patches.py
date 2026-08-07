@@ -47,7 +47,8 @@ class TestAuditorPatches(unittest.TestCase):
         """Verify knowledge matrix building across vault."""
         vault_dir = Path("/Users/dengzhaoyu/Desktop/AI Lab/AI Lab")
         matrix = build_matrix(vault_dir)
-        self.assertEqual(matrix["version"], "1.0")
+        # 矩阵 schema 版本：v2.0 全库递归扫描+实体索引（commit 1983952 起）
+        self.assertEqual(matrix["version"], "2.0")
         self.assertGreater(matrix["stats"]["total_documents"], 0)
         self.assertIn("topics", matrix["categories"])
 
