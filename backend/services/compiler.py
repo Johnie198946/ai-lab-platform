@@ -1,14 +1,11 @@
 """
-编译链引擎 —— LLM Wiki 四阶段
+编译链引擎 —— Karpathy LLM Wiki v4.0
 
-Ingest → Diff → Synth → Distill
-
-对应现有 Hermes Agent 的逻辑:
-- 轻量编译(每2h): Ingest + Diff
-- 深度编译(夜间): Synth + Distill
+两阶段编译:
+  Wiki Writer (每2h):  raw → wiki (Ingest + Diff)
+  Deep Compiler (02:00): wiki → synth → distill
 """
 
-import json
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -17,53 +14,72 @@ class CompilerService:
     """知识库编译服务"""
 
     def __init__(self, llm_client=None):
-        self.llm = llm_client  # FastAPI 依赖注入
+        self.llm = llm_client
 
-    # ---------- Ingest: 原文 → 标准化 ----------
-    async def ingest(self, article_id: int) -> Dict:
-        """
-        1. 读原文
-        2. LLM 重写为 wiki 格式
-        3. 补充 YAML frontmatter + wikilinks
-        4. 创建来源卡片
-        """
-        pass  # 接入 LLM 后实现
+    # ===== Wiki Writer (每2h) =====
 
-    # ---------- Diff: 对比已有知识 ----------
-    async def diff(self, card_id: int) -> Dict:
+    async def raw_to_wiki(self, article: Dict) -> Dict:
         """
-        1. 新卡片 vs 已有卡片对比
-        2. 标记: strengthened / weakened / uncontested
-        3. 判断是否需要触发 Synth (同题 ≥3 条)
+        Ingest: raw/ → wiki 条目直接写入（无来源卡片中间层）
+        1. LLM 读 raw
+        2. 识别实体
+        3. 写/更新 wiki 条目
+        4. 补全 wikilinks
+        """
+        entities = await self._extract_entities(article["content"])
+        results = []
+        for entity in entities:
+            wiki = await self._find_or_create_wiki(entity)
+            updated = await self._update_wiki_from_raw(wiki, article)
+            results.append(updated)
+        return {"entities": entities, "wikis_updated": len(results)}
+
+    async def _extract_entities(self, content: str) -> List[str]:
+        """从 raw 内容提取实体名"""
+        pass
+
+    async def _find_or_create_wiki(self, entity: str) -> Dict:
+        """找已有 wiki 条目或新建"""
+        pass
+
+    async def _update_wiki_from_raw(self, wiki: Dict, article: Dict) -> Dict:
+        """从 raw 提取增量信息更新 wiki 条目"""
+        pass
+
+    # ===== Diff (每次 Wiki Writer 跑后) =====
+
+    async def diff_wiki(self, wiki_id: int) -> Dict:
+        """
+        Diff: 对比 wiki 条目新旧状态
+        标记: strengthened / weakened / uncontested / new
         """
         pass
 
-    # ---------- Synth: 综合撰写专题档案 ----------
-    async def synth(self, topic_title: str) -> Dict:
+    # ===== Deep Compiler (02:00) =====
+
+    async def synth(self) -> Dict:
         """
-        1. 同一主题 ≥3 张来源卡片 → 触发
-        2. LLM 读所有卡片 → 综合撰写专题档案
-        3. 回链原卡片
+        Synth: 跨条目交叉验证
+        1. 读全部 wiki 条目
+        2. 找矛盾、找强化、找缺口
+        3. 补全 wikilinks
         """
         pass
 
-    # ---------- Distill: MO 蒸馏 ----------
     async def distill(self, week: str) -> Dict:
         """
-        1. 读本周所有增量 + 专题档案
-        2. 提炼四类输出: 竞争话术 / 行业趋势 / 客户痛点 / 方案亮点
-        3. 输出蒸馏简报
+        Distill: wiki → 可用资产
+        1. 七角色攻防话术
+        2. 产品特性→客户利益对照表
+        3. 竞品态势矩阵
+        4. 综合洞察简报
         """
         pass
 
-    # ---------- 辅助 ----------
-    async def get_compile_status(self) -> Dict:
-        """获取编译状态快照"""
-        return {
-            "last_ingest": None,
-            "last_diff": None,
-            "last_synth": None,
-            "pending_topics": [],
-            "total_cards": 0,
-            "total_topics": 0,
-        }
+    # ===== 对话处理 =====
+
+    async def dialogue_to_wiki(self, dialogue_path: str) -> Dict:
+        """
+        对话 → wiki: 从对话 dump 提取实体和决策, 更新 wiki 条目
+        """
+        pass

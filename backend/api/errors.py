@@ -41,8 +41,7 @@ class ErrorHandlerMiddleware(BaseHTTPMiddleware):
                 content={
                     "error": "internal_error",
                     "detail": (
-                        "An unexpected error occurred."
-                        " The team has been notified."
+                        "An unexpected error occurred. The team has been notified."
                     ),
                 },
             )
