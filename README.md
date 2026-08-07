@@ -70,6 +70,12 @@ bash scripts/update.sh   # 拉取最新代码 + 重建 + 健康检查
 - 用途: 服务器 Hermes agent 联网研究（HTTP_PROXY/HTTPS_PROXY 已注入 /root/.hermes/.env）
 - 更新订阅: Mac 上 Clash Verge 更新后，运行 `bash ~/.hermes/profiles/doc-maker/scripts/sync_clash.sh`（每日 2:30 自动执行）
 
+### LLM 架构阶段（当前: 无多租户）
+- 服务器 **不启用 LLM agent 操作**（研究/编译链在 Mac 上执行），服务器职责 = 数据镜像 + 知识 API + 备份
+- 保留: `POST /api/chat`（知识问答服务，deepseek 按次计费）
+- 保留待命（多租户阶段启用）: Hermes v0.19.0 + 5 profile + mihomo 代理 + DEEPSEEK/DASHSCOPE 密钥
+- 多租户阶段: 每日接收 Mac 同步数据，服务器 LLM 按租户配置提供 agent 服务
+
 ### 重新部署步骤
 ```bash
 # 服务器上，仓库根目录

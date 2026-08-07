@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.2] — 2026-08-07 (LLM 架构阶段对齐)
+
+### Changed
+- 按用户决策: 服务器停用每周研究 cron（Hermes LLM agent 操作），研究/编译链留在 Mac 执行
+- 服务器保留: /api/chat 知识问答（deepseek 按次计费）+ 每日同步/备份/矩阵/审计
+- 待命保留: Hermes v0.19.0 + 5 profile + mihomo 代理 + 密钥（多租户阶段启用）
+
 ## [0.5.1] — 2026-08-07 (服务器代理 mihomo)
 
 ### Added
