@@ -3,10 +3,12 @@
 # 配置: 复制 .env.example 为 .env 后按需修改
 
 services:
-  # PostgreSQL — 知识库主库（仅内网，不对外暴露端口）
+  # PostgreSQL — 知识库主库（仅本机可连；Authen 认证服务复用）
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-ai_lab}
       POSTGRES_USER: ${POSTGRES_USER:-ailab}
@@ -19,10 +21,12 @@ services:
       timeout: 3s
       retries: 10
 
-  # Redis — 会话 / 缓存（仅内网）
+  # Redis — 会话 / 缓存（仅本机可连；Authen 认证服务复用）
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -47,6 +51,8 @@ services:
       REDIS_URL: redis://redis:6379
       # 问答 API 需要 deepseek（.env 注入）
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      # Authen 统一认证（与认证服务共享的 HS256 密钥；配置后 API 强制 Bearer JWT）
+      AUTHEN_JWT_SECRET: ${AUTHEN_JWT_SECRET:-}
       # 知识库镜像挂载点（宿主机 ./data/vault 同步自本地 Obsidian 库）
       AI_LAB_HOME: /app/data/vault
       AI_LAB_WIKI: /app/data/vault/wiki

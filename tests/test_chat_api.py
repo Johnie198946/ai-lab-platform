@@ -7,6 +7,24 @@ from pathlib import Path
 from unittest.mock import patch
 
 os.environ["AI_LAB_HOME"] = "/tmp/nonexistent-vault-for-import"
+os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
+
+
+def auth_headers() -> dict:
+    from datetime import datetime, timedelta
+
+    from jose import jwt as jose_jwt
+
+    token = jose_jwt.encode(
+        {
+            "sub": "1",
+            "username": "tester",
+            "exp": datetime.utcnow() + timedelta(hours=1),
+        },
+        "test-secret",
+        algorithm="HS256",
+    )
+    return {"Authorization": f"Bearer {token}"}
 
 
 class TestChatAPI(unittest.TestCase):
@@ -59,7 +77,7 @@ class TestChatAPI(unittest.TestCase):
         from fastapi.testclient import TestClient
         from backend.main import app
 
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=auth_headers())
 
     def tearDown(self):
         self.k._vault = self._old_vault

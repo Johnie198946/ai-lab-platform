@@ -2,7 +2,7 @@
 FastAPI 主入口 — OpenAPI 文档配置
 """
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
 from backend.api.errors import register_error_handlers
 from backend.api.tenant import TenantMiddleware
@@ -10,6 +10,7 @@ from backend.api.screens import router as screens_router
 from backend.api.tasks import router as tasks_router
 from backend.api.knowledge import router as knowledge_router
 from backend.api.chat import router as chat_router
+from backend.api.auth import require_auth
 
 app = FastAPI(
     title="AI Lab Platform",
@@ -36,13 +37,13 @@ register_error_handlers(app)
 app.add_middleware(TenantMiddleware)
 
 # ---------- 路由 ----------
-# 9块分屏演示版: 屏配置 + Agent 任务流转
-app.include_router(screens_router)
-app.include_router(tasks_router)
+# 除 /health 外均需 Authen Bearer JWT 认证（AUTHEN_JWT_SECRET 配置后强制）
+app.include_router(screens_router, dependencies=[Depends(require_auth)])
+app.include_router(tasks_router, dependencies=[Depends(require_auth)])
 # 知识引擎: 矩阵/检索/wiki/实体
-app.include_router(knowledge_router)
+app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
 # 问答: 基于知识库的 RAG 回答
-app.include_router(chat_router)
+app.include_router(chat_router, dependencies=[Depends(require_auth)])
 
 
 # ---------- 健康检查 ----------

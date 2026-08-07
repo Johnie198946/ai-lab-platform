@@ -6,6 +6,32 @@ import unittest
 from pathlib import Path
 
 os.environ["AI_LAB_HOME"] = "/tmp/nonexistent-vault-for-import"  # 防止读到真实库
+os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
+
+TEST_TOKEN = None
+
+
+def auth_token() -> str:
+    global TEST_TOKEN
+    if TEST_TOKEN is None:
+        from datetime import datetime, timedelta
+
+        from jose import jwt as jose_jwt
+
+        TEST_TOKEN = jose_jwt.encode(
+            {
+                "sub": "1",
+                "username": "tester",
+                "exp": datetime.utcnow() + timedelta(hours=1),
+            },
+            "test-secret",
+            algorithm="HS256",
+        )
+    return TEST_TOKEN
+
+
+def auth_headers() -> dict:
+    return {"Authorization": f"Bearer {auth_token()}"}
 
 
 class TestKnowledgeAPI(unittest.TestCase):
@@ -56,7 +82,7 @@ class TestKnowledgeAPI(unittest.TestCase):
         from fastapi.testclient import TestClient
         from backend.main import app
 
-        self.client = TestClient(app)
+        self.client = TestClient(app, headers=auth_headers())
         self._restore = old
 
     def tearDown(self):

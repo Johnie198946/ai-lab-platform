@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.6.0] — 2026-08-08 (Authen 统一认证集成)
+
+### Added
+- Authen 最小认证核心部署: auth/sso/user/permission/gateway 5 服务（systemd，/opt/authen），复用平台 postgres+redis，跳过 RabbitMQ/notification/admin
+- 平台 API 认证: backend/api/auth.py（require_auth 依赖，HS256 共享密钥本地验签）+ main.py 保护全部业务路由（/health 开放）
+- python-jose 依赖 + AUTHEN_JWT_SECRET 环境注入（compose/.env）
+- compose: postgres/redis 绑定 127.0.0.1（供 Authen 复用）
+
+### Verified
+- 端到端: Authen 登录发 token → 平台 API 200；无 token 401；坏 token 401；/health 200
+- 21 测试通过（含 5 个认证专项测试），ruff 干净
+
 ## [0.5.2] — 2026-08-07 (LLM 架构阶段对齐)
 
 ### Changed

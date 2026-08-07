@@ -76,6 +76,13 @@ bash scripts/update.sh   # 拉取最新代码 + 重建 + 健康检查
 - 保留待命（多租户阶段启用）: Hermes v0.19.0 + 5 profile + mihomo 代理 + DEEPSEEK/DASHSCOPE 密钥
 - 多租户阶段: 每日接收 Mac 同步数据，服务器 LLM 按租户配置提供 agent 服务
 
+### 统一认证（Authen 集成）
+- Authen 最小核心已部署: auth:8001 / sso:8002 / user:8003 / permission:8004 / gateway:8008（systemd 常驻，/opt/authen）
+- 复用平台 postgres（auth 库）+ redis（db1）；超管: admin/123456（请尽快修改）
+- 平台 API **全部要求 `Authorization: Bearer <Authen JWT>`**（HS256 共享密钥 AUTHEN_JWT_SECRET 本地验签）；/health 开放
+- 登录: `POST http://120.24.248.58:8001/api/v1/auth/login` body `{"identifier":"admin","password":"..."}` → access_token
+- 集成代码: `backend/api/auth.py`（require_auth 依赖）+ main.py 路由保护
+
 ### 重新部署步骤
 ```bash
 # 服务器上，仓库根目录
