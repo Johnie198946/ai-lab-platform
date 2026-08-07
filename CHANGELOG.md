@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.1] — 2026-08-07 (服务器代理 mihomo)
+
+### Added
+- 服务器代理: mihomo v1.19.29（systemd 常驻，/etc/mihomo/config.yaml，mixed-port 7890 规则模式）
+- 节点: 蓝海订阅 62 节点（anytls），来源 Mac Clash Verge 已授权配置；Country.mmdb GeoIP 就位
+- Hermes agent 代理注入: HTTP_PROXY/HTTPS_PROXY/NO_PROXY 已写入服务器 /root/.hermes env（4 profile）
+- Mac 侧订阅同步: sync_clash.sh（每日 2:30 cron），Clash Verge 更新订阅后自动同步服务器并重启
+
+### Verified
+- 服务器经代理访问 Google 200 / gstatic 204 / 百度(直连) 200；Hermes agent 经代理请求 google.com 返回 200
+
 ## [0.5.0] — 2026-08-07 (问答 API · Karpathy wiki 检索对齐)
 
 ### Added
