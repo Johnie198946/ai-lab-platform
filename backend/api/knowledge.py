@@ -90,31 +90,98 @@ def _doc_title(text: str) -> str:
     return first_line.lstrip("# ").strip() or Path("unknown").stem
 
 
+def _matrix_doc_entries(m: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    """把矩阵 categories 展平为 path → 文档条目（兼容 dict 与 list 两种形状）。"""
+    out: Dict[str, Dict[str, Any]] = {}
+    for cat in m.get("categories", {}).values():
+        if not isinstance(cat, dict):
+            continue
+        for entry in cat.values():
+            if isinstance(entry, dict) and entry.get("path"):
+                out[entry["path"]] = entry
+    return out
+
+
 def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
-    """朴素全文检索：标题命中 > 前 200 字 > 正文命中。"""
+    """检索 v3 —— 与 Mac 对齐：以 knowledge_matrix 为索引。
+
+    与 build_knowledge_matrix.py 的检索语义一致：
+    1. 矩阵打分: 标题命中(4/词) > 文档实体命中(2/实体) > 标签命中(1/标签)
+    2. entity_index 反查: 查询中出现的实体 → 直接收录其文档
+    3. 内容兜底: 矩阵未收录的文档按 jieba 词项扫描
+    上下文片段优先取矩阵的 core summary（Mac agent 看到的同一份摘要）。
+    """
+    import jieba
+
     ql = q.lower()
-    scored: List[Dict[str, Any]] = []
+    qtokens = [t for t in jieba.cut(ql) if len(t.strip()) >= 2]
+    m = _matrix()
+    entries = _matrix_doc_entries(m)
+    scored: Dict[str, Dict[str, Any]] = {}
+
+    # 1) 矩阵打分
+    for path, e in entries.items():
+        title_low = (e.get("title") or "").lower()
+        ents = [str(x).lower() for x in (e.get("entities") or [])]
+        tags = [str(x).lower() for x in (e.get("tags") or [])]
+        score = 0
+        for t in qtokens:
+            if t in title_low:
+                score += 4
+        for t in qtokens:
+            if any(t in ent or ent in t for ent in ents):
+                score += 2
+        for t in qtokens:
+            if any(t in tag for tag in tags):
+                score += 1
+        if ql in title_low:
+            score += 3
+        if score <= 0:
+            continue
+        scored[path] = {
+            "path": path,
+            "title": e.get("title") or path,
+            "score": score,
+            "snippet": (e.get("summary") or "")[:_SNIPPET_CHARS],
+        }
+
+    # 2) entity_index 反查
+    ei = m.get("entity_index", {})
+    for ent, paths in ei.items():
+        ent_low = str(ent).lower()
+        if ent_low in ql or any(ent_low in t or t in ent_low for t in qtokens):
+            for p in paths:
+                if p not in scored:
+                    scored[p] = {
+                        "path": p,
+                        "title": p,
+                        "score": 1,
+                        "snippet": "",
+                    }
+
+    # 3) 内容兜底（矩阵未收录的文档，如 raw/）
     for p, rel in _iter_md_files(vault):
+        if rel in scored:
+            continue
         text = p.read_text(encoding="utf-8", errors="ignore")
         low = text.lower()
-        if ql not in low:
+        matched = [t for t in qtokens if t in low]
+        if not matched:
             continue
         title = _doc_title(text)
-        score = 1
-        if ql in title.lower():
-            score = 3
-        elif ql in low[:200]:
-            score = 2
-        idx = low.find(ql)
-        snippet = text[max(0, idx - 40): idx + _SNIPPET_CHARS].replace("\n", " ")
-        scored.append({
+        score = len(matched) * 2
+        if any(t in title.lower() for t in matched):
+            score += 4
+        idx = low.find(matched[0])
+        scored[rel] = {
             "path": rel,
             "title": title,
             "score": score,
-            "snippet": snippet,
-        })
-    scored.sort(key=lambda d: (-d["score"], d["path"]))
-    return scored[:limit]
+            "snippet": text[max(0, idx - 40): idx + _SNIPPET_CHARS].replace("\n", " "),
+        }
+
+    ranked = sorted(scored.values(), key=lambda d: (-d["score"], d["path"]))
+    return ranked[:limit]
 
 
 @router.get("/matrix")

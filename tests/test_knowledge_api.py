@@ -43,13 +43,15 @@ class TestKnowledgeAPI(unittest.TestCase):
             json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
         )
 
-        # 指向临时库
+        # 指向临时库（同时屏蔽真实矩阵，确保测试用夹具数据）
         import backend.api.knowledge as k
 
         self.k = k
         k._matrix.cache_clear()
         old = k._vault
         k._vault = lambda: self.tmp
+        self._old_matrix_path = k.MATRIX_PATH
+        k.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
 
         from fastapi.testclient import TestClient
         from backend.main import app
@@ -59,6 +61,7 @@ class TestKnowledgeAPI(unittest.TestCase):
 
     def tearDown(self):
         self.k._vault = self._restore
+        self.k.MATRIX_PATH = self._old_matrix_path
         self.k._matrix.cache_clear()
         import shutil
 
