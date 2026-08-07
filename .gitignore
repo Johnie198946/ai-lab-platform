@@ -24,3 +24,5 @@ Thumbs.db
 data/*.json
 *.log
 docx_build/
+.hermes/
+*.csv
