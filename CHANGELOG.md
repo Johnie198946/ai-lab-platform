@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0] — 2026-08-07 (知识引擎 + Agent 镜像)
+
+### Added
+- 知识引擎 API: backend/api/knowledge.py（matrix / stats / search / entities / wiki 列表 / wiki 详情）
+  - 数据源: 服务器 vault 镜像 + knowledge_matrix.json，10 个测试用例覆盖
+- Agent 镜像: 服务器安装 Hermes v0.19.0（/opt/hermes/venv），迁移 main/doc-maker/supervision/indep-coder/imageknow 五个 profile（SOUL/config/skills/memories），路径改写至服务器
+- 定时任务（服务器 crontab）: 每日 3:00 数据库备份 / 周日 4:00 矩阵重建 / 周日 4:30 wiki 审计 / 周日 6:00 每周 3+2 综合研究（Hermes + ai-lab-research-synthesizer）
+- 定时任务（本机 Hermes cron）: 每日 2:00 vault → 服务器增量镜像（ai-lab-vault-daily-sync）
+- backup.sh 容器感知化（docker compose exec pg_dump）；compose 挂载 ./data 并配置 AI_LAB_HOME/AI_LAB_WIKI/AI_LAB_VAULT
+
+### Fixed
+- 测试: test_knowledge_matrix_build 版本断言 1.0 → 2.0（对齐 commit 1983952 的矩阵 schema 升级，pytest 11/11 通过）
+
 ## [0.3.0] — 2026-08-07 (生产部署就绪)
 
 ### Added

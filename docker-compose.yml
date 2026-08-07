@@ -45,8 +45,12 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
       REDIS_URL: redis://redis:6379
-      AI_LAB_HOME: ${AI_LAB_HOME:-/app/vault}
-      AI_LAB_WIKI: ${AI_LAB_WIKI:-wiki}
+      # 知识库镜像挂载点（宿主机 ./data/vault 同步自本地 Obsidian 库）
+      AI_LAB_HOME: /app/data/vault
+      AI_LAB_WIKI: /app/data/vault/wiki
+      AI_LAB_VAULT: /app/data/vault
+    volumes:
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s

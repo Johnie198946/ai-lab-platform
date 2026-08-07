@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r req
 # 再拷代码
 COPY backend /app/backend
 COPY config /app/config
+COPY scripts /app/scripts
 
 EXPOSE 8000
 

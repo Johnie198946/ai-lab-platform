@@ -8,6 +8,7 @@ from backend.api.errors import register_error_handlers
 from backend.api.tenant import TenantMiddleware
 from backend.api.screens import router as screens_router
 from backend.api.tasks import router as tasks_router
+from backend.api.knowledge import router as knowledge_router
 
 app = FastAPI(
     title="AI Lab Platform",
@@ -37,6 +38,8 @@ app.add_middleware(TenantMiddleware)
 # 9块分屏演示版: 屏配置 + Agent 任务流转
 app.include_router(screens_router)
 app.include_router(tasks_router)
+# 知识引擎: 矩阵/检索/wiki/实体
+app.include_router(knowledge_router)
 
 
 # ---------- 健康检查 ----------
