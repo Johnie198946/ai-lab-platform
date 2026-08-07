@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1] — 2026-08-07 (更新通道 + imageknow 上线)
+
+### Added
+- scripts/update.sh: 服务器一键更新（codeload tarball 拉取 GitHub main + 重建 + 健康检查），解决大陆服务器 github.com 直连被墙问题
+- imageknow 凭据: DASHSCOPE_API_KEY 已配置（服务器 + 本地），imageknow 服务器实测在线
+- 按用户决定: supervision / indep-coder 服务器端不启用（镜像保留、休眠）；不安装 Obsidian 客户端（md 知识库流程零依赖）
+
 ## [0.4.0] — 2026-08-07 (知识引擎 + Agent 镜像)
 
 ### Added

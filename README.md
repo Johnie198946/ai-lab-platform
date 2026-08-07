@@ -42,9 +42,17 @@ MO 团队的知识引擎：自生长知识库 + Agent 自动编译 + 营销资�
 
 ### Agent 镜像（Hermes on server）
 - Hermes v0.19.0 安装于 `/opt/hermes/venv`，profile 镜像于 `/root/.hermes`
-- 已镜像: main / doc-maker / supervision / indep-coder / imageknow（SOUL+config+skills+memories）
-- 凭据: deepseek 可用（main、doc-maker）；alibaba(dashscope) / gemini / openai-codex 需补充密钥
+- 已镜像: main / doc-maker / imageknow / supervision / indep-coder（SOUL+config+skills+memories）
+- 在线可用: **main / doc-maker / imageknow**（已实测）；supervision、indep-coder 按用户要求不启用（镜像保留、处于休眠）
 - 定时: 每日 2:00 本地推送知识库 → 服务器每日 3:00 备份 / 周日 4:00 矩阵重建 / 周日 4:30 wiki 审计 / 周日 6:00 每周综合研究
+
+### 更新流程（用户推 GitHub → 服务器拉取）
+服务器位于大陆，github.com 直连被墙，走 codeload 官方通道：
+```bash
+# 服务器上，仓库根目录（/opt/ai-lab-platform）
+bash scripts/update.sh   # 拉取最新代码 + 重建 + 健康检查
+```
+本地有更新时推送 GitHub 即可，服务器无需配 git/deploy key。
 
 ### 重新部署步骤
 ```bash
