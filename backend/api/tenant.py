@@ -6,13 +6,15 @@
 """
 
 from contextvars import ContextVar
-from fastapi import Request, HTTPException
+from fastapi import Request
+from fastapi.responses import JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # 请求级变量，每个请求一个独立副本
 current_tenant: ContextVar[str] = ContextVar("tenant_id", default="")
 
 
-class TenantMiddleware:
+class TenantMiddleware(BaseHTTPMiddleware):
     """
     从请求头提取租户 ID，注入到上下文变量
 
@@ -23,13 +25,18 @@ class TenantMiddleware:
         tenant = current_tenant.get()
     """
 
-    async def __call__(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next):
         tenant_id = request.headers.get("X-Tenant-ID", "")
 
+        # 演示版: 无租户头时放行(默认租户), 产品版应改为强制
         if not tenant_id:
-            raise HTTPException(
-                status_code=400, detail="X-Tenant-ID header is required"
-            )
+            tenant_id = "demo"
+            token = current_tenant.set(tenant_id)
+            try:
+                response = await call_next(request)
+                return response
+            finally:
+                current_tenant.reset(token)
 
         token = current_tenant.set(tenant_id)
         try:

@@ -1,0 +1,10 @@
+screen_id: "screen-07"
+title: "营销经理"
+role: "marketing-materials"
+layout: "materials"
+theme: "dark"
+data_bindings:
+  - source: "marketing/materials"
+    component: "marketing-materials"
+    refresh: "30s"
+auto_fullscreen: false

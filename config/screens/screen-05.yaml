@@ -1,0 +1,10 @@
+screen_id: "screen-05"
+title: "产品经理"
+role: "prd-generator"
+layout: "generator"
+theme: "dark"
+data_bindings:
+  - source: "prd/generator"
+    component: "prd-generator"
+    refresh: "30s"
+auto_fullscreen: false

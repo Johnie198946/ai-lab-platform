@@ -138,3 +138,20 @@ class DialogueChunk:
     decisions = Column(JSON)  # 决策记录
     wiki_entry_id = Column(Integer, ForeignKey("wiki_entries.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+
+
+# ---------- Agent 任务流转 ----------
+class Task:
+    """Agent 间任务流转——投递、inbox、状态追踪"""
+
+    __tablename__ = "tasks"
+
+    id = Column(Integer, primary_key=True)
+    priority = Column(Integer, default=0)
+    from_agent = Column(String(100))
+    to_agent = Column(String(100))
+    task_type = Column(String(50))
+    payload = Column(JSON)
+    status = Column(String(20), default="pending")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)

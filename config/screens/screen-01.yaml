@@ -1,0 +1,10 @@
+screen_id: "screen-01"
+title: "总览·故事线主控"
+role: "overview"
+layout: "overview"
+theme: "dark"
+data_bindings:
+  - source: "overview/dashboard"
+    component: "storyline-progress"
+    refresh: "10s"
+auto_fullscreen: true

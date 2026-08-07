@@ -1,0 +1,10 @@
+screen_id: "screen-06"
+title: "开发工程师"
+role: "ai-coding"
+layout: "coding"
+theme: "dark"
+data_bindings:
+  - source: "coding/agent"
+    component: "ai-coding"
+    refresh: "10s"
+auto_fullscreen: false

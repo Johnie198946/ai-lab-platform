@@ -1,0 +1,10 @@
+screen_id: "screen-08"
+title: "销售经理"
+role: "email-comm"
+layout: "email"
+theme: "dark"
+data_bindings:
+  - source: "email/communication"
+    component: "email-comm"
+    refresh: "30s"
+auto_fullscreen: false

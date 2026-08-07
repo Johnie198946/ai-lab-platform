@@ -1,0 +1,10 @@
+screen_id: "screen-03"
+title: "信息收集"
+role: "competitor-radar"
+layout: "radar"
+theme: "dark"
+data_bindings:
+  - source: "intel/competitor"
+    component: "competitor-radar"
+    refresh: "60s"
+auto_fullscreen: false

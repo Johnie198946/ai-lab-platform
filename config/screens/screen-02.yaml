@@ -1,0 +1,10 @@
+screen_id: "screen-02"
+title: "知识库进化"
+role: "evolution-timeline"
+layout: "timeline"
+theme: "dark"
+data_bindings:
+  - source: "wiki/evolution"
+    component: "evolution-timeline"
+    refresh: "30s"
+auto_fullscreen: false

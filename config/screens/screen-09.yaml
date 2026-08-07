@@ -1,0 +1,10 @@
+screen_id: "screen-09"
+title: "老板·TokenBox"
+role: "tokenbox-dashboard"
+layout: "dashboard"
+theme: "dark"
+data_bindings:
+  - source: "tokenbox/dashboard"
+    component: "tokenbox-dashboard"
+    refresh: "5s"
+auto_fullscreen: false

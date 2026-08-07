@@ -1,0 +1,10 @@
+screen_id: "screen-04"
+title: "分析"
+role: "insight-report"
+layout: "report"
+theme: "dark"
+data_bindings:
+  - source: "insight/report"
+    component: "insight-report"
+    refresh: "60s"
+auto_fullscreen: false
