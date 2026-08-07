@@ -15,11 +15,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 # 通过模块引用，保证与 knowledge.py 的 monkeypatch 兼容（测试用）
 from backend.api import knowledge
+from backend.api.auth import require_auth
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -55,10 +56,14 @@ def _resolve_wiki_entries(vault: Path, q: str, limit: int) -> List[str]:
 
     ql = q.lower()
     qtokens = [t for t in jieba.cut(ql) if len(t.strip()) >= 2]
+    vis = knowledge._visibility()
     wiki_dir = vault / "wiki"
     scored: Dict[str, int] = {}
     if wiki_dir.exists():
         for p in wiki_dir.rglob("*.md"):
+            rel = p.relative_to(vault).as_posix()
+            if not knowledge._rel_visible(rel, vis):
+                continue
             text = p.read_text(encoding="utf-8", errors="ignore")
             fm = knowledge._frontmatter(text)
             title = str(fm.get("title") or p.stem)
@@ -79,7 +84,6 @@ def _resolve_wiki_entries(vault: Path, q: str, limit: int) -> List[str]:
             if ql in title_low:
                 score += 8
             if score > 0:
-                rel = p.relative_to(vault).as_posix()
                 scored[rel] = max(scored.get(rel, 0), score)
     # matrix 实体反查补充（实体出现在问题里 → 直接收录其路径）
     m = knowledge._matrix()
@@ -87,6 +91,8 @@ def _resolve_wiki_entries(vault: Path, q: str, limit: int) -> List[str]:
         ent_low = str(ent).lower()
         if ent_low in ql or any(ent_low in t or t in ent_low for t in qtokens):
             for path in paths:
+                if not knowledge._rel_visible(path, vis):
+                    continue
                 if path not in scored:
                     scored[path] = 2
     return sorted(scored, key=lambda p: -scored[p])[:limit]
@@ -97,6 +103,7 @@ def _resolve_wiki_link(vault: Path, link: str) -> Optional[str]:
     link = link.strip().split("|")[0].strip()
     if not link:
         return None
+    vis = knowledge._visibility()
     wiki_dir = vault / "wiki"
     if not wiki_dir.exists():
         return None
@@ -108,7 +115,10 @@ def _resolve_wiki_link(vault: Path, link: str) -> Optional[str]:
         title = str(fm.get("title") or p.stem)
         alias_list = [str(a) for a in (fm.get("aliases") or [])]
         if title == link or p.stem == link or link in alias_list:
-            return p.relative_to(vault).as_posix()
+            rel = p.relative_to(vault).as_posix()
+            if not knowledge._rel_visible(rel, vis):
+                continue
+            return rel
     return None
 
 
@@ -192,14 +202,18 @@ def _call_llm(system: str, user: str, model: str) -> str:
 
 
 @router.post("", response_model=ChatResponse)
-def chat(req: ChatRequest) -> ChatResponse:
+async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
+    import asyncio
+
     if not knowledge._vault().exists():
         raise HTTPException(status_code=404, detail="vault not found")
-    sources = _build_context(req.question, req.limit)
+    sources = await asyncio.to_thread(_build_context, req.question, req.limit)
     if not sources:
+        answer = "知识库中没有检索到相关资料，无法回答。"
+        await _record_session(payload["tenant_key"], req.question, answer, [])
         return ChatResponse(
             question=req.question,
-            answer="知识库中没有检索到相关资料，无法回答。",
+            answer=answer,
             sources=[],
             model=req.model,
         )
@@ -212,13 +226,56 @@ def chat(req: ChatRequest) -> ChatResponse:
         f"参考资料:\n{chr(10).join(ctx_lines)}\n\n"
         f"问题: {req.question}\n\n请基于参考资料回答，并标注引用 [1][2]…"
     )
-    answer = _call_llm(SYSTEM_PROMPT, user_prompt, req.model)
+    answer = await asyncio.to_thread(_call_llm, SYSTEM_PROMPT, user_prompt, req.model)
+    out_sources = [
+        {"path": s["path"], "title": s["title"], "score": s["score"]}
+        for s in sources
+    ]
+    await _record_session(payload["tenant_key"], req.question, answer, out_sources)
     return ChatResponse(
         question=req.question,
         answer=answer,
-        sources=[
-            {"path": s["path"], "title": s["title"], "score": s["score"]}
-            for s in sources
-        ],
+        sources=out_sources,
         model=req.model,
     )
+
+
+async def _record_session(
+    tenant_key: str, question: str, answer: str, sources: list
+) -> None:
+    """问答会话历史 + 用量（租户维，逻辑隔离落点）。"""
+    from sqlalchemy import select
+
+    from backend.db import SessionLocal
+    from backend.models.tenant import TenantSession, TenantUsage
+
+    try:
+        async with SessionLocal() as db:
+            db.add(
+                TenantSession(
+                    tenant_key=tenant_key,
+                    question=question,
+                    answer=answer,
+                    sources=sources or None,
+                )
+            )
+            usage = (
+                await db.execute(
+                    select(TenantUsage).where(TenantUsage.tenant_key == tenant_key)
+                )
+            ).scalar_one_or_none()
+            if usage is None:
+                db.add(
+                    TenantUsage(
+                        tenant_key=tenant_key,
+                        chat_calls=1,
+                        token_used=len(answer),
+                    )
+                )
+            else:
+                usage.chat_calls += 1
+                usage.token_used += len(answer)
+            await db.commit()
+    except Exception:
+        # 会话记录失败不影响问答主流程
+        pass

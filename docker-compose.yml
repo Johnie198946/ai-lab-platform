@@ -53,12 +53,18 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       # Authen 统一认证（与认证服务共享的 HS256 密钥；配置后 API 强制 Bearer JWT）
       AUTHEN_JWT_SECRET: ${AUTHEN_JWT_SECRET:-}
+      # Authen 认证服务（宿主机 systemd，经 host.docker.internal 访问）
+      AUTHEN_BASE: http://host.docker.internal:8001
+      AUTHEN_USER_URL: http://host.docker.internal:8003
+      AUTHEN_PERMISSION_URL: http://host.docker.internal:8004
       # 知识库镜像挂载点（宿主机 ./data/vault 同步自本地 Obsidian 库）
       AI_LAB_HOME: /app/data/vault
       AI_LAB_WIKI: /app/data/vault/wiki
       AI_LAB_VAULT: /app/data/vault
     volumes:
       - ./data:/app/data
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 10s

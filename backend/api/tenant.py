@@ -1,54 +1,25 @@
 """
-多租户隔离
+多租户上下文 — 订阅制逻辑隔离
 
-所有查询自动带 tenant_id
-客户 A 的数据客户 B 绝对看不到
+租户从 JWT 派生（require_auth 写入），不再信任客户端 X-Tenant-ID 头。
+- current_tenant: 当前请求的 tenant_key
+- current_visibility: None = 全部可见（超管）；frozenset[str] = 已订阅分类集合
 """
 
+from __future__ import annotations
+
 from contextvars import ContextVar
-from fastapi import Request
-from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from typing import FrozenSet, Optional
 
-# 请求级变量，每个请求一个独立副本
 current_tenant: ContextVar[str] = ContextVar("tenant_id", default="")
+current_visibility: ContextVar[Optional[FrozenSet[str]]] = ContextVar(
+    "visibility", default=None
+)
 
 
-class TenantMiddleware(BaseHTTPMiddleware):
-    """
-    从请求头提取租户 ID，注入到上下文变量
-
-    用法：
-        app.add_middleware(TenantMiddleware)
-
-        # 后续所有代码中:
-        tenant = current_tenant.get()
-    """
-
-    async def dispatch(self, request: Request, call_next):
-        tenant_id = request.headers.get("X-Tenant-ID", "")
-
-        # 演示版: 无租户头时放行(默认租户), 产品版应改为强制
-        if not tenant_id:
-            tenant_id = "demo"
-            token = current_tenant.set(tenant_id)
-            try:
-                response = await call_next(request)
-                return response
-            finally:
-                current_tenant.reset(token)
-
-        token = current_tenant.set(tenant_id)
-        try:
-            response = await call_next(request)
-            return response
-        finally:
-            current_tenant.reset(token)
-
-
-def tenant_filter():
-    """生成 SQL 租户过滤条件"""
-    tenant = current_tenant.get()
-    if not tenant:
-        return ""
-    return f"tenant_id = '{tenant}'"
+def tenant_filter(column: str = "tenant_id") -> str:
+    """生成 SQL 租户过滤条件（供后续租户维数据查询使用）。"""
+    t = current_tenant.get()
+    if not t:
+        return "1=1"
+    return f"{column} = '{t}'"

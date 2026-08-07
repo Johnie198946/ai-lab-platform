@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.7.0] — 2026-08-08 (订阅制逻辑多租户)
+
+### Added
+- 订阅制隔离: 普通用户默认空知识库，订阅知识分类后可见；超管可见全部
+- 租户从 Bearer JWT 派生（tenant_mappings），移除 X-Tenant-ID 头信任
+- 新端点: /api/v1/catalog、/me/subscriptions（订阅/退订）、/me、/me/sessions、/me/usage、/register、/admin/users
+- 知识检索订阅过滤: stats/search/wiki/matrix/chat 只返回可见分类内容
+- 问答自动记录会话历史 + 用量（tenant_sessions/tenant_usage，按租户隔离）
+- DB 层: backend/db.py（异步 SQLAlchemy）+ models/tenant.py；启动自动建表
+- compose: extra_hosts host.docker.internal（容器访问宿主机 Authen）
+
+### Verified
+- 28 测试通过（含订阅隔离专项 7 个），ruff 干净
+
 ## [0.6.0] — 2026-08-08 (Authen 统一认证集成)
 
 ### Added

@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 
+from backend.api.tenant import current_visibility
+
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 VAULT_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "vault"
@@ -34,6 +36,18 @@ MATRIX_PATH = (
 
 SEARCH_LIMIT = 20
 _SNIPPET_CHARS = 160
+
+
+def _visibility():
+    """当前可见范围: None=全部（超管/开发）；frozenset=已订阅分类集合。"""
+    return current_visibility.get()
+
+
+def _rel_visible(rel: str, vis) -> bool:
+    """文档相对路径是否对当前可见范围可见（路径首段 = 分类）。"""
+    if vis is None:
+        return True
+    return rel.split("/", 1)[0] in vis
 
 
 def _vault() -> Path:
@@ -70,9 +84,12 @@ def _wikilinks(text: str) -> List[str]:
 
 
 def _iter_md_files(vault: Path):
+    vis = _visibility()
     for p in sorted(vault.rglob("*.md")):
         rel = p.relative_to(vault).as_posix()
         if rel.startswith((".obsidian", "_archive", "00_Inbox", "模板")):
+            continue
+        if not _rel_visible(rel, vis):
             continue
         yield p, rel
 
@@ -120,7 +137,10 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     scored: Dict[str, Dict[str, Any]] = {}
 
     # 1) 矩阵打分
+    vis = _visibility()
     for path, e in entries.items():
+        if not _rel_visible(path, vis):
+            continue
         title_low = (e.get("title") or "").lower()
         ents = [str(x).lower() for x in (e.get("entities") or [])]
         tags = [str(x).lower() for x in (e.get("tags") or [])]
@@ -151,6 +171,8 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         ent_low = str(ent).lower()
         if ent_low in ql or any(ent_low in t or t in ent_low for t in qtokens):
             for p in paths:
+                if not _rel_visible(p, vis):
+                    continue
                 if p not in scored:
                     scored[p] = {
                         "path": p,
@@ -189,7 +211,37 @@ def get_matrix() -> Dict[str, Any]:
     m = _matrix()
     if not m:
         raise HTTPException(status_code=404, detail="knowledge_matrix.json not found")
-    return m
+    vis = _visibility()
+    if vis is None:
+        return m
+    # 订阅制: 返回过滤后的矩阵（只含可见分类/条目）
+    filtered = dict(m)
+    cats: Dict[str, Any] = {}
+    for cat, entries in (m.get("categories") or {}).items():
+        if isinstance(entries, dict):
+            if cat in vis:
+                cats[cat] = entries
+            else:
+                sub = {
+                    k: v
+                    for k, v in entries.items()
+                    if isinstance(v, dict) and _rel_visible(str(v.get("path", k)), vis)
+                }
+                if sub:
+                    cats[cat] = sub
+        elif isinstance(entries, list):
+            if cat in vis:
+                cats[cat] = entries
+            else:
+                sub = [p for p in entries if _rel_visible(str(p), vis)]
+                if sub:
+                    cats[cat] = sub
+    filtered["categories"] = cats
+    ei = m.get("entity_index", {})
+    filtered["entity_index"] = {
+        k: [p for p in v if _rel_visible(p, vis)] for k, v in ei.items()
+    }
+    return filtered
 
 
 @router.get("/stats")
@@ -249,11 +301,15 @@ def entities(
 @router.get("/wiki")
 def list_wiki() -> Dict[str, Any]:
     vault = _vault()
+    vis = _visibility()
     wiki_dir = vault / "wiki"
     if not wiki_dir.exists():
         raise HTTPException(status_code=404, detail="wiki dir not found")
     entries: List[Dict[str, Any]] = []
     for p in sorted(wiki_dir.rglob("*.md")):
+        rel = p.relative_to(vault).as_posix()
+        if not _rel_visible(rel, vis):
+            continue
         text = p.read_text(encoding="utf-8", errors="ignore")
         fm = _frontmatter(text)
         entries.append({
@@ -272,11 +328,16 @@ def get_wiki(slug: str) -> Dict[str, Any]:
     wiki_dir = vault / "wiki"
     if not wiki_dir.exists():
         raise HTTPException(status_code=404, detail="wiki dir not found")
-    # 防路径穿越
+    # 防路径穿越（统一 resolve 根，避免 macOS /private 符号链接不一致）
+    wiki_root = wiki_dir.resolve()
     target = (wiki_dir / f"{slug}.md").resolve()
-    if not str(target).startswith(str(wiki_dir.resolve())):
+    if not str(target).startswith(str(wiki_root)):
         raise HTTPException(status_code=403, detail="invalid slug")
     if not target.exists():
+        raise HTTPException(status_code=404, detail=f"wiki entry not found: {slug}")
+    rel = target.relative_to(wiki_root).as_posix()
+    rel = f"wiki/{rel}"
+    if not _rel_visible(rel, _visibility()):
         raise HTTPException(status_code=404, detail=f"wiki entry not found: {slug}")
     text = target.read_text(encoding="utf-8", errors="ignore")
     fm = _frontmatter(text)

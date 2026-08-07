@@ -74,12 +74,29 @@ class TestChatAPI(unittest.TestCase):
         self._old_matrix_path = k.MATRIX_PATH
         k.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
 
+        # 认证: 注入租户解析器（测试环境无 DB），默认超管全可见
+        import backend.api.auth as auth
+
+        self._old_resolver = auth.tenant_resolver
+
+        async def fake_resolver(user_id):
+            return {
+                "tenant_key": "u-test",
+                "is_super_admin": True,
+                "categories": set(),
+            }
+
+        auth.tenant_resolver = fake_resolver
+
         from fastapi.testclient import TestClient
         from backend.main import app
 
         self.client = TestClient(app, headers=auth_headers())
 
     def tearDown(self):
+        import backend.api.auth as auth
+
+        auth.tenant_resolver = self._old_resolver
         self.k._vault = self._old_vault
         self.k.MATRIX_PATH = self._old_matrix_path
         self.k._matrix.cache_clear()

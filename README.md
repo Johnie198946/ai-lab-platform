@@ -79,9 +79,20 @@ bash scripts/update.sh   # 拉取最新代码 + 重建 + 健康检查
 ### 统一认证（Authen 集成）
 - Authen 最小核心已部署: auth:8001 / sso:8002 / user:8003 / permission:8004 / gateway:8008（systemd 常驻，/opt/authen）
 - 复用平台 postgres（auth 库）+ redis（db1）；超管: admin/123456（请尽快修改）
-- 平台 API **全部要求 `Authorization: Bearer <Authen JWT>`**（HS256 共享密钥 AUTHEN_JWT_SECRET 本地验签）；/health 开放
+- 平台 API **全部要求 `Authorization: Bearer <Authen JWT>`**（HS256 共享密钥 AUTHEN_JWT_SECRET 本地验签）；/health、/api/v1/register 开放
 - 登录: `POST http://120.24.248.58:8001/api/v1/auth/login` body `{"identifier":"admin","password":"..."}` → access_token
 - 集成代码: `backend/api/auth.py`（require_auth 依赖）+ main.py 路由保护
+
+### 订阅制多租户（0.7.0）
+- **隔离模型**: 普通用户默认空知识库；订阅知识分类后才可见；超管可见全部
+- 租户由 Bearer JWT 派生（tenant_mappings 表），**不再信任 X-Tenant-ID 头**
+- 知识分类 = vault 顶层目录（研究系统/wiki/产品设计/raw/AI情报雷达/竞品情报/客户画像…），00_Inbox/模板/_archive 不进入
+- 端点:
+  - `GET /api/v1/catalog` — 可订阅分类目录
+  - `GET/POST /api/v1/me/subscriptions`、`DELETE /api/v1/me/subscriptions/{category}` — 订阅管理
+  - `GET /api/v1/me`、`/api/v1/me/sessions`、`/api/v1/me/usage` — 租户维数据（会话/用量按租户隔离）
+  - `POST /api/v1/register` — 自助注册（代理 Authen，需 SMTP）；`POST /api/v1/admin/users` — 超管建号
+- 检索/问答全部按订阅过滤（stats/search/wiki/matrix/chat）；问答自动记录会话历史与用量
 
 ### 重新部署步骤
 ```bash

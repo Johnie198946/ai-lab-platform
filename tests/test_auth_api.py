@@ -21,10 +21,28 @@ def _token(secret="test-secret", valid=True, **claims):
 
 class TestAuthAPI(unittest.TestCase):
     def setUp(self):
+        import backend.api.auth as auth
+
+        self._old_resolver = auth.tenant_resolver
+
+        async def fake_resolver(user_id):
+            return {
+                "tenant_key": "u-test",
+                "is_super_admin": False,
+                "categories": set(),
+            }
+
+        auth.tenant_resolver = fake_resolver
+
         from fastapi.testclient import TestClient
         from backend.main import app
 
         self.client = TestClient(app)
+
+    def tearDown(self):
+        import backend.api.auth as auth
+
+        auth.tenant_resolver = self._old_resolver
 
     def test_health_open_without_token(self):
         r = self.client.get("/health")
