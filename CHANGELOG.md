@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0] — 2026-08-07 (Karpathy v4.0 对齐)
+
+### Changed
+- 数据模型: 砍掉 SourceCard 中间层 → WikiEntry + WikiLink + DiffSnapshot + DistillOutput
+- 编译链引擎: 从服务桩升级为完整实现 (raw_to_wiki·diff_wiki·synth·distill·dialogue_to_wiki)
+- registry: Agent 改名对齐 Karpathy (Wiki Ingester / Wiki Writer / Deep Compiler / Knowledge Evolution)
+- 架构文档: 更新为 raw → wiki 两步 + wikilinks 知识网
+
+### Added
+- 编译链规则引擎兜底 (llm_client=None 时可离线运行·已单测覆盖 6 场景)
+
 ## [0.1.0] — Unreleased (MVP 骨架)
 
 ### Added
@@ -17,5 +28,5 @@
 ### Planned
 - 知识库 CRUD API
 - Authen 鉴权集成
-- 编译链 LLM 接入
+- 编译链 LLM 接入 (llm_client 已留接口)
 - 管理后台前端
