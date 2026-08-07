@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0] — 2026-08-07 (问答 API · Karpathy wiki 检索对齐)
+
+### Added
+- 问答 API: POST /api/chat（deepseek 生成，DEEPSEEK_API_KEY 经 .env 注入）
+- 检索对齐 Mac 的 Karpathy wiki 理论（非 RAG）: 实体解析（wiki 目录即索引）→ wiki 条目 + 1 跳 wikilinks 展开 → 跨条目 LLM 合成，引用标注来源
+- 中文分词: jieba 依赖加入 requirements.txt（词项匹配替代整句子串）
+- knowledge.py 检索 v3: 矩阵打分（标题/实体/标签）+ entity_index 反查 + 内容兜底
+
+### Verified
+- 公网实测: "华为科学家对芯片物理极限怎么看？" → 答案基于 wiki/战略信号/芯片物理极限.md + wiki/竞品/华为.md，引用 [1][3]，来源正确
+
 ## [0.4.1] — 2026-08-07 (更新通道 + imageknow 上线)
 
 ### Added

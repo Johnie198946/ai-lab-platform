@@ -35,10 +35,19 @@ MO 团队的知识引擎：自生长知识库 + Agent 自动编译 + 营销资�
 |---|---|
 | `GET /api/knowledge/stats` | 知识库统计（文档数/分类） |
 | `GET /api/knowledge/matrix` | 全量知识矩阵 v2.0 |
-| `GET /api/knowledge/search?q=` | 全文检索（标题>正文）+ 实体命中 |
+| `GET /api/knowledge/search?q=` | 实体检索（矩阵打分 + entity_index 反查 + 内容兜底） |
 | `GET /api/knowledge/entities?q=` | 实体索引反查 |
 | `GET /api/knowledge/wiki` | wiki 条目列表（含 status/tags/wikilinks） |
 | `GET /api/knowledge/wiki/{slug}` | 单条 wiki 详情 |
+| `POST /api/chat` | **基于知识的问答**（Karpathy wiki 检索链，非 RAG） |
+
+### 问答检索链（Karpathy wiki 理论，与 Mac 对齐）
+```text
+问题 → 实体解析（wiki 目录结构即索引: 竞品/产品/战略信号/…）
+     → 命中 wiki 条目 + 1 跳 [[wikilinks]] 展开（知识图谱）
+     → 跨条目 LLM 合成答案，标注引用 [1][2]
+```
+验证方法: `curl -X POST http://120.24.248.58:8000/api/chat -H "Content-Type: application/json" -d '{"question":"华为科学家对芯片物理极限怎么看？"}'`，检查答案与 sources 是否基于 wiki 条目。
 
 ### Agent 镜像（Hermes on server）
 - Hermes v0.19.0 安装于 `/opt/hermes/venv`，profile 镜像于 `/root/.hermes`
