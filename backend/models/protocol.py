@@ -58,6 +58,13 @@ class AgentProtocol(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
+    # v3: workflow engine fields
+    workflow_yaml: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("agent_protocols.id"), nullable=True
+    )
+
     # 关系
     signatures: Mapped[list[ProtocolSignature]] = relationship(
         "ProtocolSignature", back_populates="protocol", cascade="all, delete-orphan"

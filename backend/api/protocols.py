@@ -7,13 +7,18 @@ GET    /api/v1/protocols/{id}         — 详情（含签署状态）
 POST   /api/v1/protocols/{id}/sign    — Agent 签署
 POST   /api/v1/protocols/{id}/cancel  — 取消协议
 GET    /api/v1/protocols/{id}/status  — 实时签署状态
+POST   /api/v1/protocols/{id}/parse   — LLM 解析自然语言→YAML
+POST   /api/v1/protocols/{id}/amend   — 修订协议（创建新版本）
+GET    /api/v1/protocols/{id}/versions — 版本历史
 """
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import List, Optional
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -27,6 +32,7 @@ from backend.models.protocol import (
     ProtocolStatus,
     SignatureStatus,
 )
+from backend.services.protocol_schema import validate_workflow_yaml, WorkflowSchemaError
 from backend.services.protocols import dispatch_to_inbox
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -79,6 +85,9 @@ class ProtocolOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     signatures: List[SignatureOut]
+    workflow_yaml: Optional[str] = None
+    version: int = 1
+    parent_id: Optional[int] = None
 
     class Config:
         from_attributes = True
@@ -346,8 +355,327 @@ async def get_protocol_status(
 
 
 # ---------------------------------------------------------------------------
+# v3: Workflow Engine Endpoints
+# ---------------------------------------------------------------------------
+
+
+class ParseRequest(BaseModel):
+    """Natural language workflow description"""
+    description: str = Field(
+        ..., min_length=1,
+        description="Natural language description of the workflow",
+    )
+
+
+class ParseResponse(BaseModel):
+    """Parsed workflow YAML"""
+    workflow_yaml: str
+    workflow: dict
+
+
+class AmendRequest(BaseModel):
+    """Amend protocol with new workflow"""
+    workflow_yaml: str = Field(..., min_length=1, description="New workflow YAML")
+    title: Optional[str] = Field(None, description="Optional new title")
+    content: Optional[str] = Field(None, description="Optional new content")
+
+
+class VersionOut(BaseModel):
+    """Version history entry"""
+    id: int
+    version: int
+    title: str
+    status: str
+    created_at: datetime
+    parent_id: Optional[int]
+
+    class Config:
+        from_attributes = True
+
+
+@router.post("/{protocol_id}/parse", response_model=ParseResponse)
+async def parse_workflow(
+    protocol_id: int,
+    req: ParseRequest,
+    auth: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Parse natural language description into workflow YAML.
+
+    This is a rule-based parser that extracts workflow structure.
+    Future: integrate LLM for more flexible parsing.
+    """
+    tenant_key = auth.get("tenant_key", "")
+    result = await db.execute(
+        select(AgentProtocol).where(
+            AgentProtocol.id == protocol_id,
+            AgentProtocol.tenant_key == tenant_key,
+        )
+    )
+    protocol = result.scalar_one_or_none()
+    if not protocol:
+        raise HTTPException(status_code=404, detail="协议不存在")
+
+    # Rule-based parser: extract states, transitions, roles from description
+    workflow = _parse_natural_language(req.description)
+
+    # Validate the parsed workflow
+    try:
+        validate_workflow_yaml(workflow)
+    except WorkflowSchemaError as e:
+        raise HTTPException(status_code=400, detail=f"Parsed workflow is invalid: {e}")
+
+    # Convert to YAML string
+    workflow_yaml = yaml.dump(workflow, allow_unicode=True, sort_keys=False)
+
+    return ParseResponse(workflow_yaml=workflow_yaml, workflow=workflow)
+
+
+@router.post("/{protocol_id}/amend", response_model=ProtocolOut)
+async def amend_protocol(
+    protocol_id: int,
+    req: AmendRequest,
+    auth: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Amend protocol by creating a new version.
+
+    The new version references the original via parent_id.
+    Workflow YAML is validated before persistence.
+    """
+    tenant_key = auth.get("tenant_key", "")
+    created_by = auth.get("user_id", "") or auth.get("username", "")
+
+    # Load original protocol
+    result = await db.execute(
+        select(AgentProtocol)
+        .options(selectinload(AgentProtocol.signatures))
+        .where(
+            AgentProtocol.id == protocol_id,
+            AgentProtocol.tenant_key == tenant_key,
+        )
+    )
+    original = result.scalar_one_or_none()
+    if not original:
+        raise HTTPException(status_code=404, detail="协议不存在")
+
+    # Cannot amend completed or cancelled protocols
+    if original.status in [ProtocolStatus.COMPLETED, ProtocolStatus.CANCELLED]:
+        raise HTTPException(status_code=400, detail="不能修订已完成或已取消的协议")
+
+    # Validate new workflow YAML
+    try:
+        validate_workflow_yaml(req.workflow_yaml)
+    except WorkflowSchemaError as e:
+        raise HTTPException(status_code=400, detail=f"Workflow YAML 校验失败: {e}")
+
+    # Create new version
+    new_protocol = AgentProtocol(
+        title=req.title or original.title,
+        content=req.content or original.content,
+        status=ProtocolStatus.PENDING,
+        tenant_key=tenant_key,
+        created_by=created_by,
+        workflow_yaml=req.workflow_yaml,
+        version=original.version + 1,
+        parent_id=original.id,
+    )
+    db.add(new_protocol)
+    await db.flush()
+
+    # Copy signatures from original
+    for sig in original.signatures:
+        new_sig = ProtocolSignature(
+            protocol_id=new_protocol.id,
+            agent_name=sig.agent_name,
+            status=SignatureStatus.PENDING,
+        )
+        db.add(new_sig)
+
+    await db.commit()
+    await db.refresh(new_protocol)
+
+    # Load signatures
+    result = await db.execute(
+        select(AgentProtocol)
+        .options(selectinload(AgentProtocol.signatures))
+        .where(AgentProtocol.id == new_protocol.id)
+    )
+    new_protocol = result.scalar_one()
+
+    # Dispatch to inbox
+    try:
+        dispatch_to_inbox(new_protocol)
+    except Exception as e:
+        import logging
+        logging.warning(f"协议派发失败: {e}")
+
+    return _to_protocol_out(new_protocol)
+
+
+@router.get("/{protocol_id}/versions", response_model=List[VersionOut])
+async def get_versions(
+    protocol_id: int,
+    auth: dict = Depends(require_auth),
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Get version history for a protocol.
+
+    Returns all versions in the chain, from oldest to newest.
+    """
+    tenant_key = auth.get("tenant_key", "")
+
+    # Load the target protocol
+    result = await db.execute(
+        select(AgentProtocol).where(
+            AgentProtocol.id == protocol_id,
+            AgentProtocol.tenant_key == tenant_key,
+        )
+    )
+    protocol = result.scalar_one_or_none()
+    if not protocol:
+        raise HTTPException(status_code=404, detail="协议不存在")
+
+    # Build version chain: walk up parent_id to find root, then walk down
+    versions = []
+    current = protocol
+
+    # Walk up to find root
+    while current.parent_id:
+        result = await db.execute(
+            select(AgentProtocol).where(AgentProtocol.id == current.parent_id)
+        )
+        parent = result.scalar_one_or_none()
+        if not parent:
+            break
+        current = parent
+
+    # Now current is the root; walk down via children
+    root = current
+    queue = [root]
+    while queue:
+        node = queue.pop(0)
+        versions.append(node)
+        # Find children
+        result = await db.execute(
+            select(AgentProtocol).where(AgentProtocol.parent_id == node.id)
+        )
+        children = result.scalars().all()
+        queue.extend(children)
+
+    # Sort by version
+    versions.sort(key=lambda p: p.version)
+
+    return [
+        VersionOut(
+            id=v.id,
+            version=v.version,
+            title=v.title,
+            status=v.status,
+            created_at=v.created_at,
+            parent_id=v.parent_id,
+        )
+        for v in versions
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _parse_natural_language(description: str) -> dict:
+    """
+    Rule-based parser: extract workflow structure from natural language.
+
+    This is a simplified parser for demonstration.
+    Future: integrate LLM for more flexible parsing.
+
+    Example input:
+        "Start with draft. Coder can submit for review.
+         Supervision can approve or reject. If rejected, go back to draft."
+
+    Returns:
+        Workflow dict with states, transitions, roles, terminal
+    """
+    # Extract states (simple heuristic: look for common state keywords)
+    state_keywords = {
+        "draft": "draft",
+        "pending": "pending",
+        "review": "review",
+        "approved": "approved",
+        "approve": "approved",
+        "approves": "approved",
+        "rejected": "rejected",
+        "reject": "rejected",
+        "rejects": "rejected",
+        "completed": "completed",
+        "complete": "completed",
+        "done": "done",
+    }
+    states = set()
+    desc_lower = description.lower()
+    for keyword, state in state_keywords.items():
+        if keyword in desc_lower:
+            states.add(state)
+
+    # Default states if none found
+    if not states:
+        states = {"draft", "review", "approved", "rejected"}
+
+    # Extract roles (look for agent names)
+    role_keywords = ["coder", "supervision", "main", "agent"]
+    roles = set()
+    for keyword in role_keywords:
+        if keyword in desc_lower:
+            roles.add(keyword)
+
+    # Default roles if none found
+    if not roles:
+        roles = {"coder", "supervision"}
+
+    # Build transitions (simplified: assume linear flow with rejection loop)
+    states_list = sorted(states)
+    if "draft" in states_list and "review" in states_list:
+        transitions = [
+            {"from": "draft", "to": "review", "action": "submit"},
+            {"from": "review", "to": "approved", "action": "approve"},
+            {"from": "review", "to": "rejected", "action": "reject"},
+        ]
+        if "draft" in states_list and "rejected" in states_list:
+            transitions.append({"from": "rejected", "to": "draft", "action": "revise"})
+        terminal = ["approved"]
+    else:
+        # Fallback: linear chain
+        transitions = []
+        for i in range(len(states_list) - 1):
+            transitions.append({
+                "from": states_list[i],
+                "to": states_list[i + 1],
+                "action": f"move_to_{states_list[i + 1]}",
+            })
+        terminal = [states_list[-1]]
+
+    # Build role permissions
+    role_list = []
+    for role in sorted(roles):
+        allowed_actions = [t["action"] for t in transitions]
+        role_list.append({"name": role, "allowed_actions": allowed_actions})
+
+    workflow = {
+        "version": 1,
+        "name": "Parsed Workflow",
+        "states": states_list,
+        "initial": states_list[0],
+        "transitions": transitions,
+        "roles": role_list,
+        "terminal": terminal,
+    }
+
+    return workflow
 
 
 def _to_protocol_out(protocol: AgentProtocol) -> ProtocolOut:
@@ -370,4 +698,7 @@ def _to_protocol_out(protocol: AgentProtocol) -> ProtocolOut:
             )
             for s in protocol.signatures
         ],
+        workflow_yaml=protocol.workflow_yaml,
+        version=protocol.version,
+        parent_id=protocol.parent_id,
     )
