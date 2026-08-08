@@ -20,8 +20,11 @@ Thumbs.db
 .vscode/
 *.swp
 
-# 数据/产物
-data/*.json
+# 知识库与数据（完全与 GitHub 解耦，绝不推送）
+data/*
+!data/.gitkeep
+!data/manifests/
+!data/runtime/
 *.log
 docx_build/
 .hermes/
