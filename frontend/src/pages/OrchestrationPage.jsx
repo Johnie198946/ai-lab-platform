@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrchestration } from "../hooks/useOrchestration";
 import { useNavigate } from "react-router-dom";
+import DecryptedText from "../components/DecryptedText";
 import "./Dashboard.css";
 
 export function OrchestrationPage() {
@@ -68,7 +69,16 @@ export function OrchestrationPage() {
                       {msg.role === "assistant" ? (
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
-                          <div>{msg.content}</div>
+                          <div>
+                            <DecryptedText
+                              text={msg.content}
+                              animateOn="view"
+                              speed={30}
+                              maxIterations={15}
+                              sequential={true}
+                              revealDirection="start"
+                            />
+                          </div>
                         </>
                       ) : (
                         msg.content
