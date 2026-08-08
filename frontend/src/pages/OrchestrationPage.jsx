@@ -3,8 +3,9 @@ import { useAuth } from "../auth/AuthContext";
 import { useOrchestration } from "../hooks/useOrchestration";
 import { useNavigate } from "react-router-dom";
 import TextType from "../components/TextType";
+import SplitText from "../components/SplitText";
+import Orb from "../components/Orb";
 import "./Dashboard.css";
-
 export function OrchestrationPage() {
   const { authSession, logout, sessionScopeKey } = useAuth();
   const navigate = useNavigate();
@@ -46,11 +47,15 @@ export function OrchestrationPage() {
         <header className="orch-stage-header">
           <div id="ai-conversation-workspace" aria-label="工作总结">
             <div className="orch-workspace-grid">
-              <div className="orch-summary-copy">
+              <div className="orch-summary-copy" style={{ position: 'relative' }}>
                 <span className="orch-summary-kicker">工作总结</span>
                 <h1 className="orch-summary-title">
                   <TextType text="你好！今天又有什么新想法？" speed={100} />
                 </h1>
+                <div style={{ position: 'absolute', top: '140px', left: '20px' }}>
+                  <Orb color="rgba(43, 129, 255, 0.25)" size={280} blur={50} speed={12} />
+                  <Orb color="rgba(100, 200, 255, 0.2)" size={200} blur={40} speed={15} />
+                </div>
               </div>
               <aside className="orch-dialog-shell" aria-label="通用场景对话框">
                 <div className="orch-dialog-head">
