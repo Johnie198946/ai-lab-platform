@@ -1,0 +1,17 @@
+description: 竞品情报 Agent 模板
+variables:
+  AGENT_NAME:
+    default: 竞品情报
+    desc: Agent 名称
+  KNOWLEDGE_BASE:
+    default: /Users/dengzhaoyu/Desktop/AI Lab/AI Lab
+    desc: 知识库根路径
+  OUTPUT_DIR:
+    default: 竞品情报/
+    desc: 日报输出目录
+  WATCHLIST:
+    default: 华为·联想·浪潮·NVIDIA·OpenAI·Anthropic·腾讯·阿里·字节·DeepSeek
+    desc: 监控名单（·分隔）
+  DELIVER:
+    default: origin
+    desc: 投递目标
