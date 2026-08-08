@@ -13,8 +13,8 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
-      - run: pip install ruff
-      - run: ruff check backend/ scripts/ tests/
+      - run: python -m pip install ruff
+      - run: PYTHONPATH=. ruff check backend/ scripts/ tests/
 
   build:
     needs: lint
@@ -23,6 +23,6 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
-      - run: pip install -r requirements.txt
-      - run: pytest -q
-      - run: python -c "import backend; print('import ok')"
+      - run: python -m pip install -r requirements.txt
+      - run: PYTHONPATH=. python -m pytest -q
+      - run: PYTHONPATH=. python -c "import backend; print('import ok')"
