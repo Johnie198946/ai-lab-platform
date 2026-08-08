@@ -23,10 +23,15 @@ class AgentMeta:
     depends_on: List[str] = None  # 上游 Agent
     token_budget: int = 50000
     model: str = "deepseek-chat"
+    knowledge_scope: List[str] = None
+    allow_network: bool = False
+    requires_review: bool = False
 
     def __post_init__(self):
         if self.depends_on is None:
             self.depends_on = []
+        if self.knowledge_scope is None:
+            self.knowledge_scope = []
 
 
 class AgentRegistry:
@@ -48,6 +53,7 @@ class AgentRegistry:
                 inputs=["互联网"],
                 outputs=["raw/articles/", "raw/_manifest.json"],
                 token_budget=30000,
+                allow_network=True,
             ),
             AgentMeta(
                 name="竞品情报",
@@ -58,6 +64,7 @@ class AgentRegistry:
                 inputs=["互联网"],
                 outputs=["竞品情报/", "raw/_manifest.json"],
                 token_budget=40000,
+                allow_network=True,
             ),
             AgentMeta(
                 name="Wiki Ingester",
@@ -69,6 +76,8 @@ class AgentRegistry:
                 outputs=["wiki/"],
                 depends_on=["Horizon", "竞品情报", "GPU追踪", "客户画像"],
                 token_budget=50000,
+                knowledge_scope=["raw", "wiki"],
+                requires_review=True,
             ),
             AgentMeta(
                 name="Dialogue Ingester",
@@ -79,6 +88,8 @@ class AgentRegistry:
                 inputs=["00_Inbox/", "raw/dialogues/"],
                 outputs=["wiki/"],
                 token_budget=30000,
+                knowledge_scope=["00_Inbox", "raw/dialogues", "wiki"],
+                requires_review=True,
             ),
             AgentMeta(
                 name="Wiki Writer",
@@ -90,6 +101,8 @@ class AgentRegistry:
                 outputs=["wiki条目更新·Diff标记"],
                 depends_on=["Wiki Ingester", "Dialogue Ingester"],
                 token_budget=20000,
+                knowledge_scope=["wiki"],
+                requires_review=True,
             ),
             AgentMeta(
                 name="Deep Compiler",
@@ -102,6 +115,8 @@ class AgentRegistry:
                 depends_on=["Wiki Writer"],
                 token_budget=80000,
                 model="deepseek-v4",
+                knowledge_scope=["wiki", "研究系统", "蒸馏"],
+                requires_review=True,
             ),
             AgentMeta(
                 name="Knowledge Evolution",
@@ -113,6 +128,7 @@ class AgentRegistry:
                 outputs=["dashboard更新"],
                 depends_on=["Deep Compiler"],
                 token_budget=15000,
+                knowledge_scope=["raw", "wiki"],
             ),
             AgentMeta(
                 name="空间清理",
@@ -135,6 +151,8 @@ class AgentRegistry:
                 outputs=["研究系统/来源卡片/", "raw/reports/"],
                 token_budget=80000,
                 model="deepseek-v4",
+                knowledge_scope=["ai-lab-platform", "研究系统", "raw/reports"],
+                requires_review=True,
             ),
             AgentMeta(
                 name="Code Agent",
@@ -146,6 +164,7 @@ class AgentRegistry:
                 outputs=["sandbox://"],
                 token_budget=50000,
                 model="deepseek-v4",
+                requires_review=True,
             ),
             AgentMeta(
                 name="Image Agent",

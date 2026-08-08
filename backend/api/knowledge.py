@@ -244,6 +244,39 @@ def get_matrix() -> Dict[str, Any]:
     return filtered
 
 
+@router.get("/contract")
+def get_contract() -> Dict[str, Any]:
+    """暴露当前机读知识接口契约，明确已实现边界。"""
+    m = _matrix()
+    if not m:
+        raise HTTPException(status_code=404, detail="knowledge_matrix.json not found")
+    return {
+        "machine_interface": "knowledge_matrix",
+        "matrix_version": m.get("version", "unknown"),
+        "generated_at": m.get("generated_at"),
+        "source_of_truth": {
+            "human": "编译后的知识层（研究系统 / wiki 兼容视图）",
+            "machine": "knowledge_matrix.json",
+        },
+        "implemented": [
+            "matrix",
+            "stats",
+            "search",
+            "entities",
+            "wiki_list",
+            "wiki_detail",
+            "chat",
+        ],
+        "planned": [
+            "task_replay",
+            "runtime_audit_dashboard",
+            "policy-driven compile orchestration",
+        ],
+        "categories_count": m.get("stats", {}).get("categories_count", 0),
+        "entity_count": m.get("stats", {}).get("total_entities_indexed", 0),
+    }
+
+
 @router.get("/stats")
 def get_stats() -> Dict[str, Any]:
     vault = _vault()

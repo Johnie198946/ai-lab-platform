@@ -116,6 +116,13 @@ class TestKnowledgeAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["version"], "2.0")
 
+    def test_contract(self):
+        r = self.client.get("/api/knowledge/contract")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["machine_interface"], "knowledge_matrix")
+        self.assertEqual(body["matrix_version"], "2.0")
+
     def test_stats(self):
         r = self.client.get("/api/knowledge/stats")
         self.assertEqual(r.status_code, 200)

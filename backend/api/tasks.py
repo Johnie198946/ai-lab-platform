@@ -10,10 +10,18 @@ PATCH  /api/tasks/{task_id}    — 更新状态
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from backend.agents.contracts import (
+    Artifact,
+    HarnessPolicy,
+    HarnessTask,
+    TaskStatus,
+    utc_now,
+)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -22,93 +30,93 @@ router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
 
 class TaskCreate(BaseModel):
-    from_agent: str
-    to_agent: str
     task_type: str
-    payload: Optional[dict[str, Any]] = None
+    goal: str
+    assigned_to: str
+    requested_by: str = "user"
+    from_agent: str | None = None
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    expected_outputs: list[str] = Field(default_factory=list)
+    read_targets: list[str] = Field(default_factory=list)
+    write_targets: list[str] = Field(default_factory=list)
     priority: int = 0
+    policy: HarnessPolicy = Field(default_factory=HarnessPolicy)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class TaskUpdate(BaseModel):
-    status: str  # pending | in_progress | done
+    status: TaskStatus | None = None
+    result_summary: str | None = None
+    artifacts: list[Artifact] | None = None
+    next_actions: list[str] | None = None
 
 
-class TaskOut(BaseModel):
-    id: int
-    from_agent: str
-    to_agent: str
-    task_type: str
-    payload: Optional[dict[str, Any]]
-    status: str
-    created_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+# ---------- 内存队列 (当前单进程版，后续切 PostgreSQL) ----------
 
-    class Config:
-        from_attributes = True
-
-
-# ---------- 内存队列 (demo 版，生产切 PostgreSQL) ----------
-
-_tasks: dict[int, dict[str, Any]] = {}
-_next_id: int = 1
-
-
-def _now() -> str:
-    return datetime.utcnow().isoformat()
+_tasks: dict[str, HarnessTask] = {}
 
 
 @router.post("", status_code=201)
-async def post_task(body: TaskCreate) -> TaskOut:
+async def post_task(body: TaskCreate) -> HarnessTask:
     """投递一个 Agent 间流转任务。"""
-    global _next_id
-    task = {
-        "id": _next_id,
-        "from_agent": body.from_agent,
-        "to_agent": body.to_agent,
-        "task_type": body.task_type,
-        "payload": body.payload or {},
-        "status": "pending",
-        "created_at": _now(),
-        "completed_at": None,
-    }
-    _tasks[_next_id] = task
-    _next_id += 1
-    return TaskOut(**task)
+    task = HarnessTask(
+        task_type=body.task_type,
+        goal=body.goal,
+        assigned_to=body.assigned_to,
+        requested_by=body.requested_by,
+        from_agent=body.from_agent,
+        inputs=body.inputs,
+        expected_outputs=body.expected_outputs,
+        read_targets=body.read_targets,
+        write_targets=body.write_targets,
+        priority=body.priority,
+        policy=body.policy,
+        metadata=body.metadata,
+        status=TaskStatus.READY,
+    )
+    _tasks[task.task_id] = task
+    return task
 
 
 @router.get("/inbox")
 async def inbox(
     agent: str = Query(..., description="目标 Agent 名称"),
-) -> list[TaskOut]:
+    status: TaskStatus | None = Query(None, description="可选：按状态过滤"),
+) -> list[HarnessTask]:
     """获取指定 Agent 的待处理任务列表。"""
-    results = [TaskOut(**t) for t in _tasks.values() if t["to_agent"] == agent]
-    return sorted(results, key=lambda x: x.created_at or "", reverse=True)
+    results = [t for t in _tasks.values() if t.assigned_to == agent]
+    if status is not None:
+        results = [t for t in results if t.status == status]
+    return sorted(results, key=lambda x: x.created_at, reverse=True)
 
 
 @router.get("/{task_id}")
-async def get_task(task_id: int) -> TaskOut:
+async def get_task(task_id: str) -> HarnessTask:
     """查询单个任务的状态。"""
     task = _tasks.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
-    return TaskOut(**task)
+    return task
 
 
 @router.patch("/{task_id}")
-async def update_task(task_id: int, body: TaskUpdate) -> TaskOut:
-    """更新任务状态 (pending → in_progress → done)。"""
+async def update_task(task_id: str, body: TaskUpdate) -> HarnessTask:
+    """更新任务状态与执行结果。"""
     task = _tasks.get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail=f"task not found: {task_id}")
 
-    allowed = {"pending", "in_progress", "done"}
-    if body.status not in allowed:
-        raise HTTPException(
-            status_code=400,
-            detail=f"invalid status: {body.status}, must be one of {allowed}",
-        )
-
-    task["status"] = body.status
-    if body.status == "done":
-        task["completed_at"] = _now()
-    return TaskOut(**task)
+    if body.status is not None:
+        task.transition(body.status)
+    if (
+        body.status in (TaskStatus.DONE, TaskStatus.FAILED)
+        and task.completed_at is None
+    ):
+        task.completed_at = utc_now()
+    task.with_result(
+        summary=body.result_summary,
+        artifacts=body.artifacts,
+        next_actions=body.next_actions,
+    )
+    task.updated_at = utc_now()
+    return task

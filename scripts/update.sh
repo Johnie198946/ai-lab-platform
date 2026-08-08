@@ -20,14 +20,19 @@ echo "    代码已更新: $(git log --oneline -1 2>/dev/null || echo '(无 git 
 echo "==> [2/3] 重建并重启服务"
 docker compose up -d --build
 
-echo "==> [3/3] 健康检查"
+echo "==> [3/4] 健康检查"
 for i in $(seq 1 30); do
   status=$(curl -sf http://127.0.0.1:8000/health || true)
   if [ -n "$status" ]; then
     echo "    API 就绪: $status"
-    exit 0
+    break
   fi
   sleep 2
 done
-echo "WARN: 30 秒内未就绪，请查看: docker compose logs api"
-exit 1
+if [ -z "${status:-}" ]; then
+  echo "WARN: 30 秒内未就绪，请查看: docker compose logs api"
+  exit 1
+fi
+
+echo "==> [4/4] 运行平台契约审计"
+python3 scripts/audit_runtime_contracts.py --data-dir ./data

@@ -6,8 +6,9 @@ Agent 守护层（AgentCare PEP）
 2. post_check: 执行后 → 输出合规·文件安全·有效Token率
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
+from pathlib import Path
 from typing import Dict, Optional
 
 
@@ -75,8 +76,10 @@ class AgentGuard:
         # 3. 权限边界
         forbidden = ["/etc", "/root", "/var", "~/.ssh", "~/.hermes/profiles"]
         for d in allowed_dirs:
+            normalized = str(Path(d).expanduser())
             for f in forbidden:
-                if d.startswith(f):
+                forbidden_prefix = str(Path(f).expanduser())
+                if normalized.startswith(forbidden_prefix):
                     return False, f"权限拒绝: {d} (禁止访问系统目录)"
 
         return True, "pass"

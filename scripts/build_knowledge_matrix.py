@@ -115,7 +115,11 @@ def extract_frontmatter_and_content(file_path: Path) -> tuple[Dict[str, Any], st
                 if not stripped:
                     continue
                 # Handle list items under a key
-                if stripped.startswith("- ") and current_key and current_list is not None:
+                if (
+                    stripped.startswith("- ")
+                    and current_key
+                    and current_list is not None
+                ):
                     current_list.append(stripped[2:].strip().strip('"').strip("'"))
                     continue
                 # If we were building a list, save it
@@ -237,7 +241,10 @@ def build_matrix(vault_dir: Path) -> Dict[str, Any]:
                 "path": rel_str,
                 "title": fm.get("title", file.replace(".md", "")),
                 "tags": fm.get("tags", []),
-                "created": fm.get("created", fm.get("date", fm.get("published_at", ""))),
+                "created": fm.get(
+                    "created",
+                    fm.get("date", fm.get("published_at", "")),
+                ),
                 "wikilinks": wikilinks,
                 "entities": entities,
                 "summary": summary,
@@ -309,15 +316,24 @@ def main():
     print(f"   - Total WikiLinks: {matrix['stats']['total_wikilinks']}")
     print(f"   - Total Entities Indexed: {matrix['stats']['total_entities_indexed']}")
     print(f"   - Categories: {matrix['stats']['categories_count']}")
-    print(f"   - Category breakdown:")
+    print("   - Category breakdown:")
     for cat_name, cat_data in sorted(matrix["categories"].items()):
         print(f"       {cat_name}: {len(cat_data)} docs")
     print(f"   - Saved to: {out_file1}")
     print(f"   - Saved to: {out_file2}")
 
     # 验证关键实体覆盖
-    print(f"\n🔍 Entity coverage verification:")
-    critical_entities = ["字节跳动", "ByteDance", "张一鸣", "DeepSeek", "华为", "联想", "Qwen", "Anthropic"]
+    print("\n🔍 Entity coverage verification:")
+    critical_entities = [
+        "字节跳动",
+        "ByteDance",
+        "张一鸣",
+        "DeepSeek",
+        "华为",
+        "联想",
+        "Qwen",
+        "Anthropic",
+    ]
     for entity in critical_entities:
         if entity in matrix["entity_index"]:
             docs = matrix["entity_index"][entity]

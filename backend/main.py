@@ -34,16 +34,16 @@ app = FastAPI(
 ## xFusion AI Lab 知识库平台 API
 
 ### 核心概念
-- **知识库**: 原始文章 + 来源卡片 + 专题档案
+- **知识库**: 原始材料 + 编译知识层 + knowledge_matrix 机读接口
 - **编译链**: Ingest → Diff → Synth → Distill
-- **Agent**: 调度 + 状态 + 日志
+- **Agent / Harness**: 调度 + 状态 + 日志 + policy + ledger
 - **多租户（订阅制）**: 每个用户默认空知识库，订阅知识分类后可见；超管可见全部
   （租户由 Bearer JWT 派生，不信任客户端 X-Tenant-ID 头）
 
 ### 认证
 使用 Authen 统一认证，所有接口需带 `Authorization: Bearer <Authen JWT>`。
 """,
-    version="0.7.0",
+    version="0.8.0",
     docs_url="/docs",  # Swagger UI
     redoc_url="/redoc",  # ReDoc
     openapi_url="/openapi.json",
@@ -71,7 +71,7 @@ app.include_router(me_router, dependencies=[Depends(require_auth)])
 # ---------- 健康检查 ----------
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "0.7.0"}
+    return {"status": "ok", "version": "0.8.0"}
 
 
 # 自动生成 OpenAPI schema

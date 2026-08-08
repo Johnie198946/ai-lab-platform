@@ -1,24 +1,88 @@
 # AI Lab Platform
 
-> Karpathy LLM Wiki v4.0 —— raw/ → wiki/ 两步编译，砍掉来源卡片中间层。
-> wiki 条目是唯一真理源，wikilinks 织成知识网。
+> 0.8.0 起，平台从“只解释 wiki 编译链”升级为“知识层 + 机读层 + runtime harness”三位一体架构。
+> `knowledge_matrix.json` 是唯一机读接口；编译后的知识层是人类使用的知识真相源。
 
 ## 核心架构
 
 ```
-raw/ (只追加不删除)
-  ├── articles/    外部文章
-  ├── dialogues/   对话 dump
-  └── reports/     审计报告
-      ↓ LLM 读 raw
-wiki/ (单一真理源·实体条目·wikilinks 互联)
-  ├── 竞品/ 产品/ 战略信号/ 方法论/ 客户/
-  └── 每个条目: 最新在前 + [[wikilinks]] + 来源标注
-      ↓ Diff (strengthened/weakened/uncontested/new)
-      ↓ Synth (跨条目交叉验证·断链检测·孤立条目)
-      ↓ Distill (七角色话术·特性→利益表·竞品矩阵)
-蒸馏产物 (营销资产)
+原始材料层 raw/（只追加不删除）
+  ├── articles/
+  ├── dialogues/
+  └── reports/
+      ↓ 编译 / 对齐
+编译知识层（研究系统主线 + wiki 兼容视图）
+  ├── 研究系统/专题档案 / 来源卡片 / 综合报告
+  ├── wiki/实体视图
+  └── wikilinks / 标签 / frontmatter
+      ↓ 唯一机读压缩
+knowledge_matrix.json
+  ├── categories
+  ├── entity_index
+  ├── summary / wikilinks / tags
+  └── stats
+      ↓
+Knowledge API / Chat API / Runtime Harness
+      ↓
+多租户产品接口 / 蒸馏产物 / 审计与回放
 ```
+
+## 设计原则
+
+1. `人机分层`
+   - 人类看编译后的知识层
+   - 机器读 `knowledge_matrix.json`
+2. `契约先于流程`
+   - 先统一任务对象、知识接口、策略边界
+   - 再做复杂调度与多租户 runtime
+3. `已实现与规划分层`
+   - README / API / runtime 只承诺已经上线的边界
+   - 未来控制面和全量 Agent 平台单独列为规划
+
+## Runtime Harness
+
+### 统一任务对象
+
+平台任务对象现在统一为：
+
+- `task_id`
+- `task_type`
+- `goal`
+- `assigned_to`
+- `inputs`
+- `expected_outputs`
+- `read_targets`
+- `write_targets`
+- `policy`
+- `status`
+- `result_summary`
+- `artifacts`
+- `next_actions`
+
+### 统一状态机
+
+`draft → ready → running → waiting_review → done / failed`
+
+### 策略边界
+
+每个 runtime task 附带 `HarnessPolicy`：
+
+- `readable_paths`
+- `writable_paths`
+- `knowledge_scope`
+- `allow_network`
+- `requires_review`
+- `max_tokens`
+
+### 审计与回放基础
+
+当前已落地：
+
+- `data/manifests/<agent>.json`
+- `data/manifests/_global.json`
+- `data/runtime/task_ledger.jsonl`
+
+这三者构成第一版运行台账，供后续 replay / audit dashboard 复用。
 
 ## 目录结构
 
@@ -78,18 +142,19 @@ ai-lab-platform/
 
 **双模式**：`llm_client=None` 时规则引擎兜底（可离线测试）；接入 LLM 后完整生成。
 
-## 检索链 (Karpathy 原则)
+## 检索链 (当前实现)
 
-1. **不搜全文**——目录结构即索引 (竞品名 → wiki/竞品/字节跳动.md)
-2. **wikilinks 是知识图谱**——条目内 [[链接]] 表达知识关系
-3. **matrix 只是实体反查**——knowledge_matrix.json: 实体名 → 文件路径
-4. **跨条目合成**——读多个条目后由 LLM 合成答案
+1. **先读 matrix**——`knowledge_matrix.json` 是唯一机读入口
+2. **再做实体与摘要命中**——标题 / tags / entity_index / summary 共同参与打分
+3. **wiki 视图保留**——用于兼容既有实体条目与 1 跳 wikilinks 展开
+4. **跨条目合成**——读多个文档后由 LLM 合成答案
 
 ## API 设计
 
 ### 知识库
 - `POST   /api/knowledge`         — 上传文档 (raw)
 - `GET    /api/knowledge/:id`     — 读取原文
+- `GET    /api/knowledge/contract` — 查询机读知识契约
 - `GET    /api/knowledge/search`  — 实体检索 (走 matrix)
 - `GET    /api/knowledge/wikilinks/:id` — 双向链接
 
@@ -108,3 +173,18 @@ ai-lab-platform/
 - `GET    /api/agents`           — Agent 列表
 - `POST   /api/agents/:id/run`   — 手动触发
 - `GET    /api/agents/:id/logs`  — 运行日志
+
+## 已实现 vs 规划
+
+### 已实现
+- `knowledge_matrix` 机读接口
+- 搜索 / 统计 / 实体 / wiki / chat API
+- Authen JWT
+- 订阅制可见性过滤
+- 第一版 harness runtime（task contract / ledger / manifest / policy）
+
+### 规划中
+- 任务持久化
+- runtime replay
+- 编译链 orchestration API
+- dashboard / control plane

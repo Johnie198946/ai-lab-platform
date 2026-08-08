@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.8.0] — 2026-08-08 (Harness 收敛 + 契约化)
+
+### Added
+- 新增统一 harness 契约：`backend/agents/contracts.py`
+  - `HarnessTask`
+  - `HarnessPolicy`
+  - `Artifact`
+  - `TaskStatus`
+- task API 升级：从 demo 消息结构切到统一任务对象（goal / policy / read_targets / write_targets / result_summary / artifacts / next_actions）
+- runtime 升级：增加 task ledger、按 Agent 写 manifest、状态流转、等待复核态
+- 知识契约接口：`GET /api/knowledge/contract`
+- 契约审计脚本：`scripts/audit_runtime_contracts.py`
+- 部署 / 更新脚本在健康检查后自动执行契约审计
+- 新文档：`docs/harness-rollout-v0.8.md`
+
+### Changed
+- README 明确 `已实现 / 在建 / 规划` 边界
+- ARCHITECTURE 从旧的 wiki-only 叙事升级为 `知识层 + machine interface + runtime harness`
+- Agent 元数据新增 `knowledge_scope / allow_network / requires_review`
+
+### Fixed
+- runtime 失败判定修正：不再只在 `exit_code != 0 且 error 存在` 时才判失败
+- guard 路径检查使用规范化路径，减少误判
+- manifest 写入修正为每个 Agent 独立文件 + `_global.json`
+
 ## [0.7.0] — 2026-08-08 (订阅制逻辑多租户)
 
 ### Added

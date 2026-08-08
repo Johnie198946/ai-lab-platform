@@ -5,22 +5,49 @@ xFusion AI Lab 知识库平台——从个人 Obsidian 知识库演化为企业�
 ## 产品定位
 MO 团队的知识引擎：自生长知识库 + Agent 自动编译 + 营销资产蒸馏。
 
-## 技术栈（规划中）
-- Backend: Python FastAPI + SQLite/PostgreSQL
-- Frontend: React/Next.js
-- Agent Runtime: Hermes Cron Jobs → API Server
-- Knowledge Engine: LLM Wiki 编译链
-- Auth: JWT + RBAC
+## 架构收敛
 
-## 演进路径
-1. 知识库 API（读写·搜索·wikilinks）
-2. 来源卡片 + 编译链 Web 界面
-3. 多用户 + 权限
-4. Agent 调度面板
-5. 蒸馏 + 营销话术输出
+本仓库从 `0.8.0` 开始，明确采用两层真相源：
 
-## 当前状态
-从个人 Obsidian vault 提取核心逻辑，构建产品级后端。
+- 人类知识主线：编译后的知识层（`研究系统` 为主，`wiki` 为兼容视图）
+- 机器接口主线：`knowledge_matrix.json`
+
+平台不再把“任意 Obsidian 目录结构”直接暴露为产品契约；对外承诺的是：
+
+- 知识 API
+- `knowledge_matrix` 机读接口
+- task / harness runtime 契约
+
+详细方案见 `docs/harness-rollout-v0.8.md`。
+
+## 当前技术栈
+- Backend: Python FastAPI
+- Storage: PostgreSQL + Redis + 文件镜像
+- Agent Runtime: 平台内置 harness runtime（保留 Hermes 协同）
+- Knowledge Engine: knowledge_matrix + 编译知识层
+- Auth: Authen JWT + 订阅制隔离
+
+## 能力边界
+
+### 已实现
+- 知识 API：`stats / matrix / contract / search / entities / wiki / chat`
+- 统一认证：Authen JWT
+- 订阅制多租户隔离：按知识分类可见性过滤
+- 基础 task API：统一任务对象、状态流转、结果回写
+- harness runtime 第一版：task ledger / policy / per-agent manifest
+- 部署脚本：deploy / update / contract audit
+
+### 在建
+- 任务持久化（当前仍是进程内存队列）
+- runtime 回放与失败补偿
+- 编译链 orchestration API
+- 运行审计视图
+
+### 规划中
+- 真正多租户 Agent Runtime
+- Agent 调度面板
+- 前端控制台
+- 蒸馏工作台与营销资产流水线
 
 ## 部署
 
@@ -35,6 +62,7 @@ MO 团队的知识引擎：自生长知识库 + Agent 自动编译 + 营销资�
 |---|---|
 | `GET /api/knowledge/stats` | 知识库统计（文档数/分类） |
 | `GET /api/knowledge/matrix` | 全量知识矩阵 v2.0 |
+| `GET /api/knowledge/contract` | 当前机读知识接口契约 |
 | `GET /api/knowledge/search?q=` | 实体检索（矩阵打分 + entity_index 反查 + 内容兜底） |
 | `GET /api/knowledge/entities?q=` | 实体索引反查 |
 | `GET /api/knowledge/wiki` | wiki 条目列表（含 status/tags/wikilinks） |
@@ -101,9 +129,16 @@ cp .env.example .env   # 修改数据库密码
 bash scripts/deploy.sh # 构建 + 启动 + 健康检查
 ```
 
+### 平台契约审计
+```bash
+python3 scripts/audit_runtime_contracts.py --data-dir ./data
+```
+用于检查：
+- `knowledge_matrix.json` 是否满足机读契约
+- `data/manifests` 与 `data/runtime` 是否可供 harness runtime 使用
+
 ### 本地开发
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn backend.main:app --reload   # http://127.0.0.1:8000
 ```
-

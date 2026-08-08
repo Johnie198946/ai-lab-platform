@@ -157,7 +157,11 @@ def scan_big_files() -> list:
 def scan_test_gaps() -> list:
     """5. 有 api 文件无对应测试（支持 test_<name>_api.py 命名）"""
     issues = []
-    api_files = {p.stem for p in (BACKEND / "api").glob("*.py") if p.name != "__init__.py"}
+    api_files = {
+        p.stem
+        for p in (BACKEND / "api").glob("*.py")
+        if p.name != "__init__.py"
+    }
     test_stems = set()
     for p in TESTS.glob("test_*.py"):
         # test_knowledge_api.py -> knowledge / knowledge_api

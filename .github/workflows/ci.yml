@@ -14,12 +14,15 @@ jobs:
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }
       - run: pip install ruff
-      - run: ruff check backend/
+      - run: ruff check backend/ scripts/ tests/
 
   build:
     needs: lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with: { python-version: "3.11" }
       - run: pip install -r requirements.txt
+      - run: pytest -q
       - run: python -c "import backend; print('import ok')"
