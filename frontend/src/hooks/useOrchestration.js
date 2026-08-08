@@ -83,7 +83,9 @@ export const useOrchestration = ({ scopeKey }) => {
   );
 
   useEffect(() => {
-    const draft = coerceWorkspace(loadWorkspaceDraft(scopeKey));
+    // 强制清空旧的草稿，确保进去之后聊天框是空的
+    clearWorkspaceDraft(scopeKey);
+    const draft = coerceWorkspace(null);
     setMessages(draft.messages);
     setInput(draft.input);
     setRoles(draft.roles);

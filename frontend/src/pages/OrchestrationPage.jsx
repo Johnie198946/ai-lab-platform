@@ -110,15 +110,16 @@ export function OrchestrationPage() {
                 </section>
                 <div className="orch-composer" aria-label="场景输入框">
                   <textarea
+                    autoFocus
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleInputKeyDown}
                     placeholder="例如：我想做一个 AI 智能体编排平台..."
                   />
                   <div className="orch-composer-foot">
-                    <span className="orch-composer-hint">输入开放需求后，系统会先判断是直接编排角色，还是先进行补充追问。</span>
-                    <button className="orch-send-button" type="button" onClick={submitPrompt} disabled={isThinking}>
-                      {isThinking ? "生成中..." : "更新预览"}
+                    <span className="orch-composer-hint">输入开放需求后，系统会先判断是直接编排角色，还是先进行补充追问。支持回车发送。</span>
+                    <button className="orch-send-button" type="button" onClick={submitPrompt} disabled={isThinking || !input.trim()}>
+                      {isThinking ? "生成中..." : "发送"}
                     </button>
                   </div>
                 </div>
