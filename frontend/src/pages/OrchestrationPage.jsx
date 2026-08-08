@@ -15,6 +15,10 @@ export function OrchestrationPage() {
     setInput,
     setSelectedRoleId,
     handleRoleFieldChange,
+    submitPrompt,
+    isThinking,
+    messages,
+    handleInputKeyDown,
   } = useOrchestration({ scopeKey: sessionScopeKey });
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -62,29 +66,34 @@ export function OrchestrationPage() {
                 </div>
                 
                 <section className="orch-dialog-thread" aria-live="polite">
-                  <div className="orch-dialog-bubble orch-dialog-bubble--user">
-                    {input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成"}
-                  </div>
-                  <div className="orch-dialog-bubble orch-dialog-bubble--assistant">
-                    <span className="orch-dialog-kicker">正在理解需求</span>
-                    <strong>已识别为端到端角色编排场景</strong>
-                    <div>
-                      <ul className="orch-dialog-list">
-                        <li>目标结果：完成营销与销售闭环，并连接需求输入、策略输出和转化动作。</li>
-                        <li>执行方式：可直接进入 6 角色协同链路，不必停留在单轮问答。</li>
-                      </ul>
+                  {messages.map((msg) => (
+                    <div
+                      key={msg.id}
+                      className={`orch-dialog-bubble orch-dialog-bubble--${msg.role}`}
+                    >
+                      {msg.role === "assistant" ? (
+                        <>
+                          <span className="orch-dialog-kicker">系统回复</span>
+                          <div>{msg.content}</div>
+                        </>
+                      ) : (
+                        msg.content
+                      )}
                     </div>
-                  </div>
+                  ))}
                 </section>
                 <div className="orch-composer" aria-label="场景输入框">
-                  <textarea 
+                  <textarea
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={handleInputKeyDown}
                     placeholder="例如：我想做一个 AI 智能体编排平台..."
                   />
                   <div className="orch-composer-foot">
                     <span className="orch-composer-hint">输入开放需求后，系统会先判断是直接编排角色，还是先进行补充追问。</span>
-                    <button className="orch-send-button" type="button">更新预览</button>
+                    <button className="orch-send-button" type="button" onClick={submitPrompt} disabled={isThinking}>
+                      {isThinking ? "生成中..." : "更新预览"}
+                    </button>
                   </div>
                 </div>
               </aside>
