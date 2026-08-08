@@ -2,6 +2,7 @@
 import asyncio
 import os
 import unittest
+from unittest.mock import patch
 
 import httpx
 

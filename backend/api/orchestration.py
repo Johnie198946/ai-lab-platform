@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import subprocess
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -18,8 +20,14 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.api.chat import _call_llm, DEFAULT_MODEL
 from backend.api.identity import match_identity_rule
+
+# Hermes CLI configuration
+HERMES_BIN = "/opt/hermes/venv/bin/hermes"
+HERMES_CWD = "/opt/ai-lab-platform"
+HERMES_MAX_INPUT_LENGTH = 4000
+HERMES_TIMEOUT = 120
+HERMES_MAX_HISTORY_TURNS = 5
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
 
@@ -118,17 +126,82 @@ class RoleUpdateRequest(BaseModel):
     skills: Optional[str] = Field(None, max_length=500)
 
 
+class Message(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+    timestamp: datetime = Field(default_factory=_utc_now)
+
+
 class OrchestrationSession(BaseModel):
     session_id: str
     goal: str
     reply: str
     roles: List[RoleCard]
+    messages: List[Message] = []
     source: str = "ai-lab-platform"
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
 
 
 _sessions: Dict[str, OrchestrationSession] = {}
+
+
+def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
+    """Synchronous wrapper for Hermes CLI call.
+
+    Implements Supervision requirements:
+    - Explicit cwd for project context loading
+    - Input validation with length truncation
+    - Timeout handling with fallback
+    """
+    # Input validation: truncate to max length
+    if len(goal) > HERMES_MAX_INPUT_LENGTH:
+        goal = goal[:HERMES_MAX_INPUT_LENGTH]
+
+    try:
+        r = subprocess.run(
+            [HERMES_BIN, "-p", "default", "-z", goal],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=HERMES_CWD,
+            env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        )
+        if r.returncode == 0:
+            return r.stdout.strip()
+        return f"⚠️ Hermes main 执行失败（exit {r.returncode}）: {r.stderr[:200]}"
+    except subprocess.TimeoutExpired:
+        return "⚠️ Hermes main 执行超时（>120s）"
+    except Exception as e:
+        return f"⚠️ Hermes main 调用异常: {e}"
+
+
+async def _call_hermes_main(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
+    """Async wrapper using asyncio.to_thread for non-blocking execution.
+
+    Ensures FastAPI event loop is not blocked during Hermes CLI execution.
+    """
+    return await asyncio.to_thread(_call_hermes_main_sync, goal, timeout)
+
+
+def _build_multi_turn_prompt(goal: str, messages: List[Message]) -> str:
+    """Build multi-turn context prompt from message history.
+
+    Formats last N turns as conversation context for Hermes.
+    """
+    if not messages:
+        return goal
+
+    # Take last N turns (user + assistant pairs)
+    recent = messages[-HERMES_MAX_HISTORY_TURNS * 2 :]
+
+    context_lines = ["【对话历史】"]
+    for msg in recent:
+        role_label = "用户" if msg.role == "user" else "助手"
+        context_lines.append(f"{role_label}: {msg.content}")
+
+    context_lines.append(f"\n【当前问题】\n{goal}")
+    return "\n".join(context_lines)
 
 
 def _focus_for_role(role_id: str, goal: str) -> str:
@@ -164,88 +237,62 @@ def _is_orchestration_goal(goal: str) -> bool:
     match_count = sum(1 for k in keywords if k in goal)
     return match_count >= 3 or "我想做一个AI智能体编排平台" in goal
 
-def _build_reply_dynamic(goal: str, role_count: int, is_orchestration: bool) -> str:
-    # 身份话术规则优先：命中即返回固定回答，不调 LLM
-    fixed = match_identity_rule(goal)
-    if fixed:
-        return fixed
-    if is_orchestration:
-        system = "你是 AI Lab 智能体编排平台的系统助手。"
-        user = (
-            f"用户提交了业务目标：{goal}\n\n"
-            f"请用一段简短、专业的语言回复用户，确认已理解其目标，并告诉用户你已经基于 ai-lab-platform 生成了一支 {role_count} 角色协同团队，"
-            "提示他们可以逐个打开角色卡片补充细节。注意：不要重复输出用户的完整业务目标内容，保持自然对话的语气。"
-        )
-    else:
-        from backend.api.chat import _build_context, SYSTEM_PROMPT as CHAT_SYSTEM_PROMPT
-        try:
-            sources = _build_context(goal, 6)
+async def _build_reply_via_hermes(goal: str, messages: List[Message]) -> str:
+    """Build reply via Hermes main (default profile) with full tool set.
 
-            # 读取 Hermes 的全局用户记忆，注入到上下文中
-            import pathlib
-            user_memory_path = pathlib.Path("/app/memories/USER.md")
-            user_memory = ""
-            if user_memory_path.exists():
-                try:
-                    user_memory = user_memory_path.read_text(encoding="utf-8")
-                except Exception:
-                    pass
+    Replaces direct _call_llm with subprocess call to Hermes CLI.
+    Implements async non-blocking execution per Supervision requirement #1.
+    """
+    # Build multi-turn prompt with history context (Supervision requirement #4)
+    full_prompt = _build_multi_turn_prompt(goal, messages)
 
-            if not sources and not user_memory:
-                system = (
-                    "你是超聚变 AI Lab (xFusion AI Lab) 的 Hermes 主助手。"
-                    "请给出一份详细的回答或方案，使用 Markdown 格式。"
-                    "包含标题、大纲和具体的实现细节。"
-                )
-                user = (
-                    f"用户的问题或需求是：{goal}\n\n"
-                    "(注意：知识库中未检索到相关内容，请基于你的系统设定进行专业回答)"
-                )
-            else:
-                system = (
-                    CHAT_SYSTEM_PROMPT
-                    + " 请给出一份详细的回答或方案，使用 Markdown 格式。包含标题、大纲和具体的实现细节。"
-                )
-                ctx_lines = []
+    reply = await _call_hermes_main(full_prompt)
 
-                if user_memory:
-                    ctx_lines.append(
-                        f"[Hermes 记忆] 来源: 你的大脑/USER.md\n内容: {user_memory[:1000]}"
-                    )
+    # Check if Hermes returned an error fallback
+    if reply.startswith("⚠️"):
+        # Hermes failed — return generic fallback
+        return _build_reply(goal, 0)
 
-                for i, s in enumerate(sources, 1):
-                    ctx_lines.append(
-                        f"[{i}] 来源: {s['path']}\n标题: {s['title']}\n内容: {s['content']}"
-                    )
+    return reply
 
-                user = (
-                    f"参考资料:\n{chr(10).join(ctx_lines)}\n\n"
-                    f"问题: {goal}\n\n请基于参考资料回答，并标注引用 [1][2]… 使用 Markdown 格式。"
-                )
-        except Exception as e:
-            system = (
-                "你是超聚变 AI Lab (xFusion AI Lab) 的 Hermes 主助手。"
-                "请给出一份详细的回答或方案，使用 Markdown 格式。"
-            )
-            user = f"用户的问题或需求是：{goal}\n\n(检索知识库失败：{e})"
-
-    try:
-        return _call_llm(system, user, DEFAULT_MODEL)
-    except Exception as e:
-        if is_orchestration:
-            return _build_reply(goal, role_count)
-        return f"处理请求时发生错误: {e}"
 
 @router.post("/sessions", response_model=OrchestrationSession, status_code=201)
 async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
+    # 身份话术规则优先：命中即返回固定回答，不调 Hermes
+    fixed = match_identity_rule(body.goal)
+    if fixed:
+        session = OrchestrationSession(
+            session_id=uuid4().hex,
+            goal=body.goal,
+            reply=fixed,
+            roles=[],
+            messages=[
+                Message(role="user", content=body.goal),
+                Message(role="assistant", content=fixed),
+            ],
+        )
+        _sessions[session.session_id] = session
+        return session
+
     is_orch = _is_orchestration_goal(body.goal)
     roles = _build_roles(body.goal) if is_orch else []
-    reply = await asyncio.to_thread(_build_reply_dynamic, body.goal, len(roles), is_orch)
+
+    # Call Hermes main with multi-turn context
+    reply = await _build_reply_via_hermes(body.goal, [])
+
+    # Fallback if Hermes returned empty or error
+    if not reply or reply.startswith("⚠️"):
+        reply = _build_reply(body.goal, len(roles))
+
     session = OrchestrationSession(
         session_id=uuid4().hex,
         goal=body.goal,
         reply=reply,
         roles=roles,
+        messages=[
+            Message(role="user", content=body.goal),
+            Message(role="assistant", content=reply),
+        ],
     )
     _sessions[session.session_id] = session
     return session
