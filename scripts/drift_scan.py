@@ -13,6 +13,8 @@ drift_scan.py — 代码库漂移监测（OpenAI 式"垃圾回收"）
   python3 scripts/drift_scan.py            # 全量扫描
   python3 scripts/drift_scan.py --json     # JSON 输出（供 Agent 消费）
 """
+from __future__ import annotations
+
 import ast
 import json
 import sys

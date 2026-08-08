@@ -17,6 +17,8 @@
 
 用法: pytest tests/test_architecture.py -v
 """
+from __future__ import annotations
+
 import ast
 from pathlib import Path
 
