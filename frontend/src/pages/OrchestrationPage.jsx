@@ -47,15 +47,7 @@ export function OrchestrationPage() {
             <div className="orch-workspace-grid">
               <div className="orch-summary-copy">
                 <span className="orch-summary-kicker">工作总结</span>
-                <h1 className="orch-summary-title">角色编排已就位</h1>
-                <p className="orch-summary-goal">目标：搭建 AI 智能体编排平台，并由系统协同完成营销与销售闭环。</p>
-                <p className="orch-summary-progress">6 个角色已就绪，等待进入工作流；如遇到营销/销售之外的其他场景，可先通过右侧通用对话框收集上下文与边界。</p>
-                <div className="orch-summary-note" aria-label="通用交互说明">
-                  <span className="orch-summary-pill">其他场景入口</span>
-                  <span className="orch-summary-pill">需求理解</span>
-                  <span className="orch-summary-pill">决策追问</span>
-                  <span className="orch-summary-pill">文本输出</span>
-                </div>
+                <h1 className="orch-summary-title">请告诉我，你想完成的工作</h1>
               </div>
               <aside className="orch-dialog-shell" aria-label="通用场景对话框">
                 <div className="orch-dialog-head">

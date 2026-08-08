@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
@@ -16,6 +17,8 @@ from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
+
+from backend.api.chat import _call_llm, DEFAULT_MODEL
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
 
@@ -155,13 +158,27 @@ def _build_reply(goal: str, role_count: int) -> str:
     )
 
 
+def _build_reply_dynamic(goal: str, role_count: int) -> str:
+    system = "你是 AI Lab 智能体编排平台的系统助手。"
+    user = (
+        f"用户提交了业务目标：{goal}\n\n"
+        f"请用一段简短、专业的语言回复用户，确认已理解其目标，并告诉用户你已经基于 ai-lab-platform 生成了一支 {role_count} 角色协同团队，"
+        "提示他们可以逐个打开角色卡片补充细节。注意：不要重复输出用户的完整业务目标内容，保持自然对话的语气。"
+    )
+    try:
+        return _call_llm(system, user, DEFAULT_MODEL)
+    except Exception:
+        return _build_reply(goal, role_count)
+
+
 @router.post("/sessions", response_model=OrchestrationSession, status_code=201)
 async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
     roles = _build_roles(body.goal)
+    reply = await asyncio.to_thread(_build_reply_dynamic, body.goal, len(roles))
     session = OrchestrationSession(
         session_id=uuid4().hex,
         goal=body.goal,
-        reply=_build_reply(body.goal, len(roles)),
+        reply=reply,
         roles=roles,
     )
     _sessions[session.session_id] = session
