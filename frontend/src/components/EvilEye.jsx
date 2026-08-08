@@ -97,8 +97,8 @@ void main() {
     
     // Background space with swirling noise
     vec2 spaceUv = uv * uNoiseScale;
-    float n1 = fbm(spaceUv + uTime * 0.1);
-    float n2 = fbm(spaceUv - uTime * 0.15 + vec2(n1));
+    float n1 = fbm(spaceUv + uTime * 0.05);
+    float n2 = fbm(spaceUv - uTime * 0.08 + vec2(n1));
     
     // Eye geometry
     float r = length(uv);
@@ -111,14 +111,12 @@ void main() {
     );
     float distortedR = length(distortedUv);
     
-    // Pupil
+    // Pupil (pure black)
     vec2 pupilUv = uv - mouseOffset;
     float pupilR = length(pupilUv);
-    float pupilDistortion = fbm(pupilUv * 10.0 + uTime) * 0.05;
-    float pupil = smoothstep(uPupilSize + pupilDistortion, uPupilSize - 0.02, pupilR);
     
     // Iris
-    float irisShape = fbm(uv * 5.0 - uTime * 0.2);
+    float irisShape = fbm(uv * 3.0 - uTime * 0.1);
     float iris = smoothstep(uPupilSize + uIrisWidth, uPupilSize, distortedR + irisShape * 0.1);
     iris *= smoothstep(uPupilSize, uPupilSize + 0.1, pupilR); // clear pupil area
     
@@ -130,11 +128,11 @@ void main() {
     float eyeShape = 1.0 - smoothstep(0.0, 1.5, abs(uv.y) + abs(uv.x) * 0.5);
     
     // Color compositing
-    vec3 pupilColor = vec3(0.05); // Not pure black, slight dark gray
+    vec3 pupilColor = vec3(0.0); // Pure black pupil
     
     // Create rich iris colors
     vec3 irisBase = uColor;
-    vec3 irisDetail = mix(uColor, vec3(1.0, 0.8, 0.2), fbm(uv * 10.0));
+    vec3 irisDetail = mix(uColor, vec3(0.4, 0.4, 0.5), fbm(uv * 10.0));
     vec3 finalIris = mix(irisBase, irisDetail, irisShape) * uIntensity;
     
     // Glow color
@@ -152,8 +150,9 @@ void main() {
     // Add iris
     color = mix(color, finalIris, iris * eyeShape);
     
-    // Add pupil
-    color = mix(color, pupilColor, pupil);
+    // Add pupil (make it perfectly smooth, no noise distortion)
+    float cleanPupil = smoothstep(uPupilSize, uPupilSize - 0.01, pupilR);
+    color = mix(color, pupilColor, cleanPupil);
     
     // Add subtle caustic/light reflection
     float reflection = smoothstep(0.8, 1.0, fbm(uv * 3.0 + uTime)) * 0.5;

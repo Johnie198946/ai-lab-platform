@@ -75,13 +75,14 @@ export function LoginPage() {
         <article className="panel brand-panel" aria-label="品牌展示区">
           <div className="brand-visual" aria-hidden="true" style={{ width: '100%', height: '100%', overflow: 'hidden', borderRadius: '30px' }}>
             <EvilEye 
-              eyeColor="#213043"
+              eyeColor="#2a3f54"
               backgroundColor="#f5f6f8"
-              intensity={0.8}
+              intensity={0.6}
               pupilFollow={0.2}
-              pupilSize={0.12}
-              irisWidth={0.3}
-              glowIntensity={0.5}
+              pupilSize={0.15}
+              irisWidth={0.25}
+              glowIntensity={0.2}
+              scale={0.9}
             />
           </div>
         </article>
