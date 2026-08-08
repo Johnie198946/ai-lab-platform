@@ -17,6 +17,9 @@ COPY backend /app/backend
 COPY config /app/config
 COPY scripts /app/scripts
 
+# 预建 harness 运行目录（manifests/runtime 由 runtime.py 懒创建，预建保证契约审计第一天即通过）
+RUN mkdir -p /app/data/manifests /app/data/runtime
+
 EXPOSE 8000
 
 # 默认启动命令（compose 可覆盖）
