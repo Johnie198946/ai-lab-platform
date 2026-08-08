@@ -108,8 +108,9 @@ def test_no_circular_api_import():
     import subprocess
     import sys
 
+    code = "import sys; sys.path.insert(0,'.'); from backend.main import app; print('ok')"
     r = subprocess.run(
-        [sys.executable, "-c", "import sys; sys.path.insert(0,'.'); from backend.main import app; print('ok')"],
+        [sys.executable, "-c", code],
         capture_output=True, text=True, timeout=30, cwd=str(BACKEND.parent),
     )
     assert r.returncode == 0, f"backend.main 导入失败:\n{r.stderr[:500]}"
