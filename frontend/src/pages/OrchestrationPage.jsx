@@ -66,14 +66,30 @@ export function OrchestrationPage() {
           <div id="ai-conversation-workspace" aria-label="工作总结">
             <div className="orch-workspace-grid">
               <div className="orch-summary-copy" style={{ position: 'relative' }}>
-                <span className="orch-summary-kicker">工作总结</span>
-                <h1 className="orch-summary-title">
-                  <TextType text="你好！今天又有什么新想法？" speed={100} />
-                </h1>
-                <div style={{ position: 'absolute', top: '140px', left: '20px' }}>
-                  <Orb color="rgba(43, 129, 255, 0.25)" size={280} blur={50} speed={12} />
-                  <Orb color="rgba(100, 200, 255, 0.2)" size={200} blur={40} speed={15} />
-                </div>
+                {messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].isMarkdown ? (
+                  <div style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <BorderGlow onClick={() => handleMarkdownClick(messages[messages.length - 1].content)}>
+                      <div style={{ padding: '20px' }}>
+                        <h2 style={{ marginBottom: '16px', color: '#fff' }}>系统已生成方案内容</h2>
+                        <p style={{ color: '#ccc', marginBottom: '24px' }}>点击此处查看详细 Markdown 大纲与执行细节。</p>
+                        <div style={{ opacity: 0.6, fontSize: '14px', display: '-webkit-box', WebkitLineClamp: 10, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                          <ReactMarkdown>{messages[messages.length - 1].content}</ReactMarkdown>
+                        </div>
+                      </div>
+                    </BorderGlow>
+                  </div>
+                ) : (
+                  <>
+                    <span className="orch-summary-kicker">工作总结</span>
+                    <h1 className="orch-summary-title">
+                      <TextType text="你好！今天又有什么新想法？" speed={100} />
+                    </h1>
+                    <div style={{ position: 'absolute', top: '140px', left: '20px' }}>
+                      <Orb color="rgba(43, 129, 255, 0.25)" size={280} blur={50} speed={12} />
+                      <Orb color="rgba(100, 200, 255, 0.2)" size={200} blur={40} speed={15} />
+                    </div>
+                  </>
+                )}
               </div>
               <aside className="orch-dialog-shell" aria-label="通用场景对话框">
                 <div className="orch-dialog-head">
@@ -128,11 +144,11 @@ export function OrchestrationPage() {
           </div>
         </header>
 
-        <section className="orch-wall-panel" aria-label="角色输入入口">
-          <div className="orch-wall-stage">
-            <div id="role-grid" aria-label="角色卡画廊">
-              {roles.length > 0 ? (
-                roles.map(role => {
+        {roles.length > 0 && (
+          <section className="orch-wall-panel" aria-label="角色输入入口">
+            <div className="orch-wall-stage">
+              <div id="role-grid" aria-label="角色卡画廊">
+                {roles.map(role => {
                   const isActive = selectedRoleId === role.id;
                   const roleData = {
                     image: `/assets/portrait-${role.id}.jpg`,
@@ -173,23 +189,11 @@ export function OrchestrationPage() {
                       </div>
                     </button>
                   )
-                })
-              ) : messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].isMarkdown ? (
-                <div style={{ gridColumn: '1 / -1', height: '100%', minHeight: '400px' }}>
-                  <BorderGlow onClick={() => handleMarkdownClick(messages[messages.length - 1].content)}>
-                    <div style={{ padding: '20px' }}>
-                      <h2 style={{ marginBottom: '16px', color: '#fff' }}>系统已生成方案内容</h2>
-                      <p style={{ color: '#ccc', marginBottom: '24px' }}>点击此处查看详细 Markdown 大纲与执行细节。</p>
-                      <div style={{ opacity: 0.6, fontSize: '14px', display: '-webkit-box', WebkitLineClamp: 10, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                        <ReactMarkdown>{messages[messages.length - 1].content}</ReactMarkdown>
-                      </div>
-                    </div>
-                  </BorderGlow>
-                </div>
-              ) : null}
+                })}
+              </div>
             </div>
-          </div>
-        </section>
+          </section>
+        )}
       </section>
 
       {isModalOpen && (selectedRole || selectedMarkdown) && (
