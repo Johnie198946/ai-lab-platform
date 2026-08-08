@@ -158,23 +158,36 @@ def _build_reply(goal: str, role_count: int) -> str:
     )
 
 
-def _build_reply_dynamic(goal: str, role_count: int) -> str:
+def _is_orchestration_goal(goal: str) -> bool:
+    keywords = ["编排", "营销", "销售", "端到端", "平台"]
+    match_count = sum(1 for k in keywords if k in goal)
+    return match_count >= 3 or "我想做一个AI智能体编排平台" in goal
+
+def _build_reply_dynamic(goal: str, role_count: int, is_orchestration: bool) -> str:
     system = "你是 AI Lab 智能体编排平台的系统助手。"
-    user = (
-        f"用户提交了业务目标：{goal}\n\n"
-        f"请用一段简短、专业的语言回复用户，确认已理解其目标，并告诉用户你已经基于 ai-lab-platform 生成了一支 {role_count} 角色协同团队，"
-        "提示他们可以逐个打开角色卡片补充细节。注意：不要重复输出用户的完整业务目标内容，保持自然对话的语气。"
-    )
+    if is_orchestration:
+        user = (
+            f"用户提交了业务目标：{goal}\n\n"
+            f"请用一段简短、专业的语言回复用户，确认已理解其目标，并告诉用户你已经基于 ai-lab-platform 生成了一支 {role_count} 角色协同团队，"
+            "提示他们可以逐个打开角色卡片补充细节。注意：不要重复输出用户的完整业务目标内容，保持自然对话的语气。"
+        )
+    else:
+        user = (
+            f"用户的问题或需求是：{goal}\n\n"
+            "请给出一份详细的回答或方案，使用 Markdown 格式。包含标题、大纲和具体的实现细节。"
+        )
     try:
         return _call_llm(system, user, DEFAULT_MODEL)
-    except Exception:
-        return _build_reply(goal, role_count)
-
+    except Exception as e:
+        if is_orchestration:
+            return _build_reply(goal, role_count)
+        return f"处理请求时发生错误: {e}"
 
 @router.post("/sessions", response_model=OrchestrationSession, status_code=201)
 async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
-    roles = _build_roles(body.goal)
-    reply = await asyncio.to_thread(_build_reply_dynamic, body.goal, len(roles))
+    is_orch = _is_orchestration_goal(body.goal)
+    roles = _build_roles(body.goal) if is_orch else []
+    reply = await asyncio.to_thread(_build_reply_dynamic, body.goal, len(roles), is_orch)
     session = OrchestrationSession(
         session_id=uuid4().hex,
         goal=body.goal,

@@ -3,14 +3,7 @@ import { clearWorkspaceDraft, loadWorkspaceDraft, saveWorkspaceDraft } from "../
 import { DEFAULT_GOAL } from "../config/env";
 import { getPlatformStatus, orchestrateGoal, persistRole } from "../services/orchestrationService";
 
-const INITIAL_MESSAGES = [
-  {
-    id: "assistant-welcome",
-    role: "assistant",
-    content:
-      "请输入你的业务目标。我会先理解需求，再通过 ai-lab-platform 创建一支可执行的 6 角色团队，并展开需求输入页与关键角色页壳体。",
-  },
-];
+const INITIAL_MESSAGES = [];
 
 const createUserMessage = (content) => ({
   id: `user-${Date.now()}`,
@@ -18,10 +11,11 @@ const createUserMessage = (content) => ({
   content,
 });
 
-const createAssistantMessage = (content) => ({
+const createAssistantMessage = (content, isMarkdown = false) => ({
   id: `assistant-${Date.now()}`,
   role: "assistant",
   content,
+  isMarkdown,
 });
 
 const buildDefaultSessionMeta = () => ({
@@ -38,7 +32,7 @@ const buildDefaultSaveState = () => ({
 
 const buildDefaultWorkspace = () => ({
   messages: INITIAL_MESSAGES,
-  input: DEFAULT_GOAL,
+  input: "",
   roles: [],
   selectedRoleId: null,
   sessionMeta: buildDefaultSessionMeta(),
@@ -158,6 +152,7 @@ export const useOrchestration = ({ scopeKey }) => {
     }
 
     setMessages((prev) => [...prev, createUserMessage(trimmed)]);
+    setInput("");
     setIsThinking(true);
     setSubmitError("");
     setRoles([]);
@@ -169,7 +164,8 @@ export const useOrchestration = ({ scopeKey }) => {
 
     try {
       const result = await orchestrateGoal(trimmed);
-      setMessages((prev) => [...prev, createAssistantMessage(result.reply)]);
+      const isMarkdown = result.roles.length === 0;
+      setMessages((prev) => [...prev, createAssistantMessage(isMarkdown ? result.reply : result.reply, isMarkdown)]);
       setRoles(result.roles);
       setSelectedRoleId(result.roles[0]?.id ?? null);
       setSessionMeta({
@@ -201,7 +197,8 @@ export const useOrchestration = ({ scopeKey }) => {
   };
 
   const handleInputKeyDown = (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
       submitPrompt();
     }
   };
