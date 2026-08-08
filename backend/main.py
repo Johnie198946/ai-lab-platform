@@ -4,6 +4,7 @@ FastAPI 主入口 — OpenAPI 文档配置
 
 from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from backend.api.errors import register_error_handlers
 from backend.api.screens import router as screens_router
@@ -50,6 +51,14 @@ app = FastAPI(
     redoc_url="/redoc",  # ReDoc
     openapi_url="/openapi.json",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # 中间件（错误处理；租户已由 require_auth 从 JWT 派生，不再用 header 中间件）
