@@ -14,6 +14,7 @@ from backend.api.register import router as register_router
 from backend.api.catalog import router as catalog_router
 from backend.api.me import router as me_router
 from backend.api.auth import require_auth
+from backend.api.orchestration import router as orchestration_router
 from backend.api.protocols import router as protocols_router
 from backend.db import init_db
 
@@ -62,6 +63,8 @@ app.include_router(tasks_router, dependencies=[Depends(require_auth)])
 app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
 # 问答: 基于知识库的回答（订阅过滤 + 会话记录）
 app.include_router(chat_router, dependencies=[Depends(require_auth)])
+# 前端原型编排: 角色生成与编辑回写
+app.include_router(orchestration_router, dependencies=[Depends(require_auth)])
 # 注册（/register 公开；/admin/users 端点自带超管校验）
 app.include_router(register_router)
 # 目录 / 订阅管理 / 当前用户

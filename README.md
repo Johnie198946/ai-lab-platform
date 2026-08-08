@@ -22,6 +22,7 @@ MO 团队的知识引擎：自生长知识库 + Agent 自动编译 + 营销资�
 
 ## 当前技术栈
 - Backend: Python FastAPI
+- Frontend: React + Vite + GSAP（位于 `frontend/`）
 - Storage: PostgreSQL + Redis + 文件镜像
 - Agent Runtime: 平台内置 harness runtime（保留 Hermes 协同）
 - Knowledge Engine: knowledge_matrix + 编译知识层
@@ -142,3 +143,19 @@ python3 scripts/audit_runtime_contracts.py --data-dir ./data
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn backend.main:app --reload   # http://127.0.0.1:8000
 ```
+
+### 前端联调
+前端工程已收敛到 `frontend/`，不再依赖外部原型目录。
+
+```bash
+cd frontend
+npm ci
+cp .env.example .env.local
+npm run dev
+```
+
+默认约定：
+- `VITE_API_PROXY_TARGET=http://127.0.0.1:8000`，用于本地 Vite 代理到 FastAPI
+- `VITE_API_BASE_URL=` 保持为空时，前端优先通过同源或 Vite 代理访问后端
+- `VITE_API_TOKEN=` 用于填入 Authen Bearer JWT；未配置时仅 `/health` 可直接访问，编排接口会因鉴权失败转入前端受控兜底
+- `VITE_ENABLE_DEMO_FALLBACK=true` 时，后端不可用或鉴权失败会保留本地可编辑流程
