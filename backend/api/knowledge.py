@@ -120,13 +120,14 @@ def _matrix_doc_entries(m: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
-    """检索 v3 —— 与 Mac 对齐：以 knowledge_matrix 为索引。
+    """检索 v4 —— wiki 优先（对齐 Karpathy：wiki 是唯一真理源）。
 
-    与 build_knowledge_matrix.py 的检索语义一致：
-    1. 矩阵打分: 标题命中(4/词) > 文档实体命中(2/实体) > 标签命中(1/标签)
-    2. entity_index 反查: 查询中出现的实体 → 直接收录其文档
-    3. 内容兜底: 矩阵未收录的文档按 jieba 词项扫描
-    上下文片段优先取矩阵的 core summary（Mac agent 看到的同一份摘要）。
+    检索顺序：
+    1. wiki/ 目录定位: 实体名 → wiki/ 下对应条目（标题/文件名匹配优先）
+    2. wikilinks 追读: 命中条目的 [[wikilinks]] 关联条目计入候选
+    3. 矩阵辅助: knowledge_matrix 实体反查补充（仅索引层，不主导）
+    4. 内容兜底: 未收录文档按 jieba 词项扫描（raw/ 等）
+    上下文片段优先取 wiki 条目正文。
     """
     import jieba
 
@@ -136,8 +137,58 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     entries = _matrix_doc_entries(m)
     scored: Dict[str, Dict[str, Any]] = {}
 
-    # 1) 矩阵打分
+    # 1) wiki/ 优先: 实体名 → wiki/ 目录定位（wiki 是唯一真理源）
     vis = _visibility()
+    wiki_root = vault / "wiki"
+    if wiki_root.exists():
+        for wf in sorted(wiki_root.rglob("*.md")):
+            rel = wf.relative_to(vault).as_posix()
+            if not _rel_visible(rel, vis):
+                continue
+            title = _doc_title(wf.read_text(encoding="utf-8", errors="ignore"))
+            title_low = title.lower()
+            wscore = 0
+            for t in qtokens:
+                if t in title_low or t in wf.stem.lower():
+                    wscore += 6  # wiki 命中高权重
+            if ql in title_low or ql in wf.stem.lower():
+                wscore += 4
+            if wscore > 0:
+                scored[rel] = {
+                    "path": rel,
+                    "title": title,
+                    "score": wscore,
+                    "snippet": "",
+                }
+
+    # 1.5) wikilinks 追读: 命中 wiki 条目的关联条目计入候选（Karpathy 知识网）
+    import re
+    hit_paths = [p for p, e in scored.items() if p.startswith("wiki/")]
+    for hp in hit_paths:
+        try:
+            htext = (vault / hp).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        for link in re.findall(r"\[\[([^\]]+)\]\]", htext):
+            target = link.split("|")[0].strip()
+            # 目标可能是 "竞品/DeepSeek" 或 "DeepSeek" → 定位到 wiki/ 下
+            tpath = (vault / "wiki" / f"{target}.md").as_posix()
+            if not (vault / tpath).exists():
+                continue
+            rel = tpath
+            if rel in scored:
+                scored[rel]["score"] += 3  # wikilinks 关联加分
+            else:
+                scored[rel] = {
+                    "path": rel,
+                    "title": _doc_title(
+                        (vault / rel).read_text(encoding="utf-8", errors="ignore")
+                    ),
+                    "score": 3,
+                    "snippet": "",
+                }
+
+    # 2) 矩阵打分（辅助: 补 wiki 未覆盖的分类/文档）
     for path, e in entries.items():
         if not _rel_visible(path, vis):
             continue
@@ -147,23 +198,26 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         score = 0
         for t in qtokens:
             if t in title_low:
-                score += 4
+                score += 2  # 矩阵命中降权（wiki 为主）
         for t in qtokens:
             if any(t in ent or ent in t for ent in ents):
-                score += 2
+                score += 1
         for t in qtokens:
             if any(t in tag for tag in tags):
                 score += 1
         if ql in title_low:
-            score += 3
+            score += 2
         if score <= 0:
             continue
-        scored[path] = {
-            "path": path,
-            "title": e.get("title") or path,
-            "score": score,
-            "snippet": (e.get("summary") or "")[:_SNIPPET_CHARS],
-        }
+        if path in scored:
+            scored[path]["score"] += score  # 合并加分
+        else:
+            scored[path] = {
+                "path": path,
+                "title": e.get("title") or path,
+                "score": score,
+                "snippet": (e.get("summary") or "")[:_SNIPPET_CHARS],
+            }
 
     # 2) entity_index 反查
     ei = m.get("entity_index", {})
