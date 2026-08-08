@@ -16,6 +16,7 @@ v2.0 变更：
 - 使用 AI_LAB_HOME 环境变量，消除硬编码路径
 """
 
+import argparse
 import json
 import os
 import re
@@ -287,9 +288,25 @@ def build_matrix(vault_dir: Path) -> Dict[str, Any]:
 
 
 def main():
-    # 使用 AI_LAB_HOME 环境变量，消除硬编码路径
+    parser = argparse.ArgumentParser(description="AI Lab Knowledge Matrix Builder v2.0")
+    parser.add_argument(
+        "--vault-dir",
+        type=str,
+        default=None,
+        help="Path to the Obsidian Vault directory (overrides AI_LAB_HOME env var)",
+    )
+    parser.add_argument(
+        "--output",
+        type=str,
+        default=None,
+        help="Output path for knowledge_matrix.json (in addition to default locations)",
+    )
+    args = parser.parse_args()
+
+    # 使用 AI_LAB_HOME 环境变量或 CLI 参数，消除硬编码路径
     vault_dir = Path(
-        os.environ.get("AI_LAB_HOME", "/Users/dengzhaoyu/Desktop/AI Lab/AI Lab")
+        args.vault_dir
+        or os.environ.get("AI_LAB_HOME", "/Users/dengzhaoyu/Desktop/AI Lab/AI Lab")
     )
     if not vault_dir.exists():
         print(f"Error: Vault dir not found at {vault_dir}")
@@ -310,6 +327,14 @@ def main():
     out_file2 = platform_data / "knowledge_matrix.json"
     with open(out_file2, "w", encoding="utf-8") as f:
         json.dump(matrix, f, ensure_ascii=False, indent=2)
+
+    # 如果指定了 --output，额外输出到指定路径
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(matrix, f, ensure_ascii=False, indent=2)
+        print(f"   - Saved to: {out_path}")
 
     print("✅ Knowledge Matrix v2.0 successfully built!")
     print(f"   - Total Documents: {matrix['stats']['total_documents']}")
