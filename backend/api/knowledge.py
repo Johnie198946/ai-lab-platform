@@ -107,6 +107,18 @@ def _doc_title(text: str) -> str:
     return first_line.lstrip("# ").strip() or Path("unknown").stem
 
 
+def _tokenize_query(text: str) -> List[str]:
+    """优先使用 jieba；缺失时退回轻量正则切词，避免本地依赖不全直接 500。"""
+    normalized = text.lower()
+    try:
+        import jieba
+
+        tokens = [t.strip() for t in jieba.cut(normalized)]
+    except ModuleNotFoundError:
+        tokens = re.findall(r"[\w\u4e00-\u9fff]{2,}", normalized)
+    return [token for token in tokens if len(token) >= 2]
+
+
 def _matrix_doc_entries(m: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     """把矩阵 categories 展平为 path → 文档条目（兼容 dict 与 list 两种形状）。"""
     out: Dict[str, Dict[str, Any]] = {}
@@ -129,10 +141,8 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     4. 内容兜底: 未收录文档按 jieba 词项扫描（raw/ 等）
     上下文片段优先取 wiki 条目正文。
     """
-    import jieba
-
     ql = q.lower()
-    qtokens = [t for t in jieba.cut(ql) if len(t.strip()) >= 2]
+    qtokens = _tokenize_query(ql)
     m = _matrix()
     entries = _matrix_doc_entries(m)
     scored: Dict[str, Dict[str, Any]] = {}

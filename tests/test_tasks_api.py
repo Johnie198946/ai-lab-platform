@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import unittest
 from datetime import datetime, timedelta
 
+import httpx
 from jose import jwt as jose_jwt
 
 os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
@@ -42,10 +44,9 @@ class TestTasksAPI(unittest.TestCase):
 
         auth.tenant_resolver = fake_resolver
 
-        from fastapi.testclient import TestClient
         from backend.main import app
 
-        self.client = TestClient(app, headers=auth_headers())
+        self._transport = httpx.ASGITransport(app=app)
 
     def tearDown(self):
         import backend.api.auth as auth
@@ -55,8 +56,20 @@ class TestTasksAPI(unittest.TestCase):
         tasks._tasks.clear()
         tasks._tasks.update(self._old_tasks)
 
+    async def _request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            base_url="http://testserver",
+            headers=auth_headers(),
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    def request(self, method, path, **kwargs):
+        return asyncio.run(self._request(method, path, **kwargs))
+
     def test_create_and_complete_task(self):
-        r = self.client.post(
+        r = self.request(
+            "POST",
             "/api/tasks",
             json={
                 "task_type": "knowledge_compile",
@@ -80,11 +93,12 @@ class TestTasksAPI(unittest.TestCase):
         self.assertEqual(body["status"], "ready")
         task_id = body["task_id"]
 
-        inbox = self.client.get("/api/tasks/inbox", params={"agent": "Wiki Writer"})
+        inbox = self.request("GET", "/api/tasks/inbox", params={"agent": "Wiki Writer"})
         self.assertEqual(inbox.status_code, 200)
         self.assertEqual(inbox.json()[0]["task_id"], task_id)
 
-        done = self.client.patch(
+        done = self.request(
+            "PATCH",
             f"/api/tasks/{task_id}",
             json={
                 "status": "done",

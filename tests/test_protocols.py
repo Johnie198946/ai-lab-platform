@@ -67,13 +67,6 @@ class TestJWTExtraction:
         """从 auth dict 提取 tenant_key 和 created_by（user_id 优先）"""
         from backend.api.protocols import create_protocol, ProtocolCreate, AgentTarget
 
-        # 构造 mock auth payload（模拟 JWT 解析结果）
-        auth = {
-            "sub": "user-123",
-            "user_id": "user-123",
-            "tenant_key": "t-demo",
-            "username": "alice",
-        }
         # 验证 API 函数签名接受 auth 参数
         import inspect
 
@@ -153,7 +146,15 @@ class TestInboxDispatch:
                 protocol.status = "pending"
                 protocol.tenant_key = "t-demo"
                 protocol.created_by = "user-123"
-                protocol.created_at = datetime(2026, 8, 8, 12, 0, 0, tzinfo=timezone.utc)
+                protocol.created_at = datetime(
+                    2026,
+                    8,
+                    8,
+                    12,
+                    0,
+                    0,
+                    tzinfo=timezone.utc,
+                )
 
                 sig1 = MagicMock()
                 sig1.agent_name = "main"

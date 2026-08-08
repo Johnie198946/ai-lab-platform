@@ -1,10 +1,13 @@
 """订阅制逻辑隔离测试 — 目录/订阅/检索过滤。"""
+import asyncio
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from datetime import datetime, timedelta
+
+import httpx
 
 os.environ["AI_LAB_HOME"] = "/tmp/nonexistent-vault-for-import"
 os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
@@ -88,10 +91,9 @@ class TestSubscriptionIsolation(unittest.TestCase):
 
         auth.tenant_resolver = fake_resolver
 
-        from fastapi.testclient import TestClient
         from backend.main import app
 
-        self.client = TestClient(app, headers=_headers())
+        self._transport = httpx.ASGITransport(app=app)
 
     def tearDown(self):
         import shutil
@@ -105,8 +107,19 @@ class TestSubscriptionIsolation(unittest.TestCase):
         self.k._matrix.cache_clear()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    async def _request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            base_url="http://testserver",
+            headers=_headers(),
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    def request(self, method, path, **kwargs):
+        return asyncio.run(self._request(method, path, **kwargs))
+
     def test_catalog_lists_categories(self):
-        r = self.client.get("/api/v1/catalog")
+        r = self.request("GET", "/api/v1/catalog")
         self.assertEqual(r.status_code, 200)
         cats = {c["category"] for c in r.json()["catalog"]}
         self.assertIn("wiki", cats)
@@ -116,7 +129,7 @@ class TestSubscriptionIsolation(unittest.TestCase):
 
     def test_stats_filtered_by_subscription(self):
         # 只订阅了 wiki → stats 只统计 wiki
-        r = self.client.get("/api/knowledge/stats")
+        r = self.request("GET", "/api/knowledge/stats")
         self.assertEqual(r.status_code, 200)
         cats = r.json()["categories"]
         self.assertEqual(cats.get("wiki"), 2)
@@ -124,25 +137,25 @@ class TestSubscriptionIsolation(unittest.TestCase):
         self.assertNotIn("产品设计", cats)
 
     def test_wiki_list_filtered(self):
-        r = self.client.get("/api/knowledge/wiki")
+        r = self.request("GET", "/api/knowledge/wiki")
         self.assertEqual(r.status_code, 200)
         entries = r.json()["entries"]
         self.assertEqual(len(entries), 2)  # wiki/ 内 2 篇（已订阅）
-        r2 = self.client.get("/api/knowledge/wiki/模型观察")
+        r2 = self.request("GET", "/api/knowledge/wiki/模型观察")
         self.assertEqual(r2.status_code, 200)
 
     def test_unsubscribed_wiki_detail_404(self):
         # 切换到未订阅 wiki 的租户
         global FAKE_CATEGORIES
         FAKE_CATEGORIES = {"raw"}
-        r = self.client.get("/api/knowledge/wiki/模型观察")
+        r = self.request("GET", "/api/knowledge/wiki/模型观察")
         self.assertEqual(r.status_code, 404)
         # 已订阅的 raw 可见
-        r2 = self.client.get("/api/knowledge/stats")
+        r2 = self.request("GET", "/api/knowledge/stats")
         self.assertIn("raw", r2.json()["categories"])
 
     def test_search_filtered(self):
-        r = self.client.get("/api/knowledge/search", params={"q": "DeepSeek"})
+        r = self.request("GET", "/api/knowledge/search", params={"q": "DeepSeek"})
         self.assertEqual(r.status_code, 200)
         paths = [d["path"] for d in r.json()["docs"]]
         self.assertTrue(all(p.startswith("wiki/") for p in paths))
@@ -150,14 +163,14 @@ class TestSubscriptionIsolation(unittest.TestCase):
     def test_super_admin_sees_all(self):
         global FAKE_SUPER
         FAKE_SUPER = True
-        r = self.client.get("/api/knowledge/stats")
+        r = self.request("GET", "/api/knowledge/stats")
         cats = r.json()["categories"]
         self.assertEqual(cats.get("wiki"), 2)
         self.assertEqual(cats.get("raw"), 1)
         self.assertEqual(cats.get("产品设计"), 1)
 
     def test_matrix_filtered(self):
-        r = self.client.get("/api/knowledge/matrix")
+        r = self.request("GET", "/api/knowledge/matrix")
         cats = r.json()["categories"]
         self.assertIn("wiki", cats)
         self.assertNotIn("raw", cats)

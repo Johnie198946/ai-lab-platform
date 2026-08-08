@@ -1,9 +1,12 @@
 """知识引擎 API 测试 — 用临时 vault 夹具验证检索/矩阵/wiki 端点。"""
+import asyncio
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+
+import httpx
 
 os.environ["AI_LAB_HOME"] = "/tmp/nonexistent-vault-for-import"  # 防止读到真实库
 os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
@@ -94,10 +97,9 @@ class TestKnowledgeAPI(unittest.TestCase):
 
         auth.tenant_resolver = fake_resolver
 
-        from fastapi.testclient import TestClient
         from backend.main import app
 
-        self.client = TestClient(app, headers=auth_headers())
+        self._transport = httpx.ASGITransport(app=app)
         self._restore = old
 
     def tearDown(self):
@@ -111,38 +113,49 @@ class TestKnowledgeAPI(unittest.TestCase):
 
         shutil.rmtree(self.tmp, ignore_errors=True)
 
+    async def _request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            base_url="http://testserver",
+            headers=auth_headers(),
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    def request(self, method, path, **kwargs):
+        return asyncio.run(self._request(method, path, **kwargs))
+
     def test_matrix(self):
-        r = self.client.get("/api/knowledge/matrix")
+        r = self.request("GET", "/api/knowledge/matrix")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["version"], "2.0")
 
     def test_contract(self):
-        r = self.client.get("/api/knowledge/contract")
+        r = self.request("GET", "/api/knowledge/contract")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["machine_interface"], "knowledge_matrix")
         self.assertEqual(body["matrix_version"], "2.0")
 
     def test_stats(self):
-        r = self.client.get("/api/knowledge/stats")
+        r = self.request("GET", "/api/knowledge/stats")
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["total_md_files"], 4)
 
     def test_search_content(self):
-        r = self.client.get("/api/knowledge/search", params={"q": "华为"})
+        r = self.request("GET", "/api/knowledge/search", params={"q": "华为"})
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertGreaterEqual(body["total"], 1)
         self.assertIn("华为", body["entity_hits"])
 
     def test_search_title_ranks_first(self):
-        r = self.client.get("/api/knowledge/search", params={"q": "测试文档"})
+        r = self.request("GET", "/api/knowledge/search", params={"q": "测试文档"})
         docs = r.json()["docs"]
         self.assertTrue(docs)
         self.assertEqual(docs[0]["title"], "测试文档")
 
     def test_wiki_list(self):
-        r = self.client.get("/api/knowledge/wiki")
+        r = self.request("GET", "/api/knowledge/wiki")
         self.assertEqual(r.status_code, 200)
         entries = r.json()["entries"]
         self.assertEqual(len(entries), 2)
@@ -151,18 +164,18 @@ class TestKnowledgeAPI(unittest.TestCase):
         self.assertEqual(statuses["未定稿"], "draft")
 
     def test_wiki_detail_and_wikilinks(self):
-        r = self.client.get("/api/knowledge/wiki/模型观察")
+        r = self.request("GET", "/api/knowledge/wiki/模型观察")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["title"], "模型观察")
         self.assertIn("测试文档", body["wikilinks"])
 
     def test_wiki_404(self):
-        r = self.client.get("/api/knowledge/wiki/不存在")
+        r = self.request("GET", "/api/knowledge/wiki/不存在")
         self.assertEqual(r.status_code, 404)
 
     def test_entities(self):
-        r = self.client.get("/api/knowledge/entities", params={"q": "Deep"})
+        r = self.request("GET", "/api/knowledge/entities", params={"q": "Deep"})
         self.assertEqual(r.status_code, 200)
         self.assertIn("DeepSeek", r.json()["entities"])
 

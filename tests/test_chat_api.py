@@ -1,10 +1,13 @@
 """问答 API 测试 — mock LLM 调用，验证检索上下文与响应结构。"""
+import asyncio
 import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+import httpx
 
 os.environ["AI_LAB_HOME"] = "/tmp/nonexistent-vault-for-import"
 os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
@@ -88,10 +91,9 @@ class TestChatAPI(unittest.TestCase):
 
         auth.tenant_resolver = fake_resolver
 
-        from fastapi.testclient import TestClient
         from backend.main import app
 
-        self.client = TestClient(app, headers=auth_headers())
+        self._transport = httpx.ASGITransport(app=app)
 
     def tearDown(self):
         import backend.api.auth as auth
@@ -103,6 +105,17 @@ class TestChatAPI(unittest.TestCase):
         import shutil
 
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+    async def _request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            base_url="http://testserver",
+            headers=auth_headers(),
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    def request(self, method, path, **kwargs):
+        return asyncio.run(self._request(method, path, **kwargs))
 
     def test_build_context_finds_docs(self):
         docs = self.c._build_context("DeepSeek 新模型", 6)
@@ -127,7 +140,11 @@ class TestChatAPI(unittest.TestCase):
     def test_chat_returns_answer_with_sources(self):
         fake_answer = "DeepSeek 发布了新模型，推理成本下降 60%。[1]"
         with patch.object(self.c, "_call_llm", return_value=fake_answer) as mock:
-            r = self.client.post("/api/chat", json={"question": "DeepSeek 怎么样？"})
+            r = self.request(
+                "POST",
+                "/api/chat",
+                json={"question": "DeepSeek 怎么样？"},
+            )
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["answer"], fake_answer)
@@ -139,7 +156,7 @@ class TestChatAPI(unittest.TestCase):
         old = self.k._vault
         self.k._vault = lambda: empty
         try:
-            r = self.client.post("/api/chat", json={"question": "随便问问"})
+            r = self.request("POST", "/api/chat", json={"question": "随便问问"})
             self.assertEqual(r.status_code, 200)
             self.assertIn("没有检索到", r.json()["answer"])
         finally:

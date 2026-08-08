@@ -35,6 +35,11 @@ security = HTTPBearer(auto_error=False)
 # ---------------------------------------------------------------------------
 
 
+def _derived_tenant_key(user_id: str) -> str:
+    normalized = (user_id or "anonymous").strip() or "anonymous"
+    return "u-" + normalized[:8]
+
+
 async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
     """DB 实现: TenantMapping 查/建 + 订阅集合。"""
     from sqlalchemy import select
@@ -42,30 +47,42 @@ async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
     from backend.db import SessionLocal
     from backend.models.tenant import KnowledgeSubscription, TenantMapping
 
-    async with SessionLocal() as db:
-        row = (
-            await db.execute(
-                select(TenantMapping).where(TenantMapping.user_id == user_id)
-            )
-        ).scalar_one_or_none()
-        if row is None:
-            row = TenantMapping(
-                user_id=user_id, org_id="", tenant_key="u-" + user_id[:8]
-            )
-            db.add(row)
-            await db.commit()
-        subs = (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == row.tenant_key
+    fallback = {
+        "tenant_key": _derived_tenant_key(user_id),
+        "is_super_admin": False,
+        "categories": set(),
+    }
+
+    try:
+        async with SessionLocal() as db:
+            row = (
+                await db.execute(
+                    select(TenantMapping).where(TenantMapping.user_id == user_id)
                 )
-            )
-        ).scalars().all()
-        return {
-            "tenant_key": row.tenant_key,
-            "is_super_admin": bool(row.is_super_admin),
-            "categories": set(subs),
-        }
+            ).scalar_one_or_none()
+            if row is None:
+                row = TenantMapping(
+                    user_id=user_id,
+                    org_id="",
+                    tenant_key=_derived_tenant_key(user_id),
+                )
+                db.add(row)
+                await db.commit()
+            subs = (
+                await db.execute(
+                    select(KnowledgeSubscription.category).where(
+                        KnowledgeSubscription.tenant_key == row.tenant_key
+                    )
+                )
+            ).scalars().all()
+            return {
+                "tenant_key": row.tenant_key,
+                "is_super_admin": bool(row.is_super_admin),
+                "categories": set(subs),
+            }
+    except Exception:
+        # 本地未启动 DB 时仍允许 JWT 用户进入受保护页面，后续接口再按能力降级。
+        return fallback
 
 
 tenant_resolver: Callable[[str], Any] = _default_resolve_tenant
@@ -135,7 +152,14 @@ async def require_auth(
         )
 
     user_id = str(payload.get("sub", ""))
-    info = await tenant_resolver(user_id)
+    try:
+        info = await tenant_resolver(user_id)
+    except Exception:
+        info = {
+            "tenant_key": _derived_tenant_key(user_id),
+            "is_super_admin": False,
+            "categories": set(),
+        }
     tenant_key = info["tenant_key"]
     is_super = bool(info["is_super_admin"]) or await _is_super_admin(user_id)
     visible: Optional[FrozenSet[str]] = (

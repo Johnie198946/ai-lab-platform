@@ -52,10 +52,8 @@ def _resolve_wiki_entries(vault: Path, q: str, limit: int) -> List[str]:
     优先在 wiki/ 目录内按 标题/别名/文件名/目录类型 打分；
     matrix entity_index 仅作实体反查补充。
     """
-    import jieba
-
     ql = q.lower()
-    qtokens = [t for t in jieba.cut(ql) if len(t.strip()) >= 2]
+    qtokens = knowledge._tokenize_query(ql)
     vis = knowledge._visibility()
     wiki_dir = vault / "wiki"
     scored: Dict[str, int] = {}

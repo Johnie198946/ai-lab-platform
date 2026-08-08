@@ -23,26 +23,33 @@ async def me(payload=Depends(require_auth)):
     )
 
     tenant_key = payload["tenant_key"]
-    async with SessionLocal() as db:
-        subs = (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == tenant_key
+    subs: list[str] = []
+    usage = None
+    session_count = None
+    try:
+        async with SessionLocal() as db:
+            subs = (
+                await db.execute(
+                    select(KnowledgeSubscription.category).where(
+                        KnowledgeSubscription.tenant_key == tenant_key
+                    )
                 )
-            )
-        ).scalars().all()
-        usage = (
-            await db.execute(
-                select(TenantUsage).where(TenantUsage.tenant_key == tenant_key)
-            )
-        ).scalar_one_or_none()
-        session_count = (
-            await db.execute(
-                select(TenantSession.id)
-                .where(TenantSession.tenant_key == tenant_key)
-                .limit(1)
-            )
-        ).first()
+            ).scalars().all()
+            usage = (
+                await db.execute(
+                    select(TenantUsage).where(TenantUsage.tenant_key == tenant_key)
+                )
+            ).scalar_one_or_none()
+            session_count = (
+                await db.execute(
+                    select(TenantSession.id)
+                    .where(TenantSession.tenant_key == tenant_key)
+                    .limit(1)
+                )
+            ).first()
+    except Exception:
+        # 本地未连 DB 时仍返回最小会话信息，避免前端真实登录态恢复失败。
+        pass
     catalog = compute_catalog()
     visible_count = 0
     if payload.get("visible_categories") is None:
