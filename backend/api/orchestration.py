@@ -172,9 +172,58 @@ def _build_reply_dynamic(goal: str, role_count: int, is_orchestration: bool) -> 
             "提示他们可以逐个打开角色卡片补充细节。注意：不要重复输出用户的完整业务目标内容，保持自然对话的语气。"
         )
     else:
-        system = "你是 Hermes 主助手。请给出一份详细的回答或方案，使用 Markdown 格式。包含标题、大纲和具体的实现细节。"
-        user = f"用户的问题或需求是：{goal}"
-    
+        from backend.api.chat import _build_context, SYSTEM_PROMPT as CHAT_SYSTEM_PROMPT
+        try:
+            sources = _build_context(goal, 6)
+
+            # 读取 Hermes 的全局用户记忆，注入到上下文中
+            import pathlib
+            user_memory_path = pathlib.Path("/app/memories/USER.md")
+            user_memory = ""
+            if user_memory_path.exists():
+                try:
+                    user_memory = user_memory_path.read_text(encoding="utf-8")
+                except Exception:
+                    pass
+
+            if not sources and not user_memory:
+                system = (
+                    "你是超聚变 AI Lab (xFusion AI Lab) 的 Hermes 主助手。"
+                    "请给出一份详细的回答或方案，使用 Markdown 格式。"
+                    "包含标题、大纲和具体的实现细节。"
+                )
+                user = (
+                    f"用户的问题或需求是：{goal}\n\n"
+                    "(注意：知识库中未检索到相关内容，请基于你的系统设定进行专业回答)"
+                )
+            else:
+                system = (
+                    CHAT_SYSTEM_PROMPT
+                    + " 请给出一份详细的回答或方案，使用 Markdown 格式。包含标题、大纲和具体的实现细节。"
+                )
+                ctx_lines = []
+
+                if user_memory:
+                    ctx_lines.append(
+                        f"[Hermes 记忆] 来源: 你的大脑/USER.md\n内容: {user_memory[:1000]}"
+                    )
+
+                for i, s in enumerate(sources, 1):
+                    ctx_lines.append(
+                        f"[{i}] 来源: {s['path']}\n标题: {s['title']}\n内容: {s['content']}"
+                    )
+
+                user = (
+                    f"参考资料:\n{chr(10).join(ctx_lines)}\n\n"
+                    f"问题: {goal}\n\n请基于参考资料回答，并标注引用 [1][2]… 使用 Markdown 格式。"
+                )
+        except Exception as e:
+            system = (
+                "你是超聚变 AI Lab (xFusion AI Lab) 的 Hermes 主助手。"
+                "请给出一份详细的回答或方案，使用 Markdown 格式。"
+            )
+            user = f"用户的问题或需求是：{goal}\n\n(检索知识库失败：{e})"
+
     try:
         return _call_llm(system, user, DEFAULT_MODEL)
     except Exception as e:

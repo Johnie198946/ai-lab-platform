@@ -216,6 +216,18 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             model=req.model,
         )
     ctx_lines = []
+
+    # 读取 Hermes 的全局用户记忆，注入到上下文中，让编排平台也能认识用户
+    user_memory_path = Path("/app/memories/USER.md")
+    if user_memory_path.exists():
+        try:
+            user_memory = user_memory_path.read_text(encoding="utf-8")
+            ctx_lines.append(
+                f"[Hermes 记忆] 来源: 你的大脑/USER.md\n内容: {user_memory[:1000]}"
+            )
+        except Exception:
+            pass
+
     for i, s in enumerate(sources, 1):
         ctx_lines.append(
             f"[{i}] 来源: {s['path']}\n标题: {s['title']}\n内容: {s['content']}"
