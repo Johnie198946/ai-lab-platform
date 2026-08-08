@@ -8,8 +8,7 @@ import RoleEngineering from "../pages/RoleEngineering";
 import RoleFounder from "../pages/RoleFounder";
 import RoleMarketing from "../pages/RoleMarketing";
 import RoleSales from "../pages/RoleSales";
-// fallback for product which didn't have specific html design
-import RoleProduct from "../pages/RoleInsight";
+import RoleProduct from "../pages/RoleProduct";
 
 export default function App() {
   const { isAuthenticated } = useAuth();
