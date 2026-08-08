@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useAuth } from "../auth/AuthContext";
 import { useOrchestration } from "../hooks/useOrchestration";
 import { useNavigate } from "react-router-dom";
-import DecryptedText from "../components/DecryptedText";
+import TextType from "../components/TextType";
 import "./Dashboard.css";
 
 export function OrchestrationPage() {
@@ -48,7 +48,9 @@ export function OrchestrationPage() {
             <div className="orch-workspace-grid">
               <div className="orch-summary-copy">
                 <span className="orch-summary-kicker">工作总结</span>
-                <h1 className="orch-summary-title">请告诉我，你想完成的工作</h1>
+                <h1 className="orch-summary-title">
+                  <TextType text="你好！今天又有什么新想法？" speed={100} />
+                </h1>
               </div>
               <aside className="orch-dialog-shell" aria-label="通用场景对话框">
                 <div className="orch-dialog-head">
@@ -70,14 +72,7 @@ export function OrchestrationPage() {
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
                           <div>
-                            <DecryptedText
-                              text={msg.content}
-                              animateOn="view"
-                              speed={30}
-                              maxIterations={15}
-                              sequential={true}
-                              revealDirection="start"
-                            />
+                            <TextType text={msg.content} speed={25} />
                           </div>
                         </>
                       ) : (
