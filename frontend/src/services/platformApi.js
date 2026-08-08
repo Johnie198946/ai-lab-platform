@@ -1,4 +1,5 @@
-import { API_TOKEN, REQUEST_TIMEOUT_MS, buildApiUrl } from "../config/env";
+import { getAuthAccessToken } from "../auth/storage";
+import { API_TOKEN, REQUEST_TIMEOUT_MS, buildApiUrl, buildAuthUrl } from "../config/env";
 
 export class PlatformApiError extends Error {
   constructor(message, options = {}) {
@@ -19,6 +20,14 @@ const parseErrorMessage = async (response) => {
   return response.statusText || "请求失败";
 };
 
+const extractAccessToken = (payload) =>
+  [
+    payload?.access_token,
+    payload?.token,
+    payload?.data?.access_token,
+    payload?.data?.token,
+  ].find((value) => typeof value === "string" && value.trim()) ?? "";
+
 const request = async (path, options = {}) => {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -29,11 +38,18 @@ const request = async (path, options = {}) => {
     if (options.body !== undefined) {
       headers.set("Content-Type", "application/json");
     }
-    if (API_TOKEN) {
-      headers.set("Authorization", `Bearer ${API_TOKEN}`);
+    let accessToken = API_TOKEN;
+    if (!options.skipSessionAuth) {
+      accessToken = getAuthAccessToken() || accessToken;
+    }
+    if (options.accessToken !== undefined) {
+      accessToken = options.accessToken;
+    }
+    if (accessToken && !options.skipAuth) {
+      headers.set("Authorization", `Bearer ${accessToken}`);
     }
 
-    const response = await fetch(buildApiUrl(path), {
+    const response = await fetch(options.url ?? buildApiUrl(path), {
       method: options.method ?? "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
@@ -67,11 +83,37 @@ export const platformApi = {
   getHealth() {
     return request("/health");
   },
+  login({ identifier, password }) {
+    return request("", {
+      method: "POST",
+      url: buildAuthUrl("/api/v1/auth/login"),
+      body: { identifier, password },
+      skipAuth: true,
+      skipSessionAuth: true,
+    });
+  },
+  async authenticate({ identifier, password }) {
+    const payload = await this.login({ identifier, password });
+    const accessToken = extractAccessToken(payload);
+    if (!accessToken) {
+      throw new PlatformApiError("登录成功，但未返回 access token。");
+    }
+    return accessToken;
+  },
+  getMe(options = {}) {
+    return request("/api/v1/me", {
+      accessToken: options.accessToken,
+      skipSessionAuth: options.skipSessionAuth,
+    });
+  },
   createOrchestrationSession(goal) {
     return request("/api/orchestration/sessions", {
       method: "POST",
       body: { goal },
     });
+  },
+  getOrchestrationSession(sessionId) {
+    return request(`/api/orchestration/sessions/${sessionId}`);
   },
   updateRole(sessionId, roleId, role) {
     return request(`/api/orchestration/sessions/${sessionId}/roles/${roleId}`, {

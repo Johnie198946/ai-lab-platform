@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { clearWorkspaceDraft, loadWorkspaceDraft, saveWorkspaceDraft } from "../auth/storage";
 import { DEFAULT_GOAL } from "../config/env";
 import { getPlatformStatus, orchestrateGoal, persistRole } from "../services/orchestrationService";
 
@@ -23,32 +24,107 @@ const createAssistantMessage = (content) => ({
   content,
 });
 
-export const useOrchestration = () => {
+const buildDefaultSessionMeta = () => ({
+  sessionId: "",
+  source: "ai-lab-platform",
+  fallbackUsed: false,
+  fallbackReason: "",
+});
+
+const buildDefaultSaveState = () => ({
+  status: "idle",
+  message: "修改后可回写到平台。",
+});
+
+const buildDefaultWorkspace = () => ({
+  messages: INITIAL_MESSAGES,
+  input: DEFAULT_GOAL,
+  roles: [],
+  selectedRoleId: null,
+  sessionMeta: buildDefaultSessionMeta(),
+  submitError: "",
+  saveState: buildDefaultSaveState(),
+});
+
+const coerceWorkspace = (draft) => {
+  if (!draft || typeof draft !== "object") {
+    return buildDefaultWorkspace();
+  }
+
+  return {
+    messages: Array.isArray(draft.messages) && draft.messages.length > 0 ? draft.messages : INITIAL_MESSAGES,
+    input: typeof draft.input === "string" && draft.input.trim() ? draft.input : DEFAULT_GOAL,
+    roles: Array.isArray(draft.roles) ? draft.roles : [],
+    selectedRoleId: typeof draft.selectedRoleId === "string" ? draft.selectedRoleId : null,
+    sessionMeta: {
+      ...buildDefaultSessionMeta(),
+      ...(draft.sessionMeta ?? {}),
+    },
+    submitError: typeof draft.submitError === "string" ? draft.submitError : "",
+    saveState: {
+      ...buildDefaultSaveState(),
+      ...(draft.saveState ?? {}),
+    },
+  };
+};
+
+export const useOrchestration = ({ scopeKey }) => {
   const [messages, setMessages] = useState(INITIAL_MESSAGES);
   const [input, setInput] = useState(DEFAULT_GOAL);
   const [isThinking, setIsThinking] = useState(false);
   const [roles, setRoles] = useState([]);
   const [selectedRoleId, setSelectedRoleId] = useState(null);
-  const [sessionMeta, setSessionMeta] = useState({
-    sessionId: "",
-    source: "ai-lab-platform",
-    fallbackUsed: false,
-    fallbackReason: "",
-  });
+  const [sessionMeta, setSessionMeta] = useState(buildDefaultSessionMeta);
   const [platformStatus, setPlatformStatus] = useState({
     status: "checking",
     message: "正在检测 ai-lab-platform 连接状态...",
   });
   const [submitError, setSubmitError] = useState("");
-  const [saveState, setSaveState] = useState({
-    status: "idle",
-    message: "修改后可回写到平台。",
-  });
+  const [saveState, setSaveState] = useState(buildDefaultSaveState);
+  const [restoredScopeKey, setRestoredScopeKey] = useState("");
 
   const selectedRole = useMemo(
     () => roles.find((role) => role.id === selectedRoleId) ?? null,
     [roles, selectedRoleId],
   );
+
+  useEffect(() => {
+    const draft = coerceWorkspace(loadWorkspaceDraft(scopeKey));
+    setMessages(draft.messages);
+    setInput(draft.input);
+    setRoles(draft.roles);
+    setSelectedRoleId(draft.selectedRoleId);
+    setSessionMeta(draft.sessionMeta);
+    setSubmitError(draft.submitError);
+    setSaveState(draft.saveState);
+    setRestoredScopeKey(scopeKey);
+  }, [scopeKey]);
+
+  useEffect(() => {
+    if (restoredScopeKey !== scopeKey) {
+      return;
+    }
+
+    saveWorkspaceDraft(scopeKey, {
+      messages,
+      input,
+      roles,
+      selectedRoleId,
+      sessionMeta,
+      submitError,
+      saveState,
+    });
+  }, [
+    input,
+    messages,
+    roles,
+    restoredScopeKey,
+    saveState,
+    scopeKey,
+    selectedRoleId,
+    sessionMeta,
+    submitError,
+  ]);
 
   useEffect(() => {
     let active = true;
@@ -173,7 +249,23 @@ export const useOrchestration = () => {
     }
   };
 
+  const clearWorkspace = () => {
+    const workspace = buildDefaultWorkspace();
+    clearWorkspaceDraft(scopeKey);
+    setMessages(workspace.messages);
+    setInput(workspace.input);
+    setRoles(workspace.roles);
+    setSelectedRoleId(workspace.selectedRoleId);
+    setSessionMeta(workspace.sessionMeta);
+    setSubmitError(workspace.submitError);
+    setSaveState({
+      status: "idle",
+      message: "已清空本地会话，等待新的编排请求。",
+    });
+  };
+
   return {
+    clearWorkspace,
     input,
     isThinking,
     messages,
