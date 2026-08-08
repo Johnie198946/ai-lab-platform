@@ -1,0 +1,42 @@
+# 身份话术规则 —— 命中触发词时，直接返回固定回答（不调 LLM）
+# 修改此文件即生效（mtime 热加载，免重启）。规则按顺序匹配，命中即返回。
+#
+# match_type 说明：
+#   - exact:    精确匹配（去除首尾空白后完全相等，大小写不敏感）
+#   - contains: 包含匹配（子串命中，大小写不敏感）—— 默认
+#   - regex:    正则匹配（Python re 语法，re.IGNORECASE）
+#
+# 设计原则：
+#   - 剔除或精细化宽泛短词（如"你是什么"），避免误杀"你是什么架构？"
+#   - 英文短语用 exact 或 regex 全词匹配，避免子串误触
+#   - 规则按顺序匹配，第一条命中即返回
+
+rules:
+  - id: who_are_you_zh
+    name: 身份询问（中文）
+    match_type: regex
+    patterns:
+      - "^你是谁[？?。！!]*$"
+      - "^你叫什么(名字)?[？?。！!]*$"
+      - "^自我介绍(一下)?[？?。！!]*$"
+      - "^介绍一下你自己[？?。！!]*$"
+      - "^你是(谁|哪个(平台|系统|助手)?|什么(平台|系统|助手))[？?。！!]*$"
+    response: |
+      我是超聚变AI Lab，一个最懂业务和最懂技术的人！
+      我可以帮你打造自生长的知识体系，让你工作无忧！
+
+  - id: who_are_you_en
+    name: 身份询问（英文）
+    match_type: regex
+    patterns:
+      - "^(who\\s+are\\s+you|what\\s+is\\s+your\\s+name|introduce\\s+yourself)\\s*[?.!]*$"
+    response: |
+      I am xFusion AI Lab — the one who understands both business and technology best.
+      I can help you build a self-growing knowledge system and keep your work worry-free!
+
+  # 后续话术直接在此追加新规则，例如：
+  # - id: greeting
+  #   name: 问候
+  #   match_type: contains
+  #   patterns: ["你好", "hello"]
+  #   response: "你好！我是超聚变AI Lab……"

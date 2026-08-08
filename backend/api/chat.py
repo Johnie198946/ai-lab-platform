@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 # 通过模块引用，保证与 knowledge.py 的 monkeypatch 兼容（测试用）
 from backend.api import knowledge
 from backend.api.auth import require_auth
+from backend.api.identity import match_identity_rule
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -202,6 +203,17 @@ def _call_llm(system: str, user: str, model: str) -> str:
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     import asyncio
+
+    # 身份话术规则优先：命中即返回固定回答，不调 LLM
+    fixed = match_identity_rule(req.question)
+    if fixed:
+        await _record_session(payload["tenant_key"], req.question, fixed, [])
+        return ChatResponse(
+            question=req.question,
+            answer=fixed,
+            sources=[],
+            model=req.model,
+        )
 
     if not knowledge._vault().exists():
         raise HTTPException(status_code=404, detail="vault not found")

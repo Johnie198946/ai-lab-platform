@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.chat import _call_llm, DEFAULT_MODEL
+from backend.api.identity import match_identity_rule
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
 
@@ -164,6 +165,10 @@ def _is_orchestration_goal(goal: str) -> bool:
     return match_count >= 3 or "我想做一个AI智能体编排平台" in goal
 
 def _build_reply_dynamic(goal: str, role_count: int, is_orchestration: bool) -> str:
+    # 身份话术规则优先：命中即返回固定回答，不调 LLM
+    fixed = match_identity_rule(goal)
+    if fixed:
+        return fixed
     if is_orchestration:
         system = "你是 AI Lab 智能体编排平台的系统助手。"
         user = (
