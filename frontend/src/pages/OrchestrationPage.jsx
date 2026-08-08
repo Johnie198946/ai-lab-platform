@@ -3,7 +3,6 @@ import { useAuth } from "../auth/AuthContext";
 import { useOrchestration } from "../hooks/useOrchestration";
 import { useNavigate } from "react-router-dom";
 import TextType from "../components/TextType";
-import SplitText from "../components/SplitText";
 import "./Dashboard.css";
 
 export function OrchestrationPage() {
@@ -73,16 +72,7 @@ export function OrchestrationPage() {
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
                           <div>
-                            {index === messages.length - 1 ? (
-                              <SplitText
-                                text={msg.content}
-                                delay={30}
-                                duration={0.5}
-                                tag="span"
-                              />
-                            ) : (
-                              msg.content
-                            )}
+                            {msg.content}
                           </div>
                         </>
                       ) : (
