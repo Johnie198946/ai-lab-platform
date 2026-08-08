@@ -3,6 +3,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useOrchestration } from "../hooks/useOrchestration";
 import { useNavigate } from "react-router-dom";
 import TextType from "../components/TextType";
+import DecryptedText from "../components/DecryptedText";
 import "./Dashboard.css";
 
 export function OrchestrationPage() {
@@ -72,7 +73,14 @@ export function OrchestrationPage() {
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
                           <div>
-                            <TextType text={msg.content} speed={25} />
+                            <DecryptedText
+                              text={msg.content}
+                              animateOn="view"
+                              speed={30}
+                              maxIterations={15}
+                              sequential={true}
+                              revealDirection="start"
+                            />
                           </div>
                         </>
                       ) : (
