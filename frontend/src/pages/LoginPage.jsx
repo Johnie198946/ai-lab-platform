@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect, useRef } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import { API_ORIGIN_LABEL, AUTH_ORIGIN_LABEL, ENABLE_DEMO_FALLBACK } from "../config/env";
+import EvilEye from "../components/EvilEye";
 import "./Login.css";
 
 const getErrorMessage = (error) => error?.message || "登录失败，请检查账号、密码或 token。";
@@ -72,10 +73,13 @@ export function LoginPage() {
     <main className="login-page" aria-label="登录入口页">
       <section className="login-grid">
         <article className="panel brand-panel" aria-label="品牌展示区">
-          <div className="brand-visual" aria-hidden="true">
-            <div className="evil-eye-container" id="evilEye" style={{background:'#000', width:'100%', height:'100%', borderRadius:'30px'}}>
-               {/* 暂用黑色占位替代复杂的WebGL眼球特效，可后续补充 */}
-            </div>
+          <div className="brand-visual" aria-hidden="true" style={{ width: '100%', height: '100%', overflow: 'hidden', borderRadius: '30px' }}>
+            <EvilEye 
+              eyeColor="#000000"
+              backgroundColor="#f5f6f8"
+              intensity={1.0}
+              pupilFollow={0.2}
+            />
           </div>
         </article>
 
