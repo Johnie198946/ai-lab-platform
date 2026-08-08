@@ -3,7 +3,7 @@ import { useAuth } from "../auth/AuthContext";
 import { useOrchestration } from "../hooks/useOrchestration";
 import { useNavigate } from "react-router-dom";
 import TextType from "../components/TextType";
-import DecryptedText from "../components/DecryptedText";
+import SplitText from "../components/SplitText";
 import "./Dashboard.css";
 
 export function OrchestrationPage() {
@@ -64,7 +64,7 @@ export function OrchestrationPage() {
                 </div>
                 
                 <section className="orch-dialog-thread" aria-live="polite">
-                  {messages.map((msg) => (
+                  {messages.map((msg, index) => (
                     <div
                       key={msg.id}
                       className={`orch-dialog-bubble orch-dialog-bubble--${msg.role}`}
@@ -73,14 +73,16 @@ export function OrchestrationPage() {
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
                           <div>
-                            <DecryptedText
-                              text={msg.content}
-                              animateOn="view"
-                              speed={30}
-                              maxIterations={15}
-                              sequential={true}
-                              revealDirection="start"
-                            />
+                            {index === messages.length - 1 ? (
+                              <SplitText
+                                text={msg.content}
+                                delay={30}
+                                duration={0.5}
+                                tag="span"
+                              />
+                            ) : (
+                              msg.content
+                            )}
                           </div>
                         </>
                       ) : (
