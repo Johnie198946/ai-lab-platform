@@ -19,6 +19,8 @@ export function OrchestrationPage() {
     isThinking,
     messages,
     handleInputKeyDown,
+    saveSelectedRole,
+    saveState,
   } = useOrchestration({ scopeKey: sessionScopeKey });
 
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -216,8 +218,15 @@ export function OrchestrationPage() {
             )}
 
             <div className="orch-modal-actions">
-              <button 
-                className="orch-route-button is-active" 
+              <button
+                className="orch-route-button"
+                onClick={saveSelectedRole}
+                disabled={saveState.status === "saving"}
+              >
+                {saveState.status === "saving" ? "保存中..." : "保存修改"}
+              </button>
+              <button
+                className="orch-route-button is-active"
                 onClick={() => handleNavigateToRole(selectedRole.id)}
               >
                 进入工作流
