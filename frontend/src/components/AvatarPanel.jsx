@@ -13,7 +13,7 @@ export function AvatarPanel({ isThinking, rolesCount, platformStatus, fallbackUs
       <div className="panel-surface avatar-panel__surface">
         <div className="eyebrow">
           <span className="eyebrow__dot" />
-          Digital Human Workspace
+          Digital Human Console
         </div>
 
         <div className="avatar-stage">
@@ -32,20 +32,20 @@ export function AvatarPanel({ isThinking, rolesCount, platformStatus, fallbackUs
         </div>
 
         <div className="avatar-copy">
-          <h1>让数字人为你编排一整支 AI 团队</h1>
+          <h1>让数字人把一个目标拆成 6 角色链路</h1>
           <p>
-            用低干扰、对话式的交互方式，把复杂的业务目标拆成可执行角色，并持续补全每个角色的职责、能力与协同关系。
+            从需求输入开始，依次进入市场洞察、产品、开发、营销、销售与老板战情室。当前工作台优先重构登录、加载、输入页和关键角色页壳体，用于展厅稳定演示。
           </p>
         </div>
 
         <div className="status-stack">
           <div className="status-card">
             <span className="status-card__label">当前状态</span>
-            <strong>{isThinking ? "正在思考与组建角色" : "等待你的下一条指令"}</strong>
+            <strong>{isThinking ? "正在编排角色与页面协议" : "等待新的业务需求"}</strong>
           </div>
           <div className="status-card">
-            <span className="status-card__label">编排结果</span>
-            <strong>{rolesCount > 0 ? `已生成 ${rolesCount} 个角色` : "暂未生成角色"}</strong>
+            <span className="status-card__label">角色结果</span>
+            <strong>{rolesCount > 0 ? `已生成 ${rolesCount} / 6 个角色` : "暂未生成角色"}</strong>
           </div>
           <div className="status-card status-card--accent">
             <span className="status-card__label">平台联调</span>
@@ -53,18 +53,18 @@ export function AvatarPanel({ isThinking, rolesCount, platformStatus, fallbackUs
             <p>{platformStatus.message}</p>
           </div>
           <div className="status-card">
-            <span className="status-card__label">当前模式</span>
-            <strong>{fallbackUsed ? "受控本地兜底" : "真实平台接口"}</strong>
-            <p>{fallbackUsed ? "角色编辑会先保存在前端草稿。" : "角色编辑将直接回写 ai-lab-platform。"}</p>
+            <span className="status-card__label">页面模式</span>
+            <strong>{fallbackUsed ? "演示壳体优先" : "真实平台优先"}</strong>
+            <p>{fallbackUsed ? "角色编辑先保存到前端草稿。" : "角色编辑将直接回写 ai-lab-platform。"}</p>
           </div>
         </div>
 
         <div className="signal-row">
-          <span className="signal-pill">白色系</span>
-          <span className="signal-pill">低饱和</span>
-          <span className="signal-pill">轻量动效</span>
-          <span className="signal-pill">角色可编辑</span>
-          <span className="signal-pill">平台联调</span>
+          <span className="signal-pill">登录页</span>
+          <span className="signal-pill">加载页</span>
+          <span className="signal-pill">需求输入页</span>
+          <span className="signal-pill">市场 / 开发 / 营销</span>
+          <span className="signal-pill">协议驱动渲染</span>
         </div>
       </div>
     </section>

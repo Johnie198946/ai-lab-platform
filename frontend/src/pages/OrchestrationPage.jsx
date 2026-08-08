@@ -45,7 +45,10 @@ export function OrchestrationPage() {
             <span className="eyebrow__dot" />
             Secure Workspace
           </div>
-          <h1>AI Lab 编排工作台</h1>
+          <h1>AI Lab 六角色编排工作台</h1>
+          <p className="workspace-topbar__copy">
+            统一承接登录后入口、需求输入页和市场洞察 / 开发 / 营销关键角色页壳体。
+          </p>
         </div>
         <div className="workspace-topbar__actions">
           <div className="workspace-chip">

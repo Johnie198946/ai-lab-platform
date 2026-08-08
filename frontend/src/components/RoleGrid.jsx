@@ -6,17 +6,26 @@ export function RoleGrid({
   onSelect,
   onPointerMove,
 }) {
+  const roleStatusMap = {
+    insight: "屏4 洞察",
+    product: "等待洞察",
+    engineering: "屏6 开发",
+    marketing: "屏7 营销",
+    sales: "等待营销",
+    boss: "屏9 战情室",
+  };
+
   return (
     <div className="roles-shell" ref={cardsRef}>
       <div className="roles-shell__header">
         <div>
-          <span className="section-label">Agent Team</span>
-          <h3>自动生成的 6 个角色卡片</h3>
+          <span className="section-label">Role Cards</span>
+          <h3>6 角色团队与关键页面入口</h3>
         </div>
         <p>
           {sessionMeta.fallbackUsed
-            ? "后端不可用时会切到受控兜底，但仍保留可编辑流程。"
-            : "当前角色由 ai-lab-platform 返回，并支持回写保存。"}
+            ? "后端不可用时切到受控兜底，但仍保留角色编辑和关键页讲解壳体。"
+            : "当前角色由 ai-lab-platform 返回，并可继续回写保存。"}
         </p>
       </div>
 
@@ -35,10 +44,24 @@ export function RoleGrid({
               onClick={() => onSelect(role.id)}
               onPointerMove={onPointerMove}
             >
-              <span className="role-card__badge">{role.badge}</span>
+              <div className="role-card__topline">
+                <span className="role-card__badge">{role.badge}</span>
+                <span className="role-card__status">{roleStatusMap[role.id] ?? "待配置"}</span>
+              </div>
               <strong>{role.title}</strong>
+              <span className="role-card__name">{role.name}</span>
               <p>{role.summary}</p>
-              <span className="role-card__cta">打开配置</span>
+              <div className="role-card__tags">
+                {(role.skills ?? "")
+                  .split(/[、,，]/)
+                  .map((tag) => tag.trim())
+                  .filter(Boolean)
+                  .slice(0, 3)
+                  .map((tag) => (
+                    <span key={tag}>{tag}</span>
+                  ))}
+              </div>
+              <span className="role-card__cta">打开关键页与配置</span>
             </button>
           ))
         )}

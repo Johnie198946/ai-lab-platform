@@ -8,7 +8,7 @@ const INITIAL_MESSAGES = [
     id: "assistant-welcome",
     role: "assistant",
     content:
-      "请输入你的业务目标。我会先理解需求，再通过 ai-lab-platform 创建一支可执行的 6 角色团队，并开放每个角色的配置入口。",
+      "请输入你的业务目标。我会先理解需求，再通过 ai-lab-platform 创建一支可执行的 6 角色团队，并展开需求输入页与关键角色页壳体。",
   },
 ];
 

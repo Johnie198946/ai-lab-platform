@@ -8,7 +8,8 @@ export function RoleEditor({ role, saveState, fallbackUsed, onFieldChange, onSav
       <div className="editor-panel__header">
         <div>
           <span className="section-label">Role Editor</span>
-          <h3>{role.title}</h3>
+          <h3>{role.title} 配置区</h3>
+          <p>点击角色卡后，可在这里调整名字、摘要、职责和技能，确保输出物与现场讲解保持一致。</p>
         </div>
         <span className="editor-panel__hint">{fallbackUsed ? "本地草稿" : "平台回写"}</span>
       </div>
