@@ -14,6 +14,7 @@ from backend.api.register import router as register_router
 from backend.api.catalog import router as catalog_router
 from backend.api.me import router as me_router
 from backend.api.auth import require_auth
+from backend.api.protocols import router as protocols_router
 from backend.db import init_db
 
 
@@ -66,6 +67,8 @@ app.include_router(register_router)
 # 目录 / 订阅管理 / 当前用户
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
 app.include_router(me_router, dependencies=[Depends(require_auth)])
+# Agent 协议签署
+app.include_router(protocols_router, dependencies=[Depends(require_auth)])
 
 
 # ---------- 健康检查 ----------
