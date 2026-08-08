@@ -98,7 +98,9 @@ def _violations():
 def test_layered_architecture():
     """模块边界: 分层依赖规则"""
     bad = _violations()
-    assert not bad, f"架构违规 {len(bad)} 处:\n" + "\n".join(f"  {f} -> {t} ({r})" for f, t, r in bad)
+    msg = f"架构违规 {len(bad)} 处:\n"
+    msg += "\n".join(f"  {f} -> {t} ({r})" for f, t, r in bad)
+    assert not bad, msg
 
 
 def test_no_circular_api_import():
