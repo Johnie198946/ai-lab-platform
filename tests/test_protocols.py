@@ -224,8 +224,10 @@ class TestIntegration:
         """main.py 注册 protocols_router"""
         from backend.main import app
 
-        # 检查路由是否注册
+        # FastAPI 新版用 _IncludedRouter 延迟展开, app.routes 中无 path 属性
+        # 通过 openapi schema 验证真实可访问路由
+        schema = app.openapi()
         protocol_routes = [
-            r for r in app.routes if hasattr(r, "path") and "/protocols" in r.path
+            p for p in schema.get("paths", {}) if "/protocols" in p
         ]
         assert len(protocol_routes) > 0
