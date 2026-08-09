@@ -24,7 +24,21 @@ const writeJson = (key, value) => {
     return;
   }
 
-  window.localStorage.setItem(key, JSON.stringify(value));
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch (error) {
+    console.warn(`localStorage QuotaExceededError when setting key: ${key}. Clearing draft storage and retrying.`, error);
+    try {
+        if (key.startsWith(WORKSPACE_STORAGE_PREFIX)) {
+            removeKey(key);
+            // 进一步压缩对象以防止重试失败
+            const minimalValue = { savedAt: new Date().toISOString() };
+            window.localStorage.setItem(key, JSON.stringify(minimalValue));
+        }
+    } catch (retryError) {
+        console.error("Failed to save to localStorage after retry", retryError);
+    }
+  }
 };
 
 const removeKey = (key) => {
@@ -55,8 +69,14 @@ export const getAuthAccessToken = () => loadAuthSession()?.accessToken ?? "";
 export const loadWorkspaceDraft = (scopeKey) => readJson(workspaceStorageKey(scopeKey));
 
 export const saveWorkspaceDraft = (scopeKey, draft) => {
+  // Omit extremely large fields like long inputs or giant base64 attachments from being saved to prevent QuotaExceededError
+  const sanitizedDraft = { ...draft };
+  if (sanitizedDraft.input && sanitizedDraft.input.length > 5000) {
+      sanitizedDraft.input = sanitizedDraft.input.substring(0, 5000) + "\n...[内容过长，为防止本地存储爆满已截断，上传的巨型附件内容不会被保存到草稿中]";
+  }
+
   writeJson(workspaceStorageKey(scopeKey), {
-    ...draft,
+    ...sanitizedDraft,
     savedAt: new Date().toISOString(),
   });
 };

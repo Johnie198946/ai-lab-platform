@@ -16,19 +16,29 @@ from backend.api.catalog import router as catalog_router
 from backend.api.me import router as me_router
 from backend.api.auth import require_auth
 from backend.api.orchestration import router as orchestration_router
+
 from backend.api.protocols import router as protocols_router
+from backend.api.agents import router as agents_router
+from backend.api.notifications import router as notifications_router
 from backend.db import init_db
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动: 初始化数据库表（幂等）。"""
+    """启动: 初始化数据库表(幂等) + 启动 Agent 调度器。"""
     try:
         await init_db()
     except Exception:
-        # DB 不可用时不阻塞启动（知识库文件驱动功能仍可用）
+        # DB 不可用时不阻塞启动(知识库文件驱动功能仍可用)
         pass
+    # 启动平台 Agent 调度器(容器重启自动恢复)
+    from backend.services.agent_scheduler import start_scheduler
+
+    start_scheduler()
     yield
+    from backend.services.agent_scheduler import stop_scheduler
+
+    stop_scheduler()
 
 
 app = FastAPI(
@@ -82,6 +92,10 @@ app.include_router(me_router, dependencies=[Depends(require_auth)])
 # Agent 协议签署
 app.include_router(protocols_router, dependencies=[Depends(require_auth)])
 
+
+# 挂载 Agent 调度与通知中心
+app.include_router(agents_router, dependencies=[Depends(require_auth)])
+app.include_router(notifications_router, dependencies=[Depends(require_auth)])
 
 # ---------- 健康检查 ----------
 @app.get("/health")

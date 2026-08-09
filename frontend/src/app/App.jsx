@@ -3,6 +3,7 @@ import { ProtectedRoute } from "../components/ProtectedRoute";
 import { useAuth } from "../auth/AuthContext";
 import { LoginPage } from "../pages/LoginPage";
 import { OrchestrationPage } from "../pages/OrchestrationPage";
+import { AgentPage } from "../pages/AgentPage";
 import RoleInsight from "../pages/RoleInsight";
 import RoleEngineering from "../pages/RoleEngineering";
 import RoleFounder from "../pages/RoleFounder";
@@ -22,6 +23,7 @@ export default function App() {
       <Route path="/login" element={<LoginPage />} />
       <Route element={<ProtectedRoute />}>
         <Route path="/orchestration" element={<OrchestrationPage />} />
+        <Route path="/agents" element={<AgentPage />} />
         <Route path="/role/insight" element={<RoleInsight />} />
         <Route path="/role/engineering" element={<RoleEngineering />} />
         <Route path="/role/founder" element={<RoleFounder />} />

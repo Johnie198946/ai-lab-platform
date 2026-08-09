@@ -70,8 +70,11 @@ echo "==> [3/3] 开始点对点直传数据至云服务器 ${SERVER_PATH}..."
 ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p ${SERVER_PATH}/vault"
 
 # 同步 Obsidian Vault (排除 .obsidian 临时配置文件)
-echo "    → 直传 Obsidian Vault 编译知识库..."
-rsync -avz --delete \
+# ⚠️ 2026-08-09 修正: 去掉 --delete — 云端子 Agent 自生长会新增 raw/wiki 文件,
+#    --delete 会把它们当"本地已删"清掉。改为 --update 增量: 本地新/改文件覆盖同名,
+#    云端新文件保留(由 sync_cloud_back_to_local.sh 回流本地)。
+echo "    → 直传 Obsidian Vault 编译知识库(增量, 保留云端自生长)..."
+rsync -avz --update \
   --exclude=".obsidian/" \
   --exclude="*.tmp" \
   "${LOCAL_VAULT_PATH}/" \

@@ -30,6 +30,57 @@ export function OrchestrationPage() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [modalView, setModalView] = useState("form");
   const [selectedMarkdown, setSelectedMarkdown] = useState(null);
+  const [dragOverlay, setDragOverlay] = useState(false);
+
+  useEffect(() => {
+    const handleDragEnter = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOverlay(true);
+    };
+
+    const handleDragOver = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOverlay(true);
+    };
+
+    const handleDragLeave = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      // 如果鼠标离开了 window 或到达边界
+      if (e.clientX === 0 || e.clientY === 0 || e.relatedTarget === null) {
+        setDragOverlay(false);
+      }
+    };
+
+    const handleDrop = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      setDragOverlay(false);
+      
+      if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        const file = e.dataTransfer.files[0];
+        const reader = new FileReader();
+        reader.onload = (ev) => {
+          setInput(prev => prev + (prev ? '\n' : '') + `[附件内容: ${file.name}]\n${ev.target.result}\n`);
+        };
+        reader.readAsText(file);
+      }
+    };
+
+    window.addEventListener('dragenter', handleDragEnter);
+    window.addEventListener('dragover', handleDragOver);
+    window.addEventListener('dragleave', handleDragLeave);
+    window.addEventListener('drop', handleDrop);
+
+    return () => {
+      window.removeEventListener('dragenter', handleDragEnter);
+      window.removeEventListener('dragover', handleDragOver);
+      window.removeEventListener('dragleave', handleDragLeave);
+      window.removeEventListener('drop', handleDrop);
+    };
+  }, [setInput]);
 
   const threadRef = useRef(null);
 
@@ -61,6 +112,57 @@ export function OrchestrationPage() {
 
   return (
     <main className="orch-overview-shell">
+      <div
+        style={{
+          position: "fixed",
+          top: 16,
+          right: 20,
+          zIndex: 50,
+          display: "flex",
+          gap: 10,
+        }}
+      >
+        <button
+          type="button"
+          className="orch-nav-button"
+          onClick={() => navigate("/agents")}
+          style={{
+            background: "rgba(43,129,255,0.15)",
+            border: "1px solid rgba(43,129,255,0.45)",
+            color: "#9cc0ff",
+            borderRadius: 999,
+            padding: "7px 16px",
+            cursor: "pointer",
+            fontSize: "0.85rem",
+            fontWeight: 600,
+          }}
+        >
+          🤖 子 Agent 工厂
+        </button>
+      </div>
+        <div style={{
+          position: 'fixed',
+          top: 0, left: 0, right: 0, bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.7)',
+          zIndex: 9999,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          pointerEvents: 'none'
+        }}>
+          <div style={{
+            border: '2px dashed #fff',
+            borderRadius: '12px',
+            padding: '40px 80px',
+            color: '#fff',
+            fontSize: '24px',
+            fontWeight: 'bold',
+            background: 'rgba(255, 255, 255, 0.1)'
+          }}>
+            松开鼠标上传文件到对话
+          </div>
+        </div>
+      )}
       <section className="orch-stage" aria-label="需求输入工作台">
         <header className="orch-stage-header">
           <div id="ai-conversation-workspace" aria-label="工作总结">
@@ -150,13 +252,26 @@ export function OrchestrationPage() {
                     </div>
                   ))}
                 </section>
-                <div className="orch-composer" aria-label="场景输入框">
+                <div className="orch-composer" aria-label="场景输入框" 
+                     onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                     onDrop={(e) => {
+                       e.preventDefault();
+                       e.stopPropagation();
+                       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                         const file = e.dataTransfer.files[0];
+                         const reader = new FileReader();
+                         reader.onload = (ev) => {
+                           setInput(prev => prev + (prev ? '\n' : '') + `[附件内容: ${file.name}]\n${ev.target.result}\n`);
+                         };
+                         reader.readAsText(file);
+                       }
+                     }}>
                   <textarea
                     autoFocus
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={handleInputKeyDown}
-                    placeholder="例如：我想做一个 AI 智能体编排平台..."
+                    placeholder="例如：我想做一个 AI 智能体编排平台...（支持拖拽TXT/Markdown文件至此）"
                   />
                   <div className="orch-composer-foot">
                     <span className="orch-composer-hint">输入开放需求后，系统会先判断是直接编排角色，还是先进行补充追问。支持回车发送。</span>
@@ -179,9 +294,9 @@ export function OrchestrationPage() {
                   const roleData = {
                     image: `/assets/portrait-${role.id}.jpg`,
                     index: role.id === 'insight' ? '01' : role.id === 'product' ? '02' : role.id === 'engineering' ? '03' : role.id === 'marketing' ? '04' : role.id === 'sales' ? '05' : '06',
-                    caption: role.name.substring(0,2),
-                    tagA: 'system',
-                    tagB: '交付',
+                    caption: role.title || role.name.substring(0,2),
+                    tagA: role.skills ? (role.skills.split(/[,、]/)[0] || 'system') : 'system',
+                    tagB: role.skills ? (role.skills.split(/[,、]/)[1] || '交付') : '交付',
                     height: '340px',
                     position: 'center'
                   };
@@ -253,7 +368,7 @@ export function OrchestrationPage() {
                   <div className="orch-modal-panel">
                     <div className="orch-modal-fields">
                       <label className="orch-modal-field">
-                        <span>名字</span>
+                        <span>姓名</span>
                         <input 
                           type="text" 
                           value={selectedRole.name || ''} 
@@ -261,11 +376,19 @@ export function OrchestrationPage() {
                         />
                       </label>
                       <label className="orch-modal-field">
+                        <span>角色</span>
+                        <input 
+                          type="text" 
+                          value={selectedRole.title || ''} 
+                          onChange={e => handleRoleFieldChange('title', e.target.value)} 
+                        />
+                      </label>
+                      <label className="orch-modal-field">
                         <span>职责</span>
                         <textarea 
                           rows="4" 
-                          value={selectedRole.duty || ''}
-                          onChange={e => handleRoleFieldChange('duty', e.target.value)} 
+                          value={selectedRole.responsibility || ''}
+                          onChange={e => handleRoleFieldChange('responsibility', e.target.value)} 
                         />
                       </label>
                       <label className="orch-modal-field">

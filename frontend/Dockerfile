@@ -20,6 +20,7 @@ RUN echo $'server {\n\
         proxy_set_header Host $host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+        client_max_body_size 50M;\n\
     }\n\
     location /health {\n\
         proxy_pass http://api:8000/health;\n\
