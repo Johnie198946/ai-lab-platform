@@ -684,7 +684,7 @@ async def generate_role_workflow(body: RoleWorkflowRequest):
 注意：tasks 数组和 details 数组的长度必须相同。
 """
     try:
-        raw_output = await _call_hermes_main(prompt, timeout=300, session_id=body.session_id)
+        raw_output = await _call_hermes_main(prompt, timeout=500, session_id=body.session_id)
         import re, json
         json_str = raw_output
         match = re.search(r'\{.*\}', raw_output, re.DOTALL)
