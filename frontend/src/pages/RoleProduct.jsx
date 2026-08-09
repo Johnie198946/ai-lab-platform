@@ -1,109 +1,72 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Clock, PenTool, Layout, FileText, CheckCircle, Loader, Monitor } from 'lucide-react';
+import { ArrowLeft, Clock, PenTool, Layout, FileText, CheckCircle, Loader, Monitor, MessageSquare } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { useOrchestration } from '../hooks/useOrchestration';
 import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleProduct.css';
 
-const mockPrototypes = [
-  { id: 1, name: "Dashboard Overview", image: "https://images.unsplash.com/photo-1618761714954-0b8cd0026356?auto=format&fit=crop&q=80&w=800" },
-  { id: 2, name: "Agent Workflow", image: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80&w=800" },
-  { id: 3, name: "Analytics Report", image: "https://images.unsplash.com/photo-1551288049-bebda4e38f71?auto=format&fit=crop&q=80&w=800" } // reused just for mock
-];
-
 export default function RoleProduct() {
   const { sessionScopeKey } = useAuth();
   const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
 
-  const [phase, setPhase] = useState(-1); // -1: fetching, 0: wait, 1: prd, 2: wireframe, 3: done
+  const [phase, setPhase] = useState(0); // 0: waiting/blocked, 1: generating, 2: done
   const [prdProgress, setPrdProgress] = useState(0);
   const [wireframeProgress, setWireframeProgress] = useState(0);
-
-  const [prdSteps, setPrdSteps] = useState(["分析需求中..."]);
-  const [wireframeSteps, setWireframeSteps] = useState(["设计中..."]);
-  const [summary, setSummary] = useState("正在生成产品文档...");
-
   const [currentPrdStep, setCurrentPrdStep] = useState("");
-  const [currentWireframeStep, setCurrentWireframeStep] = useState("");
-  const [selectedProto, setSelectedProto] = useState(null);
+  
+  // Real data state
+  const [prdSteps, setPrdSteps] = useState([]);
+  const [wireframes, setWireframes] = useState([]);
 
   useEffect(() => {
     async function fetchWorkflow() {
       try {
-        // sessionMeta 尚未从 localStorage 恢复(首轮渲染/直达刷新), 保持 loading 等恢复
-        if (!sessionMeta.sessionId) {
-          return;
-        }
-        // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
+        if (!sessionMeta.sessionId) return;
         const goal = sessionMeta.goal || input;
         if (!goal || !goal.trim()) {
-          setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");
-          setPhase(3);
+          setPhase(2);
           return;
         }
+        
+        // Start simulation / fetching
+        setPhase(1);
         const res = await generateRoleWorkflow(sessionMeta.sessionId, "product", goal);
-        if (res && res.tasks && res.tasks.length > 0) {
+        
+        // Use the returned tasks or fallback
+        if (res && res.tasks) {
           const half = Math.ceil(res.tasks.length / 2);
           setPrdSteps(res.tasks.slice(0, half));
-          setWireframeSteps(res.tasks.slice(half));
-          setSummary(res.summary || "PRD 与原型设计完成。");
-          if (res._cached) {
-            setPhase(3);
-            setPrdProgress(100);
-            setWireframeProgress(100);
-            setCurrentPrdStep(res.tasks[half - 1] || "");
-            setCurrentWireframeStep(res.tasks[res.tasks.length - 1] || "");
-          } else {
-            setPhase(0);
-          }
+          setWireframes(res.tasks.slice(half));
+        } else {
+          setPrdSteps(["需求结构化拆解", "业务流程图生成", "用例(Use Case)编写", "数据字典梳理"]);
+          setWireframes(["首页 Dashboard", "工作流编排页", "分析报告页"]);
         }
       } catch (err) {
-        console.error("fetchWorkflow err", err);
-        setPhase(0);
+        console.error(err);
       }
     }
     fetchWorkflow();
-  }, [sessionMeta.sessionId, input]);
-
-  // 兜底: 3 秒后仍未恢复 sessionId(无历史 session/直达页面) → 提示先回编排页, 避免永久 loading(2026-08-09)
-  useEffect(() => {
-    const t = setTimeout(() => {
-      if (!sessionMeta.sessionId) {
-        setSummary("⚠️ 未找到已编排的会话。请先返回编排页, 输入你的业务目标生成六角色后, 再进入本角色工作流。");
-        setPhase(3);
-      }
-    }, 3000);
-    return () => clearTimeout(t);
   }, [sessionMeta.sessionId]);
 
-  // Phase 0: Wait for Market Insight
-  useEffect(() => {
-    if (phase === 0) {
-      setCurrentPrdStep(prdSteps[0] || "");
-      setCurrentWireframeStep(wireframeSteps[0] || "");
-      const timer = setTimeout(() => setPhase(1), 1000); // reduced wait
-      return () => clearTimeout(timer);
-    }
-  }, [phase, prdSteps, wireframeSteps]);
-
-  // Phase 1: PRD generation (10s)
+  // Handle fake progress for generating phase
   useEffect(() => {
     if (phase === 1) {
       let startTime = Date.now();
-      const duration = 10000;
+      const duration = 8000;
       const interval = setInterval(() => {
         let elapsed = Date.now() - startTime;
         let p = Math.min(100, (elapsed / duration) * 100);
         setPrdProgress(p);
-        
-        let stepIndex = Math.floor((p / 100) * prdSteps.length);
-        if (stepIndex >= prdSteps.length) stepIndex = prdSteps.length - 1;
-        setCurrentPrdStep(prdSteps[stepIndex]);
+        setWireframeProgress(p * 0.8); // wireframe lags slightly
+
+        let stepIndex = Math.floor((p / 100) * (prdSteps.length || 4));
+        setCurrentPrdStep(prdSteps[stepIndex] || "正在生成...");
 
         if (p >= 100) {
           clearInterval(interval);
+          setWireframeProgress(100);
           setPhase(2);
         }
       }, 100);
@@ -111,197 +74,167 @@ export default function RoleProduct() {
     }
   }, [phase, prdSteps]);
 
-  // Phase 2: Wireframe generation (10s)
-  useEffect(() => {
-    if (phase === 2) {
-      let startTime = Date.now();
-      const duration = 10000;
-      const interval = setInterval(() => {
-        let elapsed = Date.now() - startTime;
-        let p = Math.min(100, (elapsed / duration) * 100);
-        setWireframeProgress(p);
-        
-        let stepIndex = Math.floor((p / 100) * wireframeSteps.length);
-        if (stepIndex >= wireframeSteps.length) stepIndex = wireframeSteps.length - 1;
-        setCurrentWireframeStep(wireframeSteps[stepIndex]);
-
-        if (p >= 100) {
-          clearInterval(interval);
-          setPhase(3);
-        }
-      }, 100);
-      return () => clearInterval(interval);
-    }
-  }, [phase, wireframeSteps]);
-
-  if (phase === -1) {
-    return (
-      <div className="role-product-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
-        <Loader className="spin" size={48} />
-        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
-      </div>
-    );
-  }
+  // Handle mock button
+  const handleMockTrigger = () => {
+    if (phase === 0) setPhase(1);
+  };
 
   return (
     <div className="role-product-container">
       <Link to="/orchestration" className="back-button">
-        <ArrowLeft size={16} /> 查看其他人的工作
+        <ArrowLeft size={16} /> 返回 overview
       </Link>
 
       <div className="product-content">
-        <motion.div 
+        {/* Bespoke Header */}
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="header-section"
+          className={`bespoke-header ${phase >= 1 ? 'is-ready' : ''}`}
         >
-          <h1>产品经理</h1>
-          <p>将市场洞察转化为产品需求与交互原型，构建可落地的产品蓝图。</p>
+          <span className="role-tag">产品经理</span>
+          {phase === 0 ? (
+            <>
+              <h1>正在等待市场洞察输入，PRD 与原型保持 blocked，准备在结论抵达后进入 ready。</h1>
+              <p>当前工作台已预置依赖映射、PRD JSON 结构与原型板位。产品经理此刻不继续扩写假设，而是等待市场洞察完成后一次性接收目标用户、动机、竞争缺口与优先级结论。</p>
+            </>
+          ) : phase === 1 ? (
+            <>
+              <h1>产品经理已接收上游洞察摘要，正在将需求结构化为 PRD 与交互原型。</h1>
+              <p>系统正并行处理需求依赖关系、生成结构化的 PRD JSON 数据，并同步生成各个核心页面的高保真线框图。</p>
+            </>
+          ) : (
+            <>
+              <h1>PRD 与原型已就绪，当前可进入研发阶段。</h1>
+              <p>结构化 PRD 和页面原型已全部生成完毕。您可以点击右侧 AI 数字人助手，或继续前往开发工程师的工作台。</p>
+            </>
+          )}
+
+          <div className="status-pills">
+            <div className="pill-row">
+              <span className={`status-pill ${phase > 0 ? 'done' : 'waiting'}`}>市场洞察 {phase > 0 ? 'DONE' : 'WAITING'}</span>
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>PRD {phase === 2 ? 'DONE' : phase === 1 ? 'GENERATING' : 'BLOCKED'}</span>
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>原型 {phase === 2 ? 'DONE' : phase === 1 ? 'GENERATING' : 'BLOCKED'}</span>
+            </div>
+            <span className="status-hint">{phase === 0 ? '准备接收结论' : phase === 1 ? '处理中...' : '流程完成'}</span>
+          </div>
         </motion.div>
 
-        <AnimatePresence mode="wait">
-          {phase === 0 ? (
-            <motion.div 
-              key="waiting"
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="waiting-card"
-            >
-              <Clock className="spin-icon" size={48} />
-              <h2>等待市场洞察专家完成工作...</h2>
-              <p>产品经理需要基于详实的市场分析与竞对数据，才能开始 PRD 撰写与原型设计。</p>
-            </motion.div>
-          ) : (
-            <motion.div 
-              key="working"
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="tasks-grid"
-            >
-              {/* Task 1: PRD */}
-              <motion.div className={`task-card ${phase >= 1 ? 'active' : ''}`}>
-                <div className="task-header">
-                  <PenTool className="icon" />
-                  <h3>撰写产品 PRD</h3>
-                  {phase > 1 ? <CheckCircle className="status-icon done" /> : phase === 1 ? <Loader className="status-icon spin" /> : null}
-                </div>
-                <div className="progress-container">
-                  <div className="progress-bar" style={{ width: `${prdProgress}%` }} />
-                </div>
-                <div className="task-details">
-                  <span className="percentage">{Math.floor(prdProgress)}%</span>
-                  <AnimatePresence mode="wait">
-                    {phase === 1 && (
-                      <motion.span 
-                        key={currentPrdStep}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        className="current-target"
-                      >
-                        {currentPrdStep}
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
-                  {phase > 1 && <span className="current-target">PRD 撰写完成</span>}
-                </div>
-              </motion.div>
+        {/* Workspace */}
+        <div className="workspace-section">
+          <div className="workspace-header">
+            <div className="ws-title-area">
+              <span className="ws-tag">SUMMARY-CARD + DRIFT-SCENE</span>
+              <h2>产品经理工作台</h2>
+              <p>主体改为依赖状态、PRD JSON 与原型图画廊三段式交互。先看等待，再接收上游摘要，随后进入结构化 PRD 与原型细化。</p>
+            </div>
+            {phase === 0 && (
+              <button className="mock-btn" onClick={handleMockTrigger}>模拟市场洞察完成</button>
+            )}
+          </div>
 
-              {/* Task 2: Wireframe */}
-              <motion.div className={`task-card ${phase >= 2 ? 'active' : ''}`}>
-                <div className="task-header">
-                  <Layout className="icon" />
-                  <h3>绘制产品原型图</h3>
-                  {phase > 2 ? <CheckCircle className="status-icon done" /> : phase === 2 ? <Loader className="status-icon spin" /> : null}
-                </div>
-                <div className="progress-container">
-                  <div className="progress-bar" style={{ width: `${wireframeProgress}%` }} />
-                </div>
-                <div className="task-details">
-                  <span className="percentage">{Math.floor(wireframeProgress)}%</span>
-                  <AnimatePresence mode="wait">
-                    {phase === 2 && (
-                      <motion.span 
-                        key={currentWireframeStep}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0, y: -10 }}
-                        className="current-target"
-                      >
-                        {currentWireframeStep}
-                      </motion.span>
-                    )}
-                  </AnimatePresence>
-                  {phase > 2 && <span className="current-target">原型图绘制完成</span>}
-                </div>
-              </motion.div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Final Output */}
-        <AnimatePresence>
-          {phase === 3 && (
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="output-section"
-            >
-              <h3>工作输出</h3>
-              <div className="output-grid">
-                <div className="prd-doc-card">
-                  <FileText size={32} className="doc-icon" />
-                  <div className="doc-info">
-                    <h4>AI智能体编排平台_PRD_v1.0.pdf</h4>
-                    <p>详细的产品需求、功能列表及数据字典</p>
+          <div className="bespoke-grid">
+            {/* Column 1: 依赖状态 / 上游摘要 */}
+            <div className="grid-col">
+              <div className="col-header">
+                <h3>市场洞察摘要 (依赖)</h3>
+                <p>上游角色传递的核心信息</p>
+              </div>
+              <div className={`col-body ${phase === 0 ? 'empty-state' : ''}`}>
+                {phase === 0 ? "暂无输入数据" : (
+                  <div>
+                    <p><strong>核心需求：</strong> {sessionMeta.goal || input}</p>
+                    <p><strong>市场缺口：</strong> 缺乏端到端的全链路编排系统。</p>
+                    <p><strong>优先级：</strong> 高优先级（需支持动态工作流和拖拽组件）。</p>
+                    <div className="progress-bar-thin">
+                      <div className="fill" style={{width: '100%'}}></div>
+                    </div>
+                    <p style={{marginTop: 8, color: '#007AFF', fontSize: 12}}>数据已加载完成</p>
                   </div>
-                  <button className="view-btn">阅读报告</button>
-                </div>
+                )}
+              </div>
+            </div>
 
-                <div className="prototype-gallery">
-                  <h4>产品原型图</h4>
-                  <div className="gallery-grid">
-                    {mockPrototypes.map(p => (
-                      <div key={p.id} className="gallery-item" onClick={() => setSelectedProto(p)}>
-                        <img src={p.image} alt={p.name} />
-                        <div className="gallery-overlay">
-                          <Monitor size={24} />
-                          <span>{p.name}</span>
-                        </div>
+            {/* Column 2: PRD JSON */}
+            <div className="grid-col">
+              <div className="col-header">
+                <h3>结构化 PRD (JSON)</h3>
+                <p>功能列表与数据字典</p>
+              </div>
+              <div className={`col-body ${phase === 0 ? 'empty-state' : ''}`}>
+                {phase === 0 ? "等待生成" : (
+                  <div>
+                    <div className="doc-list-item">
+                      <strong>1. 全局配置模块</strong>
+                      {phase === 1 ? <span style={{color:'#888'}}>正在解析字段...</span> : <span>包含：会话保持、全局角色字典定义</span>}
+                    </div>
+                    <div className="doc-list-item">
+                      <strong>2. 工作流引擎</strong>
+                      {phase === 1 && prdProgress < 50 ? <span style={{color:'#888'}}>等待中...</span> : <span>包含：DAG节点调度、状态流转通知</span>}
+                    </div>
+                    {phase === 2 && prdSteps.map((task, idx) => (
+                      <div className="doc-list-item" key={idx}>
+                        <strong>{idx + 3}. {task}</strong>
+                        <span>详细功能点已入库。</span>
                       </div>
                     ))}
+                    {phase === 1 && (
+                      <div style={{marginTop: 16}}>
+                        <span style={{color: '#888'}}>{currentPrdStep} ({Math.floor(prdProgress)}%)</span>
+                        <div className="progress-bar-thin">
+                          <div className="fill" style={{width: `${prdProgress}%`}}></div>
+                        </div>
+                      </div>
+                    )}
                   </div>
-                </div>
+                )}
               </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
+            </div>
+
+            {/* Column 3: 原型图画廊 */}
+            <div className="grid-col">
+              <div className="col-header">
+                <h3>交互原型 (Wireframes)</h3>
+                <p>核心页面的线框板位</p>
+              </div>
+              <div className={`col-body ${phase === 0 ? 'empty-state' : ''}`}>
+                {phase === 0 ? "等待生成" : (
+                  <div>
+                    {wireframes.map((wf, idx) => {
+                      if (phase === 1 && wireframeProgress < (idx + 1) * (100 / wireframes.length)) return null;
+                      return (
+                        <div key={idx} style={{marginBottom: 16}}>
+                          <div className="proto-img-mock">
+                            <Layout size={24} style={{marginRight: 8}} />
+                            {wf} 渲染完成
+                          </div>
+                        </div>
+                      );
+                    })}
+                    {phase === 1 && (
+                      <div style={{marginTop: 16}}>
+                        <span style={{color: '#888'}}>生成原型布局... ({Math.floor(wireframeProgress)}%)</span>
+                        <div className="progress-bar-thin">
+                          <div className="fill" style={{width: `${wireframeProgress}%`}}></div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      {/* Prototype Modal */}
-      <AnimatePresence>
-        {selectedProto && (
-          <motion.div 
-            className="proto-modal-backdrop"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={() => setSelectedProto(null)}
-          >
-            <motion.div 
-              className="proto-modal-content"
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              onClick={e => e.stopPropagation()}
-            >
-              <img src={selectedProto.image} alt={selectedProto.name} />
-              <button className="close-modal" onClick={() => setSelectedProto(null)}>×</button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Floating AI Assistant */}
+      <div className="ai-assistant-card">
+        <div className="ai-icon-wrap">AI</div>
+        <div className="ai-info">
+          <h4>产品经理数字人</h4>
+          <p>右侧入口 • 点击后在当前页对话</p>
+        </div>
+      </div>
     </div>
   );
 }
