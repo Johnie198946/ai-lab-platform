@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, MessageSquare, Mail, Bell, Languages, ArrowRight, CheckCircle, Search, Loader } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Mail, Bell, Languages, Users, Search, Loader } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { useOrchestration } from '../hooks/useOrchestration';
 import { generateRoleWorkflow } from '../services/orchestrationService';
@@ -11,8 +11,7 @@ export default function RoleSales() {
   const { sessionScopeKey } = useAuth();
   const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
 
-  const [phase, setPhase] = useState(-1); // -1: fetching, 0: fetched
-  const [view, setView] = useState('feishu'); // 'feishu' | 'email'
+  const [phase, setPhase] = useState(0); // 0: blocked, 1: generating, 2: done
   const [emailStatus, setEmailStatus] = useState('inbox'); // 'inbox' | 'compose' | 'sent'
   const [translation, setTranslation] = useState(false);
 
@@ -25,44 +24,50 @@ export default function RoleSales() {
   useEffect(() => {
     async function fetchWorkflow() {
       try {
-        // sessionMeta 尚未从 localStorage 恢复(首轮渲染/直达刷新), 保持 loading 等恢复
-        if (!sessionMeta.sessionId) {
-          return;
-        }
-        // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
+        if (!sessionMeta.sessionId) return;
         const goal = sessionMeta.goal || input;
         if (!goal || !goal.trim()) {
-          setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");
-          setPhase(0);
+          setPhase(2);
           return;
         }
-      const res = await generateRoleWorkflow(sessionMeta.sessionId, "sales", goal);
+        
+        setPhase(1);
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "sales", goal);
+        
         if (res && res.details && res.details.length >= 2) {
           setSalesDetails({
             pushContent: res.details[0] || "【上新通知】营销资料包已发布！",
             emailSubject: res.tasks ? res.tasks[1] : "客户咨询",
             emailBody: res.details[1] || "请查收您的营销资料..."
           });
+          if (res._cached) {
+            setPhase(2);
+          }
         }
       } catch (err) {
-        console.error("fetchWorkflow err", err);
-      } finally {
-        setPhase(0);
+        console.error(err);
       }
     }
     fetchWorkflow();
   }, [sessionMeta.sessionId, input]);
 
-  // 兜底: 3 秒后仍未恢复 sessionId(无历史 session/直达页面) → 提示先回编排页, 避免永久 loading(2026-08-09)
   useEffect(() => {
     const t = setTimeout(() => {
       if (!sessionMeta.sessionId) {
-        setSummary("⚠️ 未找到已编排的会话。请先返回编排页, 输入你的业务目标生成六角色后, 再进入本角色工作流。");
-        setPhase(0);
+        setPhase(2);
       }
     }, 3000);
     return () => clearTimeout(t);
   }, [sessionMeta.sessionId]);
+
+  useEffect(() => {
+    if (phase === 1) {
+      const t = setTimeout(() => {
+        setPhase(2);
+      }, 3000);
+      return () => clearTimeout(t);
+    }
+  }, [phase]);
 
   const handleSendEmail = () => {
     setEmailStatus('sent');
@@ -71,123 +76,161 @@ export default function RoleSales() {
     }, 3000);
   };
 
-  if (phase === -1) {
-    return (
-      <div className="role-sales-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
-        <Loader className="spin" size={48} />
-        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
-      </div>
-    );
-  }
+  const handleMockTrigger = () => {
+    if (phase === 0) setPhase(1);
+  };
 
   return (
     <div className="role-sales-container">
       <Link to="/orchestration" className="back-button">
-        <ArrowLeft size={16} /> 查看其他人的工作
+        <ArrowLeft size={16} /> 返回 overview
       </Link>
 
       <div className="sales-content">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="header-section"
+          className={`bespoke-header ${phase >= 1 ? 'is-ready' : ''}`}
         >
-          <h1>销售经理</h1>
-          <p>接收内部营销物料推送，并通过邮件直接触达客户，实现一键翻译与智能回复。</p>
+          <span className="role-tag">销售经理</span>
+          {phase === 0 ? (
+            <>
+              <h1>正在等待营销物料与市场通稿，销售 CRM 拓客处于 blocked 状态。</h1>
+              <p>当前工作台已预置飞书推送监听与客户 CRM 通讯录。销售团队在此阶段不进行盲目外呼，而是等待上游核心卖点、价格体系与宣传物料的完整抵达。</p>
+            </>
+          ) : phase === 1 ? (
+            <>
+              <h1>销售经理已接收最新营销资料包，正在同步 CRM 客户线索。</h1>
+              <p>系统正根据产品的核心价值主张（Value Proposition）在 CRM 库中筛选匹配的潜在客户（Leads），并生成第一轮触达话术。</p>
+            </>
+          ) : (
+            <>
+              <h1>线索匹配完毕，一键触达通道已开启。</h1>
+              <p>飞书内部知识库已更新。您可以直接向精准客户群发推介邮件，或使用 AI 翻译助手处理跨国业务咨询，最终可前往 Boss 战情室汇报。</p>
+            </>
+          )}
+
+          <div className="status-pills">
+            <div className="pill-row">
+              <span className={`status-pill ${phase > 0 ? 'done' : 'waiting'}`}>营销物料 {phase > 0 ? 'DONE' : 'WAITING'}</span>
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>CRM 线索 {phase === 2 ? 'DONE' : phase === 1 ? 'SYNCING' : 'BLOCKED'}</span>
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>邮件触达 {phase === 2 ? 'DONE' : phase === 1 ? 'PREPARING' : 'BLOCKED'}</span>
+            </div>
+            <span className="status-hint">{phase === 0 ? '准备接收物料' : phase === 1 ? '同步中...' : '流程完成'}</span>
+          </div>
         </motion.div>
 
-        <div className="sales-layout">
-          <div className="sales-sidebar">
-            <button className={`nav-btn ${view === 'feishu' ? 'active' : ''}`} onClick={() => setView('feishu')}>
-              <Bell size={18} /> 飞书营销推送
-            </button>
-            <button className={`nav-btn ${view === 'email' ? 'active' : ''}`} onClick={() => setView('email')}>
-              <Mail size={18} /> 客户邮件沟通
-            </button>
+        <div className="workspace-section">
+          <div className="workspace-header">
+            <div className="ws-title-area">
+              <span className="ws-tag">INTERNAL PUSH + CRM + OUTREACH</span>
+              <h2>销售工作台</h2>
+              <p>三列式布局：内部飞书知识库通知、CRM 高意向客户线索池、客户邮件通讯客户端。</p>
+            </div>
+            {phase === 0 && (
+              <button className="mock-btn" onClick={handleMockTrigger}>模拟营销完成</button>
+            )}
           </div>
 
-          <div className="sales-main">
-            <AnimatePresence mode="wait">
-              {view === 'feishu' && (
-                <motion.div 
-                  key="feishu"
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  className="feishu-panel"
-                >
-                  <div className="feishu-header">
-                    <MessageSquare size={24} color="#0066ff" />
-                    <h2>飞书消息 - 营销赋能</h2>
-                  </div>
+          <div className="bespoke-grid">
+            <div className="grid-col">
+              <div className="col-header">
+                <h3>飞书内部推送 (Lark)</h3>
+                <p>获取最新产品资料与卖点培训</p>
+              </div>
+              <div className={`col-body ${phase === 0 ? 'empty-state' : ''}`}>
+                {phase === 0 ? "等待输入数据" : (
                   <div className="feishu-chat">
                     <div className="feishu-bubble system">
-                      <div className="bubble-header">营销知识库小助手</div>
+                      <div className="bubble-header"><Bell size={12}/> 营销知识库小助手</div>
                       <div className="bubble-content">
                         <p>📢 <strong>{salesDetails.pushContent}</strong></p>
                         <p>各位一线将士，最新产品的完整营销弹药包已为您准备就绪：</p>
                         <div className="material-list">
-                          <div className="material-item">📄 AI智能体编排_一指禅.pdf</div>
-                          <div className="material-item">📊 AI智能体编排_主打胶片.pptx</div>
+                          <div className="material-item">📄 产品核心一指禅.pdf</div>
+                          <div className="material-item">📊 客户演示主打胶片.pptx</div>
                           <div className="material-item">💬 销售标准话术与Q&A.docx</div>
                         </div>
                         <p>祝大家开单顺利！🔥</p>
-                        <button className="feishu-action-btn" onClick={() => setView('email')}>
-                          <Mail size={16} /> 一键触达客户
-                        </button>
                       </div>
                     </div>
                   </div>
-                </motion.div>
-              )}
+                )}
+              </div>
+            </div>
 
-              {view === 'email' && (
-                <motion.div 
-                  key="email"
-                  initial={{ opacity: 0, x: 20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  exit={{ opacity: 0, x: -20 }}
-                  className="email-panel"
-                >
-                  <div className="email-header">
-                    <h2>邮件工作台</h2>
-                    <div className="search-bar">
-                      <Search size={16} />
-                      <input type="text" placeholder="搜索邮件..." />
-                    </div>
+            <div className="grid-col">
+              <div className="col-header">
+                <h3>CRM 客户线索 (Leads)</h3>
+                <p>智能筛选的高意向潜在客户</p>
+              </div>
+              <div className={`col-body ${phase === 0 ? 'empty-state' : ''}`}>
+                {phase === 0 ? "等待生成" : (
+                  <div className="crm-list">
+                    {phase === 1 && <div className="loading-text">正在从 10,000+ 库中检索匹配...</div>}
+                    {phase === 2 && (
+                      <>
+                        <div className="crm-item high-intent">
+                          <div className="crm-avatar"><Users size={16}/></div>
+                          <div className="crm-info">
+                            <strong>David Smith (CTO)</strong>
+                            <span>TechCorp Inc. - 寻求降本增效</span>
+                          </div>
+                          <div className="crm-score">98分</div>
+                        </div>
+                        <div className="crm-item">
+                          <div className="crm-avatar"><Users size={16}/></div>
+                          <div className="crm-info">
+                            <strong>Jane Doe (VP Product)</strong>
+                            <span>Innovate LLC - 历史成单客户</span>
+                          </div>
+                          <div className="crm-score">85分</div>
+                        </div>
+                        <div className="crm-item">
+                          <div className="crm-avatar"><Users size={16}/></div>
+                          <div className="crm-info">
+                            <strong>Michael Lee (CEO)</strong>
+                            <span>Startup Co. - 刚刚融资</span>
+                          </div>
+                          <div className="crm-score">72分</div>
+                        </div>
+                      </>
+                    )}
                   </div>
+                )}
+              </div>
+            </div>
 
-                  {emailStatus === 'inbox' && (
-                    <div className="email-inbox">
-                      <div className="email-item unread" onClick={() => setEmailStatus('compose')}>
-                        <div className="email-sender">David Smith (CTO)</div>
-                        <div className="email-subject">{salesDetails.emailSubject}</div>
-                        <div className="email-time">10:42 AM</div>
+            <div className="grid-col">
+              <div className="col-header">
+                <h3>邮件触达 (Outreach)</h3>
+                <p>带有 AI 辅助的客户沟通</p>
+              </div>
+              <div className={`col-body ${phase === 0 ? 'empty-state' : ''}`} style={{padding: 0}}>
+                {phase === 0 ? <div style={{padding: 24, textAlign: 'center', color: '#bbb'}}>等待生成</div> : (
+                  <div className="email-client">
+                    {emailStatus === 'inbox' && (
+                      <div className="email-inbox">
+                        <div className="email-item unread" onClick={() => setEmailStatus('compose')}>
+                          <div className="email-sender">David Smith</div>
+                          <div className="email-subject">{salesDetails.emailSubject}</div>
+                        </div>
                       </div>
-                      <div className="email-item">
-                        <div className="email-sender">Jane Doe</div>
-                        <div className="email-subject">Re: Partnership opportunity</div>
-                        <div className="email-time">Yesterday</div>
-                      </div>
-                    </div>
-                  )}
+                    )}
 
-                  {emailStatus === 'compose' && (
-                    <div className="email-compose">
-                      <div className="email-toolbar">
-                        <button className="back-btn" onClick={() => setEmailStatus('inbox')}>
-                          <ArrowLeft size={16} /> 返回
-                        </button>
-                        <button className="translate-btn" onClick={() => setTranslation(!translation)}>
-                          <Languages size={16} /> 一键翻译与总结
-                        </button>
-                      </div>
-
-                      <div className="email-thread">
-                        <div className="incoming-email">
+                    {emailStatus === 'compose' && (
+                      <div className="email-compose">
+                        <div className="email-toolbar">
+                          <button className="back-btn" onClick={() => setEmailStatus('inbox')}>
+                            <ArrowLeft size={14} /> 返回
+                          </button>
+                          <button className="translate-btn" onClick={() => setTranslation(!translation)}>
+                            <Languages size={14} /> AI 翻译
+                          </button>
+                        </div>
+                        <div className="email-thread">
                           <div className="email-meta">
-                            <span>From: David Smith (CTO)</span>
-                            <span>To: me</span>
+                            <span>From: David Smith</span>
                           </div>
                           <p>{salesDetails.emailBody}</p>
 
@@ -199,50 +242,29 @@ export default function RoleSales() {
                                 exit={{ opacity: 0, height: 0 }}
                                 className="ai-translation-box"
                               >
-                                <h4>🤖 AI 翻译与总结</h4>
-                                <p><strong>翻译：</strong>团队你好，我们正在评估几个用于内部工作流自动化的AI平台。我看到了你们最近关于新AI编排平台的公告。你能否提供更多关于它如何处理多智能体协作的细节，以及我们在第一季度可以预期的典型ROI？期待您的回复。David</p>
-                                <p><strong>总结：</strong>客户 (CTO) 对新产品感兴趣，核心关注点为：1. 多智能体协作机制 2. 第一季度的投资回报率 (ROI)。</p>
-                                <p><strong>推荐回复：</strong>已自动为您生成包含一指禅附件的专业回复。</p>
+                                <strong>AI 中文翻译：</strong>
+                                <p>听说你们正在发布一个新的 AI 平台。能否分享一些详细信息和主要的演示胶片？</p>
                               </motion.div>
                             )}
                           </AnimatePresence>
                         </div>
-
-                        <div className="reply-box">
-                          <div className="reply-header">Reply to David Smith</div>
-                          <textarea 
-                            className="reply-input" 
-                            defaultValue={translation ? "Dear David,\n\nThank you for reaching out. Our AI Orchestration Platform is designed specifically to solve complex enterprise workflows through dynamic multi-agent collaboration. By routing tasks to specialized agents (e.g., Insight, Product, Engineering), we eliminate redundant compute overhead.\n\nRegarding ROI, our early adopters typically see a 60% reduction in time-to-market and a break-even within the first 2 months.\n\nI have attached our One-Pager and Pitch Deck for your reference. Would you be available for a 15-minute demo next Tuesday?\n\nBest regards,\nSales Manager" : ""}
-                            placeholder="Type your reply here..."
-                          ></textarea>
-                          <div className="reply-actions">
-                            <div className="attachments">
-                              <span className="attachment-tag">AI智能体编排_一指禅.pdf</span>
-                              <span className="attachment-tag">AI智能体编排_主打胶片.pptx</span>
-                            </div>
-                            <button className="send-btn" onClick={handleSendEmail}>
-                              发送 <ArrowRight size={16} />
-                            </button>
-                          </div>
+                        <div className="email-reply">
+                          <textarea placeholder="使用 AI 辅助撰写回复..." defaultValue={`Hi David,\n\nThanks for reaching out! Attached is our latest pitch deck.\n\nBest,\nSales Team`}></textarea>
+                          <button className="send-btn" onClick={handleSendEmail}>发送邮件</button>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    )}
 
-                  {emailStatus === 'sent' && (
-                    <motion.div 
-                      initial={{ opacity: 0, scale: 0.95 }}
-                      animate={{ opacity: 1, scale: 1 }}
-                      className="sent-success"
-                    >
-                      <CheckCircle size={64} color="#00cc66" />
-                      <h2>邮件发送成功</h2>
-                      <p>营销物料已成功触达客户，系统将自动跟进后续状态。</p>
-                    </motion.div>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
+                    {emailStatus === 'sent' && (
+                      <div className="email-sent">
+                        <div className="success-icon">✓</div>
+                        <p>邮件发送成功</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>

@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, TrendingUp, Clock, Target, CheckCircle, AlertTriangle, ShieldCheck, FileText, ChevronRight, Loader } from 'lucide-react';
+import { ArrowLeft, TrendingUp, Clock, Target, CheckCircle, AlertTriangle, ShieldCheck, FileText, Loader } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { useOrchestration } from '../hooks/useOrchestration';
 import { generateRoleWorkflow } from '../services/orchestrationService';
@@ -11,9 +11,8 @@ export default function RoleFounder() {
   const { sessionScopeKey } = useAuth();
   const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
 
-  const [phase, setPhase] = useState(-1);
+  const [phase, setPhase] = useState(0); // 0: blocked, 1: deciding, 2: approved
   const [approved, setApproved] = useState(false);
-  const [showOnePager, setShowOnePager] = useState(false);
 
   const [founderDetails, setFounderDetails] = useState([
     "市场空缺明确，竞争底稿已生成",
@@ -21,46 +20,38 @@ export default function RoleFounder() {
     "软件环境就绪，硬件无需定制",
     "主打胶片与宣贯物料已发布"
   ]);
-  const [founderSummary, setFounderSummary] = useState("");
 
   useEffect(() => {
     async function fetchWorkflow() {
       try {
-        // sessionMeta 尚未从 localStorage 恢复(首轮渲染/直达刷新), 保持 loading 等恢复
-        if (!sessionMeta.sessionId) {
-          return;
-        }
-        // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
+        if (!sessionMeta.sessionId) return;
         const goal = sessionMeta.goal || input;
         if (!goal || !goal.trim()) {
-          setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");
-          setPhase(0);
+          setPhase(2);
           return;
         }
-      const res = await generateRoleWorkflow(sessionMeta.sessionId, "boss", goal);
+        
+        setPhase(1);
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "boss", goal);
+        
         if (res && res.details && res.details.length >= 4) {
           setFounderDetails(res.details);
-          setFounderSummary(res.summary);
           if (res._cached) {
+            setPhase(2);
             setApproved(true);
-            setShowOnePager(true);
           }
         }
       } catch (err) {
-        console.error("fetchWorkflow err", err);
-      } finally {
-        setPhase(0);
+        console.error(err);
       }
     }
     fetchWorkflow();
   }, [sessionMeta.sessionId, input]);
 
-  // 兜底: 3 秒后仍未恢复 sessionId(无历史 session/直达页面) → 提示先回编排页, 避免永久 loading(2026-08-09)
   useEffect(() => {
     const t = setTimeout(() => {
       if (!sessionMeta.sessionId) {
-        setSummary("⚠️ 未找到已编排的会话。请先返回编排页, 输入你的业务目标生成六角色后, 再进入本角色工作流。");
-        setPhase(0);
+        setPhase(2);
       }
     }, 3000);
     return () => clearTimeout(t);
@@ -68,183 +59,172 @@ export default function RoleFounder() {
 
   const handleApprove = () => {
     setApproved(true);
-    setTimeout(() => {
-      setShowOnePager(true);
-    }, 1000);
+    setPhase(2);
+  };
+
+  const handleMockTrigger = () => {
+    if (phase === 0) setPhase(1);
   };
 
   const timelineSteps = [
-    { name: "市场洞察", status: "completed" },
-    { name: "产品 PRD", status: "completed" },
-    { name: "开发构建", status: "completed" },
-    { name: "营销方案", status: "completed" },
-    { name: "销售 Ready", status: approved ? "completed" : "pending" }
+    { name: "市场洞察", status: phase >= 1 ? "completed" : "pending" },
+    { name: "产品 PRD", status: phase >= 1 ? "completed" : "pending" },
+    { name: "开发构建", status: phase >= 1 ? "completed" : "pending" },
+    { name: "营销方案", status: phase >= 1 ? "completed" : "pending" },
+    { name: "销售就绪", status: phase === 2 ? "completed" : phase === 1 ? "active" : "pending" }
   ];
 
   const agentStatus = [
-    { name: "市场洞察专家", status: "completed", desc: founderDetails[0] || "市场空缺明确，竞争底稿已生成" },
-    { name: "产品经理", status: "completed", desc: founderDetails[1] || "PRD与原型图已输出" },
-    { name: "开发工程师", status: "completed", desc: founderDetails[2] || "软件环境就绪，硬件无需定制" },
-    { name: "营销经理", status: "completed", desc: founderDetails[3] || "主打胶片与宣贯物料已发布" },
-    { name: "销售经理", status: approved ? "completed" : "warning", desc: approved ? "开始拓客打单" : "等待产品上线审批" }
+    { name: "市场洞察专家", status: phase >= 1 ? "completed" : "pending", desc: phase >= 1 ? founderDetails[0] : "等待输入" },
+    { name: "产品经理", status: phase >= 1 ? "completed" : "pending", desc: phase >= 1 ? founderDetails[1] : "等待输入" },
+    { name: "开发工程师", status: phase >= 1 ? "completed" : "pending", desc: phase >= 1 ? founderDetails[2] : "等待输入" },
+    { name: "营销经理", status: phase >= 1 ? "completed" : "pending", desc: phase >= 1 ? founderDetails[3] : "等待输入" },
+    { name: "销售经理", status: phase === 2 ? "completed" : phase === 1 ? "warning" : "pending", desc: phase === 2 ? "开始拓客打单" : "等待审批授权" }
   ];
-
-  if (phase === -1) {
-    return (
-      <div className="role-founder-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
-        <Loader className="spin" size={48} />
-        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
-      </div>
-    );
-  }
 
   return (
     <div className="role-founder-container">
       <Link to="/orchestration" className="back-button">
-        <ArrowLeft size={16} /> 返回指挥中心
+        <ArrowLeft size={16} /> 返回 overview
       </Link>
 
       <div className="founder-content">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="header-section"
+          className={`bespoke-header ${phase === 2 ? 'is-ready' : ''}`}
         >
-          <h1>C-Level 战情室</h1>
-          <p>全局监控商业 ROI、资源消耗与端到端进度，进行高优决策与风险控制。</p>
-        </motion.div>
+          <span className="role-tag">老板 (Founder)</span>
+          {phase === 0 ? (
+            <>
+              <h1>前序节点未完成，战情室大盘暂无数据，审批处于 blocked 状态。</h1>
+              <p>老板角色作为最终决策者，无需参与一线执行，而是等待市场、产品、研发、营销等节点汇总数据，进行 ROI 与进度审查。</p>
+            </>
+          ) : phase === 1 ? (
+            <>
+              <h1>所有前序业务模块已提交数据，正在等待最终发布审批。</h1>
+              <p>全局 ROI 预期与各 Agent 工作产物已汇总至大盘。请审查资源消耗与交付成果，并决定是否正式投入市场。</p>
+            </>
+          ) : (
+            <>
+              <h1>项目已获批上线，销售管道已全面打通。</h1>
+              <p>端到端流程闭环完成。各节点团队已进入生产状态，您的决策已同步至全员。</p>
+            </>
+          )}
 
-        {/* 顶部：端到端进度与时间线 & ROI Metrics */}
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="top-dashboard"
-        >
-          <div className="timeline-card">
-            <h3>端到端全流程里程碑</h3>
-            <div className="timeline-track">
-              {timelineSteps.map((step, idx) => (
-                <React.Fragment key={step.name}>
-                  <div className={`timeline-node ${step.status}`}>
-                    {step.status === 'completed' ? <CheckCircle size={20} /> : <div className="circle-empty" />}
-                    <span>{step.name}</span>
-                  </div>
-                  {idx < timelineSteps.length - 1 && <div className={`timeline-line ${timelineSteps[idx].status === 'completed' && timelineSteps[idx+1].status === 'completed' ? 'active' : ''}`} />}
-                </React.Fragment>
-              ))}
+          <div className="status-pills">
+            <div className="pill-row">
+              <span className={`status-pill ${phase >= 1 ? 'done' : 'waiting'}`}>业务数据 {phase >= 1 ? 'DONE' : 'WAITING'}</span>
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>最终审批 {phase === 2 ? 'APPROVED' : phase === 1 ? 'DECIDING' : 'BLOCKED'}</span>
             </div>
-          </div>
-
-          <div className="roi-metrics">
-            <div className="metric-card">
-              <Clock className="metric-icon blue" />
-              <div className="metric-data">
-                <span className="label">Time-to-Market 加速</span>
-                <strong className="value">60%</strong>
-              </div>
-            </div>
-            <div className="metric-card">
-              <TrendingUp className="metric-icon green" />
-              <div className="metric-data">
-                <span className="label">预期收益 (Q1)</span>
-                <strong className="value">¥12.5M</strong>
-              </div>
-            </div>
-            <div className="metric-card">
-              <Target className="metric-icon purple" />
-              <div className="metric-data">
-                <span className="label">预计算力成本</span>
-                <strong className="value">¥1.2M</strong>
-              </div>
-            </div>
+            <span className="status-hint">{phase === 0 ? '等待前序节点' : phase === 1 ? '待审批' : '流程闭环'}</span>
           </div>
         </motion.div>
 
-        <div className="bottom-layout">
-          {/* 左侧：各角色 Agent 状态大盘 */}
-          <motion.div 
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2 }}
-            className="agent-grid"
-          >
-            <h3>Agent 状态大盘</h3>
-            <div className="agent-list">
-              {agentStatus.map(agent => (
-                <div key={agent.name} className={`agent-status-card ${agent.status}`}>
-                  <div className="agent-status-header">
-                    <span className="agent-name">{agent.name}</span>
-                    {agent.status === 'completed' ? <CheckCircle size={16} className="icon-success" /> : <AlertTriangle size={16} className="icon-warning" />}
-                  </div>
-                  <p>{agent.desc}</p>
-                </div>
-              ))}
+        <div className="workspace-section">
+          <div className="workspace-header">
+            <div className="ws-title-area">
+              <span className="ws-tag">WAR ROOM + APPROVAL</span>
+              <h2>C-Level 战情室</h2>
+              <p>全局监控商业 ROI、资源消耗与端到端进度，进行高优决策与风险控制。</p>
             </div>
-          </motion.div>
+            {phase === 0 && (
+              <button className="mock-btn" onClick={handleMockTrigger}>模拟前序完成</button>
+            )}
+          </div>
 
-          {/* 右侧：核心决策卡片与审批流 */}
-          <motion.div 
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.3 }}
-            className="decision-panel"
-          >
-            <h3>高优先级决策与审批</h3>
-            
-            <div className={`decision-card ${approved ? 'approved' : ''}`}>
-              <div className="decision-header">
-                <ShieldCheck className="decision-icon" />
-                <h4>最终发布审批：AI智能体编排平台</h4>
+          <div className="founder-dashboard">
+            {/* Top Section: Timeline & ROI */}
+            <div className="top-dashboard">
+              <div className="timeline-card">
+                <h3>端到端全流程里程碑</h3>
+                <div className="timeline-track">
+                  {timelineSteps.map((step, idx) => (
+                    <React.Fragment key={step.name}>
+                      <div className={`timeline-node ${step.status}`}>
+                        {step.status === 'completed' ? <CheckCircle size={20} /> : step.status === 'active' ? <AlertTriangle size={20} /> : <div className="circle-empty" />}
+                        <span>{step.name}</span>
+                      </div>
+                      {idx < timelineSteps.length - 1 && <div className={`timeline-line ${timelineSteps[idx].status === 'completed' && (timelineSteps[idx+1].status === 'completed' || timelineSteps[idx+1].status === 'active') ? 'active' : ''}`} />}
+                    </React.Fragment>
+                  ))}
+                </div>
               </div>
-              <p>所有前序模块（市场、产品、研发、营销）均已完成并就绪。请确认是否正式授权上线该项目，并允许销售团队向客户发车。</p>
-              
-              {!approved ? (
-                <button className="approve-btn" onClick={handleApprove}>
-                  亲笔 Approve 授权发布
-                </button>
-              ) : (
-                <div className="approved-stamp">
-                  <CheckCircle size={16} /> 已授权发布
+
+              <div className="roi-metrics">
+                <div className={`metric-card ${phase === 0 ? 'disabled' : ''}`}>
+                  <Clock className="metric-icon blue" />
+                  <div className="metric-data">
+                    <span className="label">Time-to-Market 加速</span>
+                    <strong className="value">{phase === 0 ? '--' : '60%'}</strong>
+                  </div>
                 </div>
-              )}
+                <div className={`metric-card ${phase === 0 ? 'disabled' : ''}`}>
+                  <TrendingUp className="metric-icon green" />
+                  <div className="metric-data">
+                    <span className="label">预期收益 (Q1)</span>
+                    <strong className="value">{phase === 0 ? '--' : '¥12.5M'}</strong>
+                  </div>
+                </div>
+                <div className={`metric-card ${phase === 0 ? 'disabled' : ''}`}>
+                  <Target className="metric-icon purple" />
+                  <div className="metric-data">
+                    <span className="label">预计算力成本</span>
+                    <strong className="value">{phase === 0 ? '--' : '¥1.2M'}</strong>
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <AnimatePresence>
-              {showOnePager && (
-                <motion.div 
-                  initial={{ opacity: 0, height: 0, marginTop: 0 }}
-                  animate={{ opacity: 1, height: 'auto', marginTop: 24 }}
-                  className="one-pager-preview"
-                >
-                  <div className="one-pager-header">
-                    <FileText size={20} />
-                    <h4>高管决策一页纸 (Executive Briefing)</h4>
-                  </div>
-                  <div className="one-pager-content">
-                    <div className="brief-section">
-                      <h5>项目概述</h5>
-                      <p>{founderSummary || "本项目已完成端到端的市场洞察、产品定义、技术研发与营销准备。预期在下一季度实现显著的营收增长与市占率提升。"}</p>
-                      <p><strong>下一步计划：</strong> 授权销售团队开启全渠道推广，并启动下一代版本（v2.0）的需求收集。</p>
+            {/* Bottom Section: Agent Grid & Approval */}
+            <div className="bottom-layout">
+              <div className="agent-grid-panel">
+                <h3>Agent 执行状态快照</h3>
+                <div className="agent-list">
+                  {agentStatus.map(agent => (
+                    <div key={agent.name} className={`agent-status-card ${agent.status}`}>
+                      <div className="agent-status-header">
+                        <span className="agent-name">{agent.name}</span>
+                        {agent.status === 'completed' && <CheckCircle size={16} className="icon-success" />}
+                        {agent.status === 'warning' && <AlertTriangle size={16} className="icon-warning" />}
+                        {agent.status === 'pending' && <Clock size={16} className="icon-pending" />}
+                      </div>
+                      <p>{agent.desc}</p>
                     </div>
-                    <div className="brief-section">
-                      <h5>市场与竞品结论 (来自市场洞察)</h5>
-                      <p>“市场空缺明确，字节/华为尚未完全占领该微分赛道，建议立即投入。”</p>
-                    </div>
-                    <div className="brief-section">
-                      <h5>产品与研发概况 (来自 PM & 开发)</h5>
-                      <p>产品核心亮点：智能算力路由。软件构建完成度：100%。硬件依赖：不涉及/自研算力卡适配完成。</p>
-                    </div>
-                    <div className="brief-section">
-                      <h5>营销与销售准备度 (来自 营销 & 销售)</h5>
-                      <p>营销一指禅与预热胶片已完成，MOR 流程已由 SPDT 经理提交通过；销售预估客单价与目标客户群（金融、电信数据中心客户）已锁定。</p>
-                    </div>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+                  ))}
+                </div>
+              </div>
 
-          </motion.div>
+              <div className="decision-panel">
+                <h3>高优先级决策与审批</h3>
+                {phase === 0 ? (
+                  <div className="decision-card blocked">
+                    <ShieldCheck className="decision-icon" />
+                    <p>等待前序节点汇总数据...</p>
+                  </div>
+                ) : (
+                  <div className={`decision-card ${approved ? 'approved' : ''}`}>
+                    <div className="decision-header">
+                      <ShieldCheck className="decision-icon" />
+                      <h4>最终发布审批：{sessionMeta.goal || input || "当前项目"}</h4>
+                    </div>
+                    <p>所有前序模块（市场、产品、研发、营销）均已完成并就绪。请确认是否正式授权上线该项目，并允许销售团队向客户发车。</p>
+                    
+                    {!approved ? (
+                      <button className="approve-btn" onClick={handleApprove}>
+                        授权发布 (Approve)
+                      </button>
+                    ) : (
+                      <div className="approved-stamp">
+                        <CheckCircle size={20} />
+                        <span>已授权上线，项目流转至销售端</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
