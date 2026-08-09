@@ -32,7 +32,12 @@ export default function RoleProduct() {
   useEffect(() => {
     async function fetchWorkflow() {
       try {
-        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const goal = sessionMeta.goal || input;
+        if (!goal || !goal.trim()) {
+          setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");
+          setPhase(3);
+          return;
+        }
         const res = await generateRoleWorkflow(sessionMeta.sessionId, "product", goal);
         if (res && res.tasks && res.tasks.length > 0) {
           const half = Math.ceil(res.tasks.length / 2);

@@ -40,9 +40,21 @@ export default function RoleInsight() {
   useEffect(() => {
     async function fetchWorkflow() {
       try {
-        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
+        const goal = sessionMeta.goal || input;
+        if (!goal || !goal.trim()) {
+          setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");
+          setPhase(4);
+          return;
+        }
         const res = await generateRoleWorkflow(sessionMeta.sessionId, "insight", goal);
         if (res) {
+          if (res._error) {
+            // workflow 生成失败(如超时): 展示错误, 不进入假动画流程
+            setSummary(`⚠️ workflow 生成失败: ${res._error}。可稍后重试, 或检查 Hermes 服务状态。`);
+            setPhase(4);
+            return;
+          }
           if (res.external_tasks && res.internal_tasks) {
             setCompetitors(res.external_tasks);
             setInternals(res.internal_tasks);
@@ -70,7 +82,8 @@ export default function RoleInsight() {
         }
       } catch (err) {
         console.error("fetchWorkflow err", err);
-        setPhase(0);
+        setSummary(`⚠️ workflow 请求异常: ${err?.message || err}. 请稍后重试。`);
+        setPhase(4);
       }
     }
     fetchWorkflow();
@@ -173,11 +186,11 @@ export default function RoleInsight() {
         <div className="tasks-grid">
           {/* Task 1: 竞对分析 */}
           <motion.div
-            className={`task-card ${phase >= 1 ? 'active' : ''} ${phase > 1 ? 'clickable' : ''}`}
+            className={`task-card ${phase >= 1 ? 'active' : ''} ${phase > 1 ? 'clickable' : 'clickable'}`}
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.2 }}
-            onClick={() => { if (phase > 1) handleOpenModal("竞争对手信息搜集", competitors, compDetails); }}
+            onClick={() => handleOpenModal("竞争对手信息搜集", competitors, compDetails)}
           >
             <div className="task-header">
               <Search className="icon" />
@@ -218,11 +231,11 @@ export default function RoleInsight() {
 
           {/* Task 2: 内部映射 */}
           <motion.div
-            className={`task-card ${phase >= 2 ? 'active' : ''} ${phase > 2 ? 'clickable' : ''}`}
+            className={`task-card ${phase >= 2 ? 'active' : ''} ${phase > 2 ? 'clickable' : 'clickable'}`}
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.4 }}
-            onClick={() => { if (phase > 2) handleOpenModal("企业内部信息收集", internals, internalDetails); }}
+            onClick={() => handleOpenModal("企业内部信息收集", internals, internalDetails)}
           >
             <div className="task-header">
               <Database className="icon" />
