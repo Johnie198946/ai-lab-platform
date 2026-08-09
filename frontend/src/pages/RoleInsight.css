@@ -290,3 +290,52 @@
   color: #1e293b;
   line-height: 1.5;
 }
+
+/* ---- 各角色任务清单(2026-08-09) ---- */
+.role-tasks-section {
+  margin-top: 32px;
+}
+.role-tasks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 16px;
+}
+.role-task-card {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+}
+.role-task-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.role-task-badge {
+  background: #3b82f6;
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-transform: uppercase;
+}
+.role-task-head h3 {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 0;
+}
+.role-task-card ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.role-task-card li {
+  font-size: 13px;
+  color: #475569;
+  line-height: 1.6;
+  margin-bottom: 4px;
+}

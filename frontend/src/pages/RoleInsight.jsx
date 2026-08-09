@@ -11,6 +11,13 @@ const DATA_REQUIREMENTS = `
 {
   "verdict": "值得做 / 不值得做 / 有条件地做（一句话结论，管理层视角）",
   "hero_insight": "以管理层视角判断的核心洞察总结（约50字，含是否值得做的判断）",
+  "role_tasks": [
+    { "role": "产品经理", "role_id": "product", "tasks": ["基于调研结果要做的具体事1", "具体事2"] },
+    { "role": "开发工程师", "role_id": "engineering", "tasks": ["基于调研结果要做的具体事1", "具体事2"] },
+    { "role": "营销经理", "role_id": "marketing", "tasks": ["基于调研结果要做的具体事1", "具体事2"] },
+    { "role": "销售经理", "role_id": "sales", "tasks": ["基于调研结果要做的具体事1", "具体事2"] },
+    { "role": "老板", "role_id": "boss", "tasks": ["基于调研结果要做的具体事1", "具体事2"] }
+  ],
   "conclusions": [
     { "title": "结论先行小标题", "desc": "具体说明" }
   ],
@@ -181,6 +188,33 @@ export default function RoleInsight() {
             ))}
           </div>
         </motion.section>
+
+        {/* Role Tasks: 若要做 → 5 角色任务清单(其他角色的前提输入, 2026-08-09 用户拍板) */}
+        {(data.role_tasks || []).length > 0 && (
+          <motion.section 
+            className="role-tasks-section"
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+          >
+            <h2 className="section-title">若要做 · 各角色任务清单</h2>
+            <div className="role-tasks-grid">
+              {(data.role_tasks || []).map((rt, idx) => (
+                <div key={idx} className="role-task-card">
+                  <div className="role-task-head">
+                    <span className="role-task-badge">{rt.role_id}</span>
+                    <h3>{rt.role}</h3>
+                  </div>
+                  <ul>
+                    {(rt.tasks || []).map((t, i) => (
+                      <li key={i}>{t}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          </motion.section>
+        )}
       </main>
 
       {/* Digital Advisor */}
