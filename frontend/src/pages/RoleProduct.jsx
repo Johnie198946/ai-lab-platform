@@ -39,10 +39,18 @@ export default function RoleProduct() {
           setPrdSteps(res.tasks.slice(0, half));
           setWireframeSteps(res.tasks.slice(half));
           setSummary(res.summary || "PRD 与原型设计完成。");
+          if (res._cached) {
+            setPhase(3);
+            setPrdProgress(100);
+            setWireframeProgress(100);
+            setCurrentPrdStep(res.tasks[half - 1] || "");
+            setCurrentWireframeStep(res.tasks[res.tasks.length - 1] || "");
+          } else {
+            setPhase(0);
+          }
         }
       } catch (err) {
         console.error("fetchWorkflow err", err);
-      } finally {
         setPhase(0);
       }
     }

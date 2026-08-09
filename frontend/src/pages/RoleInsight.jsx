@@ -36,10 +36,17 @@ export default function RoleInsight() {
           setInternals(res.tasks.slice(half));
           setReportSteps(res.details || ["文档生成中..."]);
           setSummary(res.summary || "分析完成。");
+          if (res._cached) {
+            setPhase(4);
+            setCompProgress(100);
+            setInternalProgress(100);
+            setReportStep(res.details ? res.details.length - 1 : 0);
+          } else {
+            setPhase(0);
+          }
         }
       } catch (err) {
         console.error("fetchWorkflow err", err);
-      } finally {
         setPhase(0);
       }
     }

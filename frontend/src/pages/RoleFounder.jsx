@@ -31,6 +31,10 @@ export default function RoleFounder() {
         if (res && res.details && res.details.length >= 4) {
           setFounderDetails(res.details);
           setFounderSummary(res.summary);
+          if (res._cached) {
+            setApproved(true);
+            setShowOnePager(true);
+          }
         }
       } catch (err) {
         console.error("fetchWorkflow err", err);

@@ -44,10 +44,18 @@ export default function RoleMarketing() {
         const res = await generateRoleWorkflow(sessionMeta.sessionId, "marketing", goal);
         if (res && res.tasks && res.tasks.length > 0) {
           setMarketingTasks(res.tasks);
+          if (res._cached) {
+            setPhase(0);
+            setStep('done');
+            setCreationProgress(100);
+            setInfoProgress(100);
+            setReviewNodes(prev => prev.map(node => ({ ...node, status: 'approved' })));
+          } else {
+            setPhase(0);
+          }
         }
       } catch (err) {
         console.error("fetchWorkflow err", err);
-      } finally {
         setPhase(0);
       }
     }

@@ -23,7 +23,20 @@ export const orchestrateGoal = async (goal) => {
 };
 
 export const generateRoleWorkflow = async (sessionId, roleId, goal) => {
-  return await platformApi.generateRoleWorkflow(sessionId, roleId, goal);
+  const cacheKey = `workflow_cache_${sessionId}_${roleId}`;
+  const cached = localStorage.getItem(cacheKey);
+  if (cached) {
+    try {
+      const parsed = JSON.parse(cached);
+      parsed._cached = true;
+      return parsed;
+    } catch (e) {}
+  }
+  const res = await platformApi.generateRoleWorkflow(sessionId, roleId, goal);
+  if (res && res.tasks) {
+    localStorage.setItem(cacheKey, JSON.stringify(res));
+  }
+  return res;
 };
 
 export const persistRole = async ({ sessionId, roleId, role, fallbackUsed }) => {

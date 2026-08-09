@@ -28,10 +28,15 @@ export default function RoleEngineering() {
         if (res && res.tasks && res.tasks.length > 0) {
           setSwSteps(res.tasks);
           setCodeSnippets(res.details || res.tasks.map(t => `$ ${t}`));
+          if (res._cached) {
+            setPhase(0);
+            setSwStep(res.tasks.length - 1);
+          } else {
+            setPhase(0);
+          }
         }
       } catch (err) {
         console.error("fetchWorkflow err", err);
-      } finally {
         setPhase(0);
       }
     }
@@ -39,9 +44,8 @@ export default function RoleEngineering() {
   }, [sessionMeta.sessionId, input]);
 
   useEffect(() => {
-    if (phase === 0 && tab === 'software') {
+    if (phase === 0 && tab === 'software' && swStep === 0) {
       let i = 0;
-      setSwStep(0);
       const interval = setInterval(() => {
         if (i < swSteps.length - 1) {
           i++;
