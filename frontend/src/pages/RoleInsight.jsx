@@ -9,7 +9,8 @@ import './RoleInsight.css';
 
 const DATA_REQUIREMENTS = `
 {
-  "hero_insight": "以管理层视角判断的核心洞察总结（约50字）",
+  "verdict": "值得做 / 不值得做 / 有条件地做（一句话结论，管理层视角）",
+  "hero_insight": "以管理层视角判断的核心洞察总结（约50字，含是否值得做的判断）",
   "conclusions": [
     { "title": "结论先行小标题", "desc": "具体说明" }
   ],
@@ -23,8 +24,8 @@ const DATA_REQUIREMENTS = `
     {
       "title": "洞察卡片标题",
       "content": "洞察卡片具体数据或分析",
-      "tag": "内部/外部/行业",
-      "source": "数据来源"
+      "tag": "外部竞争/市场空间/对手优势/对手劣势/入局时机/内部重心/基本盘/优势能力/战略支持/流程支持/团队能力",
+      "source": "数据来源（外部资料标注来源；内部搜不到写'知识库暂无相关信息'）"
     }
   ],
   "advisor_message": "数字人顾问的一句话简短建议"
@@ -74,6 +75,18 @@ export default function RoleInsight() {
       </nav>
 
       <main className="insight-main">
+        {/* Verdict Banner: 值不值得做(2026-08-09 用户拍板: 洞察核心=立项判断) */}
+        {data.verdict && (
+          <motion.div 
+            className="verdict-banner"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            <span className="verdict-label">立项判断</span>
+            <span className="verdict-text">{data.verdict}</span>
+          </motion.div>
+        )}
+
         {/* Hero Section */}
         <motion.section 
           className="hero-section"
