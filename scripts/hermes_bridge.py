@@ -37,13 +37,50 @@ _semaphore = asyncio.Semaphore(2)  # 2 核 CPU·最多 2 并发
 class GoalRequest(BaseModel):
     goal: str = Field(..., max_length=MAX_INPUT)
     session_id: str | None = None   # 传入则复用会话
+    isolation: str = Field("standard", pattern="^(pure|standard|kb)$")
+    # pure: 纯净沙箱(新 Agent 默认) — 无记忆/无技能/无规则/工具集收窄
+    # standard: 标准模式(老 Agent 兼容) — 全量上下文
+    # kb: 知识库模式 — 纯净 + 显式 RAG 检索工具
 
 
-def _run_hermes(goal: str, session_name: str | None) -> tuple[str, str]:
-    """执行 Hermes CLI。返回 (reply, session_name)"""
-    cmd = [HERMES_BIN, "-p", "default", "-z", goal]
-    if session_name:
-        cmd = [HERMES_BIN, "-p", "default", "--continue", session_name, "-z", goal]
+# 隔离模式 → CLI 参数映射 (Supervision 批复意见 1/2·main 修订一)
+ISOLATION_ARGS: dict[str, list[str]] = {
+    "pure": [
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--safe-mode",
+        "-t", "core,web",
+    ],
+    "kb": [
+        "--ignore-user-config",
+        "--ignore-rules",
+        "-t", "core,web,memory",
+    ],
+    "standard": [],
+}
+
+
+def _run_hermes(goal: str, session_name: str | None, isolation: str = "standard") -> tuple[str, str]:
+    """执行 Hermes CLI。返回 (reply, session_name)
+
+    v2.2 (2026-08-09): 会话隔离加固 —— 全部用纯 -z 新会话, 彻底禁用 --continue。
+
+    根因: 服务器有 hermes serve(9119) + 云端子 Agent 并发会话。实测
+    `--continue web_xxx` 在会话不存在时 fallback 到最近会话, 导致
+    web 洞察请求返回其他会话的"验证"内容(上下文污染)。
+
+    方案: 多轮上下文由 orchestration.py 的 _build_multi_turn_prompt
+    拼进 prompt(已在做), bridge 不再 --continue。每请求 = 全新
+    Hermes 进程 = 进程级隔离, 零串扰。代价: 每轮冷启动(~10s), 可接受。
+
+    v2.3 (2026-08-09): 纯净沙箱 — 按 isolation 参数注入隔离 CLI 参数。
+    pure: --ignore-user-config --ignore-rules --safe-mode -t core,web
+    kb:   --ignore-user-config --ignore-rules -t core,web,memory
+    standard: 无隔离参数(向后兼容)
+    """
+    cmd = [HERMES_BIN, "-p", "default"]
+    cmd.extend(ISOLATION_ARGS.get(isolation, []))
+    cmd.extend(["-z", goal])
     try:
         r = subprocess.run(
             cmd,
@@ -61,7 +98,7 @@ def _run_hermes(goal: str, session_name: str | None) -> tuple[str, str]:
 
 @app.post("/v1/chat")
 async def chat(body: GoalRequest):
-    """对话入口：支持会话复用（多轮上下文连贯）"""
+    """对话入口：支持会话复用（多轮上下文连贯）+ 隔离模式"""
     session_name = None
     if body.session_id:
         session_name = _sessions.get(body.session_id)
@@ -70,10 +107,10 @@ async def chat(body: GoalRequest):
             _sessions[body.session_id] = session_name
 
     async with _semaphore:
-        reply, _ = await asyncio.to_thread(_run_hermes, body.goal, session_name)
+        reply, _ = await asyncio.to_thread(_run_hermes, body.goal, session_name, body.isolation)
 
     # 会话建立：首次请求后回传 session_id 供前端保存
-    return {"reply": reply, "session_id": body.session_id}
+    return {"reply": reply, "session_id": body.session_id, "isolation": body.isolation}
 
 
 @app.get("/health")
