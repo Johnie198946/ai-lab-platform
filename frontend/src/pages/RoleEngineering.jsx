@@ -23,6 +23,11 @@ export default function RoleEngineering() {
   useEffect(() => {
     async function fetchWorkflow() {
       try {
+        // sessionMeta 尚未从 localStorage 恢复(首轮渲染/直达刷新), 保持 loading 等恢复
+        if (!sessionMeta.sessionId) {
+          return;
+        }
+        // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
         const goal = sessionMeta.goal || input;
         if (!goal || !goal.trim()) {
           setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");

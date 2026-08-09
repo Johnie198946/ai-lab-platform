@@ -40,6 +40,11 @@ export default function RoleInsight() {
   useEffect(() => {
     async function fetchWorkflow() {
       try {
+        // sessionMeta 尚未从 localStorage 恢复(首轮渲染/直达刷新), 保持 loading 等恢复
+        // 恢复后 sessionId 变化会触发本 effect 重跑(2026-08-09 用户报告"两个进程/报错"根因)
+        if (!sessionMeta.sessionId) {
+          return;
+        }
         // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
         const goal = sessionMeta.goal || input;
         if (!goal || !goal.trim()) {
