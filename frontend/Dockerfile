@@ -16,7 +16,7 @@ RUN echo $'server {\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\
     location /api/ {\n\
-        proxy_pass http://api:8000/api/;\n        proxy_read_timeout 300s;\n        proxy_connect_timeout 10s;\n        proxy_send_timeout 300s;\n\
+        proxy_pass http://api:8000/api/;\n        proxy_read_timeout 480s;\n        proxy_connect_timeout 10s;\n        proxy_send_timeout 480s;\n\
         proxy_set_header Host $host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
