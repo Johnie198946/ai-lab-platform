@@ -15,7 +15,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Path
+from typing import Annotated
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
@@ -149,8 +150,8 @@ async def list_agents(payload=Depends(require_auth)) -> Dict[str, Any]:
     return {"total": len(rows), "agents": [_agent_to_dict(a) for a in rows]}
 
 
-@router.get("/{agent_id}")
-async def get_agent(agent_id: str, payload=Depends(require_auth)) -> Dict[str, Any]:
+@router.get("/{agent_id:str}")
+async def get_agent(agent_id: Annotated[str, Path(pattern=r"^[0-9a-f]{12}$")], payload=Depends(require_auth)) -> Dict[str, Any]:
     from sqlalchemy import select
 
     from backend.db import SessionLocal
@@ -169,9 +170,9 @@ async def get_agent(agent_id: str, payload=Depends(require_auth)) -> Dict[str, A
     return _agent_to_dict(agent)
 
 
-@router.patch("/{agent_id}")
+@router.patch("/{agent_id:str}")
 async def update_agent(
-    agent_id: str, body: AgentUpdateRequest, payload=Depends(require_auth)
+    agent_id: Annotated[str, Path(pattern=r"^[0-9a-f]{12}$")], body: AgentUpdateRequest, payload=Depends(require_auth)
 ) -> Dict[str, Any]:
     from sqlalchemy import select
 
@@ -208,8 +209,8 @@ async def update_agent(
     return result
 
 
-@router.delete("/{agent_id}", status_code=204)
-async def delete_agent(agent_id: str, payload=Depends(require_auth)):
+@router.delete("/{agent_id:str}", status_code=204)
+async def delete_agent(agent_id: Annotated[str, Path(pattern=r"^[0-9a-f]{12}$")], payload=Depends(require_auth)):
     from sqlalchemy import select
 
     from backend.db import SessionLocal
