@@ -21,19 +21,28 @@ logger = logging.getLogger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 _scan_interval = 60  # 秒
 
+# 调度时区: 北京时间(CST=UTC+8) — cron 表达式按用户可读的 18:00 解释
+CST = timezone(timedelta(hours=8))
+
 
 def compute_next_run(cron_expr: str, base: datetime | None = None) -> datetime:
-    """cron 表达式 → 下次运行时间(UTC)。非法表达式回退 +1 天。"""
-    base = base or datetime.now(timezone.utc)
+    """cron 表达式 → 下次运行时间(UTC 存储)。表达式按北京时间(CST)解释。"""
+    base_cst = (base or datetime.now(CST))
+    if base_cst.tzinfo is None:
+        base_cst = base_cst.replace(tzinfo=CST)
+    else:
+        base_cst = base_cst.astimezone(CST)
     try:
-        it = croniter(cron_expr, base)
+        it = croniter(cron_expr, base_cst)
         nxt = it.get_next(datetime)
         if nxt.tzinfo is None:
-            nxt = nxt.replace(tzinfo=timezone.utc)
-        return nxt
+            nxt = nxt.replace(tzinfo=CST)
+        else:
+            nxt = nxt.astimezone(CST)
+        return nxt.astimezone(timezone.utc)
     except Exception as e:
         logger.warning("cron 表达式非法 %r → 回退 24h: %s", cron_expr, e)
-        return base + timedelta(days=1)
+        return datetime.now(timezone.utc) + timedelta(days=1)
 
 
 async def _run_agent_once(agent_id: str) -> None:
@@ -131,6 +140,7 @@ async def _scan_due() -> None:
     from backend.db import SessionLocal
     from backend.models.agent import Agent
 
+    # now 用 UTC(DB 里 next_run_at 是 UTC 存储)
     now = datetime.now(timezone.utc)
     try:
         async with SessionLocal() as db:

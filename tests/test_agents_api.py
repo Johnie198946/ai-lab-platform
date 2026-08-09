@@ -41,11 +41,16 @@ AUTH = {"Authorization": f"Bearer {_token()}"}
 
 
 def test_compute_next_run():
-    from datetime import datetime, timezone
+    from datetime import datetime, timedelta, timezone
 
+    # cron 表达式按北京时间解释: 0 18 * * * = 每天北京 18:00 = UTC 10:00
     base = datetime(2026, 8, 9, 10, 0, tzinfo=timezone.utc)
     nxt = compute_next_run("0 18 * * *", base)
-    assert nxt.hour == 18 and nxt.day == 9
+    assert nxt.hour == 10 and nxt.day == 10  # UTC 10:00 = 北京 18:00
+    assert nxt.tzinfo == timezone.utc
+    # 北京时间换算校验
+    bj = nxt.astimezone(timezone(timedelta(hours=8)))
+    assert bj.hour == 18
     # 非法表达式回退 24h
     fallback = compute_next_run("not-a-cron", base)
     assert fallback > base
