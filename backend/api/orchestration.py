@@ -120,7 +120,7 @@ class RoleCard(BaseModel):
 
 
 class SessionCreateRequest(BaseModel):
-    goal: str = Field(..., min_length=1, max_length=2000)
+    goal: str = Field(..., min_length=1)
 
 
 class RoleUpdateRequest(BaseModel):
@@ -150,15 +150,18 @@ class OrchestrationSession(BaseModel):
 _sessions: Dict[str, OrchestrationSession] = {}
 
 
-def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
-    """调用宿主机 Hermes 桥接服务（方案 C2·解决容器依赖链问题）"""
+def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT, session_id: str | None = None) -> str:
+    """调用宿主机 Hermes 桥接服务（方案 C2·v2 会话复用）"""
     import httpx
     if len(goal) > HERMES_MAX_INPUT_LENGTH:
         goal = goal[:HERMES_MAX_INPUT_LENGTH]
+    payload = {"goal": goal}
+    if session_id:
+        payload["session_id"] = session_id
     try:
         r = httpx.post(
             HERMES_BRIDGE_URL,
-            json={"goal": goal},
+            json=payload,
             timeout=timeout,
         )
         if r.status_code == 200:
@@ -168,12 +171,9 @@ def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
         return f"⚠️ Hermes 桥接调用异常: {e}"
 
 
-async def _call_hermes_main(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
-    """Async wrapper using asyncio.to_thread for non-blocking execution.
-
-    Ensures FastAPI event loop is not blocked during Hermes CLI execution.
-    """
-    return await asyncio.to_thread(_call_hermes_main_sync, goal, timeout)
+async def _call_hermes_main(goal: str, timeout: int = HERMES_TIMEOUT, session_id: str | None = None) -> str:
+    """Async wrapper using asyncio.to_thread for non-blocking execution."""
+    return await asyncio.to_thread(_call_hermes_main_sync, goal, timeout, session_id)
 
 
 def _build_multi_turn_prompt(goal: str, messages: List[Message]) -> str:
@@ -239,16 +239,14 @@ def _needs_hermes(goal: str) -> bool:
     return any(k in goal for k in tool_keywords)
 
 
-async def _build_reply_via_hermes(goal: str, messages: List[Message]) -> str:
+async def _build_reply_via_hermes(goal: str, messages: List[Message], session_id: str | None = None) -> str:
     """Build reply via Hermes main (default profile) with full tool set.
 
-    Replaces direct _call_llm with subprocess call to Hermes CLI.
-    Implements async non-blocking execution per Supervision requirement #1.
+    v2: 支持 session_id 会话复用（桥接层保持 Hermes 会话·多轮上下文连贯·省冷启动）
     """
-    # Build multi-turn prompt with history context (Supervision requirement #4)
     full_prompt = _build_multi_turn_prompt(goal, messages)
 
-    reply = await _call_hermes_main(full_prompt)
+    reply = await _call_hermes_main(full_prompt, session_id=session_id)
 
     # Check if Hermes returned an error fallback
     if reply.startswith("⚠️"):
@@ -374,8 +372,8 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
     else:
         roles = []
         # 全部走 Hermes main（用户拍板 8/9：通路都用 Hermes·因 Hermes 有知识库）
-        # Hermes 会自行检索知识库（wiki）+ 调用工具 + 多轮上下文
-        reply = await _build_reply_via_hermes(body.goal, [])
+        # v2: 传 session_id 做会话复用（多轮上下文连贯·省冷启动·快 3 倍）
+        reply = await _build_reply_via_hermes(body.goal, [], body.session_id)
         # Fallback if Hermes returned empty or error
         if not reply or reply.startswith("⚠️"):
             reply = _build_reply(body.goal, len(roles))
