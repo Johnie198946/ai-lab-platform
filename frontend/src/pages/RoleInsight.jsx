@@ -94,6 +94,17 @@ export default function RoleInsight() {
     fetchWorkflow();
   }, [sessionMeta.sessionId, input]);
 
+  // 兜底: 3 秒后仍未恢复 sessionId(无历史 session/直达页面) → 提示先回编排页, 避免永久 loading(2026-08-09)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (!sessionMeta.sessionId) {
+        setSummary("⚠️ 未找到已编排的会话。请先返回编排页, 输入你的业务目标生成六角色后, 再进入本角色工作流。");
+        setPhase(4);
+      }
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [sessionMeta.sessionId]);
+
   useEffect(() => {
     if (phase === 0) {
       setCurrentComp(competitors[0] || "");
