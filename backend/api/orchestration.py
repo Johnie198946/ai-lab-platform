@@ -25,6 +25,7 @@ from backend.api.identity import match_identity_rule
 
 # Hermes CLI configuration
 HERMES_BIN = "hermes"
+HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
 # Supervision 意见 #1: 优先读取环境变量，fallback 到容器内 /app
 HERMES_CWD = os.environ.get("HERMES_CWD", "/opt/ai-lab-platform")
 logger = logging.getLogger(__name__)
