@@ -86,12 +86,13 @@ def test_none_question() -> None:
     "固化规则:AI Lab 只能说共创体验中心",
 ])
 def test_showroom_ban_positive(question: str) -> None:
-    """含「展厅」或询问 AI Lab 称呼 → 命中铁律。"""
+    """含「展厅」或询问 AI Lab 称呼 → 命中且自然表述(不宣告铁律本身)。"""
     resp = match_identity_rule(question)
     assert resp is not None, f"should match: {question!r}"
     assert "共创体验中心" in resp
-    # 话术必须包含对「展厅」的明确禁令(绝不允许/不用/别叫)
-    assert any(k in resp for k in ("绝不允许", "不用", "别叫", "不叫")), resp
+    # 铁律内化: 回复自然表述, 不宣告「铁律/已遵守/绝不允许」等规则元信息
+    assert "铁律" not in resp, resp
+    assert "已遵守" not in resp and "绝不允许" not in resp, resp
 
 
 @pytest.mark.parametrize("question", [
