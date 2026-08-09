@@ -496,6 +496,7 @@ async def generate_role_workflow(body: RoleWorkflowRequest):
             id=body.role_id,
             name=f"专家 ({body.role_id})",
             title=f"角色 {body.role_id}",
+            badge="专家",
             summary="根据需求执行工作流",
             responsibility="负责端到端完成任务",
             skills="专业技能"
