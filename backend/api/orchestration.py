@@ -281,7 +281,7 @@ async def _build_orchestration_data_fast(goal: str) -> tuple[str, List[RoleCard]
 只返回 JSON。"""
 
     reply_prompt = f"""用户需求：{goal}
-请用 Markdown 总结这个软件开发项目的六角色（市场洞察专家、产品经理、开发工程师、营销经理、销售经理、老板）编排工作流。描述每个角色的工作过程时必须引用知识库方法论（如营销经理体现 MOR 流程：MOR1 立项→交付件→MOR3 发布校验→发布；其他角色引用 Token 工厂六阶段、成本收益评估等）。600 字以内，方法论驱动，不要泛泛而谈。"""
+请用 Markdown 简要总结这个软件开发项目的六角色编排工作流（市场洞察、产品、开发、营销、销售、老板）。每个角色 1-2 句话，引用对应知识库方法论（营销=MOR 流程，其他=Token 工厂六阶段/成本收益评估等）。总长 350 字以内，精炼。"""
 
     # 并发执行两个请求
     roles_task = asyncio.create_task(_call_hermes_main(roles_prompt))
