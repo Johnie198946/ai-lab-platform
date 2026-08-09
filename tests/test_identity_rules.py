@@ -73,3 +73,35 @@ def test_empty_and_whitespace() -> None:
 def test_none_question() -> None:
     # 防御性：传 None 不应抛异常
     assert match_identity_rule(None) is None
+
+
+# ---------- 铁律：AI Lab 禁提「展厅」 ----------
+
+@pytest.mark.parametrize("question", [
+    "AI Lab 展厅叫什么?",
+    "展厅在哪里?",
+    "以后 AI Lab 别叫展厅,叫共创体验中心,铁律",
+    "AI Lab 对外怎么称呼?",
+    "请记住 AI Lab 不叫展厅",
+    "固化规则:AI Lab 只能说共创体验中心",
+])
+def test_showroom_ban_positive(question: str) -> None:
+    """含「展厅」或询问 AI Lab 称呼 → 命中铁律。"""
+    resp = match_identity_rule(question)
+    assert resp is not None, f"should match: {question!r}"
+    assert "共创体验中心" in resp
+    # 话术必须包含对「展厅」的明确禁令(绝不允许/不用/别叫)
+    assert any(k in resp for k in ("绝不允许", "不用", "别叫", "不叫")), resp
+
+
+@pytest.mark.parametrize("question", [
+    "帮我做一个 AI Lab 项目",
+    "AI Lab 知识库有哪些内容?",
+    "今天有什么新闻?",
+    "AI Lab 平台怎么部署?",
+    "介绍一下 AI Lab 的对外定位",  # 业务性提问,不含违禁词,不触发
+])
+def test_showroom_ban_negative(question: str) -> None:
+    """普通业务提问不应被铁律拦截(防误杀)。"""
+    resp = match_identity_rule(question)
+    assert resp is None, f"should NOT match: {question!r}, got {resp!r}"
