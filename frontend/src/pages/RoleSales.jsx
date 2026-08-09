@@ -92,7 +92,7 @@ export default function RoleSales() {
               {emails.map((email) => (
                 <div 
                   key={email.id} 
-                  className={\`email-item \${selectedEmailId === email.id ? 'active' : ''}\`}
+                  className={`email-item ${selectedEmailId === email.id ? 'active' : ''}`}
                   onClick={() => setSelectedEmailId(email.id)}
                 >
                   <div className="item-top">
@@ -128,10 +128,10 @@ export default function RoleSales() {
 
                 <div className="processing-panel">
                   <div className="tabs">
-                    <button className={\`tab \${activeTab === 'original' ? 'active' : ''}\`} onClick={() => setActiveTab('original')}>原始邮件</button>
-                    <button className={\`tab \${activeTab === 'translation' ? 'active' : ''}\`} onClick={() => setActiveTab('translation')}>AI 翻译</button>
-                    <button className={\`tab \${activeTab === 'summary' ? 'active' : ''}\`} onClick={() => setActiveTab('summary')}>AI 总结</button>
-                    <button className={\`tab \${activeTab === 'reply' ? 'active' : ''}\`} onClick={() => setActiveTab('reply')}>AI 回复建议</button>
+                    <button className={`tab ${activeTab === 'original' ? 'active' : ''}`} onClick={() => setActiveTab('original')}>原始邮件</button>
+                    <button className={`tab ${activeTab === 'translation' ? 'active' : ''}`} onClick={() => setActiveTab('translation')}>AI 翻译</button>
+                    <button className={`tab ${activeTab === 'summary' ? 'active' : ''}`} onClick={() => setActiveTab('summary')}>AI 总结</button>
+                    <button className={`tab ${activeTab === 'reply' ? 'active' : ''}`} onClick={() => setActiveTab('reply')}>AI 回复建议</button>
                   </div>
 
                   <div className="tab-content">

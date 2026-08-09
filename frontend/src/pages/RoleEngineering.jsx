@@ -80,7 +80,7 @@ export default function RoleEngineering() {
                 <div key={idx} className="hw-card">
                   <div className="hw-top">
                     <h3>{item.task_type}</h3>
-                    <span className={\`status-badge \${item.status === 'Ready' ? 'ready' : 'pending'}\`}>
+                    <span className={`status-badge ${item.status === 'Ready' ? 'ready' : 'pending'}`}>
                       {item.status}
                     </span>
                   </div>

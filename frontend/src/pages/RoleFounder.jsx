@@ -159,7 +159,7 @@ export default function RoleFounder() {
                       <h4>{item.module}</h4>
                       <p>{item.desc}</p>
                     </div>
-                    <div className={\`health-badge \${getHealthColor(item.health)}\`}>
+                    <div className={`health-badge ${getHealthColor(item.health)}`}>
                       {item.health}
                     </div>
                   </div>

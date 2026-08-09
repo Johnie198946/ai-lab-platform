@@ -117,7 +117,7 @@ export default function RoleProduct() {
             {(data.drift_scenes || []).map((scene, idx) => (
               <motion.div 
                 key={idx} 
-                className={\`drift-card scene-\${idx}\`}
+                className={`drift-card scene-${idx}`}
                 initial={{ opacity: 0, y: 50 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.4 + idx * 0.2, type: "spring", stiffness: 100 }}
