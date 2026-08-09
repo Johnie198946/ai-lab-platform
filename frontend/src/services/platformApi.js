@@ -137,4 +137,53 @@ export const platformApi = {
       },
     });
   },
+  // ===== Agent 管理（子 Agent 纯净沙箱）=====
+  draftAgent(goal) {
+    return request("/api/agents/draft", {
+      method: "POST",
+      body: { goal },
+    });
+  },
+  createAgent(payload) {
+    return request("/api/agents", {
+      method: "POST",
+      body: payload,
+    });
+  },
+  listAgents() {
+    return request("/api/agents");
+  },
+  updateAgent(agentId, payload) {
+    return request(`/api/agents/${agentId}`, {
+      method: "PATCH",
+      body: payload,
+    });
+  },
+  deleteAgent(agentId) {
+    return request(`/api/agents/${agentId}`, {
+      method: "DELETE",
+    });
+  },
+  listAgentTemplates() {
+    return request("/api/agents/templates");
+  },
+  instantiateAgentTemplate(templateKey, mission) {
+    return request(`/api/agents/templates/${templateKey}/instantiate`, {
+      method: "POST",
+      body: { mission },
+    });
+  },
+  listNotifications() {
+    return request("/api/notifications");
+  },
+  markNotificationRead(notificationId) {
+    return request(`/api/notifications/${notificationId}/read`, {
+      method: "POST",
+    });
+  },
+  markAllNotificationsRead() {
+    return request("/api/notifications/read-all", {
+      method: "POST",
+    });
+  },
 };
