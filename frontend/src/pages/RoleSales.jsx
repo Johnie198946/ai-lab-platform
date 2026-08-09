@@ -32,7 +32,19 @@ export default function RoleSales() {
         }
         
         setPhase(1);
-        const res = await generateRoleWorkflow(sessionMeta.sessionId, "sales", goal);
+        const dataRequirements = `
+{
+  "tasks": [
+    "飞书推送消息内容",
+    "向客户发送的邮件主题"
+  ],
+  "details": [
+    "【上新通知】包含产品核心价值与资料包的飞书内部推送消息文本",
+    "包含问候与产品介绍的详细英文邮件正文"
+  ],
+  "summary": "最终的销售 CRM 触达与转化总结"
+}`;
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "sales", goal, dataRequirements);
         
         if (res && res.details && res.details.length >= 2) {
           setSalesDetails({

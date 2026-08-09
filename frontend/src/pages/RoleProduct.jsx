@@ -32,7 +32,29 @@ export default function RoleProduct() {
         
         // Start simulation / fetching
         setPhase(1);
-        const res = await generateRoleWorkflow(sessionMeta.sessionId, "product", goal);
+        const dataRequirements = `
+{
+  "tasks": [
+    "需求结构化拆解",
+    "业务流程图生成",
+    "用例(Use Case)编写",
+    "数据字典梳理",
+    "首页 Dashboard 线框图",
+    "工作流编排页线框图",
+    "分析报告页线框图"
+  ],
+  "details": [
+    "针对步骤1的具体内容或代码片段或分析数据",
+    "针对步骤2的具体内容或代码片段或分析数据",
+    "针对步骤3的具体内容或代码片段或分析数据",
+    "针对步骤4的具体内容或代码片段或分析数据",
+    "针对步骤5的具体内容或代码片段或分析数据",
+    "针对步骤6的具体内容或代码片段或分析数据",
+    "针对步骤7的具体内容或代码片段或分析数据"
+  ],
+  "summary": "最终的产品 PRD 与原型产出总结"
+}`;
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "product", goal, dataRequirements);
         
         // Use the returned tasks or fallback
         if (res && res.tasks) {

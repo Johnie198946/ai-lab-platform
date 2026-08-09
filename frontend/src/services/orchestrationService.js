@@ -22,7 +22,7 @@ export const orchestrateGoal = async (goal) => {
   }
 };
 
-export const generateRoleWorkflow = async (sessionId, roleId, goal) => {
+export const generateRoleWorkflow = async (sessionId, roleId, goal, dataRequirements) => {
   // 缓存 key 带 goal 指纹: 防止"同 session 换需求"时命中旧流程缓存(2026-08-09 用户报告)
   const goalFingerprint = (goal || "").slice(0, 24).replace(/\s+/g, "");
   const cacheKey = `workflow_cache_${sessionId}_${roleId}_${goalFingerprint}`;
@@ -35,8 +35,8 @@ export const generateRoleWorkflow = async (sessionId, roleId, goal) => {
     } catch (e) {}
   }
   try {
-    const res = await platformApi.generateRoleWorkflow(sessionId, roleId, goal);
-    if (res && res.tasks) {
+    const res = await platformApi.generateRoleWorkflow(sessionId, roleId, goal, dataRequirements);
+    if (res && (res.tasks || res.external_tasks || res.details || Object.keys(res).length > 1)) {
       localStorage.setItem(cacheKey, JSON.stringify(res));
     }
     return res;

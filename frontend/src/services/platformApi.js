@@ -126,13 +126,14 @@ export const platformApi = {
       },
     });
   },
-  generateRoleWorkflow(sessionId, roleId, goal) {
+  generateRoleWorkflow(sessionId, roleId, goal, dataRequirements) {
     return request("/api/orchestration/workflow", {
       method: "POST",
       body: {
         session_id: sessionId,
         role_id: roleId,
         goal: goal,
+        data_requirements: dataRequirements
       },
     });
   },

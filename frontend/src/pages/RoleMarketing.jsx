@@ -35,8 +35,24 @@ export default function RoleMarketing() {
           setPhase(4);
           return;
         }
-        
-        const res = await generateRoleWorkflow(sessionMeta.sessionId, "marketing", goal);
+        setPhase(1);
+        const dataRequirements = `
+{
+  "tasks": [
+    "官网落地页文案",
+    "产品介绍 PPT (主打胶片)",
+    "发布会演讲稿",
+    "社交媒体预热海报文案"
+  ],
+  "details": [
+    "针对步骤1的具体内容或分析数据",
+    "针对步骤2的具体内容或分析数据",
+    "针对步骤3的具体内容或分析数据",
+    "针对步骤4的具体内容或分析数据"
+  ],
+  "summary": "最终的营销材料产出与 MOR 评审总结"
+}`;
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "marketing", goal, dataRequirements);
         if (res && res.tasks) {
           setMarketingTasks(res.tasks);
         } else {

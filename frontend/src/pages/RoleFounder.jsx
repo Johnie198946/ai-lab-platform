@@ -32,7 +32,23 @@ export default function RoleFounder() {
         }
         
         setPhase(1);
-        const res = await generateRoleWorkflow(sessionMeta.sessionId, "boss", goal);
+        const dataRequirements = `
+{
+  "tasks": [
+    "市场洞察专家状态",
+    "产品经理状态",
+    "开发工程师状态",
+    "营销经理状态"
+  ],
+  "details": [
+    "用一句话总结市场洞察专家的产出（如：市场空缺明确，竞争底稿已生成）",
+    "用一句话总结产品经理的产出（如：PRD与原型图已输出）",
+    "用一句话总结开发工程师的产出（如：软件环境就绪，硬件无需定制）",
+    "用一句话总结营销经理的产出（如：主打胶片与宣贯物料已发布）"
+  ],
+  "summary": "最终的老板战情室整体评估与发布决议"
+}`;
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "boss", goal, dataRequirements);
         
         if (res && res.details && res.details.length >= 4) {
           setFounderDetails(res.details);

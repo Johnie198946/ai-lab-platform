@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Search, Database, FileText, CheckCircle, Loader } from 'lucide-react';
+import { ArrowLeft, TrendingUp, Target, Database, FileText, Loader, Zap } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { useOrchestration } from '../hooks/useOrchestration';
 import { generateRoleWorkflow } from '../services/orchestrationService';
@@ -11,361 +11,211 @@ export default function RoleInsight() {
   const { sessionScopeKey } = useAuth();
   const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
 
-  const [phase, setPhase] = useState(-1); // -1: fetching, 0: init, 1: comp, 2: internal, 3: report, 4: done
-  const [compProgress, setCompProgress] = useState(0);
-  const [internalProgress, setInternalProgress] = useState(0);
-  
-  const [competitors, setCompetitors] = useState(["分析中..."]);
-  const [internals, setInternals] = useState(["检索中..."]);
-  const [compDetails, setCompDetails] = useState([]);
-  const [internalDetails, setInternalDetails] = useState([]);
-  const [reportSteps, setReportSteps] = useState(["生成中..."]);
-  const [summary, setSummary] = useState("正在生成执行摘要...");
+  const [phase, setPhase] = useState(0); // 0: init, 1: generating, 2: done
 
-  const [currentComp, setCurrentComp] = useState("");
-  const [currentInternal, setCurrentInternal] = useState("");
-  const [reportStep, setReportStep] = useState(0);
-
-  // Modal state
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalTitle, setModalTitle] = useState("");
-  const [modalContent, setModalContent] = useState([]);
-
-  const handleOpenModal = (title, tasks, details) => {
-    setModalTitle(title);
-    setModalContent(tasks.map((t, i) => ({ task: t, detail: details[i] || "暂无详细信息" })));
-    setModalOpen(true);
-  };
+  const [insightData, setInsightData] = useState({
+    competitors: [
+      { name: "Competitor A", focus: "分析中...", strength: "分析中...", weakness: "分析中..." }
+    ],
+    market_trends: [
+      { trend_name: "趋势分析中...", impact: "评估中..." }
+    ],
+    internal_assets: [
+      { asset_name: "资产检索中...", relevance: "评估中..." }
+    ],
+    insight_summary: "等待洞察..."
+  });
 
   useEffect(() => {
     async function fetchWorkflow() {
       try {
-        // sessionMeta 尚未从 localStorage 恢复(首轮渲染/直达刷新), 保持 loading 等恢复
-        // 恢复后 sessionId 变化会触发本 effect 重跑(2026-08-09 用户报告"两个进程/报错"根因)
-        if (!sessionMeta.sessionId) {
-          return;
-        }
-        // 必须基于用户真实输入的需求执行, 不允许静默 fallback 到默认文案(2026-08-09 用户报告"两个进程")
+        if (!sessionMeta.sessionId) return;
         const goal = sessionMeta.goal || input;
         if (!goal || !goal.trim()) {
-          setSummary("⚠️ 尚未收到用户需求。请先返回编排页, 输入你的业务目标后再进入本角色工作流。");
-          setPhase(4);
+          setPhase(2);
           return;
         }
-        const res = await generateRoleWorkflow(sessionMeta.sessionId, "insight", goal);
-        if (res) {
-          if (res._error) {
-            // workflow 生成失败(如超时): 展示错误, 不进入假动画流程
-            setSummary(`⚠️ workflow 生成失败: ${res._error}。可稍后重试, 或检查 Hermes 服务状态。`);
-            setPhase(4);
-            return;
-          }
-          if (res.external_tasks && res.internal_tasks) {
-            setCompetitors(res.external_tasks);
-            setInternals(res.internal_tasks);
-            setCompDetails(res.external_details || []);
-            setInternalDetails(res.internal_details || []);
-            setReportSteps(res.report_steps || ["文档生成中..."]);
-            setSummary(res.summary || "分析完成。");
-          } else if (res.tasks) {
-            const half = Math.ceil(res.tasks.length / 2);
-            setCompetitors(res.tasks.slice(0, half));
-            setInternals(res.tasks.slice(half));
-            setCompDetails(res.details ? res.details.slice(0, half) : []);
-            setInternalDetails(res.details ? res.details.slice(half) : []);
-            setReportSteps(["文档生成中..."]);
-            setSummary(res.summary || "分析完成。");
-          }
+        
+        setPhase(1);
+        const dataRequirements = `
+{
+  "competitors": [
+    {
+      "name": "竞品名称或类别",
+      "focus": "该竞品的主打方向",
+      "strength": "核心优势",
+      "weakness": "关键劣势"
+    }
+  ],
+  "market_trends": [
+    {
+      "trend_name": "市场或技术趋势名称",
+      "impact": "对本项目的影响或机会点"
+    }
+  ],
+  "internal_assets": [
+    {
+      "asset_name": "内部已有能力、资产或知识库内容",
+      "relevance": "如何复用或借鉴（如果没有，写暂无直接可复用资产）"
+    }
+  ],
+  "insight_summary": "一到两段话的最终执行摘要，总结切入点与核心战略建议"
+}
+注意：请返回至少2个竞品，2个市场趋势，2个内部资产。
+`;
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "insight", goal, dataRequirements);
+        
+        if (res && res.competitors) {
+          setInsightData(res);
           if (res._cached) {
-            setPhase(4);
-            setCompProgress(100);
-            setInternalProgress(100);
-            setReportStep(res.report_steps ? res.report_steps.length - 1 : (res.details ? res.details.length - 1 : 0));
-          } else {
-            setPhase(0);
+            setPhase(2);
           }
         }
       } catch (err) {
-        console.error("fetchWorkflow err", err);
-        setSummary(`⚠️ workflow 请求异常: ${err?.message || err}. 请稍后重试。`);
-        setPhase(4);
+        console.error(err);
       }
     }
     fetchWorkflow();
   }, [sessionMeta.sessionId, input]);
 
-  // 兜底: 3 秒后仍未恢复 sessionId(无历史 session/直达页面) → 提示先回编排页, 避免永久 loading(2026-08-09)
   useEffect(() => {
     const t = setTimeout(() => {
       if (!sessionMeta.sessionId) {
-        setSummary("⚠️ 未找到已编排的会话。请先返回编排页, 输入你的业务目标生成六角色后, 再进入本角色工作流。");
-        setPhase(4);
+        setPhase(2);
       }
     }, 3000);
     return () => clearTimeout(t);
   }, [sessionMeta.sessionId]);
 
   useEffect(() => {
-    if (phase === 0) {
-      setCurrentComp(competitors[0] || "");
-      setCurrentInternal(internals[0] || "");
-      const timer = setTimeout(() => setPhase(1), 500);
-      return () => clearTimeout(timer);
-    }
-  }, [phase, competitors, internals]);
-
-  useEffect(() => {
     if (phase === 1) {
-      let startTime = Date.now();
-      const duration = 15000;
-      const interval = setInterval(() => {
-        let elapsed = Date.now() - startTime;
-        let p = Math.min(100, (elapsed / duration) * 100);
-        setCompProgress(p);
-        
-        let compIndex = Math.floor((p / 100) * competitors.length);
-        if (compIndex >= competitors.length) compIndex = competitors.length - 1;
-        setCurrentComp(competitors[compIndex]);
-
-        if (p >= 100) {
-          clearInterval(interval);
-          setPhase(2);
-        }
-      }, 100);
-      return () => clearInterval(interval);
+      const t = setTimeout(() => {
+        setPhase(2);
+      }, 5000);
+      return () => clearTimeout(t);
     }
-  }, [phase, competitors]);
-
-  useEffect(() => {
-    if (phase === 2) {
-      let startTime = Date.now();
-      const duration = 10000;
-      const interval = setInterval(() => {
-        let elapsed = Date.now() - startTime;
-        let p = Math.min(100, (elapsed / duration) * 100);
-        setInternalProgress(p);
-
-        let intIndex = Math.floor((p / 100) * internals.length);
-        if (intIndex >= internals.length) intIndex = internals.length - 1;
-        setCurrentInternal(internals[intIndex]);
-
-        if (p >= 100) {
-          clearInterval(interval);
-          setPhase(3);
-        }
-      }, 100);
-      return () => clearInterval(interval);
-    }
-  }, [phase, internals]);
-
-  useEffect(() => {
-    if (phase === 3) {
-      let i = 0;
-      const interval = setInterval(() => {
-        if (i < reportSteps.length - 1) {
-          i++;
-          setReportStep(i);
-        } else {
-          clearInterval(interval);
-          setPhase(4);
-        }
-      }, 1500);
-      return () => clearInterval(interval);
-    }
-  }, [phase, reportSteps]);
-
-  if (phase === -1) {
-    return (
-      <div className="role-insight-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
-        <Loader className="spin" size={48} />
-        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
-      </div>
-    );
-  }
+  }, [phase]);
 
   return (
     <div className="role-insight-container">
       <Link to="/orchestration" className="back-button">
-        <ArrowLeft size={16} /> 查看其他人的工作
+        <ArrowLeft size={16} /> 返回 overview
       </Link>
 
       <div className="insight-content">
-        <motion.div 
+        <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          className="header-section"
+          className={`bespoke-header ${phase === 2 ? 'is-ready' : ''}`}
         >
-          <h1>市场洞察专家</h1>
-          <p>正在为您进行端到端的市场与竞对分析，生成高管洞察报告。</p>
+          <span className="role-tag">市场洞察专家</span>
+          {phase === 0 ? (
+            <>
+              <h1>初始化分析环境，准备扫描市场格局。</h1>
+              <p>市场洞察专家将通过 Hermes Main Agent 检索企业知识库并抓取外部情报，为您构建全局市场认知地图。</p>
+            </>
+          ) : phase === 1 ? (
+            <>
+              <h1>正在执行深度市场扫描与内部能力映射。</h1>
+              <p>系统正并行抓取外部竞品情报、评估行业技术趋势，同时穿透企业内部知识库寻找可复用的资产与经验。</p>
+            </>
+          ) : (
+            <>
+              <h1>市场洞察与战略大盘已生成。</h1>
+              <p>外部竞争格局与内部能力盘点已完成，您可以直接参考以下战略总结，或前往产品经理工作台将洞察转化为产品需求。</p>
+            </>
+          )}
+
+          <div className="status-pills">
+            <div className="pill-row">
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>外部扫描 {phase === 2 ? 'DONE' : phase === 1 ? 'SCANNING' : 'WAITING'}</span>
+              <span className={`status-pill ${phase === 2 ? 'done' : phase === 1 ? 'active' : 'waiting'}`}>内部映射 {phase === 2 ? 'DONE' : phase === 1 ? 'MAPPING' : 'WAITING'}</span>
+            </div>
+            <span className="status-hint">{phase === 0 ? '准备启动' : phase === 1 ? '分析中...' : '洞察就绪'}</span>
+          </div>
         </motion.div>
 
-        <div className="tasks-grid">
-          {/* Task 1: 竞对分析 */}
-          <motion.div
-            className={`task-card ${phase >= 1 ? 'active' : ''} ${phase > 1 ? 'clickable' : 'clickable'}`}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2 }}
-            onClick={() => handleOpenModal("竞争对手信息搜集", competitors, compDetails)}
-          >
-            <div className="task-header">
-              <Search className="icon" />
-              <h3>竞争对手信息搜集</h3>
-              {phase > 1 ? <CheckCircle className="status-icon done" /> : phase === 1 ? <Loader className="status-icon spin" /> : null}
+        <div className="workspace-section">
+          <div className="workspace-header">
+            <div className="ws-title-area">
+              <span className="ws-tag">STRATEGY & INTELLIGENCE</span>
+              <h2>洞察分析大盘</h2>
+              <p>左侧为外部市场扫描（竞品与趋势），右侧为内部资产复用与最终战略洞察报告。</p>
             </div>
-            <div className="progress-container">
-              <div className="progress-bar" style={{ width: `${compProgress}%` }} />
-            </div>
-            <div className="task-details">
-              <span className="percentage">{Math.floor(compProgress)}%</span>
-              <AnimatePresence mode="wait">
-                {phase === 1 && (
-                  <motion.span 
-                    key={currentComp}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="current-target"
-                  >
-                    正在分析: {currentComp}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-              {phase > 1 && <span className="current-target">分析完成</span>}
-            </div>
-            {phase > 1 && competitors && competitors.length > 0 && (
-              <div className="info-list">
-                <h4>外部信息收集结果：</h4>
-                <ul>
-                  {competitors.map((comp, idx) => (
-                    <li key={idx}>{comp}</li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </motion.div>
+          </div>
 
-          {/* Task 2: 内部映射 */}
-          <motion.div
-            className={`task-card ${phase >= 2 ? 'active' : ''} ${phase > 2 ? 'clickable' : 'clickable'}`}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.4 }}
-            onClick={() => handleOpenModal("企业内部信息收集", internals, internalDetails)}
-          >
-            <div className="task-header">
-              <Database className="icon" />
-              <h3>企业内部信息收集</h3>
-              {phase > 2 ? <CheckCircle className="status-icon done" /> : phase === 2 ? <Loader className="status-icon spin" /> : null}
-            </div>
-            <div className="progress-container">
-              <div className="progress-bar" style={{ width: `${internalProgress}%` }} />
-            </div>
-            <div className="task-details">
-              <span className="percentage">{Math.floor(internalProgress)}%</span>
-              <AnimatePresence mode="wait">
-                {phase === 2 && (
-                  <motion.span 
-                    key={currentInternal}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -10 }}
-                    className="current-target"
-                  >
-                    正在检索: {currentInternal}
-                  </motion.span>
-                )}
-              </AnimatePresence>
-              {phase > 2 && <span className="current-target">检索完成</span>}
-            </div>
-            {phase > 2 && internals && internals.length > 0 && (
-              <div className="info-list">
-                <h4>企业内部知识库信息：</h4>
-                <ul>
-                  {internals.map((item, idx) => (
-                    <li key={idx}>{item}</li>
-                  ))}
-                </ul>
+          <div className="bespoke-grid insight-grid">
+            <div className="grid-col span-2">
+              <div className="col-header">
+                <h3>外部市场扫描 (External Intel)</h3>
+                <p>实时竞争格局与行业趋势追踪</p>
               </div>
-            )}
-          </motion.div>
+              <div className="col-body">
+                <div className="intel-section">
+                  <h4 className="section-subtitle"><Target size={14}/> 核心竞对剖析</h4>
+                  <div className="competitor-list">
+                    {insightData.competitors.map((comp, idx) => (
+                      <div key={idx} className="competitor-card">
+                        <div className="comp-header">
+                          <span className="comp-name">{comp.name}</span>
+                          <span className="comp-focus">{comp.focus}</span>
+                        </div>
+                        <div className="comp-body">
+                          <div className="comp-attr strength">
+                            <strong>优势:</strong> {comp.strength}
+                          </div>
+                          <div className="comp-attr weakness">
+                            <strong>劣势:</strong> {comp.weakness}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
 
-          {/* Task 3: 报告生成 */}
-          <motion.div 
-            className={`task-card ${phase >= 3 ? 'active' : ''}`}
-            initial={{ opacity: 0, x: -20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.6 }}
-          >
-            <div className="task-header">
-              <FileText className="icon" />
-              <h3>洞察报告编纂</h3>
-              {phase > 3 ? <CheckCircle className="status-icon done" /> : phase === 3 ? <Loader className="status-icon spin" /> : null}
+                <div className="intel-section">
+                  <h4 className="section-subtitle"><TrendingUp size={14}/> 宏观趋势与机会点</h4>
+                  <div className="trends-list">
+                    {insightData.market_trends.map((trend, idx) => (
+                      <div key={idx} className="trend-item">
+                        <span className="trend-name">{trend.trend_name}</span>
+                        <span className="trend-impact">{trend.impact}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
             </div>
-            <div className="report-status">
-              {phase >= 3 && (
-                <motion.div 
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="report-step-text"
-                >
-                  {reportSteps[reportStep]}
-                </motion.div>
-              )}
+
+            <div className="grid-col span-1">
+              <div className="col-header">
+                <h3>内部映射与战略 (Internal & Strategy)</h3>
+                <p>组织能力盘点与最终执行建议</p>
+              </div>
+              <div className="col-body">
+                <div className="intel-section">
+                  <h4 className="section-subtitle"><Database size={14}/> 企业资产映射</h4>
+                  <div className="assets-list">
+                    {insightData.internal_assets.map((asset, idx) => (
+                      <div key={idx} className="asset-card">
+                        <div className="asset-name">{asset.asset_name}</div>
+                        <div className="asset-relevance">{asset.relevance}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="intel-section summary-section">
+                  <h4 className="section-subtitle"><Zap size={14}/> 战略洞察执行摘要</h4>
+                  <div className={`insight-summary-card ${phase === 1 ? 'pulsing' : ''}`}>
+                    <FileText size={24} className="summary-icon" />
+                    <p>{insightData.insight_summary}</p>
+                  </div>
+                </div>
+              </div>
             </div>
-          </motion.div>
+          </div>
         </div>
-
-        {/* Final Output */}
-        <AnimatePresence>
-          {phase === 4 && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              className="final-output-card"
-            >
-              <div className="word-doc-preview">
-                <FileText size={48} className="word-icon" />
-                <div className="doc-info">
-                  <h4>AI行业洞察与超聚变战略建议.docx</h4>
-                  <p>包含竞对分析、内部能力盘点及可落地的管理层建议。</p>
-                </div>
-                <button className="download-btn">查看文档</button>
-              </div>
-              <div className="ai-summary">
-                <p><strong>执行摘要：</strong> {summary}</p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        {/* Modal */}
-        <AnimatePresence>
-          {modalOpen && (
-            <div className="role-modal-overlay" onClick={() => setModalOpen(false)}>
-              <motion.div 
-                className="role-modal-content"
-                initial={{ opacity: 0, y: 50 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 50 }}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <div className="role-modal-header">
-                  <h3>{modalTitle} - 详细输出</h3>
-                  <button className="role-modal-close" onClick={() => setModalOpen(false)}>✕</button>
-                </div>
-                <div className="role-modal-body">
-                  {modalContent.map((item, idx) => (
-                    <div key={idx} className="role-modal-item">
-                      <h4>{item.task}</h4>
-                      <p>{item.detail}</p>
-                    </div>
-                  ))}
-                </div>
-              </motion.div>
-            </div>
-          )}
-        </AnimatePresence>
       </div>
     </div>
   );

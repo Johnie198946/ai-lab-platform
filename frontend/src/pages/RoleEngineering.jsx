@@ -28,7 +28,23 @@ export default function RoleEngineering() {
         }
         
         setPhase(1);
-        const res = await generateRoleWorkflow(sessionMeta.sessionId, "engineering", goal);
+        const dataRequirements = `
+{
+  "tasks": [
+    "解析 PRD 依赖与架构设计",
+    "搭建后端 API 服务",
+    "配置数据库与缓存",
+    "部署上线与 CI/CD 配置"
+  ],
+  "details": [
+    "执行 npm install 或相关初始化命令",
+    "执行 uvicorn main:app 或相关启动命令",
+    "执行 docker-compose up -d 或相关数据库部署命令",
+    "输出部署成功的日志和地址"
+  ],
+  "summary": "最终的工程实现与硬件算力评估总结"
+}`;
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "engineering", goal, dataRequirements);
         
         if (res && res.tasks && res.tasks.length > 0) {
           setSwSteps(res.tasks);
