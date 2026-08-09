@@ -458,7 +458,9 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
         roles = []
         # 全部走 Hermes main（用户拍板 8/9：通路都用 Hermes·因 Hermes 有知识库）
         # v2: 传 session_id 做会话复用（多轮上下文连贯·省冷启动·快 3 倍）
-        reply = await _build_reply_via_hermes(body.goal, [], body.session_id)
+        # 从已有 session 取历史消息（多轮上下文衔接）
+        history = _sessions[body.session_id].messages if body.session_id and body.session_id in _sessions else []
+        reply = await _build_reply_via_hermes(body.goal, history, body.session_id)
         # Fallback if Hermes returned empty or error
         if not reply or reply.startswith("⚠️"):
             reply = _build_reply(body.goal, len(roles))
