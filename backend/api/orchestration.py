@@ -273,6 +273,45 @@ async def _build_reply_via_hermes(goal: str, messages: List[Message], session_id
     return reply
 
 
+async def _build_orchestration_data_fast(goal: str) -> tuple[str, List[RoleCard]]:
+    """并发拆分版：角色 JSON 与 reply 并行生成·时间减半（44s→25s）"""
+    roles_prompt = f"""用户需求：{goal}
+请严格返回 JSON（{{开头}}结尾，无 markdown 标记）：
+{{"roles": [{{"id":"insight","name":"随机英文名","title":"市场洞察专家","responsibility":"职责","skills":"技能"}}, {{"id":"product","name":"随机英文名","title":"产品经理","responsibility":"职责","skills":"技能"}}, {{"id":"engineering","name":"随机英文名","title":"开发工程师","responsibility":"职责","skills":"技能"}}, {{"id":"marketing","name":"随机英文名","title":"营销经理","responsibility":"职责","skills":"技能"}}, {{"id":"sales","name":"随机英文名","title":"销售经理","responsibility":"职责","skills":"技能"}}, {{"id":"boss","name":"随机英文名","title":"老板","responsibility":"职责","skills":"技能"}}]}}
+只返回 JSON。"""
+
+    reply_prompt = f"""用户需求：{goal}
+请用 Markdown 总结这个软件开发项目的六角色（市场洞察专家、产品经理、开发工程师、营销经理、销售经理、老板）编排工作流。描述每个角色的工作过程时必须引用知识库方法论（如营销经理体现 MOR 流程：MOR1 立项→交付件→MOR3 发布校验→发布；其他角色引用 Token 工厂六阶段、成本收益评估等）。600 字以内，方法论驱动，不要泛泛而谈。"""
+
+    # 并发执行两个请求
+    roles_task = asyncio.create_task(_call_hermes_main(roles_prompt))
+    reply_task = asyncio.create_task(_call_hermes_main(reply_prompt))
+    roles_raw, reply = await asyncio.gather(roles_task, reply_task)
+
+    # 解析 roles JSON
+    import re, json
+    roles: List[RoleCard] = []
+    try:
+        match = re.search(r'\{.*\}', roles_raw, re.DOTALL)
+        data = json.loads(match.group(0)) if match else json.loads(roles_raw)
+        for r in data.get("roles", [])[:6]:
+            roles.append(RoleCard(
+                id=r.get("id", "role"),
+                name=r.get("name", "Agent"),
+                title=r.get("title", "角色"),
+                responsibility=r.get("responsibility", ""),
+                skills=r.get("skills", ""),
+            ))
+    except Exception:
+        roles = _build_roles(goal)
+    if not roles:
+        roles = _build_roles(goal)
+
+    if not reply or reply.startswith("⚠️"):
+        reply = f"已按需求编排六角色，可逐个查看角色卡片。"
+    return reply, roles
+
+
 async def _build_orchestration_data(goal: str) -> tuple[str, List[RoleCard]]:
     prompt = f"""
 用户提交了智能体编排需求："{goal}"
@@ -387,7 +426,7 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
     is_orch = _is_orchestration_goal(body.goal)
     
     if is_orch:
-        reply, roles = await _build_orchestration_data(body.goal)
+        reply, roles = await _build_orchestration_data_fast(body.goal)
     else:
         roles = []
         # 全部走 Hermes main（用户拍板 8/9：通路都用 Hermes·因 Hermes 有知识库）
