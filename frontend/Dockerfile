@@ -12,7 +12,33 @@ COPY nginx/ailab.crt /etc/nginx/ssl/ailab.crt
 COPY nginx/ailab.key /etc/nginx/ssl/ailab.key
 RUN echo $'server {\n\
     listen 80;\n\
-    return 301 https://$host$request_uri;\n\
+    location / {\n\
+        root   /usr/share/nginx/html;\n\
+        index  index.html index.htm;\n\
+        try_files $uri $uri/ /index.html;\n\
+    }\n\
+    location /api/ {\n\
+        proxy_pass http://api:8000/api/;\n\
+        proxy_read_timeout 480s;\n\
+        proxy_connect_timeout 10s;\n\
+        proxy_send_timeout 480s;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+        client_max_body_size 50M;\n\
+    }\n\
+    location /health {\n\
+        proxy_pass http://api:8000/health;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    }\n\
+    location /authen/ {\n\
+        proxy_pass http://host.docker.internal:8001/;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    }\n\
 }\n\
 server {\n\
     listen 443 ssl;\n\
