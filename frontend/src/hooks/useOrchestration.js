@@ -18,10 +18,11 @@ const createUserMessage = (content) => ({
   content,
 });
 
-const createAssistantMessage = (content) => ({
+const createAssistantMessage = (content, isMarkdown = false) => ({
   id: `assistant-${Date.now()}`,
   role: "assistant",
   content,
+  isMarkdown,
 });
 
 const buildDefaultSessionMeta = () => ({
@@ -170,7 +171,7 @@ export const useOrchestration = ({ scopeKey }) => {
 
     try {
       const result = await orchestrateGoal(trimmed);
-      setMessages((prev) => [...prev, createAssistantMessage(result.reply)]);
+      setMessages((prev) => [...prev, createAssistantMessage(result.reply, true)]);
       setRoles(result.roles);
       setSelectedRoleId(result.roles[0]?.id ?? null);
       setSessionMeta({
