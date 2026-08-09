@@ -50,6 +50,16 @@ export default function RoleProduct() {
     fetchWorkflow();
   }, [sessionMeta.sessionId]);
 
+  // 兜底: 3 秒后仍未恢复 sessionId(无历史 session/直达页面) → 提示先回编排页, 避免永久 loading(2026-08-09)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (!sessionMeta.sessionId) {
+        setPhase(2);
+      }
+    }, 3000);
+    return () => clearTimeout(t);
+  }, [sessionMeta.sessionId]);
+
   // Handle fake progress for generating phase
   useEffect(() => {
     if (phase === 1) {
