@@ -246,7 +246,7 @@ export function OrchestrationPage() {
                           <span className="orch-dialog-kicker">系统回复</span>
                           <div>
                             {index === messages.length - 1 ? (
-                              msg.isMarkdown ? "请参考左侧内容" : <SplitText text={msg.content} delay={30} />
+                              msg.isMarkdown ? "请参考左侧内容" : msg.content
                             ) : (
                               msg.isMarkdown ? "请参考左侧内容" : msg.content
                             )}

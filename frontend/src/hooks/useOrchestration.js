@@ -203,7 +203,8 @@ export const useOrchestration = ({ scopeKey }) => {
   };
 
   const handleInputKeyDown = (event) => {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault(); // 阻止默认的回车换行行为
       submitPrompt();
     }
   };
