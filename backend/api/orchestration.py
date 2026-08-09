@@ -262,14 +262,7 @@ def _is_orchestration_goal(goal: str) -> bool:
         return True
     return False
 
-def _needs_hermes(goal: str) -> bool:
-    """快慢分离路由：需要工具/创建类请求走 Hermes（慢但能干），普通对话走 DeepSeek（快）"""
-    tool_keywords = [
-        "skill", "Skill", "创建", "写一个", "帮我做", "生成文件",
-        "写代码", "代码", "脚本", "搜索", "查一下", "整理资料",
-        "总结", "分析", "调研", "制作", "编排", "身份",
-    ]
-    return any(k in goal for k in tool_keywords)
+
 
 
 async def _build_reply_via_hermes(goal: str, messages: List[Message], session_id: str | None = None) -> str:
