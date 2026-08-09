@@ -156,7 +156,7 @@ def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT, session_id:
     import httpx
     if len(goal) > HERMES_MAX_INPUT_LENGTH:
         goal = goal[:HERMES_MAX_INPUT_LENGTH]
-    payload = {"goal": goal}
+    payload = {"goal": goal, "isolation": "kb"}
     if session_id:
         payload["session_id"] = session_id
     try:
