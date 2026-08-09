@@ -590,7 +590,7 @@ async def generate_role_workflow(body: RoleWorkflowRequest):
         data = json.loads(json_str)
         return data
     except Exception as e:
-        logger.error(f"Hermes workflow 调用异常: {e}")
+        logger.error(f"Hermes workflow 调用异常: {e} | raw_output: {raw_output if 'raw_output' in locals() else 'N/A'}")
         if body.role_id == "insight":
             return {
                 "external_tasks": ["外部信息检索..."],
