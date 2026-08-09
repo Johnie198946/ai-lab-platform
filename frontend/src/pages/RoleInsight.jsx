@@ -29,18 +29,25 @@ export default function RoleInsight() {
       try {
         const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
         const res = await generateRoleWorkflow(sessionMeta.sessionId, "insight", goal);
-        if (res && res.tasks && res.tasks.length > 0) {
-          // split tasks into competitors and internals for demo
-          const half = Math.ceil(res.tasks.length / 2);
-          setCompetitors(res.tasks.slice(0, half));
-          setInternals(res.tasks.slice(half));
-          setReportSteps(res.details || ["文档生成中..."]);
-          setSummary(res.summary || "分析完成。");
+        if (res) {
+          // split tasks into competitors and internals for demo if using old format, otherwise use new format
+          if (res.external_tasks && res.internal_tasks) {
+            setCompetitors(res.external_tasks);
+            setInternals(res.internal_tasks);
+            setReportSteps(res.report_steps || ["文档生成中..."]);
+            setSummary(res.summary || "分析完成。");
+          } else if (res.tasks) {
+            const half = Math.ceil(res.tasks.length / 2);
+            setCompetitors(res.tasks.slice(0, half));
+            setInternals(res.tasks.slice(half));
+            setReportSteps(res.details || ["文档生成中..."]);
+            setSummary(res.summary || "分析完成。");
+          }
           if (res._cached) {
             setPhase(4);
             setCompProgress(100);
             setInternalProgress(100);
-            setReportStep(res.details ? res.details.length - 1 : 0);
+            setReportStep(res.report_steps ? res.report_steps.length - 1 : (res.details ? res.details.length - 1 : 0));
           } else {
             setPhase(0);
           }
@@ -180,6 +187,16 @@ export default function RoleInsight() {
               </AnimatePresence>
               {phase > 1 && <span className="current-target">分析完成</span>}
             </div>
+            {phase > 1 && competitors && competitors.length > 0 && (
+              <div className="info-list">
+                <h4>外部信息收集结果：</h4>
+                <ul>
+                  {competitors.map((comp, idx) => (
+                    <li key={idx}>{comp}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </motion.div>
 
           {/* Task 2: 内部映射 */}
@@ -214,6 +231,16 @@ export default function RoleInsight() {
               </AnimatePresence>
               {phase > 2 && <span className="current-target">检索完成</span>}
             </div>
+            {phase > 2 && internals && internals.length > 0 && (
+              <div className="info-list">
+                <h4>企业内部知识库信息：</h4>
+                <ul>
+                  {internals.map((item, idx) => (
+                    <li key={idx}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </motion.div>
 
           {/* Task 3: 报告生成 */}

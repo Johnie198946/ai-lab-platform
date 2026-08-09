@@ -451,14 +451,58 @@ class RoleWorkflowRequest(BaseModel):
 @router.post("/workflow")
 async def generate_role_workflow(body: RoleWorkflowRequest):
     session = _sessions.get(body.session_id)
+    # If session doesn't exist (e.g., backend restarted), we create a dummy role based on ID to not break the frontend
     if not session:
-        raise HTTPException(status_code=404, detail="编排会话不存在")
-    
-    role = next((r for r in session.roles if r.id == body.role_id), None)
-    if not role:
-        raise HTTPException(status_code=404, detail="角色不存在")
+        role = RoleCard(
+            id=body.role_id,
+            name=f"专家 ({body.role_id})",
+            title=f"角色 {body.role_id}",
+            summary="根据需求执行工作流",
+            responsibility="负责端到端完成任务",
+            skills="专业技能"
+        )
+    else:
+        role = next((r for r in session.roles if r.id == body.role_id), None)
+        if not role:
+            raise HTTPException(status_code=404, detail="角色不存在")
 
-    prompt = f"""
+    if body.role_id == "insight":
+        prompt = f"""
+用户提交了智能体编排需求："{body.goal}"
+
+你现在的身份是：{role.title}（{role.name}）
+你的职责是：{role.responsibility}
+你的核心技能是：{role.skills}
+
+请针对上述需求，模拟你的工作流，按照市场洞察的方法论去完成动作。你需要收集企业外部信息（竞品分析、市场趋势等）和企业内部信息（检索知识库内信息，如果没有相关内部信息就说没有）。
+必须严格返回以下 JSON 格式数据（必须以 {{ 开始，以 }} 结束，不要包含 markdown code block 标记）：
+{{
+  "external_tasks": [
+    "外部信息收集步骤1（如：竞品A产品分析）",
+    "外部信息收集步骤2（如：行业趋势报告提取）"
+  ],
+  "external_details": [
+    "步骤1的具体分析内容与数据",
+    "步骤2的具体分析内容与数据"
+  ],
+  "internal_tasks": [
+    "内部信息检索步骤1（如：查询企业知识库中的产品路标）",
+    "内部信息检索步骤2（如：查询内部营销工具包）"
+  ],
+  "internal_details": [
+    "检索到的具体内部信息（如果没有查到相关信息，请明确说明知识库中暂无相关信息）",
+    "检索到的具体内部信息（或说明无）"
+  ],
+  "report_steps": [
+    "报告编制步骤1",
+    "报告编制步骤2"
+  ],
+  "summary": "最终的市场洞察产出物总结或执行摘要报告"
+}}
+注意：各个 tasks 数组和其对应的 details 数组的长度必须相同。
+"""
+    else:
+        prompt = f"""
 用户提交了智能体编排需求："{body.goal}"
 
 你现在的身份是：{role.title}（{role.name}）
@@ -496,6 +540,15 @@ async def generate_role_workflow(body: RoleWorkflowRequest):
         return data
     except Exception as e:
         logger.error(f"Hermes workflow 调用异常: {e}")
+        if body.role_id == "insight":
+            return {
+                "external_tasks": ["外部信息检索..."],
+                "external_details": ["正在分析竞品..."],
+                "internal_tasks": ["内部知识库检索..."],
+                "internal_details": ["正在查询内部信息..."],
+                "report_steps": ["生成报告..."],
+                "summary": "洞察分析生成中，请稍候..."
+            }
         # 返回默认兜底数据
         return {
             "tasks": ["初始化任务...", "分析需求...", "执行处理...", "验证结果...", "完成输出"],

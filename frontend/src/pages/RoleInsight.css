@@ -212,3 +212,32 @@
 .ai-summary strong {
   color: #111;
 }
+.info-list {
+  margin-top: 16px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  border-left: 4px solid var(--primary-color);
+  font-size: 0.9rem;
+}
+
+.info-list h4 {
+  margin: 0 0 8px 0;
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.info-list ul {
+  margin: 0;
+  padding-left: 20px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+.info-list li {
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+.info-list li:last-child {
+  margin-bottom: 0;
+}
