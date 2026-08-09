@@ -8,15 +8,26 @@ RUN npm run build
 
 FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx/ailab.crt /etc/nginx/ssl/ailab.crt
+COPY nginx/ailab.key /etc/nginx/ssl/ailab.key
 RUN echo $'server {\n\
     listen 80;\n\
+    return 301 https://$host$request_uri;\n\
+}\n\
+server {\n\
+    listen 443 ssl;\n\
+    ssl_certificate     /etc/nginx/ssl/ailab.crt;\n\
+    ssl_certificate_key /etc/nginx/ssl/ailab.key;\n\
     location / {\n\
         root   /usr/share/nginx/html;\n\
         index  index.html index.htm;\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\
     location /api/ {\n\
-        proxy_pass http://api:8000/api/;\n        proxy_read_timeout 480s;\n        proxy_connect_timeout 10s;\n        proxy_send_timeout 480s;\n\
+        proxy_pass http://api:8000/api/;\n\
+        proxy_read_timeout 480s;\n\
+        proxy_connect_timeout 10s;\n\
+        proxy_send_timeout 480s;\n\
         proxy_set_header Host $host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
@@ -34,12 +45,12 @@ RUN echo $'server {\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
-    location ~* \\.(html)$ {\n\
+    location ~* \.(html)$ {\n\
         root   /usr/share/nginx/html;\n\
         add_header Cache-Control "no-cache, no-store, must-revalidate";\n\
         add_header Pragma "no-cache";\n\
         add_header Expires 0;\n\
     }\n\
 }' > /etc/nginx/conf.d/default.conf
-EXPOSE 80
+EXPOSE 80 443
 CMD ["nginx", "-g", "daemon off;"]
