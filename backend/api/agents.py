@@ -234,6 +234,7 @@ async def delete_agent(agent_id: str, payload=Depends(require_auth)):
 # 模板库
 # ---------------------------------------------------------------------------
 
+@router.get("/templates")
 @router.get("/templates/meta")
 async def list_templates() -> Dict[str, Any]:
     tpls = []
