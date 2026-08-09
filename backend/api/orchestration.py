@@ -228,6 +228,16 @@ def _is_orchestration_goal(goal: str) -> bool:
     match_count = sum(1 for k in keywords if k in goal)
     return match_count >= 3 or "我想做一个AI智能体编排平台" in goal
 
+def _needs_hermes(goal: str) -> bool:
+    """快慢分离路由：需要工具/创建类请求走 Hermes（慢但能干），普通对话走 DeepSeek（快）"""
+    tool_keywords = [
+        "skill", "Skill", "创建", "写一个", "帮我做", "生成文件",
+        "写代码", "代码", "脚本", "搜索", "查一下", "整理资料",
+        "总结", "分析", "调研", "制作", "编排", "身份",
+    ]
+    return any(k in goal for k in tool_keywords)
+
+
 async def _build_reply_via_hermes(goal: str, messages: List[Message]) -> str:
     """Build reply via Hermes main (default profile) with full tool set.
 
@@ -362,8 +372,15 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
         reply, roles = await _build_orchestration_data(body.goal)
     else:
         roles = []
-        # Call Hermes main with multi-turn context
-        reply = await _build_reply_via_hermes(body.goal, [])
+        # 快慢分离路由：工具/创建类请求走 Hermes（慢但能干），普通对话走 DeepSeek（快·避免超时）
+        if _needs_hermes(body.goal):
+            reply = await _build_reply_via_hermes(body.goal, [])
+        else:
+            try:
+                from backend.api.chat import SYSTEM_PROMPT, _call_llm
+                reply = await asyncio.to_thread(_call_llm, SYSTEM_PROMPT, body.goal, DEFAULT_MODEL)
+            except Exception:
+                reply = await _build_reply_via_hermes(body.goal, [])
         # Fallback if Hermes returned empty or error
         if not reply or reply.startswith("⚠️"):
             reply = _build_reply(body.goal, len(roles))
