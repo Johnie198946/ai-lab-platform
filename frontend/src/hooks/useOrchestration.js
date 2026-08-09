@@ -3,7 +3,14 @@ import { clearWorkspaceDraft, loadWorkspaceDraft, saveWorkspaceDraft } from "../
 import { DEFAULT_GOAL } from "../config/env";
 import { getPlatformStatus, orchestrateGoal, persistRole } from "../services/orchestrationService";
 
-const INITIAL_MESSAGES = [];
+const INITIAL_MESSAGES = [
+  {
+    id: "assistant-welcome",
+    role: "assistant",
+    content:
+      "请输入你的业务目标。我会先理解需求，再通过 ai-lab-platform 创建一支可执行的 6 角色团队，并展开需求输入页与关键角色页壳体。",
+  },
+];
 
 const createUserMessage = (content) => ({
   id: `user-${Date.now()}`,
@@ -11,15 +18,15 @@ const createUserMessage = (content) => ({
   content,
 });
 
-const createAssistantMessage = (content, isMarkdown = false) => ({
+const createAssistantMessage = (content) => ({
   id: `assistant-${Date.now()}`,
   role: "assistant",
   content,
-  isMarkdown,
 });
 
 const buildDefaultSessionMeta = () => ({
   sessionId: "",
+  goal: "",
   source: "ai-lab-platform",
   fallbackUsed: false,
   fallbackReason: "",
@@ -32,7 +39,7 @@ const buildDefaultSaveState = () => ({
 
 const buildDefaultWorkspace = () => ({
   messages: INITIAL_MESSAGES,
-  input: "",
+  input: DEFAULT_GOAL,
   roles: [],
   selectedRoleId: null,
   sessionMeta: buildDefaultSessionMeta(),
@@ -83,23 +90,9 @@ export const useOrchestration = ({ scopeKey }) => {
   );
 
   useEffect(() => {
-    // 强制清空旧的草稿，确保进去之后聊天框是空的
-    const draft = coerceWorkspace(null);
-    const existingDraft = window.localStorage.getItem(workspaceStorageKey(scopeKey));
-    if (existingDraft) {
-        try {
-            const parsed = JSON.parse(existingDraft);
-            // 恢复草稿，但强制清空输入框
-            draft.messages = parsed.messages || [];
-            draft.roles = parsed.roles || [];
-            draft.selectedRoleId = parsed.selectedRoleId || null;
-            draft.sessionMeta = parsed.sessionMeta || buildDefaultSessionMeta();
-        } catch (e) {
-            console.error(e);
-        }
-    }
+    const draft = coerceWorkspace(loadWorkspaceDraft(scopeKey));
     setMessages(draft.messages);
-    setInput(draft.input); // 强制为空
+    setInput(draft.input);
     setRoles(draft.roles);
     setSelectedRoleId(draft.selectedRoleId);
     setSessionMeta(draft.sessionMeta);
@@ -166,25 +159,23 @@ export const useOrchestration = ({ scopeKey }) => {
     }
 
     setMessages((prev) => [...prev, createUserMessage(trimmed)]);
-    setInput("");
     setIsThinking(true);
     setSubmitError("");
+    setRoles([]);
+    setSelectedRoleId(null);
     setSaveState({
       status: "idle",
       message: "生成完成后可保存角色配置。",
     });
 
     try {
-      // 通过 Chat API 获取带历史记录的回复，或者通过编排 API 获取，此处保留编排逻辑但不断开上下文
       const result = await orchestrateGoal(trimmed);
-      const isMarkdown = true;
-      setMessages((prev) => [...prev, createAssistantMessage(result.reply || result.message, isMarkdown)]);
-      if (result.roles && result.roles.length > 0) {
-        setRoles(result.roles);
-        setSelectedRoleId(result.roles[0]?.id ?? null);
-      }
+      setMessages((prev) => [...prev, createAssistantMessage(result.reply)]);
+      setRoles(result.roles);
+      setSelectedRoleId(result.roles[0]?.id ?? null);
       setSessionMeta({
         sessionId: result.sessionId,
+        goal: result.goal || trimmed,
         source: result.source,
         fallbackUsed: result.fallbackUsed,
         fallbackReason: result.fallbackReason ?? "",
@@ -212,8 +203,7 @@ export const useOrchestration = ({ scopeKey }) => {
   };
 
   const handleInputKeyDown = (event) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
       submitPrompt();
     }
   };

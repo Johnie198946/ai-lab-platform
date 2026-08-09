@@ -52,7 +52,7 @@ const request = async (path, options = {}) => {
     const response = await fetch(options.url ?? buildApiUrl(path), {
       method: options.method ?? "GET",
       headers,
-      body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      body: typeof options.body === "string" ? options.body : (options.body === undefined ? undefined : JSON.stringify(options.body)),
       signal: controller.signal,
     });
 

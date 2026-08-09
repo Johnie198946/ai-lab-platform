@@ -32,11 +32,22 @@ export const generateRoleWorkflow = async (sessionId, roleId, goal) => {
       return parsed;
     } catch (e) {}
   }
-  const res = await platformApi.generateRoleWorkflow(sessionId, roleId, goal);
-  if (res && res.tasks) {
-    localStorage.setItem(cacheKey, JSON.stringify(res));
+  try {
+    const res = await platformApi.generateRoleWorkflow(sessionId, roleId, goal);
+    if (res && res.tasks) {
+      localStorage.setItem(cacheKey, JSON.stringify(res));
+    }
+    return res;
+  } catch (error) {
+    console.error("generateRoleWorkflow api err:", error);
+    // fallback 
+    return {
+      tasks: ["分析需求中..."],
+      details: ["正在为您处理..."],
+      summary: "生成中，请稍候...",
+      _cached: false
+    }
   }
-  return res;
 };
 
 export const persistRole = async ({ sessionId, roleId, role, fallbackUsed }) => {
