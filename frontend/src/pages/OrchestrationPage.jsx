@@ -8,6 +8,78 @@ import Orb from "../components/Orb";
 import BorderGlow from "../components/BorderGlow";
 import ReactMarkdown from "react-markdown";
 import "./Dashboard.css";
+
+const parseMarkdownSections = (md) => {
+  const sections = [];
+  const regex = /^(#{1,4})\s+(.*)$/gm;
+  let match;
+  let lastIndex = 0;
+  let currentSection = null;
+
+  while ((match = regex.exec(md)) !== null) {
+    if (currentSection) {
+      currentSection.content = md.substring(lastIndex, match.index).trim();
+    } else {
+      const intro = md.substring(0, match.index).trim();
+      if (intro) {
+        sections.push({ title: '引言', content: intro, id: 'intro' });
+      }
+    }
+    currentSection = {
+      title: match[2],
+      id: `sec-${match.index}`,
+      content: ''
+    };
+    sections.push(currentSection);
+    lastIndex = match.index + match[0].length;
+  }
+  if (currentSection) {
+    currentSection.content = md.substring(lastIndex).trim();
+  } else if (sections.length === 0) {
+    sections.push({ title: '执行方案', content: md.trim(), id: 'all' });
+  }
+  return sections;
+};
+
+const MarkdownAccordion = ({ content }) => {
+  const sections = parseMarkdownSections(content);
+  const [expandedId, setExpandedId] = useState(sections.length > 0 ? sections[0].id : null);
+
+  return (
+    <div className="orch-markdown-accordion">
+      {sections.map((sec) => {
+        const isExpanded = expandedId === sec.id;
+        return (
+          <div key={sec.id} className={`orch-accordion-item ${isExpanded ? 'is-expanded' : ''}`}>
+            <button 
+              className="orch-accordion-header" 
+              onClick={() => setExpandedId(isExpanded ? null : sec.id)}
+            >
+              <span className="orch-accordion-title">{sec.title}</span>
+              <span className="orch-accordion-icon">{isExpanded ? '−' : '+'}</span>
+            </button>
+            {isExpanded && (
+              <div className="orch-accordion-body">
+                <ReactMarkdown
+                  components={{
+                    p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
+                    ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                    ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                    li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
+                    strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                  }}
+                >
+                  {sec.content}
+                </ReactMarkdown>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+};
+
 export function OrchestrationPage() {
   const { authSession, logout, sessionScopeKey } = useAuth();
   const navigate = useNavigate();
@@ -179,9 +251,9 @@ export function OrchestrationPage() {
                     <BorderGlow onClick={() => handleMarkdownClick(messages[messages.length - 1].content)}>
                       <div style={{ padding: '0', display: 'flex', flexDirection: 'column', height: '100%' }}>
                         <h2 style={{ marginBottom: '16px', color: '#fff', fontSize: '1.25rem', flexShrink: 0 }}>系统已生成方案内容</h2>
-                        <p style={{ color: '#ccc', marginBottom: '16px', fontSize: '0.875rem', flexShrink: 0 }}>点击此处查看详细 Markdown 大纲与执行细节。</p>
+                        <p style={{ color: '#ccc', marginBottom: '16px', fontSize: '0.875rem', flexShrink: 0 }}>点击卡片展开查看具体步骤和执行细节。</p>
                         <div style={{
-                          opacity: 0.8,
+                          opacity: 0.9,
                           fontSize: '14px',
                           display: 'block',
                           flex: 1,
@@ -193,21 +265,7 @@ export function OrchestrationPage() {
                           paddingTop: '16px',
                           paddingRight: '8px'
                         }} className="markdown-preview-scroll">
-                          <ReactMarkdown
-                            components={{
-                              h1: ({node, ...props}) => <h3 style={{fontSize: '1.1rem', margin: '12px 0 8px', color: '#fff'}} {...props} />,
-                              h2: ({node, ...props}) => <h4 style={{fontSize: '1rem', margin: '10px 0 6px', color: '#ddd'}} {...props} />,
-                              h3: ({node, ...props}) => <h5 style={{fontSize: '0.9rem', margin: '8px 0 4px', color: '#ccc'}} {...props} />,
-                              p: ({node, ...props}) => <p style={{margin: '0 0 8px'}} {...props} />,
-                              ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
-                              li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
-                              code: ({node, inline, ...props}) =>
-                                inline ? <code style={{background: '#333', padding: '2px 4px', borderRadius: '4px', fontSize: '0.85em'}} {...props} />
-                                       : <pre style={{background: '#222', padding: '8px', borderRadius: '4px', overflowX: 'auto', margin: '0 0 8px'}}><code {...props} /></pre>
-                            }}
-                          >
-                            {messages[messages.length - 1].content}
-                          </ReactMarkdown>
+                          <MarkdownAccordion content={messages[messages.length - 1].content} />
                         </div>
                       </div>
                     </BorderGlow>
@@ -244,11 +302,19 @@ export function OrchestrationPage() {
                       {msg.role === "assistant" ? (
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
-                          <div>
-                            {index === messages.length - 1 ? (
-                              msg.isMarkdown ? "请参考左侧内容" : msg.content
-                            ) : (
-                              msg.isMarkdown ? "请参考左侧内容" : msg.content
+                          <div className="orch-dialog-markdown">
+                            {msg.isMarkdown ? "请参考左侧内容" : (
+                              <ReactMarkdown
+                                components={{
+                                  p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
+                                  ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                                  ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                                  li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
+                                  strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                                }}
+                              >
+                                {msg.content}
+                              </ReactMarkdown>
                             )}
                           </div>
                         </>

@@ -956,6 +956,108 @@
       transform: translateX(4px);
     }
 
+    .orch-dialog-markdown {
+  font-size: 14px;
+  line-height: 1.6;
+  color: #333;
+}
+.orch-dialog-markdown h1,
+.orch-dialog-markdown h2,
+.orch-dialog-markdown h3,
+.orch-dialog-markdown h4,
+.orch-dialog-markdown h5 {
+  margin: 12px 0 8px;
+  color: #111;
+  font-weight: 600;
+}
+.orch-dialog-markdown h1 { font-size: 1.1rem; }
+.orch-dialog-markdown h2 { font-size: 1.05rem; }
+.orch-dialog-markdown h3 { font-size: 1rem; }
+.orch-dialog-markdown p { margin-bottom: 8px; }
+.orch-dialog-markdown ul { padding-left: 20px; margin-bottom: 8px; }
+.orch-dialog-markdown li { margin-bottom: 4px; }
+.orch-dialog-markdown strong { font-weight: 600; color: #000; }
+
+.orch-markdown-accordion {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 4px;
+    }
+
+    .orch-accordion-item {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      overflow: hidden;
+      transition: all 0.2s ease;
+    }
+
+    .orch-accordion-item:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.15);
+    }
+
+    .orch-accordion-item.is-expanded {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .orch-accordion-header {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: none;
+      border: none;
+      color: #fff;
+      font-size: 15px;
+      font-weight: 500;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .orch-accordion-icon {
+      font-size: 18px;
+      color: #888;
+      transition: color 0.2s;
+    }
+
+    .orch-accordion-header:hover .orch-accordion-icon {
+      color: #fff;
+    }
+
+    .orch-accordion-body {
+      padding: 0 16px 16px 16px;
+      color: #ccc;
+      font-size: 14px;
+      line-height: 1.6;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      margin-top: 4px;
+      padding-top: 12px;
+    }
+
+    .orch-accordion-body h1,
+    .orch-accordion-body h2,
+    .orch-accordion-body h3,
+    .orch-accordion-body h4 {
+      color: #fff;
+      margin: 12px 0 8px;
+      font-size: 15px;
+    }
+
+    .markdown-preview-scroll::-webkit-scrollbar {
+      width: 4px;
+    }
+    .markdown-preview-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 4px;
+    }
+    .markdown-preview-scroll::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
     @media (max-width: 1280px) {
       #role-grid {
         column-count: 3;
