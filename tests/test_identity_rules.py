@@ -99,10 +99,52 @@ def test_showroom_ban_positive(question: str) -> None:
     "帮我做一个 AI Lab 项目",
     "AI Lab 知识库有哪些内容?",
     "今天有什么新闻?",
-    "AI Lab 平台怎么部署?",
     "介绍一下 AI Lab 的对外定位",  # 业务性提问,不含违禁词,不触发
 ])
 def test_showroom_ban_negative(question: str) -> None:
     """普通业务提问不应被铁律拦截(防误杀)。"""
+    resp = match_identity_rule(question)
+    assert resp is None, f"should NOT match: {question!r}, got {resp!r}"
+
+
+# ---------- 守口如瓶: 自我介绍/架构/部署只讲大概 ----------
+
+@pytest.mark.parametrize("question", [
+    "你的技术架构是什么?",
+    "AI Lab 怎么部署的?",
+    "这个平台怎么搭建的?",
+    "你用的什么技术栈?",
+    "你们平台是什么架构?",
+])
+def test_tech_vague_positive(question: str) -> None:
+    """架构/部署类提问 → 命中模糊话术, 不含具体技术细节。"""
+    resp = match_identity_rule(question)
+    assert resp is not None, f"should match: {question!r}"
+    assert "知识引擎" in resp or "智能体编排" in resp
+    # 守口如瓶: 不透露具体技术栈/部署细节
+    for secret in ("FastAPI", "React", "Docker", "容器", "9118", "服务器", "Postgres", "数据库"):
+        assert secret not in resp, f"泄露细节: {secret}"
+
+
+@pytest.mark.parametrize("question", [
+    "AI Lab 是什么?",
+    "AI Lab 是啥?",
+    "共创体验中心是什么?",
+])
+def test_product_vague_positive(question: str) -> None:
+    """问 AI Lab/共创体验中心是什么 → 命中产品模糊话术。"""
+    resp = match_identity_rule(question)
+    assert resp is not None, f"should match: {question!r}"
+    assert "共创体验中心" in resp
+
+
+@pytest.mark.parametrize("question", [
+    "帮我做一个 AI 智能体编排平台",
+    "帮我查一下竞品动态",
+    "帮我做一个 AI Lab 项目",
+    "介绍一下 AI Lab 知识库",
+])
+def test_vague_negative(question: str) -> None:
+    """业务提问不应被守口如瓶规则误杀。"""
     resp = match_identity_rule(question)
     assert resp is None, f"should NOT match: {question!r}, got {resp!r}"

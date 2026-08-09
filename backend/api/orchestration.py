@@ -30,7 +30,7 @@ HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.inte
 HERMES_CWD = os.environ.get("HERMES_CWD", "/opt/ai-lab-platform")
 logger = logging.getLogger(__name__)
 HERMES_MAX_INPUT_LENGTH = 4000
-HERMES_TIMEOUT = 120
+HERMES_TIMEOUT = 300  # Hermes 固化技能/doc-maker/复杂任务可达 2-5 分钟(2026-08-09 从120s上调)
 HERMES_MAX_HISTORY_TURNS = 5
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
