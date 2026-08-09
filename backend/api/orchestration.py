@@ -226,9 +226,25 @@ def _build_reply(goal: str, role_count: int) -> str:
 
 
 def _is_orchestration_goal(goal: str) -> bool:
-    keywords = ["编排", "营销", "销售", "端到端", "平台"]
-    match_count = sum(1 for k in keywords if k in goal)
-    return match_count >= 3 or "我想做一个AI智能体编排平台" in goal
+    """判断是否为软件开发项目类需求（用户 8/9：只要是一个软件开发项目就召唤六角色）"""
+    # 开发动作词：明确要"做"一个东西
+    build_verbs = ["做", "开发", "搭建", "构建", "实现", "建", "创建", "写一个", "设计一个", "搞一个", "做一个"]
+    # 交付物名词：软件/系统/平台/应用/工具/网站/小程序等
+    artifact_nouns = ["平台", "系统", "应用", "app", "APP", "软件", "网站", "小程序", "工具", "程序", "产品", "机器人", "agent", "Agent", "AI", "ai", "智能体", "助手", "模块", "功能"]
+    # 项目意图词
+    project_hints = ["端到端", "帮我完成", "帮我实现", "从零", "全流程", "营销", "销售", "业务流程"]
+
+    has_build = any(v in goal for v in build_verbs)
+    has_artifact = any(n in goal for n in artifact_nouns)
+    has_hint = any(h in goal for h in project_hints)
+
+    # 明确开发动作 + 有交付物 = 软件开发项目 → 触发
+    if has_build and (has_artifact or has_hint):
+        return True
+    # 原编排平台专属触发词保持兼容
+    if "我想做一个AI智能体编排平台" in goal:
+        return True
+    return False
 
 def _needs_hermes(goal: str) -> bool:
     """快慢分离路由：需要工具/创建类请求走 Hermes（慢但能干），普通对话走 DeepSeek（快）"""
