@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 from copy import deepcopy
@@ -24,7 +25,9 @@ from backend.api.identity import match_identity_rule
 
 # Hermes CLI configuration
 HERMES_BIN = "/opt/hermes/venv/bin/hermes"
-HERMES_CWD = "/opt/ai-lab-platform"
+# Supervision 意见 #1: 优先读取环境变量，fallback 到容器内 /app
+HERMES_CWD = os.environ.get("HERMES_CWD", "/app")
+logger = logging.getLogger(__name__)
 HERMES_MAX_INPUT_LENGTH = 4000
 HERMES_TIMEOUT = 120
 HERMES_MAX_HISTORY_TURNS = 5
@@ -153,6 +156,7 @@ def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
     - Explicit cwd for project context loading
     - Input validation with length truncation
     - Timeout handling with fallback
+    - 错误日志记录（Supervision 意见 #4）
     """
     # Input validation: truncate to max length
     if len(goal) > HERMES_MAX_INPUT_LENGTH:
@@ -169,10 +173,19 @@ def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
         )
         if r.returncode == 0:
             return r.stdout.strip()
+        # Supervision 意见 #4: 记录 stderr + exit code 到日志
+        logger.error(
+            "Hermes main 执行失败 | exit_code=%d | stderr=%s | goal=%s",
+            r.returncode,
+            r.stderr[:500],
+            goal[:100],
+        )
         return f"⚠️ Hermes main 执行失败（exit {r.returncode}）: {r.stderr[:200]}"
     except subprocess.TimeoutExpired:
+        logger.error("Hermes main 执行超时 | timeout=%ds | goal=%s", timeout, goal[:100])
         return "⚠️ Hermes main 执行超时（>120s）"
     except Exception as e:
+        logger.error("Hermes main 调用异常 | error=%s | goal=%s", str(e), goal[:100])
         return f"⚠️ Hermes main 调用异常: {e}"
 
 
@@ -256,6 +269,104 @@ async def _build_reply_via_hermes(goal: str, messages: List[Message]) -> str:
     return reply
 
 
+async def _build_orchestration_data(goal: str) -> tuple[str, List[RoleCard]]:
+    prompt = f"""
+用户提交了智能体编排需求："{goal}"
+
+请严格返回以下 JSON 格式数据（必须以 {{ 开始，以 }} 结束，不要包含 markdown code block 标记如 ```json，也不要包含任何其他解释文字）：
+{{
+  "reply": "在这里用 Markdown 格式总结和介绍整个拆解的工作流。根据用户需求，详细描述市场洞察专家、产品经理、开发工程师、营销经理、销售经理、老板的具体工作过程和动效要求。",
+  "roles": [
+    {{
+      "id": "insight",
+      "name": "随机英文名",
+      "title": "市场洞察专家",
+      "responsibility": "根据用户需求设定的职责",
+      "skills": "技能1, 技能2..."
+    }},
+    {{
+      "id": "product",
+      "name": "随机英文名",
+      "title": "产品经理",
+      "responsibility": "根据用户需求设定的职责",
+      "skills": "技能1, 技能2..."
+    }},
+    {{
+      "id": "engineering",
+      "name": "随机英文名",
+      "title": "开发工程师",
+      "responsibility": "根据用户需求设定的职责",
+      "skills": "技能1, 技能2..."
+    }},
+    {{
+      "id": "marketing",
+      "name": "随机英文名",
+      "title": "营销经理",
+      "responsibility": "根据用户需求设定的职责",
+      "skills": "技能1, 技能2..."
+    }},
+    {{
+      "id": "sales",
+      "name": "随机英文名",
+      "title": "销售经理",
+      "responsibility": "根据用户需求设定的职责",
+      "skills": "技能1, 技能2..."
+    }},
+    {{
+      "id": "boss",
+      "name": "随机英文名",
+      "title": "老板",
+      "responsibility": "根据用户需求设定的职责",
+      "skills": "技能1, 技能2..."
+    }}
+  ]
+}}
+"""
+    try:
+        from backend.api.chat import _call_llm, DEFAULT_MODEL
+        import asyncio
+        raw_output = await asyncio.to_thread(
+            _call_llm, 
+            "你是一个专业的 AI 智能体编排助手，你需要根据用户输入生成 JSON 格式的编排结果。", 
+            prompt, 
+            DEFAULT_MODEL
+        )
+    except Exception as e:
+        print(f"LLM 调用异常: {e}")
+        return _build_reply(goal, 0), _build_roles(goal)
+
+    try:
+        import re, json
+        json_str = raw_output
+        match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        data = json.loads(json_str)
+        
+        reply = data.get("reply", "编排完成。")
+        roles = []
+        
+        generated_roles = data.get("roles", [])
+        for i, r in enumerate(generated_roles):
+            bp = next((b for b in ROLE_BLUEPRINTS if b["id"] == r.get("id")), ROLE_BLUEPRINTS[i % 6])
+            merged = deepcopy(bp)
+            merged["name"] = r.get("name", merged["name"])
+            merged["title"] = r.get("title", merged["title"])
+            merged["responsibility"] = r.get("responsibility", merged["responsibility"])
+            merged["skills"] = r.get("skills", merged["skills"])
+            roles.append(RoleCard(**merged))
+            
+        if len(roles) < 6:
+            existing_ids = {r.id for r in roles}
+            for bp in ROLE_BLUEPRINTS:
+                if bp["id"] not in existing_ids:
+                    roles.append(RoleCard(**deepcopy(bp)))
+                    
+        return reply, roles
+    except Exception as e:
+        print(f"Failed to parse LLM JSON output: {e}, raw_output: {raw_output}")
+        return _build_reply(goal, 6), _build_roles(goal)
+
 @router.post("/sessions", response_model=OrchestrationSession, status_code=201)
 async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
     # 身份话术规则优先：命中即返回固定回答，不调 Hermes
@@ -275,14 +386,16 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
         return session
 
     is_orch = _is_orchestration_goal(body.goal)
-    roles = _build_roles(body.goal) if is_orch else []
-
-    # Call Hermes main with multi-turn context
-    reply = await _build_reply_via_hermes(body.goal, [])
-
-    # Fallback if Hermes returned empty or error
-    if not reply or reply.startswith("⚠️"):
-        reply = _build_reply(body.goal, len(roles))
+    
+    if is_orch:
+        reply, roles = await _build_orchestration_data(body.goal)
+    else:
+        roles = []
+        # Call Hermes main with multi-turn context
+        reply = await _build_reply_via_hermes(body.goal, [])
+        # Fallback if Hermes returned empty or error
+        if not reply or reply.startswith("⚠️"):
+            reply = _build_reply(body.goal, len(roles))
 
     session = OrchestrationSession(
         session_id=uuid4().hex,

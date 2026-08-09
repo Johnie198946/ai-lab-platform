@@ -63,6 +63,12 @@ services:
       AI_LAB_VAULT: /app/data/vault
     volumes:
       - ./data:/app/data
+      # Hermes CLI 挂载（Supervision 批复意见 #1, #3）
+      - /opt/hermes:/opt/hermes                    # Hermes 可执行+venv
+      - /root/.hermes/skills:/root/.hermes/skills  # skills 目录可写
+      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro  # config 只读
+      - /root/.hermes/profiles:/root/.hermes/profiles  # profiles 配置
+      - /opt/ai-lab-platform:/opt/ai-lab-platform  # CWD 挂载（意见 #1）
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
