@@ -31,25 +31,29 @@ export function OrchestrationPage() {
   const [modalView, setModalView] = useState("form");
   const [selectedMarkdown, setSelectedMarkdown] = useState(null);
   const [dragOverlay, setDragOverlay] = useState(false);
+  // 用来追踪真正的进入/离开次数，防止子元素触发的 dragleave 导致蒙层闪烁或常驻
+  const dragCounter = useRef(0);
 
   useEffect(() => {
     const handleDragEnter = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      setDragOverlay(true);
+      dragCounter.current += 1;
+      if (e.dataTransfer.items && e.dataTransfer.items.length > 0) {
+        setDragOverlay(true);
+      }
     };
 
     const handleDragOver = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      setDragOverlay(true);
     };
 
     const handleDragLeave = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      // 如果鼠标离开了 window 或到达边界
-      if (e.clientX === 0 || e.clientY === 0 || e.relatedTarget === null) {
+      dragCounter.current -= 1;
+      if (dragCounter.current === 0) {
         setDragOverlay(false);
       }
     };
@@ -57,6 +61,7 @@ export function OrchestrationPage() {
     const handleDrop = (e) => {
       e.preventDefault();
       e.stopPropagation();
+      dragCounter.current = 0;
       setDragOverlay(false);
       
       if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
@@ -140,6 +145,7 @@ export function OrchestrationPage() {
           🤖 子 Agent 工厂
         </button>
       </div>
+      {dragOverlay && (
         <div style={{
           position: 'fixed',
           top: 0, left: 0, right: 0, bottom: 0,
@@ -251,6 +257,16 @@ export function OrchestrationPage() {
                       )}
                     </div>
                   ))}
+                  {isThinking && (
+                    <div className="orch-dialog-bubble orch-dialog-bubble--assistant">
+                      <span className="orch-dialog-kicker">系统思考中</span>
+                      <div className="orch-typing-indicator">
+                        <span></span>
+                        <span></span>
+                        <span></span>
+                      </div>
+                    </div>
+                  )}
                 </section>
                 <div className="orch-composer" aria-label="场景输入框" 
                      onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}

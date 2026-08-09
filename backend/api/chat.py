@@ -35,7 +35,7 @@ SYSTEM_PROMPT = (
 
 
 class ChatRequest(BaseModel):
-    question: str = Field(..., min_length=1, max_length=2000)
+    question: str = Field(..., min_length=1)
     limit: int = Field(6, ge=1, le=15)  # 检索上下文条数
     model: str = Field(DEFAULT_MODEL, max_length=50)
 
