@@ -112,6 +112,12 @@ export const platformApi = {
       body: { goal },
     });
   },
+  chat(question) {
+    return request("/api/chat", {
+      method: "POST",
+      body: { question },
+    });
+  },
   getOrchestrationSession(sessionId) {
     return request(`/api/orchestration/sessions/${sessionId}`);
   },
