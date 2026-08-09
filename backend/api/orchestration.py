@@ -373,15 +373,9 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
         reply, roles = await _build_orchestration_data(body.goal)
     else:
         roles = []
-        # 快慢分离路由：工具/创建类请求走 Hermes（慢但能干），普通对话走 DeepSeek（快·避免超时）
-        if _needs_hermes(body.goal):
-            reply = await _build_reply_via_hermes(body.goal, [])
-        else:
-            try:
-                from backend.api.chat import SYSTEM_PROMPT, _call_llm
-                reply = await asyncio.to_thread(_call_llm, SYSTEM_PROMPT, body.goal, DEFAULT_MODEL)
-            except Exception:
-                reply = await _build_reply_via_hermes(body.goal, [])
+        # 全部走 Hermes main（用户拍板 8/9：通路都用 Hermes·因 Hermes 有知识库）
+        # Hermes 会自行检索知识库（wiki）+ 调用工具 + 多轮上下文
+        reply = await _build_reply_via_hermes(body.goal, [])
         # Fallback if Hermes returned empty or error
         if not reply or reply.startswith("⚠️"):
             reply = _build_reply(body.goal, len(roles))
