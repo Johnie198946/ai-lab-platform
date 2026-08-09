@@ -11,12 +11,19 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from croniter import croniter
 
 logger = logging.getLogger(__name__)
+
+HERMES_BRIDGE_URL = os.environ.get(
+    "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
+)
+HERMES_TIMEOUT = 240  # Agent 定时执行更宽松(采集+入库+编译)
 
 _scheduler: AsyncIOScheduler | None = None
 _scan_interval = 60  # 秒
@@ -27,7 +34,7 @@ CST = timezone(timedelta(hours=8))
 
 def compute_next_run(cron_expr: str, base: datetime | None = None) -> datetime:
     """cron 表达式 → 下次运行时间(UTC 存储)。表达式按北京时间(CST)解释。"""
-    base_cst = (base or datetime.now(CST))
+    base_cst = base or datetime.now(CST)
     if base_cst.tzinfo is None:
         base_cst = base_cst.replace(tzinfo=CST)
     else:
@@ -45,6 +52,19 @@ def compute_next_run(cron_expr: str, base: datetime | None = None) -> datetime:
         return datetime.now(timezone.utc) + timedelta(days=1)
 
 
+async def _call_hermes_bridge(goal: str) -> str:
+    """透传 Hermes bridge。"""
+    try:
+        async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
+            r = await client.post(HERMES_BRIDGE_URL, json={"goal": goal})
+            if r.status_code == 200:
+                return r.json().get("reply", "").strip()
+            return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）"
+    except Exception as e:
+        logger.error("Hermes 桥接调用异常: %s", e)
+        return f"⚠️ Hermes 桥接调用异常: {e}"
+
+
 async def _run_agent_once(agent_id: str) -> None:
     """执行一个 Agent(独立事务, 失败不影响其他 Agent)。"""
     from sqlalchemy import select
@@ -52,7 +72,6 @@ async def _run_agent_once(agent_id: str) -> None:
     from backend.db import SessionLocal
     from backend.models.agent import Agent
     from backend.models.notification import Notification
-    from backend.services import agent_engine
 
     try:
         async with SessionLocal() as db:
@@ -63,22 +82,15 @@ async def _run_agent_once(agent_id: str) -> None:
                 return
 
             mission = agent.mission or ""
-            prompt = agent.prompt or agent_engine.build_exec_prompt(
-                {
-                    "name": agent.name,
-                    "mission": mission,
-                    "sources": agent.sources or [],
-                    "actions": agent.actions or [],
-                }
-            )
+            prompt = agent.prompt or mission
 
             agent.last_run_at = datetime.now(timezone.utc)
             agent.last_status = "running"
             await db.commit()
 
         # 执行(不持锁, 长任务)
-        reply = await agent_engine.call_hermes_async(
-            f"【定时任务·{agent.name}】{prompt}", timeout=agent_engine.EXEC_TIMEOUT
+        reply = await _call_hermes_bridge(
+            f"【定时任务·{agent.name}】{prompt}"
         )
         success = not reply.startswith("⚠️")
 
@@ -190,7 +202,7 @@ async def _scan_loop() -> None:
 
 
 def start_scheduler() -> None:
-    """FastAPI lifespan 调用: 启动后台调度循环。"""
+    """FastAPI lifespan 调用: 启动后台扫描循环。"""
     global _scheduler
     if _scheduler is not None:
         return

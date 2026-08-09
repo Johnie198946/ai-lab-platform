@@ -1,6 +1,39 @@
 import { ENABLE_DEMO_FALLBACK } from "../config/env";
-import { normalizeRole, normalizeSession, buildFallbackSession } from "../utils/roleTransforms";
 import { platformApi } from "./platformApi";
+
+const cleanText = (value, fallback = "") => {
+  if (typeof value !== "string") return fallback;
+  const trimmed = value.trim();
+  return trimmed || fallback;
+};
+
+const normalizeRole = (role) => ({
+  id: cleanText(role?.id, `role-${Math.random().toString(36).slice(2, 8)}`),
+  title: cleanText(role?.title, "未命名角色"),
+  badge: cleanText(role?.badge, "角色"),
+  summary: cleanText(role?.summary, ""),
+  name: cleanText(role?.name, ""),
+  responsibility: cleanText(role?.responsibility, ""),
+  skills: cleanText(role?.skills, ""),
+  focus: cleanText(role?.focus, ""),
+});
+
+const normalizeSession = (session) => ({
+  sessionId: cleanText(session?.session_id, ""),
+  reply: cleanText(session?.reply, "已接收你的目标。"),
+  source: cleanText(session?.source, "ai-lab-platform"),
+  fallbackUsed: false,
+  roles: Array.isArray(session?.roles) ? session.roles.map(normalizeRole) : [],
+});
+
+const buildFallbackSession = (goal, reason = "") => ({
+  sessionId: "",
+  reply: `后端暂不可用。当前目标是：${goal}。`,
+  source: "frontend-fallback",
+  fallbackUsed: true,
+  fallbackReason: reason,
+  roles: [],
+});
 
 export const getPlatformStatus = async () => {
   const health = await platformApi.getHealth();
@@ -12,8 +45,6 @@ export const getPlatformStatus = async () => {
 
 export const orchestrateGoal = async (goal, sessionId = null) => {
   try {
-    // 聊天框一律走 Hermes main（用户拍板 8/9：通路都用 Hermes·知识库/技能/记忆在 Hermes）
-    // 记忆接力（2026-08-09）：带 sessionId 时后端读取历史·多轮上下文连贯
     const session = await platformApi.createOrchestrationSession(goal, sessionId);
     return normalizeSession(session);
   } catch (error) {
@@ -42,13 +73,12 @@ export const generateRoleWorkflow = async (sessionId, roleId, goal, dataRequirem
     return res;
   } catch (error) {
     console.error("generateRoleWorkflow api err:", error);
-    // fallback 
     return {
       tasks: ["分析需求中..."],
       details: ["正在为您处理..."],
       summary: "生成中，请稍候...",
       _cached: false
-    }
+    };
   }
 };
 
@@ -57,7 +87,7 @@ export const persistRole = async ({ sessionId, roleId, role, fallbackUsed }) => 
     return {
       persisted: false,
       mode: "local",
-      role: normalizeRole(role, role),
+      role: normalizeRole(role),
       message: "当前为本地兜底模式，已仅保存到前端草稿。",
     };
   }
@@ -66,7 +96,7 @@ export const persistRole = async ({ sessionId, roleId, role, fallbackUsed }) => 
   return {
     persisted: true,
     mode: "remote",
-    role: normalizeRole(savedRole, role),
+    role: normalizeRole(savedRole),
     message: "角色配置已回写到 ai-lab-platform。",
   };
 };

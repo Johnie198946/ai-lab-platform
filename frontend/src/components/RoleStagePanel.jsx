@@ -1,5 +1,3 @@
-import { getRoleShell } from "../data/protocolShells";
-
 function OutputSection({ section }) {
   if (section.type === "text") {
     return (
@@ -100,14 +98,14 @@ function StreamBlock({ stream }) {
             <h4>{stream.title}</h4>
           </div>
         </div>
-        <div className="protocol-progress-list">
+        <div className="protocol-stream-list">
           {stream.items.map((item) => (
-            <div key={item.label} className="protocol-progress-item">
-              <div className="protocol-progress-item__meta">
+            <div key={item.label} className="protocol-stream-item">
+              <div className="protocol-stream-item__meta">
                 <strong>{item.label}</strong>
                 <span>{item.meta}</span>
               </div>
-              <div className="protocol-progress-item__track">
+              <div className="protocol-stream-item__track">
                 <span style={{ width: `${item.progress}%` }} />
               </div>
               <em>{item.progress}%</em>
@@ -187,7 +185,28 @@ function StreamBlock({ stream }) {
 }
 
 export function RoleStagePanel({ role }) {
-  const shell = getRoleShell(role);
+  // Simplified: no longer uses hardcoded protocolShells
+  const shell = {
+    stage: "等待上游输入",
+    status: "待触发",
+    emphasis: "等待前序角色完成后进入当前阶段",
+    summary: "当前角色暂不展示关键流程页壳体。你仍然可以编辑角色职责、技能和名字。",
+    metrics: [
+      { label: "当前模式", value: "待机" },
+      { label: "依赖关系", value: "上游完成后唤起" },
+      { label: "输出形态", value: "JSON + Word" },
+    ],
+    streams: [],
+    sections: [
+      {
+        title: "统一协议",
+        type: "text",
+        content: "角色页面遵循统一规律：过程使用 SSE 流驱动，结果使用 JSON 渲染，下载使用 Word 链接承接。",
+      },
+    ],
+    actions: [{ label: "继续编辑当前角色", kind: "primary" }],
+    focus: role?.focus || "",
+  };
 
   return (
     <section className="protocol-shell">
