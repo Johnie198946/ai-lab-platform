@@ -103,7 +103,8 @@ const MarkdownAccordion = ({ content }) => {
                       ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
                       ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
                       li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
-                      strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                      strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />,
+                      img: ({node, ...props}) => <img style={{maxWidth: '100%', borderRadius: '8px', margin: '8px 0'}} {...props} />
                     }}
                   >
                     {sec.content}
@@ -379,7 +380,8 @@ export function OrchestrationPage() {
                                 ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
                                 ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
                                 li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
-                                strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                                strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />,
+                                img: ({node, ...props}) => <img style={{maxWidth: '100%', borderRadius: '8px', margin: '8px 0'}} {...props} />
                               }}
                             >
                               {msg.content}

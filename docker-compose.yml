@@ -94,6 +94,8 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - api
+    volumes:
+      - ./docs/charts:/usr/share/nginx/html/charts
 
 volumes:
   pgdata:

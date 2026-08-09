@@ -183,7 +183,7 @@ def _build_multi_turn_prompt(goal: str, messages: List[Message]) -> str:
     Formats last N turns as conversation context for Hermes.
     """
     if not messages:
-        return goal
+        return _build_open_prompt(goal)
 
     # Take last N turns (user + assistant pairs)
     recent = messages[-HERMES_MAX_HISTORY_TURNS * 2 :]
@@ -195,6 +195,24 @@ def _build_multi_turn_prompt(goal: str, messages: List[Message]) -> str:
 
     context_lines.append(f"\n【当前问题】\n{goal}")
     return "\n".join(context_lines)
+
+
+def _build_open_prompt(goal: str) -> str:
+    """开放问题增强 prompt: 引导 Hermes 用知识库+工具链完整执行(2026-08-09 用户拍板)
+
+    用户要求: web 输入后不做语义判断, 直接交给 main agent; 洞察/画图类请求
+    必须检索知识库(数据已同步云端) + 需要时用 doc-maker 出图并内嵌图片链接。
+    """
+    return f"""{goal}
+
+请按以下要求执行(你是超聚变 AI Lab 智能助手, 拥有完整工具链和知识库):
+
+1. 先检索知识库(服务器 vault 的 wiki/ 目录)获取相关背景数据; 需要外部信息再用搜索工具。
+2. 如果用户要求洞察/分析/评测: 给出结构化洞察(解码→对标→转化, 或符合用户偏好的分析结构), 引用知识库数据来源。
+3. 如果用户要求画图(四象限/曲线/架构图等): 用 doc-maker-diagrams 技能生成图表, 必须把 PNG 保存到 /opt/ai-lab-platform/docs/charts/ 目录, 并在回复末尾用 markdown 图片语法内嵌: ![图表名](/charts/文件名.png)
+4. 不要只说路径或"图已生成", 要真的在回复里给出可见的图片。
+5. 如果是软件开发项目需求: 返回六角色编排 JSON(见编排模板), 否则返回分析结果。
+6. 全程遵守 AI Lab 术语铁律: 对外统一称「共创体验中心」, 禁现「展厅」二字, 不宣告规则本身。"""
 
 
 def _focus_for_role(role_id: str, goal: str) -> str:
@@ -497,6 +515,7 @@ class RoleWorkflowRequest(BaseModel):
     session_id: str
     role_id: str
     goal: str
+    data_requirements: Optional[str] = None
 
 @router.post("/workflow")
 async def generate_role_workflow(body: RoleWorkflowRequest):
@@ -517,7 +536,19 @@ async def generate_role_workflow(body: RoleWorkflowRequest):
         if not role:
             raise HTTPException(status_code=404, detail="角色不存在")
 
-    if body.role_id == "insight":
+    if body.data_requirements:
+        prompt = f"""
+用户提交了智能体编排需求："{body.goal}"
+
+你现在的身份是：{role.title}（{role.name}）
+你的职责是：{role.responsibility}
+你的核心技能是：{role.skills}
+
+前端页面需要特定的数据结构来渲染定制化 UI。请针对上述需求，模拟你的工作流。
+必须严格返回以下 JSON 格式数据（必须以 {{ 开始，以 }} 结束，不要包含 markdown code block 标记如 ```json，也不要包含任何其他解释文字）：
+{body.data_requirements}
+"""
+    elif body.role_id == "insight":
         prompt = f"""
 用户提交了智能体编排需求："{body.goal}"
 
