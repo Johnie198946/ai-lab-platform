@@ -17,6 +17,8 @@ export default function RoleInsight() {
   
   const [competitors, setCompetitors] = useState(["分析中..."]);
   const [internals, setInternals] = useState(["检索中..."]);
+  const [compDetails, setCompDetails] = useState([]);
+  const [internalDetails, setInternalDetails] = useState([]);
   const [reportSteps, setReportSteps] = useState(["生成中..."]);
   const [summary, setSummary] = useState("正在生成执行摘要...");
 
@@ -24,23 +26,37 @@ export default function RoleInsight() {
   const [currentInternal, setCurrentInternal] = useState("");
   const [reportStep, setReportStep] = useState(0);
 
+  // Modal state
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalTitle, setModalTitle] = useState("");
+  const [modalContent, setModalContent] = useState([]);
+
+  const handleOpenModal = (title, tasks, details) => {
+    setModalTitle(title);
+    setModalContent(tasks.map((t, i) => ({ task: t, detail: details[i] || "暂无详细信息" })));
+    setModalOpen(true);
+  };
+
   useEffect(() => {
     async function fetchWorkflow() {
       try {
         const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
         const res = await generateRoleWorkflow(sessionMeta.sessionId, "insight", goal);
         if (res) {
-          // split tasks into competitors and internals for demo if using old format, otherwise use new format
           if (res.external_tasks && res.internal_tasks) {
             setCompetitors(res.external_tasks);
             setInternals(res.internal_tasks);
+            setCompDetails(res.external_details || []);
+            setInternalDetails(res.internal_details || []);
             setReportSteps(res.report_steps || ["文档生成中..."]);
             setSummary(res.summary || "分析完成。");
           } else if (res.tasks) {
             const half = Math.ceil(res.tasks.length / 2);
             setCompetitors(res.tasks.slice(0, half));
             setInternals(res.tasks.slice(half));
-            setReportSteps(res.details || ["文档生成中..."]);
+            setCompDetails(res.details ? res.details.slice(0, half) : []);
+            setInternalDetails(res.details ? res.details.slice(half) : []);
+            setReportSteps(["文档生成中..."]);
             setSummary(res.summary || "分析完成。");
           }
           if (res._cached) {
@@ -156,11 +172,12 @@ export default function RoleInsight() {
 
         <div className="tasks-grid">
           {/* Task 1: 竞对分析 */}
-          <motion.div 
-            className={`task-card ${phase >= 1 ? 'active' : ''}`}
+          <motion.div
+            className={`task-card ${phase >= 1 ? 'active' : ''} ${phase > 1 ? 'clickable' : ''}`}
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.2 }}
+            onClick={() => { if (phase > 1) handleOpenModal("竞争对手信息搜集", competitors, compDetails); }}
           >
             <div className="task-header">
               <Search className="icon" />
@@ -200,11 +217,12 @@ export default function RoleInsight() {
           </motion.div>
 
           {/* Task 2: 内部映射 */}
-          <motion.div 
-            className={`task-card ${phase >= 2 ? 'active' : ''}`}
+          <motion.div
+            className={`task-card ${phase >= 2 ? 'active' : ''} ${phase > 2 ? 'clickable' : ''}`}
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.4 }}
+            onClick={() => { if (phase > 2) handleOpenModal("企业内部信息收集", internals, internalDetails); }}
           >
             <div className="task-header">
               <Database className="icon" />
@@ -272,7 +290,7 @@ export default function RoleInsight() {
         {/* Final Output */}
         <AnimatePresence>
           {phase === 4 && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0, scale: 0.95 }}
               animate={{ opacity: 1, scale: 1 }}
               className="final-output-card"
@@ -289,6 +307,34 @@ export default function RoleInsight() {
                 <p><strong>执行摘要：</strong> {summary}</p>
               </div>
             </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Modal */}
+        <AnimatePresence>
+          {modalOpen && (
+            <div className="role-modal-overlay" onClick={() => setModalOpen(false)}>
+              <motion.div 
+                className="role-modal-content"
+                initial={{ opacity: 0, y: 50 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 50 }}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="role-modal-header">
+                  <h3>{modalTitle} - 详细输出</h3>
+                  <button className="role-modal-close" onClick={() => setModalOpen(false)}>✕</button>
+                </div>
+                <div className="role-modal-body">
+                  {modalContent.map((item, idx) => (
+                    <div key={idx} className="role-modal-item">
+                      <h4>{item.task}</h4>
+                      <p>{item.detail}</p>
+                    </div>
+                  ))}
+                </div>
+              </motion.div>
+            </div>
           )}
         </AnimatePresence>
       </div>

@@ -56,19 +56,30 @@
 }
 
 .task-card {
-  background: #fff;
-  border: 1px solid #eaeaea;
-  border-radius: 16px;
+  background: white;
+  border-radius: 12px;
   padding: 24px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03);
-  opacity: 0.6;
-  transition: opacity 0.3s;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+  border: 1px solid #eaeaea;
+  opacity: 0.5;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
 }
 
 .task-card.active {
   opacity: 1;
-  border-color: #d0d0d0;
-  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.06);
+  border-color: #007AFF;
+  box-shadow: 0 8px 24px rgba(0, 122, 255, 0.1);
+}
+
+.task-card.clickable {
+  cursor: pointer;
+}
+
+.task-card.clickable:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 32px rgba(0, 122, 255, 0.15);
 }
 
 .task-header {
@@ -240,4 +251,82 @@
 
 .info-list li:last-child {
   margin-bottom: 0;
+}
+
+.role-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.role-modal-content {
+  background: white;
+  border-radius: 12px;
+  width: 80%;
+  max-width: 800px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.2);
+}
+
+.role-modal-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid #eaeaea;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.role-modal-header h3 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #111;
+}
+
+.role-modal-close {
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  color: #888;
+  cursor: pointer;
+  padding: 4px;
+}
+
+.role-modal-close:hover {
+  color: #333;
+}
+
+.role-modal-body {
+  padding: 24px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.role-modal-item {
+  margin-bottom: 24px;
+}
+
+.role-modal-item:last-child {
+  margin-bottom: 0;
+}
+
+.role-modal-item h4 {
+  margin: 0 0 8px 0;
+  color: #007AFF;
+  font-size: 1.1rem;
+}
+
+.role-modal-item p {
+  margin: 0;
+  color: #444;
+  line-height: 1.6;
+  white-space: pre-wrap;
 }
