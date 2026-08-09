@@ -36,8 +36,6 @@ const parseMarkdownSections = (md) => {
     }
     if (cur) {
       cur.content = bodyText.substring(last).trim();
-    } else if (bodyText.trim()) {
-      subs.push({ title: '概述', content: bodyText.trim(), level: 3 });
     }
     return subs;
   };
@@ -98,7 +96,7 @@ const MarkdownAccordion = ({ content }) => {
             </button>
             {isExpanded && (
               <div className="orch-accordion-body">
-                {sec.content && (
+                {!hasSubs && sec.content && (
                   <ReactMarkdown
                     components={{
                       p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
