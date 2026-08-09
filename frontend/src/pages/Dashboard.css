@@ -1197,3 +1197,59 @@
       }
     }
   
+/* ---- 手风琴子节(### 角色小节) ---- */
+.orch-accordion-subs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  border-top: 1px dashed rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+.orch-sub-item {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: all 0.2s ease;
+}
+
+.orch-sub-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.orch-sub-item.is-open {
+  background: rgba(43, 129, 255, 0.06);
+  border-color: rgba(43, 129, 255, 0.25);
+}
+
+.orch-sub-header {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 14px;
+  background: none;
+  border: none;
+  color: #cfe0ff;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.orch-sub-title {
+  color: #a8c6ff;
+}
+
+.orch-sub-body {
+  padding: 0 14px 12px 14px;
+  color: #c8d2e4;
+  font-size: 13px;
+  line-height: 1.6;
+  border-top: 1px solid rgba(255, 255, 255, 0.04);
+  margin-top: 2px;
+  padding-top: 10px;
+}

@@ -11,32 +11,61 @@ import "./Dashboard.css";
 
 const parseMarkdownSections = (md) => {
   const sections = [];
-  const regex = /^(#{1,4})\s+(.*)$/gm;
-  let match;
-  let lastIndex = 0;
-  let currentSection = null;
+  // 先按 ## 分主节，再在主节内按 ### 分子节
+  const topRegex = /^##\s+(.*)$/gm;
+  let topMatch;
+  let topIndex = 0;
+  let currentTop = null;
 
-  while ((match = regex.exec(md)) !== null) {
-    if (currentSection) {
-      currentSection.content = md.substring(lastIndex, match.index).trim();
+  const parseSubsections = (bodyText) => {
+    const subs = [];
+    const subRegex = /^###\s+(.*)$/gm;
+    let m;
+    let last = 0;
+    let cur = null;
+    while ((m = subRegex.exec(bodyText)) !== null) {
+      if (cur) {
+        cur.content = bodyText.substring(last, m.index).trim();
+      } else {
+        const intro = bodyText.substring(0, m.index).trim();
+        if (intro) subs.push({ title: '概述', content: intro, level: 3 });
+      }
+      cur = { title: m[1], content: '', level: 3 };
+      subs.push(cur);
+      last = m.index + m[0].length;
+    }
+    if (cur) {
+      cur.content = bodyText.substring(last).trim();
+    } else if (bodyText.trim()) {
+      subs.push({ title: '概述', content: bodyText.trim(), level: 3 });
+    }
+    return subs;
+  };
+
+  while ((topMatch = topRegex.exec(md)) !== null) {
+    if (currentTop) {
+      currentTop.content = md.substring(topIndex, topMatch.index).trim();
     } else {
-      const intro = md.substring(0, match.index).trim();
+      const intro = md.substring(0, topMatch.index).trim();
       if (intro) {
-        sections.push({ title: '引言', content: intro, id: 'intro' });
+        sections.push({ title: '引言', content: intro, id: 'intro', subs: [] });
       }
     }
-    currentSection = {
-      title: match[2],
-      id: `sec-${match.index}`,
-      content: ''
+    const bodyText = md.substring(topMatch.index + topMatch[0].length);
+    const subs = parseSubsections(bodyText);
+    currentTop = {
+      title: topMatch[1],
+      id: `sec-${topMatch.index}`,
+      content: '',
+      subs,
     };
-    sections.push(currentSection);
-    lastIndex = match.index + match[0].length;
+    sections.push(currentTop);
+    topIndex = topMatch.index + topMatch[0].length;
   }
-  if (currentSection) {
-    currentSection.content = md.substring(lastIndex).trim();
+  if (currentTop) {
+    currentTop.content = md.substring(topIndex).trim();
   } else if (sections.length === 0) {
-    sections.push({ title: '执行方案', content: md.trim(), id: 'all' });
+    sections.push({ title: '执行方案', content: md.trim(), id: 'all', subs: [] });
   }
   return sections;
 };
@@ -44,11 +73,20 @@ const parseMarkdownSections = (md) => {
 const MarkdownAccordion = ({ content }) => {
   const sections = parseMarkdownSections(content);
   const [expandedId, setExpandedId] = useState(sections.length > 0 ? sections[0].id : null);
+  const [expandedSubs, setExpandedSubs] = useState({});
+
+  const toggleSub = (secId, subIdx) => {
+    setExpandedSubs((prev) => ({
+      ...prev,
+      [`${secId}-${subIdx}`]: !prev[`${secId}-${subIdx}`],
+    }));
+  };
 
   return (
     <div className="orch-markdown-accordion">
       {sections.map((sec) => {
         const isExpanded = expandedId === sec.id;
+        const hasSubs = (sec.subs || []).length > 0;
         return (
           <div key={sec.id} className={`orch-accordion-item ${isExpanded ? 'is-expanded' : ''}`}>
             <button 
@@ -60,17 +98,49 @@ const MarkdownAccordion = ({ content }) => {
             </button>
             {isExpanded && (
               <div className="orch-accordion-body">
-                <ReactMarkdown
-                  components={{
-                    p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
-                    ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
-                    ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
-                    li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
-                    strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
-                  }}
-                >
-                  {sec.content}
-                </ReactMarkdown>
+                {sec.content && (
+                  <ReactMarkdown
+                    components={{
+                      p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
+                      ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                      ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                      li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
+                      strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                    }}
+                  >
+                    {sec.content}
+                  </ReactMarkdown>
+                )}
+                {hasSubs && (
+                  <div className="orch-accordion-subs">
+                    {sec.subs.map((sub, subIdx) => {
+                      const subKey = `${sec.id}-${subIdx}`;
+                      const subOpen = !!expandedSubs[subKey];
+                      return (
+                        <div key={subKey} className={`orch-sub-item ${subOpen ? 'is-open' : ''}`}>
+                          <button className="orch-sub-header" onClick={() => toggleSub(sec.id, subIdx)}>
+                            <span className="orch-sub-title">{sub.title}</span>
+                            <span className="orch-accordion-icon">{subOpen ? '−' : '+'}</span>
+                          </button>
+                          {subOpen && (
+                            <div className="orch-sub-body">
+                              <ReactMarkdown
+                                components={{
+                                  p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
+                                  ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                                  li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
+                                  strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                                }}
+                              >
+                                {sub.content}
+                              </ReactMarkdown>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -303,19 +373,19 @@ export function OrchestrationPage() {
                         <>
                           <span className="orch-dialog-kicker">系统回复</span>
                           <div className="orch-dialog-markdown">
-                            {msg.isMarkdown ? "请参考左侧内容" : (
-                              <ReactMarkdown
-                                components={{
-                                  p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
-                                  ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
-                                  ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
-                                  li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
-                                  strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
-                                }}
-                              >
-                                {msg.content}
-                              </ReactMarkdown>
-                            )}
+                            <ReactMarkdown
+                              components={{
+                                h2: ({node, ...props}) => <h2 style={{margin: '10px 0 6px', fontSize: '1.05rem', color: '#fff'}} {...props} />,
+                                h3: ({node, ...props}) => <h3 style={{margin: '8px 0 4px', fontSize: '0.95rem', color: '#fff'}} {...props} />,
+                                p: ({node, ...props}) => <p style={{margin: '0 0 8px', lineHeight: '1.5'}} {...props} />,
+                                ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                                ol: ({node, ...props}) => <ol style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                                li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
+                                strong: ({node, ...props}) => <strong style={{color: '#fff', fontWeight: '600'}} {...props} />
+                              }}
+                            >
+                              {msg.content}
+                            </ReactMarkdown>
                           </div>
                         </>
                       ) : (
