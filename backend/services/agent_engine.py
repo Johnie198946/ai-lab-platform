@@ -42,14 +42,17 @@ DEFAULT_SCHEDULE = "0 18 * * *"  # 默认每日 18:00(与本地 18:30 错峰)
 # Hermes 桥接调用
 # ---------------------------------------------------------------------------
 
-def call_hermes(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
-    """同步调用云端 Hermes 桥接(子进程隔离·容器内可用)。"""
+def call_hermes(goal: str, timeout: int = HERMES_TIMEOUT, isolation: str = "standard") -> str:
+    """同步调用云端 Hermes 桥接(子进程隔离·容器内可用)。
+
+    isolation: pure | standard | kb — 透传给 hermes_bridge 的隔离模式。
+    """
     if len(goal) > HERMES_MAX_INPUT_LENGTH:
         goal = goal[:HERMES_MAX_INPUT_LENGTH]
     try:
         r = httpx.post(
             HERMES_BRIDGE_URL,
-            json={"goal": goal},
+            json={"goal": goal, "isolation": isolation},
             timeout=timeout,
         )
         if r.status_code == 200:
@@ -61,9 +64,9 @@ def call_hermes(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
         return f"⚠️ Hermes 桥接调用异常: {e}"
 
 
-async def call_hermes_async(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
+async def call_hermes_async(goal: str, timeout: int = HERMES_TIMEOUT, isolation: str = "standard") -> str:
     """异步包装(调度器内不阻塞事件循环)。"""
-    return await asyncio.to_thread(call_hermes, goal, timeout)
+    return await asyncio.to_thread(call_hermes, goal, timeout, isolation)
 
 
 # ---------------------------------------------------------------------------
