@@ -235,7 +235,6 @@ async def delete_agent(agent_id: str, payload=Depends(require_auth)):
 # ---------------------------------------------------------------------------
 
 @router.get("/templates")
-@router.get("/templates/meta")
 async def list_templates() -> Dict[str, Any]:
     tpls = []
     for key, tpl in agent_engine.AGENT_TEMPLATES.items():
@@ -249,6 +248,12 @@ async def list_templates() -> Dict[str, Any]:
             }
         )
     return {"total": len(tpls), "templates": tpls}
+
+
+@router.get("/templates/meta")
+async def list_templates_meta() -> Dict[str, Any]:
+    """兼容旧路径 /templates/meta。"""
+    return await list_templates()
 
 
 @router.post("/templates/{template_key}/instantiate", status_code=201)
