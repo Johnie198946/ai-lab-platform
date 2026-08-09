@@ -69,11 +69,37 @@ export function OrchestrationPage() {
                 {messages.length > 0 && messages[messages.length - 1].role === 'assistant' && messages[messages.length - 1].isMarkdown ? (
                   <div style={{ height: '100%', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
                     <BorderGlow onClick={() => handleMarkdownClick(messages[messages.length - 1].content)}>
-                      <div style={{ padding: '20px' }}>
-                        <h2 style={{ marginBottom: '16px', color: '#fff' }}>系统已生成方案内容</h2>
-                        <p style={{ color: '#ccc', marginBottom: '24px' }}>点击此处查看详细 Markdown 大纲与执行细节。</p>
-                        <div style={{ opacity: 0.6, fontSize: '14px', display: '-webkit-box', WebkitLineClamp: 10, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
-                          <ReactMarkdown>{messages[messages.length - 1].content}</ReactMarkdown>
+                      <div style={{ padding: '0' }}>
+                        <h2 style={{ marginBottom: '16px', color: '#fff', fontSize: '1.25rem' }}>系统已生成方案内容</h2>
+                        <p style={{ color: '#ccc', marginBottom: '16px', fontSize: '0.875rem' }}>点击此处查看详细 Markdown 大纲与执行细节。</p>
+                        <div style={{ 
+                          opacity: 0.8, 
+                          fontSize: '14px', 
+                          display: 'block', 
+                          height: '240px',
+                          overflowY: 'auto', 
+                          overflowX: 'hidden',
+                          color: '#e0e0e0',
+                          lineHeight: '1.6',
+                          borderTop: '1px solid #333',
+                          paddingTop: '16px',
+                          paddingRight: '8px'
+                        }} className="markdown-preview-scroll">
+                          <ReactMarkdown
+                            components={{
+                              h1: ({node, ...props}) => <h3 style={{fontSize: '1.1rem', margin: '12px 0 8px', color: '#fff'}} {...props} />,
+                              h2: ({node, ...props}) => <h4 style={{fontSize: '1rem', margin: '10px 0 6px', color: '#ddd'}} {...props} />,
+                              h3: ({node, ...props}) => <h5 style={{fontSize: '0.9rem', margin: '8px 0 4px', color: '#ccc'}} {...props} />,
+                              p: ({node, ...props}) => <p style={{margin: '0 0 8px'}} {...props} />,
+                              ul: ({node, ...props}) => <ul style={{paddingLeft: '20px', margin: '0 0 8px'}} {...props} />,
+                              li: ({node, ...props}) => <li style={{marginBottom: '4px'}} {...props} />,
+                              code: ({node, inline, ...props}) => 
+                                inline ? <code style={{background: '#333', padding: '2px 4px', borderRadius: '4px', fontSize: '0.85em'}} {...props} />
+                                       : <pre style={{background: '#222', padding: '8px', borderRadius: '4px', overflowX: 'auto', margin: '0 0 8px'}}><code {...props} /></pre>
+                            }}
+                          >
+                            {messages[messages.length - 1].content}
+                          </ReactMarkdown>
                         </div>
                       </div>
                     </BorderGlow>

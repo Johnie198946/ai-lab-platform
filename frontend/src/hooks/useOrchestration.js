@@ -166,8 +166,9 @@ export const useOrchestration = ({ scopeKey }) => {
 
     try {
       const result = await orchestrateGoal(trimmed);
-      const isMarkdown = result.roles.length === 0;
-      setMessages((prev) => [...prev, createAssistantMessage(isMarkdown ? result.reply : result.reply, isMarkdown)]);
+      // 无论是通用聊天还是编排模式，都把 AI 回复当作 Markdown 渲染在左侧
+      const isMarkdown = true; 
+      setMessages((prev) => [...prev, createAssistantMessage(result.reply, isMarkdown)]);
       setRoles(result.roles);
       setSelectedRoleId(result.roles[0]?.id ?? null);
       setSessionMeta({
