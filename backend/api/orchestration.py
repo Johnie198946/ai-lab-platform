@@ -121,6 +121,7 @@ class RoleCard(BaseModel):
 
 class SessionCreateRequest(BaseModel):
     goal: str = Field(..., min_length=1)
+    session_id: Optional[str] = Field(None, max_length=100)  # v2: 会话复用
 
 
 class RoleUpdateRequest(BaseModel):
