@@ -24,9 +24,9 @@ from pydantic import BaseModel, Field
 from backend.api.identity import match_identity_rule
 
 # Hermes CLI configuration
-HERMES_BIN = "/opt/hermes/venv/bin/hermes"
+HERMES_BIN = "hermes"
 # Supervision 意见 #1: 优先读取环境变量，fallback 到容器内 /app
-HERMES_CWD = os.environ.get("HERMES_CWD", "/app")
+HERMES_CWD = os.environ.get("HERMES_CWD", "/opt/ai-lab-platform")
 logger = logging.getLogger(__name__)
 HERMES_MAX_INPUT_LENGTH = 4000
 HERMES_TIMEOUT = 120
@@ -150,43 +150,21 @@ _sessions: Dict[str, OrchestrationSession] = {}
 
 
 def _call_hermes_main_sync(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
-    """Synchronous wrapper for Hermes CLI call.
-
-    Implements Supervision requirements:
-    - Explicit cwd for project context loading
-    - Input validation with length truncation
-    - Timeout handling with fallback
-    - 错误日志记录（Supervision 意见 #4）
-    """
-    # Input validation: truncate to max length
+    """调用宿主机 Hermes 桥接服务（方案 C2·解决容器依赖链问题）"""
+    import httpx
     if len(goal) > HERMES_MAX_INPUT_LENGTH:
         goal = goal[:HERMES_MAX_INPUT_LENGTH]
-
     try:
-        r = subprocess.run(
-            [HERMES_BIN, "-p", "default", "-z", goal],
-            capture_output=True,
-            text=True,
+        r = httpx.post(
+            HERMES_BRIDGE_URL,
+            json={"goal": goal},
             timeout=timeout,
-            cwd=HERMES_CWD,
-            env={**os.environ, "PYTHONUNBUFFERED": "1"},
         )
-        if r.returncode == 0:
-            return r.stdout.strip()
-        # Supervision 意见 #4: 记录 stderr + exit code 到日志
-        logger.error(
-            "Hermes main 执行失败 | exit_code=%d | stderr=%s | goal=%s",
-            r.returncode,
-            r.stderr[:500],
-            goal[:100],
-        )
-        return f"⚠️ Hermes main 执行失败（exit {r.returncode}）: {r.stderr[:200]}"
-    except subprocess.TimeoutExpired:
-        logger.error("Hermes main 执行超时 | timeout=%ds | goal=%s", timeout, goal[:100])
-        return "⚠️ Hermes main 执行超时（>120s）"
+        if r.status_code == 200:
+            return r.json().get("reply", "").strip()
+        return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）: {r.text[:200]}"
     except Exception as e:
-        logger.error("Hermes main 调用异常 | error=%s | goal=%s", str(e), goal[:100])
-        return f"⚠️ Hermes main 调用异常: {e}"
+        return f"⚠️ Hermes 桥接调用异常: {e}"
 
 
 async def _call_hermes_main(goal: str, timeout: int = HERMES_TIMEOUT) -> str:
@@ -323,16 +301,9 @@ async def _build_orchestration_data(goal: str) -> tuple[str, List[RoleCard]]:
 }}
 """
     try:
-        from backend.api.chat import _call_llm, DEFAULT_MODEL
-        import asyncio
-        raw_output = await asyncio.to_thread(
-            _call_llm, 
-            "你是一个专业的 AI 智能体编排助手，你需要根据用户输入生成 JSON 格式的编排结果。", 
-            prompt, 
-            DEFAULT_MODEL
-        )
+        raw_output = await _call_hermes_main(prompt)
     except Exception as e:
-        print(f"LLM 调用异常: {e}")
+        logger.error(f"Hermes main 调用异常: {e}")
         return _build_reply(goal, 0), _build_roles(goal)
 
     try:
