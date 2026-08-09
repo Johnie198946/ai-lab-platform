@@ -7,8 +7,8 @@ hermes_bridge.py — 宿主机 Hermes 桥接服务（v4·原生会话版）
 v4 (2026-08-10·Route C 实施·监督批复):
 - 彻底删除 _session_history 字典与【对话历史】手动文本拼接（零文本处理）
 - 引入 user_id -> hermes_session_id 显式绑定 + 存在性断言
-- 首次对话：hermes -z 创建原生 Session，捕获 Session ID 建立映射
-- 后续对话：精准 hermes -c <session_id> 恢复（严禁裸 --continue 防 fallback 污染）
+- 首次对话：hermes -z 创建原生 Session，从 state.db 捕获 Session ID 建立映射
+- 后续对话：精准 hermes -r <session_id> 恢复（严禁裸 --continue 防 fallback 污染）
 - 持久化：依托 Hermes 原生 state.db；user→session 映射用 JSON 文件（支持重启恢复）
 
 用法: systemctl start hermes-bridge
@@ -66,7 +66,7 @@ def _save_mapping() -> None:
 # ---------- Hermes 原生 Session 存在性断言 ----------
 
 def _session_exists(session_id: str) -> bool:
-    """查询 Hermes state.db 确认 session 真实存在（防 --continue fallback 污染）。"""
+    """查询 Hermes state.db 确认 session 真实存在（防 --resume fallback 污染）。"""
     if not os.path.exists(STATE_DB):
         return False
     try:
@@ -84,52 +84,35 @@ def _session_exists(session_id: str) -> bool:
         return False
 
 
-def _detect_latest_session_id(since_rowid: int) -> str | None:
-    """捕获新创建 session 的 ID（按 messages.rowid > since 定位最新会话）。"""
+def _get_latest_session_id() -> str | None:
+    """获取 state.db 中最新创建的 session ID（用于首次对话后捕获）。"""
     if not os.path.exists(STATE_DB):
         return None
     try:
         conn = sqlite3.connect(STATE_DB)
         try:
             cur = conn.execute(
-                "SELECT session_id FROM messages WHERE rowid>? "
-                "ORDER BY rowid DESC LIMIT 1",
-                (since_rowid,),
+                "SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1"
             )
             row = cur.fetchone()
             return row[0] if row else None
         finally:
             conn.close()
     except Exception as e:
-        print(f"[bridge] 检测新 session 失败: {e}")
+        print(f"[bridge] 获取最新 session 失败: {e}")
         return None
-
-
-def _get_max_rowid() -> int:
-    if not os.path.exists(STATE_DB):
-        return 0
-    try:
-        conn = sqlite3.connect(STATE_DB)
-        try:
-            cur = conn.execute("SELECT MAX(rowid) FROM messages")
-            row = cur.fetchone()
-            return row[0] or 0
-        finally:
-            conn.close()
-    except Exception:
-        return 0
 
 
 # ---------- Hermes CLI 调用 ----------
 
 def _run_hermes(goal: str, session_id: str | None = None) -> str:
-    """执行 Hermes CLI。session_id 存在时用 -c 精准恢复；否则新建。"""
+    """执行 Hermes CLI。session_id 存在时用 -r 精准恢复；否则新建。"""
     if len(goal) > MAX_INPUT:
         goal = goal[:MAX_INPUT]
 
     cmd = [HERMES_BIN, "-p", "default"]
     if session_id:
-        cmd += ["-c", session_id]  # 精准恢复·严禁裸 --continue
+        cmd += ["-r", session_id]  # 精准恢复·严禁裸 --continue
     cmd += ["-z", goal]
 
     env = os.environ.copy()
@@ -170,11 +153,10 @@ async def chat(body: GoalRequest):
         hermes_sid = None
         _user_session_map.pop(user_id, None)
 
-    # 首次对话：捕获 max rowid → 执行 -z → 检测新 session ID → 建立映射
+    # 首次对话：执行 -z → 从 state.db 捕获最新 session ID → 建立映射
     if not hermes_sid:
-        before_rowid = _get_max_rowid()
         reply = await asyncio.to_thread(_run_hermes, body.goal, None)
-        new_sid = await asyncio.to_thread(_detect_latest_session_id, before_rowid)
+        new_sid = await asyncio.to_thread(_get_latest_session_id)
         if new_sid:
             _user_session_map[user_id] = new_sid
             _save_mapping()
