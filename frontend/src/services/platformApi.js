@@ -106,10 +106,10 @@ export const platformApi = {
       skipSessionAuth: options.skipSessionAuth,
     });
   },
-  createOrchestrationSession(goal) {
+  createOrchestrationSession(goal, sessionId = null) {
     return request("/api/orchestration/sessions", {
       method: "POST",
-      body: { goal },
+      body: sessionId ? { goal, session_id: sessionId } : { goal },
     });
   },
   chat(question) {

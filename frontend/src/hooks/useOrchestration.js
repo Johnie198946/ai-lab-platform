@@ -170,7 +170,7 @@ export const useOrchestration = ({ scopeKey }) => {
     });
 
     try {
-      const result = await orchestrateGoal(trimmed);
+      const result = await orchestrateGoal(trimmed, sessionMeta?.sessionId ?? null);
       setMessages((prev) => [...prev, createAssistantMessage(result.reply, true)]);
       setRoles(result.roles);
       setSelectedRoleId(result.roles[0]?.id ?? null);

@@ -10,10 +10,11 @@ export const getPlatformStatus = async () => {
   };
 };
 
-export const orchestrateGoal = async (goal) => {
+export const orchestrateGoal = async (goal, sessionId = null) => {
   try {
     // 聊天框一律走 Hermes main（用户拍板 8/9：通路都用 Hermes·知识库/技能/记忆在 Hermes）
-    const session = await platformApi.createOrchestrationSession(goal);
+    // 记忆接力（2026-08-09）：带 sessionId 时后端读取历史·多轮上下文连贯
+    const session = await platformApi.createOrchestrationSession(goal, sessionId);
     return normalizeSession(session);
   } catch (error) {
     if (!ENABLE_DEMO_FALLBACK) {
