@@ -121,7 +121,7 @@ def parse_agent_definition(raw: str) -> Optional[Dict[str, Any]]:
 async def draft_agent(goal: str) -> Dict[str, Any]:
     """对话 → Agent 定义草稿(不入库, 供前端确认卡展示)。"""
     prompt = _AGENT_PARSE_PROMPT.format(goal=goal[:HERMES_MAX_INPUT_LENGTH])
-    raw = await call_hermes_async(prompt)
+    raw = await call_hermes_async(prompt, isolation="pure")  # 纯净沙箱：草稿生成不带 AI Lab 上下文
     definition = parse_agent_definition(raw)
     if definition is None:
         return {
