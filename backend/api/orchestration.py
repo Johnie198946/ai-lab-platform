@@ -263,7 +263,7 @@ async def _build_orchestration_data(goal: str) -> tuple[str, List[RoleCard]]:
 
 请严格返回以下 JSON 格式数据（必须以 {{ 开始，以 }} 结束，不要包含 markdown code block 标记如 ```json，也不要包含任何其他解释文字）：
 {{
-  "reply": "在这里用 Markdown 格式总结和介绍整个拆解的工作流。根据用户需求，详细描述市场洞察专家、产品经理、开发工程师、营销经理、销售经理、老板的具体工作过程和动效要求。",
+  "reply": "在这里用 Markdown 格式总结和介绍整个拆解的工作流。根据用户需求，基于知识库详细描述市场洞察专家、产品经理、开发工程师、营销经理、销售经理、老板六个角色的定位、职责与工作过程。",
   "roles": [
     {{
       "id": "insight",
