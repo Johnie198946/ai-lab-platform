@@ -126,55 +126,14 @@ export const platformApi = {
       },
     });
   },
-  // ---- Agent 管理(对话创建子 Agent) ----
-  draftAgent(goal) {
-    return request("/api/agents/draft", {
+  generateRoleWorkflow(sessionId, roleId, goal) {
+    return request("/api/orchestration/workflow", {
       method: "POST",
-      body: { goal },
+      body: {
+        session_id: sessionId,
+        role_id: roleId,
+        goal: goal,
+      },
     });
-  },
-  createAgent(payload) {
-    return request("/api/agents", {
-      method: "POST",
-      body: payload,
-    });
-  },
-  listAgents() {
-    return request("/api/agents");
-  },
-  getAgent(agentId) {
-    return request(`/api/agents/${agentId}`);
-  },
-  updateAgent(agentId, payload) {
-    return request(`/api/agents/${agentId}`, {
-      method: "PATCH",
-      body: payload,
-    });
-  },
-  deleteAgent(agentId) {
-    return request(`/api/agents/${agentId}`, { method: "DELETE" });
-  },
-  listAgentTemplates() {
-    return request("/api/agents/templates/meta");
-  },
-  instantiateAgentTemplate(templateKey, payload) {
-    return request(`/api/agents/templates/${templateKey}/instantiate`, {
-      method: "POST",
-      body: payload,
-    });
-  },
-  // ---- 站内通知中心 ----
-  listNotifications({ limit = 50, unreadOnly = false } = {}) {
-    return request(
-      `/api/notifications?limit=${limit}&unread_only=${unreadOnly ? "true" : "false"}`,
-    );
-  },
-  markNotificationRead(notificationId) {
-    return request(`/api/notifications/${notificationId}/read`, {
-      method: "POST",
-    });
-  },
-  markAllNotificationsRead() {
-    return request("/api/notifications/read-all", { method: "POST" });
   },
 };

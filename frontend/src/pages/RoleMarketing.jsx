@@ -2,18 +2,27 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Lightbulb, LayoutTemplate, Users, Send, CheckCircle, Loader } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { useOrchestration } from '../hooks/useOrchestration';
+import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleMarketing.css';
 
 export default function RoleMarketing() {
+  const { sessionScopeKey } = useAuth();
+  const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
+
+  const [phase, setPhase] = useState(-1); // -1: fetching, 0: fetched
   const [step, setStep] = useState('inspiration'); // inspiration, creation, review, publish, done
   
+  const [marketingTasks, setMarketingTasks] = useState(["收集产品原型图", "分析产品特性", "提炼产品卖点", "生成营销文案"]);
+
   // Inspiration state
   const [inspConfirmed, setInspConfirmed] = useState(false);
 
   // Creation state
   const [creationProgress, setCreationProgress] = useState(0);
   const [infoProgress, setInfoProgress] = useState(0);
-  const [infoTarget, setInfoTarget] = useState("产品原型图");
+  const [infoTarget, setInfoTarget] = useState("");
   
   // Review state
   const [reviewNodes, setReviewNodes] = useState([
@@ -29,7 +38,24 @@ export default function RoleMarketing() {
   const [publishing, setPublishing] = useState(false);
 
   useEffect(() => {
-    if (step === 'creation') {
+    async function fetchWorkflow() {
+      try {
+        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "marketing", goal);
+        if (res && res.tasks && res.tasks.length > 0) {
+          setMarketingTasks(res.tasks);
+        }
+      } catch (err) {
+        console.error("fetchWorkflow err", err);
+      } finally {
+        setPhase(0);
+      }
+    }
+    fetchWorkflow();
+  }, [sessionMeta.sessionId, input]);
+
+  useEffect(() => {
+    if (phase === 0 && step === 'creation') {
       let start = Date.now();
       
       // 15s info collection progress
@@ -37,9 +63,10 @@ export default function RoleMarketing() {
         let elapsed = Date.now() - start;
         let p = Math.min(100, (elapsed / 15000) * 100);
         setInfoProgress(p);
-        if (p < 33) setInfoTarget("产品原型图");
-        else if (p < 66) setInfoTarget("产品特性收集");
-        else setInfoTarget("产品卖点收集");
+        
+        let index = Math.floor((p / 100) * marketingTasks.length);
+        if (index >= marketingTasks.length) index = marketingTasks.length - 1;
+        setInfoTarget(marketingTasks[index] || "正在生成...");
         
         if (p >= 100) clearInterval(infoInterval);
       }, 100);
@@ -61,7 +88,7 @@ export default function RoleMarketing() {
         clearInterval(createInterval);
       };
     }
-  }, [step]);
+  }, [phase, step, marketingTasks]);
 
   const handleConfirmInspiration = () => {
     setInspConfirmed(true);
@@ -91,6 +118,15 @@ export default function RoleMarketing() {
       setStep('done');
     }, 3000);
   };
+
+  if (phase === -1) {
+    return (
+      <div className="role-marketing-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
+        <Loader className="spin" size={48} />
+        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="role-marketing-container">

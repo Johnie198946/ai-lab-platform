@@ -1,13 +1,47 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, MessageSquare, Mail, Bell, Languages, ArrowRight, CheckCircle, Search } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Mail, Bell, Languages, ArrowRight, CheckCircle, Search, Loader } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { useOrchestration } from '../hooks/useOrchestration';
+import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleSales.css';
 
 export default function RoleSales() {
+  const { sessionScopeKey } = useAuth();
+  const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
+
+  const [phase, setPhase] = useState(-1); // -1: fetching, 0: fetched
   const [view, setView] = useState('feishu'); // 'feishu' | 'email'
   const [emailStatus, setEmailStatus] = useState('inbox'); // 'inbox' | 'compose' | 'sent'
   const [translation, setTranslation] = useState(false);
+
+  const [salesDetails, setSalesDetails] = useState({
+    pushContent: "【上新通知】AI智能体编排平台 上市资料包已发布！",
+    emailSubject: "Inquiry about your new AI Orchestration Platform",
+    emailBody: "I heard you guys are releasing a new AI platform. Could you share some details and the main slides?"
+  });
+
+  useEffect(() => {
+    async function fetchWorkflow() {
+      try {
+        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "sales", goal);
+        if (res && res.details && res.details.length >= 2) {
+          setSalesDetails({
+            pushContent: res.details[0] || "【上新通知】营销资料包已发布！",
+            emailSubject: res.tasks ? res.tasks[1] : "客户咨询",
+            emailBody: res.details[1] || "请查收您的营销资料..."
+          });
+        }
+      } catch (err) {
+        console.error("fetchWorkflow err", err);
+      } finally {
+        setPhase(0);
+      }
+    }
+    fetchWorkflow();
+  }, [sessionMeta.sessionId, input]);
 
   const handleSendEmail = () => {
     setEmailStatus('sent');
@@ -15,6 +49,15 @@ export default function RoleSales() {
       setEmailStatus('inbox');
     }, 3000);
   };
+
+  if (phase === -1) {
+    return (
+      <div className="role-sales-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
+        <Loader className="spin" size={48} />
+        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="role-sales-container">
@@ -60,7 +103,7 @@ export default function RoleSales() {
                     <div className="feishu-bubble system">
                       <div className="bubble-header">营销知识库小助手</div>
                       <div className="bubble-content">
-                        <p>📢 <strong>【上新通知】AI智能体编排平台 上市资料包已发布！</strong></p>
+                        <p>📢 <strong>{salesDetails.pushContent}</strong></p>
                         <p>各位一线将士，最新产品的完整营销弹药包已为您准备就绪：</p>
                         <div className="material-list">
                           <div className="material-item">📄 AI智能体编排_一指禅.pdf</div>
@@ -97,7 +140,7 @@ export default function RoleSales() {
                     <div className="email-inbox">
                       <div className="email-item unread" onClick={() => setEmailStatus('compose')}>
                         <div className="email-sender">David Smith (CTO)</div>
-                        <div className="email-subject">Inquiry about your new AI Orchestration Platform</div>
+                        <div className="email-subject">{salesDetails.emailSubject}</div>
                         <div className="email-time">10:42 AM</div>
                       </div>
                       <div className="email-item">
@@ -125,10 +168,7 @@ export default function RoleSales() {
                             <span>From: David Smith (CTO)</span>
                             <span>To: me</span>
                           </div>
-                          <p>Hi team,</p>
-                          <p>We are currently evaluating several AI platforms for our internal workflow automation. I saw your recent announcement about the new AI Orchestration Platform. Could you provide more details on how it handles multi-agent collaboration and the typical ROI we can expect within the first quarter?</p>
-                          <p>Looking forward to hearing from you.</p>
-                          <p>Best,<br/>David</p>
+                          <p>{salesDetails.emailBody}</p>
 
                           <AnimatePresence>
                             {translation && (

@@ -2,24 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Clock, PenTool, Layout, FileText, CheckCircle, Loader, Monitor } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { useOrchestration } from '../hooks/useOrchestration';
+import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleProduct.css';
-
-const prdSteps = [
-  "分析市场洞察数据...",
-  "定义产品愿景与目标...",
-  "梳理核心用户路径 (User Journey)...",
-  "撰写功能需求列表...",
-  "制定非功能性需求...",
-  "PRD 文档排版完成"
-];
-
-const wireframeSteps = [
-  "绘制首页线框图...",
-  "设计用户仪表盘...",
-  "构建工作流详情页...",
-  "配置交互状态与动效...",
-  "导出原型图集合"
-];
 
 const mockPrototypes = [
   { id: 1, name: "Dashboard Overview", image: "https://images.unsplash.com/photo-1618761714954-0b8cd0026356?auto=format&fit=crop&q=80&w=800" },
@@ -28,26 +14,56 @@ const mockPrototypes = [
 ];
 
 export default function RoleProduct() {
-  const [phase, setPhase] = useState(0); // 0: wait, 1: prd, 2: wireframe, 3: done
+  const { sessionScopeKey } = useAuth();
+  const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
+
+  const [phase, setPhase] = useState(-1); // -1: fetching, 0: wait, 1: prd, 2: wireframe, 3: done
   const [prdProgress, setPrdProgress] = useState(0);
   const [wireframeProgress, setWireframeProgress] = useState(0);
-  const [currentPrdStep, setCurrentPrdStep] = useState(prdSteps[0]);
-  const [currentWireframeStep, setCurrentWireframeStep] = useState(wireframeSteps[0]);
+
+  const [prdSteps, setPrdSteps] = useState(["分析需求中..."]);
+  const [wireframeSteps, setWireframeSteps] = useState(["设计中..."]);
+  const [summary, setSummary] = useState("正在生成产品文档...");
+
+  const [currentPrdStep, setCurrentPrdStep] = useState("");
+  const [currentWireframeStep, setCurrentWireframeStep] = useState("");
   const [selectedProto, setSelectedProto] = useState(null);
+
+  useEffect(() => {
+    async function fetchWorkflow() {
+      try {
+        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "product", goal);
+        if (res && res.tasks && res.tasks.length > 0) {
+          const half = Math.ceil(res.tasks.length / 2);
+          setPrdSteps(res.tasks.slice(0, half));
+          setWireframeSteps(res.tasks.slice(half));
+          setSummary(res.summary || "PRD 与原型设计完成。");
+        }
+      } catch (err) {
+        console.error("fetchWorkflow err", err);
+      } finally {
+        setPhase(0);
+      }
+    }
+    fetchWorkflow();
+  }, [sessionMeta.sessionId, input]);
 
   // Phase 0: Wait for Market Insight
   useEffect(() => {
     if (phase === 0) {
-      const timer = setTimeout(() => setPhase(1), 4000); // mock waiting for 4s
+      setCurrentPrdStep(prdSteps[0] || "");
+      setCurrentWireframeStep(wireframeSteps[0] || "");
+      const timer = setTimeout(() => setPhase(1), 1000); // reduced wait
       return () => clearTimeout(timer);
     }
-  }, [phase]);
+  }, [phase, prdSteps, wireframeSteps]);
 
-  // Phase 1: PRD generation (15s)
+  // Phase 1: PRD generation (10s)
   useEffect(() => {
     if (phase === 1) {
       let startTime = Date.now();
-      const duration = 15000;
+      const duration = 10000;
       const interval = setInterval(() => {
         let elapsed = Date.now() - startTime;
         let p = Math.min(100, (elapsed / duration) * 100);
@@ -64,13 +80,13 @@ export default function RoleProduct() {
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [phase]);
+  }, [phase, prdSteps]);
 
-  // Phase 2: Wireframe generation (15s)
+  // Phase 2: Wireframe generation (10s)
   useEffect(() => {
     if (phase === 2) {
       let startTime = Date.now();
-      const duration = 15000;
+      const duration = 10000;
       const interval = setInterval(() => {
         let elapsed = Date.now() - startTime;
         let p = Math.min(100, (elapsed / duration) * 100);
@@ -87,7 +103,16 @@ export default function RoleProduct() {
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [phase]);
+  }, [phase, wireframeSteps]);
+
+  if (phase === -1) {
+    return (
+      <div className="role-product-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
+        <Loader className="spin" size={48} />
+        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="role-product-container">

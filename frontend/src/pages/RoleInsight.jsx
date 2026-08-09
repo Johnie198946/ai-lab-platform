@@ -2,37 +2,63 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { ArrowLeft, Search, Database, FileText, CheckCircle, Loader } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { useOrchestration } from '../hooks/useOrchestration';
+import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleInsight.css';
 
-const competitors = ["字节跳动", "阿里云", "腾讯", "华为", "浪潮", "H3C", "OpenAI", "Google", "Claude"];
-const internals = ["产品路标", "算力产品族", "营销工具包", "研发物料"];
-
 export default function RoleInsight() {
-  const [phase, setPhase] = useState(0); // 0: init, 1: comp, 2: internal, 3: report, 4: done
+  const { sessionScopeKey } = useAuth();
+  const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
+
+  const [phase, setPhase] = useState(-1); // -1: fetching, 0: init, 1: comp, 2: internal, 3: report, 4: done
   const [compProgress, setCompProgress] = useState(0);
   const [internalProgress, setInternalProgress] = useState(0);
-  const [currentComp, setCurrentComp] = useState(competitors[0]);
-  const [currentInternal, setCurrentInternal] = useState(internals[0]);
-  const [reportStep, setReportStep] = useState(0);
   
-  const reportSteps = [
-    "正在整合竞争与内部数据...",
-    "多维度交叉分析中...",
-    "生成洞察报告草稿...",
-    "调用 Office 工具编辑...",
-    "完成 Word 文档生成"
-  ];
+  const [competitors, setCompetitors] = useState(["分析中..."]);
+  const [internals, setInternals] = useState(["检索中..."]);
+  const [reportSteps, setReportSteps] = useState(["生成中..."]);
+  const [summary, setSummary] = useState("正在生成执行摘要...");
+
+  const [currentComp, setCurrentComp] = useState("");
+  const [currentInternal, setCurrentInternal] = useState("");
+  const [reportStep, setReportStep] = useState(0);
 
   useEffect(() => {
-    // 延迟一点启动
-    const timer = setTimeout(() => setPhase(1), 500);
-    return () => clearTimeout(timer);
-  }, []);
+    async function fetchWorkflow() {
+      try {
+        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "insight", goal);
+        if (res && res.tasks && res.tasks.length > 0) {
+          // split tasks into competitors and internals for demo
+          const half = Math.ceil(res.tasks.length / 2);
+          setCompetitors(res.tasks.slice(0, half));
+          setInternals(res.tasks.slice(half));
+          setReportSteps(res.details || ["文档生成中..."]);
+          setSummary(res.summary || "分析完成。");
+        }
+      } catch (err) {
+        console.error("fetchWorkflow err", err);
+      } finally {
+        setPhase(0);
+      }
+    }
+    fetchWorkflow();
+  }, [sessionMeta.sessionId, input]);
+
+  useEffect(() => {
+    if (phase === 0) {
+      setCurrentComp(competitors[0] || "");
+      setCurrentInternal(internals[0] || "");
+      const timer = setTimeout(() => setPhase(1), 500);
+      return () => clearTimeout(timer);
+    }
+  }, [phase, competitors, internals]);
 
   useEffect(() => {
     if (phase === 1) {
       let startTime = Date.now();
-      const duration = 30000;
+      const duration = 15000;
       const interval = setInterval(() => {
         let elapsed = Date.now() - startTime;
         let p = Math.min(100, (elapsed / duration) * 100);
@@ -49,12 +75,12 @@ export default function RoleInsight() {
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [phase]);
+  }, [phase, competitors]);
 
   useEffect(() => {
     if (phase === 2) {
       let startTime = Date.now();
-      const duration = 15000;
+      const duration = 10000;
       const interval = setInterval(() => {
         let elapsed = Date.now() - startTime;
         let p = Math.min(100, (elapsed / duration) * 100);
@@ -71,7 +97,7 @@ export default function RoleInsight() {
       }, 100);
       return () => clearInterval(interval);
     }
-  }, [phase]);
+  }, [phase, internals]);
 
   useEffect(() => {
     if (phase === 3) {
@@ -87,7 +113,16 @@ export default function RoleInsight() {
       }, 1500);
       return () => clearInterval(interval);
     }
-  }, [phase]);
+  }, [phase, reportSteps]);
+
+  if (phase === -1) {
+    return (
+      <div className="role-insight-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
+        <Loader className="spin" size={48} />
+        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="role-insight-container">
@@ -217,7 +252,7 @@ export default function RoleInsight() {
                 <button className="download-btn">查看文档</button>
               </div>
               <div className="ai-summary">
-                <p><strong>执行摘要：</strong> 市场空缺明确，字节/华为尚未完全占领该微分赛道，建议结合超聚变现有的算力产品族优势，优先切入高认知价值场景。营销工具包与产品路标已完成对齐，建议立即投入研发。</p>
+                <p><strong>执行摘要：</strong> {summary}</p>
               </div>
             </motion.div>
           )}

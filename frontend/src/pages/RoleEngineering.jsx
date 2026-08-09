@@ -1,34 +1,47 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, Code, Cpu, Play, Terminal, Database, Cloud, FileJson } from 'lucide-react';
+import { ArrowLeft, Code, Cpu, Play, Terminal, Database, Cloud, FileJson, Loader } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { useOrchestration } from '../hooks/useOrchestration';
+import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleEngineering.css';
 
 export default function RoleEngineering() {
+  const { sessionScopeKey } = useAuth();
+  const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
+
+  const [phase, setPhase] = useState(-1); // -1: fetching, 0: done fetching
   const [tab, setTab] = useState('software'); // 'software' | 'hardware'
   const [showVideo, setShowVideo] = useState(false);
   
   // Software steps
   const [swStep, setSwStep] = useState(0);
-  const swSteps = [
-    "初始化前后端代码库...",
-    "生成数据库 Schema 与 ORM...",
-    "编写 RESTful API 接口...",
-    "构建 React 前端组件...",
-    "部署至云端测试环境..."
-  ];
-
-  const codeSnippets = [
-    "git init && npm create vite@latest frontend",
-    "CREATE TABLE agents (id UUID, role VARCHAR(50), status VARCHAR(20));",
-    "@app.post('/api/orchestrate')\ndef create_workflow():\n    return {'status': 'success'}",
-    "function AgentCard({ role }) {\n  return <div className=\"card\">{role.name}</div>;\n}",
-    "docker-compose up -d --build"
-  ];
+  const [swSteps, setSwSteps] = useState(["初始化环境..."]);
+  const [codeSnippets, setCodeSnippets] = useState(["$ loading..."]);
 
   useEffect(() => {
-    if (tab === 'software') {
+    async function fetchWorkflow() {
+      try {
+        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "engineering", goal);
+        if (res && res.tasks && res.tasks.length > 0) {
+          setSwSteps(res.tasks);
+          setCodeSnippets(res.details || res.tasks.map(t => `$ ${t}`));
+        }
+      } catch (err) {
+        console.error("fetchWorkflow err", err);
+      } finally {
+        setPhase(0);
+      }
+    }
+    fetchWorkflow();
+  }, [sessionMeta.sessionId, input]);
+
+  useEffect(() => {
+    if (phase === 0 && tab === 'software') {
       let i = 0;
+      setSwStep(0);
       const interval = setInterval(() => {
         if (i < swSteps.length - 1) {
           i++;
@@ -39,7 +52,16 @@ export default function RoleEngineering() {
       }, 2500);
       return () => clearInterval(interval);
     }
-  }, [tab]);
+  }, [phase, tab, swSteps]);
+
+  if (phase === -1) {
+    return (
+      <div className="role-eng-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
+        <Loader className="spin" size={48} />
+        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="role-eng-container" style={{ overflowX: 'hidden' }}>

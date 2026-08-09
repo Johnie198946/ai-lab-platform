@@ -84,10 +84,22 @@ export const useOrchestration = ({ scopeKey }) => {
 
   useEffect(() => {
     // 强制清空旧的草稿，确保进去之后聊天框是空的
-    clearWorkspaceDraft(scopeKey);
     const draft = coerceWorkspace(null);
+    const existingDraft = window.localStorage.getItem(workspaceStorageKey(scopeKey));
+    if (existingDraft) {
+        try {
+            const parsed = JSON.parse(existingDraft);
+            // 恢复草稿，但强制清空输入框
+            draft.messages = parsed.messages || [];
+            draft.roles = parsed.roles || [];
+            draft.selectedRoleId = parsed.selectedRoleId || null;
+            draft.sessionMeta = parsed.sessionMeta || buildDefaultSessionMeta();
+        } catch (e) {
+            console.error(e);
+        }
+    }
     setMessages(draft.messages);
-    setInput(draft.input);
+    setInput(draft.input); // 强制为空
     setRoles(draft.roles);
     setSelectedRoleId(draft.selectedRoleId);
     setSessionMeta(draft.sessionMeta);
@@ -157,20 +169,20 @@ export const useOrchestration = ({ scopeKey }) => {
     setInput("");
     setIsThinking(true);
     setSubmitError("");
-    setRoles([]);
-    setSelectedRoleId(null);
     setSaveState({
       status: "idle",
       message: "生成完成后可保存角色配置。",
     });
 
     try {
+      // 通过 Chat API 获取带历史记录的回复，或者通过编排 API 获取，此处保留编排逻辑但不断开上下文
       const result = await orchestrateGoal(trimmed);
-      // 无论是通用聊天还是编排模式，都把 AI 回复当作 Markdown 渲染在左侧
-      const isMarkdown = true; 
-      setMessages((prev) => [...prev, createAssistantMessage(result.reply, isMarkdown)]);
-      setRoles(result.roles);
-      setSelectedRoleId(result.roles[0]?.id ?? null);
+      const isMarkdown = true;
+      setMessages((prev) => [...prev, createAssistantMessage(result.reply || result.message, isMarkdown)]);
+      if (result.roles && result.roles.length > 0) {
+        setRoles(result.roles);
+        setSelectedRoleId(result.roles[0]?.id ?? null);
+      }
       setSessionMeta({
         sessionId: result.sessionId,
         source: result.source,

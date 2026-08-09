@@ -1,12 +1,45 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { ArrowLeft, TrendingUp, Clock, Target, CheckCircle, AlertTriangle, ShieldCheck, FileText, ChevronRight } from 'lucide-react';
+import { ArrowLeft, TrendingUp, Clock, Target, CheckCircle, AlertTriangle, ShieldCheck, FileText, ChevronRight, Loader } from 'lucide-react';
+import { useAuth } from '../auth/AuthContext';
+import { useOrchestration } from '../hooks/useOrchestration';
+import { generateRoleWorkflow } from '../services/orchestrationService';
 import './RoleFounder.css';
 
 export default function RoleFounder() {
+  const { sessionScopeKey } = useAuth();
+  const { sessionMeta, input } = useOrchestration({ scopeKey: sessionScopeKey });
+
+  const [phase, setPhase] = useState(-1);
   const [approved, setApproved] = useState(false);
   const [showOnePager, setShowOnePager] = useState(false);
+
+  const [founderDetails, setFounderDetails] = useState([
+    "市场空缺明确，竞争底稿已生成",
+    "PRD与原型图已输出",
+    "软件环境就绪，硬件无需定制",
+    "主打胶片与宣贯物料已发布"
+  ]);
+  const [founderSummary, setFounderSummary] = useState("");
+
+  useEffect(() => {
+    async function fetchWorkflow() {
+      try {
+        const goal = sessionMeta.goal || input || "我想做一个 AI 智能体编排平台，并且帮我完成营销和销售，请帮我端到端完成";
+        const res = await generateRoleWorkflow(sessionMeta.sessionId, "boss", goal);
+        if (res && res.details && res.details.length >= 4) {
+          setFounderDetails(res.details);
+          setFounderSummary(res.summary);
+        }
+      } catch (err) {
+        console.error("fetchWorkflow err", err);
+      } finally {
+        setPhase(0);
+      }
+    }
+    fetchWorkflow();
+  }, [sessionMeta.sessionId, input]);
 
   const handleApprove = () => {
     setApproved(true);
@@ -24,12 +57,21 @@ export default function RoleFounder() {
   ];
 
   const agentStatus = [
-    { name: "市场洞察专家", status: "completed", desc: "市场空缺明确，竞争底稿已生成" },
-    { name: "产品经理", status: "completed", desc: "PRD与原型图已输出" },
-    { name: "开发工程师", status: "completed", desc: "软件环境就绪，硬件无需定制" },
-    { name: "营销经理", status: "completed", desc: "主打胶片与宣贯物料已发布" },
+    { name: "市场洞察专家", status: "completed", desc: founderDetails[0] || "市场空缺明确，竞争底稿已生成" },
+    { name: "产品经理", status: "completed", desc: founderDetails[1] || "PRD与原型图已输出" },
+    { name: "开发工程师", status: "completed", desc: founderDetails[2] || "软件环境就绪，硬件无需定制" },
+    { name: "营销经理", status: "completed", desc: founderDetails[3] || "主打胶片与宣贯物料已发布" },
     { name: "销售经理", status: approved ? "completed" : "warning", desc: approved ? "开始拓客打单" : "等待产品上线审批" }
   ];
+
+  if (phase === -1) {
+    return (
+      <div className="role-founder-container" style={{display: 'flex', justifyContent: 'center', alignItems: 'center', color: '#fff'}}>
+        <Loader className="spin" size={48} />
+        <span style={{marginLeft: 16}}>正在连接 Hermes Main Agent 规划工作流...</span>
+      </div>
+    );
+  }
 
   return (
     <div className="role-founder-container">
@@ -155,6 +197,11 @@ export default function RoleFounder() {
                     <h4>高管决策一页纸 (Executive Briefing)</h4>
                   </div>
                   <div className="one-pager-content">
+                    <div className="brief-section">
+                      <h5>项目概述</h5>
+                      <p>{founderSummary || "本项目已完成端到端的市场洞察、产品定义、技术研发与营销准备。预期在下一季度实现显著的营收增长与市占率提升。"}</p>
+                      <p><strong>下一步计划：</strong> 授权销售团队开启全渠道推广，并启动下一代版本（v2.0）的需求收集。</p>
+                    </div>
                     <div className="brief-section">
                       <h5>市场与竞品结论 (来自市场洞察)</h5>
                       <p>“市场空缺明确，字节/华为尚未完全占领该微分赛道，建议立即投入。”</p>

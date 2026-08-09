@@ -22,6 +22,10 @@ export const orchestrateGoal = async (goal) => {
   }
 };
 
+export const generateRoleWorkflow = async (sessionId, roleId, goal) => {
+  return await platformApi.generateRoleWorkflow(sessionId, roleId, goal);
+};
+
 export const persistRole = async ({ sessionId, roleId, role, fallbackUsed }) => {
   if (!sessionId || fallbackUsed) {
     return {

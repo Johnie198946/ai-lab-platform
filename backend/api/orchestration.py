@@ -424,3 +424,63 @@ async def update_role(
     role.updated_at = _utc_now()
     session.updated_at = _utc_now()
     return role
+
+class RoleWorkflowRequest(BaseModel):
+    session_id: str
+    role_id: str
+    goal: str
+
+@router.post("/workflow")
+async def generate_role_workflow(body: RoleWorkflowRequest):
+    session = _sessions.get(body.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="编排会话不存在")
+    
+    role = next((r for r in session.roles if r.id == body.role_id), None)
+    if not role:
+        raise HTTPException(status_code=404, detail="角色不存在")
+
+    prompt = f"""
+用户提交了智能体编排需求："{body.goal}"
+
+你现在的身份是：{role.title}（{role.name}）
+你的职责是：{role.responsibility}
+你的核心技能是：{role.skills}
+
+请针对上述需求，模拟你的工作流，并返回详细的任务拆解数据。必须严格返回以下 JSON 格式数据（必须以 {{ 开始，以 }} 结束，不要包含 markdown code block 标记）：
+{{
+  "tasks": [
+    "具体的任务拆解步骤1（如：竞品信息搜集... / 绘制首页线框图... / 生成数据库 Schema...）",
+    "具体的任务拆解步骤2",
+    "具体的任务拆解步骤3",
+    "具体的任务拆解步骤4",
+    "具体的任务拆解步骤5"
+  ],
+  "details": [
+    "针对步骤1的具体内容或代码片段或分析数据",
+    "针对步骤2的具体内容或代码片段或分析数据",
+    "针对步骤3的具体内容或代码片段或分析数据",
+    "针对步骤4的具体内容或代码片段或分析数据",
+    "针对步骤5的具体内容或代码片段或分析数据"
+  ],
+  "summary": "最终的产出物总结或执行摘要报告"
+}}
+注意：tasks 数组和 details 数组的长度必须相同。
+"""
+    try:
+        raw_output = await _call_hermes_main(prompt, session_id=body.session_id)
+        import re, json
+        json_str = raw_output
+        match = re.search(r'\{.*\}', raw_output, re.DOTALL)
+        if match:
+            json_str = match.group(0)
+        data = json.loads(json_str)
+        return data
+    except Exception as e:
+        logger.error(f"Hermes workflow 调用异常: {e}")
+        # 返回默认兜底数据
+        return {
+            "tasks": ["初始化任务...", "分析需求...", "执行处理...", "验证结果...", "完成输出"],
+            "details": ["正在初始化...", "需求分析中...", "处理中...", "验证中...", "输出完毕"],
+            "summary": "根据当前需求，工作流已模拟执行完毕。"
+        }
