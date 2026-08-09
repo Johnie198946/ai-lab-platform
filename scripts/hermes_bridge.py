@@ -8,7 +8,7 @@ v2 改进（4G 内存升级后·2026-08-09）：
 1. **会话复用**：每个 session_id 保持独立 Hermes 会话（--continue），
    多轮对话上下文连贯，减少重复冷启动
 2. **并发控制**：asyncio.Semaphore 限制并发（2 核 CPU 保护）
-3. **超时优化**：按请求类型区分超时（对话 60s·复杂任务 180s）
+3. **超时优化**：按请求类型区分超时（对话 90s·复杂任务 600s）
 
 用法: systemctl start hermes-bridge（已注册）
 """
@@ -24,7 +24,8 @@ app = FastAPI(title="Hermes Bridge v2")
 HERMES_BIN = "/opt/hermes/venv/bin/hermes"
 HERMES_CWD = "/opt/ai-lab-platform"
 MAX_INPUT = 4000
-DEFAULT_TIMEOUT = 180      # 复杂任务
+# 2026-08-09: 复杂任务 180s → 600s — 子 Agent 定时执行(采集+wiki编译)需更长
+DEFAULT_TIMEOUT = 600      # 复杂任务（Agent 定时执行/长研究）
 CHAT_TIMEOUT = 90          # 普通对话
 
 # 会话存储：session_id -> (session_name, last_active)
