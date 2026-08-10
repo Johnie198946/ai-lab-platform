@@ -92,7 +92,7 @@ async def _stream_hermes(goal: str, session_id: Optional[str] = None):
                     yield f"{line}\n"
 
 
-@router.post("/sessions", status_code=201)
+@router.post("/sessions", status_code=201, response_model=None)
 async def create_session(body: SessionCreateRequest) -> Union[OrchestrationSession, StreamingResponse]:
     """编排入口 — 身份规则优先，其余全交 Hermes。
     
