@@ -118,7 +118,10 @@ export const orchestrateGoalStream = async (goal, sessionId = null, onChunk) => 
     }
 
     window.clearTimeout(timeoutId);
-    return { reply: fullReply, sessionId: sessionId || "", streamed: true };
+    // 从响应头接回后端真实 session_id（首轮流式时后端通过 X-Session-ID 返回新建的 client_sid）
+    // Header 缺失时 fallback 到传入的旧 sessionId（容错·不抛异常）
+    const sidFromHeader = response.headers.get("X-Session-ID") || sessionId;
+    return { reply: fullReply, sessionId: sidFromHeader || "", streamed: true };
   } catch (error) {
     if (error.name === "AbortError") {
       throw new Error("请求超时");
