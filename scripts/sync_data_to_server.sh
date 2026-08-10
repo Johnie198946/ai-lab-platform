@@ -73,6 +73,9 @@ ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p ${SERVER_PATH}/vault"
 # ⚠️ 2026-08-09 修正: 去掉 --delete — 云端子 Agent 自生长会新增 raw/wiki 文件,
 #    --delete 会把它们当"本地已删"清掉。改为 --update 增量: 本地新/改文件覆盖同名,
 #    云端新文件保留(由 sync_cloud_back_to_local.sh 回流本地)。
+# ⚠️ 2026-08-10 约定: 访客画像/ 目录仅存在于服务器端(体验中心业务·本地不需要)。
+#    本地严禁创建同名 访客画像/ 目录 — 否则 rsync --update 会把本地同名文件
+#    覆盖到服务器端。服务器端访客画像自生长·永不回传本地。
 echo "    → 直传 Obsidian Vault 编译知识库(增量, 保留云端自生长)..."
 rsync -avz --update \
   --exclude=".obsidian/" \
