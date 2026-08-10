@@ -49,6 +49,8 @@ RUN echo $'server {\n\
         proxy_http_version 1.1;\n\
         proxy_set_header Upgrade $http_upgrade;\n\
         proxy_set_header Connection "upgrade";\n\
+        proxy_redirect / /hermes/;\n\
+        proxy_redirect http://$host/ http://$host/hermes/;\n\
     }\n\
 }\n\
 server {\n\
@@ -92,6 +94,8 @@ server {\n\
         proxy_http_version 1.1;\n\
         proxy_set_header Upgrade $http_upgrade;\n\
         proxy_set_header Connection "upgrade";\n\
+        proxy_redirect / /hermes/;\n\
+        proxy_redirect http://$host/ http://$host/hermes/;\n\
     }\n\
     location ~* \.(html)$ {\n\
         root   /usr/share/nginx/html;\n\
