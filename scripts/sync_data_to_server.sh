@@ -76,10 +76,13 @@ ssh "${SERVER_USER}@${SERVER_HOST}" "mkdir -p ${SERVER_PATH}/vault"
 # ⚠️ 2026-08-10 约定: 访客画像/ 目录仅存在于服务器端(体验中心业务·本地不需要)。
 #    本地严禁创建同名 访客画像/ 目录 — 否则 rsync --update 会把本地同名文件
 #    覆盖到服务器端。服务器端访客画像自生长·永不回传本地。
+# ⚠️ 2026-08-10 修正: 上行 exclude 访客画像/ — 防止本地误创建同名目录后回推覆盖服务器端。
+#    访客画像单向回流（服务器→本地）由 sync_cloud_back_to_local.sh 处理。
 echo "    → 直传 Obsidian Vault 编译知识库(增量, 保留云端自生长)..."
 rsync -avz --update \
   --exclude=".obsidian/" \
   --exclude="*.tmp" \
+  --exclude="访客画像/" \
   "${LOCAL_VAULT_PATH}/" \
   "${SERVER_USER}@${SERVER_HOST}:${SERVER_PATH}/vault/"
 
