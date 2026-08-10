@@ -69,7 +69,7 @@ async def _call_hermes(goal: str, session_id: Optional[str] = None) -> str:
 
 async def _stream_hermes(goal: str, session_id: Optional[str] = None):
     """透传 Hermes bridge SSE 流式。
-    
+
     返回异步生成器·产出 SSE 格式字符串。
     失败时抛出异常·由调用方降级处理。
     """
@@ -93,16 +93,24 @@ async def _stream_hermes(goal: str, session_id: Optional[str] = None):
 
 
 @router.post("/sessions", status_code=201, response_model=None)
-async def create_session(body: SessionCreateRequest) -> Union[OrchestrationSession, StreamingResponse]:
+async def create_session(
+    body: SessionCreateRequest,
+) -> Union[OrchestrationSession, StreamingResponse]:
     """编排入口 — 身份规则优先，其余全交 Hermes。
-    
+
     支持流式（stream=true）和非流式两种模式。
+
+    session_id 策略：前端首轮不传 → 生成 client_sid；次轮带回 → 复用。
+    client_sid 同时作为 bridge 的 user_id 透传，确保 Hermes --resume 命中同一会话。
     """
+    # 统一 client_sid：复用前端传入 or 首轮生成
+    client_sid = body.session_id or uuid4().hex
+
     # 身份话术规则优先：命中即返回固定回答，不调 Hermes
     fixed = match_identity_rule(body.goal)
     if fixed:
         session = OrchestrationSession(
-            session_id=uuid4().hex,
+            session_id=client_sid,
             goal=body.goal,
             reply=fixed,
             messages=[
@@ -110,19 +118,20 @@ async def create_session(body: SessionCreateRequest) -> Union[OrchestrationSessi
                 Message(role="assistant", content=fixed),
             ],
         )
-        _sessions[session.session_id] = session
+        _sessions[client_sid] = session
         return session
 
     # 流式模式：返回 SSE 流（前端通过 fetch 读取）
     if body.stream:
         try:
             return StreamingResponse(
-                _stream_hermes(body.goal, session_id=body.session_id),
+                _stream_hermes(body.goal, session_id=client_sid),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
+                    "X-Session-ID": client_sid,
                 },
             )
         except Exception as e:
@@ -131,12 +140,12 @@ async def create_session(body: SessionCreateRequest) -> Union[OrchestrationSessi
 
     # 非流式模式（默认）
     try:
-        reply = await _call_hermes(body.goal, session_id=body.session_id)
+        reply = await _call_hermes(body.goal, session_id=client_sid)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Hermes 调用失败: {e}") from e
 
     session = OrchestrationSession(
-        session_id=uuid4().hex,
+        session_id=client_sid,
         goal=body.goal,
         reply=reply,
         messages=[
@@ -144,7 +153,7 @@ async def create_session(body: SessionCreateRequest) -> Union[OrchestrationSessi
             Message(role="assistant", content=reply),
         ],
     )
-    _sessions[session.session_id] = session
+    _sessions[client_sid] = session
     return session
 
 

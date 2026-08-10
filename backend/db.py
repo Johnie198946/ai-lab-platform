@@ -22,7 +22,11 @@ DATABASE_URL = os.environ.get(
     "postgresql+asyncpg://ailab:ailab_dev@localhost:5432/ai_lab",
 )
 
-engine = create_async_engine(DATABASE_URL, pool_pre_ping=True, pool_size=5)
+_engine_kwargs: dict = {"pool_pre_ping": True}
+if not DATABASE_URL.startswith("sqlite"):
+    _engine_kwargs["pool_size"] = 5
+
+engine = create_async_engine(DATABASE_URL, **_engine_kwargs)
 SessionLocal = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
