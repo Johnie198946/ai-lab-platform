@@ -403,20 +403,21 @@ async def chat_stream(body: GoalRequest):
                 },
             )
 
-    # 尝试 WS PTY 流式（v6 主路径）
-    try:
-        print(f"[bridge] WS PTY 流式: user={user_id} session={hermes_sid}")
-        return StreamingResponse(
-            _stream_from_ws_pty(body.goal, hermes_sid),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",  # nginx 禁用缓冲
-            },
-        )
-    except Exception as ws_err:
-        print(f"[bridge] WS PTY 失败·降级到 SSE: {ws_err}")
+    # 尝试 WS PTY 流式（v6 主路径·默认禁用——serve PTY 只回显不执行 Hermes·流式做好后设 WS_PTY_ENABLED=true 启用）
+    if os.environ.get("WS_PTY_ENABLED", "false") == "true":
+        try:
+            print(f"[bridge] WS PTY 流式: user={user_id} session={hermes_sid}")
+            return StreamingResponse(
+                _stream_from_ws_pty(body.goal, hermes_sid),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",  # nginx 禁用缓冲
+                },
+            )
+        except Exception as ws_err:
+            print(f"[bridge] WS PTY 失败·降级到 SSE: {ws_err}")
 
     # 二级降级：SSE 流式（v5 路径）
     try:
