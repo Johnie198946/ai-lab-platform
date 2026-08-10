@@ -169,11 +169,11 @@ export const useOrchestration = ({ scopeKey }) => {
       message: "生成完成后可保存角色配置。",
     });
 
-    // 创建空的 assistant 消息占位符（用于流式填充）
+    // 创建思考中的 assistant 消息占位符（显示"正在思考..."动画）
     const assistantMsgId = `assistant-${Date.now()}`;
     setMessages((prev) => [
       ...prev,
-      { id: assistantMsgId, role: "assistant", content: "", isMarkdown: true },
+      { id: assistantMsgId, role: "assistant", content: "", isMarkdown: true, isThinking: true },
     ]);
 
     try {
@@ -182,10 +182,12 @@ export const useOrchestration = ({ scopeKey }) => {
         trimmed,
         sessionMeta?.sessionId ?? null,
         (chunk, fullReply) => {
-          // 实时更新 assistant 消息内容（打字机效果）
+          // 首次收到 chunk 时清除思考状态，开始打字机效果
           setMessages((prev) =>
             prev.map((msg) =>
-              msg.id === assistantMsgId ? { ...msg, content: fullReply } : msg
+              msg.id === assistantMsgId 
+                ? { ...msg, content: fullReply, isThinking: false } 
+                : msg
             )
           );
         }

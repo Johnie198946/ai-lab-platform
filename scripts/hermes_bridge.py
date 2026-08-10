@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
 """
-hermes_bridge.py — 宿主机 Hermes 桥接服务（v5.0·SSE 流式版）
+hermes_bridge.py — 宿主机 Hermes 桥接服务（v6.0·WS PTY 真实对接版）
 
-把 `hermes serve` (SSE 流式) 和 `hermes -z` (非流式降级) 包成 HTTP API，
+把 `hermes serve` WebSocket PTY（ws://127.0.0.1:9119/api/pty）包成 HTTP SSE API，
 供 API 容器通过 host.docker.internal 调用。
+
+v6.0 (2026-08-10·Supervision 批复返工·WS PTY 真实对接):
+- 核心改造：通过 WebSocket 客户端连接 hermes serve /api/pty 端点
+- ANSI 转义清洗：re.sub(r'\\x1b\\[[0-9;]*[a-zA-Z]', '', text)
+- Token 流转发：清洗后的文本以 SSE data: {type:chunk,content:...} 格式推送
+- 认证：ws 握手携带 HERMES_SERVE_TOKEN（Bearer）
+- 保留 /v1/chat 非流式兜底（CLI -z）
+- 会话映射沿用 v4/v5（user_id → hermes session_id）
 
 v5.0 (2026-08-10·SSE 流式改造):
 - 新增 /v1/chat/stream 端点：对接 hermes serve SSE 流式·逐 chunk 转发
 - hermes serve 认证：Bearer Token（环境变量 HERMES_SERVE_TOKEN·不入 git）
-- 会话映射沿用 v4（user_id → hermes session_id）
-- 保留 /v1/chat 非流式向后兼容
-- 失败自动降级：serve 不可用时 fallback 到 CLI -z 非流式
 
 v4.1 (2026-08-10·Supervision 批复返工):
 - 修正 CLI 参数：-r → --resume（精准恢复会话）
 - STATE_DB 动态路径：Path.home()/.hermes/state.db 或 env HERMES_STATE_DB
 - 并发安全：使用 --usage-file 原子捕获 session_id
-- 严格断言：_session_exists 为 False 时清除映射·按新建处理
 
 用法: systemctl start hermes-bridge
 """
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -30,17 +35,20 @@ import uuid
 from pathlib import Path
 
 import httpx
+import websockets
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
-app = FastAPI(title="Hermes Bridge v5.0")
+app = FastAPI(title="Hermes Bridge v6.0")
 
 HERMES_BIN = os.environ.get("HERMES_BIN", "/opt/hermes/venv/bin/hermes")
 HERMES_CWD = os.environ.get("HERMES_CWD", "/opt/ai-lab-platform")
 # hermes serve 地址（本机回环·不暴露公网）
 HERMES_SERVE_URL = os.environ.get("HERMES_SERVE_URL", "http://127.0.0.1:9119")
+# hermes serve WebSocket PTY 地址
+HERMES_WS_URL = os.environ.get("HERMES_WS_URL", "ws://127.0.0.1:9119/api/pty")
 # hermes serve 认证 Token（环境变量·严禁入 git）
 HERMES_SERVE_TOKEN = os.environ.get("HERMES_SERVE_TOKEN", "")
 # 动态路径：优先环境变量，否则 Path.home()/.hermes/state.db
@@ -48,10 +56,13 @@ STATE_DB = os.environ.get(
     "HERMES_STATE_DB",
     str(Path.home() / ".hermes" / "state.db")
 )
-MAPPING_FILE = Path("/opt/ai-lab-platform/data/session_mapping.json")
+MAPPING_FILE = Path("/opt/ai-lab-platform/data/session_mappings.json")
 MAX_INPUT = 4000
 DEFAULT_TIMEOUT = 180
 SERVE_TIMEOUT = 300
+
+# ANSI 转义序列清洗正则（匹配所有 ANSI escape codes）
+ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
 # user_id -> hermes_session_id 显式绑定（内存缓存 + JSON 持久化）
 _user_session_map: dict[str, str] = {}
@@ -184,7 +195,92 @@ def _update_session_mapping(user_id: str, hermes_sid: str) -> None:
     print(f"[bridge] 会话映射: user={user_id} -> session={hermes_sid}")
 
 
-# ---------- hermes serve SSE 流式调用 ----------
+# ---------- hermes serve WS PTY 流式调用（v6.0 核心） ----------
+
+def _clean_ansi(text: str) -> str:
+    """清洗 ANSI 转义序列（hermes serve PTY 输出包含颜色/光标控制码）。"""
+    return ANSI_ESCAPE_RE.sub('', text)
+
+
+async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
+    """通过 WebSocket 连接 hermes serve /api/pty 端点·实现真实流式。
+
+    协议：
+    1. 建立 WS 连接（ws://127.0.0.1:9119/api/pty）
+    2. 握手携带 Authorization: Bearer <HERMES_SERVE_TOKEN>
+    3. 发送 {"type":"input","data":"<goal>\\n"} 作为用户输入
+    4. 持续接收 PTY 输出（含 ANSI 转义）
+    5. 清洗 ANSI → 提取 token 流 → 以 SSE data: {type:chunk,content:...} 转发
+
+    失败时抛出异常·由调用方降级到 /v1/chat 非流式。
+    """
+    if len(goal) > MAX_INPUT:
+        goal = goal[:MAX_INPUT]
+
+    # 构造 WS 握手 headers
+    ws_headers = {}
+    if HERMES_SERVE_TOKEN:
+        ws_headers["Authorization"] = f"Bearer {HERMES_SERVE_TOKEN}"
+
+    print(f"[bridge] WS PTY 连接: {HERMES_WS_URL}")
+
+    async with websockets.connect(
+        HERMES_WS_URL,
+        additional_headers=ws_headers,
+        open_timeout=10,
+        close_timeout=5,
+    ) as ws:
+        print(f"[bridge] WS PTY 已连接·发送 goal")
+
+        # 发送用户输入（模拟 PTY stdin）
+        await ws.send(json.dumps({
+            "type": "input",
+            "data": goal + "\n",
+        }))
+
+        # 持续接收 PTY 输出并转发为 SSE
+        full_reply = ""
+        try:
+            async for raw_msg in ws:
+                # 解析 WS 消息
+                try:
+                    msg = json.loads(raw_msg)
+                    msg_type = msg.get("type", "")
+                    text = msg.get("data", "") or msg.get("content", "") or ""
+                except (json.JSONDecodeError, AttributeError):
+                    # 非 JSON 消息视为纯文本
+                    text = str(raw_msg)
+                    msg_type = "output"
+
+                # 清洗 ANSI 转义序列
+                cleaned = _clean_ansi(text)
+
+                # 跳过空内容
+                if not cleaned.strip() and not cleaned:
+                    continue
+
+                full_reply += cleaned
+
+                # 以 SSE 格式转发给前端
+                sse_payload = json.dumps({
+                    "type": "chunk",
+                    "content": cleaned,
+                }, ensure_ascii=False)
+                yield f"data: {sse_payload}\n\n"
+
+                # 检测结束信号
+                if msg_type == "done" or msg_type == "exit":
+                    break
+
+        except websockets.exceptions.ConnectionClosed:
+            print(f"[bridge] WS PTY 连接关闭·流结束")
+
+        # 发送结束标记
+        yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
+        print(f"[bridge] WS PTY 流结束·总长度: {len(full_reply)}")
+
+
+# ---------- hermes serve SSE 流式调用（v5 保留·作为 WS 失败时的二级降级） ----------
 
 async def _stream_from_serve(goal: str, session_id: str | None = None):
     """对接 hermes serve SSE 流式端点·逐 chunk 转发。
@@ -248,31 +344,30 @@ async def _startup():
 
 @app.post("/v1/chat/stream")
 async def chat_stream(body: GoalRequest):
-    """SSE 流式对话入口（Bridge v5 核心端点）。
-    
-    对接 hermes serve SSE 流式·逐 chunk 转发。
-    失败时自动降级到 /v1/chat 非流式。
+    """SSE 流式对话入口（Bridge v6 核心端点）。
+
+    优先级：WS PTY（/api/pty）→ SSE 流式（/api/chat）→ CLI -z 非流式降级。
+    全部以 SSE data: {type:chunk,content:...} 格式推送给前端。
     """
     user_id = body.session_id or "anonymous"
     hermes_sid = _resolve_hermes_session(user_id)
 
-    # 尝试 SSE 流式
-    try:
-        # 首次对话：先通过 CLI 新建会话·捕获 session_id
-        if not hermes_sid:
-            print(f"[bridge] 首次对话·先通过 CLI 新建会话")
-            reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
-            if new_sid:
-                _update_session_mapping(user_id, new_sid)
-                hermes_sid = new_sid
-            else:
-                # CLI 新建失败·直接返回非流式结果
-                return {"reply": reply, "session_id": user_id, "hermes_session_id": None, "streamed": False}
+    # 首次对话：先通过 CLI 新建会话·捕获 session_id
+    if not hermes_sid:
+        print(f"[bridge] 首次对话·先通过 CLI 新建会话")
+        reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
+        if new_sid:
+            _update_session_mapping(user_id, new_sid)
+            hermes_sid = new_sid
+        else:
+            # CLI 新建失败·直接返回非流式结果
+            return {"reply": reply, "session_id": user_id, "hermes_session_id": None, "streamed": False}
 
-        # 后续对话：SSE 流式
-        print(f"[bridge] SSE 流式: user={user_id} session={hermes_sid}")
+    # 尝试 WS PTY 流式（v6 主路径）
+    try:
+        print(f"[bridge] WS PTY 流式: user={user_id} session={hermes_sid}")
         return StreamingResponse(
-            _stream_from_serve(body.goal, hermes_sid),
+            _stream_from_ws_pty(body.goal, hermes_sid),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -280,12 +375,27 @@ async def chat_stream(body: GoalRequest):
                 "X-Accel-Buffering": "no",  # nginx 禁用缓冲
             },
         )
+    except Exception as ws_err:
+        print(f"[bridge] WS PTY 失败·降级到 SSE: {ws_err}")
 
-    except Exception as e:
-        # 流式失败·降级到非流式
-        print(f"[bridge] SSE 流式失败·降级到非流式: {e}")
-        reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
-        return {"reply": reply, "session_id": user_id, "hermes_session_id": hermes_sid, "streamed": False}
+    # 二级降级：SSE 流式（v5 路径）
+    try:
+        print(f"[bridge] SSE 流式降级: user={user_id} session={hermes_sid}")
+        return StreamingResponse(
+            _stream_from_serve(body.goal, hermes_sid),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+    except Exception as sse_err:
+        print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
+
+    # 最终降级：CLI -z 非流式
+    reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
+    return {"reply": reply, "session_id": user_id, "hermes_session_id": hermes_sid, "streamed": False}
 
 
 @app.post("/v1/chat")
@@ -311,9 +421,10 @@ async def health():
     return {
         "status": "ok",
         "service": "hermes-bridge",
-        "version": "v5.0",
+        "version": "v6.0",
         "sessions": len(_user_session_map),
         "streaming": True,
+        "ws_pty": HERMES_WS_URL,
     }
 
 
