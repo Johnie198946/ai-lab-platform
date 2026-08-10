@@ -46,7 +46,25 @@ RUN echo $'server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         proxy_set_header X-Forwarded-Proto $scheme;\n\
         proxy_set_header X-Forwarded-Host $host;\n\
-        proxy_set_header X-Forwarded-Prefix /hermes;\n\
+        proxy_read_timeout 600s;\n\
+        proxy_buffering off;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+    }\n\
+}\n\
+# 官方 Hermes Dashboard 独立入口（根路径反代·serve 无前缀逻辑·登录正常）\n\
+server {\n\
+    listen 9443 ssl;\n\
+    ssl_certificate     /etc/nginx/ssl/ailab.crt;\n\
+    ssl_certificate_key /etc/nginx/ssl/ailab.key;\n\
+    location / {\n\
+        proxy_pass http://host.docker.internal:9119;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+        proxy_set_header X-Forwarded-Proto $scheme;\n\
+        proxy_set_header X-Forwarded-Host $host;\n\
         proxy_read_timeout 600s;\n\
         proxy_buffering off;\n\
         proxy_http_version 1.1;\n\
@@ -92,7 +110,6 @@ server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         proxy_set_header X-Forwarded-Proto $scheme;\n\
         proxy_set_header X-Forwarded-Host $host;\n\
-        proxy_set_header X-Forwarded-Prefix /hermes;\n\
         proxy_read_timeout 600s;\n\
         proxy_buffering off;\n\
         proxy_http_version 1.1;\n\
@@ -106,5 +123,5 @@ server {\n\
         add_header Expires 0;\n\
     }\n\
 }' > /etc/nginx/conf.d/default.conf
-EXPOSE 80 443
+EXPOSE 80 443 9443
 CMD ["nginx", "-g", "daemon off;"]
