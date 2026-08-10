@@ -243,8 +243,20 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
 
         # 持续接收 PTY 输出并转发为 SSE
         full_reply = ""
+        # ⚠️ 2026-08-10 临时: WS PTY 挂起未通·加 8s 首帧超时·无输出即降级（流式做好后移除）
         try:
-            async for raw_msg in ws:
+            first_frame = await asyncio.wait_for(ws.recv(), timeout=8)
+        except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed):
+            print("[bridge] WS PTY 8s 无输出·降级")
+            raise TimeoutError("WS PTY 无输出超时") from None
+
+        async def _frame_gen(first):
+            yield first
+            async for m in ws:
+                yield m
+
+        try:
+            async for raw_msg in _frame_gen(first_frame):
                 # 解析 WS 消息
                 try:
                     msg = json.loads(raw_msg)
