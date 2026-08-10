@@ -419,22 +419,22 @@ async def chat_stream(body: GoalRequest):
         except Exception as ws_err:
             print(f"[bridge] WS PTY 失败·降级到 SSE: {ws_err}")
 
-    # 二级降级：SSE 流式（v5 路径）
-    try:
-        print(f"[bridge] SSE 流式降级: user={user_id} session={hermes_sid}")
-        return StreamingResponse(
-            _stream_from_serve(body.goal, hermes_sid),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
-        )
-    except Exception as sse_err:
-        print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
+    # 二级降级：SSE 流式（v5 路径·serve 无 /api/chat 端点恒 405·2026-08-10 禁用直接走 CLI）
+    # try:
+    #     print(f"[bridge] SSE 流式降级: user={user_id} session={hermes_sid}")
+    #     return StreamingResponse(
+    #         _stream_from_serve(body.goal, hermes_sid),
+    #         media_type="text/event-stream",
+    #         headers={
+    #             "Cache-Control": "no-cache",
+    #             "Connection": "keep-alive",
+    #             "X-Accel-Buffering": "no",
+    #         },
+    #     )
+    # except Exception as sse_err:
+    #     print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
 
-    # 最终降级：CLI -z 非流式·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
+    # 最终降级：CLI -z 非流式（SSE 包装·契约统一）·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
     reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
     print(f"[bridge] 最终降级 CLI·包装 SSE 返回")
     return StreamingResponse(
