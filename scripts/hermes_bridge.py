@@ -283,6 +283,21 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
         print(f"[bridge] WS PTY 流结束·总长度: {len(full_reply)}")
 
 
+# ---------- 最终降级 SSE 包装（v6.1·契约统一） ----------
+
+async def _fallback_sse(reply: str):
+    """将非流式 reply 包装为标准 SSE 流（与前端契约一致）。
+
+    产出：
+      data: {"type": "chunk", "content": "<reply>"}\n\n
+      data: {"type": "done", "content": ""}\n\n
+    """
+    payload = json.dumps({"type": "chunk", "content": reply}, ensure_ascii=False)
+    yield f"data: {payload}\n\n"
+    done_payload = json.dumps({"type": "done", "content": ""}, ensure_ascii=False)
+    yield f"data: {done_payload}\n\n"
+
+
 # ---------- hermes serve SSE 流式调用（v5 保留·作为 WS 失败时的二级降级） ----------
 
 async def _stream_from_serve(goal: str, session_id: str | None = None):
@@ -363,8 +378,18 @@ async def chat_stream(body: GoalRequest):
             _update_session_mapping(user_id, new_sid)
             hermes_sid = new_sid
         else:
-            # CLI 新建失败·直接返回非流式结果
-            return {"reply": reply, "session_id": user_id, "hermes_session_id": None, "streamed": False}
+            # CLI 新建失败·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
+            print(f"[bridge] CLI 新建失败·降级 SSE 包装返回")
+            return StreamingResponse(
+                _fallback_sse(reply),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Session-ID": user_id,
+                },
+            )
 
     # 尝试 WS PTY 流式（v6 主路径）
     try:
@@ -396,9 +421,19 @@ async def chat_stream(body: GoalRequest):
     except Exception as sse_err:
         print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
 
-    # 最终降级：CLI -z 非流式
+    # 最终降级：CLI -z 非流式·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
     reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
-    return {"reply": reply, "session_id": user_id, "hermes_session_id": hermes_sid, "streamed": False}
+    print(f"[bridge] 最终降级 CLI·包装 SSE 返回")
+    return StreamingResponse(
+        _fallback_sse(reply),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "X-Session-ID": user_id,
+        },
+    )
 
 
 @app.post("/v1/chat")

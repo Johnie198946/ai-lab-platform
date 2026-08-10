@@ -85,6 +85,12 @@ export const orchestrateGoalStream = async (goal, sessionId = null, onChunk) => 
       throw new Error(`HTTP ${response.status}`);
     }
 
+    // 契约校验：响应必须是 text/event-stream，否则抛错走非流式降级
+    const contentType = response.headers.get("Content-Type") || "";
+    if (!contentType.includes("text/event-stream")) {
+      throw new Error(`非 SSE 响应（Content-Type: ${contentType}）·降级非流式`);
+    }
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
