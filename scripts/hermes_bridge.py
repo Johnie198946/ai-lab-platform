@@ -237,11 +237,9 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
     ) as ws:
         print(f"[bridge] WS PTY 已连接·发送 goal")
 
-        # 发送用户输入（模拟 PTY stdin）
-        await ws.send(json.dumps({
-            "type": "input",
-            "data": goal + "\n",
-        }))
+        # 发送用户输入（PTY 协议：原始文本·非 JSON·实测 web_server.py writer loop）
+        # ⚠️ 2026-08-10 修复: 之前发 {"type":"input","data":...} JSON 被当纯文本写入 PTY
+        await ws.send(goal + "\n")
 
         # 持续接收 PTY 输出并转发为 SSE
         full_reply = ""
