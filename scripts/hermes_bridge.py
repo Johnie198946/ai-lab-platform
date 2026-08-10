@@ -218,14 +218,19 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
         goal = goal[:MAX_INPUT]
 
     # 构造 WS 握手 headers
+    # ⚠️ 2026-08-10 修复: serve PTY 认证用 ?token= query 参数（非 Authorization 头）·
+    #    实测 ws://127.0.0.1:9119/api/pty?token=<TOKEN> 握手成功（否则 403）
     ws_headers = {}
-    if HERMES_SERVE_TOKEN:
-        ws_headers["Authorization"] = f"Bearer {HERMES_SERVE_TOKEN}"
 
-    print(f"[bridge] WS PTY 连接: {HERMES_WS_URL}")
+    ws_url = HERMES_WS_URL
+    if HERMES_SERVE_TOKEN:
+        sep = "&" if "?" in ws_url else "?"
+        ws_url = f"{ws_url}{sep}token={HERMES_SERVE_TOKEN}"
+
+    print(f"[bridge] WS PTY 连接: {HERMES_WS_URL} (query token)")
 
     async with websockets.connect(
-        HERMES_WS_URL,
+        ws_url,
         additional_headers=ws_headers,
         open_timeout=10,
         close_timeout=5,
