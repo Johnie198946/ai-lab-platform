@@ -60,7 +60,7 @@ CONFLICT_FILES=()
 # 创建临时文件列表
 TMP_LOCAL=$(mktemp)
 TMP_SERVER=$(mktemp)
-trap 'rm -f "${TMP_LOCAL}" "${TMP_SERVER}"' EXIT
+trap 'rm -f "${TMP_LOCAL}" "${TMP_SERVER}" "${TMP_CONFLICTS:-}"' EXIT
 
 for DIR in "${SYNC_DIRS[@]}"; do
   LOCAL_DIR="${LOCAL_VAULT_PATH}/${DIR}"
@@ -77,7 +77,8 @@ for DIR in "${SYNC_DIRS[@]}"; do
     "cd '${SERVER_DIR}' 2>/dev/null && find . -type f -name '*.md' -o -name '*.json' | sed 's|^\./||' | sort" \
     > "${TMP_SERVER}" 2>/dev/null || true
 
-  # 找出两端共有的文件
+  # 找出两端共有的文件（临时文件收集·避免子shell变量丢失）
+  TMP_CONFLICTS=$(mktemp)
   comm -12 "${TMP_LOCAL}" "${TMP_SERVER}" | while IFS= read -r rel_path; do
     LOCAL_FILE="${LOCAL_DIR}/${rel_path}"
     SERVER_FILE="${SERVER_DIR}/${rel_path}"
@@ -127,10 +128,15 @@ for DIR in "${SYNC_DIRS[@]}"; do
 EOF
 
       CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
-      CONFLICT_FILES+=("${DIR}/${rel_path}")
+      # 记录到临时文件（子shell外统计用）
+      echo "${DIR}/${rel_path}" >> "${TMP_CONFLICTS}"
     fi
   done
 done
+
+# 从临时文件统计（子shell 变量已丢失·以文件为准）
+mapfile -t CONFLICT_FILES < "${TMP_CONFLICTS}" 2>/dev/null || CONFLICT_FILES=()
+CONFLICT_COUNT=${#CONFLICT_FILES[@]}
 
 echo "  冲突文件数: ${CONFLICT_COUNT}"
 
