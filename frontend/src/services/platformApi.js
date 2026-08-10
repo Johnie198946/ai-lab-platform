@@ -112,6 +112,12 @@ export const platformApi = {
       body: sessionId ? { goal, session_id: sessionId } : { goal },
     });
   },
+  createOrchestrationSessionStream(goal, sessionId = null) {
+    return request("/api/orchestration/sessions", {
+      method: "POST",
+      body: sessionId ? { goal, session_id: sessionId, stream: true } : { goal, stream: true },
+    });
+  },
   chat(question) {
     return request("/api/chat", {
       method: "POST",

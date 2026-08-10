@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { clearWorkspaceDraft, loadWorkspaceDraft, saveWorkspaceDraft } from "../auth/storage";
 import { DEFAULT_GOAL } from "../config/env";
-import { getPlatformStatus, orchestrateGoal, persistRole } from "../services/orchestrationService";
+import { getPlatformStatus, orchestrateGoal, orchestrateGoalStream, persistRole } from "../services/orchestrationService";
 
 const INITIAL_MESSAGES = [
   {
@@ -169,35 +169,78 @@ export const useOrchestration = ({ scopeKey }) => {
       message: "生成完成后可保存角色配置。",
     });
 
+    // 创建空的 assistant 消息占位符（用于流式填充）
+    const assistantMsgId = `assistant-${Date.now()}`;
+    setMessages((prev) => [
+      ...prev,
+      { id: assistantMsgId, role: "assistant", content: "", isMarkdown: true },
+    ]);
+
     try {
-      const result = await orchestrateGoal(trimmed, sessionMeta?.sessionId ?? null);
-      setMessages((prev) => [...prev, createAssistantMessage(result.reply, true)]);
-      setRoles(result.roles);
-      setSelectedRoleId(result.roles[0]?.id ?? null);
+      // 尝试流式
+      const result = await orchestrateGoalStream(
+        trimmed,
+        sessionMeta?.sessionId ?? null,
+        (chunk, fullReply) => {
+          // 实时更新 assistant 消息内容（打字机效果）
+          setMessages((prev) =>
+            prev.map((msg) =>
+              msg.id === assistantMsgId ? { ...msg, content: fullReply } : msg
+            )
+          );
+        }
+      );
+
+      // 流式完成·更新最终状态
       setSessionMeta({
-        sessionId: result.sessionId,
-        goal: result.goal || trimmed,
-        source: result.source,
-        fallbackUsed: result.fallbackUsed,
-        fallbackReason: result.fallbackReason ?? "",
+        sessionId: result.sessionId || sessionMeta.sessionId,
+        goal: trimmed,
+        source: "ai-lab-platform",
+        fallbackUsed: false,
+        fallbackReason: "",
       });
       setPlatformStatus((prev) =>
-        result.fallbackUsed
-          ? {
-              status: "degraded",
-              message: result.fallbackReason || "编排请求已切换为本地兜底模式。",
-            }
-          : prev.status === "checking"
-            ? { status: "online", message: "后端编排接口联调成功。" }
-            : prev,
+        prev.status === "checking"
+          ? { status: "online", message: "后端编排接口联调成功（流式）。" }
+          : prev
       );
-    } catch (error) {
-      const message = error.message || "编排失败，请检查后端接口配置。";
-      setSubmitError(message);
-      setMessages((prev) => [
-        ...prev,
-        createAssistantMessage(`本次编排失败：${message}`),
-      ]);
+    } catch (streamError) {
+      // 流式失败·降级到非流式
+      console.warn("[useOrchestration] 流式失败·降级到非流式:", streamError.message);
+      
+      // 清除占位符消息
+      setMessages((prev) => prev.filter((msg) => msg.id !== assistantMsgId));
+
+      try {
+        const result = await orchestrateGoal(trimmed, sessionMeta?.sessionId ?? null);
+        setMessages((prev) => [...prev, createAssistantMessage(result.reply, true)]);
+        setRoles(result.roles);
+        setSelectedRoleId(result.roles[0]?.id ?? null);
+        setSessionMeta({
+          sessionId: result.sessionId,
+          goal: result.goal || trimmed,
+          source: result.source,
+          fallbackUsed: result.fallbackUsed,
+          fallbackReason: result.fallbackReason ?? "",
+        });
+        setPlatformStatus((prev) =>
+          result.fallbackUsed
+            ? {
+                status: "degraded",
+                message: result.fallbackReason || "编排请求已切换为本地兜底模式。",
+              }
+            : prev.status === "checking"
+            ? { status: "online", message: "后端编排接口联调成功。" }
+            : prev
+        );
+      } catch (fallbackError) {
+        const message = fallbackError.message || "编排失败，请检查后端接口配置。";
+        setSubmitError(message);
+        setMessages((prev) => [
+          ...prev,
+          createAssistantMessage(`本次编排失败：${message}`),
+        ]);
+      }
     } finally {
       setIsThinking(false);
     }

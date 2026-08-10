@@ -1,4 +1,6 @@
 import { ENABLE_DEMO_FALLBACK } from "../config/env";
+import { getAuthAccessToken } from "../auth/storage";
+import { buildApiUrl } from "../config/env";
 import { platformApi } from "./platformApi";
 
 const cleanText = (value, fallback = "") => {
@@ -52,6 +54,76 @@ export const orchestrateGoal = async (goal, sessionId = null) => {
       throw error;
     }
     return buildFallbackSession(goal, error.message);
+  }
+};
+
+export const orchestrateGoalStream = async (goal, sessionId = null, onChunk) => {
+  try {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 480000);
+
+    const headers = new Headers({
+      "Content-Type": "application/json",
+      "Accept": "text/event-stream",
+    });
+    
+    const accessToken = getAuthAccessToken();
+    if (accessToken) {
+      headers.set("Authorization", `Bearer ${accessToken}`);
+    }
+
+    const body = sessionId ? { goal, session_id: sessionId, stream: true } : { goal, stream: true };
+
+    const response = await fetch(buildApiUrl("/api/orchestration/sessions"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let fullReply = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        if (line.startsWith("data: ")) {
+          const data = line.slice(6).trim();
+          if (data === "[DONE]") continue;
+          
+          try {
+            const chunk = JSON.parse(data);
+            const content = chunk.content || chunk.text || chunk.delta || "";
+            if (content) {
+              fullReply += content;
+              onChunk?.(content, fullReply);
+            }
+          } catch {
+            // 非 JSON 行·忽略
+          }
+        }
+      }
+    }
+
+    window.clearTimeout(timeoutId);
+    return { reply: fullReply, sessionId: sessionId || "", streamed: true };
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("请求超时");
+    }
+    throw error;
   }
 };
 

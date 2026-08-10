@@ -1,7 +1,7 @@
 """
-前端编排 API — 透明网关模式
+前端编排 API — 透明网关模式（支持 SSE 流式）
 
-流程: goal + session_id → 身份规则匹配 → Hermes bridge → 返回 reply
+流程: goal + session_id → 身份规则匹配 → Hermes bridge (流式/非流式) → 返回 reply
 后端仅做鉴权和透传，不拼 prompt、不控制工具集、不管理历史。
 """
 
@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.api.identity import match_identity_rule
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
+HERMES_BRIDGE_STREAM_URL = os.environ.get("HERMES_BRIDGE_STREAM_URL", "http://host.docker.internal:9118/v1/chat/stream")
 HERMES_TIMEOUT = 300
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
@@ -31,6 +33,7 @@ def _utc_now() -> datetime:
 class SessionCreateRequest(BaseModel):
     goal: str = Field(..., min_length=1)
     session_id: Optional[str] = Field(None, max_length=100)
+    stream: bool = Field(False, description="是否启用 SSE 流式输出")
 
 
 class Message(BaseModel):
@@ -46,13 +49,14 @@ class OrchestrationSession(BaseModel):
     messages: List[Message] = []
     source: str = "ai-lab-platform"
     created_at: datetime = Field(default_factory=_utc_now)
+    streamed: bool = False
 
 
 _sessions: Dict[str, OrchestrationSession] = {}
 
 
 async def _call_hermes(goal: str, session_id: Optional[str] = None) -> str:
-    """透传 Hermes bridge。"""
+    """透传 Hermes bridge（非流式）。"""
     payload: Dict[str, object] = {"goal": goal}
     if session_id:
         payload["session_id"] = session_id
@@ -63,9 +67,37 @@ async def _call_hermes(goal: str, session_id: Optional[str] = None) -> str:
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）"
 
 
-@router.post("/sessions", response_model=OrchestrationSession, status_code=201)
-async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
-    """编排入口 — 身份规则优先，其余全交 Hermes。"""
+async def _stream_hermes(goal: str, session_id: Optional[str] = None):
+    """透传 Hermes bridge SSE 流式。
+    
+    返回异步生成器·产出 SSE 格式字符串。
+    失败时抛出异常·由调用方降级处理。
+    """
+    payload: Dict[str, object] = {"goal": goal}
+    if session_id:
+        payload["session_id"] = session_id
+
+    async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
+        async with client.stream(
+            "POST",
+            HERMES_BRIDGE_STREAM_URL,
+            json=payload,
+        ) as response:
+            if response.status_code != 200:
+                raise RuntimeError(f"Bridge 流式返回 {response.status_code}")
+
+            # 逐行转发 SSE 流
+            async for line in response.aiter_lines():
+                if line:
+                    yield f"{line}\n"
+
+
+@router.post("/sessions", status_code=201)
+async def create_session(body: SessionCreateRequest) -> Union[OrchestrationSession, StreamingResponse]:
+    """编排入口 — 身份规则优先，其余全交 Hermes。
+    
+    支持流式（stream=true）和非流式两种模式。
+    """
     # 身份话术规则优先：命中即返回固定回答，不调 Hermes
     fixed = match_identity_rule(body.goal)
     if fixed:
@@ -81,7 +113,23 @@ async def create_session(body: SessionCreateRequest) -> OrchestrationSession:
         _sessions[session.session_id] = session
         return session
 
-    # 透传 Hermes bridge
+    # 流式模式：返回 SSE 流（前端通过 fetch 读取）
+    if body.stream:
+        try:
+            return StreamingResponse(
+                _stream_hermes(body.goal, session_id=body.session_id),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                },
+            )
+        except Exception as e:
+            # 流式失败·降级到非流式
+            print(f"[orchestration] 流式失败·降级: {e}")
+
+    # 非流式模式（默认）
     try:
         reply = await _call_hermes(body.goal, session_id=body.session_id)
     except Exception as e:
