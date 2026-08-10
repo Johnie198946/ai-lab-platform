@@ -60,7 +60,8 @@ CONFLICT_FILES=()
 # 创建临时文件列表
 TMP_LOCAL=$(mktemp)
 TMP_SERVER=$(mktemp)
-trap 'rm -f "${TMP_LOCAL}" "${TMP_SERVER}" "${TMP_CONFLICTS:-}"' EXIT
+TMP_CONFLICTS=$(mktemp)
+trap 'rm -f "${TMP_LOCAL}" "${TMP_SERVER}" "${TMP_CONFLICTS}"' EXIT
 
 for DIR in "${SYNC_DIRS[@]}"; do
   LOCAL_DIR="${LOCAL_VAULT_PATH}/${DIR}"
@@ -77,8 +78,7 @@ for DIR in "${SYNC_DIRS[@]}"; do
     "cd '${SERVER_DIR}' 2>/dev/null && find . -type f -name '*.md' -o -name '*.json' | sed 's|^\./||' | sort" \
     > "${TMP_SERVER}" 2>/dev/null || true
 
-  # 找出两端共有的文件（临时文件收集·避免子shell变量丢失）
-  TMP_CONFLICTS=$(mktemp)
+  # 找出两端共有的文件（冲突写入统一临时文件·避免子shell变量丢失）
   comm -12 "${TMP_LOCAL}" "${TMP_SERVER}" | while IFS= read -r rel_path; do
     LOCAL_FILE="${LOCAL_DIR}/${rel_path}"
     SERVER_FILE="${SERVER_DIR}/${rel_path}"
@@ -134,8 +134,11 @@ EOF
   done
 done
 
-# 从临时文件统计（子shell 变量已丢失·以文件为准）
-mapfile -t CONFLICT_FILES < "${TMP_CONFLICTS}" 2>/dev/null || CONFLICT_FILES=()
+# 从临时文件统计（子shell 变量已丢失·以文件为准；macOS bash 3.2 无 mapfile·用 while read）
+CONFLICT_FILES=()
+while IFS= read -r cf_line; do
+  [ -n "${cf_line}" ] && CONFLICT_FILES+=("${cf_line}")
+done < "${TMP_CONFLICTS}" 2>/dev/null || true
 CONFLICT_COUNT=${#CONFLICT_FILES[@]}
 
 echo "  冲突文件数: ${CONFLICT_COUNT}"
