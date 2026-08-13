@@ -157,9 +157,11 @@ echo "==> [2/4] 增量回流：rsync --update（跳过冲突文件）..."
 
 # 构建 exclude 列表（冲突文件不覆盖）
 EXCLUDE_ARGS=()
-for cf in "${CONFLICT_FILES[@]}"; do
-  EXCLUDE_ARGS+=(--exclude="${cf}")
-done
+if [[ ${#CONFLICT_FILES[@]} -gt 0 ]]; then
+  for cf in "${CONFLICT_FILES[@]}"; do
+    EXCLUDE_ARGS+=(--exclude="${cf}")
+  done
+fi
 
 # raw/ 增量
 rsync -avz --update --timeout=30 \
@@ -167,13 +169,13 @@ rsync -avz --update --timeout=30 \
   --exclude='.obsidian/' --exclude='_archive/' --exclude='00_Inbox/' \
   --exclude='模板/' --exclude='.git/' \
   --exclude='待合并/' \
-  "${EXCLUDE_ARGS[@]}" \
+  ${EXCLUDE_ARGS[@]+"${EXCLUDE_ARGS[@]}"} \
   "${SERVER_USER}@${SERVER_HOST}:${SERVER_VAULT_PATH}/raw/" "${LOCAL_VAULT_PATH}/raw/"
 
 # wiki/ 增量
 rsync -avz --update --timeout=30 \
   -e "ssh -o ConnectTimeout=10" \
-  "${EXCLUDE_ARGS[@]}" \
+  ${EXCLUDE_ARGS[@]+"${EXCLUDE_ARGS[@]}"} \
   "${SERVER_USER}@${SERVER_HOST}:${SERVER_VAULT_PATH}/wiki/" "${LOCAL_VAULT_PATH}/wiki/"
 
 # knowledge_matrix.json
