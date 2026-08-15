@@ -1,0 +1,66 @@
+//
+//  AIPlatformApp.swift
+//  AIPlatformApp
+//
+//  Application Main Lifecycle Entry Point & AppRoot Navigation Coordinator
+//  Swift 6 / iOS 17+ Standard App Entry
+//
+
+import SwiftUI
+
+@main
+public struct AIPlatformApp: App {
+    @StateObject private var appState = AppState(isLoggedIn: ProcessInfo.processInfo.arguments.contains("-autoLogin"))
+    @StateObject private var apiClient = APIClient.shared
+
+    public init() {}
+
+    public var body: some Scene {
+        WindowGroup {
+            AppRootCoordinatorView()
+                .environmentObject(appState)
+                .environmentObject(apiClient)
+        }
+    }
+}
+
+// MARK: - App Root Coordinator
+public struct AppRootCoordinatorView: View {
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var apiClient: APIClient
+
+    public var body: some View {
+        Group {
+            if appState.isLoggedIn {
+                MainTabView()
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
+            } else {
+                LoginView()
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.3), value: appState.isLoggedIn)
+        .onChange(of: apiClient.needsReauth) { _, needs in
+            if needs {
+                // 401 重登：清 token + 回到登录页
+                apiClient.needsReauth = false
+                apiClient.clearToken()
+                appState.logout()
+            }
+        }
+    }
+}
+
+// MARK: - Xcode #Preview
+
+#Preview("AppRoot - Logged Out") {
+    AppRootCoordinatorView()
+        .environmentObject(AppState(isLoggedIn: false))
+        .environmentObject(APIClient.shared)
+}
+
+#Preview("AppRoot - Logged In") {
+    AppRootCoordinatorView()
+        .environmentObject(AppState(isLoggedIn: true))
+        .environmentObject(APIClient.shared)
+}
