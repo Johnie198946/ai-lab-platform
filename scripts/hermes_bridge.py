@@ -30,16 +30,26 @@ import os
 import re
 import sqlite3
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
 import httpx
-import websockets
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
+
+# 保证仓库根在 sys.path：桥接服务独立运行时（systemd / uvicorn 直跑 scripts/）
+# 也能导入 backend 包（reasoning_extractor）。websockets 改为懒加载（WS PTY 默认禁用）。
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from backend.services.reasoning_extractor import extract_steps  # noqa: E402
 
 app = FastAPI(title="Hermes Bridge v6.0")
 
@@ -66,7 +76,47 @@ ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
 # user_id -> hermes_session_id 显式绑定（内存缓存 + JSON 持久化）
 _user_session_map: dict[str, str] = {}
+# 全局并发信号量（两级锁序第一级）
 _semaphore = asyncio.Semaphore(2)
+# MAPPING_FILE 读写进程内全局锁（原子写防并发损坏）
+_mapping_lock = threading.Lock()
+
+# user_id -> asyncio.Lock 细粒度锁（两级锁序第二级），LRU 512 有界 + 30min 空闲 TTL
+_user_locks: dict[str, asyncio.Lock] = {}
+_user_lock_timestamps: dict[str, float] = {}
+USER_LOCK_CAPACITY = 512
+USER_LOCK_TTL_SECONDS = 30 * 60
+ANONYMOUS_LOCK_KEY = "_anonymous"
+
+
+def _get_user_lock(user_id: str) -> asyncio.Lock:
+    """按 user_id 取细粒度锁；anonymous 统一固定 `_anonymous` key。
+
+    LRU 512 上限 + 30 分钟空闲 TTL 惰性清理，杜绝锁对象无限堆积内存泄漏。
+    """
+    lock_key = user_id if user_id and user_id != "anonymous" else ANONYMOUS_LOCK_KEY
+    now = time.monotonic()
+
+    # 空闲 TTL 惰性清理
+    stale = [
+        k for k, ts in _user_lock_timestamps.items()
+        if now - ts > USER_LOCK_TTL_SECONDS
+    ]
+    for k in stale:
+        _user_locks.pop(k, None)
+        _user_lock_timestamps.pop(k, None)
+
+    lock = _user_locks.get(lock_key)
+    if lock is None:
+        # LRU 淘汰最久未使用
+        if len(_user_locks) >= USER_LOCK_CAPACITY:
+            oldest = min(_user_lock_timestamps.items(), key=lambda kv: kv[1])[0]
+            _user_locks.pop(oldest, None)
+            _user_lock_timestamps.pop(oldest, None)
+        lock = asyncio.Lock()
+        _user_locks[lock_key] = lock
+    _user_lock_timestamps[lock_key] = now
+    return lock
 
 
 class GoalRequest(BaseModel):
@@ -79,20 +129,38 @@ class GoalRequest(BaseModel):
 
 def _load_mapping() -> None:
     global _user_session_map
-    if MAPPING_FILE.exists():
-        try:
-            _user_session_map = json.loads(MAPPING_FILE.read_text())
-        except Exception:
-            _user_session_map = {}
+    with _mapping_lock:
+        if MAPPING_FILE.exists():
+            try:
+                _user_session_map = json.loads(MAPPING_FILE.read_text())
+            except Exception:
+                _user_session_map = {}
 
 
 def _save_mapping() -> None:
-    try:
-        MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
-        data = json.dumps(_user_session_map, ensure_ascii=False, indent=2)
-        MAPPING_FILE.write_text(data)
-    except Exception as e:
-        print(f"[bridge] 保存映射失败: {e}")
+    """原子写 MAPPING_FILE（临时文件 + os.replace），进程内锁保护，杜绝并发损坏。"""
+    global _user_session_map
+    with _mapping_lock:
+        try:
+            MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = json.dumps(_user_session_map, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(MAPPING_FILE.parent),
+                prefix=".session_mappings.",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(tmp_path, MAPPING_FILE)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as e:
+            print(f"[bridge] 保存映射失败: {e}")
 
 
 # ---------- Hermes 原生 Session 存在性断言 ----------
@@ -195,6 +263,45 @@ def _update_session_mapping(user_id: str, hermes_sid: str) -> None:
     print(f"[bridge] 会话映射: user={user_id} -> session={hermes_sid}")
 
 
+# ---------- 思维链水位线快照与增量回读 ----------
+
+def _get_baseline_id(session_id: str | None) -> int:
+    """请求前快照：当前 session 已落库的最大消息 id（新会话/异常返回 0）。"""
+    if not session_id or not os.path.exists(STATE_DB):
+        return 0
+    try:
+        conn = sqlite3.connect(STATE_DB)
+        try:
+            cur = conn.execute(
+                "SELECT COALESCE(MAX(id), 0) FROM messages WHERE session_id=?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[bridge] 水位线快照失败·按 0 处理: {e}")
+        return 0
+
+
+def _readback_delta(session_id: str | None, baseline_id: int) -> list[dict]:
+    """执行后增量回读：仅 id > baseline_id 的当次新增行（只读 SELECT·禁止写操作）。"""
+    if not session_id or not os.path.exists(STATE_DB):
+        return []
+    conn = sqlite3.connect(STATE_DB)
+    try:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT id, session_id, role, content, reasoning_content, tool_name, tool_calls "
+            "FROM messages WHERE session_id=? AND id>? ORDER BY id ASC",
+            (session_id, baseline_id),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 # ---------- hermes serve WS PTY 流式调用（v6.0 核心） ----------
 
 def _clean_ansi(text: str) -> str:
@@ -214,6 +321,8 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
 
     失败时抛出异常·由调用方降级到 /v1/chat 非流式。
     """
+    import websockets  # 懒加载：WS PTY 默认禁用，无 websockets 依赖也不阻塞启动
+
     if len(goal) > MAX_INPUT:
         goal = goal[:MAX_INPUT]
 
@@ -451,20 +560,49 @@ async def chat_stream(body: GoalRequest):
 
 @app.post("/v1/chat")
 async def chat(body: GoalRequest):
-    """非流式对话入口（向后兼容·Agent 工厂/子代理使用）。"""
+    """非流式对话入口（向后兼容·Agent 工厂/子代理使用）。
+
+    两级锁序固定：全局 Semaphore(2) → user 细粒度锁，先取 Semaphore 再取 user 锁。
+    临界区全程覆盖：解析映射 → 快照水位线 → CLI 执行(to_thread) → 增量回读 → 映射更新。
+    思维链回读失败降级 reasoning=[] 并打 Warning 日志，严禁向客户端抛 500。
+    """
     user_id = body.session_id or "anonymous"
-    hermes_sid = _resolve_hermes_session(user_id)
 
-    # 首次对话或映射失效：执行 -z 新建会话
-    if not hermes_sid:
-        reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
-        if new_sid:
-            _update_session_mapping(user_id, new_sid)
-        return {"reply": reply, "session_id": user_id, "hermes_session_id": new_sid}
+    async with _semaphore:
+        user_lock = _get_user_lock(user_id)
+        async with user_lock:
+            # 1) 解析 session 映射（失效则清除）
+            hermes_sid = _resolve_hermes_session(user_id)
 
-    # 后续对话：精准恢复原生 Session
-    reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
-    return {"reply": reply, "session_id": user_id, "hermes_session_id": hermes_sid}
+            # 2) 请求前快照：水位线 baseline_id
+            baseline_id = await asyncio.to_thread(_get_baseline_id, hermes_sid)
+
+            # 3) CLI 执行（唯一真实执行路径·to_thread 不阻塞事件循环）
+            if not hermes_sid:
+                reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
+                effective_sid = new_sid
+                if new_sid:
+                    _update_session_mapping(user_id, new_sid)
+            else:
+                reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
+                effective_sid = new_sid or hermes_sid
+
+            # 4) 执行后增量回读 + 真实思维链映射（失败降级·不 500）
+            reasoning: list[dict] = []
+            try:
+                rows = await asyncio.to_thread(
+                    _readback_delta, effective_sid, baseline_id
+                )
+                reasoning = [s.model_dump() for s in extract_steps(rows)]
+            except Exception as e:
+                print(f"[bridge] ⚠️ 思维链回读失败·降级空 reasoning: {e}")
+
+            return {
+                "reply": reply,
+                "session_id": user_id,
+                "hermes_session_id": effective_sid,
+                "reasoning": reasoning,
+            }
 
 
 @app.get("/health")
