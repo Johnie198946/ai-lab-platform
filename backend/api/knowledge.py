@@ -43,11 +43,18 @@ def _visibility():
     return current_visibility.get()
 
 
-def _rel_visible(rel: str, vis) -> bool:
-    """文档相对路径是否对当前可见范围可见（路径首段 = 分类）。"""
+def _rel_visible(rel: str, vis: set[str] | frozenset[str] | None) -> bool:
+    """文档相对路径是否对当前可见范围可见（支持多段类目前缀匹配）。
+
+    - ``vis is None`` → 全部可见（超管 / 开发态）
+    - 否则：rel 与任一已订类目相等，或以 ``类目/`` 为前缀即可见。
+      单层类目零回归（如 ``wiki/条目.md`` 对 ``wiki``）；
+      多段类目通过前缀对齐（如 ``knowledge/行业知识/金融/动态.md`` 对
+      ``knowledge/行业知识/金融``）。
+    """
     if vis is None:
         return True
-    return rel.split("/", 1)[0] in vis
+    return any(rel == cat or rel.startswith(f"{cat}/") for cat in vis)
 
 
 def _vault() -> Path:

@@ -30,6 +30,43 @@ SYSTEM_DIRS = {
     "_archive",
 }
 
+# ---------------------------------------------------------------------------
+# Catalog 白名单（v6 硬锁）：只有显式白名单目录可被订阅，禁止反射扫描泄露。
+# ---------------------------------------------------------------------------
+
+# 9 个公共可订阅顶层目录（物理白名单，顺序即目录展示顺序）
+PUBLIC_CATEGORIES: tuple[str, ...] = (
+    "wiki",
+    "raw",
+    "研究系统",
+    "竞品情报",
+    "AI情报雷达",
+    "产品设计",
+    "客户画像",
+    "任务记录",
+    "决策记录",
+)
+
+# 行业知识二级展开前缀：knowledge/行业知识/<domain>
+INDUSTRY_KNOWLEDGE_PREFIX = "knowledge/行业知识"
+
+# 物理不可订阅目录（防御性硬编码：即使目录真实存在也绝不进入 /catalog）
+FORBIDDEN_CATEGORIES = frozenset(
+    {
+        "knowledge",   # knowledge/ 根不可订阅，仅其下行业知识二级展开
+        "tenants",
+        "sandbox",
+        "scripts",
+        "访客画像",
+        "00_Inbox",
+        "模板",
+        "_archive",
+        ".obsidian",
+        ".git",
+        ".DS_Store",
+    }
+)
+
 CATEGORY_TITLES = {
     "研究系统": "研究报告与来源卡片",
     "wiki": "编译知识条目",
@@ -43,25 +80,53 @@ CATEGORY_TITLES = {
 }
 
 
+def _doc_count(dir_path) -> int:
+    """统计目录下 markdown 文档数。"""
+    return sum(1 for _ in dir_path.rglob("*.md"))
+
+
 def compute_catalog() -> list[dict]:
-    """从 vault 顶层目录实时计算分类目录（含文档数）。"""
+    """从 vault 白名单实时计算可订阅分类目录（含行业知识二级展开）。
+
+    硬锁：
+    - 仅 9 个公共目录 + knowledge/行业知识/<domain> 二级展开进入目录；
+    - knowledge/ 根、tenants/、sandbox/、scripts/、访客画像 等物理不可订阅。
+    """
     vault = knowledge._vault()
     if not vault.exists():
         return []
-    catalog = []
-    for child in sorted(vault.iterdir()):
-        if not child.is_dir() or child.name in SYSTEM_DIRS:
+    catalog: list[dict] = []
+
+    # 1) 9 个公共顶层目录（白名单）
+    for name in PUBLIC_CATEGORIES:
+        child = vault / name
+        if not child.is_dir():
             continue
-        doc_count = sum(1 for _ in child.rglob("*.md"))
         catalog.append(
             {
-                "category": child.name,
-                "path_prefix": f"{child.name}/",
-                "title": CATEGORY_TITLES.get(child.name, child.name),
-                "doc_count": doc_count,
+                "category": name,
+                "path_prefix": f"{name}/",
+                "title": CATEGORY_TITLES.get(name, name),
+                "doc_count": _doc_count(child),
                 "open": True,
             }
         )
+
+    # 2) knowledge/行业知识/<domain> 二级展开
+    industry_root = vault / "knowledge" / "行业知识"
+    if industry_root.is_dir():
+        for domain in sorted(p for p in industry_root.iterdir() if p.is_dir()):
+            category_id = f"{INDUSTRY_KNOWLEDGE_PREFIX}/{domain.name}"
+            catalog.append(
+                {
+                    "category": category_id,
+                    "path_prefix": f"{category_id}/",
+                    "title": domain.name,
+                    "doc_count": _doc_count(domain),
+                    "open": True,
+                }
+            )
+
     return catalog
 
 
@@ -97,7 +162,11 @@ class SubscribeRequest(BaseModel):
 
 @router.post("/me/subscriptions")
 async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
-    """订阅一个分类（分类必须在 catalog 中）。"""
+    """订阅一个分类（分类必须在 catalog 白名单中，物理不可订目录返回 404）。"""
+    if body.category in FORBIDDEN_CATEGORIES:
+        raise HTTPException(
+            status_code=404, detail=f"分类不存在: {body.category}"
+        )
     catalog = {c["category"] for c in compute_catalog()}
     if body.category not in catalog:
         raise HTTPException(

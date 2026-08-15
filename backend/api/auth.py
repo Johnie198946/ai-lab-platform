@@ -12,6 +12,7 @@ Authen 统一认证集成 — Bearer JWT 本地验签 + 租户上下文派生（
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from typing import Any, Callable, Dict, FrozenSet, Optional
@@ -22,6 +23,8 @@ from jose import JWTError, jwt
 
 from backend.api.tenant import current_tenant, current_visibility
 
+logger = logging.getLogger(__name__)
+
 AUTHEN_JWT_SECRET = os.environ.get("AUTHEN_JWT_SECRET", "")
 AUTHEN_JWT_ALGORITHM = "HS256"
 AUTHEN_PERMISSION_URL = os.environ.get(
@@ -29,6 +32,17 @@ AUTHEN_PERMISSION_URL = os.environ.get(
 )
 
 security = HTTPBearer(auto_error=False)
+
+
+def check_dev_visibility_guard() -> bool:
+    """启动守卫：JWT secret 为空 → 开发态全可见，隔离承诺不生效。
+
+    返回 True 表示处于开发态（隔离承诺不生效），False 表示已配置真实密钥。
+    """
+    if not AUTHEN_JWT_SECRET:
+        logger.warning("开发态全可见，隔离承诺不生效")
+        return True
+    return False
 
 # ---------------------------------------------------------------------------
 # 租户解析（测试可注入）

@@ -176,5 +176,164 @@ class TestSubscriptionIsolation(unittest.TestCase):
         self.assertNotIn("raw", cats)
 
 
+class TestCatalogWhitelistAndPrefixMatch(unittest.TestCase):
+    """catalog 白名单 + 行业知识二级展开 + _rel_visible 前缀匹配 + 根/私有不可订阅。"""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="catalog-test-"))
+        # 9 个公共目录
+        for name in [
+            "wiki", "raw", "研究系统", "竞品情报", "AI情报雷达",
+            "产品设计", "客户画像", "任务记录", "决策记录",
+        ]:
+            (self.tmp / name).mkdir(parents=True)
+            (self.tmp / name / "doc.md").write_text(
+                f"# {name}\n公共内容。", encoding="utf-8"
+            )
+        # 行业知识二级结构（knowledge/行业知识/<domain>）
+        (self.tmp / "knowledge" / "行业知识" / "金融").mkdir(parents=True)
+        (self.tmp / "knowledge" / "行业知识" / "金融" / "动态.md").write_text(
+            "# 金融动态\n金融行业动态。", encoding="utf-8"
+        )
+        (self.tmp / "knowledge" / "行业知识" / "医疗").mkdir(parents=True)
+        (self.tmp / "knowledge" / "行业知识" / "医疗" / "医院.md").write_text(
+            "# 医院管理\n医疗管理。", encoding="utf-8"
+        )
+        # knowledge 根目录本身放一个文件（根不可订/不进 catalog）
+        (self.tmp / "knowledge" / "根.md").write_text(
+            "# knowledge根\n不应暴露。", encoding="utf-8"
+        )
+        # 物理不可订目录
+        for name in ["tenants", "sandbox", "scripts", "访客画像"]:
+            (self.tmp / name).mkdir(parents=True)
+            (self.tmp / name / "私有.md").write_text(
+                f"# {name}\n私有内容。", encoding="utf-8"
+            )
+
+        matrix = {
+            "version": "2.0",
+            "stats": {},
+            "entity_index": {},
+            "categories": {},
+        }
+        (self.tmp / "knowledge_matrix.json").write_text(
+            json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
+        )
+
+        import backend.api.knowledge as k
+        import backend.api.auth as auth
+
+        self.k = k
+        self.auth = auth
+        k._matrix.cache_clear()
+        self._old_vault = k._vault
+        k._vault = lambda: self.tmp
+        self._old_matrix_path = k.MATRIX_PATH
+        k.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
+
+        self.categories = {"wiki"}
+        self.is_super = False
+
+        self._old_resolver = auth.tenant_resolver
+
+        async def fake_resolver(user_id):
+            return {
+                "tenant_key": "u-test",
+                "is_super_admin": self.is_super,
+                "categories": set(self.categories),
+            }
+
+        auth.tenant_resolver = fake_resolver
+
+        from backend.main import app
+
+        self._transport = httpx.ASGITransport(app=app)
+
+    def tearDown(self):
+        import shutil
+
+        self.auth.tenant_resolver = self._old_resolver
+        self.k._vault = self._old_vault
+        self.k.MATRIX_PATH = self._old_matrix_path
+        self.k._matrix.cache_clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    async def _request(self, method, path, **kwargs):
+        async with httpx.AsyncClient(
+            transport=self._transport,
+            base_url="http://testserver",
+            headers=_headers(),
+        ) as client:
+            return await client.request(method, path, **kwargs)
+
+    def request(self, method, path, **kwargs):
+        return asyncio.run(self._request(method, path, **kwargs))
+
+    def test_catalog_whitelist_in_root_not_in(self):
+        r = self.request("GET", "/api/v1/catalog")
+        self.assertEqual(r.status_code, 200)
+        cats = {c["category"] for c in r.json()["catalog"]}
+        for name in [
+            "wiki", "raw", "研究系统", "竞品情报", "AI情报雷达",
+            "产品设计", "客户画像", "任务记录", "决策记录",
+        ]:
+            self.assertIn(name, cats)
+        # 二级展开
+        self.assertIn("knowledge/行业知识/金融", cats)
+        self.assertIn("knowledge/行业知识/医疗", cats)
+        # 根/私有不进 catalog
+        self.assertNotIn("knowledge", cats)
+        self.assertNotIn("tenants", cats)
+        self.assertNotIn("sandbox", cats)
+        self.assertNotIn("scripts", cats)
+        self.assertNotIn("访客画像", cats)
+        self.assertNotIn("00_Inbox", cats)
+
+    def test_industry_secondary_expansion_doc_count(self):
+        r = self.request("GET", "/api/v1/catalog")
+        by_cat = {c["category"]: c for c in r.json()["catalog"]}
+        self.assertEqual(by_cat["knowledge/行业知识/金融"]["doc_count"], 1)
+        self.assertEqual(by_cat["knowledge/行业知识/医疗"]["doc_count"], 1)
+
+    def test_root_and_private_not_subscribable(self):
+        for bad in ["knowledge", "tenants", "sandbox", "scripts", "访客画像"]:
+            r = self.request(
+                "POST", "/api/v1/me/subscriptions", json={"category": bad}
+            )
+            self.assertEqual(r.status_code, 404, f"{bad} 应 404 不可订阅")
+        # 合法多段类目可订阅
+        r = self.request(
+            "POST",
+            "/api/v1/me/subscriptions",
+            json={"category": "knowledge/行业知识/金融"},
+        )
+        self.assertEqual(r.status_code, 200)
+
+    def test_prefix_match_visibility(self):
+        _rel_visible = self.k._rel_visible
+        vis = frozenset({"knowledge/行业知识/金融"})
+        self.assertTrue(_rel_visible("knowledge/行业知识/金融/动态.md", vis))
+        self.assertFalse(_rel_visible("knowledge/行业知识/医疗/医院.md", vis))
+        self.assertFalse(_rel_visible("knowledge/根.md", vis))
+        # 单层类目零回归
+        self.assertTrue(_rel_visible("wiki/doc.md", frozenset({"wiki"})))
+        self.assertFalse(_rel_visible("raw/doc.md", frozenset({"wiki"})))
+        # vis None 全可见
+        self.assertTrue(_rel_visible("tenants/私有.md", None))
+
+    def test_multi_segment_subscription_search_visible(self):
+        self.categories = {"knowledge/行业知识/金融"}
+        r = self.request("GET", "/api/knowledge/search", params={"q": "金融动态"})
+        self.assertEqual(r.status_code, 200)
+        paths = [d["path"] for d in r.json()["docs"]]
+        self.assertTrue(
+            any(p.startswith("knowledge/行业知识/金融/") for p in paths)
+        )
+        self.assertFalse(
+            any(p.startswith("knowledge/行业知识/医疗/") for p in paths)
+        )
+        self.assertFalse(any(p.startswith("wiki/") for p in paths))
+
+
 if __name__ == "__main__":
     unittest.main()

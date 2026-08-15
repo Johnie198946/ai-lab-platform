@@ -14,7 +14,7 @@ from backend.api.chat import router as chat_router
 from backend.api.register import router as register_router
 from backend.api.catalog import router as catalog_router
 from backend.api.me import router as me_router
-from backend.api.auth import require_auth
+from backend.api.auth import require_auth, check_dev_visibility_guard
 from backend.api.orchestration import router as orchestration_router
 
 from backend.api.protocols import router as protocols_router
@@ -25,7 +25,9 @@ from backend.db import init_db
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """启动: 初始化数据库表(幂等) + 启动 Agent 调度器。"""
+    """启动: 启动守卫 + 初始化数据库表(幂等) + 启动 Agent 调度器。"""
+    # 启动守卫：JWT secret 为空 → 开发态全可见，隔离承诺不生效
+    check_dev_visibility_guard()
     try:
         await init_db()
     except Exception:
