@@ -393,6 +393,7 @@ class StreamRequest(BaseModel):
 class ClarifySubmitRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     response: str = Field(..., min_length=1)
+    agent_id: Optional[str] = Field(None, max_length=50)
 
 
 class CancelRequest(BaseModel):
@@ -472,11 +473,17 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
 async def chat_clarify_submit(
     req: ClarifySubmitRequest, payload=Depends(require_auth)
 ) -> Dict[str, Any]:
-    """澄清响应提交：透传 bridge /v1/chat/clarify（解锁阻塞的 agent 线程）。"""
+    """澄清响应提交：透传 bridge /v1/chat/clarify（解锁阻塞的 agent 线程）。
+
+    session_id 必须与 /stream 请求一致：按 agent 维度派生前缀归一
+    （bridge 以 {session_id} 为 user_id 注册 clarify 阻塞线程；前端传无前缀
+    本地会话 ID 会导致 resolve 失配 → 502「选项提交失败」）。
+    """
+    isolated = derive_isolated_session_id(req.agent_id, req.session_id)
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             HERMES_BRIDGE_CLARIFY_URL,
-            json={"session_id": req.session_id, "response": req.response},
+            json={"session_id": isolated, "response": req.response},
         )
         if r.status_code == 200:
             return r.json()
