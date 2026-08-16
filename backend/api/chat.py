@@ -326,7 +326,12 @@ async def list_skills(tenant: str = "public", payload=Depends(require_auth)) -> 
     tenant 过滤：public 返回全局；指定 tenant 返回专属 + public。
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(10)) as client:
-        resp = await client.get(HERMES_BRIDGE_URL.rstrip("/") + "/v1/skills", params={"tenant": tenant})
+        base = HERMES_BRIDGE_URL.rstrip("/")
+        # HERMES_BRIDGE_URL 含 /v1/chat 前缀（如 host.docker.internal:9118/v1/chat）——
+        # /v1/skills 在基地址层，剥离前缀
+        if base.endswith("/v1/chat"):
+            base = base[: -len("/v1/chat")]
+        resp = await client.get(base + "/v1/skills", params={"tenant": tenant})
         if resp.status_code != 200:
             return {"skills": [], "tenant": tenant}
         return resp.json()
