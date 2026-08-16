@@ -3,10 +3,9 @@
 //  AIPlatformApp
 //
 //  等待期动态阶段提示：告别单一枯燥的「已等待 N 秒」。
-//  本地单 Timer 派生 waitingSeconds，映射三阶段文案（配呼吸光点）：
-//    - 0 ~ 15 秒：正在理解任务需求…
-//    - 15 ~ 60 秒：正在检索知识星海 / 调用工具链…
-//    - 60 秒以上：深度协同推理进行中 (已等待 N 秒)
+//  真实 status 分相直显（bridge boot→reasoning）：首帧 boot「正在初始化推理引擎…」→
+//  agent 构建完成 reasoning「正在理解需求…」→ 真实 thought 到达后占位让位（ChatView 解除 pending）。
+//  phase/phaseDetail 为空时回退本地等待秒数伪文案（非 bridge 流场景兜底），配呼吸光点。
 //
 
 import SwiftUI
@@ -14,17 +13,36 @@ import SwiftUI
 public struct ThinkingPlaceholderView: View {
     public let seconds: Int
     public let progress: String?
+    public let phase: String?
+    public let phaseDetail: String?
     public let onCancel: () -> Void
 
     @State private var isBreathing: Bool = false
 
-    public init(seconds: Int, progress: String? = nil, onCancel: @escaping () -> Void) {
+    public init(
+        seconds: Int,
+        progress: String? = nil,
+        phase: String? = nil,
+        phaseDetail: String? = nil,
+        onCancel: @escaping () -> Void
+    ) {
         self.seconds = seconds
         self.progress = progress
+        self.phase = phase
+        self.phaseDetail = phaseDetail
         self.onCancel = onCancel
     }
 
+    /// 真实 status 分相直显：phaseDetail 优先（bridge 下发即真文案）→ 分相兜底 → 本地秒数伪文案回退
     private var stageText: String {
+        if let detail = phaseDetail, !detail.isEmpty {
+            return detail
+        }
+        switch phase {
+        case "boot": return "正在初始化推理引擎…"
+        case "reasoning": return "正在理解需求…"
+        default: break
+        }
         switch seconds {
         case ..<15: return "正在理解任务需求…"
         case ..<60: return "正在检索知识星海 / 调用工具链…"
@@ -33,6 +51,11 @@ public struct ThinkingPlaceholderView: View {
     }
 
     private var stageIcon: String {
+        switch phase {
+        case "boot": return "bolt.horizontal.circle.fill"
+        case "reasoning": return "brain.head.profile"
+        default: break
+        }
         switch seconds {
         case ..<15: return "text.book.closed.fill"
         case ..<60: return "sparkle.magnifyingglass"

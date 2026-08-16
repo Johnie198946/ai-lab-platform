@@ -36,6 +36,9 @@ public struct ChatView: View {
     @State private var demoMode: Bool = false                 // 网络错误后「切换演示模式」
     @State private var liveProgress: String? = nil            // 长任务轮询拉取的最新步骤
     @State private var statusPollTask: Task<Void, Never>? = nil  // 320s 指数退避轮询任务
+    /// 真实 status 分相（bridge boot/reasoning）：只驱动 ThinkingPlaceholder 文案，不解除 pending（R-3 铁律）
+    @State private var thinkingPhase: String? = nil
+    @State private var thinkingDetail: String? = nil
 
     private let waitingTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -204,10 +207,8 @@ public struct ChatView: View {
         }
 
         // bridge 澄清：使用当前活动会话 ID 提交到澄清端点解锁 agent（严禁使用未初始化的 nil）
-        // 优先顺序：appState.chatSessionId -> 当前消息绑定的 sessionId -> activeSessionID()
-        let resolvedSessionId = (appState.chatSessionId?.isEmpty == false ? appState.chatSessionId : nil)
-            ?? inflight?.sessionId
-            ?? sessionId
+        // 会话单源：req.inflight.sessionId → activeSessionID()（appState.chatSessionId 已废除）
+        let resolvedSessionId = inflight?.sessionId ?? sessionId
 
         Task {
             var submitSuccess = false
@@ -634,7 +635,13 @@ public struct ChatView: View {
     private func inflightPlaceholder(_ req: InFlightRequest) -> some View {
         switch req.phase {
         case .thinking:
-            ThinkingPlaceholderView(seconds: waitingSeconds, progress: liveProgress, onCancel: { cancelInFlight() })
+            ThinkingPlaceholderView(
+                seconds: waitingSeconds,
+                progress: liveProgress,
+                phase: thinkingPhase,
+                phaseDetail: thinkingDetail,
+                onCancel: { cancelInFlight() }
+            )
         case .timeout:
             StatusCardView(
                 icon: "exclamationmark.triangle.fill",
@@ -736,6 +743,8 @@ public struct ChatView: View {
     private func startGeneration(text: String, quote: QuotedContext?) {
         isGenerating = true
         waitingSeconds = 0
+        thinkingPhase = nil   // 新请求重置真实分相（等待首帧 status 到达）
+        thinkingDetail = nil
         let sessionId = sessionManager.activeSessionID()
         let req = InFlightRequest(id: UUID().uuidString, sessionId: sessionId, text: text, quote: quote)
         inflight = req
@@ -758,13 +767,10 @@ public struct ChatView: View {
         do {
             let resp = try await APIClient.shared.chat(
                 question: req.text,
-                sessionId: appState.chatSessionId,
+                sessionId: req.sessionId,
                 quotedContext: req.quote?.text,
                 agentId: appState.selectedAgentId
             )
-            if let sid = resp.sessionId, !sid.isEmpty {
-                appState.chatSessionId = sid
-            }
             await handleSuccess(req: req, response: resp)
         } catch {
             await handleError(req: req, error: error)
@@ -780,7 +786,7 @@ public struct ChatView: View {
         }
         let stream = APIClient.shared.chatStream(
             question: req.text,
-            sessionId: appState.chatSessionId,
+            sessionId: req.sessionId,
             agentId: appState.selectedAgentId
         )
         do {
@@ -872,10 +878,12 @@ public struct ChatView: View {
                     }
                 case .clarifyRejected:
                     showToast("选择未通过校验，请从选项中选择或输入有效内容")
+                case .status(let phase, let detail):
+                    // R-3 铁律：status 仅更新 ThinkingPlaceholder 阶段文案，绝不解除 pending
+                    // （占位解除仍以首个 thought/delta 为准，否则 boot 首帧即解除、分相提示失去展示期）
+                    thinkingPhase = phase.isEmpty ? nil : phase
+                    thinkingDetail = detail.isEmpty ? nil : detail
                 case .done(let sid, let answer):
-                    if let sid, !sid.isEmpty {
-                        appState.chatSessionId = sid
-                    }
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         // 完成时所有步骤置为 done
                         updateReasoningSteps(for: idx) { steps in
@@ -1131,9 +1139,6 @@ public struct ChatView: View {
                 quotedContext: updated.quote?.text,
                 agentId: appState.selectedAgentId
             )
-            if let sid = resp.sessionId, !sid.isEmpty {
-                appState.chatSessionId = sid
-            }
             await handleSuccess(req: updated, response: resp)
         } catch {
             if let apiErr = error as? APIError, case .server(let code, _) = apiErr, code == 404 {
@@ -1203,8 +1208,9 @@ public struct ChatView: View {
     private func startStatusPolling(req: InFlightRequest) {
         statusPollTask?.cancel()
         liveProgress = nil
-        let sid = appState.chatSessionId
-        guard let sid, !sid.isEmpty, !demoMode else { return }
+        // 会话单源：轮询绑定本次请求的会话 ID（appState.chatSessionId 已废除）
+        let sid = req.sessionId
+        guard !sid.isEmpty, !demoMode else { return }
         statusPollTask = Task { @MainActor in
             let delays = [2, 4, 6, 8]
             var step = 0
@@ -1249,7 +1255,9 @@ public struct ChatView: View {
 
     private func probeAndResume(_ req: InFlightRequest) async {
         // 先探测 status：已完成 → 秒级装载；未完成/探测失败 → 断点续接（重发 POST，桥接层 --resume）
-        if let sid = appState.chatSessionId, !sid.isEmpty, !demoMode {
+        // 会话单源：探测绑定本次请求会话 ID（appState.chatSessionId 已废除）
+        let sid = req.sessionId
+        if !sid.isEmpty, !demoMode {
             do {
                 let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true)
                 if status.status == "completed",

@@ -969,6 +969,7 @@ def _build_in_process_agent(
     - tool_start/tool_complete → tool 事件（载荷治理·不发 raw result）
     - clarify_callback → clarify_gateway 注册 + clarify 事件 + 阻塞等待解锁
     """
+    _build_t0 = time.monotonic()  # 延迟打点：构建入口
     from hermes_cli.config import load_config
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
@@ -1071,6 +1072,9 @@ def _build_in_process_agent(
     except Exception:
         pass
 
+    build_ms = (time.monotonic() - _build_t0) * 1000.0
+    print(f"[bridge] agent_build_ms={build_ms:.1f} user={user_id}")
+
     return agent, session_db
 
 
@@ -1086,6 +1090,8 @@ def _run_agent_sync(
     session_db = None
     try:
         agent, session_db = _build_in_process_agent(goal, user_id, hermes_sid, stream_q)
+        # 第二帧状态：agent 构建完成（build 返回后、run_conversation 前）→ 进入推理
+        _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
         agent_holder[0] = agent
         result = agent.run_conversation(goal)
         final = (result.get("final_response") or "") if isinstance(result, dict) else str(result or "")
@@ -1114,6 +1120,9 @@ def _sse_from_in_process(user_id: str, goal: str):
     start_ts = time.monotonic()
     last_keepalive_ts = time.monotonic()
 
+    # 首帧状态（worker 启动前入队 → SSE 首帧即 boot，<10ms 真实构建状态）
+    _qput(stream_q, {"type": "status", "phase": "boot", "detail": "正在初始化推理引擎…"})
+
     hermes_sid = _resolve_hermes_session(user_id)
 
     worker = threading.Thread(
@@ -1126,6 +1135,7 @@ def _sse_from_in_process(user_id: str, goal: str):
     _stream_run_register(user_id, {"agent_holder": agent_holder, "queue": stream_q})
 
     try:
+        first_thought_recorded = False
         while True:
             now = time.monotonic()
 
@@ -1148,6 +1158,12 @@ def _sse_from_in_process(user_id: str, goal: str):
 
             if item is None:
                 break
+            # 延迟打点：start_ts 至首个 thought 出队差（真实思维链首帧延迟）
+            if not first_thought_recorded and item.get("type") == "thought":
+                first_thought_recorded = True
+                print(
+                    f"[bridge] first_thought_ms={(time.monotonic() - start_ts) * 1000.0:.1f} user={user_id}"
+                )
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
     finally:
         # 断连/取消回收：interrupt + 清理 streaming 标记

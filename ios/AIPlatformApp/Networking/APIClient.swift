@@ -216,6 +216,11 @@ public struct TenantAgentDTO: Codable, Identifiable, Hashable {
     public let createdAt: String?
 }
 
+/// GET /api/v1/hermes/serve-token 响应体（B-2-2：WKWebView 注入 token 来源）
+public struct ServeTokenDTO: Codable {
+    public let token: String
+}
+
 /// POST /api/v1/tenant-agents 请求体（tenant_id 由后端派生，客户端不可指定）
 public struct TenantAgentCreateDTO: Encodable {
     public let baseAgentId: String
@@ -552,7 +557,16 @@ public final class APIClient: ObservableObject {
 
     // MARK: - 租户 Agent 切片（与后端 /api/v1/tenant-agents 同源，需求3/4）
 
-    /// GET /api/v1/tenant-agents：当前租户的 Agent 切片列表（多租户隔离由后端保证）
+    /// 获取 Hermes Dashboard 会话 Token（B-2-2：注入 WKWebView window.__HERMES_SESSION_TOKEN__）。
+    /// 后端 GET /api/v1/hermes/serve-token 返回 {"token": "..."}；503（未配置）时抛 server 错误。
+    public func fetchServeToken() async throws -> String {
+        let dto: ServeTokenDTO = try await request(ServeTokenDTO.self, path: "hermes/serve-token")
+        guard !dto.token.isEmpty else {
+            throw APIError.server(503, "HERMES_SERVE_TOKEN 未配置")
+        }
+        return dto.token
+    }
+
     public func fetchTenantAgents() async throws -> [TenantAgentDTO] {
         try await request([TenantAgentDTO].self, path: "tenant-agents")
     }
@@ -644,6 +658,7 @@ public final class APIClient: ObservableObject {
         case toolComplete(id: String, tool: String)
         case clarify(question: String, choices: [String], multiSelect: Bool, source: String)
         case clarifyRejected
+        case status(phase: String, detail: String)
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -675,6 +690,12 @@ public final class APIClient: ObservableObject {
                 )
             case "clarify_rejected":
                 return .clarifyRejected
+            case "status":
+                // 真实状态分相（boot/reasoning）：仅驱动 ThinkingPlaceholder 阶段文案
+                return .status(
+                    phase: json["phase"] as? String ?? "",
+                    detail: json["detail"] as? String ?? ""
+                )
             case "done":
                 return .done(
                     sessionId: json["session_id"] as? String,
