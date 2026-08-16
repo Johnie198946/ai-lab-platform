@@ -29,6 +29,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -1230,6 +1231,39 @@ def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, functio
     })
 
 
+def _tenantize_created_skill(function_args) -> None:
+    """技能创建租户化：skill_manage(action=create) 后把新技能从全局分类目录
+    迁移到 skills/tenants/<TENANT_ID>/<name>/（租户设置页只显示租户专属技能）。
+
+    TENANT_ID 为空/public 时跳过（public 环境技能留在全局库）。
+    """
+    try:
+        args = function_args or {}
+        if args.get("action") != "create" or not args.get("name"):
+            return
+        tenant = os.environ.get("TENANT_ID", "").strip()
+        if not tenant or tenant == "public":
+            return
+        name = str(args["name"]).strip()
+        if not name:
+            return
+        home = Path(os.environ.get("HERMES_HOME", str(Path.home())))
+        skills_root = home / "skills" if home.name == ".hermes" else home / ".hermes" / "skills"
+        # 新技能目录可能在分类子目录（<category>/<name>）或顶层（<name>）
+        candidates = list(skills_root.glob(f"*/{name}")) + list(skills_root.glob(name))
+        for src in candidates:
+            if src.is_dir() and (src / "SKILL.md").exists() and "tenants" not in src.parts:
+                dst = skills_root / "tenants" / tenant / name
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if dst.exists():
+                    shutil.rmtree(str(dst))
+                shutil.move(str(src), str(dst))
+                print(f"[bridge] 技能租户化: {name} → tenants/{tenant}/")
+                return
+    except Exception as e:
+        print(f"[bridge] 技能租户化失败: {e}")
+
+
 def _emit_tool_complete(stream_q: queue.Queue, tool_call_id, function_name, function_args=None, result=None) -> None:
     """工具完成事件（模块级可测）：不发 raw result（对齐 api_server 契约·防内部信息泄露）。"""
     if not tool_call_id or (function_name or "").startswith("_"):
@@ -1331,6 +1365,10 @@ def _build_in_process_agent(
     def _tool_complete_cb(tool_call_id, function_name, function_args, result) -> None:
         # 载荷治理：不发 raw result（对齐 api_server 契约·防内部信息泄露）
         _emit_tool_complete(stream_q, tool_call_id, function_name, function_args, result)
+        # 技能创建租户化：skill_manage(action=create) 完成后把新技能迁移到 tenants/<tenant>/
+        # （租户设置页只显示租户专属技能——用户创建的技能自动归租户，不留在 public）
+        if function_name == "skill_manage":
+            _tenantize_created_skill(function_args)
 
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
     # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
@@ -1671,7 +1709,11 @@ async def list_skills(tenant: str = "public"):
         # parts: (名称, SKILL.md) | (分类, 名称, SKILL.md) | (tenants, <tenant>, 名称, SKILL.md)
         is_tenant = len(parts) >= 4 and parts[0] == "tenants"
         skill_tenant = parts[1] if is_tenant else "public"
-        if tenant != "public" and skill_tenant not in ("public", tenant):
+        # 租户隔离：public 查询只返回全局技能；租户查询只返回该租户专属（互不含）
+        if tenant == "public":
+            if is_tenant:
+                continue
+        elif skill_tenant != tenant:
             continue
         if len(parts) == 2:
             name, category = parts[0], ""
