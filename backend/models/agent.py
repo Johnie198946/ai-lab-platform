@@ -6,7 +6,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     JSON,
-    Boolean,
     DateTime,
     String,
     Text,

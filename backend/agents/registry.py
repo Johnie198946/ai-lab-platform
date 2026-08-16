@@ -5,7 +5,7 @@ Agent 广场的"发现层"——不依赖前端
 每个 Agent 的元数据、依赖关系、触发条件都在这里
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List
 from dataclasses import dataclass
 
 

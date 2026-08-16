@@ -9,7 +9,7 @@ Agent 守护层（AgentCare PEP）
 from datetime import datetime
 import os
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict
 
 
 class AgentGuard:

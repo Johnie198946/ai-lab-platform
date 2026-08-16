@@ -6,7 +6,6 @@ wiki 条目是唯一真理源，wikilinks 织成知识网
 """
 
 from datetime import datetime
-from typing import Optional, List
 from sqlalchemy import (
     Column,
     Integer,

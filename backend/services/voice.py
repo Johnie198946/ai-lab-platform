@@ -5,11 +5,7 @@
 后端: faster-whisper → Intent Router
 """
 
-import asyncio
 import io
-import wave
-from pathlib import Path
-from typing import Optional
 
 # faster-whisper 与 Hermes STT 共享同一引擎
 try:

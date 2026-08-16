@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from backend.services.protocol_schema import validate_workflow_yaml, WorkflowSchemaError
+from backend.services.protocol_schema import validate_workflow_yaml
 
 
 class EngineError(Exception):

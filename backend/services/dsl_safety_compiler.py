@@ -13,7 +13,6 @@ from typing import List, Dict, Union, Set, Any, Optional
 from backend.models.tenant_agent_schema import (
     WorkflowDSLPlan,
     WorkflowDSLNode,
-    WorkflowDSLEdge,
     WorkflowNodeType,
 )
 

@@ -9,7 +9,6 @@ PATCH  /api/tasks/{task_id}    — 更新状态
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query

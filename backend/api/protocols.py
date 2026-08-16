@@ -14,7 +14,6 @@ GET    /api/v1/protocols/{id}/versions — 版本历史
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
 from typing import List, Optional
 

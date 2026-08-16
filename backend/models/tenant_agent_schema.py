@@ -8,7 +8,7 @@ backend/models/tenant_agent_schema.py
 from __future__ import annotations
 from enum import Enum
 from typing import List, Optional, Dict, Any
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 class TenantRole(str, Enum):
