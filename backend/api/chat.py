@@ -94,6 +94,9 @@ async def _check_cached_answer(
         return None
     if not data or data.get("status") != "completed":
         return None
+    # 已消费（正常追问/重发）→ 不返回旧答案；未消费（断点续接）→ 0ms 返回
+    if data.get("consumed", True):
+        return None
     answer = (data.get("answer") or "").strip()
     if not answer:
         return None

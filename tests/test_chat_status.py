@@ -226,6 +226,18 @@ class TestBridgeStatusEndpoint(unittest.TestCase):
         # consume=1 后水位线推进到最新消息 id
         self.assertEqual(bridge._get_watermark("user_1"), 2)
 
+    def test_consumed_flag_reflects_watermark(self):
+        import scripts.hermes_bridge as bridge
+
+        with patch.object(bridge, "STATE_DB", self.db_path):
+            # 首次：未消费（consumed=False），consume=1 顺带标记
+            first = asyncio.run(bridge.chat_status("user_1", 1))
+            self.assertEqual(first["status"], "completed")
+            self.assertFalse(first["consumed"])
+            # 再次查询：已消费（consumed=True）
+            second = asyncio.run(bridge.chat_status("user_1", 0))
+            self.assertTrue(second["consumed"])
+
     def test_endpoint_unknown_user_not_found(self):
         import scripts.hermes_bridge as bridge
 
@@ -251,12 +263,26 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "status": "completed",
             "answer": "已有答案",
             "reasoning": [{"type": "thought", "title": "思考过程", "detail": "x"}],
+            "consumed": False,
         }
         with patch("backend.api.chat._call_hermes_status", return_value=fake):
             resp = asyncio.run(_check_cached_answer("问题", "sid"))
         self.assertIsNotNone(resp)
         self.assertEqual(resp.answer, "已有答案")
         self.assertEqual(resp.reasoning[0].type, "thought")
+
+    def test_check_cached_answer_skips_consumed(self):
+        from backend.api.chat import _check_cached_answer
+
+        fake = {
+            "status": "completed",
+            "answer": "旧答案",
+            "reasoning": [],
+            "consumed": True,
+        }
+        with patch("backend.api.chat._call_hermes_status", return_value=fake):
+            resp = asyncio.run(_check_cached_answer("问题", "sid"))
+        self.assertIsNone(resp)
 
     def test_check_cached_answer_skips_non_completed(self):
         from backend.api.chat import _check_cached_answer
@@ -278,7 +304,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
     def test_chat_returns_cached_without_calling_hermes(self):
         from backend.api.chat import ChatRequest, chat
 
-        fake = {"status": "completed", "answer": "缓存回答", "reasoning": []}
+        fake = {"status": "completed", "answer": "缓存回答", "reasoning": [], "consumed": False}
         with patch("backend.api.chat.match_identity_rule", return_value=None), \
              patch("backend.api.chat._call_hermes_status", return_value=fake), \
              patch("backend.api.chat._call_hermes") as mock_hermes:

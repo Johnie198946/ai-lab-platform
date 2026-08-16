@@ -387,7 +387,7 @@ def _latest_step_text(last_row) -> str:
     return "等待处理"
 
 
-def _query_status(hermes_sid: str | None) -> dict:
+def _query_status(hermes_sid: str | None, user_id: str | None = None) -> dict:
     """只读查询 state.db 会话状态，返回 4 态状态机结果。
 
     - not_found：无映射 / 会话不存在 / 已归档
@@ -395,6 +395,7 @@ def _query_status(hermes_sid: str | None) -> dict:
     - running：最新为 tool/thought/user 且 300s 内有更新（附 latest_step + 已产生 steps）
     - timeout：超时（>300s 无更新）或进程已退出且无 assistant 回答
     """
+    wm_key = user_id or hermes_sid or ""
     empty = {"status": "not_found", "answer": "", "reasoning": [], "latest_step": ""}
     if not hermes_sid:
         return empty
@@ -436,7 +437,7 @@ def _query_status(hermes_sid: str | None) -> dict:
                 "answer": content,
                 "reasoning": steps,
                 "latest_step": "",
-                "consumed": last["id"] <= _get_watermark(hermes_sid),
+                "consumed": last["id"] <= _get_watermark(wm_key),
             }
 
         # running vs timeout
@@ -785,7 +786,7 @@ async def chat_status(user_id: str, consume: int = 0):
     consume=1 时，completed 结果顺带推进消费水位线（0ms 断点回读后标记已消费）。
     """
     hermes_sid = _user_session_map.get(user_id)
-    result = await asyncio.to_thread(_query_status, hermes_sid)
+    result = await asyncio.to_thread(_query_status, hermes_sid, user_id)
     if consume == 1 and result.get("status") == "completed":
         _mark_consumed(user_id, hermes_sid)
     return result
