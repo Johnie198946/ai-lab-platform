@@ -9,3 +9,9 @@ tests/
 docs/
 *.md
 .DS_Store
+# 构建上下文隔离（context 改为仓库根后必须排除大目录）
+web-dashboard/node_modules/
+data/
+backups/
+apps/
+*.tgz

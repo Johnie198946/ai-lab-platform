@@ -1,8 +1,8 @@
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package*.json ./
+COPY frontend/package*.json ./
 RUN npm ci
-COPY . .
+COPY frontend/ .
 # Build
 RUN npm run build
 
