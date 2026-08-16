@@ -32,6 +32,62 @@ router = APIRouter(prefix="/api/chat", tags=["chat"])
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
 )
+# ---------------------------------------------------------------------------
+# L1 规则预分诊引擎（零 LLM 延迟 · 0.5s 直出结构化澄清卡片）
+# ---------------------------------------------------------------------------
+
+_PRECLASSIFIED_RULES = [
+    {
+        "keywords": ["电商", "商城", "买卖", "购物车", "卖货", "网店", "shopify"],
+        "question": "先定业务形态，再谈方案。你的电商网站是哪一类？",
+        "choices": [
+            "B2C 零售商城：个人/小团队卖货，含商品 + 购物车 + 支付",
+            "B2B 批发订货平台：企业采购、阶梯报价与大宗撮合",
+            "多商户入驻平台：类似淘宝/美团，含多商家管理与分账",
+            "跨境独立站：多语言、多币种与海外物流支付集成",
+        ],
+    },
+    {
+        "keywords": ["操作系统", "手机系统", "os开发", "自研系统", "微内核"],
+        "question": "操作系统研发涉及多个层面，你的核心目标是哪一种？",
+        "choices": [
+            "演示/教学原型：基于 QEMU/Linux 的轻量微内核概念验证",
+            "基于 AOSP 定制：Android 开源框架裁剪与深度系统 ROM 定制",
+            "嵌入式/物联网 OS：针对特定硬件的实时轻量操作系统 (RTOS)",
+            "仅做方案与架构调研：技术路线对比与可行性分析",
+        ],
+    },
+    {
+        "keywords": ["大模型应用", "做个ai应用", "智能体平台", "知识库问答", "rag系统"],
+        "question": "AI 应用落地场景很多，你想构建哪种形态？",
+        "choices": [
+            "企业内部知识库 RAG：文档问答与垂直领域检索增强",
+            "自主 Agent 协同工作流：多智能体协作完成复杂任务",
+            "AI 垂直类 SaaS 产品：面向外部用户的 AI 生成或辅助工具",
+            "私有化大模型部署与微调：基于开源模型在本地服务器微调与部署",
+        ],
+    },
+]
+
+
+def match_preclassified_clarify(text: str) -> Optional[Dict[str, Any]]:
+    """纯规则预分诊：命中超宽泛开发需求，直接返回 Clarify 结构，跳过模型推理耗时。"""
+    t = text.strip().lower()
+    # 明确要求写报告/方案等深度长文时，不触发预分诊拦截
+    if any(k in t for k in ["调研报告", "分析报告", "详细方案", "完整报告", "撰写报告"]):
+        return None
+    # 字数过长说明需求已经带细节，不属于超宽泛词
+    if len(t) > 40:
+        return None
+
+    for rule in _PRECLASSIFIED_RULES:
+        if any(kw in t for kw in rule["keywords"]):
+            return {
+                "question": rule["question"],
+                "choices": rule["choices"],
+                "multi_select": False,
+            }
+    return None
 # Bridge 状态回读端点（长任务状态 / 断点 0ms 回读）
 HERMES_BRIDGE_STATUS_URL = os.environ.get(
     "HERMES_BRIDGE_STATUS_URL",
@@ -370,10 +426,27 @@ async def _call_bridge_stream(
 async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> StreamingResponse:
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
 
-    事件协议：delta / thought / tool_start / tool_complete / clarify /
-              clarify_rejected / done / error + keepalive 注释帧。
+    L1 规则预分诊优先：若命中超宽泛词，直接 0.5s 下发 Clarify 选项卡片，消灭模型冷启动。
     """
     isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
+
+    # L1 规则预分诊：命中最宽泛需求直接下发卡片（source=preclassified 标记）
+    pre_clarify = match_preclassified_clarify(req.question)
+    if pre_clarify:
+        async def _preclassified_gen():
+            payload = {"type": "clarify", "source": "preclassified", **pre_clarify}
+            yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        return StreamingResponse(
+            _preclassified_gen(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Session-ID": isolated_session_id,
+            },
+        )
+
     _streaming_sessions.add(isolated_session_id)
 
     async def _gen():

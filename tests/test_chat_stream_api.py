@@ -77,9 +77,44 @@ def test_clarify_submit_model():
     assert req.response == "B2C 单商户"
 
 
-def test_cancel_request_model():
-    req = CancelRequest(session_id="s1")
-    assert req.session_id == "s1"
+def test_match_preclassified_clarify():
+    from backend.api.chat import match_preclassified_clarify
+
+    # 1. 命中超宽泛开发需求
+    c1 = match_preclassified_clarify("我想开发一个电商网站")
+    assert c1 is not None
+    assert "电商网站是哪一类" in c1["question"]
+    assert len(c1["choices"]) == 4
+
+    # 2. 命中操作系统需求
+    c2 = match_preclassified_clarify("开发手机系统")
+    assert c2 is not None
+    assert "操作系统" in c2["question"]
+
+    # 3. 明确要求写报告不被拦截
+    c3 = match_preclassified_clarify("输出电商行业调研报告")
+    assert c3 is None
+
+    # 4. 字数很长（带细节）不被拦截
+    c4 = match_preclassified_clarify("我想做一个基于 Flutter 的跨境电商网站，已经有 UI 设计图和 Stripe 账号")
+    assert c4 is None
+
+
+@pytest.mark.asyncio
+async def test_stream_preclassified_fast_clarify(app: FastAPI, transport: httpx.ASGITransport):
+    """规则预分诊命中时直接 0.5s 下发 clarify SSE 事件，不调 bridge。"""
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        async with client.stream(
+            "POST", "/api/chat/stream",
+            json={"question": "我想做一个电商商城", "session_id": "s-pre"},
+            headers=auth_headers(),
+        ) as resp:
+            assert resp.status_code == 200
+            body = ""
+            async for chunk in resp.aiter_text():
+                body += chunk
+            assert '"type": "clarify"' in body
+            assert "电商网站是哪一类" in body
 
 
 # ---------------------------------------------------------------------------

@@ -204,6 +204,8 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     /// true = 多选（Checkbox），false = 单选（Radio）
     public var multiSelect: Bool
     public var submitLabel: String
+    /// 澄清来源：bridge = Hermes clarify 工具（点选后 submitClarify 解锁 agent）；preclassified = 本地规则预分诊卡片（点选后发起新一轮对话）
+    public var source: String
     /// 已提交标记：提交后禁用重复点选，并记录最终选择文本
     public var isSubmitted: Bool
     public var submittedSelection: String
@@ -214,6 +216,7 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
         choices: [String],
         multiSelect: Bool = false,
         submitLabel: String = "确认选择",
+        source: String = "bridge",
         isSubmitted: Bool = false,
         submittedSelection: String = ""
     ) {
@@ -222,6 +225,7 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
         self.choices = choices.map { ClarifyOption(label: $0) }
         self.multiSelect = multiSelect
         self.submitLabel = submitLabel
+        self.source = source
         self.isSubmitted = isSubmitted
         self.submittedSelection = submittedSelection
     }

@@ -164,16 +164,20 @@ public struct ChatView: View {
         }
     }
 
-    /// 澄清卡片提交：优先走流式 clarify 端点（解锁 agent 线程·非流式降级为普通消息）。
+    /// 澄清卡片提交：按来源分流——
+    /// - bridge 澄清（Hermes clarify 工具）：submitClarify 解锁阻塞中的 agent 线程；
+    /// - preclassified 澄清（本地规则预分诊卡片）：无 agent 在等，直接发起新一轮对话推进。
     private func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         let sessionId = sessionManager.activeSessionID()
+        var source = "bridge"
         // 1) 原卡片置为已提交（禁用重复点选）——直接改 blocks 数组内的关联值
         if let blockIdx = messages[idx].blocks.firstIndex(where: {
             if case .clarify = $0 { return true }
             return false
         }) {
             if case .clarify(var c) = messages[idx].blocks[blockIdx] {
+                source = c.source
                 c.markSubmitted(selection: selection)
                 messages[idx].blocks[blockIdx] = .clarify(c)
             }
@@ -187,7 +191,19 @@ public struct ChatView: View {
         ))
         commitSession()
 
-        // 3) 流式链路：使用当前活动会话 ID 提交到澄清端点解锁 agent（严禁使用未初始化的 nil）
+        // 3) 按来源分流
+        if source == "preclassified" {
+            // 本地预分诊卡片：没有 agent 在等 → 把选择作为新消息发起真实对话（agent 接手 Gate-by-Gate）
+            if !isGenerating {
+                startGeneration(text: selection, quote: nil)
+            } else {
+                // 理论不会发生（预分诊流已结束 isGenerating=false），兜底直接排队
+                pendingQueue.append(PendingItem(id: UUID().uuidString, text: selection, quote: nil))
+            }
+            return
+        }
+
+        // bridge 澄清：使用当前活动会话 ID 提交到澄清端点解锁 agent（严禁使用未初始化的 nil）
         // 优先顺序：appState.chatSessionId -> 当前消息绑定的 sessionId -> activeSessionID()
         let resolvedSessionId = (appState.chatSessionId?.isEmpty == false ? appState.chatSessionId : nil)
             ?? inflight?.sessionId
@@ -832,12 +848,13 @@ public struct ChatView: View {
                             }
                         }
                     }
-                case .clarify(let question, let choices, let multiSelect):
+                case .clarify(let question, let choices, let multiSelect, let source):
                     let block = ClarifyBlock(
                         question: question,
                         choices: choices,
                         multiSelect: multiSelect,
-                        submitLabel: "确认选择"
+                        submitLabel: "确认选择",
+                        source: source
                     )
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         // 思考步骤全部置为 done

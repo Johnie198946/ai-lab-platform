@@ -642,7 +642,7 @@ public final class APIClient: ObservableObject {
         case thought(String)
         case toolStart(id: String, tool: String, label: String)
         case toolComplete(id: String, tool: String)
-        case clarify(question: String, choices: [String], multiSelect: Bool)
+        case clarify(question: String, choices: [String], multiSelect: Bool, source: String)
         case clarifyRejected
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
@@ -670,7 +670,8 @@ public final class APIClient: ObservableObject {
                 return .clarify(
                     question: json["question"] as? String ?? "",
                     choices: json["choices"] as? [String] ?? [],
-                    multiSelect: json["multi_select"] as? Bool ?? false
+                    multiSelect: json["multi_select"] as? Bool ?? false,
+                    source: json["source"] as? String ?? "bridge"
                 )
             case "clarify_rejected":
                 return .clarifyRejected
