@@ -1023,7 +1023,12 @@ def _watchdog_loop() -> None:
 
 
 def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, function_args) -> None:
-    """工具启动事件（模块级可测）：过滤内部工具 + 载荷治理（仅 preview/label）。"""
+    """工具启动事件（模块级可测）：过滤内部工具 + 载荷治理（仅 preview/label）。
+
+    代码块唤起（对齐官方 gateway fenced code block 语义）：代码型工具
+    （terminal/write_file/patch/execute_code）附 code 字段（截断预览），
+    前端渲染为代码块卡片；非代码工具 code=None。
+    """
     if not tool_call_id or (function_name or "").startswith("_"):
         return
     label = function_name
@@ -1034,11 +1039,30 @@ def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, functio
             label = preview
     except Exception:
         pass
+
+    code: str | None = None
+    try:
+        args = function_args or {}
+        if function_name == "terminal":
+            code = str(args.get("command") or "").rstrip()
+        elif function_name in ("write_file", "patch"):
+            content = args.get("content") or args.get("new_string") or ""
+            content_s = str(content)
+            code = content_s[:400] + ("\n…（预览截断）" if len(content_s) > 400 else "")
+        elif function_name == "execute_code":
+            content_s = str(args.get("code") or "")
+            code = content_s[:400] + ("\n…（预览截断）" if len(content_s) > 400 else "")
+    except Exception:
+        code = None
+    if code is not None and not code.strip():
+        code = None
+
     _qput(stream_q, {
         "type": "tool_start",
         "id": tool_call_id,
         "tool": function_name,
         "label": label,
+        "code": code,
     })
 
 
