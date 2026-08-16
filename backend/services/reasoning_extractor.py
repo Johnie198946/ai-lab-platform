@@ -55,12 +55,14 @@ TOOL_WHITELIST: frozenset[str] = frozenset(
         "vision_analyze",
         "process",
         "delegate_task",
+        "clarify",
     }
 )
 
 # 工具类型专业化映射
 _SKILL_LOAD_TOOLS = frozenset({"skill_view"})
 _AGENT_SPAWN_TOOLS = frozenset({"delegate_task"})
+_CLARIFY_TOOLS = frozenset({"clarify"})
 
 # 敏感凭证正则（大小写不敏感，打码为 ***）
 _CREDENTIAL_RE = re.compile(
@@ -99,6 +101,8 @@ def _tool_type(tool_name: str) -> str:
         return "skill_load"
     if tool_name in _AGENT_SPAWN_TOOLS:
         return "agent_spawn"
+    if tool_name in _CLARIFY_TOOLS:
+        return "clarify"
     return "tool_call"
 
 
@@ -195,6 +199,25 @@ def extract_steps(rows: List[Dict[str, Any]]) -> List[ReasoningStep]:
                         type=ttype,
                         title="分派子代理任务",
                         detail="子任务内部步骤暂不展开",
+                    )
+                )
+            elif ttype == "clarify":
+                # 澄清选项卡片触发
+                q_text = ""
+                detail_text = str(args)
+                try:
+                    parsed_args = json.loads(args) if isinstance(args, str) else (args or {})
+                    if isinstance(parsed_args, dict):
+                        q_text = str(parsed_args.get("question") or "")
+                        detail_text = json.dumps(parsed_args, ensure_ascii=False)
+                except Exception:
+                    pass
+                title = f"需求澄清: {q_text}" if q_text else "需求澄清"
+                steps.append(
+                    ReasoningStep(
+                        type=ttype,
+                        title=title,
+                        detail=sanitize_step(detail_text),
                     )
                 )
             else:
