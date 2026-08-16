@@ -194,12 +194,20 @@ async def _call_hermes(
 
 
 async def _call_hermes_status(
-    session_id: str, consume: bool = False
+    session_id: str, consume: bool = False, offset: int = 0
 ) -> Optional[Dict[str, Any]]:
-    """透传 Bridge 状态回读端点，返回状态机 dict（失败返回 None）。"""
+    """透传 Bridge 状态回读端点，返回状态机 dict（失败返回 None）。
+
+    offset>0 时携带 ?offset=N：reasoning 仅返回消息 id>N 的新条（增量轮询，方案 v5）。
+    """
     url = f"{HERMES_BRIDGE_STATUS_URL}/{session_id}"
+    params = []
     if consume:
-        url += "?consume=1"
+        params.append("consume=1")
+    if offset:
+        params.append(f"offset={offset}")
+    if params:
+        url += "?" + "&".join(params)
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.get(url)
         if r.status_code == 200:
@@ -312,13 +320,17 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
 
 @router.get("/status/{session_id}")
 async def chat_status(
-    session_id: str, consume: bool = False, payload=Depends(require_auth)
+    session_id: str,
+    consume: bool = False,
+    offset: int = 0,
+    payload=Depends(require_auth),
 ) -> Dict[str, Any]:
     """长任务状态回读：透传 Bridge GET /v1/chat/status/{user_id}。
 
     consume=True 时 Bridge 顺带标记 completed 结果为已消费（断点 0ms 回读）。
+    offset=N 时 reasoning 仅返回消息 id>N 的新条（增量轮询，方案 v5）。
     """
-    data = await _call_hermes_status(session_id, consume=consume)
+    data = await _call_hermes_status(session_id, consume=consume, offset=offset)
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
     return data

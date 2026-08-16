@@ -79,8 +79,8 @@ WATERMARK_FILE = Path(
 MAX_INPUT = 4000
 DEFAULT_TIMEOUT = 300
 SERVE_TIMEOUT = 300
-# 状态回读 stale 判定阈值（秒）：最新消息超过该阈值未更新即判 timeout
-STATUS_STALE_SECONDS = 300
+# 注：v5 起显式移除「>300s 无更新」stale 判定（STATUS_STALE_SECONDS），
+# timeout 判定统一单一时钟源：run.start_ts 超 STREAM_MAX_DURATION_SECONDS(720s)。
 
 # ---------------------------------------------------------------------------
 # v7 真实流式（进程内 agent runner）配置
@@ -438,41 +438,140 @@ def _readback_delta(session_id: str | None, baseline_id: int) -> list[dict]:
 
 # ---------- 状态回读（GET /v1/chat/status） ----------
 
-def _latest_step_text(last_row) -> str:
-    """从最新一行提炼 human-readable 最新步骤摘要。"""
+def _build_status_phrase(last_row) -> str:
+    """latest_step 双驱动之一：tool_start 短语。
+
+    最新一条为 tool 消息 → 「正在执行: <tool_name>」微信式进度短语。
+    """
     role = (last_row["role"] or "").strip()
     if role == "tool":
         name = (last_row["tool_name"] or "").strip()
-        return f"工具执行完成: {name}" if name else "工具执行完成"
+        return f"正在执行: {name}" if name else "正在执行工具"
+    return ""
+
+
+def _thought_summary(rows) -> str:
+    """latest_step 双驱动之二：从最近 thought（assistant.reasoning_content）取摘要。
+
+    截断 60 字符 + 省略号，避免长思考文本撑爆进度行。
+    """
+    for row in reversed(rows):
+        if (row["role"] or "").strip() != "assistant":
+            continue
+        rc = (row["reasoning_content"] or "").strip()
+        if rc:
+            return rc[:60] + ("…" if len(rc) > 60 else "")
+    return ""
+
+
+def _latest_step_text(rows) -> str:
+    """latest_step 双驱动合成：tool_start 短语优先，无则 thought 摘要，再兜底文案。"""
+    last = rows[-1]
+    role = (last["role"] or "").strip()
+    phrase = _build_status_phrase(last)
+    if phrase:
+        return phrase
     if role == "assistant":
-        content = (last_row["content"] or "").strip()
-        if content:
+        summary = _thought_summary(rows)
+        if summary:
+            return f"思考中: {summary}"
+        if (last["content"] or "").strip():
             return "已生成回答"
-        if last_row["tool_calls"]:
-            return "正在调用工具"
-        if (last_row["reasoning_content"] or "").strip():
-            return "思考中"
-        return "处理中"
-    return "等待处理"
+        return "思考中"
+    if role == "user":
+        return "正在初始化…"
+    return "处理中"
 
 
-def _query_status(hermes_sid: str | None, user_id: str | None = None) -> dict:
-    """只读查询 state.db 会话状态，返回 4 态状态机结果。
+def _pending_clarify(user_id: str) -> dict | None:
+    """从 clarify_gateway._entries 取未 resolve 的 pending entry（response is None）。
 
-    - not_found：无映射 / 会话不存在 / 已归档
-    - completed：最后一条为 role='assistant' 且内容非空（附完整 answer + reasoning）
-    - running：最新为 tool/thought/user 且 300s 内有更新（附 latest_step + 已产生 steps）
-    - timeout：超时（>300s 无更新）或进程已退出且无 assistant 回答
+    只返回当前 user 的 entry（session_key 匹配）；已 resolve/已消费（wait_for_response
+    超时清理）的 entry 自然被过滤。载荷对齐前端 ClarifyBlock：question/choices/
+    multi_select/clarify_id。
+    """
+    cg = None
+    try:
+        cg = _get_clarify_gateway()
+        entries = getattr(cg, "_entries", None)
+        lock = getattr(cg, "_lock", None)
+        if entries is None:
+            return None
+        if lock is not None:
+            with lock:
+                items = list(entries.values())
+        else:
+            items = list(entries.values())
+        for entry in items:
+            if getattr(entry, "session_key", None) == user_id and getattr(entry, "response", "§") is None:
+                return {
+                    "clarify_id": entry.clarify_id,
+                    "question": entry.question,
+                    "choices": list(entry.choices) if entry.choices else [],
+                    "multi_select": bool(entry.multi_select),
+                }
+    except Exception as e:
+        print(f"[bridge] pending clarify 查询失败·忽略: {e}")
+    return None
 
-    首秒兜底：Hermes CLI 启动中尚未向 state.db 落库时，若该 user 有在途请求
-    （_in_flight_users 命中且未超时），直接返回 running，绝不误报 not_found。
+
+def _interrupt_and_discard(user_id: str, run_id: str | None) -> None:
+    """超时回收：interrupt agent + discard run（watchdog 与 status 命中 timeout 共用路径）。"""
+    state = _stream_run_get(user_id)
+    if state:
+        agent = state.get("agent_holder", [None])[0]
+        if agent is not None:
+            try:
+                agent.interrupt()
+            except Exception:
+                pass
+    _stream_run_discard(user_id, run_id)
+
+
+def _query_status(
+    hermes_sid: str | None, user_id: str | None = None, offset: int = 0
+) -> dict:
+    """只读查询 state.db 会话状态，返回四元组快照（方案 v5）。
+
+    返回字段：
+    - status     : completed / running / timeout / not_found（兼容旧客户端）
+    - phase      : boot / reasoning / tool / clarify / completed / timeout / not_found
+    - latest_step: tool_start 短语（build_status_phrase）+ thought 摘要双驱动
+    - reasoning  : 思维链步骤；offset>0 时仅返回消息 id>offset 的新条（增量轮询）
+    - clarify    : 未 resolve 的 pending clarify entry（无则 null）
+    - last_message_id: 当前最大消息 id（前端据此推进 offset）
+    - answer     : completed 时完整回答
+    - consumed   : 消费水位线标记（consume=1 推进）
+
+    timeout 判定（单一时钟源，对齐 watchdog）：
+    - run 存在   → run.start_ts 超 STREAM_MAX_DURATION_SECONDS(720s) → timeout，
+                   命中同时 interrupt+discard（复用 watchdog 路径）
+    - run 不存在 → 会话 ended 无答案 / 最后消息超 720s 无更新 → timeout
+                  （bridge 重启后旧 run 进程消亡，无双 run，按 state.db 判定）
+    显式移除历史「>300s 无更新」stale 判定。
     """
     wm_key = user_id or hermes_sid or ""
-    empty = {"status": "not_found", "answer": "", "reasoning": [], "latest_step": ""}
+    empty = {
+        "status": "not_found",
+        "phase": "not_found",
+        "answer": "",
+        "reasoning": [],
+        "latest_step": "",
+        "clarify": None,
+        "last_message_id": 0,
+    }
 
     def _running_fallback() -> dict:
         if _is_in_flight(user_id):
-            return {"status": "running", "answer": "", "reasoning": [], "latest_step": "处理中"}
+            return {
+                "status": "running",
+                "phase": "boot",
+                "answer": "",
+                "reasoning": [],
+                "latest_step": "处理中",
+                "clarify": None,
+                "last_message_id": 0,
+            }
         return empty
 
     if not hermes_sid:
@@ -499,40 +598,107 @@ def _query_status(hermes_sid: str | None, user_id: str | None = None) -> dict:
             (hermes_sid,),
         ).fetchall()
         if not rows:
-            return {"status": "running", "answer": "", "reasoning": [], "latest_step": ""}
+            return {
+                "status": "running",
+                "phase": "boot",
+                "answer": "",
+                "reasoning": [],
+                "latest_step": "正在初始化…",
+                "clarify": None,
+                "last_message_id": 0,
+            }
 
         last = rows[-1]
         role = (last["role"] or "").strip()
         content = (last["content"] or "").strip()
         ts = last["timestamp"] or 0
-        steps = [s.model_dump() for s in extract_steps([dict(r) for r in rows])]
-        latest_step = _latest_step_text(last)
+        max_msg_id = max(int(r["id"]) for r in rows)
+        latest_step = _latest_step_text(rows)
 
-        # completed：最后一条 assistant 且内容非空
-        if role == "assistant" and content:
+        # pending clarify 优先（agent 阻塞等用户点选时最后一条可能是引导语，
+        # 必须先于 completed 判定，避免误判完成）
+        clarify = _pending_clarify(user_id or "")
+
+        # run 存在性判定（单一时钟源）：start_ts 超 720s → timeout + interrupt+discard
+        run = _stream_run_get(user_id or "")
+        if run is not None:
+            start_ts = run.get("start_ts") or 0
+            if time.monotonic() - start_ts > STREAM_MAX_DURATION_SECONDS:
+                print(
+                    f"[bridge] status 命中 timeout: user={user_id} run 超 "
+                    f"{STREAM_MAX_DURATION_SECONDS}s·interrupt+discard"
+                )
+                _interrupt_and_discard(user_id or "", run.get("run_id"))
+                return {
+                    "status": "timeout",
+                    "phase": "timeout",
+                    "answer": "",
+                    "reasoning": [],
+                    "latest_step": latest_step,
+                    "clarify": None,
+                    "last_message_id": max_msg_id,
+                }
+
+        # completed：最后一条 assistant 且内容非空（且无 pending clarify 阻塞）
+        if role == "assistant" and content and clarify is None:
+            steps = [s.model_dump() for s in extract_steps([dict(r) for r in rows])]
             return {
                 "status": "completed",
+                "phase": "completed",
                 "answer": content,
                 "reasoning": steps,
                 "latest_step": "",
+                "clarify": None,
+                "last_message_id": max_msg_id,
                 "consumed": last["id"] <= _get_watermark(wm_key),
             }
 
-        # running vs timeout
-        session_ended = srow["ended_at"] is not None
-        stale = (time.time() - ts) > STATUS_STALE_SECONDS
-        if not stale and not session_ended:
+        # 有 pending clarify → 卡在澄清等待（优先级高于 running 细分）
+        if clarify is not None:
             return {
                 "status": "running",
+                "phase": "clarify",
                 "answer": "",
-                "reasoning": steps,
+                "reasoning": [],
                 "latest_step": latest_step,
+                "clarify": clarify,
+                "last_message_id": max_msg_id,
             }
+
+        # run 不存在（重启/被杀/异常结束）且非 completed：
+        # 会话已 ended 无答案，或最后消息超 720s 无新消息 → timeout
+        # （run 存在且未超预算时由 agent 线程保障，不适用此判定）
+        if run is None:
+            session_ended = srow["ended_at"] is not None
+            no_progress = (time.time() - ts) > STREAM_MAX_DURATION_SECONDS
+            if session_ended or no_progress:
+                return {
+                    "status": "timeout",
+                    "phase": "timeout",
+                    "answer": "",
+                    "reasoning": [],
+                    "latest_step": latest_step,
+                    "clarify": None,
+                    "last_message_id": max_msg_id,
+                }
+
+        # running 细分（boot/reasoning/tool）：reasoning 支持 offset 增量
+        delta_rows = [dict(r) for r in rows if int(r["id"]) > offset]
+        steps = [s.model_dump() for s in extract_steps(delta_rows)] if delta_rows else []
+        if role == "tool":
+            phase = "tool"
+        elif role == "assistant":
+            phase = "reasoning"
+        else:
+            phase = "boot"
         return {
-            "status": "timeout",
+            "status": "running",
+            "phase": phase,
             "answer": "",
-            "reasoning": [],
+            "reasoning": steps,
             "latest_step": latest_step,
+            "clarify": None,
+            "last_message_id": max_msg_id,
         }
     finally:
         conn.close()
@@ -1000,21 +1166,16 @@ def _watchdog_scan_once(now: float | None = None) -> list[tuple[str, str | None]
 
 
 def _watchdog_loop_step() -> None:
-    """watchdog 单轮执行：扫描 → 逐个 interrupt + discard（可单测驱动，G-10）。"""
+    """watchdog 单轮执行：扫描 → 逐个 interrupt + discard（可单测驱动，G-10）。
+
+    interrupt+discard 复用 _interrupt_and_discard（status 命中 timeout 同路径）。
+    """
     for uid, run_id in _watchdog_scan_once():
         print(
             f"[bridge] watchdog: detached run 超 {STREAM_MAX_DURATION_SECONDS}s"
             f"·interrupt+discard user={uid}"
         )
-        state = _stream_run_get(uid)
-        if state:
-            agent = state.get("agent_holder", [None])[0]
-            if agent is not None:
-                try:
-                    agent.interrupt()
-                except Exception:
-                    pass
-        _stream_run_discard(uid, run_id)
+        _interrupt_and_discard(uid, run_id)
 
 
 def _watchdog_loop() -> None:
@@ -1473,15 +1634,16 @@ async def chat(body: GoalRequest):
 
 
 @app.get("/v1/chat/status/{user_id}")
-async def chat_status(user_id: str, consume: int = 0):
+async def chat_status(user_id: str, consume: int = 0, offset: int = 0):
     """状态回读端点（只读·不写 state.db）。
 
-    通过 user_id 锁定 hermes_session_id，返回 4 态状态机：
-    completed / running / timeout / not_found。
-    consume=1 时，completed 结果顺带推进消费水位线（0ms 断点回读后标记已消费）。
+    通过 user_id 锁定 hermes_session_id，返回四元组快照（方案 v5）：
+    phase / latest_step / reasoning / clarify（附 last_message_id 供 offset 推进）。
+    - consume=1 时，completed 结果顺带推进消费水位线（0ms 断点回读后标记已消费）。
+    - offset=N 时，reasoning 仅返回消息 id>N 的新条（增量轮询）。
     """
     hermes_sid = _user_session_map.get(user_id)
-    result = await asyncio.to_thread(_query_status, hermes_sid, user_id)
+    result = await asyncio.to_thread(_query_status, hermes_sid, user_id, offset)
     if consume == 1 and result.get("status") == "completed":
         _mark_consumed(user_id, hermes_sid)
     return result
