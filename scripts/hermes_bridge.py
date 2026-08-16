@@ -833,6 +833,37 @@ def _stream_run_discard(user_id: str) -> None:
         _stream_runs.pop(user_id, None)
 
 
+def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, function_args) -> None:
+    """工具启动事件（模块级可测）：过滤内部工具 + 载荷治理（仅 preview/label）。"""
+    if not tool_call_id or (function_name or "").startswith("_"):
+        return
+    label = function_name
+    try:
+        from agent.display import build_tool_preview
+        preview = build_tool_preview(function_name, function_args)
+        if preview:
+            label = preview
+    except Exception:
+        pass
+    _qput(stream_q, {
+        "type": "tool_start",
+        "id": tool_call_id,
+        "tool": function_name,
+        "label": label,
+    })
+
+
+def _emit_tool_complete(stream_q: queue.Queue, tool_call_id, function_name, function_args=None, result=None) -> None:
+    """工具完成事件（模块级可测）：不发 raw result（对齐 api_server 契约·防内部信息泄露）。"""
+    if not tool_call_id or (function_name or "").startswith("_"):
+        return
+    _qput(stream_q, {
+        "type": "tool_complete",
+        "id": tool_call_id,
+        "tool": function_name,
+    })
+
+
 def _build_in_process_agent(
     goal: str,
     user_id: str,
@@ -900,32 +931,11 @@ def _build_in_process_agent(
             _qput(stream_q, {"type": "thought", "content": text})
 
     def _tool_start_cb(tool_call_id, function_name, function_args) -> None:
-        if not tool_call_id or (function_name or "").startswith("_"):
-            return
-        label = function_name
-        try:
-            from agent.display import build_tool_preview
-            preview = build_tool_preview(function_name, function_args)
-            if preview:
-                label = preview
-        except Exception:
-            pass
-        _qput(stream_q, {
-            "type": "tool_start",
-            "id": tool_call_id,
-            "tool": function_name,
-            "label": label,
-        })
+        _emit_tool_start(stream_q, tool_call_id, function_name, function_args)
 
     def _tool_complete_cb(tool_call_id, function_name, function_args, result) -> None:
         # 载荷治理：不发 raw result（对齐 api_server 契约·防内部信息泄露）
-        if not tool_call_id or (function_name or "").startswith("_"):
-            return
-        _qput(stream_q, {
-            "type": "tool_complete",
-            "id": tool_call_id,
-            "tool": function_name,
-        })
+        _emit_tool_complete(stream_q, tool_call_id, function_name, function_args, result)
 
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
     # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
