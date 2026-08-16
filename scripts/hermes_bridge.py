@@ -810,6 +810,83 @@ async def chat_stream(body: GoalRequest):
 # v7 进程内 agent runner（真实流式·SSE 事件流）
 # ---------------------------------------------------------------------------
 
+# 常驻预热单例缓存（支柱一：消灭单次请求冷启动）
+# - Config/Tools/Runtime/Fallback 为纯只读数据 → 全局单例共享（线程安全，0ms 读盘）
+# - SessionDB 为可写资源 → 线程局部轻量创建（check_same_thread=False，<0.2ms）
+_CACHED_CFG = None
+_CACHED_CFG_LOCK = threading.Lock()
+_CACHED_TOOLS = None
+_CACHED_RUNTIME = None
+_CACHED_FALLBACK = None
+
+
+def _get_cached_config() -> dict:
+    """常驻 Config 单例：首次加载后内存复用（0ms 读盘）。"""
+    global _CACHED_CFG
+    if _CACHED_CFG is None:
+        with _CACHED_CFG_LOCK:
+            if _CACHED_CFG is None:
+                from hermes_cli.config import load_config
+                _CACHED_CFG = load_config()
+    return _CACHED_CFG
+
+
+def _get_cached_runtime(cfg: dict) -> dict:
+    """常驻 Runtime Provider 单例（0ms 解析）。"""
+    global _CACHED_RUNTIME
+    if _CACHED_RUNTIME is None:
+        with _CACHED_CFG_LOCK:
+            if _CACHED_RUNTIME is None:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                model_cfg = cfg.get("model") or {}
+                m = model_cfg if isinstance(model_cfg, str) else (model_cfg.get("default") or model_cfg.get("model") or "")
+                _CACHED_RUNTIME = resolve_runtime_provider(requested=None, target_model=m or None)
+    return _CACHED_RUNTIME
+
+
+def _get_cached_tools(cfg: dict) -> list:
+    """常驻 Tools 元数据单例（0ms 反射扫描）。"""
+    global _CACHED_TOOLS
+    if _CACHED_TOOLS is None:
+        with _CACHED_CFG_LOCK:
+            if _CACHED_TOOLS is None:
+                from hermes_cli.tools_config import _get_platform_tools
+                _CACHED_TOOLS = sorted(_get_platform_tools(cfg, "cli"))
+    return _CACHED_TOOLS
+
+
+def _get_cached_fallback(cfg: dict):
+    """常驻 Fallback 链单例。"""
+    global _CACHED_FALLBACK
+    if _CACHED_FALLBACK is None:
+        with _CACHED_CFG_LOCK:
+            if _CACHED_FALLBACK is None:
+                from hermes_cli.fallback_config import get_fallback_chain
+                _CACHED_FALLBACK = get_fallback_chain(cfg)
+    return _CACHED_FALLBACK
+
+
+def _create_thread_local_session_db():
+    """线程局部 SessionDB（避免 SQLite 跨线程冲突）：轻量创建 <0.2ms。"""
+    from hermes_cli.oneshot import _create_session_db_for_oneshot
+    return _create_session_db_for_oneshot()
+
+
+def _supports_reasoning_effort(model: str) -> bool:
+    """自适应检测：目标模型/Provider 是否支持 reasoning_effort 参数（支柱二兼容层）。
+
+    复用 Hermes 原生 capability 检查；检测失败时保守返回 False（不传该参数），
+    由 CLARIFY_GATE_PROMPT 的 prompt 级限词约束兜底，绝不触发 400。
+    """
+    if not model:
+        return False
+    try:
+        from hermes_cli.models import github_model_reasoning_efforts
+        return bool(github_model_reasoning_efforts(model))
+    except Exception:
+        return False
+
+
 # AI Lab 全局交互与澄清铁律（2026-08-16 用户拍板）：
 # 1. 长篇大论全面禁止：除用户显式要求撰写调研报告/长文方案外，日常交互正文必须极致极简（≤3 句话），禁废话铺垫。
 # 2. 模糊需求秒级澄清：判定为模糊开发/方案/决策需求，思考 ≤20 词立刻调用 clarify 工具弹选项卡片。
@@ -983,6 +1060,15 @@ def _build_in_process_agent(
         tool_start_callback=_tool_start_cb,
         tool_complete_callback=_tool_complete_cb,
     )
+
+    # 支柱二：reasoning_effort 自适应注入（首轮澄清阶段 minimal 提速）
+    # - 仅当目标模型能力检测支持时透传；不支持则静默跳过（Prompt 级限词兜底，绝不 400）
+    try:
+        if _supports_reasoning_effort(cfg_model):
+            agent.reasoning_effort = "minimal"
+    except Exception:
+        pass
+
     return agent, session_db
 
 
