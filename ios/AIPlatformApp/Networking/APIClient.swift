@@ -90,17 +90,20 @@ public struct ChatRequestDTO: Encodable {
     public let question: String
     public let sessionId: String?
     public let quotedContext: String?
+    public let agentId: String?
 
-    public init(question: String, sessionId: String? = nil, quotedContext: String? = nil) {
+    public init(question: String, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil) {
         self.question = question
         self.sessionId = sessionId
         self.quotedContext = quotedContext
+        self.agentId = agentId
     }
 
     enum CodingKeys: String, CodingKey {
         case question
         case sessionId = "session_id"
         case quotedContext = "quoted_context"
+        case agentId = "agent_id"
     }
 }
 
@@ -145,6 +148,28 @@ public struct RegisterResponseDTO: Codable {
     public let message: String?
     public let userId: String?
     public let token: String?
+}
+
+/// GET /api/v1/topology 单节点（后端基线 Agent 注册表唯一真值来源）
+public struct TopologyNodeDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let name: String
+    public let roleDesc: String
+    public let tools: [String]
+    public let status: String
+}
+
+/// GET /api/v1/topology 单条协同边
+public struct TopologyEdgeDTO: Codable, Hashable {
+    public let source: String
+    public let target: String
+    public let label: String?
+}
+
+/// GET /api/v1/topology 响应（节点 + 边，对话页与拓扑页同源消费）
+public struct TopologyGraphDTO: Codable {
+    public let nodes: [TopologyNodeDTO]
+    public let edges: [TopologyEdgeDTO]
 }
 
 // MARK: - API 错误
@@ -237,12 +262,15 @@ public final class APIClient: ObservableObject {
     private let chatSession: URLSession
     private let decoder: JSONDecoder
 
-    public init(baseURL: URL = URL(string: "http://120.24.248.58:8000")!) {
+    public init(baseURL: URL = URL(string: "http://120.24.248.58")!) {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 8
-        config.timeoutIntervalForResource = 15
+        config.timeoutIntervalForRequest = 15
+        config.timeoutIntervalForResource = 30
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
+        // 模拟器/真机内测直连云端：禁用系统代理（127.0.0.1 代理在模拟器环回内不存在，
+        // 继承代理会导致连接拒绝→误报后端不可达/静默加载失败）
+        config.connectionProxyDictionary = [:]
         self.session = URLSession(configuration: config)
 
         // 对话专用会话：超时 200s（后端 HERMES_TIMEOUT=180s 兜底），避免被默认 15s resource 超时截断
@@ -250,6 +278,7 @@ public final class APIClient: ObservableObject {
         chatConfig.timeoutIntervalForRequest = 200
         chatConfig.timeoutIntervalForResource = 220
         chatConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        chatConfig.connectionProxyDictionary = [:]
         self.chatSession = URLSession(configuration: chatConfig)
 
         self.decoder = JSONDecoder()
@@ -278,6 +307,60 @@ public final class APIClient: ObservableObject {
 
     // MARK: - 通用请求
 
+    /// 瞬态网络错误（DNS 解析失败 / 连接拒绝 / 超时 / 连接丢失等），GET 幂等请求可自动重试 1 次。
+    private static func isTransientNetworkError(_ urlError: URLError) -> Bool {
+        switch urlError.code {
+        case .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost,
+             .networkConnectionLost, .notConnectedToInternet, .timedOut,
+             .secureConnectionFailed:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// 底层请求执行：统一处理 401（不重试→needsReauth）、状态码、离线降级标注与 GET 幂等单次重试。
+    /// 瞬态网络错误（DNS/连接拒绝/超时）对 GET 自动重试 1 次；重试成功复位 isOfflineMode，仍失败置 true。
+    private func perform(
+        _ request: URLRequest,
+        session: URLSession,
+        canRetry: Bool
+    ) async throws -> Data {
+        var attempt = 0
+        while true {
+            do {
+                let (data, response) = try await session.data(for: request)
+                guard let http = response as? HTTPURLResponse else {
+                    throw APIError.network("无效响应")
+                }
+                if http.statusCode == 401 {
+                    // 401 绝不重试：清 token 置 needsReauth，交由根协调器引导登录
+                    clearToken()
+                    isOfflineMode = false
+                    needsReauth = true
+                    throw APIError.unauthorized
+                }
+                guard (200..<300).contains(http.statusCode) else {
+                    throw APIError.server(
+                        http.statusCode,
+                        String(data: data, encoding: .utf8) ?? ""
+                    )
+                }
+                isOfflineMode = false
+                return data
+            } catch let urlError as URLError where urlError.code == .cancelled {
+                throw urlError  // 请求取消，原样上抛，不误标离线
+            } catch let urlError as URLError {
+                if canRetry && attempt == 0 && Self.isTransientNetworkError(urlError) {
+                    attempt += 1
+                    continue
+                }
+                isOfflineMode = true
+                throw APIError.network(urlError.localizedDescription)
+            }
+        }
+    }
+
     /// 发起请求并解码。401 自动清 token + 置 needsReauth；网络异常置 isOfflineMode。
     /// 调用方持有外层 Task 即可实现「请求取消」（URLSession.data(for:) 对 Task 取消敏感）。
     public func request<T: Decodable>(
@@ -300,34 +383,12 @@ public final class APIClient: ObservableObject {
             request.httpBody = try JSONEncoder().encode(body)
         }
 
+        // 仅 GET 幂等请求自动重试；POST/PATCH/DELETE 由 UI 触发手动重试
+        let data = try await perform(request, session: session, canRetry: method == "GET")
         do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw APIError.network("无效响应")
-            }
-            if http.statusCode == 401 {
-                clearToken()
-                isOfflineMode = false
-                needsReauth = true
-                throw APIError.unauthorized
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                throw APIError.server(
-                    http.statusCode,
-                    String(data: data, encoding: .utf8) ?? ""
-                )
-            }
-            isOfflineMode = false
-            do {
-                return try decoder.decode(T.self, from: data)
-            } catch {
-                throw APIError.decoding(error.localizedDescription)
-            }
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            throw urlError  // 请求取消，原样上抛，不误标离线
-        } catch let urlError as URLError {
-            isOfflineMode = true
-            throw APIError.network(urlError.localizedDescription)
+            return try decoder.decode(T.self, from: data)
+        } catch {
+            throw APIError.decoding(error.localizedDescription)
         }
     }
 
@@ -386,30 +447,8 @@ public final class APIClient: ObservableObject {
         if let token = currentToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        do {
-            let (data, response) = try await session.data(for: request)
-            guard let http = response as? HTTPURLResponse else {
-                throw APIError.network("无效响应")
-            }
-            if http.statusCode == 401 {
-                clearToken()
-                isOfflineMode = false
-                needsReauth = true
-                throw APIError.unauthorized
-            }
-            guard (200..<300).contains(http.statusCode) else {
-                throw APIError.server(
-                    http.statusCode, String(data: data, encoding: .utf8) ?? ""
-                )
-            }
-            isOfflineMode = false
-            return try decoder.decode(SearchResponse.self, from: data).docs
-        } catch let urlError as URLError where urlError.code == .cancelled {
-            throw urlError
-        } catch let urlError as URLError {
-            isOfflineMode = true
-            throw APIError.network(urlError.localizedDescription)
-        }
+        let data = try await perform(request, session: session, canRetry: true)
+        return try decoder.decode(SearchResponse.self, from: data).docs
     }
 
     public func fetchMe() async throws -> ProfileDTO {
@@ -427,6 +466,11 @@ public final class APIClient: ObservableObject {
         )
     }
 
+    /// GET /api/v1/topology：基线 Agent 注册表（对话页选择栏 + 拓扑页 DAG 同源消费）
+    public func fetchTopology() async throws -> TopologyGraphDTO {
+        try await request(TopologyGraphDTO.self, path: "topology")
+    }
+
     // MARK: - 对话 / 思维链
 
     /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
@@ -434,7 +478,8 @@ public final class APIClient: ObservableObject {
     public func chat(
         question: String,
         sessionId: String? = nil,
-        quotedContext: String? = nil
+        quotedContext: String? = nil,
+        agentId: String? = nil
     ) async throws -> ChatResponseDTO {
         let url = baseURL.appendingPathComponent("api/chat")
         var request = URLRequest(url: url)
@@ -446,7 +491,12 @@ public final class APIClient: ObservableObject {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
         request.httpBody = try JSONEncoder().encode(
-            ChatRequestDTO(question: question, sessionId: sessionId, quotedContext: quotedContext)
+            ChatRequestDTO(
+                question: question,
+                sessionId: sessionId,
+                quotedContext: quotedContext,
+                agentId: agentId
+            )
         )
 
         do {
