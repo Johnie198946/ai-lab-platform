@@ -294,14 +294,48 @@ public struct LoginView: View {
     }
     
     private func performPhoneLogin() {
+        guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
-        
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+
+        // 手机号表单 → register 契约桥接（开发态占位；生产需真实邮箱/密码表单，见开发总结）
+        let username = phoneNumber
+        let email = "\(phoneNumber)@ailab.quantum"
+        let password = smsCode
+        let code = smsCode
+
+        Task { @MainActor in
+            var isDev = false
+            // 1. 真实注册（开发态 Authen 未起 → 连接失败，降级开发模式）
+            do {
+                let resp = try await APIClient.shared.register(
+                    email: email,
+                    username: username,
+                    password: password,
+                    verificationCode: code
+                )
+                if let token = resp.token, !token.isEmpty {
+                    APIClient.shared.saveToken(token)
+                }
+            } catch {
+                isDev = true
+            }
+
+            // 2. 探测 /me 判定开发态（dev 载荷 tenant_key=demo）或连接失败
+            do {
+                let profile = try await APIClient.shared.fetchMe()
+                if profile.tenantKey == "demo" || profile.username == "dev" {
+                    isDev = true
+                }
+            } catch {
+                isDev = true
+            }
+
             isLoading = false
             #if os(iOS)
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             #endif
+            appState.isDevMode = isDev
             withAnimation(.spring()) {
                 appState.isLoggedIn = true
                 appState.isGuestMode = false

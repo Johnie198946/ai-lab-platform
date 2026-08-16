@@ -2,8 +2,8 @@
 //  TokenSummaryCard.swift
 //  AIPlatformApp
 //
-//  Token 极简卡（④）：大数字（本月消耗，tabular-nums）+ 一句状态（预算剩余 %）
-//  + 单条细进度线 + 一行泳道小字（数据不删，呈现简化）。
+//  Token 消耗卡：真实对接 GET /api/v1/me/usage（chat_calls + token_used）
+//  离线/失败时回退本地配额演示，UI 显式标注「演示数据」防误解。
 //
 
 import SwiftUI
@@ -11,15 +11,20 @@ import SwiftUI
 public struct TokenSummaryCard: View {
     @EnvironmentObject private var appState: AppState
 
-    /// 月度 Token 预算（演示基线）
+    /// 月度 Token 预算（仅作展示配额上限与离线回退基线）
     private let totalBudget: Int = 4_200_000
+
+    @State private var chatCalls: Int? = nil
+    @State private var tokenUsed: Int? = nil
+    @State private var offline: Bool = false
 
     public init() {}
 
     public var body: some View {
         let profile = appState.currentProfile
-        let used = Int(Double(totalBudget) * profile.tokenQuotaUsage)
-        let remainingPct = Int((1 - profile.tokenQuotaUsage) * 100)
+        let used = tokenUsed ?? Int(Double(totalBudget) * profile.tokenQuotaUsage)
+        let calls = chatCalls ?? 0
+        let progress = min(1.0, max(0.0, Double(used) / Double(totalBudget)))
 
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             // 标题行
@@ -31,23 +36,25 @@ public struct TokenSummaryCard: View {
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(AppTheme.Colors.textPrimary)
                 Spacer()
-                Text("本月")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
+                Text(offline ? "演示数据" : "实时用量")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(offline ? AppTheme.Colors.textTertiary : AppTheme.Colors.securityGreen)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background((offline ? AppTheme.Colors.textTertiary : AppTheme.Colors.securityGreen).opacity(0.12))
+                    .clipShape(Capsule())
             }
 
-            // 大数字
+            // 大数字（token_used）
             Text(compact(used))
                 .font(.system(size: 42, weight: .bold, design: .rounded))
                 .monospacedDigit()
                 .foregroundColor(AppTheme.Colors.textPrimary)
 
-            // 一句状态
-            Text("预算剩余 \(remainingPct)%")
+            // 累计对话次数（chat_calls）
+            Text("累计对话 \(grouped(calls)) 次")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(
-                    remainingPct < 20 ? AppTheme.Colors.securityRed : AppTheme.Colors.textSecondary
-                )
+                .foregroundColor(AppTheme.Colors.textSecondary)
 
             // 单条细进度线
             GeometryReader { geo in
@@ -55,17 +62,17 @@ public struct TokenSummaryCard: View {
                     Capsule()
                         .fill(AppTheme.Colors.tertiaryBackground)
                     Capsule()
-                        .fill(progressColor(remainingPct: remainingPct))
-                        .frame(width: geo.size.width * profile.tokenQuotaUsage)
+                        .fill(offline ? AnyShapeStyle(AppTheme.Colors.accent) : AnyShapeStyle(AppTheme.Colors.quantumGradient))
+                        .frame(width: geo.size.width * progress)
                 }
             }
             .frame(height: 6)
 
             // 一行泳道小字
             HStack {
-                Text(profile.isVipLane ? "VIP 泳道 · 0 延迟" : "抢占式池 · 并发 ≤ \(profile.concurrencyLimit)")
+                Text("Token 用量 \(grouped(used))")
                 Spacer()
-                Text("\(grouped(used)) / \(grouped(totalBudget))")
+                Text("调用 \(grouped(calls)) 次")
             }
             .font(.system(size: 11))
             .foregroundColor(AppTheme.Colors.textTertiary)
@@ -73,13 +80,20 @@ public struct TokenSummaryCard: View {
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .task {
+            await loadUsage()
+        }
     }
 
-    private func progressColor(remainingPct: Int) -> Color {
-        if remainingPct < 20 {
-            return AppTheme.Colors.securityRed
+    private func loadUsage() async {
+        do {
+            let usage = try await APIClient.shared.fetchUsage()
+            chatCalls = usage.chatCalls
+            tokenUsed = usage.tokenUsed
+            offline = false
+        } catch {
+            offline = true
         }
-        return AppTheme.Colors.accent
     }
 
     private func compact(_ n: Int) -> String {

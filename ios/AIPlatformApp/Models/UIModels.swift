@@ -561,6 +561,10 @@ public final class AppState: ObservableObject {
     @Published public var activeTab: Int = 0
     @Published public var selectedAgentId: String = "main_agent"
     @Published public var pendingChatPrompt: String? = nil
+    /// 内存会话级 session_id（不持久化磁盘；404/401 清重发；账号切换清空）
+    @Published public var chatSessionId: String? = nil
+    /// 开发态（后端 dev 载荷 / 连接失败）→ 顶部导航栏下「开发模式·免鉴权」蓝 banner
+    @Published public var isDevMode: Bool = false
     
     public init(
         isLoggedIn: Bool = true,
@@ -588,6 +592,8 @@ public final class AppState: ObservableObject {
     public func logout() {
         self.isLoggedIn = false
         self.isGuestMode = false
+        self.chatSessionId = nil
+        self.isDevMode = false
     }
     
     public func navigateToChatWithPrompt(_ prompt: String) {

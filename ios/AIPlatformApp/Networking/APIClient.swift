@@ -85,6 +85,68 @@ public struct ProfileUpdateRequest: Encodable {
     }
 }
 
+/// POST /api/chat 请求体（snake_case 序列化对齐后端 ChatRequest）
+public struct ChatRequestDTO: Encodable {
+    public let question: String
+    public let sessionId: String?
+    public let quotedContext: String?
+
+    public init(question: String, sessionId: String? = nil, quotedContext: String? = nil) {
+        self.question = question
+        self.sessionId = sessionId
+        self.quotedContext = quotedContext
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case question
+        case sessionId = "session_id"
+        case quotedContext = "quoted_context"
+    }
+}
+
+/// POST /api/chat 响应（snake_case → camelCase 自动转换）
+public struct ChatResponseDTO: Codable {
+    public let question: String
+    public let answer: String
+    public let sessionId: String?
+    public let reasoning: [ChatReasoningStepDTO]?
+
+    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO]) {
+        self.question = question
+        self.answer = answer
+        self.sessionId = sessionId
+        self.reasoning = reasoning
+    }
+}
+
+/// 单条真实推理步骤（对应后端 ReasoningStep：thought / tool_call / skill_load / agent_spawn）
+public struct ChatReasoningStepDTO: Codable {
+    public let type: String
+    public let title: String
+    public let detail: String
+    public let status: String
+}
+
+public extension ChatReasoningStepDTO {
+    /// DTO → 前端 UI 模型（未知 type 兜底为 toolCall，保证 4 类之外不崩溃）
+    func toReasoningStep() -> ReasoningStep {
+        ReasoningStep(
+            type: ReasoningStepType(rawValue: type) ?? .toolCall,
+            title: title,
+            detail: detail,
+            status: status
+        )
+    }
+}
+
+/// POST /api/v1/register 响应（token 为可选：当前后端仅返回 user_id，预留生产 JWT）
+public struct RegisterResponseDTO: Codable {
+    public let success: Bool?
+    public let message: String?
+    public let userId: String?
+    public let token: String?
+}
+
 // MARK: - API 错误
 
 public enum APIError: Error, LocalizedError {
@@ -93,6 +155,7 @@ public enum APIError: Error, LocalizedError {
     case server(Int, String)
     case network(String)
     case decoding(String)
+    case timeout
 
     public var errorDescription: String? {
         switch self {
@@ -101,6 +164,7 @@ public enum APIError: Error, LocalizedError {
         case .server(let code, let msg): return "服务端错误 \(code): \(msg)"
         case .network(let msg): return "网络不可用: \(msg)"
         case .decoding(let msg): return "数据解析失败: \(msg)"
+        case .timeout: return "响应超时"
         }
     }
 }
@@ -170,15 +234,24 @@ public final class APIClient: ObservableObject {
 
     public var baseURL: URL
     private let session: URLSession
+    private let chatSession: URLSession
     private let decoder: JSONDecoder
 
-    public init(baseURL: URL = URL(string: "http://127.0.0.1:8000")!) {
+    public init(baseURL: URL = URL(string: "http://120.24.248.58:8000")!) {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 8
         config.timeoutIntervalForResource = 15
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
         self.session = URLSession(configuration: config)
+
+        // 对话专用会话：超时 200s（后端 HERMES_TIMEOUT=180s 兜底），避免被默认 15s resource 超时截断
+        let chatConfig = URLSessionConfiguration.default
+        chatConfig.timeoutIntervalForRequest = 200
+        chatConfig.timeoutIntervalForResource = 220
+        chatConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.chatSession = URLSession(configuration: chatConfig)
+
         self.decoder = JSONDecoder()
         self.decoder.keyDecodingStrategy = .convertFromSnakeCase
     }
@@ -351,6 +424,102 @@ public final class APIClient: ObservableObject {
             path: "me",
             method: "PATCH",
             body: ProfileUpdateRequest(username: username, avatarUrl: avatarUrl)
+        )
+    }
+
+    // MARK: - 对话 / 思维链
+
+    /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
+    /// Task.cancel 传播中断客户端等待；404 可区分（清 session_id 幂等重发一次），超时单独抛 `.timeout`）。
+    public func chat(
+        question: String,
+        sessionId: String? = nil,
+        quotedContext: String? = nil
+    ) async throws -> ChatResponseDTO {
+        let url = baseURL.appendingPathComponent("api/chat")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 200
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try JSONEncoder().encode(
+            ChatRequestDTO(question: question, sessionId: sessionId, quotedContext: quotedContext)
+        )
+
+        do {
+            let (data, response) = try await chatSession.data(for: request)
+            guard let http = response as? HTTPURLResponse else {
+                throw APIError.network("无效响应")
+            }
+            if http.statusCode == 401 {
+                clearToken()
+                isOfflineMode = false
+                needsReauth = true
+                throw APIError.unauthorized
+            }
+            guard (200..<300).contains(http.statusCode) else {
+                throw APIError.server(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+            }
+            isOfflineMode = false
+            do {
+                return try decoder.decode(ChatResponseDTO.self, from: data)
+            } catch {
+                throw APIError.decoding(error.localizedDescription)
+            }
+        } catch let urlError as URLError where urlError.code == .cancelled {
+            throw urlError  // 请求取消：原样上抛，供调用方识别「已取消」
+        } catch let urlError as URLError where urlError.code == .timedOut {
+            throw APIError.timeout  // 客户端 200s 超时：专属「响应超时(180s)」提示
+        } catch let urlError as URLError {
+            isOfflineMode = true
+            throw APIError.network(urlError.localizedDescription)
+        }
+    }
+
+    // MARK: - Token 用量 / 注册
+
+    /// GET /api/v1/me/usage → (chat_calls, token_used)
+    public func fetchUsage() async throws -> (chatCalls: Int, tokenUsed: Int) {
+        struct UsageResponse: Codable {
+            let tenantKey: String
+            let chatCalls: Int
+            let tokenUsed: Int
+        }
+        let resp: UsageResponse = try await request(UsageResponse.self, path: "me/usage")
+        return (resp.chatCalls, resp.tokenUsed)
+    }
+
+    /// POST /api/v1/register：自助注册（Authen 代理）。开发态 Authen 未起 → 连接失败，由调用方降级开发模式。
+    public func register(
+        email: String,
+        username: String,
+        password: String,
+        verificationCode: String
+    ) async throws -> RegisterResponseDTO {
+        struct RegisterBody: Encodable {
+            let email: String
+            let username: String
+            let password: String
+            let verificationCode: String
+
+            enum CodingKeys: String, CodingKey {
+                case email, username, password
+                case verificationCode = "verification_code"
+            }
+        }
+        return try await request(
+            RegisterResponseDTO.self,
+            path: "register",
+            method: "POST",
+            body: RegisterBody(
+                email: email,
+                username: username,
+                password: password,
+                verificationCode: verificationCode
+            )
         )
     }
 }

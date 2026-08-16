@@ -3,7 +3,7 @@
 //  AIPlatformApp
 //
 //  Streaming Agent Conversation View with TextKit2-Style Markdown Bubbles & Quoted Follow-Ups
-//  首条主动发送注入富媒体演示剧本 + 真实思维链折叠卡 + regenerate 混合态
+//  真实后端对接：POST /api/chat + 真实思维链折叠卡 + 排队/取消/超时/404 幂等自愈完整状态机
 //
 
 import SwiftUI
@@ -13,7 +13,7 @@ public struct ChatView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var messages: [ChatMessage] = MockData.messages
+    @State private var messages: [ChatMessage] = []
     @State private var inputText: String = ""
     @State private var selectedAgentId: String = "main_agent"
     @State private var quotedContext: QuotedContext? = nil
@@ -21,11 +21,17 @@ public struct ChatView: View {
     @State private var isGenerating: Bool = false
     @State private var showingVoiceInput: Bool = false
     @State private var showingPlusMenu: Bool = false
-    @State private var hasShownRichMediaDemo: Bool = false
     @StateObject private var speechService = SpeechRecognizerService()
 
-    /// 预置消息 id 集合（用于 regenerate 混合态判定：预置=保留 blocks+附真实链，运行时=全量替换）
-    private let presetMessageIds: Set<String> = Set(MockData.messages.map(\.id))
+    // MARK: - 状态机字段（真实后端对接）
+    @State private var inflight: InFlightRequest? = nil       // 当前 in-flight（思考/超时/错误占位）
+    @State private var pendingQueue: [PendingItem] = []       // 排队消息（上限 3）
+    @State private var waitingSeconds: Int = 0                // 「已等待 N 秒」本地计时
+    @State private var currentChatTask: Task<Void, Never>? = nil
+    @State private var toastMessage: String? = nil
+    @State private var demoMode: Bool = false                 // 网络错误后「切换演示模式」
+
+    private let waitingTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
     private let availableAgents = [
         ("main_agent", "Main 智能编排", "sparkles"),
@@ -56,34 +62,7 @@ public struct ChatView: View {
                         .background(AppTheme.Colors.border)
 
                     // MARK: - 2. Scrollable Messages Stream
-                    ScrollViewReader { proxy in
-                        ScrollView {
-                            LazyVStack(spacing: AppTheme.Spacing.md) {
-                                ForEach(messages) { message in
-                                    MessageBubbleView(
-                                        message: message,
-                                        onQuoteFollowUp: { quote in
-                                            withAnimation(.spring()) {
-                                                self.quotedContext = quote
-                                            }
-                                        },
-                                        onRegenerate: { messageId in
-                                            regenerate(messageId: messageId)
-                                        }
-                                    )
-                                    .id(message.id)
-                                }
-                            }
-                            .padding(.vertical, AppTheme.Spacing.md)
-                        }
-                        .onChange(of: messages.count) { _, _ in
-                            if let lastId = messages.last?.id {
-                                withAnimation(.easeOut(duration: 0.25)) {
-                                    proxy.scrollTo(lastId, anchor: .bottom)
-                                }
-                            }
-                        }
-                    }
+                    messagesList
 
                     // MARK: - 3. Suggestion Chips Bar
                     suggestionChipsBar
@@ -114,38 +93,17 @@ public struct ChatView: View {
             }
             .alert("清空当前对话？", isPresented: $isShowingClearAlert) {
                 Button("取消", role: .cancel) {}
-                Button("清空", role: .destructive) {
-                    messages.removeAll()
-                    hasShownRichMediaDemo = false
-                }
+                Button("清空", role: .destructive) { clearMessages() }
             } message: {
                 Text("此操作将清空当前会话所有消息记录。")
             }
-            .onAppear {
-                handlePendingPrompt()
-            }
-            .onChange(of: appState.pendingChatPrompt) { _, _ in
-                handlePendingPrompt()
-            }
-            .sheet(isPresented: $showingVoiceInput) {
-                VoiceInputView(
-                    service: speechService,
-                    onTranscript: { text in
-                        inputText = text
-                    },
-                    onDismiss: {
-                        showingVoiceInput = false
-                    }
-                )
-            }
-            .sheet(isPresented: $showingPlusMenu) {
-                PlusMenuSheet(
-                    onPhotoPicked: { data in attachPhoto(data) },
-                    onDocumentPicked: { url in attachDocument(url) },
-                    onWeChatImported: { link in importWeChatLink(link) },
-                    onKnowledgeReferenced: { item in referenceKnowledge(item) }
-                )
-            }
+            .overlay(alignment: .bottom) { toastOverlay }
+            .animation(.easeInOut(duration: 0.2), value: toastMessage)
+            .onAppear { handlePendingPrompt() }
+            .onChange(of: appState.pendingChatPrompt) { _, _ in handlePendingPrompt() }
+            .onReceive(waitingTimer) { _ in tickWaitingTimer() }
+            .sheet(isPresented: $showingVoiceInput) { voiceSheet }
+            .sheet(isPresented: $showingPlusMenu) { plusSheet }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     InboxFileManager.shared.cleanupStaleInboxFiles()
@@ -154,11 +112,84 @@ public struct ChatView: View {
         }
     }
 
+    private var messagesList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: AppTheme.Spacing.md) {
+                    ForEach(messages) { message in
+                        MessageBubbleView(
+                            message: message,
+                            onQuoteFollowUp: { quote in
+                                withAnimation(.spring()) { self.quotedContext = quote }
+                            },
+                            onRegenerate: { messageId in regenerate(messageId: messageId) }
+                        )
+                        .id(message.id)
+                    }
+
+                    // 当前 in-flight 占位（思考 / 超时 / 错误）
+                    if let current = inflight {
+                        inflightPlaceholder(current)
+                            .id("inflight_\(current.id)")
+                    }
+
+                    // 排队占位（实时序号）
+                    ForEach(Array(pendingQueue.enumerated()), id: \.element.id) { index, item in
+                        PendingPlaceholderView(
+                            position: index + 1,
+                            onCancel: { cancelQueued(item.id) }
+                        )
+                        .id("pending_\(item.id)")
+                    }
+                }
+                .padding(.vertical, AppTheme.Spacing.md)
+            }
+            .onChange(of: messages.count) { _, _ in scrollToLatest(proxy) }
+            .onChange(of: pendingQueue.count) { _, _ in scrollToLatest(proxy) }
+            .onChange(of: inflight?.id) { _, _ in scrollToLatest(proxy) }
+        }
+    }
+
+    @ViewBuilder
+    private var toastOverlay: some View {
+        if let toast = toastMessage {
+            toastView(toast)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+                .padding(.bottom, 90)
+        }
+    }
+
+    private var voiceSheet: some View {
+        VoiceInputView(
+            service: speechService,
+            onTranscript: { text in inputText = text },
+            onDismiss: { showingVoiceInput = false }
+        )
+    }
+
+    private var plusSheet: some View {
+        PlusMenuSheet(
+            onPhotoPicked: { data in attachPhoto(data) },
+            onDocumentPicked: { url in attachDocument(url) },
+            onWeChatImported: { link in importWeChatLink(link) },
+            onKnowledgeReferenced: { item in referenceKnowledge(item) }
+        )
+    }
+
+    private func tickWaitingTimer() {
+        if let inf = inflight, inf.phase == .thinking {
+            waitingSeconds += 1
+        }
+    }
+
+    private func clearMessages() {
+        messages.removeAll()
+    }
+
     // MARK: - Subviews
 
     private var agentHeaderBadge: some View {
         HStack(spacing: 6) {
-            // Quantum 品牌微标（自适应托盘球体图标）+ 状态点缀色
             QuantumAvatarView(size: 18)
             Text(currentAgentTitle)
                 .font(.system(size: 13, weight: .semibold))
@@ -277,7 +308,6 @@ public struct ChatView: View {
 
     private var bottomInputBar: some View {
         HStack(alignment: .bottom, spacing: AppTheme.Spacing.sm) {
-            // Attachment Plus Button（四入口扩展面板 + 进入面板触发清理节流）
             Button(action: {
                 #if os(iOS)
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -291,7 +321,6 @@ public struct ChatView: View {
             }
             .padding(.bottom, 6)
 
-            // Multiline Text Editor
             HStack {
                 TextField("发送指令或提出问题...", text: $inputText, axis: .vertical)
                     .lineLimit(1...5)
@@ -311,7 +340,6 @@ public struct ChatView: View {
             .background(AppTheme.Colors.secondaryBackground)
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
 
-            // Send / Voice Button
             if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 Button(action: {
                     #if os(iOS)
@@ -351,6 +379,70 @@ public struct ChatView: View {
         .background(AppTheme.Colors.cardBackground)
     }
 
+    // MARK: - In-flight / Pending 占位渲染
+
+    @ViewBuilder
+    private func inflightPlaceholder(_ req: InFlightRequest) -> some View {
+        switch req.phase {
+        case .thinking:
+            ThinkingPlaceholderView(seconds: waitingSeconds, onCancel: { cancelInFlight() })
+        case .timeout:
+            StatusCardView(
+                icon: "exclamationmark.triangle.fill",
+                iconColor: AppTheme.Colors.securityYellow,
+                title: "响应超时(180s)",
+                message: "后端 180 秒内未返回，可能仍在处理中。",
+                primary: ("继续等待", { retryCurrentInFlight() }),
+                secondary: ("重试", { retryCurrentInFlight() })
+            )
+        case .networkError:
+            StatusCardView(
+                icon: "wifi.exclamationmark",
+                iconColor: AppTheme.Colors.securityRed,
+                title: "后端不可达",
+                message: "无法连接到后端服务，请检查网络或稍后重试。",
+                primary: ("重试", { retryCurrentInFlight() }),
+                secondary: ("切换演示模式", { switchToDemoMode() })
+            )
+        case .serverError(let msg):
+            StatusCardView(
+                icon: "xmark.octagon.fill",
+                iconColor: AppTheme.Colors.securityRed,
+                title: "请求失败",
+                message: msg,
+                primary: ("重试", { retryCurrentInFlight() }),
+                secondary: nil
+            )
+        }
+    }
+
+    private func toastView(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundColor(AppTheme.Colors.onPrimary)
+            .padding(.horizontal, AppTheme.Spacing.lg)
+            .padding(.vertical, AppTheme.Spacing.sm + 2)
+            .background(AppTheme.Colors.quantumBlue.opacity(0.95))
+            .clipShape(Capsule())
+            .shadow(color: Color.black.opacity(0.15), radius: 8, y: 2)
+    }
+
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        let anchor: String?
+        if let last = pendingQueue.last {
+            anchor = "pending_\(last.id)"
+        } else if let inf = inflight {
+            anchor = "inflight_\(inf.id)"
+        } else {
+            anchor = messages.last?.id
+        }
+        if let anchor {
+            withAnimation(.easeOut(duration: 0.25)) {
+                proxy.scrollTo(anchor, anchor: .bottom)
+            }
+        }
+    }
+
     // MARK: - Actions
 
     private func handlePendingPrompt() {
@@ -360,6 +452,8 @@ public struct ChatView: View {
         }
     }
 
+    // MARK: - 发送 / 状态机
+
     private func sendMessage() {
         let text = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
@@ -368,91 +462,239 @@ public struct ChatView: View {
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
 
-        let userMsg = ChatMessage(
-            role: .user,
-            content: text,
-            quotedContext: quotedContext
-        )
-        messages.append(userMsg)
+        let quote = quotedContext
+        if isGenerating && pendingQueue.count >= 3 {
+            showToast("最多排队 3 条，请等待")
+            return
+        }
+
+        messages.append(ChatMessage(role: .user, content: text, quotedContext: quote))
         inputText = ""
         quotedContext = nil
+        dispatchAssistantReply(to: text, quote: quote)
+    }
 
-        // 首条主动发送 → 注入 4 卡剧本回复；之后走普通流式
-        if !hasShownRichMediaDemo {
-            hasShownRichMediaDemo = true
-            injectRichMediaDemo(to: text)
+    /// 排队或立即开始（isGenerating 为 true 时入队；否则直接发起真实请求）
+    private func dispatchAssistantReply(to text: String, quote: QuotedContext? = nil) {
+        if isGenerating {
+            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote))
         } else {
-            simulateAssistantResponse(to: text)
+            startGeneration(text: text, quote: quote)
         }
     }
 
-    /// 首条主动消息触发 4 卡剧本（Chart/Image/Table/Attachment + 真实链），本地打字机动画。
-    private func injectRichMediaDemo(to userPrompt: String) {
+    private func startGeneration(text: String, quote: QuotedContext?) {
         isGenerating = true
-
-        let streamId = UUID().uuidString
-        let initial = ChatMessage(
-            id: streamId,
-            role: .assistant,
-            content: "思考中...",
-            isStreaming: true
-        )
-        messages.append(initial)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            if let idx = messages.firstIndex(where: { $0.id == streamId }) {
-                let demo = MockData.richMediaDemoReply(for: userPrompt)
-                messages[idx] = ChatMessage(
-                    id: streamId,
-                    role: .assistant,
-                    content: demo.content,
-                    isStreaming: false,
-                    blocks: demo.blocks,
-                    isDemoSample: true
-                )
-            }
-            self.isGenerating = false
+        waitingSeconds = 0
+        let req = InFlightRequest(id: UUID().uuidString, text: text, quote: quote)
+        inflight = req
+        currentChatTask = Task {
+            await runInFlight(req)
         }
     }
 
-    /// 普通流式回复（本地打字机动画·非网络流式）；期间 blocks 为空，完成一次性注入。
-    private func simulateAssistantResponse(to userPrompt: String) {
-        isGenerating = true
-
-        let streamId = UUID().uuidString
-        let initialAssistantMsg = ChatMessage(
-            id: streamId,
-            role: .assistant,
-            content: "思考中...",
-            isStreaming: true
-        )
-        messages.append(initialAssistantMsg)
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
-            if let idx = messages.firstIndex(where: { $0.id == streamId }) {
-                messages[idx].content = "已收到关于「\(userPrompt)」的协同请求。正在调用多租户 Agent 编排流水线与知识库检索..."
-            }
+    private func runInFlight(_ req: InFlightRequest) async {
+        if demoMode {
+            await appendDemoReply(req: req)
+            return
         }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            if let idx = messages.firstIndex(where: { $0.id == streamId }) {
-                messages[idx].content = "根据分析，当前任务已自动调度至最优智能体处理。输出如下："
-                messages[idx].isStreaming = false
-                messages[idx].blocks = [
-                    .code(
-                        CodeSnippet(
-                            language: "swift",
-                            code: "// Swift 6 异步协同调用示例\nlet response = await orchestrator.execute(intent: \"\(userPrompt)\")"
-                        )
-                    )
-                ]
+        do {
+            let resp = try await APIClient.shared.chat(
+                question: req.text,
+                sessionId: appState.chatSessionId,
+                quotedContext: req.quote?.text
+            )
+            if let sid = resp.sessionId, !sid.isEmpty {
+                appState.chatSessionId = sid
             }
-            self.isGenerating = false
+            await handleSuccess(req: req, response: resp)
+        } catch {
+            await handleError(req: req, error: error)
         }
     }
 
-    /// regenerate(messageId:)：定位 assistant → 最近 user → 替换。
-    /// 预置消息=保留原 blocks+附真实链（混合态·演示样例标注）；运行时=全量替换；isGenerating 互斥。
+    private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO) async {
+        guard inflight?.id == req.id else { return }
+
+        // 先挂载真实 reasoning（折叠 ReasoningCard，空 reasoning 自动隐藏）
+        let steps = (response.reasoning ?? []).map { $0.toReasoningStep() }
+        var blocks: [MessageBlock] = []
+        if !steps.isEmpty {
+            blocks.append(.reasoning(steps))
+        }
+
+        let messageId = UUID().uuidString
+        messages.append(
+            ChatMessage(id: messageId, role: .assistant, content: "", isStreaming: true, blocks: blocks)
+        )
+
+        // 移除思考占位
+        inflight = nil
+
+        // 再打字机渲染 answer
+        await typewriter(messageId: messageId, answer: response.answer)
+
+        finishGeneration()
+    }
+
+    private func handleError(req: InFlightRequest, error: Error) async {
+        guard inflight?.id == req.id else { return }
+
+        if let urlError = error as? URLError, urlError.code == .cancelled {
+            markCancelled(req: req)
+            return
+        }
+        if error is CancellationError {
+            markCancelled(req: req)
+            return
+        }
+
+        switch error {
+        case APIError.unauthorized:
+            // 401 → needsReauth（APIClient 已置位，AppRoot 协调器负责登出）；不推进队列
+            isGenerating = false
+            inflight = nil
+            currentChatTask = nil
+            waitingSeconds = 0
+        case APIError.timeout:
+            inflight?.phase = .timeout
+        case APIError.server(let code, _) where code == 404:
+            await handleNotFound(req: req)
+        case APIError.server(let code, _):
+            inflight?.phase = .serverError("服务端错误 \(code)")
+        case APIError.network:
+            inflight?.phase = .networkError
+        case APIError.decoding, APIError.invalidURL:
+            inflight?.phase = .serverError("数据解析失败")
+        default:
+            inflight?.phase = .serverError(error.localizedDescription)
+        }
+    }
+
+    /// 404：清 session_id 无感知重发一次；再 404 → toast 不循环
+    private func handleNotFound(req: InFlightRequest) async {
+        if req.didRetry404 {
+            showToast("会话失效，已开启新会话")
+            finishGeneration()
+            return
+        }
+        appState.chatSessionId = nil
+        var updated = req
+        updated.didRetry404 = true
+        inflight = updated
+
+        do {
+            let resp = try await APIClient.shared.chat(
+                question: updated.text,
+                sessionId: nil,
+                quotedContext: updated.quote?.text
+            )
+            if let sid = resp.sessionId, !sid.isEmpty {
+                appState.chatSessionId = sid
+            }
+            await handleSuccess(req: updated, response: resp)
+        } catch {
+            if let apiErr = error as? APIError, case .server(let code, _) = apiErr, code == 404 {
+                showToast("会话失效，已开启新会话")
+                finishGeneration()
+            } else {
+                await handleError(req: updated, error: error)
+            }
+        }
+    }
+
+    private func markCancelled(req: InFlightRequest) {
+        guard inflight?.id == req.id else { return }
+        // 占位改「已取消」
+        messages.append(ChatMessage(role: .assistant, content: "已取消", isStreaming: false))
+        finishGeneration()
+    }
+
+    private func finishGeneration() {
+        isGenerating = false
+        inflight = nil
+        currentChatTask = nil
+        waitingSeconds = 0
+        advanceQueue()
+    }
+
+    private func advanceQueue() {
+        guard !pendingQueue.isEmpty else { return }
+        let next = pendingQueue.removeFirst()
+        startGeneration(text: next.text, quote: next.quote)
+    }
+
+    private func cancelInFlight() {
+        currentChatTask?.cancel()
+    }
+
+    private func cancelQueued(_ id: String) {
+        pendingQueue.removeAll { $0.id == id }
+        // 后续占位序号由 enumerated 实时重排
+    }
+
+    private func retryCurrentInFlight() {
+        guard var req = inflight else { return }
+        req.phase = .thinking
+        req.didRetry404 = false
+        inflight = req
+        waitingSeconds = 0
+        currentChatTask = Task {
+            await runInFlight(req)
+        }
+    }
+
+    private func switchToDemoMode() {
+        demoMode = true
+        currentChatTask?.cancel()
+        guard let req = inflight else { return }
+        inflight = nil
+        Task {
+            await appendDemoReply(req: req)
+        }
+    }
+
+    private func appendDemoReply(req: InFlightRequest) async {
+        let messageId = UUID().uuidString
+        messages.append(
+            ChatMessage(id: messageId, role: .assistant, content: "", isStreaming: true, isDemoSample: true)
+        )
+        await typewriter(messageId: messageId, answer: demoReply(for: req.text))
+        finishGeneration()
+    }
+
+    private func demoReply(for question: String) -> String {
+        "演示模式：后端暂不可达，已切换到本地演示。你提出的「\(question)」将在接入真实后端后获得答复。"
+    }
+
+    /// 打字机渲染 answer（先挂载 reasoning 卡后再逐字推进正文）
+    private func typewriter(messageId: String, answer: String) async {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        let chars = Array(answer)
+        guard !chars.isEmpty else {
+            messages[idx].isStreaming = false
+            return
+        }
+        var shown = 0
+        while shown < chars.count {
+            shown = min(shown + 3, chars.count)
+            messages[idx].content = String(chars[0..<shown])
+            try? await Task.sleep(nanoseconds: 16_000_000)
+        }
+        messages[idx].isStreaming = false
+    }
+
+    private func showToast(_ text: String) {
+        toastMessage = text
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            if toastMessage == text {
+                toastMessage = nil
+            }
+        }
+    }
+
+    // MARK: - regenerate（统一走真实 API，共享 isGenerating 互斥锁）
+
     private func regenerate(messageId: String) {
         guard !isGenerating else { return }
         guard let targetIdx = messages.firstIndex(where: { $0.id == messageId }) else { return }
@@ -460,30 +702,14 @@ public struct ChatView: View {
         guard let userIdx = messages[..<targetIdx].lastIndex(where: { $0.role == .user }) else { return }
 
         let userPrompt = messages[userIdx].content
-        let isPreset = presetMessageIds.contains(messageId)
-
-        if isPreset {
-            // 预置消息混合态：保留原富媒体 blocks + 附真实 reasoning，标注演示样例
-            var updated = messages[targetIdx]
-            updated.content = "关于「\(userPrompt)」——已重新生成（演示样例）。"
-            updated.blocks = messages[targetIdx].blocks.filter { block in
-                if case .reasoning = block { return false }
-                return true
-            }
-            updated.blocks.append(.reasoning(MockData.demoReasoningSteps))
-            updated.isStreaming = false
-            updated.isDemoSample = true
-            messages[targetIdx] = updated
-        } else {
-            // 运行时全量替换：移除目标及其后所有消息，流式重发
-            messages.removeSubrange(targetIdx...)
-            simulateAssistantResponse(to: userPrompt)
-        }
+        let quote = messages[userIdx].quotedContext
+        // 移除目标及其后所有消息，走真实 API 重发
+        messages.removeSubrange(targetIdx...)
+        startGeneration(text: userPrompt, quote: quote)
     }
 
     // MARK: - PlusMenuSheet 回填处理
 
-    /// 照片导入：降采样后 JPEG 数据 → 用户消息 + 图片卡
     private func attachPhoto(_ data: Data) {
         let block = ImageBlock(assetName: "imported_photo", imageData: data, caption: "已导入照片（2048px 降采样）")
         let msg = ChatMessage(
@@ -492,10 +718,9 @@ public struct ChatView: View {
             blocks: [.image(block)]
         )
         messages.append(msg)
-        simulateAssistantResponse(to: "照片导入")
+        dispatchAssistantReply(to: "照片导入")
     }
 
-    /// 文档导入：前置 50MB 预检已通过，读取文件名/体积 → 用户消息 + 附件卡
     private func attachDocument(_ url: URL) {
         let name = url.lastPathComponent
         let sizeBytes = InboxFileManager.shared.fileSizeBytes(at: url) ?? 0
@@ -507,20 +732,18 @@ public struct ChatView: View {
             blocks: [.attachment(attachment)]
         )
         messages.append(msg)
-        simulateAssistantResponse(to: "文档导入")
+        dispatchAssistantReply(to: "文档导入")
     }
 
-    /// 微信文章导入：白名单校验通过后的链接回填（抓取由后端后续轮承接）
     private func importWeChatLink(_ link: String) {
         let msg = ChatMessage(
             role: .user,
             content: "💬 微信文章导入请求：\(link)\n（已通过 mp.weixin.qq.com 白名单校验，内容抓取由后端引擎后续轮次承接）"
         )
         messages.append(msg)
-        simulateAssistantResponse(to: "微信文章导入")
+        dispatchAssistantReply(to: "微信文章导入")
     }
 
-    /// 引用知识：已订阅条目 → 带引用上下文的用户消息
     private func referenceKnowledge(_ item: KnowledgeItem) {
         let quote = QuotedContext(text: "《\(item.title)》", blockSummary: item.summary)
         let msg = ChatMessage(
@@ -529,7 +752,7 @@ public struct ChatView: View {
             quotedContext: quote
         )
         messages.append(msg)
-        simulateAssistantResponse(to: "知识引用")
+        dispatchAssistantReply(to: "知识引用")
     }
 
     private func attachmentFileType(for url: URL) -> AttachmentFileType {
@@ -540,6 +763,165 @@ public struct ChatView: View {
         case "xls", "xlsx", "csv": return .excel
         default: return .generic
         }
+    }
+}
+
+// MARK: - 状态机数据结构
+
+private struct PendingItem: Identifiable {
+    let id: String
+    let text: String
+    let quote: QuotedContext?
+}
+
+private struct InFlightRequest {
+    let id: String
+    let text: String
+    let quote: QuotedContext?
+    var didRetry404: Bool = false
+    var phase: InFlightPhase = .thinking
+}
+
+private enum InFlightPhase: Equatable {
+    case thinking
+    case timeout
+    case networkError
+    case serverError(String)
+}
+
+// MARK: - 占位视图
+
+private struct ThinkingPlaceholderView: View {
+    let seconds: Int
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            HStack(spacing: AppTheme.Spacing.xs) {
+                Circle().fill(AppTheme.Colors.primary).frame(width: 6, height: 6)
+                Circle().fill(AppTheme.Colors.primary.opacity(0.6)).frame(width: 6, height: 6)
+                Circle().fill(AppTheme.Colors.primary.opacity(0.3)).frame(width: 6, height: 6)
+                Text("思考中 · 已等待 \(seconds) 秒")
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                Spacer()
+                Button(action: onCancel) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "xmark.circle.fill")
+                        Text("取消")
+                    }
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(AppTheme.Colors.textTertiary)
+                }
+                .buttonStyle(SoftButtonStyle())
+            }
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, AppTheme.Spacing.sm + 2)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.18), lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+    }
+}
+
+private struct PendingPlaceholderView: View {
+    let position: Int
+    let onCancel: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            HStack(spacing: AppTheme.Spacing.xs) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.Colors.textTertiary)
+                Text("排队中 · 第 \(position) 位")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                Spacer()
+                Button(action: onCancel) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                }
+                .buttonStyle(SoftButtonStyle())
+            }
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, AppTheme.Spacing.sm + 2)
+            .background(AppTheme.Colors.cardBackground.opacity(0.7))
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+    }
+}
+
+private struct StatusCardView: View {
+    let icon: String
+    let iconColor: Color
+    let title: String
+    let message: String
+    let primary: (label: String, action: () -> Void)
+    let secondary: (label: String, action: () -> Void)?
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .font(.system(size: 12))
+                        .foregroundColor(iconColor)
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                }
+                Text(message)
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    actionChip(primary.label, primary.action)
+                    if let secondary {
+                        actionChip(secondary.label, secondary.action)
+                    }
+                }
+            }
+            .padding(AppTheme.Spacing.md)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(iconColor.opacity(0.25), lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+    }
+
+    private func actionChip(_ label: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(AppTheme.Colors.primary)
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .padding(.vertical, 6)
+                .background(AppTheme.Colors.primary.opacity(0.08))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(SoftButtonStyle())
     }
 }
 
