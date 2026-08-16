@@ -143,6 +143,14 @@ public struct ChatView: View {
             } else {
                 OrphanPendingCardView(onRetry: { retryMessage(message.id) })
             }
+        } else if let clarify = message.clarifyBlock {
+            // 澄清选项卡片：点选后回调 sendClarifySelection 提交
+            ClarifyCard(
+                block: clarify,
+                onSubmit: { selection in
+                    sendClarifySelection(messageId: message.id, selection: selection)
+                }
+            )
         } else {
             MessageBubbleView(
                 message: message,
@@ -152,6 +160,30 @@ public struct ChatView: View {
                 onRegenerate: { messageId in regenerate(messageId: messageId) }
             )
         }
+    }
+
+    /// 澄清卡片提交：把用户选择回填为一条 user 消息，并清空原卡片（防重复提交）。
+    private func sendClarifySelection(messageId: String, selection: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        // 1) 原卡片置为已提交（禁用重复点选）——直接改 blocks 数组内的关联值
+        if let blockIdx = messages[idx].blocks.firstIndex(where: {
+            if case .clarify = $0 { return true }
+            return false
+        }) {
+            if case .clarify(var c) = messages[idx].blocks[blockIdx] {
+                c.markSubmitted(selection: selection)
+                messages[idx].blocks[blockIdx] = .clarify(c)
+            }
+        }
+        commitSession()
+        // 2) 回填用户选择消息
+        messages.append(ChatMessage(
+            sessionId: sessionManager.activeSessionID(),
+            role: .user,
+            content: selection
+        ))
+        // 3) 走正常链路发起下一轮对话
+        dispatchAssistantReply(to: selection)
     }
 
     @ViewBuilder
@@ -713,6 +745,29 @@ public struct ChatView: View {
 
         // 移除思考占位
         inflight = nil
+
+        // 澄清卡片优先：后端返回 clarify 载荷 → 直接挂载 ClarifyBlock，
+        // answer 仅作为极简引导语（禁止正文废话），跳过思维链揭示与打字机渲染。
+        if let payload = response.clarify, !payload.question.isEmpty {
+            let clarify = ClarifyBlock(
+                question: payload.question,
+                choices: payload.choices.isEmpty ? [] : payload.choices,
+                multiSelect: payload.multiSelect,
+                submitLabel: "确认选择"
+            )
+            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                var blocks = messages[idx].blocks
+                blocks.append(.clarify(clarify))
+                // 正文只保留极简引导（≤40 字），杜绝流程说教
+                messages[idx].content = response.answer.isEmpty ? "" : String(response.answer.prefix(40))
+                messages[idx].blocks = blocks
+                messages[idx].pending = false
+                messages[idx].isStreaming = false
+            }
+            commitSession()
+            finishGeneration()
+            return
+        }
 
         // 思维链逐步揭示（每步约 300ms），揭示完毕后再打字机渲染正文
         if !steps.isEmpty {

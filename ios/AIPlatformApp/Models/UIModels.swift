@@ -183,6 +183,56 @@ public struct AttachmentBlock: Identifiable, Sendable, Hashable {
     }
 }
 
+// MARK: - 澄清选项卡片（对齐 Hermes clarify 协议：question / choices / multi_select）
+
+/// 单条澄清选项
+public struct ClarifyOption: Identifiable, Sendable, Hashable {
+    public let id: String
+    public var label: String
+
+    public init(id: String = UUID().uuidString, label: String) {
+        self.id = id
+        self.label = label
+    }
+}
+
+/// 澄清卡片数据块（单选/多选 + 自定义输入 + 已提交态）
+public struct ClarifyBlock: Identifiable, Sendable, Hashable {
+    public let id: String
+    public var question: String
+    public var choices: [ClarifyOption]
+    /// true = 多选（Checkbox），false = 单选（Radio）
+    public var multiSelect: Bool
+    public var submitLabel: String
+    /// 已提交标记：提交后禁用重复点选，并记录最终选择文本
+    public var isSubmitted: Bool
+    public var submittedSelection: String
+
+    public init(
+        id: String = UUID().uuidString,
+        question: String,
+        choices: [String],
+        multiSelect: Bool = false,
+        submitLabel: String = "确认选择",
+        isSubmitted: Bool = false,
+        submittedSelection: String = ""
+    ) {
+        self.id = id
+        self.question = question
+        self.choices = choices.map { ClarifyOption(label: $0) }
+        self.multiSelect = multiSelect
+        self.submitLabel = submitLabel
+        self.isSubmitted = isSubmitted
+        self.submittedSelection = submittedSelection
+    }
+
+    /// 提交结果回填（由 ChatView 在用户点选确认后调用，防重复提交）
+    public mutating func markSubmitted(selection: String) {
+        self.isSubmitted = true
+        self.submittedSelection = selection
+    }
+}
+
 /// 推理步骤类型（与后端 reasoning_extractor 的 type 字符串对齐）
 public enum ReasoningStepType: String, Sendable, Hashable {
     case thought = "thought"
@@ -267,6 +317,7 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
     case table(TableBlock)
     case attachment(AttachmentBlock)
     case reasoning([ReasoningStep])
+    case clarify(ClarifyBlock)
 
     public var id: String {
         switch self {
@@ -277,11 +328,22 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
         case .table(let t): return "table_\(t.id)"
         case .attachment(let a): return "attachment_\(a.id)"
         case .reasoning(let steps): return "reasoning_" + steps.map(\.id).joined(separator: "_")
+        case .clarify(let c): return "clarify_\(c.id)"
         }
     }
 }
 
 public extension ChatMessage {
+    /// 取消息中的澄清卡片块（无则 nil）。ChatView 据此将消息渲染为 ClarifyCard 而非普通气泡。
+    var clarifyBlock: ClarifyBlock? {
+        for block in blocks {
+            if case .clarify(let c) = block {
+                return c
+            }
+        }
+        return nil
+    }
+
     /// 构造引用上下文：仅正文 + 富媒体卡片摘要，显式剔除 reasoning 块（防思维链污染引用）。
     var quoteContext: QuotedContext {
         let summaries: [String] = blocks.compactMap { block in
@@ -293,6 +355,7 @@ public extension ChatMessage {
             case .table(let t): return "[表格·\(t.title)]"
             case .attachment(let a): return "[附件·\(a.fileName)]"
             case .reasoning: return nil   // 显式剔除 reasoning
+            case .clarify(let c): return "[澄清·\(c.question)]"
             }
         }
         let blockSummary = summaries.isEmpty ? nil : summaries.joined(separator: " ")

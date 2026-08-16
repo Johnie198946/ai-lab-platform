@@ -217,7 +217,8 @@ def extract_steps(rows: List[Dict[str, Any]]) -> List[ReasoningStep]:
                     ReasoningStep(
                         type=ttype,
                         title=title,
-                        detail=sanitize_step(detail_text),
+                        # 澄清卡片是 UI 数据（question+choices），放宽截断到 1000 字符，保证选项完整送达前端
+                        detail=sanitize_step(detail_text, limit=1000),
                     )
                 )
             else:

@@ -8,12 +8,15 @@
 
 /* Begin PBXBuildFile section */
 		1995D55E8A97BAB4170D7656 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6CC416750077F6D7DF859B /* SpeechRecognizerService.swift */; };
+		1A5D7C672B1E21E9CBE54D6B /* ClarifyCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 487851A719C4FA40DFA066AC /* ClarifyCard.swift */; };
 		1B83E300CE2CE743A621F7C5 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 4E35AD99D2D7E9243E8DADC7 /* InfoPlist.strings */; };
+		1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */; };
 		364D6C336F779FC90000B64E /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD70BD59CD071FB619837740 /* ChatView.swift */; };
 		3FFEAF19DF3D4DE1A028D6F0 /* PlusMenuSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA8E5B249F6B3A2259CE92A /* PlusMenuSheet.swift */; };
 		44364A0B81BC8C873E2A107F /* QuantumAvatarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A0179B18110033BC1CA0851 /* QuantumAvatarView.swift */; };
 		4968A2BF3FA933724CA3EED1 /* TokenSummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = CF013F7A1E943E1DB704B2C0 /* TokenSummaryCard.swift */; };
 		4D0490AB8539AF2303A30FD6 /* APIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5739784ABF1359A2846D8888 /* APIClient.swift */; };
+		511FE1B06DE33A584C0A8C69 /* QuickCommandTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = C46EACC0E8183D29E10202F1 /* QuickCommandTracker.swift */; };
 		54F1BB8A5626FEC33057A530 /* TopologyCanvasView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 416F0C2DCD91D27B61D53C19 /* TopologyCanvasView.swift */; };
 		55FE0861FFFFA12CF6705B08 /* ChartCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2DF83086061F218C1259F32C /* ChartCard.swift */; };
 		5820D9361C974E6882000A61 /* TableCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A789A71D20741647361F7B75 /* TableCard.swift */; };
@@ -22,7 +25,9 @@
 		70A7548492134FB38A9468A2 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = F421FF9169B217EA9B1F3CB3 /* Theme.swift */; };
 		835F48448522A2A88E0C7165 /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9503A88EC7D490F2425318D0 /* MainTabView.swift */; };
 		85D4C80001C8700309C59875 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D8C3C41383CABE92AED74AF8 /* MessageBubbleView.swift */; };
+		8A5A9BA341A670FC81416FDE /* MarkdownCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA248235E4F8F54568B90C23 /* MarkdownCards.swift */; };
 		A90220533C07201C3B17C5B6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C3999D4D79E502B3827976F /* SettingsView.swift */; };
+		AE5A3CC965F3BF6DE4F2D9D4 /* LocalArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBADA126A671C61D293BE967 /* LocalArtifactStore.swift */; };
 		AF3FBBCFB0CCECD37F56C829 /* AgentCreatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BB3C5ED04BDD0018FB3421 /* AgentCreatorView.swift */; };
 		B11A605E5DA136F4CEC7F3C3 /* ReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8895E27447B9A9076EB1D59 /* ReasoningCard.swift */; };
 		BF6487D4B02C2A259642AFD4 /* AttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */; };
@@ -34,6 +39,7 @@
 		EA82BF67AC18747EC5F3FA3E /* KnowledgeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BCBB7C00E5A6746E434E2EBC /* KnowledgeView.swift */; };
 		EB4EC10398BD98D6CA5312C5 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = D1E31A390B5DA9F45A4E7E6F /* Assets.xcassets */; };
 		F3462447EFD8BB4DAFA14A1E /* WeChatLinkValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC0682A56D72BAAB4097CFA /* WeChatLinkValidator.swift */; };
+		F97A7339A74692F2CEE74D86 /* ThinkingPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CC8A62E663E1EB37C7BE0B /* ThinkingPlaceholderView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -42,8 +48,10 @@
 		2DF83086061F218C1259F32C /* ChartCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartCard.swift; sourceTree = "<group>"; };
 		416F0C2DCD91D27B61D53C19 /* TopologyCanvasView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TopologyCanvasView.swift; sourceTree = "<group>"; };
 		42A09EB0901BFFE6D59012F0 /* ImageCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ImageCard.swift; sourceTree = "<group>"; };
+		487851A719C4FA40DFA066AC /* ClarifyCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClarifyCard.swift; sourceTree = "<group>"; };
 		4E35AD99D2D7E9243E8DADC7 /* InfoPlist.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = InfoPlist.strings; path = "zh-Hans.lproj/InfoPlist.strings"; sourceTree = "<group>"; };
 		5739784ABF1359A2846D8888 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
+		5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlockParser.swift; sourceTree = "<group>"; };
 		6C3999D4D79E502B3827976F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		77831964D4BC5807CFED21D0 /* ProfileEditSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditSheet.swift; sourceTree = "<group>"; };
 		7A0179B18110033BC1CA0851 /* QuantumAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuantumAvatarView.swift; sourceTree = "<group>"; };
@@ -53,17 +61,22 @@
 		964A9F3CAD461856EAF48590 /* AIPlatformApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIPlatformApp.swift; sourceTree = "<group>"; };
 		A789A71D20741647361F7B75 /* TableCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TableCard.swift; sourceTree = "<group>"; };
 		A8895E27447B9A9076EB1D59 /* ReasoningCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReasoningCard.swift; sourceTree = "<group>"; };
+		AA248235E4F8F54568B90C23 /* MarkdownCards.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownCards.swift; sourceTree = "<group>"; };
 		AC6CC416750077F6D7DF859B /* SpeechRecognizerService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechRecognizerService.swift; sourceTree = "<group>"; };
 		AE840AF43A4B6B0BA1587D11 /* VoiceInputView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceInputView.swift; sourceTree = "<group>"; };
+		B4C9371EEE0A71253EADCED7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		BCBB7C00E5A6746E434E2EBC /* KnowledgeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnowledgeView.swift; sourceTree = "<group>"; };
 		BD70BD59CD071FB619837740 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
+		C46EACC0E8183D29E10202F1 /* QuickCommandTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickCommandTracker.swift; sourceTree = "<group>"; };
 		CF013F7A1E943E1DB704B2C0 /* TokenSummaryCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TokenSummaryCard.swift; sourceTree = "<group>"; };
 		D1E31A390B5DA9F45A4E7E6F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D8C3C41383CABE92AED74AF8 /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
 		DEA8E5B249F6B3A2259CE92A /* PlusMenuSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlusMenuSheet.swift; sourceTree = "<group>"; };
+		EBADA126A671C61D293BE967 /* LocalArtifactStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalArtifactStore.swift; sourceTree = "<group>"; };
 		F1BB3C5ED04BDD0018FB3421 /* AgentCreatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCreatorView.swift; sourceTree = "<group>"; };
 		F1BCBEC07C644E546DA3A3FD /* UIModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UIModels.swift; sourceTree = "<group>"; };
 		F421FF9169B217EA9B1F3CB3 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		F6CC8A62E663E1EB37C7BE0B /* ThinkingPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ThinkingPlaceholderView.swift; sourceTree = "<group>"; };
 		F8E70EAC9E0B5B8A7FA5B187 /* InboxFileManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InboxFileManager.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -81,7 +94,9 @@
 			children = (
 				13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */,
 				2DF83086061F218C1259F32C /* ChartCard.swift */,
+				487851A719C4FA40DFA066AC /* ClarifyCard.swift */,
 				42A09EB0901BFFE6D59012F0 /* ImageCard.swift */,
+				AA248235E4F8F54568B90C23 /* MarkdownCards.swift */,
 				A8895E27447B9A9076EB1D59 /* ReasoningCard.swift */,
 				A789A71D20741647361F7B75 /* TableCard.swift */,
 			);
@@ -150,6 +165,9 @@
 			isa = PBXGroup;
 			children = (
 				F8E70EAC9E0B5B8A7FA5B187 /* InboxFileManager.swift */,
+				EBADA126A671C61D293BE967 /* LocalArtifactStore.swift */,
+				5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */,
+				C46EACC0E8183D29E10202F1 /* QuickCommandTracker.swift */,
 				AC6CC416750077F6D7DF859B /* SpeechRecognizerService.swift */,
 				8CC0682A56D72BAAB4097CFA /* WeChatLinkValidator.swift */,
 			);
@@ -169,6 +187,7 @@
 			children = (
 				964A9F3CAD461856EAF48590 /* AIPlatformApp.swift */,
 				D1E31A390B5DA9F45A4E7E6F /* Assets.xcassets */,
+				B4C9371EEE0A71253EADCED7 /* Info.plist */,
 				4E35AD99D2D7E9243E8DADC7 /* InfoPlist.strings */,
 				6767AA4A11C8D340E760E734 /* DesignSystem */,
 				EAFA6C978F4C7CF1755C429A /* Models */,
@@ -185,6 +204,7 @@
 				BD70BD59CD071FB619837740 /* ChatView.swift */,
 				D8C3C41383CABE92AED74AF8 /* MessageBubbleView.swift */,
 				DEA8E5B249F6B3A2259CE92A /* PlusMenuSheet.swift */,
+				F6CC8A62E663E1EB37C7BE0B /* ThinkingPlaceholderView.swift */,
 				323A9E3F60AE15C3ADC6086C /* Cards */,
 			);
 			path = Chat;
@@ -297,20 +317,26 @@
 				BF6487D4B02C2A259642AFD4 /* AttachmentCard.swift in Sources */,
 				55FE0861FFFFA12CF6705B08 /* ChartCard.swift in Sources */,
 				364D6C336F779FC90000B64E /* ChatView.swift in Sources */,
+				1A5D7C672B1E21E9CBE54D6B /* ClarifyCard.swift in Sources */,
 				EA5709C3A46D1DE62905B40C /* ImageCard.swift in Sources */,
 				C9A8805D56EF7F858B0ADD99 /* InboxFileManager.swift in Sources */,
 				EA82BF67AC18747EC5F3FA3E /* KnowledgeView.swift in Sources */,
+				AE5A3CC965F3BF6DE4F2D9D4 /* LocalArtifactStore.swift in Sources */,
 				C5628D34D35E19AAF03CA518 /* LoginView.swift in Sources */,
 				835F48448522A2A88E0C7165 /* MainTabView.swift in Sources */,
+				1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */,
+				8A5A9BA341A670FC81416FDE /* MarkdownCards.swift in Sources */,
 				85D4C80001C8700309C59875 /* MessageBubbleView.swift in Sources */,
 				3FFEAF19DF3D4DE1A028D6F0 /* PlusMenuSheet.swift in Sources */,
 				D5E5539813EF231D57471760 /* ProfileEditSheet.swift in Sources */,
 				44364A0B81BC8C873E2A107F /* QuantumAvatarView.swift in Sources */,
+				511FE1B06DE33A584C0A8C69 /* QuickCommandTracker.swift in Sources */,
 				B11A605E5DA136F4CEC7F3C3 /* ReasoningCard.swift in Sources */,
 				A90220533C07201C3B17C5B6 /* SettingsView.swift in Sources */,
 				1995D55E8A97BAB4170D7656 /* SpeechRecognizerService.swift in Sources */,
 				5820D9361C974E6882000A61 /* TableCard.swift in Sources */,
 				70A7548492134FB38A9468A2 /* Theme.swift in Sources */,
+				F97A7339A74692F2CEE74D86 /* ThinkingPlaceholderView.swift in Sources */,
 				4968A2BF3FA933724CA3EED1 /* TokenSummaryCard.swift in Sources */,
 				54F1BB8A5626FEC33057A530 /* TopologyCanvasView.swift in Sources */,
 				6519DC1C7260123F1CD43718 /* UIModels.swift in Sources */,
@@ -330,15 +356,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Quantum;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于语音交互输入，将你的语音实时转写为文字。";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于将你的语音转写为文字，辅助对话输入。";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -422,15 +440,7 @@
 				CODE_SIGNING_ALLOWED = NO;
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_IDENTITY = "";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = Quantum;
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于语音交互输入，将你的语音实时转写为文字。";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于将你的语音转写为文字，辅助对话输入。";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait";
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

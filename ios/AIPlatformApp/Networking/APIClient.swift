@@ -115,13 +115,29 @@ public struct ChatResponseDTO: Codable {
     public let reasoning: [ChatReasoningStepDTO]?
     /// 502 降级标记：true 时前端跳过 ReasoningCard、不入正常历史、渲染降级卡
     public let degraded: Bool?
+    /// 澄清卡片载荷：非空时前端渲染 ClarifyCard（对齐 Hermes clarify 协议）
+    public let clarify: ChatClarifyDTO?
 
-    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil) {
+    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil) {
         self.question = question
         self.answer = answer
         self.sessionId = sessionId
         self.reasoning = reasoning
         self.degraded = degraded
+        self.clarify = clarify
+    }
+}
+
+/// 后端澄清卡片载荷（对应 backend ClarifyPayload：question / choices / multi_select）
+public struct ChatClarifyDTO: Codable {
+    public let question: String
+    public let choices: [String]
+    public let multiSelect: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case question
+        case choices
+        case multiSelect = "multi_select"
     }
 }
 

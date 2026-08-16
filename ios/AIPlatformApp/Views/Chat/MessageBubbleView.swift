@@ -129,7 +129,7 @@ public struct MessageBubbleView: View {
         .clipShape(Capsule())
     }
 
-    // MARK: - 块分发（7 case 统一渲染）
+    // MARK: - 块分发（8 case 统一渲染）
     @ViewBuilder
     private func blockCard(_ block: MessageBlock) -> some View {
         switch block {
@@ -140,6 +140,7 @@ public struct MessageBubbleView: View {
         case .table(let table): TableCard(block: table)
         case .attachment(let attachment): AttachmentCard(block: attachment)
         case .reasoning(let steps): ReasoningCard(steps: steps)
+        case .clarify(let clarify): ClarifyCard(block: clarify, onSubmit: nil)
         }
     }
 

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import uuid
@@ -85,6 +86,14 @@ class ChatRequest(BaseModel):
     agent_id: Optional[str] = Field(None, max_length=50)
 
 
+class ClarifyPayload(BaseModel):
+    """澄清卡片结构化载荷（对齐 Hermes clarify 协议），由 clarify 推理步骤解析而来。"""
+
+    question: str
+    choices: List[str]
+    multi_select: bool = False
+
+
 class ChatResponse(BaseModel):
     question: str
     answer: str
@@ -92,6 +101,45 @@ class ChatResponse(BaseModel):
     session_id: Optional[str] = None
     reasoning: List[ReasoningStep] = []
     citations: List[str] = []
+    # 澄清卡片：非空时前端优先渲染 ClarifyCard，answer 仅作引导语
+    clarify: Optional[ClarifyPayload] = None
+
+
+def extract_clarify_payload(reasoning: List[ReasoningStep]) -> Optional[ClarifyPayload]:
+    """从推理步骤中提取最后一条 clarify 步骤并解析为结构化载荷。
+
+    clarify 步骤的 detail 为 sanitize 后的 JSON（question/choices/multi_select），
+    解析失败或缺少 question 时返回 None（前端退化为普通文本气泡）。
+    兼容 ReasoningStep 对象与原始 dict（mock/测试场景）。
+    """
+    for step in reversed(reasoning):
+        if isinstance(step, dict):
+            step_type = step.get("type")
+            detail = step.get("detail")
+        else:
+            step_type = getattr(step, "type", None)
+            detail = getattr(step, "detail", "")
+        if step_type != "clarify":
+            continue
+        try:
+            data = json.loads(detail or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        question = str(data.get("question") or "").strip()
+        if not question:
+            return None
+        raw_choices = data.get("choices") or []
+        if isinstance(raw_choices, str):
+            raw_choices = [raw_choices]
+        choices = [str(c).strip() for c in raw_choices if str(c).strip()]
+        return ClarifyPayload(
+            question=question,
+            choices=choices,
+            multi_select=bool(data.get("multi_select", False)),
+        )
+    return None
 
 
 async def _call_hermes(
@@ -155,6 +203,7 @@ async def _check_cached_answer(
         session_id=session_id,
         reasoning=reasoning,
         citations=citations,
+        clarify=extract_clarify_payload(reasoning),
     )
 
 
@@ -214,6 +263,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         )
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
+        clarify = extract_clarify_payload(reasoning)
         return ChatResponse(
             question=req.question,
             answer=answer,
@@ -221,6 +271,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             session_id=isolated_session_id,
             reasoning=reasoning,
             citations=citations,
+            clarify=clarify,
         )
     except Exception as e:
         raise HTTPException(
