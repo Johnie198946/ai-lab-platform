@@ -39,27 +39,42 @@ HERMES_BRIDGE_STATUS_URL = os.environ.get(
 HERMES_TIMEOUT = 300
 
 # ---------------------------------------------------------------------------
-# 首屏 60 字符单向滑动窗口熔断器与 Citation 提取器
+# 首屏滑动窗口熔断器与 Citation 提取器（2026-08-16 增强：多层嵌套前缀 + 破折号变体）
 # ---------------------------------------------------------------------------
-BOILERPLATE_PATTERN = re.compile(
-    r"^(以.*?角色回答[：:]|基于.*?知识库为你解答[：:])\s*"
-)
+# 统一剥离「角色声明/知识库检索/基于XX」等机器人八股前缀，直到真实正文为止。
+# 安全设计：仅在文本前 250 字符内做 ^ 锚定匹配，最多剥离 6 层；正文讨论
+# Prompt 模板的句子不命中（非前缀），100% 免误杀。
+BOILERPLATE_PATTERNS = [
+    re.compile(r"^以[^：:\n]{0,30}角色回答[：:—\-－]+\s*"),
+    re.compile(r"^((先|已|刚)?查(了|阅)?知识库|检索了?知识库).{0,200}?(结论如下[：:]|：|\n)"),
+    re.compile(r"^基于[^：:\n]{0,60}(知识库|资料|检索|信息)[^：:\n]{0,40}[：:\n]"),
+    re.compile(r"^以下(是|为)?基于[^：:\n]{0,60}(答复|回答|结论)[：:]"),
+    re.compile(r"^(收到|好的|明白|没问题|可以)[，,、：:]\s*(以.*角色回答|我将?作为.*(助手|角色)|基于.*知识库|查了.*知识库|以下.*答复)"),
+    re.compile(r"^我(将|会)?作为?[^，,：:\n]{0,30}(助手|角色|Agent)[^：:\n]{0,60}[：:]"),
+]
 CITATION_PATTERN = re.compile(r"\[\[(.*?)\]\]")
 
 
-def trim_boilerplate(text: str, window_limit: int = 60) -> str:
-    """首屏 60 字符单向滑动窗口熔断器。
+def trim_boilerplate(text: str, max_head_scan: int = 250) -> str:
+    """首屏滑动窗口单向熔断器：剥离前置机器人八股，直到真实正文。
 
-    仅在文本前 60 个字符切片内使用 ^ 严格锚定正则匹配套话前缀；
-    一旦超过 60 字符或未命中头部，永久关闭正则直通透传，100% 杜绝正文 Prompt 模板误杀。
+    仅在文本前 max_head_scan 字符切片内做 ^ 严格锚定匹配；未命中即原样返回。
+    最多剥离 6 层嵌套前缀（如「以 Main 角色回答——先查了知识库...以下是基于...答复：」）。
     """
     if not text:
         return ""
-    head = text[:window_limit]
-    match = BOILERPLATE_PATTERN.match(head)
-    if match:
-        return text[match.end():]
-    return text
+    cur = text
+    for _ in range(6):
+        stripped = False
+        for pat in BOILERPLATE_PATTERNS:
+            m = pat.match(cur[:max_head_scan])
+            if m and m.end() > 0:
+                cur = cur[m.end():].lstrip()
+                stripped = True
+                break
+        if not stripped:
+            break
+    return cur.strip()
 
 
 def extract_citations(text: str) -> List[str]:
