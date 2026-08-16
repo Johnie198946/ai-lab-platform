@@ -209,4 +209,5 @@ async def test_clarify_submit_endpoint(app: FastAPI, transport: httpx.ASGITransp
     assert bridge_calls and bridge_calls[0][1] == {
         "session_id": "main_agent-x",
         "response": "B2C 单商户",
+        "clarify_id": None,
     }
