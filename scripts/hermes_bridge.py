@@ -562,16 +562,10 @@ def _query_status(
     }
 
     def _running_fallback() -> dict:
-        if _is_in_flight(user_id):
-            return {
-                "status": "running",
-                "phase": "boot",
-                "answer": "",
-                "reasoning": [],
-                "latest_step": "处理中",
-                "clarify": None,
-                "last_message_id": 0,
-            }
+        # 微信模式提交后立即轮询（2s）vs agent 构建 10s+：映射未写期间
+        # 必须认 _stream_runs（进程内流式 run 已注册）→ running 兜底，绝不误报 not_found
+        if _is_in_flight(user_id) or _stream_run_get(user_id) is not None:
+            return {"status": "running", "answer": "", "reasoning": [], "latest_step": "处理中"}
         return empty
 
     if not hermes_sid:
