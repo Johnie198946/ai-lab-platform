@@ -26,7 +26,12 @@ from backend.services.reasoning_extractor import ReasoningStep
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
-HERMES_TIMEOUT = 180
+# Bridge 状态回读端点（长任务状态 / 断点 0ms 回读）
+HERMES_BRIDGE_STATUS_URL = os.environ.get(
+    "HERMES_BRIDGE_STATUS_URL",
+    "http://host.docker.internal:9118/v1/chat/status",
+)
+HERMES_TIMEOUT = 300
 
 
 class ChatRequest(BaseModel):
@@ -64,6 +69,45 @@ async def _call_hermes(
             ]
             return reply, reasoning
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）", []
+
+
+async def _call_hermes_status(session_id: str, consume: bool = False) -> Optional[Dict[str, Any]]:
+    """透传 Bridge 状态回读端点，返回状态机 dict（失败返回 None）。"""
+    url = f"{HERMES_BRIDGE_STATUS_URL}/{session_id}"
+    if consume:
+        url += "?consume=1"
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.get(url)
+        if r.status_code == 200:
+            return r.json()
+        return None
+
+
+async def _check_cached_answer(
+    question: str, session_id: str
+) -> Optional[ChatResponse]:
+    """断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes。"""
+    try:
+        data = await _call_hermes_status(session_id, consume=True)
+    except Exception as e:
+        print(f"[chat] 断点检查异常·跳过: {e}")
+        return None
+    if not data or data.get("status") != "completed":
+        return None
+    answer = (data.get("answer") or "").strip()
+    if not answer:
+        return None
+    reasoning = [
+        ReasoningStep(**s) if isinstance(s, dict) else s
+        for s in data.get("reasoning", [])
+    ]
+    return ChatResponse(
+        question=question,
+        answer=answer,
+        sources=[],
+        session_id=session_id,
+        reasoning=reasoning,
+    )
 
 
 _KNOWN_SESSION_PREFIXES = ("main_agent-", "supervision-", "coder-", "knowledge-")
@@ -104,6 +148,11 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     goal = role_prefix_for(req.agent_id) + req.question
     isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
 
+    # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
+    cached = await _check_cached_answer(req.question, isolated_session_id)
+    if cached is not None:
+        return cached
+
     # 透传 Hermes bridge（附真实思维链）
     try:
         reply, reasoning = await _call_hermes(goal, session_id=isolated_session_id)
@@ -116,3 +165,15 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         )
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Hermes 调用失败: {e}") from e
+
+
+@router.get("/status/{session_id}")
+async def chat_status(session_id: str, consume: bool = False, payload=Depends(require_auth)) -> Dict[str, Any]:
+    """长任务状态回读：透传 Bridge GET /v1/chat/status/{user_id}。
+
+    consume=True 时 Bridge 顺带标记 completed 结果为已消费（断点 0ms 回读）。
+    """
+    data = await _call_hermes_status(session_id, consume=consume)
+    if data is None:
+        raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
+    return data

@@ -67,19 +67,32 @@ STATE_DB = os.environ.get(
     str(Path.home() / ".hermes" / "state.db")
 )
 MAPPING_FILE = Path("/opt/ai-lab-platform/data/session_mappings.json")
+# 消费水位线持久化文件（user_id -> 已投递最大消息 id），供断点 0ms 回读判定
+WATERMARK_FILE = Path(
+    os.environ.get(
+        "HERMES_WATERMARK_FILE",
+        "/opt/ai-lab-platform/data/delivered_watermarks.json",
+    )
+)
 MAX_INPUT = 4000
-DEFAULT_TIMEOUT = 180
+DEFAULT_TIMEOUT = 300
 SERVE_TIMEOUT = 300
+# 状态回读 stale 判定阈值（秒）：最新消息超过该阈值未更新即判 timeout
+STATUS_STALE_SECONDS = 300
 
 # ANSI 转义序列清洗正则（匹配所有 ANSI escape codes）
 ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
 # user_id -> hermes_session_id 显式绑定（内存缓存 + JSON 持久化）
 _user_session_map: dict[str, str] = {}
+# user_id -> 已投递最大消息 id（消费水位线，断点 0ms 回读判定）
+_delivered_watermark: dict[str, int] = {}
 # 全局并发信号量（两级锁序第一级）
 _semaphore = asyncio.Semaphore(2)
 # MAPPING_FILE 读写进程内全局锁（原子写防并发损坏）
 _mapping_lock = threading.Lock()
+# WATERMARK_FILE 读写进程内全局锁
+_watermark_lock = threading.Lock()
 
 # user_id -> asyncio.Lock 细粒度锁（两级锁序第二级），LRU 512 有界 + 30min 空闲 TTL
 _user_locks: dict[str, asyncio.Lock] = {}
@@ -161,6 +174,58 @@ def _save_mapping() -> None:
                 raise
         except Exception as e:
             print(f"[bridge] 保存映射失败: {e}")
+
+
+def _load_watermarks() -> None:
+    """加载消费水位线（user_id -> 已投递最大消息 id）。"""
+    global _delivered_watermark
+    with _watermark_lock:
+        if WATERMARK_FILE.exists():
+            try:
+                data = json.loads(WATERMARK_FILE.read_text())
+                _delivered_watermark = {
+                    str(k): int(v) for k, v in data.items()
+                }
+            except Exception:
+                _delivered_watermark = {}
+
+
+def _save_watermarks() -> None:
+    """原子写消费水位线（临时文件 + os.replace），进程内锁保护。"""
+    global _delivered_watermark
+    with _watermark_lock:
+        try:
+            WATERMARK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = json.dumps(_delivered_watermark, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(WATERMARK_FILE.parent),
+                prefix=".delivered_watermarks.",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(data)
+                os.replace(tmp_path, WATERMARK_FILE)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as e:
+            print(f"[bridge] 保存水位线失败: {e}")
+
+
+def _get_watermark(user_id: str) -> int:
+    return _delivered_watermark.get(user_id, 0)
+
+
+def _set_watermark(user_id: str, max_msg_id: int) -> None:
+    """推进消费水位线（只增不减），并持久化。"""
+    if max_msg_id <= _get_watermark(user_id):
+        return
+    _delivered_watermark[user_id] = max_msg_id
+    _save_watermarks()
 
 
 # ---------- Hermes 原生 Session 存在性断言 ----------
@@ -300,6 +365,108 @@ def _readback_delta(session_id: str | None, baseline_id: int) -> list[dict]:
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+# ---------- 状态回读（GET /v1/chat/status） ----------
+
+def _latest_step_text(last_row) -> str:
+    """从最新一行提炼 human-readable 最新步骤摘要。"""
+    role = (last_row["role"] or "").strip()
+    if role == "tool":
+        name = (last_row["tool_name"] or "").strip()
+        return f"工具执行完成: {name}" if name else "工具执行完成"
+    if role == "assistant":
+        content = (last_row["content"] or "").strip()
+        if content:
+            return "已生成回答"
+        if last_row["tool_calls"]:
+            return "正在调用工具"
+        if (last_row["reasoning_content"] or "").strip():
+            return "思考中"
+        return "处理中"
+    return "等待处理"
+
+
+def _query_status(hermes_sid: str | None) -> dict:
+    """只读查询 state.db 会话状态，返回 4 态状态机结果。
+
+    - not_found：无映射 / 会话不存在 / 已归档
+    - completed：最后一条为 role='assistant' 且内容非空（附完整 answer + reasoning）
+    - running：最新为 tool/thought/user 且 300s 内有更新（附 latest_step + 已产生 steps）
+    - timeout：超时（>300s 无更新）或进程已退出且无 assistant 回答
+    """
+    empty = {"status": "not_found", "answer": "", "reasoning": [], "latest_step": ""}
+    if not hermes_sid:
+        return empty
+    if not os.path.exists(STATE_DB):
+        return empty
+    try:
+        conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
+    except Exception as e:
+        print(f"[bridge] state.db 只读连接失败: {e}")
+        return empty
+    try:
+        conn.row_factory = sqlite3.Row
+        srow = conn.execute(
+            "SELECT ended_at, archived FROM sessions WHERE id=? LIMIT 1",
+            (hermes_sid,),
+        ).fetchone()
+        if srow is None or srow["archived"]:
+            return empty
+
+        rows = conn.execute(
+            "SELECT id, role, content, reasoning_content, tool_name, tool_calls, timestamp "
+            "FROM messages WHERE session_id=? AND active=1 ORDER BY id ASC",
+            (hermes_sid,),
+        ).fetchall()
+        if not rows:
+            return {"status": "running", "answer": "", "reasoning": [], "latest_step": ""}
+
+        last = rows[-1]
+        role = (last["role"] or "").strip()
+        content = (last["content"] or "").strip()
+        ts = last["timestamp"] or 0
+        steps = [s.model_dump() for s in extract_steps([dict(r) for r in rows])]
+        latest_step = _latest_step_text(last)
+
+        # completed：最后一条 assistant 且内容非空
+        if role == "assistant" and content:
+            return {
+                "status": "completed",
+                "answer": content,
+                "reasoning": steps,
+                "latest_step": "",
+                "consumed": last["id"] <= _get_watermark(hermes_sid),
+            }
+
+        # running vs timeout
+        session_ended = srow["ended_at"] is not None
+        stale = (time.time() - ts) > STATUS_STALE_SECONDS
+        if not stale and not session_ended:
+            return {
+                "status": "running",
+                "answer": "",
+                "reasoning": steps,
+                "latest_step": latest_step,
+            }
+        return {
+            "status": "timeout",
+            "answer": "",
+            "reasoning": [],
+            "latest_step": latest_step,
+        }
+    finally:
+        conn.close()
+
+
+def _mark_consumed(user_id: str, hermes_sid: str | None) -> None:
+    """将当前会话最新消息 id 推进到消费水位线（断点 0ms 回读后标记已消费）。"""
+    if not hermes_sid:
+        return
+    try:
+        _set_watermark(user_id, _get_baseline_id(hermes_sid))
+    except Exception as e:
+        print(f"[bridge] 标记消费失败·忽略: {e}")
 
 
 # ---------- hermes serve WS PTY 流式调用（v6.0 核心） ----------
@@ -476,6 +643,7 @@ async def _stream_from_serve(goal: str, session_id: str | None = None):
 @app.on_event("startup")
 async def _startup():
     _load_mapping()
+    _load_watermarks()
     print(f"[bridge] v5 启动·已加载 {len(_user_session_map)} 条 user→session 映射")
     if not HERMES_SERVE_TOKEN:
         print("[bridge] ⚠️ 警告: HERMES_SERVE_TOKEN 未设置·serve 认证可能失败")
@@ -597,12 +765,30 @@ async def chat(body: GoalRequest):
             except Exception as e:
                 print(f"[bridge] ⚠️ 思维链回读失败·降级空 reasoning: {e}")
 
+            # 投递成功后推进消费水位线（断点 0ms 回读判定依据）
+            _mark_consumed(user_id, effective_sid)
+
             return {
                 "reply": reply,
                 "session_id": user_id,
                 "hermes_session_id": effective_sid,
                 "reasoning": reasoning,
             }
+
+
+@app.get("/v1/chat/status/{user_id}")
+async def chat_status(user_id: str, consume: int = 0):
+    """状态回读端点（只读·不写 state.db）。
+
+    通过 user_id 锁定 hermes_session_id，返回 4 态状态机：
+    completed / running / timeout / not_found。
+    consume=1 时，completed 结果顺带推进消费水位线（0ms 断点回读后标记已消费）。
+    """
+    hermes_sid = _user_session_map.get(user_id)
+    result = await asyncio.to_thread(_query_status, hermes_sid)
+    if consume == 1 and result.get("status") == "completed":
+        _mark_consumed(user_id, hermes_sid)
+    return result
 
 
 @app.get("/health")
