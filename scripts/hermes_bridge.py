@@ -502,6 +502,13 @@ def _pending_clarify(user_id: str) -> dict | None:
                 items = list(entries.values())
         else:
             items = list(entries.values())
+        # 诊断日志：多步 Clarify 卡丢失定位（微信模式 status 轮询读 pending entry）
+        if items:
+            debug_entries = [
+                f"{getattr(e, 'session_key', '?')[:20]}/resp={getattr(e, 'response', '§') is not None}"
+                for e in items
+            ]
+            print(f"[bridge] _pending_clarify entries={len(items)} user={user_id[:20]} list={debug_entries}")
         for entry in items:
             if getattr(entry, "session_key", None) == user_id and getattr(entry, "response", "§") is None:
                 return {
