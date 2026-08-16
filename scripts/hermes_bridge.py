@@ -1650,6 +1650,57 @@ async def chat_status(user_id: str, consume: int = 0, offset: int = 0):
     return result
 
 
+@app.get("/v1/skills")
+async def list_skills(tenant: str = "public"):
+    """技能库列表（租户隔离·软隔离）：读 HERMES_HOME/skills。
+
+    目录约定：
+    - skills/<category>/<name>/SKILL.md          → public 技能（全局分类）
+    - skills/tenants/<tenant>/<name>/SKILL.md   → 租户专属技能（切片隔离）
+    tenant 过滤：public 返回全局分类技能；指定 tenant 返回其专属技能 + public 技能。
+    """
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home())))
+    # HERMES_HOME 已是 ~/.hermes（含 .hermes）；未设置时补 .hermes
+    skills_root = home / "skills" if home.name == ".hermes" else home / ".hermes" / "skills"
+    items = []
+    if not skills_root.exists():
+        return {"skills": [], "tenant": tenant}
+    for skill_md in sorted(skills_root.rglob("SKILL.md")):
+        rel = skill_md.relative_to(skills_root)
+        parts = rel.parts
+        # parts: (名称, SKILL.md) | (分类, 名称, SKILL.md) | (tenants, <tenant>, 名称, SKILL.md)
+        is_tenant = len(parts) >= 4 and parts[0] == "tenants"
+        skill_tenant = parts[1] if is_tenant else "public"
+        if tenant != "public" and skill_tenant not in ("public", tenant):
+            continue
+        if len(parts) == 2:
+            name, category = parts[0], ""
+        elif is_tenant:
+            name, category = parts[2], parts[1]
+        else:
+            name, category = parts[1], parts[0]
+        desc = ""
+        created = None
+        try:
+            lines = skill_md.read_text(encoding="utf-8", errors="replace").splitlines()
+            for line in lines:
+                low = line.lower()
+                if low.startswith("description:") and not desc:
+                    desc = line.split(":", 1)[1].strip()
+                if low.startswith("date:") and created is None:
+                    created = line.split(":", 1)[1].strip()
+        except Exception:
+            pass
+        items.append({
+            "name": name,
+            "description": desc[:120],
+            "category": category,
+            "tenant": skill_tenant,
+            "created_at": created,
+        })
+    return {"skills": items, "tenant": tenant}
+
+
 @app.get("/health")
 async def health():
     return {

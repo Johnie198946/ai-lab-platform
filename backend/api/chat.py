@@ -318,6 +318,20 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         ) from e
 
 
+@router.get("/skills")
+async def list_skills(tenant: str = "public", payload=Depends(require_auth)) -> Dict[str, Any]:
+    """技能库列表（租户软隔离）：透传 Bridge GET /v1/skills?tenant=。
+
+    目录约定：skills/<category>/<name>/ → public；skills/tenants/<tenant>/<name>/ → 租户专属。
+    tenant 过滤：public 返回全局；指定 tenant 返回专属 + public。
+    """
+    async with httpx.AsyncClient(timeout=httpx.Timeout(10)) as client:
+        resp = await client.get(HERMES_BRIDGE_URL.rstrip("/") + "/v1/skills", params={"tenant": tenant})
+        if resp.status_code != 200:
+            return {"skills": [], "tenant": tenant}
+        return resp.json()
+
+
 @router.get("/status/{session_id}")
 async def chat_status(
     session_id: str,
