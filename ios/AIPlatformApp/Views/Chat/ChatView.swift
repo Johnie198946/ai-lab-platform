@@ -748,24 +748,29 @@ public struct ChatView: View {
                 switch event {
                 case .delta(let content):
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        // 铁律：首个流式事件到达立即解除 pending 占位（防 ThinkingPlaceholder 遮蔽真流式）
+                        messages[idx].pending = false
                         messages[idx].content += content
                         messages[idx].isStreaming = true
                     }
                 case .thought(let content):
                     // 实时思考流：追加进 ReasoningCard 的 thought 步骤
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        messages[idx].pending = false
                         var steps = reasoningSteps(for: idx)
                         steps.append(ReasoningStep(type: .thought, title: "思考过程", detail: content))
                         messages[idx].blocks = [.reasoning(steps)]
                     }
                 case .toolStart(let id, let tool, let label):
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        messages[idx].pending = false
                         var steps = reasoningSteps(for: idx)
                         steps.append(ReasoningStep(type: .toolCall, title: "调用工具: \(tool)", detail: label, status: "running"))
                         messages[idx].blocks = [.reasoning(steps)]
                     }
                 case .toolComplete(let id, _):
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        messages[idx].pending = false
                         var steps = reasoningSteps(for: idx)
                         if let last = steps.lastIndex(where: { $0.status == "running" }) {
                             steps[last].status = "done"

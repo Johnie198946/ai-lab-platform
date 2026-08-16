@@ -810,6 +810,15 @@ async def chat_stream(body: GoalRequest):
 # v7 进程内 agent runner（真实流式·SSE 事件流）
 # ---------------------------------------------------------------------------
 
+# 模糊需求澄清门禁（AI Lab 交互铁律 · 2026-08-16 用户拍板）：
+# 通过 ephemeral_system_prompt 声明式注入，防 agent 在模糊需求下自嗨跑完整套 IPD 工具链。
+CLARIFY_GATE_PROMPT = """【AI Lab 需求澄清门禁 · 必须遵守】
+1. 零废话·秒拦截：用户输入是模糊开发/方案/架构/立项需求（如"做电商平台"、"开发手机操作系统"、"做大模型应用"——目标范围过大、缺场景/边界/验收标准）时，第一轮输出正文 ≤2 句极简引导（≤40 字），并【立即调用 clarify 工具】弹出选项卡片（2~4 个结构化选项，单选/多选），严禁输出长篇分析、架构设计、IPD 流程说教长文。
+2. 严禁手写「1. 请回答… 2. 请回答…」文本问答题——必须用 clarify 工具的 choices 选项卡片（手机软键盘长文输入是反人机交互）。
+3. IPD 关口步进（Gate-by-Gate）：流程拆解为 CDCP→PDCP→EDCP→ADCP，每阶段只交付当前关口产物 + 《需求收敛确认单》，用户确认后才推进下一步，严禁一轮对话一揽子跑完全程。
+4. 需求已清晰（含明确场景/边界/验收依据）时不受此限，正常执行。"""
+
+
 def _qput(stream_q: queue.Queue, item: dict) -> None:
     """线程安全投递事件；队列满用 put_nowait 丢弃（绝不阻塞 agent 线程）。"""
     try:
@@ -952,6 +961,7 @@ def _build_in_process_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        ephemeral_system_prompt=CLARIFY_GATE_PROMPT,
         clarify_callback=_clarify_cb,
         stream_delta_callback=_delta_cb,
         reasoning_callback=_reasoning_cb,
