@@ -1195,6 +1195,12 @@ def _run_agent_sync(
     session_db = None
     try:
         agent, session_db = _build_in_process_agent(goal, user_id, hermes_sid, stream_q)
+        # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
+        # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
+        # 前端 probeAndResume 断点恢复不依赖 SSE 连接。
+        agent_sid = getattr(agent, "session_id", None) or hermes_sid
+        if agent_sid:
+            _update_session_mapping(user_id, agent_sid)
         # 第二帧状态：agent 构建完成（build 返回后、run_conversation 前）→ 进入推理
         _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
         agent_holder[0] = agent
@@ -1277,12 +1283,12 @@ def _sse_from_in_process(user_id: str, goal: str):
                 item = stream_q.get(timeout=0.5)
             except queue.Empty:
                 if not worker.is_alive() and stream_q.empty():
-                    finished = True  # worker 退出且无待发事件 → 任务已结束
+                    print(f"[bridge] SSE-BREAK worker_dead queue_empty user={user_id}")
                     break
                 continue
 
             if item is None:
-                finished = True
+                print(f"[bridge] SSE-BREAK item_none user={user_id}")
                 break
             # 延迟打点：start_ts 至首个 thought 出队差（真实思维链首帧延迟）
             if not first_thought_recorded and item.get("type") == "thought":
@@ -1290,6 +1296,8 @@ def _sse_from_in_process(user_id: str, goal: str):
                 print(
                     f"[bridge] first_thought_ms={(time.monotonic() - start_ts) * 1000.0:.1f} user={user_id}"
                 )
+            if item.get("type") in ("done", "error", "clarify", "status"):
+                print(f"[bridge] SSE-YIELD type={item.get('type')} user={user_id} worker_alive={worker.is_alive()} qsize={stream_q.qsize()}")
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
             # 终帧（done/error）后流自然结束：标记 finished 供 finally 分流 discard
             if item.get("type") in ("done", "error"):
