@@ -19,14 +19,15 @@ class TestChatAgentIdContract(unittest.TestCase):
 
 class TestRolePrefixMapping(unittest.TestCase):
     def test_role_prefix_mapping(self):
-        self.assertEqual(role_prefix_for("main_agent"), "以 Main 智能编排角色回答：")
-        self.assertEqual(role_prefix_for("supervision"), "以 Supervision 架构审查角色回答：")
-        self.assertEqual(role_prefix_for("coder"), "以 Coder 独立开发角色回答：")
-        self.assertEqual(role_prefix_for("knowledge"), "以 知识星海角色回答：")
+        # 废除向 query 拼接角色前缀，统一返回空字符串，避免污染模型真实问答
+        self.assertEqual(role_prefix_for("main_agent"), "")
+        self.assertEqual(role_prefix_for("supervision"), "")
+        self.assertEqual(role_prefix_for("coder"), "")
+        self.assertEqual(role_prefix_for("knowledge"), "")
 
     def test_role_prefix_default_and_unknown(self):
-        self.assertEqual(role_prefix_for(None), "以 Main 智能编排角色回答：")
-        self.assertEqual(role_prefix_for("unknown"), "以 Main 智能编排角色回答：")
+        self.assertEqual(role_prefix_for(None), "")
+        self.assertEqual(role_prefix_for("unknown"), "")
 
 
 class TestChatAgentRouting(unittest.TestCase):
@@ -44,7 +45,7 @@ class TestChatAgentRouting(unittest.TestCase):
                 chat(ChatRequest(question="帮我审查这段代码", agent_id="supervision"), payload={})
             )
         self.assertEqual(resp.answer, "答案")
-        self.assertEqual(captured["goal"], "以 Supervision 架构审查角色回答：帮我审查这段代码")
+        self.assertEqual(captured["goal"], "帮我审查这段代码")
         self.assertTrue(captured["session_id"].startswith("supervision-"))
 
     def test_session_isolation_by_agent_prefix(self):

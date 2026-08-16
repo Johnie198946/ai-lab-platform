@@ -57,13 +57,21 @@ AGENT_EDGES: List[Dict[str, Any]] = [
 ]
 
 # ---------------------------------------------------------------------------
-# agent_id → 角色扮演前缀（未命中身份规则时拼接 goal 发 bridge）
+# agent_id → 角色系统负向硬约束（通过 System Prompt / Agent 元数据下发，废除向 query 拼接前缀）
 # ---------------------------------------------------------------------------
+AGENT_SYSTEM_PROMPTS: Dict[str, str] = {
+    "main_agent": "你是 Main 智能编排 Agent。直接输出结构化正文与结论，严禁输出任何角色声明、引导性套话或元信息八股。",
+    "supervision": "你是 Supervision 架构审查 Agent。直接输出结构化正文与结论，严禁输出任何角色声明、引导性套话或元信息八股。",
+    "coder": "你是 Coder 独立开发 Agent。直接输出结构化正文与结论，严禁输出任何角色声明、引导性套话或元信息八股。",
+    "knowledge": "你是 知识星海 Agent。直接输出结构化正文与结论，严禁输出任何角色声明、引导性套话或元信息八股。",
+}
+
+# 向后兼容保留：ROLE_PREFIX 已废除，均返回空字符串
 ROLE_PREFIX: Dict[str, str] = {
-    "main_agent": "以 Main 智能编排角色回答：",
-    "supervision": "以 Supervision 架构审查角色回答：",
-    "coder": "以 Coder 独立开发角色回答：",
-    "knowledge": "以 知识星海角色回答：",
+    "main_agent": "",
+    "supervision": "",
+    "coder": "",
+    "knowledge": "",
 }
 
 # agent_id → session_id 隔离前缀
@@ -83,10 +91,19 @@ def agent_ids() -> List[str]:
 
 
 def role_prefix_for(agent_id: Optional[str]) -> str:
-    """agent_id → 角色扮演前缀（未知/空回退 main_agent）。"""
-    return ROLE_PREFIX.get(agent_id or DEFAULT_AGENT_ID, ROLE_PREFIX[DEFAULT_AGENT_ID])
+    """已废除向 query 拼接角色前缀，固定返回空字符串。"""
+    return ""
+
+
+def system_prompt_for(agent_id: Optional[str]) -> str:
+    """获取 Agent 对应的系统提示词负向约束。"""
+    return AGENT_SYSTEM_PROMPTS.get(
+        agent_id or DEFAULT_AGENT_ID, AGENT_SYSTEM_PROMPTS[DEFAULT_AGENT_ID]
+    )
 
 
 def session_prefix_for(agent_id: Optional[str]) -> str:
     """agent_id → session_id 隔离前缀（未知/空回退 main_agent）。"""
-    return SESSION_PREFIX.get(agent_id or DEFAULT_AGENT_ID, SESSION_PREFIX[DEFAULT_AGENT_ID])
+    return SESSION_PREFIX.get(
+        agent_id or DEFAULT_AGENT_ID, SESSION_PREFIX[DEFAULT_AGENT_ID]
+    )

@@ -1,10 +1,8 @@
-"""问答 API 测试 — mock LLM 调用，验证检索上下文与响应结构。"""
+"""问答 API 单元测试 — 首屏 60 字符废话熔断、Prompt 讨论词保留、citations 结构化提炼与网关端到端测试。"""
+
 import asyncio
-import json
 import os
-import tempfile
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import httpx
@@ -14,15 +12,14 @@ os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
 
 
 def auth_headers() -> dict:
-    from datetime import datetime, timedelta
-
+    from datetime import datetime, timedelta, timezone
     from jose import jwt as jose_jwt
 
     token = jose_jwt.encode(
         {
             "sub": "1",
             "username": "tester",
-            "exp": datetime.utcnow() + timedelta(hours=1),
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },
         "test-secret",
         algorithm="HS256",
@@ -30,54 +27,102 @@ def auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
-class TestChatAPI(unittest.TestCase):
+class TestBoilerplateTrimmer(unittest.TestCase):
+    """首屏 60 字符单向滑动窗口熔断器测试。"""
+
+    def test_trim_main_agent_prefix(self):
+        from backend.api.chat import trim_boilerplate
+
+        raw = "以 Main 智能编排角色回答：这是发现的问题与编排规划。"
+        expected = "这是发现的问题与编排规划。"
+        self.assertEqual(trim_boilerplate(raw), expected)
+
+    def test_trim_supervision_prefix(self):
+        from backend.api.chat import trim_boilerplate
+
+        raw = "以 Supervision 架构审查角色回答：经审查，方案存在以下风险。"
+        expected = "经审查，方案存在以下风险。"
+        self.assertEqual(trim_boilerplate(raw), expected)
+
+    def test_trim_coder_prefix_colon(self):
+        from backend.api.chat import trim_boilerplate
+
+        raw = "以 Coder 独立开发角色回答: 补丁已应用并通过测试。"
+        expected = "补丁已应用并通过测试。"
+        self.assertEqual(trim_boilerplate(raw), expected)
+
+    def test_trim_knowledge_prefix(self):
+        from backend.api.chat import trim_boilerplate
+
+        raw = "以 知识星海角色回答：知识库已命中 3 处相关条目。"
+        expected = "知识库已命中 3 处相关条目。"
+        self.assertEqual(trim_boilerplate(raw), expected)
+
+    def test_trim_kb_boilerplate(self):
+        from backend.api.chat import trim_boilerplate
+
+        raw = "基于 AI Lab 知识库为你解答：超聚变相关架构如下。"
+        expected = "超聚变相关架构如下。"
+        self.assertEqual(trim_boilerplate(raw), expected)
+
+    def test_preserve_prompt_discussion_at_beginning(self):
+        from backend.api.chat import trim_boilerplate
+
+        # 用户提问讨论 Prompt 模板或角色说明，非 ^(以.*角色回答) 开头，必须 100% 保留
+        raw = "请教以 Main 智能编排角色回答的提示词模板写法，应该如何设计负向约束？"
+        self.assertEqual(trim_boilerplate(raw), raw)
+
+    def test_preserve_role_phrase_beyond_60_chars(self):
+        from backend.api.chat import trim_boilerplate
+
+        # 超过 60 字符处出现的角色词，单向滑动窗口已永久熔断关闭，绝不误杀
+        prefix_60 = "一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十一二三四五六七八九十"
+        raw = prefix_60 + "以 Main 智能编排角色回答：正文中的这段话不能被删！"
+        self.assertEqual(trim_boilerplate(raw), raw)
+
+    def test_empty_and_normal_text(self):
+        from backend.api.chat import trim_boilerplate
+
+        self.assertEqual(trim_boilerplate(""), "")
+        normal = "这是一段完全正常的正文回答，包含 Markdown **粗体** 与代码。"
+        self.assertEqual(trim_boilerplate(normal), normal)
+
+
+class TestCitationExtractor(unittest.TestCase):
+    """正文知识库引用 [[wiki/...]] 结构化提取器测试。"""
+
+    def test_extract_wiki_citations(self):
+        from backend.api.chat import extract_citations
+
+        text = "根据 [[wiki/DeepSeek.md]] 与 [[wiki/模型观察]] 的分析，推理成本下降 60%。"
+        citations = extract_citations(text)
+        self.assertEqual(citations, ["wiki/DeepSeek.md", "wiki/模型观察"])
+
+    def test_extract_standard_bracket_citations(self):
+        from backend.api.chat import extract_citations
+
+        text = "请参考 [[TokenOps架构]] 以及 [[Supervision治理规范]]。"
+        citations = extract_citations(text)
+        self.assertEqual(citations, ["TokenOps架构", "Supervision治理规范"])
+
+    def test_deduplicate_preserving_order(self):
+        from backend.api.chat import extract_citations
+
+        text = "引用 [[wiki/A]]，再次引用 [[wiki/B]]，重复引用 [[wiki/A]] 与 [[wiki/C]]。"
+        citations = extract_citations(text)
+        self.assertEqual(citations, ["wiki/A", "wiki/B", "wiki/C"])
+
+    def test_no_citations(self):
+        from backend.api.chat import extract_citations
+
+        self.assertEqual(extract_citations("纯净文本，没有任何双括号引用。"), [])
+        self.assertEqual(extract_citations(""), [])
+
+
+class TestChatAPIEndpoint(unittest.TestCase):
+    """Chat API 路由与契约端到端集成测试。"""
+
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="vault-chat-"))
-        (self.tmp / "wiki").mkdir(parents=True)
-        (self.tmp / "raw").mkdir()
-        (self.tmp / "wiki" / "DeepSeek.md").write_text(
-            "---\ntitle: DeepSeek\ntype: 竞品\naliases: [深度求索]\n---\n"
-            "# DeepSeek\nDeepSeek 发布了新模型，推理成本下降 60%。[[模型观察]]\n",
-            encoding="utf-8",
-        )
-        (self.tmp / "raw" / "deepseek.md").write_text(
-            "---\ntitle: DeepSeek 报告\n---\n# DeepSeek 报告\n"
-            "DeepSeek 发布了新模型，推理成本下降 60%。[[模型观察]]\n",
-            encoding="utf-8",
-        )
-        (self.tmp / "raw" / "huawei.md").write_text(
-            "# 华为芯片\n麒麟处理器与昇腾 AI 集群。", encoding="utf-8"
-        )
-        (self.tmp / "wiki" / "模型观察.md").write_text(
-            "---\ntitle: 模型观察\nstatus: active\ntags: [ai]\n---\n"
-            "# 模型观察\n[[测试文档]] 相关。",
-            encoding="utf-8",
-        )
-        matrix = {
-            "version": "2.0",
-            "stats": {"total_documents": 2},
-            "entity_index": {
-                "DeepSeek": ["raw/deepseek.md"],
-                "华为": ["raw/huawei.md"],
-            },
-            "categories": {"raw": ["raw/deepseek.md", "raw/huawei.md"]},
-        }
-        (self.tmp / "knowledge_matrix.json").write_text(
-            json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
-        )
-
-        import backend.api.knowledge as k
-        import backend.api.chat as c
-
-        self.k = k
-        self.c = c
-        k._matrix.cache_clear()
-        self._old_vault = k._vault
-        k._vault = lambda: self.tmp
-        self._old_matrix_path = k.MATRIX_PATH
-        k.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
-
-        # 认证: 注入租户解析器（测试环境无 DB），默认超管全可见
         import backend.api.auth as auth
 
         self._old_resolver = auth.tenant_resolver
@@ -99,12 +144,6 @@ class TestChatAPI(unittest.TestCase):
         import backend.api.auth as auth
 
         auth.tenant_resolver = self._old_resolver
-        self.k._vault = self._old_vault
-        self.k.MATRIX_PATH = self._old_matrix_path
-        self.k._matrix.cache_clear()
-        import shutil
-
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def _request(self, method, path, **kwargs):
         async with httpx.AsyncClient(
@@ -117,53 +156,82 @@ class TestChatAPI(unittest.TestCase):
     def request(self, method, path, **kwargs):
         return asyncio.run(self._request(method, path, **kwargs))
 
-    def test_build_context_finds_docs(self):
-        docs = self.c._build_context("DeepSeek 新模型", 6)
-        paths = [d["path"] for d in docs]
-        # wiki-first: 编译后的 wiki 条目应优先于 raw 原文
-        self.assertIn("wiki/DeepSeek.md", paths)
-        self.assertLess(
-            paths.index("wiki/DeepSeek.md"), paths.index("raw/deepseek.md")
+    def test_chat_returns_trimmed_answer_and_citations(self):
+        raw_llm_reply = (
+            "以 Main 智能编排角色回答：我们基于 [[wiki/DeepSeek]] 与 [[wiki/算力调度]] "
+            "完成了本次任务编排，性能提升 300%。"
         )
+        fake_reasoning = [{"type": "thought", "title": "思考", "detail": "分诊完成"}]
 
-    def test_build_context_wikilink_expansion(self):
-        docs = self.c._build_context("DeepSeek", 6)
-        paths = [d["path"] for d in docs]
-        # 1 跳 wikilinks 展开: DeepSeek 条目链接到 模型观察
-        self.assertIn("wiki/模型观察.md", paths)
+        with patch("backend.api.chat.match_identity_rule", return_value=None), \
+             patch("backend.api.chat._check_cached_answer", return_value=None), \
+             patch("backend.api.chat._call_hermes", return_value=(raw_llm_reply, fake_reasoning)):
+            r = self.request("POST", "/api/chat", json={"question": "如何优化调度？", "agent_id": "main_agent"})
 
-    def test_build_context_entity_supplement(self):
-        docs = self.c._build_context("华为昇腾", 6)
-        paths = [d["path"] for d in docs]
-        self.assertIn("raw/huawei.md", paths)
-
-    def test_chat_returns_answer_with_sources(self):
-        fake_answer = "DeepSeek 发布了新模型，推理成本下降 60%。[1]"
-        with patch.object(self.c, "_call_llm", return_value=fake_answer) as mock:
-            r = self.request(
-                "POST",
-                "/api/chat",
-                json={"question": "DeepSeek 怎么样？"},
-            )
         self.assertEqual(r.status_code, 200)
         body = r.json()
-        self.assertEqual(body["answer"], fake_answer)
-        self.assertGreaterEqual(len(body["sources"]), 1)
-        mock.assert_called_once()
+        # 验证 1：首屏套话被剥离
+        self.assertFalse(body["answer"].startswith("以 Main 智能编排角色回答："))
+        self.assertTrue(body["answer"].startswith("我们基于 [[wiki/DeepSeek]]"))
+        # 验证 2：citations 结构化字段正确下沉
+        self.assertEqual(body["citations"], ["wiki/DeepSeek", "wiki/算力调度"])
+        # 验证 3：session_id 隔离
+        self.assertTrue(body["session_id"].startswith("main_agent-"))
 
-    def test_chat_empty_kb_returns_note(self):
-        empty = Path(tempfile.mkdtemp(prefix="vault-empty-"))
-        old = self.k._vault
-        self.k._vault = lambda: empty
-        try:
-            r = self.request("POST", "/api/chat", json={"question": "随便问问"})
-            self.assertEqual(r.status_code, 200)
-            self.assertIn("没有检索到", r.json()["answer"])
-        finally:
-            self.k._vault = old
-            import shutil
+    def test_chat_does_not_prepend_role_prefix_to_goal(self):
+        captured_goal = {}
 
-            shutil.rmtree(empty, ignore_errors=True)
+        async def fake_hermes(goal, session_id=None):
+            captured_goal["goal"] = goal
+            return "直接回答", []
+
+        with patch("backend.api.chat.match_identity_rule", return_value=None), \
+             patch("backend.api.chat._check_cached_answer", return_value=None), \
+             patch("backend.api.chat._call_hermes", side_effect=fake_hermes):
+            r = self.request("POST", "/api/chat", json={"question": "请审查代码", "agent_id": "supervision"})
+
+        self.assertEqual(r.status_code, 200)
+        # 验证向 Hermes 传递的 goal 废除了硬编码角色前缀拼接，原样传递
+        self.assertEqual(captured_goal["goal"], "请审查代码")
+
+    def test_chat_identity_rule_hit_with_citations(self):
+        fixed_answer = "我是 AI Lab 智能助手，相关规范参见 [[wiki/体验中心定位]]。"
+        with patch("backend.api.chat.match_identity_rule", return_value=fixed_answer), \
+             patch("backend.api.chat._call_hermes") as mock_hermes:
+            r = self.request("POST", "/api/chat", json={"question": "你是谁"})
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["answer"], fixed_answer)
+        self.assertEqual(body["citations"], ["wiki/体验中心定位"])
+        mock_hermes.assert_not_called()
+
+    def test_chat_cached_answer_trimmed_and_extracted(self):
+        fake_cached = {
+            "status": "completed",
+            "answer": "以 Coder 独立开发角色回答：已参考 [[wiki/补丁规范]] 完成代码修改。",
+            "reasoning": [],
+            "consumed": False,
+        }
+        with patch("backend.api.chat.match_identity_rule", return_value=None), \
+             patch("backend.api.chat._call_hermes_status", return_value=fake_cached), \
+             patch("backend.api.chat._call_hermes") as mock_hermes:
+            r = self.request("POST", "/api/chat", json={"question": "任务状态", "session_id": "coder-123", "agent_id": "coder"})
+
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(body["answer"], "已参考 [[wiki/补丁规范]] 完成代码修改。")
+        self.assertEqual(body["citations"], ["wiki/补丁规范"])
+        mock_hermes.assert_not_called()
+
+    def test_chat_hermes_failure_returns_502(self):
+        with patch("backend.api.chat.match_identity_rule", return_value=None), \
+             patch("backend.api.chat._check_cached_answer", return_value=None), \
+             patch("backend.api.chat._call_hermes", side_effect=RuntimeError("Connection refused")):
+            r = self.request("POST", "/api/chat", json={"question": "测试失败"})
+
+        self.assertEqual(r.status_code, 502)
+        self.assertIn("Hermes 调用失败", r.json()["detail"])
 
 
 if __name__ == "__main__":
