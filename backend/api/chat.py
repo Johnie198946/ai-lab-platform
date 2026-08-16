@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -16,6 +17,10 @@ from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
 from backend.api.identity import match_identity_rule
+from backend.models.agent_registry import (
+    role_prefix_for,
+    session_prefix_for,
+)
 from backend.services.reasoning_extractor import ReasoningStep
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -29,6 +34,8 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(None, max_length=100)
     # 容忍前端富媒体引用追问新字段（透明透传不参与处理，仅保证不拒绝请求）
     quoted_context: Optional[str] = Field(None, max_length=2000)
+    # 选中 Agent（三方协议角色扮演）；None 视为 main_agent
+    agent_id: Optional[str] = Field(None, max_length=50)
 
 
 class ChatResponse(BaseModel):
@@ -59,10 +66,30 @@ async def _call_hermes(
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）", []
 
 
+_KNOWN_SESSION_PREFIXES = ("main_agent-", "supervision-", "coder-", "knowledge-")
+
+
+def derive_isolated_session_id(
+    agent_id: Optional[str], session_id: Optional[str]
+) -> str:
+    """按 agent 维度隔离 session_id：加命名前缀，且幂等（重复前缀不叠加）。
+
+    - 无 session_id 时生成随机 base；
+    - 已带任意 Agent 前缀时先剥离，再套当前 Agent 前缀（支持切换 Agent 不叠加）。
+    """
+    prefix = session_prefix_for(agent_id) + "-"
+    base = (session_id or "").strip() or uuid.uuid4().hex
+    for p in _KNOWN_SESSION_PREFIXES:
+        if base.startswith(p):
+            base = base[len(p):]
+            break
+    return prefix + base
+
+
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
-    """问答接口 — 身份规则优先，其余全交 Hermes。"""
-    # 身份话术规则优先：命中即返回固定回答，不调 Hermes（无思维链）
+    """问答接口 — 身份规则优先，其余按 agent_id 角色扮演后交 Hermes。"""
+    # 身份话术规则优先：用原始 question 命中即返回固定回答，不调 Hermes（无思维链）
     fixed = match_identity_rule(req.question)
     if fixed:
         return ChatResponse(
@@ -73,14 +100,18 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             reasoning=[],
         )
 
+    # 未命中身份规则：按 agent_id 映射角色前缀拼接 goal（bridge 零改动）
+    goal = role_prefix_for(req.agent_id) + req.question
+    isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
+
     # 透传 Hermes bridge（附真实思维链）
     try:
-        reply, reasoning = await _call_hermes(req.question, session_id=req.session_id)
+        reply, reasoning = await _call_hermes(goal, session_id=isolated_session_id)
         return ChatResponse(
             question=req.question,
             answer=reply,
             sources=[],
-            session_id=req.session_id,
+            session_id=isolated_session_id,
             reasoning=reasoning,
         )
     except Exception as e:

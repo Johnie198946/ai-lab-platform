@@ -20,6 +20,7 @@ from backend.api.orchestration import router as orchestration_router
 from backend.api.protocols import router as protocols_router
 from backend.api.agents import router as agents_router
 from backend.api.notifications import router as notifications_router
+from backend.api.topology import router as topology_router
 from backend.db import init_db
 
 
@@ -98,6 +99,8 @@ app.include_router(protocols_router, dependencies=[Depends(require_auth)])
 # 挂载 Agent 调度与通知中心
 app.include_router(agents_router, dependencies=[Depends(require_auth)])
 app.include_router(notifications_router, dependencies=[Depends(require_auth)])
+# 拓扑注册表（对话页 Agent 选择栏 + 拓扑页 DAG 同源消费）
+app.include_router(topology_router, dependencies=[Depends(require_auth)])
 
 # ---------- 健康检查 ----------
 @app.get("/health")
