@@ -21,9 +21,7 @@ from pydantic import BaseModel, Field
 from backend.api.auth import require_auth
 from backend.api.identity import match_identity_rule
 from backend.models.agent_registry import (
-    role_prefix_for,
     session_prefix_for,
-    system_prompt_for,
 )
 from backend.services.reasoning_extractor import ReasoningStep
 
@@ -112,7 +110,8 @@ def extract_citations(text: str) -> List[str]:
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
     session_id: Optional[str] = Field(None, max_length=100)
-    # 容忍前端富媒体引用追问新字段（透明透传不参与处理，仅保证不拒绝请求）
+    # 引用回复上下文（从中间回复历史消息）：透传 bridge 注入 agent goal，
+    # 让 agent 明确用户引用的历史消息（会话记忆关联，不丢弃）
     quoted_context: Optional[str] = Field(None, max_length=2000)
     # 选中 Agent（三方协议角色扮演）；None 视为 main_agent
     agent_id: Optional[str] = Field(None, max_length=50)
@@ -333,6 +332,8 @@ class StreamRequest(BaseModel):
     question: str = Field(..., min_length=1)
     session_id: Optional[str] = Field(None, max_length=100)
     agent_id: Optional[str] = Field(None, max_length=50)
+    # 引用回复上下文（从中间回复历史消息）：透传注入 agent goal
+    quoted_context: Optional[str] = Field(None, max_length=2000)
 
 
 class ClarifySubmitRequest(BaseModel):
@@ -379,6 +380,12 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
     goal = req.question
+    # 引用回复上下文注入（会话记忆关联）：用户从中间回复历史消息时，
+    # quoted_context 携带被引用消息原文，让 agent 明确回复对象与上文关联
+    if req.quoted_context:
+        quote = req.quoted_context.strip()
+        if quote:
+            goal = f"（你正在回复用户引用的历史消息：{quote[:500]}）\n{goal}"
     if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", goal, re.IGNORECASE):
         goal += (
             "\n\n（输出要求：本问题涉及两个及以上主体对比，请使用 Markdown 表格呈现，"
