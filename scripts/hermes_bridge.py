@@ -88,16 +88,37 @@ STATUS_STALE_SECONDS = 300
 IN_PROCESS_STREAM_ENABLED = os.environ.get("HERMES_IN_PROCESS_STREAM", "false") == "true"
 # SSE keepalive 注释帧间隔（对齐 Hermes CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS=30.0）
 STREAM_KEEPALIVE_SECONDS = float(os.environ.get("HERMES_STREAM_KEEPALIVE", "30"))
-# 单次流式总时长上限（超时 → interrupt + error 帧）
-STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "300"))
+# 单次流式总时长上限（超时 → watchdog interrupt + error 帧）
+STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "720"))
+# watchdog 扫描间隔（秒）：detached run 超时判定精度；G-10 压缩测试可覆盖
+WATCHDOG_INTERVAL_SECONDS = float(os.environ.get("HERMES_WATCHDOG_INTERVAL", "10"))
 # clarify 等待用户响应超时（默认 180s，替代 Hermes 原生 3600s）
 CLARIFY_TIMEOUT_SECONDS = int(os.environ.get("HERMES_CLARIFY_TIMEOUT", "180"))
 # 事件队列容量（线程 → async 桥）
 STREAM_QUEUE_CAPACITY = 512
 
 # user_id -> 在途流式运行状态（agent holder / 线程 / 队列 / 停止事件），供 cancel/clarify 端点寻址
+# 状态模型（保活机制 v6）：{agent_holder, queue, attached, start_ts, run_id[, clarify_issued]}
+#   - attached=True  → SSE 客户端仍连接（generator 存活）
+#   - attached=False → SSE 断连已 detach（不 interrupt），由 watchdog 守护，超时 interrupt+discard
+#   - start_ts       → run 启动时间戳（monotonic），watchdog 超时判定依据
+#   - run_id         → 每次启动 run 的唯一标识，discard 校验防误删新 run
 _stream_runs: dict[str, dict] = {}
 _stream_runs_guard = threading.Lock()
+
+# clarify_gateway 懒加载缓存（模块级）：首次调用 import tools.clarify_gateway 并缓存，
+# 行为与原函数内 `from tools import clarify_gateway` 等价（模块对象恒定），
+# 且测试可直接 patch 此引用（测试环境 sys.path 无 tools 包）
+_clarify_gateway = None
+
+
+def _get_clarify_gateway():
+    """返回 clarify_gateway 模块（懒加载 + 缓存）。"""
+    global _clarify_gateway
+    if _clarify_gateway is None:
+        from tools import clarify_gateway
+        _clarify_gateway = clarify_gateway
+    return _clarify_gateway
 
 # ANSI 转义序列清洗正则（匹配所有 ANSI escape codes）
 ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
@@ -704,6 +725,17 @@ async def _startup():
     print(f"[bridge] v5 启动·已加载 {len(_user_session_map)} 条 user→session 映射")
     if not HERMES_SERVE_TOKEN:
         print("[bridge] ⚠️ 警告: HERMES_SERVE_TOKEN 未设置·serve 认证可能失败")
+    # 保活机制 v6（M-3）：独立守护线程，扫描 detached runs 超时 interrupt+discard
+    watchdog = threading.Thread(
+        target=_watchdog_loop,
+        daemon=True,
+        name="bridge-watchdog",
+    )
+    watchdog.start()
+    print(
+        f"[bridge] watchdog 已启动: 间隔 {WATCHDOG_INTERVAL_SECONDS}s"
+        f"·detached 超时 {STREAM_MAX_DURATION_SECONDS}s"
+    )
 
 
 @app.post("/v1/chat/stream")
@@ -719,6 +751,21 @@ async def chat_stream(body: GoalRequest):
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
     if IN_PROCESS_STREAM_ENABLED:
+        # 并发防护（G-6）：同 session 已有活跃 run（attached 或 detached 后台保活中）
+        # → 返回 running 状态事件流，绝不启动第二个 agent
+        existing = _stream_run_get(user_id)
+        if existing is not None:
+            print(f"[bridge] 并发防护: user={user_id} 已有活跃 run·拒绝新 agent")
+            return StreamingResponse(
+                _busy_sse(user_id),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Session-ID": user_id,
+                },
+            )
         try:
             print(f"[bridge] v7 进程内流式: user={user_id}")
             return StreamingResponse(
@@ -920,9 +967,58 @@ def _stream_run_get(user_id: str) -> dict | None:
         return _stream_runs.get(user_id)
 
 
-def _stream_run_discard(user_id: str) -> None:
+def _stream_run_discard(user_id: str, run_id: str | None = None) -> None:
+    """移除在途 run 状态；传入 run_id 时校验匹配，防止误删新启动的 run（M-6 并发防护）。"""
     with _stream_runs_guard:
+        state = _stream_runs.get(user_id)
+        if state is None:
+            return
+        if run_id is not None and state.get("run_id") != run_id:
+            return
         _stream_runs.pop(user_id, None)
+
+
+def _watchdog_scan_once(now: float | None = None) -> list[tuple[str, str | None]]:
+    """watchdog 单次扫描：返回应中断的 (user_id, run_id) 列表（detached 且超时）。
+
+    独立纯函数便于单测（G-10 压缩测试直接驱动）；attached run 由 SSE generator
+    自身守护（客户端连接存在），不在 watchdog 管辖范围。
+    """
+    now = now if now is not None else time.monotonic()
+    victims: list[tuple[str, str | None]] = []
+    with _stream_runs_guard:
+        for uid, state in list(_stream_runs.items()):
+            if state.get("attached", True):
+                continue
+            start_ts = state.get("start_ts") or 0
+            if now - start_ts > STREAM_MAX_DURATION_SECONDS:
+                victims.append((uid, state.get("run_id")))
+    return victims
+
+
+def _watchdog_loop_step() -> None:
+    """watchdog 单轮执行：扫描 → 逐个 interrupt + discard（可单测驱动，G-10）。"""
+    for uid, run_id in _watchdog_scan_once():
+        print(
+            f"[bridge] watchdog: detached run 超 {STREAM_MAX_DURATION_SECONDS}s"
+            f"·interrupt+discard user={uid}"
+        )
+        state = _stream_run_get(uid)
+        if state:
+            agent = state.get("agent_holder", [None])[0]
+            if agent is not None:
+                try:
+                    agent.interrupt()
+                except Exception:
+                    pass
+        _stream_run_discard(uid, run_id)
+
+
+def _watchdog_loop() -> None:
+    """独立守护线程：周期扫描 detached runs，超时 interrupt + discard（第 1 处中断入口）。"""
+    while True:
+        time.sleep(WATCHDOG_INTERVAL_SECONDS)
+        _watchdog_loop_step()
 
 
 def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, function_args) -> None:
@@ -991,7 +1087,7 @@ def _build_in_process_agent(
 
     def _clarify_cb(question: str, choices=None, multi_select: bool = False) -> str:
         """clarify 回调：注册进 clarify_gateway → 推 clarify 事件 → 阻塞等用户响应。"""
-        from tools import clarify_gateway as cg
+        cg = _get_clarify_gateway()
 
         clarify_id = uuid.uuid4().hex[:10]
         # 跨版本兼容：服务器 v0.19.0 register() 无 multi_select 参数（本地 v0.19.1 有）
@@ -1016,6 +1112,11 @@ def _build_in_process_agent(
             "choices": list(choices) if choices else None,
             "multi_select": bool(multi_select) and bool(choices),
         })
+        # 记录 clarify 发出时间戳：resolve 失败分类依据（expired vs no_pending）
+        run_state = _stream_run_get(user_id)
+        if run_state:
+            with _stream_runs_guard:
+                run_state["clarify_issued"] = time.monotonic()
         resp = cg.wait_for_response(clarify_id, timeout=float(CLARIFY_TIMEOUT_SECONDS))
         if resp is None or resp == "":
             return (
@@ -1113,12 +1214,29 @@ def _run_agent_sync(
             pass
 
 
+def _busy_sse(user_id: str):
+    """并发防护事件流：任务已在执行中（running 状态帧 + done 终帧）。
+
+    前端收到后不启动新 agent，转为轮询 status 端点跟踪原任务（G-6/G-4）。
+    """
+    yield f"data: {json.dumps({'type': 'status', 'phase': 'running', 'detail': '任务已在执行中…'}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'session_id': user_id, 'answer': ''}, ensure_ascii=False)}\n\n"
+
+
 def _sse_from_in_process(user_id: str, goal: str):
-    """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。"""
+    """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。
+
+    保活机制 v6：
+    - run 状态带 run_id / attached=True / start_ts（watchdog 寻址与超时判定）
+    - 正常结束（done/error 帧）→ discard（run_id 校验防误删）
+    - SSE 断连（客户端断开触发 finally）→ 仅 detach（attached=False，不 interrupt），
+      agent 线程继续后台完成，结果落 state.db，由 status 端点回读 + watchdog 兜底超时
+    """
     stream_q: queue.Queue = queue.Queue(maxsize=STREAM_QUEUE_CAPACITY)
     agent_holder: list = [None]
     start_ts = time.monotonic()
     last_keepalive_ts = time.monotonic()
+    run_id = uuid.uuid4().hex[:12]
 
     # 首帧状态（worker 启动前入队 → SSE 首帧即 boot，<10ms 真实构建状态）
     _qput(stream_q, {"type": "status", "phase": "boot", "detail": "正在初始化推理引擎…"})
@@ -1132,17 +1250,19 @@ def _sse_from_in_process(user_id: str, goal: str):
         name=f"agent-stream-{user_id[:12]}",
     )
     worker.start()
-    _stream_run_register(user_id, {"agent_holder": agent_holder, "queue": stream_q})
+    _stream_run_register(user_id, {
+        "agent_holder": agent_holder,
+        "queue": stream_q,
+        "attached": True,
+        "start_ts": start_ts,
+        "run_id": run_id,
+    })
 
+    finished = False
     try:
         first_thought_recorded = False
         while True:
             now = time.monotonic()
-
-            # 总时长上限（对齐方案 v4：300s 可配置）
-            if now - start_ts > STREAM_MAX_DURATION_SECONDS:
-                _qput(stream_q, {"type": "error", "code": "timeout"})
-                break
 
             # keepalive 注释帧（对齐 Hermes 30s 常量）
             if now - last_keepalive_ts >= STREAM_KEEPALIVE_SECONDS:
@@ -1153,10 +1273,12 @@ def _sse_from_in_process(user_id: str, goal: str):
                 item = stream_q.get(timeout=0.5)
             except queue.Empty:
                 if not worker.is_alive() and stream_q.empty():
+                    finished = True  # worker 退出且无待发事件 → 任务已结束
                     break
                 continue
 
             if item is None:
+                finished = True
                 break
             # 延迟打点：start_ts 至首个 thought 出队差（真实思维链首帧延迟）
             if not first_thought_recorded and item.get("type") == "thought":
@@ -1165,15 +1287,26 @@ def _sse_from_in_process(user_id: str, goal: str):
                     f"[bridge] first_thought_ms={(time.monotonic() - start_ts) * 1000.0:.1f} user={user_id}"
                 )
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+            # 终帧（done/error）后流自然结束：标记 finished 供 finally 分流 discard
+            if item.get("type") in ("done", "error"):
+                finished = True
+                break
     finally:
-        # 断连/取消回收：interrupt + 清理 streaming 标记
-        agent = agent_holder[0]
-        if agent is not None:
-            try:
-                agent.interrupt()
-            except Exception:
-                pass
-        _stream_run_discard(user_id)
+        # 断连/结束分流（保活机制 v6）：
+        # - 任务已结束（done/error/worker 退出）→ discard 清理状态
+        # - 任务仍在跑（客户端断连 detach）→ 仅 attached=False，不 interrupt，
+        #   交给 watchdog 守护（超时 interrupt+discard）与 status 端点回读
+        if finished or not worker.is_alive():
+            _stream_run_discard(user_id, run_id)
+        else:
+            with _stream_runs_guard:
+                state = _stream_runs.get(user_id)
+                if state is not None and state.get("run_id") == run_id:
+                    state["attached"] = False
+                    print(
+                        f"[bridge] SSE 断连 detach: user={user_id} run={run_id}"
+                        "·agent 后台继续·watchdog 兜底"
+                    )
 
 
 class ClarifyResolveRequest(BaseModel):
@@ -1187,23 +1320,37 @@ class CancelRequest(BaseModel):
 
 @app.post("/v1/chat/clarify")
 async def clarify_resolve(body: ClarifyResolveRequest):
-    """澄清响应提交：解锁阻塞的 agent 线程（不占 session 锁·thread-safe）。"""
-    from tools import clarify_gateway as cg
+    """澄清响应提交：解锁阻塞的 agent 线程（不占 session 锁·thread-safe）。
+
+    失败分类（reason 三态，G-7）：
+    - rejected   → 存在 pending clarify 但响应被拒（多选卡片收到自由文本）
+    - expired    → 曾发出 clarify 但已超时被 wait_for_response 清理（卡片过期）
+    - no_pending → 当前无任何 pending clarify（从未发出或已消费）
+    """
+    cg = _get_clarify_gateway()
 
     ok = cg.resolve_text_response_for_session(body.session_id, body.response)
-    if not ok:
-        # 自由文本被 _coerce_text_response 拒绝 → 通知前端重试（防静默丢失）
-        run = _stream_run_get(body.session_id)
-        if run:
-            _qput(run["queue"], {"type": "clarify_rejected"})
-        return {"ok": False, "reason": "rejected"}
-    return {"ok": True}
+    if ok:
+        return {"ok": True}
+
+    run = _stream_run_get(body.session_id)
+    if cg.has_pending(body.session_id):
+        reason = "rejected"
+    else:
+        clarify_issued = run.get("clarify_issued") if run else None
+        if clarify_issued is not None and (time.monotonic() - clarify_issued) <= CLARIFY_TIMEOUT_SECONDS + 60:
+            reason = "expired"
+        else:
+            reason = "no_pending"
+    if run:
+        _qput(run["queue"], {"type": "clarify_rejected"})
+    return {"ok": False, "reason": reason}
 
 
 @app.post("/v1/chat/stream/cancel")
 async def stream_cancel(body: CancelRequest):
     """取消在途流式：interrupt agent + 强制解锁 clarify + 清理状态。"""
-    from tools import clarify_gateway as cg
+    cg = _get_clarify_gateway()
 
     run = _stream_run_get(body.session_id)
     if run:
@@ -1218,7 +1365,7 @@ async def stream_cancel(body: CancelRequest):
             cg.clear_session(body.session_id)
         except Exception:
             pass
-        _stream_run_discard(body.session_id)
+        _stream_run_discard(body.session_id, run.get("run_id"))
     return {"ok": True}
 
 

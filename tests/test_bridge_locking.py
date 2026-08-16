@@ -5,12 +5,15 @@
 2. _save_mapping 原子写（tmp + os.replace）且无残留 tmp 文件
 3. 水位线 _get_baseline_id / _readback_delta 增量过滤（id > baseline 且按 session）
 4. /v1/chat 临界区：同 user 串行、reasoning 回读、回读失败降级 reasoning=[] 不抛 500
+5. 保活机制 v6：watchdog 扫描（detached 超时）、并发防护（busy running 事件）、
+   clarify reason 三态（expired/rejected/no_pending）
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import queue
 import sqlite3
 import tempfile
 import threading
@@ -184,6 +187,178 @@ class TestChatReasoningIntegration(unittest.TestCase):
 
         # 同 user 在细粒度锁内串行执行，绝不并发
         self.assertEqual(max_active["n"], 1)
+
+
+class TestWatchdogKeepAlive(unittest.TestCase):
+    """保活机制 v6（M-3）：watchdog 只扫 detached 超时 run，attached/未超时不误杀。"""
+
+    def setUp(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._stream_runs.clear()
+        self.bridge = bridge
+
+    def tearDown(self):
+        self.bridge._stream_runs.clear()
+
+    def _register(self, uid, attached, age_seconds, run_id="r1"):
+        self.bridge._stream_run_register(uid, {
+            "agent_holder": [None],
+            "queue": queue.Queue(),
+            "attached": attached,
+            "start_ts": time.monotonic() - age_seconds,
+            "run_id": run_id,
+        })
+
+    def test_detached_timeout_flagged(self):
+        with patch.object(self.bridge, "STREAM_MAX_DURATION_SECONDS", 720):
+            self._register("w1", attached=False, age_seconds=800)
+            victims = self.bridge._watchdog_scan_once()
+            self.assertTrue(any(uid == "w1" for uid, _ in victims))
+
+    def test_attached_not_flagged(self):
+        with patch.object(self.bridge, "STREAM_MAX_DURATION_SECONDS", 720):
+            self._register("w2", attached=True, age_seconds=800)  # attached 超时也不杀
+            victims = self.bridge._watchdog_scan_once()
+            self.assertFalse(any(uid == "w2" for uid, _ in victims))
+
+    def test_detached_within_budget_not_flagged(self):
+        with patch.object(self.bridge, "STREAM_MAX_DURATION_SECONDS", 720):
+            self._register("w3", attached=False, age_seconds=100)
+            victims = self.bridge._watchdog_scan_once()
+            self.assertFalse(any(uid == "w3" for uid, _ in victims))
+
+    def test_watchdog_interrupt_and_discard(self):
+        """G-10 核心：detached 超时 run 被 interrupt + discard（含 run_id 校验）。"""
+        interrupted = {"n": 0}
+        agent = type("FakeAgent", (), {"interrupt": lambda self: interrupted.__setitem__("n", interrupted["n"] + 1)})()
+
+        def fake_get(uid):
+            return {"agent_holder": [agent], "queue": queue.Queue(), "run_id": "r1"}
+
+        with patch.object(self.bridge, "STREAM_MAX_DURATION_SECONDS", 720), \
+             patch.object(self.bridge, "_stream_run_get", side_effect=fake_get):
+            self._register("w4", attached=False, age_seconds=800)
+            self.bridge._watchdog_loop_step()  # 执行一轮 interrupt+discard
+        self.assertEqual(interrupted["n"], 1)
+        self.assertIsNone(self.bridge._stream_run_get("w4"))
+
+    def test_discard_run_id_mismatch_keeps_state(self):
+        """run_id 校验：不匹配的 discard 不误删新 run（M-6 防误删）。"""
+        self._register("w5", attached=False, age_seconds=10, run_id="new_run")
+        self.bridge._stream_run_discard("w5", "old_run")
+        self.assertIsNotNone(self.bridge._stream_run_get("w5"))
+        self.bridge._stream_run_discard("w5", "new_run")
+        self.assertIsNone(self.bridge._stream_run_get("w5"))
+
+
+class TestConcurrencyGuard(unittest.TestCase):
+    """保活机制 v6（G-6）：同 session 活跃 run → running 事件流，不启动新 agent。"""
+
+    def _collect(self, resp):
+        async def gather():
+            chunks = []
+            async for chunk in resp.body_iterator:
+                chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+            return "".join(chunks)
+        return asyncio.run(gather())
+
+    def test_busy_returns_running_then_done(self):
+        import scripts.hermes_bridge as bridge
+
+        with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
+             patch.object(bridge, "_stream_run_get", return_value={
+                 "attached": True, "run_id": "r", "start_ts": time.monotonic()
+             }), \
+             patch.object(bridge, "_sse_from_in_process") as mock_sse:
+            resp = asyncio.run(bridge.chat_stream(
+                GoalRequest(goal="hi", session_id="u_busy", isolation="standard")
+            ))
+            body = self._collect(resp)
+        self.assertIn('"phase": "running"', body)
+        self.assertIn('"type": "done"', body)
+        mock_sse.assert_not_called()  # 未启动新 agent
+
+    def test_free_slot_starts_agent(self):
+        import scripts.hermes_bridge as bridge
+
+        async def fake_sse(user_id, goal):
+            yield f"data: {json.dumps({'type': 'status', 'phase': 'boot'})}\n\n"
+
+        with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
+             patch.object(bridge, "_stream_run_get", return_value=None), \
+             patch.object(bridge, "_sse_from_in_process", side_effect=fake_sse):
+            resp = asyncio.run(bridge.chat_stream(
+                GoalRequest(goal="hi", session_id="u_free", isolation="standard")
+            ))
+            body = self._collect(resp)
+        self.assertIn('"phase": "boot"', body)
+
+
+class TestClarifyResolveReason(unittest.TestCase):
+    """保活机制 v6（G-7）：clarify resolve 失败 reason 三态（expired/rejected/no_pending）。"""
+
+    def _resolve(self, session_id="s1", response="x"):
+        import scripts.hermes_bridge as bridge
+
+        return asyncio.run(bridge.clarify_resolve(
+            bridge.ClarifyResolveRequest(session_id=session_id, response=response)
+        ))
+
+    def _mock_cg(self):
+        """注入 mock clarify_gateway 模块（patch 模块级缓存引用）。"""
+        import scripts.hermes_bridge as bridge
+        from types import SimpleNamespace
+
+        mock_cg = SimpleNamespace(resolve_text_response_for_session=None, has_pending=None)
+        return mock_cg, patch.object(bridge, "_clarify_gateway", mock_cg)
+
+    def test_ok_true(self):
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        mock_cg.resolve_text_response_for_session = lambda *a, **k: True
+        with patcher, \
+             patch.object(bridge, "_stream_run_get", return_value=None):
+            result = self._resolve()
+        self.assertEqual(result, {"ok": True})
+
+    def test_rejected_when_pending_exists(self):
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        mock_cg.resolve_text_response_for_session = lambda *a, **k: False
+        mock_cg.has_pending = lambda *a, **k: True
+        with patcher, \
+             patch.object(bridge, "_stream_run_get", return_value={"queue": queue.Queue()}):
+            result = self._resolve()
+        self.assertEqual(result, {"ok": False, "reason": "rejected"})
+
+    def test_expired_when_issued_recently(self):
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        mock_cg.resolve_text_response_for_session = lambda *a, **k: False
+        mock_cg.has_pending = lambda *a, **k: False
+        with patcher, \
+             patch.object(bridge, "_stream_run_get", return_value={
+                 "queue": queue.Queue(),
+                 "clarify_issued": time.monotonic() - 100,  # 发出不久但已超时清理
+             }), \
+             patch.object(bridge, "CLARIFY_TIMEOUT_SECONDS", 180):
+            result = self._resolve()
+        self.assertEqual(result, {"ok": False, "reason": "expired"})
+
+    def test_no_pending_when_never_issued(self):
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        mock_cg.resolve_text_response_for_session = lambda *a, **k: False
+        mock_cg.has_pending = lambda *a, **k: False
+        with patcher, \
+             patch.object(bridge, "_stream_run_get", return_value=None):
+            result = self._resolve()
+        self.assertEqual(result, {"ok": False, "reason": "no_pending"})
 
 
 if __name__ == "__main__":
