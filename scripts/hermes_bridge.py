@@ -976,17 +976,17 @@ def _build_in_process_agent(
     from hermes_cli.oneshot import _create_session_db_for_oneshot
     from run_agent import AIAgent
 
-    cfg = load_config()
+    cfg = _get_cached_config()  # 常驻单例：0ms 读盘
     model_cfg = cfg.get("model") or {}
     if isinstance(model_cfg, str):
         cfg_model = model_cfg
     else:
         cfg_model = model_cfg.get("default") or model_cfg.get("model") or ""
 
-    runtime = resolve_runtime_provider(requested=None, target_model=cfg_model or None)
-    toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
-    _fb = get_fallback_chain(cfg)
-    session_db = _create_session_db_for_oneshot()
+    runtime = _get_cached_runtime(cfg)  # 常驻单例：0ms 解析
+    toolsets_list = _get_cached_tools(cfg)  # 常驻单例：0ms 反射
+    _fb = _get_cached_fallback(cfg)  # 常驻单例
+    session_db = _create_thread_local_session_db()  # 线程局部：防 SQLite 跨线程冲突
 
     def _clarify_cb(question: str, choices=None, multi_select: bool = False) -> str:
         """clarify 回调：注册进 clarify_gateway → 推 clarify 事件 → 阻塞等用户响应。"""
