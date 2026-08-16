@@ -11,10 +11,11 @@ import json
 import os
 import re
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
@@ -36,7 +37,22 @@ HERMES_BRIDGE_STATUS_URL = os.environ.get(
     "HERMES_BRIDGE_STATUS_URL",
     "http://host.docker.internal:9118/v1/chat/status",
 )
+# Bridge v7 流式端点（真实 SSE 逐 token）与配套控制端点
+HERMES_BRIDGE_STREAM_URL = os.environ.get(
+    "HERMES_BRIDGE_STREAM_URL",
+    "http://host.docker.internal:9118/v1/chat/stream",
+)
+HERMES_BRIDGE_CLARIFY_URL = os.environ.get(
+    "HERMES_BRIDGE_CLARIFY_URL",
+    "http://host.docker.internal:9118/v1/chat/clarify",
+)
+HERMES_BRIDGE_CANCEL_URL = os.environ.get(
+    "HERMES_BRIDGE_CANCEL_URL",
+    "http://host.docker.internal:9118/v1/chat/stream/cancel",
+)
 HERMES_TIMEOUT = 300
+# 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
+STREAM_IDLE_TIMEOUT = 240
 
 # ---------------------------------------------------------------------------
 # 首屏滑动窗口熔断器与 Citation 提取器（2026-08-16 增强：多层嵌套前缀 + 破折号变体）
@@ -306,3 +322,105 @@ async def chat_status(
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
     return data
+
+
+# ---------------------------------------------------------------------------
+# v7 真实流式端点（SSE 透传·对齐 bridge 事件协议）
+# ---------------------------------------------------------------------------
+
+class StreamRequest(BaseModel):
+    question: str = Field(..., min_length=1)
+    session_id: Optional[str] = Field(None, max_length=100)
+    agent_id: Optional[str] = Field(None, max_length=50)
+
+
+class ClarifySubmitRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    response: str = Field(..., min_length=1)
+
+
+class CancelRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+
+
+# 流式会话标记：session_id -> 进行中（_check_cached_answer 跳过流式态）
+_streaming_sessions: set[str] = set()
+
+
+async def _call_bridge_stream(
+    goal: str, session_id: str
+) -> AsyncIterator[str]:
+    """转发 bridge /v1/chat/stream（SSE 透传）。"""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
+        async with client.stream(
+            "POST",
+            HERMES_BRIDGE_STREAM_URL,
+            json={"goal": goal, "session_id": session_id},
+        ) as resp:
+            if resp.status_code != 200:
+                yield f"data: {json.dumps({'type': 'error', 'code': 'bridge', 'message': f'HTTP {resp.status_code}'}, ensure_ascii=False)}\n\n"
+                return
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                yield line + "\n"
+
+
+@router.post("/stream")
+async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> StreamingResponse:
+    """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
+
+    事件协议：delta / thought / tool_start / tool_complete / clarify /
+              clarify_rejected / done / error + keepalive 注释帧。
+    """
+    isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
+    _streaming_sessions.add(isolated_session_id)
+
+    async def _gen():
+        try:
+            async for frame in _call_bridge_stream(req.question, isolated_session_id):
+                yield frame
+        finally:
+            _streaming_sessions.discard(isolated_session_id)
+
+    return StreamingResponse(
+        _gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+            "X-Session-ID": isolated_session_id,
+        },
+    )
+
+
+@router.post("/stream/clarify")
+async def chat_clarify_submit(
+    req: ClarifySubmitRequest, payload=Depends(require_auth)
+) -> Dict[str, Any]:
+    """澄清响应提交：透传 bridge /v1/chat/clarify（解锁阻塞的 agent 线程）。"""
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            HERMES_BRIDGE_CLARIFY_URL,
+            json={"session_id": req.session_id, "response": req.response},
+        )
+        if r.status_code == 200:
+            return r.json()
+        raise HTTPException(status_code=502, detail="澄清提交失败")
+
+
+@router.post("/stream/cancel")
+async def chat_stream_cancel(
+    req: CancelRequest, payload=Depends(require_auth)
+) -> Dict[str, Any]:
+    """取消在途流式：透传 bridge interrupt（服务端回收线程与内存）。"""
+    async with httpx.AsyncClient(timeout=15) as client:
+        r = await client.post(
+            HERMES_BRIDGE_CANCEL_URL,
+            json={"session_id": req.session_id},
+        )
+        _streaming_sessions.discard(req.session_id)
+        if r.status_code == 200:
+            return r.json()
+        raise HTTPException(status_code=502, detail="取消流式失败")

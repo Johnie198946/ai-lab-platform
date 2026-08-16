@@ -164,9 +164,10 @@ public struct ChatView: View {
         }
     }
 
-    /// 澄清卡片提交：把用户选择回填为一条 user 消息，并清空原卡片（防重复提交）。
+    /// 澄清卡片提交：优先走流式 clarify 端点（解锁 agent 线程·非流式降级为普通消息）。
     private func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        let sessionId = sessionManager.activeSessionID()
         // 1) 原卡片置为已提交（禁用重复点选）——直接改 blocks 数组内的关联值
         if let blockIdx = messages[idx].blocks.firstIndex(where: {
             if case .clarify = $0 { return true }
@@ -178,14 +179,23 @@ public struct ChatView: View {
             }
         }
         commitSession()
-        // 2) 回填用户选择消息
+        // 2) 回填用户选择消息（视觉一致）
         messages.append(ChatMessage(
-            sessionId: sessionManager.activeSessionID(),
+            sessionId: sessionId,
             role: .user,
             content: selection
         ))
-        // 3) 走正常链路发起下一轮对话
-        dispatchAssistantReply(to: selection)
+        // 3) 流式链路：提交到澄清端点解锁 agent（保留非流式降级：直接当普通消息发下一轮）
+        let sid = appState.chatSessionId
+        Task {
+            let ok = (try? await APIClient.shared.submitClarify(sessionId: sid, response: selection)) ?? false
+            if !ok {
+                // 降级：走正常链路发起下一轮对话（原逻辑）
+                await MainActor.run {
+                    dispatchAssistantReply(to: selection)
+                }
+            }
+        }
     }
 
     @ViewBuilder
@@ -689,7 +699,7 @@ public struct ChatView: View {
         )
         commitSession()
         currentChatTask = Task {
-            await runInFlight(req)
+            await runInFlightStreamed(req)
         }
         startStatusPolling(req: req)
     }
@@ -713,6 +723,109 @@ public struct ChatView: View {
         } catch {
             await handleError(req: req, error: error)
         }
+    }
+
+    /// v7 真实流式入口：SSE 事件逐条驱动 UI（delta 实时追加 / tool 实时卡片 / clarify 实时卡片）。
+    /// 流式失败时降级为 runInFlight 非流式路径（体验不劣化）。
+    private func runInFlightStreamed(_ req: InFlightRequest) async {
+        if demoMode {
+            await appendDemoReply(req: req)
+            return
+        }
+        let stream = APIClient.shared.chatStream(
+            question: req.text,
+            sessionId: appState.chatSessionId,
+            agentId: appState.selectedAgentId
+        )
+        do {
+            for try await event in stream {
+                guard inflight?.id == req.id else { return }
+                guard req.sessionId == sessionManager.activeSessionID() else {
+                    sessionManager.markInterrupted(sessionId: req.sessionId)
+                    finishGeneration()
+                    return
+                }
+                switch event {
+                case .delta(let content):
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        messages[idx].content += content
+                        messages[idx].isStreaming = true
+                    }
+                case .thought(let content):
+                    // 实时思考流：追加进 ReasoningCard 的 thought 步骤
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        var steps = reasoningSteps(for: idx)
+                        steps.append(ReasoningStep(type: .thought, title: "思考过程", detail: content))
+                        messages[idx].blocks = [.reasoning(steps)]
+                    }
+                case .toolStart(let id, let tool, let label):
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        var steps = reasoningSteps(for: idx)
+                        steps.append(ReasoningStep(type: .toolCall, title: "调用工具: \(tool)", detail: label, status: "running"))
+                        messages[idx].blocks = [.reasoning(steps)]
+                    }
+                case .toolComplete(let id, _):
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        var steps = reasoningSteps(for: idx)
+                        if let last = steps.lastIndex(where: { $0.status == "running" }) {
+                            steps[last].status = "done"
+                        }
+                        messages[idx].blocks = [.reasoning(steps)]
+                    }
+                case .clarify(let question, let choices, let multiSelect):
+                    let block = ClarifyBlock(
+                        question: question,
+                        choices: choices,
+                        multiSelect: multiSelect,
+                        submitLabel: "确认选择"
+                    )
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        var blocks = messages[idx].blocks
+                        blocks.append(.clarify(block))
+                        messages[idx].blocks = blocks
+                        messages[idx].pending = false
+                        messages[idx].isStreaming = false
+                    }
+                case .clarifyRejected:
+                    showToast("选择未通过校验，请从选项中选择或输入有效内容")
+                case .done(let sid, let answer):
+                    if let sid, !sid.isEmpty {
+                        appState.chatSessionId = sid
+                    }
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        messages[idx].pending = false
+                        messages[idx].isStreaming = false
+                    }
+                case .error(let code, let message):
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        messages[idx].content = message.isEmpty ? "流式响应异常（\(code)）" : message
+                        messages[idx].pending = false
+                        messages[idx].isStreaming = false
+                        messages[idx].degraded = true
+                    }
+                }
+            }
+            commitSession()
+            finishGeneration()
+        } catch {
+            // 流式失败 → 降级非流式（保留既有 502/404 自愈路径）
+            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                messages[idx].content = ""
+                messages[idx].blocks = []
+            }
+            await runInFlight(req)
+        }
+    }
+
+    /// 取消息当前已挂载的推理步骤（无则空数组）
+    private func reasoningSteps(for index: Int) -> [ReasoningStep] {
+        guard index < messages.count else { return [] }
+        for block in messages[index].blocks {
+            if case .reasoning(let steps) = block {
+                return steps
+            }
+        }
+        return []
     }
 
     private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO) async {

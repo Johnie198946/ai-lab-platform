@@ -161,6 +161,18 @@ public extension ChatReasoningStepDTO {
     }
 }
 
+/// GET /api/chat/status/{session_id} 响应（长任务状态回读 + 断点 0ms 恢复）
+/// 状态机：completed（附 answer + 完整 reasoning）/ running（附 latestStep + 已产生 steps）
+///        / timeout / not_found
+public struct ChatStatusDTO: Codable {
+    public let status: String
+    public let answer: String?
+    public let reasoning: [ChatReasoningStepDTO]?
+    public let latestStep: String?
+    /// 是否已消费（completed 且水位线已推进）；consume=1 时后端顺带标记
+    public let consumed: Bool?
+}
+
 /// POST /api/v1/register 响应（token 为可选：当前后端仅返回 user_id，预留生产 JWT）
 public struct RegisterResponseDTO: Codable {
     public let success: Bool?
@@ -619,6 +631,200 @@ public final class APIClient: ObservableObject {
         } catch let urlError as URLError {
             isOfflineMode = true
             throw APIError.network(urlError.localizedDescription)
+        }
+    }
+
+    // MARK: - v7 真实流式（SSE 事件流）
+
+    /// 流式事件类型（对齐后端 bridge 事件协议）
+    public enum StreamEvent {
+        case delta(String)
+        case thought(String)
+        case toolStart(id: String, tool: String, label: String)
+        case toolComplete(id: String, tool: String)
+        case clarify(question: String, choices: [String], multiSelect: Bool)
+        case clarifyRejected
+        case done(sessionId: String?, answer: String?)
+        case error(code: String, message: String)
+
+        /// 从 SSE `data:` JSON 解析事件
+        static func parse(_ json: [String: Any]) -> StreamEvent? {
+            guard let type = json["type"] as? String else { return nil }
+            switch type {
+            case "delta":
+                return .delta(json["content"] as? String ?? "")
+            case "thought":
+                return .thought(json["content"] as? String ?? "")
+            case "tool_start":
+                return .toolStart(
+                    id: json["id"] as? String ?? "",
+                    tool: json["tool"] as? String ?? "",
+                    label: json["label"] as? String ?? ""
+                )
+            case "tool_complete":
+                return .toolComplete(
+                    id: json["id"] as? String ?? "",
+                    tool: json["tool"] as? String ?? ""
+                )
+            case "clarify":
+                return .clarify(
+                    question: json["question"] as? String ?? "",
+                    choices: json["choices"] as? [String] ?? [],
+                    multiSelect: json["multi_select"] as? Bool ?? false
+                )
+            case "clarify_rejected":
+                return .clarifyRejected
+            case "done":
+                return .done(
+                    sessionId: json["session_id"] as? String,
+                    answer: json["answer"] as? String
+                )
+            case "error":
+                return .error(
+                    code: json["code"] as? String ?? "unknown",
+                    message: json["message"] as? String ?? ""
+                )
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// POST /api/chat/stream：URLSession.bytes 逐行消费 SSE 事件流（真实流式）
+    /// - Returns: AsyncThrowingStream 事件流；客户端断连/取消时自动 POST /api/chat/stream/cancel 回收服务端
+    public func chatStream(
+        question: String,
+        sessionId: String? = nil,
+        agentId: String? = nil
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let url = baseURL.appendingPathComponent("api/chat/stream")
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 60  // 空闲保活（30s keepalive 帧持续刷新）
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+            if let token = currentToken(), !token.isEmpty {
+                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            }
+            request.httpBody = try? JSONEncoder().encode(
+                ChatRequestDTO(
+                    question: question,
+                    sessionId: sessionId,
+                    quotedContext: nil,
+                    agentId: agentId
+                )
+            )
+
+            let consumeTask = Task {
+                do {
+                    let (bytes, response) = try await chatSession.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse else {
+                        continuation.finish(throwing: APIError.network("无效响应"))
+                        return
+                    }
+                    guard (200..<300).contains(http.statusCode) else {
+                        continuation.finish(throwing: APIError.server(http.statusCode, "流式端点错误"))
+                        return
+                    }
+                    var buffer = ""
+                    for try await line in bytes.lines {
+                        if line.hasPrefix(":") { continue }          // keepalive 注释帧
+                        if line.hasPrefix("data: ") {
+                            let payload = String(line.dropFirst(6))
+                            if let data = payload.data(using: .utf8),
+                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                               let event = StreamEvent.parse(json) {
+                                continuation.yield(event)
+                            }
+                        } else {
+                            // 半行缓冲（SSE 行可能被 TCP 分包）
+                            buffer += line
+                            if buffer.hasPrefix("data: "),
+                               let data = buffer.dropFirst(6).data(using: .utf8),
+                               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                               let event = StreamEvent.parse(json) {
+                                continuation.yield(event)
+                                buffer = ""
+                            }
+                        }
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { @Sendable _ in
+                consumeTask.cancel()
+                // 断连/取消 → 通知服务端 interrupt 回收线程与内存
+                Task {
+                    try? await self.cancelStream(sessionId: sessionId)
+                }
+            }
+        }
+    }
+
+    /// POST /api/chat/stream/cancel：服务端 interrupt + 回收
+    public func cancelStream(sessionId: String?) async throws {
+        guard let sessionId, !sessionId.isEmpty else { return }
+        let url = baseURL.appendingPathComponent("api/chat/stream/cancel")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONEncoder().encode(["session_id": sessionId])
+        _ = try? await chatSession.data(for: request)
+    }
+
+    /// POST /api/chat/stream/clarify：提交澄清响应（解锁 agent 线程）
+    public func submitClarify(sessionId: String?, response: String) async throws -> Bool {
+        guard let sessionId, !sessionId.isEmpty else { return false }
+        let url = baseURL.appendingPathComponent("api/chat/stream/clarify")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        request.httpBody = try? JSONEncoder().encode([
+            "session_id": sessionId,
+            "response": response,
+        ])
+        let (data, _) = try await chatSession.data(for: request)
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        return (json?["ok"] as? Bool) ?? false
+    }
+
+    /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。
+    /// consume=true 时后端顺带将 completed 结果标记为已消费（断点续接后不会误命中旧答案）。
+    public func fetchChatStatus(sessionId: String, consume: Bool = false) async throws -> ChatStatusDTO {
+        var url = baseURL
+            .appendingPathComponent("api/chat/status")
+            .appendingPathComponent(sessionId)
+        if consume {
+            var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+            comps?.queryItems = [URLQueryItem(name: "consume", value: "1")]
+            if let u = comps?.url { url = u }
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let data = try await perform(request, session: session, canRetry: true)
+        do {
+            return try decoder.decode(ChatStatusDTO.self, from: data)
+        } catch {
+            throw APIError.decoding(error.localizedDescription)
         }
     }
 

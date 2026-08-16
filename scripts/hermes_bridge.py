@@ -27,6 +27,7 @@ v4.1 (2026-08-10·Supervision 批复返工):
 import asyncio
 import json
 import os
+import queue
 import re
 import sqlite3
 import subprocess
@@ -79,6 +80,24 @@ DEFAULT_TIMEOUT = 300
 SERVE_TIMEOUT = 300
 # 状态回读 stale 判定阈值（秒）：最新消息超过该阈值未更新即判 timeout
 STATUS_STALE_SECONDS = 300
+
+# ---------------------------------------------------------------------------
+# v7 真实流式（进程内 agent runner）配置
+# ---------------------------------------------------------------------------
+# 进程内流式开关：true 时 /v1/chat/stream 走 AIAgent 进程内 runner（真实逐 token）
+IN_PROCESS_STREAM_ENABLED = os.environ.get("HERMES_IN_PROCESS_STREAM", "false") == "true"
+# SSE keepalive 注释帧间隔（对齐 Hermes CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS=30.0）
+STREAM_KEEPALIVE_SECONDS = float(os.environ.get("HERMES_STREAM_KEEPALIVE", "30"))
+# 单次流式总时长上限（超时 → interrupt + error 帧）
+STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "300"))
+# clarify 等待用户响应超时（默认 180s，替代 Hermes 原生 3600s）
+CLARIFY_TIMEOUT_SECONDS = int(os.environ.get("HERMES_CLARIFY_TIMEOUT", "180"))
+# 事件队列容量（线程 → async 桥）
+STREAM_QUEUE_CAPACITY = 512
+
+# user_id -> 在途流式运行状态（agent holder / 线程 / 队列 / 停止事件），供 cancel/clarify 端点寻址
+_stream_runs: dict[str, dict] = {}
+_stream_runs_guard = threading.Lock()
 
 # ANSI 转义序列清洗正则（匹配所有 ANSI escape codes）
 ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
@@ -689,14 +708,32 @@ async def _startup():
 
 @app.post("/v1/chat/stream")
 async def chat_stream(body: GoalRequest):
-    """SSE 流式对话入口（Bridge v6 核心端点）。
+    """SSE 流式对话入口（Bridge v7 核心端点）。
 
-    优先级：WS PTY（/api/pty）→ SSE 流式（/api/chat）→ CLI -z 非流式降级。
-    全部以 SSE data: {type:chunk,content:...} 格式推送给前端。
+    优先级：进程内 agent runner（真实逐 token·v7 主路径）→ WS PTY（默认禁用）→ CLI -z 非流式降级。
+    全部以 SSE data: {type:...} 格式推送给前端。
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
     _mark_in_flight(user_id)
+
+    # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
+    if IN_PROCESS_STREAM_ENABLED:
+        try:
+            print(f"[bridge] v7 进程内流式: user={user_id}")
+            return StreamingResponse(
+                _sse_from_in_process(user_id, body.goal),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Session-ID": user_id,
+                },
+            )
+        except Exception as stream_err:
+            print(f"[bridge] v7 进程内流式失败·降级: {stream_err}")
+
     try:
         hermes_sid = _resolve_hermes_session(user_id)
 
@@ -767,6 +804,282 @@ async def chat_stream(body: GoalRequest):
         )
     finally:
         _clear_in_flight(user_id)
+
+
+# ---------------------------------------------------------------------------
+# v7 进程内 agent runner（真实流式·SSE 事件流）
+# ---------------------------------------------------------------------------
+
+def _qput(stream_q: queue.Queue, item: dict) -> None:
+    """线程安全投递事件；队列满用 put_nowait 丢弃（绝不阻塞 agent 线程）。"""
+    try:
+        stream_q.put_nowait(item)
+    except queue.Full:
+        print(f"[bridge] ⚠️ 流式事件队列满·丢弃事件: {item.get('type')}")
+
+
+def _stream_run_register(user_id: str, state: dict) -> None:
+    with _stream_runs_guard:
+        _stream_runs[user_id] = state
+
+
+def _stream_run_get(user_id: str) -> dict | None:
+    with _stream_runs_guard:
+        return _stream_runs.get(user_id)
+
+
+def _stream_run_discard(user_id: str) -> None:
+    with _stream_runs_guard:
+        _stream_runs.pop(user_id, None)
+
+
+def _build_in_process_agent(
+    goal: str,
+    user_id: str,
+    hermes_sid: str | None,
+    stream_q: queue.Queue,
+) -> object:
+    """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
+
+    - stream_delta_callback → delta 事件
+    - reasoning_callback → thought 事件（实时思考流）
+    - tool_start/tool_complete → tool 事件（载荷治理·不发 raw result）
+    - clarify_callback → clarify_gateway 注册 + clarify 事件 + 阻塞等待解锁
+    """
+    from hermes_cli.config import load_config
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.tools_config import _get_platform_tools
+    from hermes_cli.fallback_config import get_fallback_chain
+    from hermes_cli.oneshot import _create_session_db_for_oneshot
+    from run_agent import AIAgent
+
+    cfg = load_config()
+    model_cfg = cfg.get("model") or {}
+    if isinstance(model_cfg, str):
+        cfg_model = model_cfg
+    else:
+        cfg_model = model_cfg.get("default") or model_cfg.get("model") or ""
+
+    runtime = resolve_runtime_provider(requested=None, target_model=cfg_model or None)
+    toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
+    _fb = get_fallback_chain(cfg)
+    session_db = _create_session_db_for_oneshot()
+
+    def _clarify_cb(question: str, choices=None, multi_select: bool = False) -> str:
+        """clarify 回调：注册进 clarify_gateway → 推 clarify 事件 → 阻塞等用户响应。"""
+        from tools import clarify_gateway as cg
+
+        clarify_id = uuid.uuid4().hex[:10]
+        cg.register(
+            clarify_id=clarify_id,
+            session_key=user_id,
+            question=question,
+            choices=list(choices) if choices else None,
+            multi_select=bool(multi_select),
+        )
+        _qput(stream_q, {
+            "type": "clarify",
+            "question": question,
+            "choices": list(choices) if choices else None,
+            "multi_select": bool(multi_select) and bool(choices),
+        })
+        resp = cg.wait_for_response(clarify_id, timeout=float(CLARIFY_TIMEOUT_SECONDS))
+        if resp is None or resp == "":
+            return (
+                f"[user did not respond within {CLARIFY_TIMEOUT_SECONDS}s. "
+                "Make the most reasonable assumption and continue.]"
+            )
+        return resp
+
+    def _delta_cb(text) -> None:
+        if text:
+            _qput(stream_q, {"type": "delta", "content": text})
+
+    def _reasoning_cb(text) -> None:
+        if text:
+            _qput(stream_q, {"type": "thought", "content": text})
+
+    def _tool_start_cb(tool_call_id, function_name, function_args) -> None:
+        if not tool_call_id or (function_name or "").startswith("_"):
+            return
+        label = function_name
+        try:
+            from agent.display import build_tool_preview
+            preview = build_tool_preview(function_name, function_args)
+            if preview:
+                label = preview
+        except Exception:
+            pass
+        _qput(stream_q, {
+            "type": "tool_start",
+            "id": tool_call_id,
+            "tool": function_name,
+            "label": label,
+        })
+
+    def _tool_complete_cb(tool_call_id, function_name, function_args, result) -> None:
+        # 载荷治理：不发 raw result（对齐 api_server 契约·防内部信息泄露）
+        if not tool_call_id or (function_name or "").startswith("_"):
+            return
+        _qput(stream_q, {
+            "type": "tool_complete",
+            "id": tool_call_id,
+            "tool": function_name,
+        })
+
+    agent = AIAgent(
+        api_key=runtime.get("api_key"),
+        base_url=runtime.get("base_url"),
+        provider=runtime.get("provider"),
+        requested_provider=runtime.get("requested_provider"),
+        api_mode=runtime.get("api_mode"),
+        model=cfg_model,
+        enabled_toolsets=toolsets_list,
+        quiet_mode=True,
+        platform="cli",
+        session_id=hermes_sid,
+        session_db=session_db,
+        credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
+        clarify_callback=_clarify_cb,
+        stream_delta_callback=_delta_cb,
+        reasoning_callback=_reasoning_cb,
+        tool_start_callback=_tool_start_cb,
+        tool_complete_callback=_tool_complete_cb,
+    )
+    return agent, session_db
+
+
+def _run_agent_sync(
+    goal: str,
+    user_id: str,
+    hermes_sid: str | None,
+    stream_q: queue.Queue,
+    agent_holder: list,
+) -> None:
+    """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
+    agent = None
+    session_db = None
+    try:
+        agent, session_db = _build_in_process_agent(goal, user_id, hermes_sid, stream_q)
+        agent_holder[0] = agent
+        result = agent.run_conversation(goal)
+        final = (result.get("final_response") or "") if isinstance(result, dict) else str(result or "")
+        _qput(stream_q, {"type": "done", "session_id": user_id, "answer": final})
+    except Exception as e:
+        print(f"[bridge] ⚠️ 进程内 agent 执行失败: {e}")
+        _qput(stream_q, {"type": "error", "code": "internal", "message": str(e)[:200]})
+    finally:
+        # 显式回收：agent.close + session_db.close（防内存泄漏）
+        try:
+            if agent is not None:
+                agent.close()
+        except Exception:
+            pass
+        try:
+            if session_db is not None:
+                session_db.close()
+        except Exception:
+            pass
+
+
+def _sse_from_in_process(user_id: str, goal: str):
+    """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。"""
+    stream_q: queue.Queue = queue.Queue(maxsize=STREAM_QUEUE_CAPACITY)
+    agent_holder: list = [None]
+    start_ts = time.monotonic()
+    last_keepalive_ts = time.monotonic()
+
+    hermes_sid = _resolve_hermes_session(user_id)
+
+    worker = threading.Thread(
+        target=_run_agent_sync,
+        args=(goal, user_id, hermes_sid, stream_q, agent_holder),
+        daemon=True,
+        name=f"agent-stream-{user_id[:12]}",
+    )
+    worker.start()
+    _stream_run_register(user_id, {"agent_holder": agent_holder, "queue": stream_q})
+
+    try:
+        while True:
+            now = time.monotonic()
+
+            # 总时长上限（对齐方案 v4：300s 可配置）
+            if now - start_ts > STREAM_MAX_DURATION_SECONDS:
+                _qput(stream_q, {"type": "error", "code": "timeout"})
+                break
+
+            # keepalive 注释帧（对齐 Hermes 30s 常量）
+            if now - last_keepalive_ts >= STREAM_KEEPALIVE_SECONDS:
+                yield ": keepalive\n\n"
+                last_keepalive_ts = now
+
+            try:
+                item = stream_q.get(timeout=0.5)
+            except queue.Empty:
+                if not worker.is_alive() and stream_q.empty():
+                    break
+                continue
+
+            if item is None:
+                break
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+    finally:
+        # 断连/取消回收：interrupt + 清理 streaming 标记
+        agent = agent_holder[0]
+        if agent is not None:
+            try:
+                agent.interrupt()
+            except Exception:
+                pass
+        _stream_run_discard(user_id)
+
+
+class ClarifyResolveRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+    response: str = Field(..., min_length=1)
+
+
+class CancelRequest(BaseModel):
+    session_id: str = Field(..., min_length=1)
+
+
+@app.post("/v1/chat/clarify")
+async def clarify_resolve(body: ClarifyResolveRequest):
+    """澄清响应提交：解锁阻塞的 agent 线程（不占 session 锁·thread-safe）。"""
+    from tools import clarify_gateway as cg
+
+    ok = cg.resolve_text_response_for_session(body.session_id, body.response)
+    if not ok:
+        # 自由文本被 _coerce_text_response 拒绝 → 通知前端重试（防静默丢失）
+        run = _stream_run_get(body.session_id)
+        if run:
+            _qput(run["queue"], {"type": "clarify_rejected"})
+        return {"ok": False, "reason": "rejected"}
+    return {"ok": True}
+
+
+@app.post("/v1/chat/stream/cancel")
+async def stream_cancel(body: CancelRequest):
+    """取消在途流式：interrupt agent + 强制解锁 clarify + 清理状态。"""
+    from tools import clarify_gateway as cg
+
+    run = _stream_run_get(body.session_id)
+    if run:
+        agent = run["agent_holder"][0]
+        if agent is not None:
+            try:
+                agent.interrupt()
+            except Exception:
+                pass
+        # 强制解锁阻塞在 clarify Event.wait() 的线程（不等超时）
+        try:
+            cg.clear_session(body.session_id)
+        except Exception:
+            pass
+        _stream_run_discard(body.session_id)
+    return {"ok": True}
 
 
 @app.post("/v1/chat")

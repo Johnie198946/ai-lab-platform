@@ -13,12 +13,14 @@ import SwiftUI
 
 public struct ThinkingPlaceholderView: View {
     public let seconds: Int
+    public let progress: String?
     public let onCancel: () -> Void
 
     @State private var isBreathing: Bool = false
 
-    public init(seconds: Int, onCancel: @escaping () -> Void) {
+    public init(seconds: Int, progress: String? = nil, onCancel: @escaping () -> Void) {
         self.seconds = seconds
+        self.progress = progress
         self.onCancel = onCancel
     }
 
@@ -45,13 +47,28 @@ public struct ThinkingPlaceholderView: View {
             HStack(spacing: AppTheme.Spacing.sm) {
                 breathingDots
 
-                HStack(spacing: 5) {
-                    Image(systemName: stageIcon)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(AppTheme.Colors.quantumBlue)
-                    Text(stageText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(AppTheme.Colors.textSecondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 5) {
+                        Image(systemName: stageIcon)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(AppTheme.Colors.quantumBlue)
+                        Text(stageText)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(AppTheme.Colors.textSecondary)
+                    }
+
+                    // 长任务状态回读：轮询拉取的最新工具步骤（2s→4s→6s→8s 退避）
+                    if let progress, !progress.isEmpty {
+                        HStack(spacing: 5) {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(AppTheme.Colors.quantumCyan)
+                            Text(progress)
+                                .font(.system(size: 11))
+                                .foregroundColor(AppTheme.Colors.textTertiary)
+                                .lineLimit(1)
+                        }
+                    }
                 }
 
                 Spacer()
