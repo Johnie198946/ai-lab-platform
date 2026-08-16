@@ -1059,13 +1059,15 @@ def _build_in_process_agent(
         reasoning_callback=_reasoning_cb,
         tool_start_callback=_tool_start_cb,
         tool_complete_callback=_tool_complete_cb,
+        # 支柱二：iOS 通道请求级思考预算覆盖（不影响微信 gateway 的 config medium）
+        # - Hermes 原生 resolve_reasoning_config 处理 DeepSeek 映射；不支持的 Provider 自动忽略
+        reasoning_config={"effort": "minimal"},
     )
 
-    # 支柱二：reasoning_effort 自适应注入（首轮澄清阶段 minimal 提速）
-    # - 仅当目标模型能力检测支持时透传；不支持则静默跳过（Prompt 级限词兜底，绝不 400）
+    # 支柱二兜底：若模型能力检测不支持 reasoning_effort 字段注入，保留 prompt 级限词约束
     try:
-        if _supports_reasoning_effort(cfg_model):
-            agent.reasoning_effort = "minimal"
+        if not _supports_reasoning_effort(cfg_model):
+            pass  # DeepSeek 系不走 reasoning_effort 字段，reasoning_config 已覆盖
     except Exception:
         pass
 
