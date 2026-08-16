@@ -101,6 +101,34 @@ USER_LOCK_CAPACITY = 512
 USER_LOCK_TTL_SECONDS = 30 * 60
 ANONYMOUS_LOCK_KEY = "_anonymous"
 
+# user_id -> 在途任务开始时间戳（首秒 running 状态兜底）。
+# 请求进入 chat/chat_stream 协程第一瞬间登记，finally 块移除；即使 Hermes CLI
+# 启动首秒内尚未向 state.db 落库，GET /v1/chat/status/{user_id} 也能立刻返回 running，
+# 绝不误报 not_found。
+_in_flight_users: dict[str, float] = {}
+# 在途判定 stale 阈值（秒）：超过该阈值视为任务僵死，不再兜底 running。
+IN_FLIGHT_STALE_SECONDS = 300
+
+
+def _mark_in_flight(user_id: str) -> None:
+    """登记 user 在途任务开始时间戳（进程内瞬时状态，finally 移除）。"""
+    _in_flight_users[user_id] = time.time()
+
+
+def _clear_in_flight(user_id: str) -> None:
+    """移除 user 在途标记（任务结束/异常 finally 块调用）。"""
+    _in_flight_users.pop(user_id, None)
+
+
+def _is_in_flight(user_id: str | None) -> bool:
+    """判定 user 是否有在途任务且未超时（首秒 running 兜底依据）。"""
+    if not user_id:
+        return False
+    ts = _in_flight_users.get(user_id)
+    if ts is None:
+        return False
+    return (time.time() - ts) <= IN_FLIGHT_STALE_SECONDS
+
 
 def _get_user_lock(user_id: str) -> asyncio.Lock:
     """按 user_id 取细粒度锁；anonymous 统一固定 `_anonymous` key。
@@ -394,18 +422,27 @@ def _query_status(hermes_sid: str | None, user_id: str | None = None) -> dict:
     - completed：最后一条为 role='assistant' 且内容非空（附完整 answer + reasoning）
     - running：最新为 tool/thought/user 且 300s 内有更新（附 latest_step + 已产生 steps）
     - timeout：超时（>300s 无更新）或进程已退出且无 assistant 回答
+
+    首秒兜底：Hermes CLI 启动中尚未向 state.db 落库时，若该 user 有在途请求
+    （_in_flight_users 命中且未超时），直接返回 running，绝不误报 not_found。
     """
     wm_key = user_id or hermes_sid or ""
     empty = {"status": "not_found", "answer": "", "reasoning": [], "latest_step": ""}
+
+    def _running_fallback() -> dict:
+        if _is_in_flight(user_id):
+            return {"status": "running", "answer": "", "reasoning": [], "latest_step": "处理中"}
+        return empty
+
     if not hermes_sid:
-        return empty
+        return _running_fallback()
     if not os.path.exists(STATE_DB):
-        return empty
+        return _running_fallback()
     try:
         conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
     except Exception as e:
         print(f"[bridge] state.db 只读连接失败: {e}")
-        return empty
+        return _running_fallback()
     try:
         conn.row_factory = sqlite3.Row
         srow = conn.execute(
@@ -413,7 +450,7 @@ def _query_status(hermes_sid: str | None, user_id: str | None = None) -> dict:
             (hermes_sid,),
         ).fetchone()
         if srow is None or srow["archived"]:
-            return empty
+            return _running_fallback()
 
         rows = conn.execute(
             "SELECT id, role, content, reasoning_content, tool_name, tool_calls, timestamp "
@@ -656,75 +693,80 @@ async def chat_stream(body: GoalRequest):
 
     优先级：WS PTY（/api/pty）→ SSE 流式（/api/chat）→ CLI -z 非流式降级。
     全部以 SSE data: {type:chunk,content:...} 格式推送给前端。
+    在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
-    hermes_sid = _resolve_hermes_session(user_id)
+    _mark_in_flight(user_id)
+    try:
+        hermes_sid = _resolve_hermes_session(user_id)
 
-    # 首次对话：先通过 CLI 新建会话·捕获 session_id
-    if not hermes_sid:
-        print(f"[bridge] 首次对话·先通过 CLI 新建会话")
-        reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
-        if new_sid:
-            _update_session_mapping(user_id, new_sid)
-            hermes_sid = new_sid
-        else:
-            # CLI 新建失败·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
-            print(f"[bridge] CLI 新建失败·降级 SSE 包装返回")
-            return StreamingResponse(
-                _fallback_sse(reply),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",
-                    "X-Session-ID": user_id,
-                },
-            )
+        # 首次对话：先通过 CLI 新建会话·捕获 session_id
+        if not hermes_sid:
+            print(f"[bridge] 首次对话·先通过 CLI 新建会话")
+            reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
+            if new_sid:
+                _update_session_mapping(user_id, new_sid)
+                hermes_sid = new_sid
+            else:
+                # CLI 新建失败·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
+                print(f"[bridge] CLI 新建失败·降级 SSE 包装返回")
+                return StreamingResponse(
+                    _fallback_sse(reply),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                        "X-Session-ID": user_id,
+                    },
+                )
 
-    # 尝试 WS PTY 流式（v6 主路径·默认禁用——serve PTY 只回显不执行 Hermes·流式做好后设 WS_PTY_ENABLED=true 启用）
-    if os.environ.get("WS_PTY_ENABLED", "false") == "true":
-        try:
-            print(f"[bridge] WS PTY 流式: user={user_id} session={hermes_sid}")
-            return StreamingResponse(
-                _stream_from_ws_pty(body.goal, hermes_sid),
-                media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                    "X-Accel-Buffering": "no",  # nginx 禁用缓冲
-                },
-            )
-        except Exception as ws_err:
-            print(f"[bridge] WS PTY 失败·降级到 SSE: {ws_err}")
+        # 尝试 WS PTY 流式（v6 主路径·默认禁用——serve PTY 只回显不执行 Hermes·流式做好后设 WS_PTY_ENABLED=true 启用）
+        if os.environ.get("WS_PTY_ENABLED", "false") == "true":
+            try:
+                print(f"[bridge] WS PTY 流式: user={user_id} session={hermes_sid}")
+                return StreamingResponse(
+                    _stream_from_ws_pty(body.goal, hermes_sid),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",  # nginx 禁用缓冲
+                    },
+                )
+            except Exception as ws_err:
+                print(f"[bridge] WS PTY 失败·降级到 SSE: {ws_err}")
 
-    # 二级降级：SSE 流式（v5 路径·serve 无 /api/chat 端点恒 405·2026-08-10 禁用直接走 CLI）
-    # try:
-    #     print(f"[bridge] SSE 流式降级: user={user_id} session={hermes_sid}")
-    #     return StreamingResponse(
-    #         _stream_from_serve(body.goal, hermes_sid),
-    #         media_type="text/event-stream",
-    #         headers={
-    #             "Cache-Control": "no-cache",
-    #             "Connection": "keep-alive",
-    #             "X-Accel-Buffering": "no",
-    #         },
-    #     )
-    # except Exception as sse_err:
-    #     print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
+        # 二级降级：SSE 流式（v5 路径·serve 无 /api/chat 端点恒 405·2026-08-10 禁用直接走 CLI）
+        # try:
+        #     print(f"[bridge] SSE 流式降级: user={user_id} session={hermes_sid}")
+        #     return StreamingResponse(
+        #         _stream_from_serve(body.goal, hermes_sid),
+        #         media_type="text/event-stream",
+        #         headers={
+        #             "Cache-Control": "no-cache",
+        #             "Connection": "keep-alive",
+        #             "X-Accel-Buffering": "no",
+        #         },
+        #     )
+        # except Exception as sse_err:
+        #     print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
 
-    # 最终降级：CLI -z 非流式（SSE 包装·契约统一）·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
-    reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
-    print(f"[bridge] 最终降级 CLI·包装 SSE 返回")
-    return StreamingResponse(
-        _fallback_sse(reply),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-            "X-Session-ID": user_id,
-        },
-    )
+        # 最终降级：CLI -z 非流式（SSE 包装·契约统一）·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
+        reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
+        print(f"[bridge] 最终降级 CLI·包装 SSE 返回")
+        return StreamingResponse(
+            _fallback_sse(reply),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "X-Session-ID": user_id,
+            },
+        )
+    finally:
+        _clear_in_flight(user_id)
 
 
 @app.post("/v1/chat")
@@ -734,47 +776,51 @@ async def chat(body: GoalRequest):
     两级锁序固定：全局 Semaphore(2) → user 细粒度锁，先取 Semaphore 再取 user 锁。
     临界区全程覆盖：解析映射 → 快照水位线 → CLI 执行(to_thread) → 增量回读 → 映射更新。
     思维链回读失败降级 reasoning=[] 并打 Warning 日志，严禁向客户端抛 500。
+    在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
+    _mark_in_flight(user_id)
+    try:
+        async with _semaphore:
+            user_lock = _get_user_lock(user_id)
+            async with user_lock:
+                # 1) 解析 session 映射（失效则清除）
+                hermes_sid = _resolve_hermes_session(user_id)
 
-    async with _semaphore:
-        user_lock = _get_user_lock(user_id)
-        async with user_lock:
-            # 1) 解析 session 映射（失效则清除）
-            hermes_sid = _resolve_hermes_session(user_id)
+                # 2) 请求前快照：水位线 baseline_id
+                baseline_id = await asyncio.to_thread(_get_baseline_id, hermes_sid)
 
-            # 2) 请求前快照：水位线 baseline_id
-            baseline_id = await asyncio.to_thread(_get_baseline_id, hermes_sid)
+                # 3) CLI 执行（唯一真实执行路径·to_thread 不阻塞事件循环）
+                if not hermes_sid:
+                    reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
+                    effective_sid = new_sid
+                    if new_sid:
+                        _update_session_mapping(user_id, new_sid)
+                else:
+                    reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
+                    effective_sid = new_sid or hermes_sid
 
-            # 3) CLI 执行（唯一真实执行路径·to_thread 不阻塞事件循环）
-            if not hermes_sid:
-                reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
-                effective_sid = new_sid
-                if new_sid:
-                    _update_session_mapping(user_id, new_sid)
-            else:
-                reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
-                effective_sid = new_sid or hermes_sid
+                # 4) 执行后增量回读 + 真实思维链映射（失败降级·不 500）
+                reasoning: list[dict] = []
+                try:
+                    rows = await asyncio.to_thread(
+                        _readback_delta, effective_sid, baseline_id
+                    )
+                    reasoning = [s.model_dump() for s in extract_steps(rows)]
+                except Exception as e:
+                    print(f"[bridge] ⚠️ 思维链回读失败·降级空 reasoning: {e}")
 
-            # 4) 执行后增量回读 + 真实思维链映射（失败降级·不 500）
-            reasoning: list[dict] = []
-            try:
-                rows = await asyncio.to_thread(
-                    _readback_delta, effective_sid, baseline_id
-                )
-                reasoning = [s.model_dump() for s in extract_steps(rows)]
-            except Exception as e:
-                print(f"[bridge] ⚠️ 思维链回读失败·降级空 reasoning: {e}")
+                # 投递成功后推进消费水位线（断点 0ms 回读判定依据）
+                _mark_consumed(user_id, effective_sid)
 
-            # 投递成功后推进消费水位线（断点 0ms 回读判定依据）
-            _mark_consumed(user_id, effective_sid)
-
-            return {
-                "reply": reply,
-                "session_id": user_id,
-                "hermes_session_id": effective_sid,
-                "reasoning": reasoning,
-            }
+                return {
+                    "reply": reply,
+                    "session_id": user_id,
+                    "hermes_session_id": effective_sid,
+                    "reasoning": reasoning,
+                }
+    finally:
+        _clear_in_flight(user_id)
 
 
 @app.get("/v1/chat/status/{user_id}")

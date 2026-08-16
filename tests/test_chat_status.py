@@ -21,7 +21,13 @@ from unittest.mock import patch
 os.environ.setdefault("HERMES_STATE_DB", "/tmp/test_state_status.db")
 os.environ.setdefault("AUTHEN_JWT_SECRET", "test-secret")
 
-from scripts.hermes_bridge import _query_status, _mark_consumed  # noqa: E402
+from scripts.hermes_bridge import (  # noqa: E402
+    _clear_in_flight,
+    _is_in_flight,
+    _mark_consumed,
+    _mark_in_flight,
+    _query_status,
+)
 
 
 _SCHEMA = """
@@ -328,6 +334,81 @@ class TestChatStatusPassthrough(unittest.TestCase):
         with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
             asyncio.run(chat_status("sid", consume=True, payload={}))
         mock.assert_called_once_with("sid", consume=True)
+
+
+class TestInFlightUsers(unittest.TestCase):
+    """_in_flight_users 瞬时 running 兜底（首秒状态感知）测试。"""
+
+    def setUp(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._in_flight_users = {}
+
+    def tearDown(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._in_flight_users = {}
+
+    def test_is_in_flight_true_after_mark(self):
+        _mark_in_flight("u1")
+        self.assertTrue(_is_in_flight("u1"))
+
+    def test_is_in_flight_false_without_mark(self):
+        self.assertFalse(_is_in_flight("u_missing"))
+        self.assertFalse(_is_in_flight(None))
+
+    def test_is_in_flight_false_after_clear(self):
+        _mark_in_flight("u1")
+        _clear_in_flight("u1")
+        self.assertFalse(_is_in_flight("u1"))
+
+    def test_is_in_flight_false_when_stale(self):
+        import scripts.hermes_bridge as bridge
+
+        _mark_in_flight("u1")
+        # 手动把时间戳拨到阈值之外，模拟任务僵死
+        bridge._in_flight_users["u1"] = time.time() - bridge.IN_FLIGHT_STALE_SECONDS - 1
+        self.assertFalse(_is_in_flight("u1"))
+
+    def test_query_status_running_when_in_flight_no_mapping(self):
+        """首秒窗口：无映射但 user 在途 → 返回 running 而非 not_found。"""
+        _mark_in_flight("u_inflight")
+        result = _query_status(None, "u_inflight")
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["latest_step"], "处理中")
+
+    def test_query_status_not_found_when_not_in_flight_no_mapping(self):
+        result = _query_status(None, "u_idle")
+        self.assertEqual(result["status"], "not_found")
+
+    def test_chat_registers_and_clears_in_flight(self):
+        """/v1/chat 执行期间登记在途标记，结束后 finally 清除。"""
+        import scripts.hermes_bridge as bridge
+        from scripts.hermes_bridge import GoalRequest, chat
+
+        bridge._user_session_map = {}
+        bridge._in_flight_users = {}
+        snapshots = []
+
+        def fake_run(goal, session_id=None):
+            snapshots.append(dict(bridge._in_flight_users))
+            return ("ok", "sess_new")
+
+        with tempfile.TemporaryDirectory() as d:
+            mapping = Path(d) / "mappings.json"
+            with patch.object(bridge, "MAPPING_FILE", mapping), \
+                 patch.object(bridge, "_session_exists", return_value=False), \
+                 patch.object(bridge, "_run_hermes", side_effect=fake_run):
+                result = asyncio.run(
+                    chat(GoalRequest(goal="hi", session_id="u_inflight", isolation="standard"))
+                )
+
+        self.assertEqual(result["reply"], "ok")
+        # 执行期间在途标记已登记（fake_run 快照命中）
+        self.assertTrue(any("u_inflight" in snap for snap in snapshots))
+        # 结束后在途标记已清除
+        self.assertNotIn("u_inflight", bridge._in_flight_users)
+        self.assertFalse(bridge._is_in_flight("u_inflight"))
 
 
 if __name__ == "__main__":
