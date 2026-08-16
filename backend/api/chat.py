@@ -63,6 +63,7 @@ STREAM_IDLE_TIMEOUT = 240
 BOILERPLATE_PATTERNS = [
     re.compile(r"^以[^：:\n]{0,30}角色回答[：:—\-－]+\s*"),
     re.compile(r"^((先|已|刚)?查(了|阅)?知识库|检索了?知识库).{0,200}?(结论如下[：:]|：|\n)"),
+    re.compile(r"^知识库[^：:\n]{0,20}(有现成|直接读取|已有|找到)[^：:\n]{0,60}[：:，,]?"),
     re.compile(r"^基于[^：:\n]{0,60}(知识库|资料|检索|信息)[^：:\n]{0,40}[：:\n]"),
     re.compile(r"^以下(是|为)?基于[^：:\n]{0,60}(答复|回答|结论)[：:]"),
     re.compile(r"^(收到|好的|明白|没问题|可以)[，,、：:]\s*(以.*角色回答|我将?作为.*(助手|角色)|基于.*知识库|查了.*知识库|以下.*答复)"),
@@ -375,11 +376,19 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
     """
     isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
 
+    # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
+    goal = req.question
+    if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", goal, re.IGNORECASE):
+        goal += (
+            "\n\n（输出要求：本问题涉及两个及以上主体对比，请使用 Markdown 表格呈现，"
+            "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。）"
+        )
+
     _streaming_sessions.add(isolated_session_id)
 
     async def _gen():
         try:
-            async for frame in _call_bridge_stream(req.question, isolated_session_id):
+            async for frame in _call_bridge_stream(goal, isolated_session_id):
                 yield frame
         finally:
             _streaming_sessions.discard(isolated_session_id)
