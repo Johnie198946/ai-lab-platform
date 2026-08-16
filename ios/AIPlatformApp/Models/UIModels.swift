@@ -62,6 +62,8 @@ public enum MessageRole: String, Codable, Sendable {
     case user = "user"
     case assistant = "assistant"
     case system = "system"
+    /// 会话切换屏障：在途请求被切换拦截时，在原会话落盘的显式中断标记（不参与 API 上下文组装）
+    case interrupted = "interrupted"
 }
 
 public struct CodeSnippet: Identifiable, Codable, Sendable, Hashable {
@@ -222,23 +224,8 @@ public struct QuotedContext: Sendable, Hashable {
     }
 }
 
-/// 平台定时任务卡（纯前端轻量演示模型：三字段只读，零执行史）
-public struct ScheduledTask: Identifiable, Sendable, Hashable {
-    public let id: String
-    public let name: String
-    public let schedule: String
-    public let enabled: Bool
-
-    public init(id: String = UUID().uuidString, name: String, schedule: String, enabled: Bool = false) {
-        self.id = id
-        self.name = name
-        self.schedule = schedule
-        self.enabled = enabled
-    }
-}
-
-/// 设置页「我创建的智能体」演示态模型（纯静态字段：名称/职责/创建时间/版本，去 live 语义）
-public struct CreatedAgent: Identifiable, Sendable, Hashable {
+/// 设置页「我创建的智能体」本地持久化模型（名称/职责/创建时间/版本，去 live 语义）
+public struct CreatedAgent: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public let name: String
     public let responsibility: String
@@ -254,8 +241,8 @@ public struct CreatedAgent: Identifiable, Sendable, Hashable {
     }
 }
 
-/// 设置页「我制作的技能」演示态模型（纯静态字段：名称/职责/创建时间/版本，去 live 语义）
-public struct CreatedSkill: Identifiable, Sendable, Hashable {
+/// 设置页「我制作的技能」本地持久化模型（名称/职责/创建时间/版本，去 live 语义）
+public struct CreatedSkill: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public let name: String
     public let responsibility: String
@@ -324,6 +311,10 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
     public var quotedContext: QuotedContext?
     /// 富媒体演示样例标注（剧本/混合态卡片标注「演示样例」，防误解）
     public var isDemoSample: Bool
+    /// 在途占位标记：请求发起时 true，收到完整应答/异常/降级/中断时 false（冷启动自愈孤儿会话）
+    public var pending: Bool
+    /// 502 降级标记：degraded=true 的消息跳过 ReasoningCard、不入 API 上下文、渲染降级卡
+    public var degraded: Bool
 
     public init(
         id: String = UUID().uuidString,
@@ -334,7 +325,9 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         isStreaming: Bool = false,
         blocks: [MessageBlock] = [],
         quotedContext: QuotedContext? = nil,
-        isDemoSample: Bool = false
+        isDemoSample: Bool = false,
+        pending: Bool = false,
+        degraded: Bool = false
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -345,6 +338,267 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         self.blocks = blocks
         self.quotedContext = quotedContext
         self.isDemoSample = isDemoSample
+        self.pending = pending
+        self.degraded = degraded
+    }
+}
+
+// MARK: - 会话持久化（消息级原子落盘 + 冷启动恢复）
+
+/// 落盘消息 DTO：仅持久化会话恢复所需的核心字段（角色/正文/时间/pending/degraded/演示标注）。
+/// 富媒体 blocks 为演示态，不参与落盘（本轮范围：iPhone 单窗口会话管理，诚实标注）。
+public struct PersistedMessage: Codable, Sendable {
+    public let id: String
+    public let role: String
+    public let content: String
+    public let createdAt: Date
+    public let pending: Bool
+    public let degraded: Bool
+    public let isDemoSample: Bool
+
+    public init(_ m: ChatMessage) {
+        self.id = m.id
+        self.role = m.role.rawValue
+        self.content = m.content
+        self.createdAt = m.createdAt
+        self.pending = m.pending
+        self.degraded = m.degraded
+        self.isDemoSample = m.isDemoSample
+    }
+
+    public func toChatMessage(sessionId: String) -> ChatMessage {
+        ChatMessage(
+            id: id,
+            sessionId: sessionId,
+            role: MessageRole(rawValue: role) ?? .assistant,
+            content: content,
+            createdAt: createdAt,
+            isStreaming: false,
+            blocks: [],
+            quotedContext: nil,
+            isDemoSample: isDemoSample,
+            pending: pending,
+            degraded: degraded
+        )
+    }
+}
+
+/// 单个会话的落盘记录（标题 + 更新时间 + 消息数组）。
+public struct SessionRecord: Codable, Sendable {
+    public let id: String
+    public var title: String
+    public var updatedAt: Date
+    public var messages: [PersistedMessage]
+
+    public init(id: String, title: String, updatedAt: Date, messages: [PersistedMessage]) {
+        self.id = id
+        self.title = title
+        self.updatedAt = updatedAt
+        self.messages = messages
+    }
+}
+
+/// 多会话状态管理器（@MainActor 严格串行，iPhone 单窗口）。
+/// - 内存 `sessions: [String: [ChatMessage]]` 字典隔离
+/// - 消息级原子落盘：Documents/Sessions/<id>.json（tmp + rename，杜绝断电损坏）
+/// - pending 标记：响应前 true / 完成后 false；冷启动恢复 updatedAt 最新会话为 active
+@MainActor
+public final class SessionManager: ObservableObject {
+    public static let shared = SessionManager()
+
+    @Published public private(set) var sessions: [String: [ChatMessage]] = [:]
+    @Published public private(set) var activeSessionId: String? = nil
+    @Published public private(set) var sessionTitles: [String: String] = [:]
+    @Published public private(set) var sessionUpdatedAt: [String: Date] = [:]
+
+    private let fm = FileManager.default
+
+    /// Documents/Sessions/<id>.json
+    private var directory: URL {
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fm.temporaryDirectory
+        return docs.appendingPathComponent("Sessions", isDirectory: true)
+    }
+
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder()
+        e.dateEncodingStrategy = .iso8601
+        e.outputFormatting = [.sortedKeys]
+        return e
+    }()
+
+    private static let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.dateDecodingStrategy = .iso8601
+        return d
+    }()
+
+    private init() {
+        loadAll()
+    }
+
+    // MARK: - 冷启动恢复
+
+    private func loadAll() {
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let files = try? fm.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        var loaded: [String: [ChatMessage]] = [:]
+        var titles: [String: String] = [:]
+        var updated: [String: Date] = [:]
+        var latestId: String? = nil
+        var latestDate: Date = .distantPast
+
+        for url in files where url.pathExtension == "json" {
+            guard let data = try? Data(contentsOf: url),
+                  let rec = try? Self.decoder.decode(SessionRecord.self, from: data) else { continue }
+            let msgs = rec.messages.map { $0.toChatMessage(sessionId: rec.id) }
+            loaded[rec.id] = msgs
+            titles[rec.id] = rec.title
+            updated[rec.id] = rec.updatedAt
+            if rec.updatedAt > latestDate {
+                latestDate = rec.updatedAt
+                latestId = rec.id
+            }
+        }
+
+        sessions = loaded
+        sessionTitles = titles
+        sessionUpdatedAt = updated
+        // 恢复 updatedAt 最新的会话为 activeSessionId
+        activeSessionId = latestId
+    }
+
+    // MARK: - 会话生命周期
+
+    public func activeSessionID() -> String {
+        if let active = activeSessionId, sessions[active] != nil { return active }
+        return createSession()
+    }
+
+    @discardableResult
+    public func createSession() -> String {
+        let id = UUID().uuidString
+        sessions[id] = []
+        sessionTitles[id] = "新会话"
+        sessionUpdatedAt[id] = Date()
+        activeSessionId = id
+        persist(id: id)
+        return id
+    }
+
+    public func switchTo(_ id: String) {
+        if sessions[id] == nil { sessions[id] = [] }
+        activeSessionId = id
+    }
+
+    /// 删除会话：本地级联清理（内存 + 磁盘文件）。
+    public func deleteSession(_ id: String) {
+        sessions.removeValue(forKey: id)
+        sessionTitles.removeValue(forKey: id)
+        sessionUpdatedAt.removeValue(forKey: id)
+        try? fm.removeItem(at: fileURL(id))
+        if activeSessionId == id {
+            activeSessionId = latestSessionID()
+            if activeSessionId == nil { _ = createSession() }
+        }
+    }
+
+    /// 按 updatedAt 倒序的会话 id 列表（供抽屉排序）。
+    public func sortedSessionIDs() -> [String] {
+        sessionUpdatedAt.keys.sorted {
+            (sessionUpdatedAt[$0] ?? .distantPast) > (sessionUpdatedAt[$1] ?? .distantPast)
+        }
+    }
+
+    private func latestSessionID() -> String? {
+        sessions.keys.max { (sessionUpdatedAt[$0] ?? .distantPast) < (sessionUpdatedAt[$1] ?? .distantPast) }
+    }
+
+    // MARK: - 消息读写（消息级原子落盘）
+
+    public func messages(for id: String) -> [ChatMessage] {
+        sessions[id] ?? []
+    }
+
+    public var activeMessages: [ChatMessage] {
+        guard let id = activeSessionId else { return [] }
+        return sessions[id] ?? []
+    }
+
+    public func title(for id: String) -> String {
+        sessionTitles[id] ?? "新会话"
+    }
+
+    /// 整会话写入（消息级事件触发单次落盘，非 chunk 级）。标题按首条 user 前 20 字规则刷新。
+    public func setMessages(_ messages: [ChatMessage], for id: String) {
+        sessions[id] = messages
+        refreshTitle(for: id, messages: messages)
+        sessionUpdatedAt[id] = Date()
+        persist(id: id)
+    }
+
+    /// 组装 API 上下文：强制过滤 .interrupted / .system / degraded，仅保留纯净 user/assistant 问答对。
+    public func apiContextMessages(for id: String) -> [ChatMessage] {
+        (sessions[id] ?? []).filter {
+            ($0.role == .user || $0.role == .assistant) && !$0.degraded
+        }
+    }
+
+    /// 会话屏障：在途请求被切换拦截时，在原会话把 pending 占位替换为 .interrupted（不静默丢弃）。
+    public func markInterrupted(sessionId: String) {
+        guard var msgs = sessions[sessionId], !msgs.isEmpty else { return }
+        if let idx = msgs.lastIndex(where: { $0.role == .assistant && $0.pending }) {
+            msgs[idx].role = .interrupted
+            msgs[idx].content = Self.interruptedText
+            msgs[idx].pending = false
+            msgs[idx].isStreaming = false
+            msgs[idx].degraded = false
+        } else {
+            msgs.append(ChatMessage(sessionId: sessionId, role: .interrupted, content: Self.interruptedText))
+        }
+        setMessages(msgs, for: sessionId)
+    }
+
+    public static let interruptedText = "⚠️ 响应已中断（会话切换）"
+
+    private func refreshTitle(for id: String, messages: [ChatMessage]) {
+        guard let firstUser = messages.first(where: { $0.role == .user }) else {
+            sessionTitles[id] = "新会话"
+            return
+        }
+        let text = firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        sessionTitles[id] = text.isEmpty ? "新会话" : String(text.prefix(20))
+    }
+
+    // MARK: - 原子落盘（tmp + rename）
+
+    private func fileURL(_ id: String) -> URL {
+        directory.appendingPathComponent("\(id).json")
+    }
+
+    private func persist(id: String) {
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
+        guard let msgs = sessions[id] else { return }
+        let rec = SessionRecord(
+            id: id,
+            title: sessionTitles[id] ?? "新会话",
+            updatedAt: sessionUpdatedAt[id] ?? Date(),
+            messages: msgs.map(PersistedMessage.init)
+        )
+        guard let data = try? Self.encoder.encode(rec) else { return }
+        let url = fileURL(id)
+        let tmp = directory.appendingPathComponent("\(id).json.tmp")
+        try? data.write(to: tmp, options: .atomic)
+        if fm.fileExists(atPath: url.path) {
+            _ = try? fm.replaceItemAt(url, withItemAt: tmp)
+        } else {
+            try? fm.moveItem(at: tmp, to: url)
+        }
     }
 }
 
@@ -354,6 +608,7 @@ public enum AgentNodeStatus: String, Codable, Sendable {
     case running = "running"
     case completed = "completed"
     case error = "error"
+    case demo = "演示"
     
     public var indicatorColor: Color {
         switch self {
@@ -361,6 +616,7 @@ public enum AgentNodeStatus: String, Codable, Sendable {
         case .running: return AppTheme.Colors.statusRunning
         case .completed: return AppTheme.Colors.statusCompleted
         case .error: return AppTheme.Colors.statusError
+        case .demo: return AppTheme.Colors.quantumCyan
         }
     }
     
@@ -370,6 +626,7 @@ public enum AgentNodeStatus: String, Codable, Sendable {
         case .running: return "执行中 (Running)"
         case .completed: return "完成 (Completed)"
         case .error: return "异常 (Error)"
+        case .demo: return "演示 (Demo)"
         }
     }
 }
@@ -385,6 +642,7 @@ public struct AgentNode: Identifiable, Codable, Sendable, Hashable {
     public var subscribedKnowledge: [String]
     public var inputDeps: [String]
     public var outputDeps: [String]
+    public var tools: [String]
     
     public var position: CGPoint {
         get { CGPoint(x: x, y: y) }
@@ -403,7 +661,8 @@ public struct AgentNode: Identifiable, Codable, Sendable, Hashable {
         position: CGPoint,
         subscribedKnowledge: [String] = [],
         inputDeps: [String] = [],
-        outputDeps: [String] = []
+        outputDeps: [String] = [],
+        tools: [String] = []
     ) {
         self.id = id
         self.name = name
@@ -415,6 +674,7 @@ public struct AgentNode: Identifiable, Codable, Sendable, Hashable {
         self.subscribedKnowledge = subscribedKnowledge
         self.inputDeps = inputDeps
         self.outputDeps = outputDeps
+        self.tools = tools
     }
 }
 
@@ -444,6 +704,53 @@ public struct TopologyGraph: Codable, Sendable, Hashable {
     public init(nodes: [AgentNode] = [], edges: [AgentEdge] = []) {
         self.nodes = nodes
         self.edges = edges
+    }
+}
+
+// MARK: - 后端拓扑 DTO → 前端图模型映射（注册表为唯一真值来源）
+
+public extension TopologyGraphDTO {
+    /// 将后端基线 Agent 注册表映射为前端拓扑图（依赖从边推导，节点位置按简单树状布局派生）。
+    func toTopologyGraph() -> TopologyGraph {
+        var inputDeps: [String: [String]] = [:]
+        var outputDeps: [String: [String]] = [:]
+        for e in edges {
+            inputDeps[e.target, default: []].append(e.source)
+            outputDeps[e.source, default: []].append(e.target)
+        }
+        let nameById = Dictionary(uniqueKeysWithValues: self.nodes.map { ($0.id, $0.name) })
+
+        let nodes: [AgentNode] = self.nodes.enumerated().map { idx, n in
+            AgentNode(
+                id: n.id,
+                name: n.name,
+                roleCategory: n.roleDesc,
+                systemPromptSummary: n.roleDesc,
+                status: AgentNodeStatus(rawValue: n.status) ?? .demo,
+                position: TopologyGraphDTO.layoutPosition(index: idx, total: self.nodes.count),
+                subscribedKnowledge: [],
+                inputDeps: (inputDeps[n.id] ?? []).compactMap { nameById[$0] },
+                outputDeps: (outputDeps[n.id] ?? []).compactMap { nameById[$0] },
+                tools: n.tools
+            )
+        }
+
+        let agentEdges: [AgentEdge] = edges.map {
+            AgentEdge(sourceNodeId: $0.source, targetNodeId: $0.target, label: $0.label)
+        }
+        return TopologyGraph(nodes: nodes, edges: agentEdges)
+    }
+
+    /// 简单布局：首节点（根/main）置左，其余节点右侧纵向均布。
+    static func layoutPosition(index: Int, total: Int) -> CGPoint {
+        if index == 0 {
+            return CGPoint(x: 30, y: 140)
+        }
+        let children = max(total - 1, 1)
+        let childIdx = CGFloat(index - 1)
+        let step: CGFloat = 100
+        let startY = 140 - (CGFloat(children) - 1) * step / 2
+        return CGPoint(x: 210, y: startY + childIdx * step)
     }
 }
 
@@ -553,6 +860,12 @@ public struct PromptRefinementDraft: Identifiable, Codable, Sendable, Hashable {
 }
 
 // MARK: - Global App State
+
+public extension Notification.Name {
+    /// 租户 Agent 切片列表变更广播：对话式创建成功 / 删除后触发拓扑页静默刷新。
+    static let tenantAgentsDidUpdate = Notification.Name("tenantAgentsDidUpdate")
+}
+
 @MainActor
 public final class AppState: ObservableObject {
     @Published public var isLoggedIn: Bool = false
@@ -725,13 +1038,6 @@ public enum MockData {
         )
     }
     
-    /// 设置页底部「平台定时任务（演示）」三字段只读数据
-    public static let scheduledTasks: [ScheduledTask] = [
-        ScheduledTask(name: "竞品监控日报", schedule: "每日 08:00"),
-        ScheduledTask(name: "知识库周报编译", schedule: "每周日 22:00"),
-        ScheduledTask(name: "成本审计月报", schedule: "每月 1 日 10:00")
-    ]
-
     /// 设置页「我创建的智能体」演示态（纯静态字段，显式标注不可交互；后端列表 API 后续轮）
     public static let createdAgents: [CreatedAgent] = [
         CreatedAgent(name: "制造诊断 Sentinel", responsibility: "产线 IoT 遥测与 SMT 专家知识库因果推断", createdAt: "2026-08-12", version: "v1.3"),

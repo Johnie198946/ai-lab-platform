@@ -15,6 +15,8 @@ public enum LocalAgentTemplateEngine {
         public let name: String
         public let roleCategory: String
         public let summary: String
+        /// 继承的基线 profile（后端白名单：main_agent / supervision / coder / knowledge）
+        public let baseAgentId: String
     }
 
     public static func build(from purpose: String) -> AgentNode {
@@ -30,40 +32,45 @@ public enum LocalAgentTemplateEngine {
         )
     }
 
-    private static func match(_ purpose: String) -> Template {
+    public static func match(_ purpose: String) -> Template {
         let p = purpose
         if p.contains("制造") || p.contains("产线") || p.contains("SMT") || p.contains("质检") {
             return Template(
                 name: "制造诊断 Sentinel",
                 roleCategory: "根因诊断 · 制造",
-                summary: "结合产线 IoT 遥测与 SMT 专家知识库，对设备异常进行因果推断，输出告警定级与处置工单。"
+                summary: "结合产线 IoT 遥测与 SMT 专家知识库，对设备异常进行因果推断，输出告警定级与处置工单。",
+                baseAgentId: "main_agent"
             )
         }
         if p.contains("金融") || p.contains("对账") || p.contains("风控") || p.contains("清算") {
             return Template(
                 name: "金融对账 Agent",
                 roleCategory: "对账风控 · 金融",
-                summary: "面向高并发清结算系统的幂等性校验与三方对账差异核销，输出防重放协议与差异报告。"
+                summary: "面向高并发清结算系统的幂等性校验与三方对账差异核销，输出防重放协议与差异报告。",
+                baseAgentId: "coder"
             )
         }
         if p.contains("竞品") || p.contains("情报") || p.contains("监测") {
             return Template(
                 name: "竞品情报雷达",
                 roleCategory: "情报监测 · 竞品",
-                summary: "增量追踪竞品动态、定价与开源策略，生成结构化情报卡片并回写竞品情报知识库。"
+                summary: "增量追踪竞品动态、定价与开源策略，生成结构化情报卡片并回写竞品情报知识库。",
+                baseAgentId: "knowledge"
             )
         }
         if p.contains("审计") || p.contains("合规") || p.contains("内控") {
             return Template(
                 name: "审计合规哨兵",
                 roleCategory: "合规审计 · 内控",
-                summary: "全流程审计写操作与参数下发，校验 ABAC 权限与变更影响域，输出合规红线清单。"
+                summary: "全流程审计写操作与参数下发，校验 ABAC 权限与变更影响域，输出合规红线清单。",
+                baseAgentId: "supervision"
             )
         }
         return Template(
             name: "通用协同 Agent",
             roleCategory: "通用 · 任务分诊",
-            summary: "基于已订阅知识库进行任务分诊与多智能体编排，输出结构化执行方案。"
+            summary: "基于已订阅知识库进行任务分诊与多智能体编排，输出结构化执行方案。",
+            baseAgentId: "main_agent"
         )
     }
 }
@@ -72,10 +79,13 @@ public enum LocalAgentTemplateEngine {
 
 public struct AgentCreatorView: View {
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var store = LocalArtifactStore.shared
 
     @State private var purposeText: String = ""
     @State private var isCreating: Bool = false
     @State private var createdAgent: AgentNode? = nil
+    @State private var cloudWriteFailed: Bool = false
+    @State private var creationError: String? = nil
 
     private let presetPurposes = [
         "检查制造产线异常",
@@ -160,7 +170,7 @@ public struct AgentCreatorView: View {
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(AppTheme.Colors.textPrimary)
             Spacer()
-            Text("本地模板 · 0 LLM 成本")
+            Text("基线派生 · 云端切片")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(AppTheme.Colors.accent)
                 .padding(.horizontal, 6)
@@ -244,9 +254,9 @@ public struct AgentCreatorView: View {
             }
             .buttonStyle(SoftButtonStyle())
 
-            Text("演示语义 · 不持久化（刷新后重置）")
+            Text(cloudWriteFailed ? (creationError ?? "云端写入失败 · 已存本地演示") : "已写入云端 PostgreSQL")
                 .font(.system(size: 10))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+                .foregroundColor(cloudWriteFailed ? AppTheme.Colors.securityYellow : AppTheme.Colors.textTertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
     }
@@ -261,13 +271,57 @@ public struct AgentCreatorView: View {
         #endif
         isCreating = true
         createdAgent = nil
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
-            self.isCreating = false
-            self.createdAgent = LocalAgentTemplateEngine.build(from: purpose)
-            #if os(iOS)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            #endif
+        cloudWriteFailed = false
+        creationError = nil
+
+        let template = LocalAgentTemplateEngine.match(purpose)
+        let body = TenantAgentCreateDTO(
+            baseAgentId: template.baseAgentId,
+            customName: template.name,
+            privatePromptDelta: template.summary
+        )
+
+        Task { @MainActor in
+            do {
+                // 直写云端 PostgreSQL（201），base_agent_id 由后端白名单校验（非法 422）
+                let dto = try await APIClient.shared.createTenantAgent(body)
+                isCreating = false
+                let agent = AgentNode(
+                    id: dto.id,
+                    name: dto.customName ?? dto.baseAgentId,
+                    roleCategory: template.roleCategory,
+                    systemPromptSummary: dto.privatePromptDelta.isEmpty ? template.summary : dto.privatePromptDelta,
+                    status: .idle,
+                    position: CGPoint(x: 0, y: 0)
+                )
+                createdAgent = agent
+                // 双轨：本地 JSON 同步一份演示记录（原子写 + .bak 恢复）
+                store.addAgent(Self.record(from: agent))
+                #if os(iOS)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                #endif
+            } catch {
+                // 云端写入失败：本地回滚（模板引擎落本地演示），诚实提示
+                isCreating = false
+                let agent = LocalAgentTemplateEngine.build(from: purpose)
+                createdAgent = agent
+                store.addAgent(Self.record(from: agent))
+                cloudWriteFailed = true
+                creationError = "云端写入失败，已保存到本地演示"
+            }
         }
+    }
+
+    /// AgentNode → 本地持久化记录（CreatedAgent）。
+    private static func record(from agent: AgentNode) -> CreatedAgent {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return CreatedAgent(
+            name: agent.name,
+            responsibility: agent.systemPromptSummary,
+            createdAt: formatter.string(from: Date()),
+            version: "v1.0"
+        )
     }
 
     private func goToChat() {

@@ -78,25 +78,26 @@ public struct MessageBubbleView: View {
                 demoSampleBadge
             }
 
-            // Main Text Body
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                Text(parseFormattedMarkdown(message.content))
-                    .font(.system(size: 15))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                    .lineSpacing(4)
+            // Markdown 卡片流：解析 message.content 为 8 类块，逐块卡片化呈现（彻底消除原始横线/符号堆砌）
+            if !markdownBlocks.isEmpty || message.isStreaming {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                    ForEach(markdownBlocks) { block in
+                        MarkdownBlockCard(block: block)
+                    }
 
-                if message.isStreaming {
-                    streamingCursorView
+                    if message.isStreaming {
+                        streamingCursorView
+                    }
                 }
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .padding(.vertical, AppTheme.Spacing.md)
+                .background(AppTheme.Colors.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                        .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.18), lineWidth: 0.5)
+                )
             }
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.sm + 2)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                    .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.18), lineWidth: 0.5)
-            )
 
             // 富媒体块（单 ForEach 按 blocks 数组序）
             ForEach(message.blocks) { block in
@@ -106,6 +107,11 @@ public struct MessageBubbleView: View {
         .contextMenu {
             contextMenuActions
         }
+    }
+
+    /// 解析后的 Markdown 卡片块（NSCache 按 messageId + contentHash 缓存，避免长列表重复解析）。
+    private var markdownBlocks: [MarkdownBlock] {
+        MarkdownBlockParser.shared.parse(message.content, messageId: message.id)
     }
 
     // MARK: - 演示样例标注
@@ -204,11 +210,6 @@ public struct MessageBubbleView: View {
                 Label("重新生成", systemImage: "arrow.clockwise")
             }
         }
-    }
-
-    // MARK: - Markdown Helpers
-    private func parseFormattedMarkdown(_ text: String) -> LocalizedStringKey {
-        LocalizedStringKey(text)
     }
 }
 

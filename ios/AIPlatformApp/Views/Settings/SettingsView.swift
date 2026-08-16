@@ -10,6 +10,7 @@ import SwiftUI
 
 public struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var store = LocalArtifactStore.shared
 
     @State private var showingProfileEdit: Bool = false
 
@@ -44,9 +45,7 @@ public struct SettingsView: View {
                         }
                         .padding(.horizontal, AppTheme.Spacing.md)
 
-                        // 4. 平台定时任务（演示·三字段只读）
-                        scheduledTasksSection
-                            .padding(.horizontal, AppTheme.Spacing.md)
+                        // 4. 平台定时任务区块已移除（后续统一对接 Hermes cronjob 体系，需求6）
 
                         // 5. 平台与账号操作
                         accountActionsSection
@@ -130,14 +129,19 @@ public struct SettingsView: View {
     private func createdAgentsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             artifactHeader(icon: "sparkles", title: "我创建的智能体", accent: AppTheme.Colors.quantumViolet)
-            ForEach(MockData.createdAgents) { agent in
-                artifactRow(
-                    name: agent.name,
-                    responsibility: agent.responsibility,
-                    createdAt: agent.createdAt,
-                    version: agent.version,
-                    accent: AppTheme.Colors.quantumViolet
-                )
+            if store.agents.isEmpty {
+                emptyArtifactHint("尚未创建智能体，使用上方「创建智能体」入口")
+            } else {
+                ForEach(store.agents) { agent in
+                    artifactRow(
+                        name: agent.name,
+                        responsibility: agent.responsibility,
+                        createdAt: agent.createdAt,
+                        version: agent.version,
+                        accent: AppTheme.Colors.quantumViolet,
+                        onDelete: { store.removeAgent(id: agent.id) }
+                    )
+                }
             }
         }
         .padding(AppTheme.Spacing.md)
@@ -148,14 +152,19 @@ public struct SettingsView: View {
     private func createdSkillsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             artifactHeader(icon: "bolt.fill", title: "我制作的技能", accent: AppTheme.Colors.quantumCyan)
-            ForEach(MockData.createdSkills) { skill in
-                artifactRow(
-                    name: skill.name,
-                    responsibility: skill.responsibility,
-                    createdAt: skill.createdAt,
-                    version: skill.version,
-                    accent: AppTheme.Colors.quantumCyan
-                )
+            if store.skills.isEmpty {
+                emptyArtifactHint("尚未制作技能（技能创建入口后续轮次接入）")
+            } else {
+                ForEach(store.skills) { skill in
+                    artifactRow(
+                        name: skill.name,
+                        responsibility: skill.responsibility,
+                        createdAt: skill.createdAt,
+                        version: skill.version,
+                        accent: AppTheme.Colors.quantumCyan,
+                        onDelete: { store.removeSkill(id: skill.id) }
+                    )
+                }
             }
         }
         .padding(AppTheme.Spacing.md)
@@ -171,7 +180,7 @@ public struct SettingsView: View {
             Text(title)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundColor(AppTheme.Colors.textPrimary)
-            Text("演示数据·不可交互")
+            Text("本地演示")
                 .font(.system(size: 10, weight: .bold))
                 .foregroundColor(AppTheme.Colors.textTertiary)
                 .padding(.horizontal, 6)
@@ -182,8 +191,16 @@ public struct SettingsView: View {
         }
     }
 
-    /// 纯静态字段卡：名称 / 职责 / 创建时间 / 版本（去 live 语义，无运行状态/调试入口）
-    private func artifactRow(name: String, responsibility: String, createdAt: String, version: String, accent: Color) -> some View {
+    private func emptyArtifactHint(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12))
+            .foregroundColor(AppTheme.Colors.textTertiary)
+            .padding(.vertical, AppTheme.Spacing.sm)
+            .frame(maxWidth: .infinity)
+    }
+
+    /// 本地持久化记录卡：名称 / 职责 / 创建时间 / 版本 + 删除（去 live 语义）。
+    private func artifactRow(name: String, responsibility: String, createdAt: String, version: String, accent: Color, onDelete: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle()
@@ -197,75 +214,22 @@ public struct SettingsView: View {
                 Text(version)
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(accent)
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                }
+                .buttonStyle(SoftButtonStyle())
             }
             Text(responsibility)
                 .font(.system(size: 12))
                 .foregroundColor(AppTheme.Colors.textSecondary)
                 .lineSpacing(1)
-            Text("创建于 \(createdAt)")
+            Text("创建于 \(createdAt) · 本地演示")
                 .font(.system(size: 11))
                 .foregroundColor(AppTheme.Colors.textTertiary)
         }
         .padding(AppTheme.Spacing.sm)
-        .background(AppTheme.Colors.secondaryBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-    }
-
-    // MARK: - 4. 平台定时任务（演示·三字段只读）
-
-    private var scheduledTasksSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            HStack(spacing: 6) {
-                Image(systemName: "clock.arrow.circlepath")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.primary)
-                Text("平台定时任务")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                Text("演示")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(AppTheme.Colors.primary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(AppTheme.Colors.primary.opacity(0.08))
-                    .clipShape(Capsule())
-                Spacer()
-            }
-
-            ForEach(MockData.scheduledTasks) { task in
-                scheduledTaskRow(task)
-            }
-        }
-        .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-    }
-
-    private func scheduledTaskRow(_ task: ScheduledTask) -> some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "calendar.badge.clock")
-                .font(.system(size: 15))
-                .foregroundColor(AppTheme.Colors.textSecondary)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(task.name)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                Text(task.schedule)
-                    .font(.system(size: 11))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
-            }
-
-            Spacer()
-
-            // 三字段只读展示：开关禁用
-            Toggle("", isOn: .constant(task.enabled))
-                .labelsHidden()
-                .disabled(true)
-                .scaleEffect(0.8)
-        }
-        .padding(.vertical, AppTheme.Spacing.xs)
-        .padding(.horizontal, AppTheme.Spacing.sm)
         .background(AppTheme.Colors.secondaryBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
     }

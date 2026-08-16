@@ -15,36 +15,27 @@ public struct ChatView: View {
 
     @State private var messages: [ChatMessage] = []
     @State private var inputText: String = ""
-    @State private var selectedAgentId: String = "main_agent"
+    @State private var quickCommands: [String] = []
     @State private var quotedContext: QuotedContext? = nil
     @State private var isShowingClearAlert: Bool = false
     @State private var isGenerating: Bool = false
     @State private var showingVoiceInput: Bool = false
     @State private var showingPlusMenu: Bool = false
+    @State private var showingSessionDrawer: Bool = false
     @StateObject private var speechService = SpeechRecognizerService()
+    @ObservedObject private var sessionManager = SessionManager.shared
 
     // MARK: - 状态机字段（真实后端对接）
     @State private var inflight: InFlightRequest? = nil       // 当前 in-flight（思考/超时/错误占位）
     @State private var pendingQueue: [PendingItem] = []       // 排队消息（上限 3）
     @State private var waitingSeconds: Int = 0                // 「已等待 N 秒」本地计时
     @State private var currentChatTask: Task<Void, Never>? = nil
+    /// 思维链逐步揭示动画任务表（按消息 ID 隔离，defer 自清理，切换会话安全取消）
+    @State private var animationTasks: [String: Task<Void, Never>] = [:]
     @State private var toastMessage: String? = nil
     @State private var demoMode: Bool = false                 // 网络错误后「切换演示模式」
 
     private let waitingTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
-
-    private let availableAgents = [
-        ("main_agent", "Main 智能编排", "sparkles"),
-        ("supervision", "Supervision 架构审查", "shield.checkerboard"),
-        ("coder", "Coder 独立开发", "chevron.left.forwardslash.chevron.right")
-    ]
-
-    private let suggestionChips = [
-        "🔍 诊断 SMT 贴片机气压告警",
-        "📐 调整 DAG 拓扑串联质检",
-        "🔒 申请受限知识库订阅",
-        "✨ 提炼结构化 Prompt"
-    ]
 
     public init() {}
 
@@ -55,8 +46,8 @@ public struct ChatView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // MARK: - 1. Top Agent Selector & Status
-                    topAgentSelectorBar
+                    // MARK: - 1. Session Top Bar（Quantum 球体 + 会话标题 + 新建/历史）
+                    sessionTopBar
 
                     Divider()
                         .background(AppTheme.Colors.border)
@@ -76,13 +67,9 @@ public struct ChatView: View {
                     bottomInputBar
                 }
             }
-            .navigationTitle("协同对话")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    agentHeaderBadge
-                }
-
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: { isShowingClearAlert = true }) {
                         Image(systemName: "trash")
@@ -99,11 +86,16 @@ public struct ChatView: View {
             }
             .overlay(alignment: .bottom) { toastOverlay }
             .animation(.easeInOut(duration: 0.2), value: toastMessage)
-            .onAppear { handlePendingPrompt() }
+            .onAppear {
+                restoreActiveSession()
+                refreshQuickCommands()
+                handlePendingPrompt()
+            }
             .onChange(of: appState.pendingChatPrompt) { _, _ in handlePendingPrompt() }
             .onReceive(waitingTimer) { _ in tickWaitingTimer() }
             .sheet(isPresented: $showingVoiceInput) { voiceSheet }
             .sheet(isPresented: $showingPlusMenu) { plusSheet }
+            .sheet(isPresented: $showingSessionDrawer) { sessionDrawerSheet }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
                     InboxFileManager.shared.cleanupStaleInboxFiles()
@@ -117,20 +109,8 @@ public struct ChatView: View {
             ScrollView {
                 LazyVStack(spacing: AppTheme.Spacing.md) {
                     ForEach(messages) { message in
-                        MessageBubbleView(
-                            message: message,
-                            onQuoteFollowUp: { quote in
-                                withAnimation(.spring()) { self.quotedContext = quote }
-                            },
-                            onRegenerate: { messageId in regenerate(messageId: messageId) }
-                        )
-                        .id(message.id)
-                    }
-
-                    // 当前 in-flight 占位（思考 / 超时 / 错误）
-                    if let current = inflight {
-                        inflightPlaceholder(current)
-                            .id("inflight_\(current.id)")
+                        messageRow(message)
+                            .id(message.id)
                     }
 
                     // 排队占位（实时序号）
@@ -147,6 +127,30 @@ public struct ChatView: View {
             .onChange(of: messages.count) { _, _ in scrollToLatest(proxy) }
             .onChange(of: pendingQueue.count) { _, _ in scrollToLatest(proxy) }
             .onChange(of: inflight?.id) { _, _ in scrollToLatest(proxy) }
+        }
+    }
+
+    /// 单条消息分发渲染：.interrupted / degraded / pending 占位 / 常规气泡四态。
+    @ViewBuilder
+    private func messageRow(_ message: ChatMessage) -> some View {
+        if message.role == .interrupted {
+            InterruptedCardView(onRetry: { retryMessage(message.id) })
+        } else if message.degraded {
+            DegradedCardView(onRetry: { retryMessage(message.id) })
+        } else if message.pending && message.role == .assistant {
+            if let req = inflight, req.id == message.id {
+                inflightPlaceholder(req)
+            } else {
+                OrphanPendingCardView(onRetry: { retryMessage(message.id) })
+            }
+        } else {
+            MessageBubbleView(
+                message: message,
+                onQuoteFollowUp: { quote in
+                    withAnimation(.spring()) { self.quotedContext = quote }
+                },
+                onRegenerate: { messageId in regenerate(messageId: messageId) }
+            )
         }
     }
 
@@ -183,92 +187,241 @@ public struct ChatView: View {
     }
 
     private func clearMessages() {
+        cancelAllReveals()
         messages.removeAll()
+        commitSession()
     }
 
     // MARK: - Subviews
 
-    private var agentHeaderBadge: some View {
-        HStack(spacing: 6) {
-            QuantumAvatarView(size: 18)
-            Text(currentAgentTitle)
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(AppTheme.Colors.textPrimary)
-            Circle()
-                .fill(AppTheme.Colors.quantumCyan)
-                .frame(width: 6, height: 6)
-        }
-    }
+    // MARK: - Session 顶栏（Quantum 球体 + 会话标题 + 新建/历史）
 
-    private var currentAgentTitle: String {
-        availableAgents.first(where: { $0.0 == selectedAgentId })?.1 ?? "AI Agent"
-    }
+    private var sessionTopBar: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            // 左侧 Quantum 球体 + 状态点
+            ZStack(alignment: .bottomTrailing) {
+                QuantumAvatarView(size: 30)
+                Circle()
+                    .fill(statusDotColor)
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().stroke(AppTheme.Colors.cardBackground, lineWidth: 1.5))
+            }
 
-    private var topAgentSelectorBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: AppTheme.Spacing.sm) {
-                ForEach(availableAgents, id: \.0) { agent in
-                    let isSelected = selectedAgentId == agent.0
-                    Button(action: {
-                        #if os(iOS)
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        #endif
-                        selectedAgentId = agent.0
-                    }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: agent.2)
-                                .font(.system(size: 12))
-                            Text(agent.1)
-                                .font(.system(size: 12, weight: isSelected ? .bold : .medium))
-                        }
-                        .padding(.horizontal, AppTheme.Spacing.md)
-                        .padding(.vertical, 6)
-                        .foregroundColor(isSelected ? AppTheme.Colors.onPrimary : AppTheme.Colors.textSecondary)
-                        .background(
-                            isSelected ?
-                            AnyShapeStyle(AppTheme.Colors.quantumGradient) :
-                            AnyShapeStyle(AppTheme.Colors.cardBackground)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                                .stroke(isSelected ? Color.clear : AppTheme.Colors.border, lineWidth: 1)
-                        )
-                    }
-                    .buttonStyle(SoftButtonStyle())
+            // 中间：当前会话标题 + chevron.down（触发会话抽屉）
+            Button(action: { showingSessionDrawer = true }) {
+                HStack(spacing: 4) {
+                    Text(currentSessionTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
                 }
             }
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.sm)
+            .buttonStyle(SoftButtonStyle())
+
+            Spacer()
+
+            // 右侧：新建会话 + 历史会话
+            Button(action: newSession) {
+                Image(systemName: "square.and.pencil")
+                    .font(.system(size: 15))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+            }
+            .buttonStyle(SoftButtonStyle())
+
+            Button(action: { showingSessionDrawer = true }) {
+                Image(systemName: "clock.arrow.circlepath")
+                    .font(.system(size: 15))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+            }
+            .buttonStyle(SoftButtonStyle())
         }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.sm)
         .background(AppTheme.Colors.cardBackground)
     }
 
+    private var statusDotColor: Color {
+        isGenerating ? AppTheme.Colors.statusRunning : AppTheme.Colors.quantumCyan
+    }
+
+    private var currentSessionTitle: String {
+        sessionManager.title(for: sessionManager.activeSessionID())
+    }
+
+    /// 会话抽屉：多会话切换（updatedAt 倒序）+ 新建 + 删除（本地级联清理）。
+    private var sessionDrawerSheet: some View {
+        SessionDrawerSheet(
+            sessionManager: sessionManager,
+            onSelect: { id in switchSession(to: id) },
+            onNew: { newSession() },
+            onDelete: { id in deleteSessionAndMaybeSwitch(id) }
+        )
+    }
+
+    /// 按所选 Agent 动态生成的默认预设 Chip（冷启动兜底，点击填入输入框）。
+    private var defaultChips: [String] {
+        switch appState.selectedAgentId {
+        case "supervision":
+            return ["🔍 审查这份架构方案的风险点", "📋 出具执行硬锁批复", "🧪 核对后端契约测试"]
+        case "coder":
+            return ["💻 实现一个 FastAPI 路由", "🔧 修复网络超时与降级", "✅ 跑通后端 pytest"]
+        case "knowledge":
+            return ["📚 检索最新竞品动态", "🧠 知识入库并打三标签", "🔒 订阅受限知识分类"]
+        default:
+            return ["📝 撰写一份问题报告", "🤝 分诊任务并派发执行", "📊 生成周度总结"]
+        }
+    }
+
+    // MARK: - 会话动作（持久化 / 切换 / 屏障 / 重试）
+
+    private func restoreActiveSession() {
+        let sid = sessionManager.activeSessionID()
+        messages = sessionManager.messages(for: sid)
+    }
+
+    /// 将当前视图 messages 写回 SessionManager（消息级原子落盘）。
+    private func commitSession() {
+        let sid = sessionManager.activeSessionID()
+        sessionManager.setMessages(messages, for: sid)
+    }
+
+    /// 新建会话：新 UUID + cancel 在途 + 清 pendingQueue + 重置状态。
+    private func newSession() {
+        commitSession()
+        abandonInFlight()
+        sessionManager.createSession()
+        messages = []
+        pendingQueue.removeAll()
+        isGenerating = false
+        inflight = nil
+        currentChatTask = nil
+        waitingSeconds = 0
+        inputText = ""
+        quotedContext = nil
+        showingSessionDrawer = false
+    }
+
+    private func switchSession(to id: String) {
+        guard id != sessionManager.activeSessionId else {
+            showingSessionDrawer = false
+            return
+        }
+        commitSession()
+        // 会话屏障：切换时 cancel 在途，被拦截的响应在原会话落盘 .interrupted
+        abandonInFlight()
+        sessionManager.switchTo(id)
+        messages = sessionManager.messages(for: id)
+        pendingQueue.removeAll()
+        isGenerating = false
+        inflight = nil
+        currentChatTask = nil
+        waitingSeconds = 0
+        inputText = ""
+        quotedContext = nil
+        showingSessionDrawer = false
+    }
+
+    /// 删除会话：本地级联清理；若删除的是 active，切到剩余最新会话。
+    private func deleteSessionAndMaybeSwitch(_ id: String) {
+        sessionManager.deleteSession(id)
+        if sessionManager.activeSessionId != nil {
+            messages = sessionManager.messages(for: sessionManager.activeSessionID())
+        }
+        // 若被删的是当前活跃会话且已有新 active，重置视图状态
+        if !isGenerating || inflight == nil {
+            pendingQueue.removeAll()
+            inputText = ""
+            quotedContext = nil
+        }
+    }
+
+    /// 取消在途请求并在其原会话（req.sessionId）落盘 .interrupted 标记（不静默丢弃）。
+    private func abandonInFlight() {
+        // 无论 inflight 是否已清空（响应已到、思维链揭示中），都先取消在途揭示动画
+        cancelAllReveals()
+        guard let req = inflight else { return }
+        currentChatTask?.cancel()
+        sessionManager.markInterrupted(sessionId: req.sessionId)
+        inflight = nil
+        isGenerating = false
+        currentChatTask = nil
+        waitingSeconds = 0
+    }
+
+    /// 重试：重发 preceding user 提问，成功原地替换（不追加）degraded/interrupted 卡。
+    private func retryMessage(_ messageId: String) {
+        guard !isGenerating else { return }
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        guard let userIdx = messages[..<idx].lastIndex(where: { $0.role == .user }) else { return }
+        let prompt = messages[userIdx].content
+        let quote = messages[userIdx].quotedContext
+        // 移除降级/中断卡，重发（startGeneration 会追加新 pending 占位，成功替换不重复）
+        messages.remove(at: idx)
+        commitSession()
+        startGeneration(text: prompt, quote: quote)
+    }
+
+    // MARK: - 快捷指令（本地滑动窗口 Top3 + 冷启动兜底，需求1）
+
+    private func computeQuickCommands() -> [String] {
+        let defaults = defaultChips
+        let ranked = QuickCommandTracker.shared.rankedCommands()
+        var result: [String] = []
+        for (cmd, _) in ranked where !result.contains(cmd) && result.count < 3 {
+            result.append(cmd)
+        }
+        for d in defaults where !result.contains(d) && result.count < 3 {
+            result.append(d)
+        }
+        return result
+    }
+
+    private func refreshQuickCommands() {
+        quickCommands = computeQuickCommands()
+    }
+
     private var suggestionChipsBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: AppTheme.Spacing.xs) {
-                ForEach(suggestionChips, id: \.self) { chip in
-                    Button(action: {
-                        inputText = chip
-                        sendMessage()
-                    }) {
-                        Text(chip)
-                            .font(.system(size: 12))
-                            .foregroundColor(AppTheme.Colors.textSecondary)
-                            .padding(.horizontal, AppTheme.Spacing.sm + 2)
-                            .padding(.vertical, 4)
-                            .background(AppTheme.Colors.cardBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: AppTheme.Radius.sm)
-                                    .stroke(AppTheme.Colors.border, lineWidth: 0.5)
-                            )
+        VStack(spacing: 2) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: AppTheme.Spacing.xs) {
+                    ForEach(quickCommands, id: \.self) { chip in
+                        Button(action: {
+                            // 本地记录使用频次（滑动窗口），再填充并发送（需求1）
+                            QuickCommandTracker.shared.record(chip)
+                            refreshQuickCommands()
+                            inputText = chip
+                            sendMessage()
+                        }) {
+                            Text(chip)
+                                .font(.system(size: 12))
+                                .foregroundColor(AppTheme.Colors.textSecondary)
+                                .padding(.horizontal, AppTheme.Spacing.sm + 2)
+                                .padding(.vertical, 4)
+                                .background(AppTheme.Colors.cardBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: AppTheme.Radius.sm)
+                                        .stroke(AppTheme.Colors.border, lineWidth: 0.5)
+                                )
+                        }
+                        .buttonStyle(SoftButtonStyle())
                     }
-                    .buttonStyle(SoftButtonStyle())
                 }
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .padding(.vertical, AppTheme.Spacing.xs)
             }
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.xs)
+            // 隐私标注：快捷指令仅本地计算（需求1）
+            HStack(spacing: 4) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9))
+                Text("仅本地计算 · 保护隐私")
+                    .font(.system(size: 10))
+            }
+            .foregroundColor(AppTheme.Colors.textTertiary)
+            .padding(.bottom, 2)
         }
     }
 
@@ -432,7 +585,7 @@ public struct ChatView: View {
         if let last = pendingQueue.last {
             anchor = "pending_\(last.id)"
         } else if let inf = inflight {
-            anchor = "inflight_\(inf.id)"
+            anchor = inf.id
         } else {
             anchor = messages.last?.id
         }
@@ -468,9 +621,10 @@ public struct ChatView: View {
             return
         }
 
-        messages.append(ChatMessage(role: .user, content: text, quotedContext: quote))
+        messages.append(ChatMessage(sessionId: sessionManager.activeSessionID(), role: .user, content: text, quotedContext: quote))
         inputText = ""
         quotedContext = nil
+        commitSession()
         dispatchAssistantReply(to: text, quote: quote)
     }
 
@@ -486,8 +640,14 @@ public struct ChatView: View {
     private func startGeneration(text: String, quote: QuotedContext?) {
         isGenerating = true
         waitingSeconds = 0
-        let req = InFlightRequest(id: UUID().uuidString, text: text, quote: quote)
+        let sessionId = sessionManager.activeSessionID()
+        let req = InFlightRequest(id: UUID().uuidString, sessionId: sessionId, text: text, quote: quote)
         inflight = req
+        // pending 占位消息（响应前 true；成功/降级/中断后 false）
+        messages.append(
+            ChatMessage(id: req.id, sessionId: sessionId, role: .assistant, content: "", isStreaming: true, pending: true)
+        )
+        commitSession()
         currentChatTask = Task {
             await runInFlight(req)
         }
@@ -502,7 +662,8 @@ public struct ChatView: View {
             let resp = try await APIClient.shared.chat(
                 question: req.text,
                 sessionId: appState.chatSessionId,
-                quotedContext: req.quote?.text
+                quotedContext: req.quote?.text,
+                agentId: appState.selectedAgentId
             )
             if let sid = resp.sessionId, !sid.isEmpty {
                 appState.chatSessionId = sid
@@ -516,25 +677,82 @@ public struct ChatView: View {
     private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO) async {
         guard inflight?.id == req.id else { return }
 
-        // 先挂载真实 reasoning（折叠 ReasoningCard，空 reasoning 自动隐藏）
-        let steps = (response.reasoning ?? []).map { $0.toReasoningStep() }
-        var blocks: [MessageBlock] = []
-        if !steps.isEmpty {
-            blocks.append(.reasoning(steps))
+        // 会话屏障：响应回来时已切换到别的会话 → 丢弃响应，原会话插 .interrupted
+        guard req.sessionId == sessionManager.activeSessionID() else {
+            sessionManager.markInterrupted(sessionId: req.sessionId)
+            finishGeneration()
+            return
         }
 
-        let messageId = UUID().uuidString
-        messages.append(
-            ChatMessage(id: messageId, role: .assistant, content: "", isStreaming: true, blocks: blocks)
-        )
+        // 502 降级：跳过 ReasoningCard，pending 占位原地替换为降级卡（不入正常历史）
+        if response.degraded == true {
+            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                messages[idx].content = response.answer.isEmpty ? "服务暂时不可用，请稍后重试" : response.answer
+                messages[idx].degraded = true
+                messages[idx].pending = false
+                messages[idx].isStreaming = false
+                messages[idx].blocks = []
+            }
+            inflight = nil
+            commitSession()
+            finishGeneration()
+            return
+        }
+
+        // 对话式创建 Agent 成功信号 → 广播通知，触发拓扑页租户切片列表静默刷新
+        if response.answer.contains("已为您创建专属 Agent 切片") {
+            NotificationCenter.default.post(name: .tenantAgentsDidUpdate, object: nil)
+        }
+
+        // 正常：先挂载真实 reasoning（折叠 ReasoningCard，空 reasoning 自动隐藏）
+        let steps = (response.reasoning ?? []).map { $0.toReasoningStep() }
+        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            // 先挂空 reasoning（逐步揭示任务逐条填充），无步骤时 ReasoningCard 自动隐藏
+            messages[idx].blocks = steps.isEmpty ? [] : [.reasoning([])]
+        }
 
         // 移除思考占位
         inflight = nil
 
-        // 再打字机渲染 answer
-        await typewriter(messageId: messageId, answer: response.answer)
+        // 思维链逐步揭示（每步约 300ms），揭示完毕后再打字机渲染正文
+        if !steps.isEmpty {
+            await revealReasoning(messageId: req.id, steps: steps)
+        }
 
+        // 再打字机渲染 answer（原地填充 pending 占位）
+        await typewriter(messageId: req.id, answer: response.answer)
+
+        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            messages[idx].pending = false
+        }
+        commitSession()
         finishGeneration()
+    }
+
+    /// 思维链逐步揭示动画：四类步骤按序以 300ms 间隔展开。
+    /// 任务注册进 `animationTasks`（按消息 ID 隔离），Task 执行体内 `defer` 自清理，
+    /// 会话切换 / 清空 / 取消在途时由 `cancelAllReveals()` 统一 cancel。
+    private func revealReasoning(messageId: String, steps: [ReasoningStep]) async {
+        animationTasks[messageId]?.cancel()
+        let task = Task { @MainActor in
+            defer { animationTasks.removeValue(forKey: messageId) }
+            for k in 1...steps.count {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if Task.isCancelled { return }
+                guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    messages[idx].blocks = [.reasoning(Array(steps[0..<k]))]
+                }
+            }
+        }
+        animationTasks[messageId] = task
+        await task.value
+    }
+
+    /// 统一取消所有在途思维链揭示动画（会话切换 / 新建 / 清空 / 取消在途）。
+    private func cancelAllReveals() {
+        for task in animationTasks.values { task.cancel() }
+        animationTasks.removeAll()
     }
 
     private func handleError(req: InFlightRequest, error: Error) async {
@@ -587,7 +805,8 @@ public struct ChatView: View {
             let resp = try await APIClient.shared.chat(
                 question: updated.text,
                 sessionId: nil,
-                quotedContext: updated.quote?.text
+                quotedContext: updated.quote?.text,
+                agentId: appState.selectedAgentId
             )
             if let sid = resp.sessionId, !sid.isEmpty {
                 appState.chatSessionId = sid
@@ -605,8 +824,16 @@ public struct ChatView: View {
 
     private func markCancelled(req: InFlightRequest) {
         guard inflight?.id == req.id else { return }
-        // 占位改「已取消」
-        messages.append(ChatMessage(role: .assistant, content: "已取消", isStreaming: false))
+        // 占位改「已取消」（用户主动取消；会话切换的取消已由 markInterrupted 处理）
+        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            messages[idx].content = "已取消"
+            messages[idx].pending = false
+            messages[idx].isStreaming = false
+            messages[idx].degraded = false
+        } else {
+            messages.append(ChatMessage(role: .assistant, content: "已取消", isStreaming: false))
+        }
+        commitSession()
         finishGeneration()
     }
 
@@ -655,11 +882,12 @@ public struct ChatView: View {
     }
 
     private func appendDemoReply(req: InFlightRequest) async {
-        let messageId = UUID().uuidString
-        messages.append(
-            ChatMessage(id: messageId, role: .assistant, content: "", isStreaming: true, isDemoSample: true)
-        )
-        await typewriter(messageId: messageId, answer: demoReply(for: req.text))
+        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            messages[idx].isDemoSample = true
+            await typewriter(messageId: req.id, answer: demoReply(for: req.text))
+            messages[idx].pending = false
+        }
+        commitSession()
         finishGeneration()
     }
 
@@ -776,6 +1004,7 @@ private struct PendingItem: Identifiable {
 
 private struct InFlightRequest {
     let id: String
+    let sessionId: String    // 会话屏障：响应回来时校验是否仍为 active 会话
     let text: String
     let quote: QuotedContext?
     var didRetry404: Bool = false
@@ -790,46 +1019,6 @@ private enum InFlightPhase: Equatable {
 }
 
 // MARK: - 占位视图
-
-private struct ThinkingPlaceholderView: View {
-    let seconds: Int
-    let onCancel: () -> Void
-
-    var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-            QuantumAvatarView(size: 32).padding(.top, 2)
-            HStack(spacing: AppTheme.Spacing.xs) {
-                Circle().fill(AppTheme.Colors.primary).frame(width: 6, height: 6)
-                Circle().fill(AppTheme.Colors.primary.opacity(0.6)).frame(width: 6, height: 6)
-                Circle().fill(AppTheme.Colors.primary.opacity(0.3)).frame(width: 6, height: 6)
-                Text("思考中 · 已等待 \(seconds) 秒")
-                    .font(.system(size: 12))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                Spacer()
-                Button(action: onCancel) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle.fill")
-                        Text("取消")
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
-                }
-                .buttonStyle(SoftButtonStyle())
-            }
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.sm + 2)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                    .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.18), lineWidth: 0.5)
-            )
-            Spacer(minLength: 44)
-        }
-        .padding(.horizontal, AppTheme.Spacing.md)
-        .padding(.vertical, AppTheme.Spacing.xs)
-    }
-}
 
 private struct PendingPlaceholderView: View {
     let position: Int
@@ -920,6 +1109,251 @@ private struct StatusCardView: View {
                 .padding(.vertical, 6)
                 .background(AppTheme.Colors.primary.opacity(0.08))
                 .clipShape(Capsule())
+        }
+        .buttonStyle(SoftButtonStyle())
+    }
+}
+
+// MARK: - 会话抽屉（多会话切换 + 新建 + 删除）
+
+private struct SessionDrawerSheet: View {
+    @ObservedObject var sessionManager: SessionManager
+    let onSelect: (String) -> Void
+    let onNew: () -> Void
+    let onDelete: (String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Button(action: onNew) {
+                        Label("新建会话", systemImage: "square.and.pencil")
+                    }
+                }
+
+                Section("历史会话") {
+                    ForEach(sessionManager.sortedSessionIDs(), id: \.self) { id in
+                        Button {
+                            onSelect(id)
+                        } label: {
+                            SessionRow(
+                                title: sessionManager.title(for: id),
+                                messageCount: sessionManager.messages(for: id).count,
+                                updatedAt: sessionManager.sessionUpdatedAt[id] ?? .distantPast,
+                                isActive: sessionManager.activeSessionId == id
+                            )
+                        }
+                        .buttonStyle(SoftButtonStyle())
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                onDelete(id)
+                            } label: {
+                                Label("删除", systemImage: "trash")
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("会话")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+}
+
+private struct SessionRow: View {
+    let title: String
+    let messageCount: Int
+    let updatedAt: Date
+    let isActive: Bool
+
+    var body: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title.isEmpty ? "新会话" : title)
+                    .font(.system(size: 14, weight: isActive ? .bold : .medium))
+                    .foregroundColor(isActive ? AppTheme.Colors.primary : AppTheme.Colors.textPrimary)
+                    .lineLimit(1)
+                Text("\(messageCount) 条消息 · \(relativeTime(updatedAt))")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppTheme.Colors.textTertiary)
+            }
+            Spacer()
+            if isActive {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundColor(AppTheme.Colors.primary)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func relativeTime(_ date: Date) -> String {
+        let s = Int(Date().timeIntervalSince(date))
+        if s < 60 { return "刚刚" }
+        if s < 3600 { return "\(s / 60) 分钟前" }
+        if s < 86400 { return "\(s / 3600) 小时前" }
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        return f.string(from: date)
+    }
+}
+
+// MARK: - 降级卡 / 中断卡 / 未完成孤儿卡
+
+/// 502 降级卡（跳过 ReasoningCard，不入正常历史，重试成功原地替换）。
+private struct DegradedCardView: View {
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack(spacing: 6) {
+                    Image(systemName: "wifi.exclamationmark")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.securityYellow)
+                    Text("服务暂时不可用")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                }
+                Text("服务暂时不可用，请稍后重试")
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                retryChip
+            }
+            .padding(AppTheme.Spacing.md)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.securityYellow.opacity(0.25), lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+    }
+
+    private var retryChip: some View {
+        Button(action: onRetry) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.clockwise")
+                Text("重试")
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(AppTheme.Colors.primary)
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, 6)
+            .background(AppTheme.Colors.primary.opacity(0.08))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(SoftButtonStyle())
+    }
+}
+
+/// 会话切换中断卡（在原会话落盘，携带重试入口，不污染 API 上下文）。
+private struct InterruptedCardView: View {
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.securityYellow)
+                    Text("响应已中断")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                }
+                Text(SessionManager.interruptedText)
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                retryChip
+            }
+            .padding(AppTheme.Spacing.md)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.securityYellow.opacity(0.25), lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+    }
+
+    private var retryChip: some View {
+        Button(action: onRetry) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.clockwise")
+                Text("重试")
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(AppTheme.Colors.primary)
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, 6)
+            .background(AppTheme.Colors.primary.opacity(0.08))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(SoftButtonStyle())
+    }
+}
+
+/// 冷启动孤儿 pending 卡（上次中断未完成的会话恢复，提供继续/重试入口）。
+private struct OrphanPendingCardView: View {
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.badge.exclamationmark")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                    Text("未完成")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                }
+                Text("该回复在上次中断前未完成，可继续重试。")
+                    .font(.system(size: 12))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                retryChip
+            }
+            .padding(AppTheme.Spacing.md)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.border, lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+    }
+
+    private var retryChip: some View {
+        Button(action: onRetry) {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.clockwise")
+                Text("继续 / 重试")
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(AppTheme.Colors.primary)
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, 6)
+            .background(AppTheme.Colors.primary.opacity(0.08))
+            .clipShape(Capsule())
         }
         .buttonStyle(SoftButtonStyle())
     }

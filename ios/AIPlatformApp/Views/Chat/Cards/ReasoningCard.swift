@@ -11,7 +11,8 @@ import SwiftUI
 
 public struct ReasoningCard: View {
     public let steps: [ReasoningStep]
-    @State private var isExpanded: Bool = false
+    /// 默认展开（配合 ChatView 思维链逐步揭示动画，步骤按 300ms 逐条展开；用户仍可折叠）。
+    @State private var isExpanded: Bool = true
 
     public init(steps: [ReasoningStep]) {
         self.steps = steps

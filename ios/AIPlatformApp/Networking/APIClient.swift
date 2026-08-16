@@ -113,12 +113,15 @@ public struct ChatResponseDTO: Codable {
     public let answer: String
     public let sessionId: String?
     public let reasoning: [ChatReasoningStepDTO]?
+    /// 502 降级标记：true 时前端跳过 ReasoningCard、不入正常历史、渲染降级卡
+    public let degraded: Bool?
 
-    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO]) {
+    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil) {
         self.question = question
         self.answer = answer
         self.sessionId = sessionId
         self.reasoning = reasoning
+        self.degraded = degraded
     }
 }
 
@@ -170,6 +173,54 @@ public struct TopologyEdgeDTO: Codable, Hashable {
 public struct TopologyGraphDTO: Codable {
     public let nodes: [TopologyNodeDTO]
     public let edges: [TopologyEdgeDTO]
+}
+
+/// GET /api/v1/tenant-agents 单条租户 Agent 切片（对齐后端 TenantAgentOut）
+public struct TenantAgentDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let tenantId: String
+    public let baseAgentId: String
+    public let customName: String?
+    public let privatePromptDelta: String
+    public let subscribedKnowledgePacks: [String]
+    public let customAvatar: String?
+    public let isActive: Bool
+    public let createdAt: String?
+}
+
+/// POST /api/v1/tenant-agents 请求体（tenant_id 由后端派生，客户端不可指定）
+public struct TenantAgentCreateDTO: Encodable {
+    public let baseAgentId: String
+    public let customName: String?
+    public let privatePromptDelta: String?
+    public let subscribedKnowledgePacks: [String]?
+    public let customAvatar: String?
+    public let isActive: Bool?
+
+    public init(
+        baseAgentId: String,
+        customName: String? = nil,
+        privatePromptDelta: String? = nil,
+        subscribedKnowledgePacks: [String]? = nil,
+        customAvatar: String? = nil,
+        isActive: Bool? = nil
+    ) {
+        self.baseAgentId = baseAgentId
+        self.customName = customName
+        self.privatePromptDelta = privatePromptDelta
+        self.subscribedKnowledgePacks = subscribedKnowledgePacks
+        self.customAvatar = customAvatar
+        self.isActive = isActive
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case baseAgentId = "base_agent_id"
+        case customName = "custom_name"
+        case privatePromptDelta = "private_prompt_delta"
+        case subscribedKnowledgePacks = "subscribed_knowledge_packs"
+        case customAvatar = "custom_avatar"
+        case isActive = "is_active"
+    }
 }
 
 // MARK: - API 错误
@@ -469,6 +520,32 @@ public final class APIClient: ObservableObject {
     /// GET /api/v1/topology：基线 Agent 注册表（对话页选择栏 + 拓扑页 DAG 同源消费）
     public func fetchTopology() async throws -> TopologyGraphDTO {
         try await request(TopologyGraphDTO.self, path: "topology")
+    }
+
+    // MARK: - 租户 Agent 切片（与后端 /api/v1/tenant-agents 同源，需求3/4）
+
+    /// GET /api/v1/tenant-agents：当前租户的 Agent 切片列表（多租户隔离由后端保证）
+    public func fetchTenantAgents() async throws -> [TenantAgentDTO] {
+        try await request([TenantAgentDTO].self, path: "tenant-agents")
+    }
+
+    /// POST /api/v1/tenant-agents：创建租户私有 Agent 切片（base_agent_id 限基线 4 个）
+    public func createTenantAgent(_ body: TenantAgentCreateDTO) async throws -> TenantAgentDTO {
+        try await request(TenantAgentDTO.self, path: "tenant-agents", method: "POST", body: body)
+    }
+
+    /// DELETE /api/v1/tenant-agents/{id}：删除租户切片（204 无响应体）
+    public func deleteTenantAgent(id: String) async throws {
+        let url = baseURL
+            .appendingPathComponent("api/v1/tenant-agents")
+            .appendingPathComponent(id)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        _ = try await perform(request, session: session, canRetry: false)
     }
 
     // MARK: - 对话 / 思维链
