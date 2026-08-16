@@ -66,6 +66,9 @@ services:
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
       # Hermes 桥接(容器 → 宿主机 Hermes)
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
+      # Hermes Dashboard 会话 Token（Tab 1 官方 Web 容器认证通道 · B-2-2；
+      # 部署时须与宿主机 hermes-serve 的 HERMES_DASHBOARD_SESSION_TOKEN 同值，否则 401）
+      HERMES_SERVE_TOKEN: ${HERMES_SERVE_TOKEN:-}
     volumes:
       - ./data:/app/data
       # Hermes CLI 配置挂载（无需挂载可执行文件，已在 requirements.txt 中安装）
@@ -92,6 +95,8 @@ services:
       - "80:80"
       - "443:443"
       - "9443:9443"
+      - "9080:9080"
+      - "9081:9081"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
