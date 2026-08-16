@@ -330,7 +330,10 @@ async def chat_status(
     consume=True 时 Bridge 顺带标记 completed 结果为已消费（断点 0ms 回读）。
     offset=N 时 reasoning 仅返回消息 id>N 的新条（增量轮询，方案 v5）。
     """
-    data = await _call_hermes_status(session_id, consume=consume, offset=offset)
+    # session 前缀归一（对齐提交端点）：前端传原始 UUID，bridge run 注册为
+    # main_agent-<UUID>——不 derive 则查不到 run 误报 not_found（微信模式必现）
+    isolated = derive_isolated_session_id(None, session_id)
+    data = await _call_hermes_status(isolated, consume=consume, offset=offset)
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
     return data
