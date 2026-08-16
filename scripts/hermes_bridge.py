@@ -1114,12 +1114,14 @@ def _build_in_process_agent(
             "choices": list(choices) if choices else None,
             "multi_select": bool(multi_select) and bool(choices),
         })
+        print(f"[bridge] clarify-REGISTER cid={clarify_id} user={user_id} q={str(question)[:30]}")
         # 记录 clarify 发出时间戳：resolve 失败分类依据（expired vs no_pending）
         run_state = _stream_run_get(user_id)
         if run_state:
             with _stream_runs_guard:
                 run_state["clarify_issued"] = time.monotonic()
         resp = cg.wait_for_response(clarify_id, timeout=float(CLARIFY_TIMEOUT_SECONDS))
+        print(f"[bridge] clarify-WAIT-RETURN cid={clarify_id} resp={str(resp)[:40]!r}")
         if resp is None or resp == "":
             return (
                 f"[user did not respond within {CLARIFY_TIMEOUT_SECONDS}s. "
@@ -1337,10 +1339,12 @@ async def clarify_resolve(body: ClarifyResolveRequest):
     # 带 clarify_id 则精确解锁本次卡对应的 agent 等待线程。
     if body.clarify_id:
         ok = cg.resolve_gateway_clarify(body.clarify_id, body.response)
+        print(f"[bridge] clarify-RESOLVE cid={body.clarify_id} session={body.session_id} ok={ok}")
         if ok:
             return {"ok": True}
         # clarify_id 未命中（已超时/不存在）→ 回退 session 级 resolve（兼容旧前端）
     ok = cg.resolve_text_response_for_session(body.session_id, body.response)
+    print(f"[bridge] clarify-RESOLVE-SESSION session={body.session_id} ok={ok}")
     if ok:
         return {"ok": True}
 
