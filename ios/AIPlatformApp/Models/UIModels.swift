@@ -629,6 +629,62 @@ public final class SessionManager: ObservableObject {
 
     public static let interruptedText = "⚠️ 响应已中断（会话切换）"
 
+    // MARK: - Hermes 式后台完成：切换会话不中断在途任务，结果落盘到归属会话
+
+    /// 把归属会话中 requestId 对应的 pending 占位替换为真实响应（切走后由 handleSuccess 调用）。
+    public func applyResponse(sessionId: String, requestId: String, response: ChatResponseDTO) {
+        guard var msgs = sessions[sessionId] else { return }
+        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
+            msgs[idx].content = response.answer
+            msgs[idx].pending = false
+            msgs[idx].isStreaming = false
+            msgs[idx].degraded = response.degraded == true
+            // 后台完成不渲染逐步推理动画；用户切回时看到折叠推理卡/全文
+            msgs[idx].blocks = []
+        } else {
+            msgs.append(ChatMessage(
+                sessionId: sessionId, role: .assistant,
+                content: response.answer, pending: false,
+                degraded: response.degraded == true
+            ))
+        }
+        setMessages(msgs, for: sessionId)
+    }
+
+    /// 断点续接已完成（status=completed）时，把结果写归属会话（切走后由 applyCompletedStatus 调用）。
+    public func applyCompletedStatus(sessionId: String, requestId: String, answer: String) {
+        guard var msgs = sessions[sessionId] else { return }
+        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
+            msgs[idx].content = answer
+            msgs[idx].pending = false
+            msgs[idx].isStreaming = false
+            msgs[idx].degraded = false
+        } else {
+            msgs.append(ChatMessage(
+                sessionId: sessionId, role: .assistant,
+                content: answer, pending: false
+            ))
+        }
+        setMessages(msgs, for: sessionId)
+    }
+
+    /// 切走后任务失败：把 degraded 卡写归属会话（不中断、不静默）。
+    public func applyDegraded(sessionId: String, requestId: String, text: String) {
+        guard var msgs = sessions[sessionId] else { return }
+        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
+            msgs[idx].content = text
+            msgs[idx].pending = false
+            msgs[idx].isStreaming = false
+            msgs[idx].degraded = true
+        } else {
+            msgs.append(ChatMessage(
+                sessionId: sessionId, role: .assistant,
+                content: text, pending: false, degraded: true
+            ))
+        }
+        setMessages(msgs, for: sessionId)
+    }
+
     private func refreshTitle(for id: String, messages: [ChatMessage]) {
         guard let firstUser = messages.first(where: { $0.role == .user }) else {
             sessionTitles[id] = "新会话"

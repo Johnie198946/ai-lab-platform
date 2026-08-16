@@ -34,6 +34,8 @@ public struct ChatView: View {
     @State private var animationTasks: [String: Task<Void, Never>] = [:]
     @State private var toastMessage: String? = nil
     @State private var demoMode: Bool = false                 // 网络错误后「切换演示模式」
+    @State private var liveProgress: String? = nil            // 长任务轮询拉取的最新步骤
+    @State private var statusPollTask: Task<Void, Never>? = nil  // 320s 指数退避轮询任务
 
     private let waitingTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -320,16 +322,16 @@ public struct ChatView: View {
         sessionManager.setMessages(messages, for: sid)
     }
 
-    /// 新建会话：新 UUID + cancel 在途 + 清 pendingQueue + 重置状态。
+    /// 新建会话：新 UUID + 保留后台在途（Hermes 式：任务继续跑完写归属会话）+ 清当前视图状态。
     private func newSession() {
         commitSession()
-        abandonInFlight()
+        // 不中断在途任务：Hermes 式后台完成，结果落盘到原会话；切回可看
+        stopStatusPolling()
         sessionManager.createSession()
         messages = []
         pendingQueue.removeAll()
         isGenerating = false
-        inflight = nil
-        currentChatTask = nil
+        // 保留 inflight/currentChatTask 引用让后台任务跑完（回调按 sessionId 归属写盘）
         waitingSeconds = 0
         inputText = ""
         quotedContext = nil
@@ -342,18 +344,23 @@ public struct ChatView: View {
             return
         }
         commitSession()
-        // 会话屏障：切换时 cancel 在途，被拦截的响应在原会话落盘 .interrupted
-        abandonInFlight()
+        // 不中断在途任务（Hermes 式后台完成）；进度轮询仅对活跃会话有意义，先停
+        stopStatusPolling()
         sessionManager.switchTo(id)
         messages = sessionManager.messages(for: id)
         pendingQueue.removeAll()
         isGenerating = false
-        inflight = nil
-        currentChatTask = nil
         waitingSeconds = 0
         inputText = ""
         quotedContext = nil
         showingSessionDrawer = false
+        // 切回原会话时：若该会话仍有在途任务（pending 占位），恢复生成态与进度轮询
+        if let inflight,
+           inflight.sessionId == id,
+           messages.contains(where: { $0.id == inflight.id && $0.pending }) {
+            isGenerating = true
+            startStatusPolling(req: inflight)
+        }
     }
 
     /// 删除会话：本地级联清理；若删除的是 active，切到剩余最新会话。
@@ -374,6 +381,7 @@ public struct ChatView: View {
     private func abandonInFlight() {
         // 无论 inflight 是否已清空（响应已到、思维链揭示中），都先取消在途揭示动画
         cancelAllReveals()
+        stopStatusPolling()
         guard let req = inflight else { return }
         currentChatTask?.cancel()
         sessionManager.markInterrupted(sessionId: req.sessionId)
@@ -570,15 +578,15 @@ public struct ChatView: View {
     private func inflightPlaceholder(_ req: InFlightRequest) -> some View {
         switch req.phase {
         case .thinking:
-            ThinkingPlaceholderView(seconds: waitingSeconds, onCancel: { cancelInFlight() })
+            ThinkingPlaceholderView(seconds: waitingSeconds, progress: liveProgress, onCancel: { cancelInFlight() })
         case .timeout:
             StatusCardView(
                 icon: "exclamationmark.triangle.fill",
                 iconColor: AppTheme.Colors.securityYellow,
-                title: "响应超时(180s)",
-                message: "后端 180 秒内未返回，可能仍在处理中。",
-                primary: ("继续等待", { retryCurrentInFlight() }),
-                secondary: ("重试", { retryCurrentInFlight() })
+                title: "长任务超时(300s)",
+                message: "任务可能仍在后台处理中，已轮询最新进度。可一键断点续接或继续等待。",
+                primary: ("断点续接", { probeAndResumeCurrentInFlight() }),
+                secondary: ("继续等待", { retryCurrentInFlight() })
             )
         case .networkError:
             StatusCardView(
@@ -586,7 +594,7 @@ public struct ChatView: View {
                 iconColor: AppTheme.Colors.securityRed,
                 title: "后端不可达",
                 message: "无法连接到后端服务，请检查网络或稍后重试。",
-                primary: ("重试", { retryCurrentInFlight() }),
+                primary: ("重试", { probeAndResumeCurrentInFlight() }),
                 secondary: ("切换演示模式", { switchToDemoMode() })
             )
         case .serverError(let msg):
@@ -683,6 +691,7 @@ public struct ChatView: View {
         currentChatTask = Task {
             await runInFlight(req)
         }
+        startStatusPolling(req: req)
     }
 
     private func runInFlight(_ req: InFlightRequest) async {
@@ -707,11 +716,16 @@ public struct ChatView: View {
     }
 
     private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO) async {
-        guard inflight?.id == req.id else { return }
+        // 后台任务兜底：inflight 槽已被更新的任务占用（用户在别的会话又发了消息）——
+        // 本响应仍按归属会话落盘，绝不丢弃（Hermes 式后台完成）。
+        if inflight?.id != req.id {
+            sessionManager.applyResponse(sessionId: req.sessionId, requestId: req.id, response: response)
+            return
+        }
 
-        // 会话屏障：响应回来时已切换到别的会话 → 丢弃响应，原会话插 .interrupted
+        // 会话感知：响应回来时已切到别的会话 → 结果写原会话（不中断、不丢）
         guard req.sessionId == sessionManager.activeSessionID() else {
-            sessionManager.markInterrupted(sessionId: req.sessionId)
+            sessionManager.applyResponse(sessionId: req.sessionId, requestId: req.id, response: response)
             finishGeneration()
             return
         }
@@ -811,7 +825,38 @@ public struct ChatView: View {
     }
 
     private func handleError(req: InFlightRequest, error: Error) async {
-        guard inflight?.id == req.id else { return }
+        // 后台任务兜底：inflight 槽已被更新的任务占用 → 降级卡写归属会话。
+        if inflight?.id != req.id {
+            let text: String
+            if let urlError = error as? URLError, urlError.code == .cancelled {
+                sessionManager.applyDegraded(sessionId: req.sessionId, requestId: req.id, text: "已取消")
+                return
+            }
+            if error is CancellationError {
+                sessionManager.applyDegraded(sessionId: req.sessionId, requestId: req.id, text: "已取消")
+                return
+            }
+            if let apiErr = error as? APIError, case .timeout = apiErr {
+                text = "响应超时，请重试"
+            } else {
+                text = "服务暂时不可用，请稍后重试"
+            }
+            sessionManager.applyDegraded(sessionId: req.sessionId, requestId: req.id, text: text)
+            return
+        }
+
+        // 切走后任务失败：degraded 卡写原会话（不中断、不静默）。
+        guard req.sessionId == sessionManager.activeSessionID() else {
+            let text: String
+            if let apiErr = error as? APIError, case .timeout = apiErr {
+                text = "响应超时，请重试"
+            } else {
+                text = "服务暂时不可用，请稍后重试"
+            }
+            sessionManager.applyDegraded(sessionId: req.sessionId, requestId: req.id, text: text)
+            finishGeneration()
+            return
+        }
 
         if let urlError = error as? URLError, urlError.code == .cancelled {
             markCancelled(req: req)
@@ -897,6 +942,7 @@ public struct ChatView: View {
         inflight = nil
         currentChatTask = nil
         waitingSeconds = 0
+        stopStatusPolling()
         advanceQueue()
     }
 
@@ -924,6 +970,104 @@ public struct ChatView: View {
         currentChatTask = Task {
             await runInFlight(req)
         }
+        startStatusPolling(req: req)
+    }
+
+    // MARK: - 长任务状态回读 / 断点重续（320s 指数退避轮询 + 状态探测）
+
+    /// 320s 指数退避轮询：2s→4s→6s→8s（上限 8s），最多 50 次。
+    /// 拉取 status=running 时的 latest_step，实时回填 ThinkingPlaceholder 进度行。
+    private func startStatusPolling(req: InFlightRequest) {
+        statusPollTask?.cancel()
+        liveProgress = nil
+        let sid = appState.chatSessionId
+        guard let sid, !sid.isEmpty, !demoMode else { return }
+        statusPollTask = Task { @MainActor in
+            let delays = [2, 4, 6, 8]
+            var step = 0
+            var polls = 0
+            while polls < 50 && !Task.isCancelled {
+                let delay = delays[min(step, delays.count - 1)]
+                step += 1
+                try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000_000)
+                if Task.isCancelled { return }
+                guard isGenerating,
+                      inflight?.id == req.id,
+                      inflight?.phase == .thinking else { return }
+                do {
+                    let status = try await APIClient.shared.fetchChatStatus(sessionId: sid)
+                    if status.status == "running" {
+                        liveProgress = status.latestStep
+                    }
+                } catch {
+                    // 轮询失败忽略，不干扰主 POST 请求
+                }
+                polls += 1
+            }
+        }
+    }
+
+    private func stopStatusPolling() {
+        statusPollTask?.cancel()
+        statusPollTask = nil
+        liveProgress = nil
+    }
+
+    /// 断点续接入口：先探测 status 端点（completed 秒级装载 / 未完成断点续接）。
+    private func probeAndResumeCurrentInFlight() {
+        guard var req = inflight else { return }
+        req.phase = .thinking
+        inflight = req
+        waitingSeconds = 0
+        currentChatTask = Task {
+            await probeAndResume(req)
+        }
+    }
+
+    private func probeAndResume(_ req: InFlightRequest) async {
+        // 先探测 status：已完成 → 秒级装载；未完成/探测失败 → 断点续接（重发 POST，桥接层 --resume）
+        if let sid = appState.chatSessionId, !sid.isEmpty, !demoMode {
+            do {
+                let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true)
+                if status.status == "completed",
+                   let answer = status.answer, !answer.isEmpty {
+                    await applyCompletedStatus(req: req, status: status)
+                    return
+                }
+            } catch {
+                // 探测失败 → 落入重发
+            }
+        }
+        retryCurrentInFlight()
+    }
+
+    /// 秒级装载已完成的断点结果（不重复调用 Hermes）。
+    private func applyCompletedStatus(req: InFlightRequest, status: ChatStatusDTO) async {
+        guard inflight?.id == req.id else { return }
+        // 切走后探测到 completed：结果写原会话（断点续接成果不丢）
+        guard req.sessionId == sessionManager.activeSessionID() else {
+            sessionManager.applyCompletedStatus(
+                sessionId: req.sessionId, requestId: req.id,
+                answer: status.answer ?? "服务暂时不可用，请稍后重试"
+            )
+            finishGeneration()
+            return
+        }
+        let steps = (status.reasoning ?? []).map { $0.toReasoningStep() }
+        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            messages[idx].blocks = steps.isEmpty ? [] : [.reasoning([])]
+        }
+        inflight = nil
+        stopStatusPolling()
+        if !steps.isEmpty {
+            await revealReasoning(messageId: req.id, steps: steps)
+        }
+        await typewriter(messageId: req.id, answer: status.answer ?? "")
+        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            messages[idx].pending = false
+        }
+        commitSession()
+        finishGeneration()
     }
 
     private func switchToDemoMode() {
