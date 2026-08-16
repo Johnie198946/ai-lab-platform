@@ -910,13 +910,22 @@ def _build_in_process_agent(
         from tools import clarify_gateway as cg
 
         clarify_id = uuid.uuid4().hex[:10]
-        cg.register(
-            clarify_id=clarify_id,
-            session_key=user_id,
-            question=question,
-            choices=list(choices) if choices else None,
-            multi_select=bool(multi_select),
-        )
+        # 跨版本兼容：服务器 v0.19.0 register() 无 multi_select 参数（本地 v0.19.1 有）
+        try:
+            cg.register(
+                clarify_id=clarify_id,
+                session_key=user_id,
+                question=question,
+                choices=list(choices) if choices else None,
+                multi_select=bool(multi_select),
+            )
+        except TypeError:
+            cg.register(
+                clarify_id=clarify_id,
+                session_key=user_id,
+                question=question,
+                choices=list(choices) if choices else None,
+            )
         _qput(stream_q, {
             "type": "clarify",
             "question": question,
