@@ -1108,6 +1108,7 @@ def _build_in_process_agent(
             )
         _qput(stream_q, {
             "type": "clarify",
+            "clarify_id": clarify_id,
             "question": question,
             "choices": list(choices) if choices else None,
             "multi_select": bool(multi_select) and bool(choices),
@@ -1312,6 +1313,7 @@ def _sse_from_in_process(user_id: str, goal: str):
 class ClarifyResolveRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     response: str = Field(..., min_length=1)
+    clarify_id: Optional[str] = Field(None, max_length=32)
 
 
 class CancelRequest(BaseModel):
@@ -1329,6 +1331,14 @@ async def clarify_resolve(body: ClarifyResolveRequest):
     """
     cg = _get_clarify_gateway()
 
+    # 多步 Clarify 精确寻址（P0 根治）：优先按 clarify_id 直连 resolve——
+    # 官方 get_pending_for_session 返回 oldest entry（含已消费），多卡场景必错配；
+    # 带 clarify_id 则精确解锁本次卡对应的 agent 等待线程。
+    if body.clarify_id:
+        ok = cg.resolve_gateway_clarify(body.clarify_id, body.response)
+        if ok:
+            return {"ok": True}
+        # clarify_id 未命中（已超时/不存在）→ 回退 session 级 resolve（兼容旧前端）
     ok = cg.resolve_text_response_for_session(body.session_id, body.response)
     if ok:
         return {"ok": True}

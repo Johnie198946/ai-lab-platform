@@ -339,6 +339,7 @@ class ClarifySubmitRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     response: str = Field(..., min_length=1)
     agent_id: Optional[str] = Field(None, max_length=50)
+    clarify_id: Optional[str] = Field(None, max_length=32)
 
 
 class CancelRequest(BaseModel):
@@ -420,7 +421,11 @@ async def chat_clarify_submit(
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             HERMES_BRIDGE_CLARIFY_URL,
-            json={"session_id": isolated, "response": req.response},
+            json={
+                "session_id": isolated,
+                "response": req.response,
+                "clarify_id": req.clarify_id,
+            },
         )
         if r.status_code == 200:
             return r.json()
