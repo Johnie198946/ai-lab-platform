@@ -185,14 +185,44 @@ public struct ChatView: View {
             role: .user,
             content: selection
         ))
-        // 3) 流式链路：提交到澄清端点解锁 agent（保留非流式降级：直接当普通消息发下一轮）
-        let sid = appState.chatSessionId
+        commitSession()
+
+        // 3) 流式链路：使用当前活动会话 ID 提交到澄清端点解锁 agent（严禁使用未初始化的 nil）
+        // 优先顺序：appState.chatSessionId -> 当前消息绑定的 sessionId -> activeSessionID()
+        let resolvedSessionId = (appState.chatSessionId?.isEmpty == false ? appState.chatSessionId : nil)
+            ?? inflight?.sessionId
+            ?? sessionId
+
         Task {
-            let ok = (try? await APIClient.shared.submitClarify(sessionId: sid, response: selection)) ?? false
-            if !ok {
-                // 降级：走正常链路发起下一轮对话（原逻辑）
+            var submitSuccess = false
+            // 带 3 次轻量重试机制（防偶发网络抖动）
+            for attempt in 0..<3 {
+                do {
+                    let ok = try await APIClient.shared.submitClarify(sessionId: resolvedSessionId, response: selection)
+                    if ok {
+                        submitSuccess = true
+                        break
+                    }
+                } catch {
+                    // 稍作等待后重试
+                    try? await Task.sleep(nanoseconds: UInt64((attempt + 1) * 300_000_000))
+                }
+            }
+
+            if !submitSuccess {
+                // 解锁失败兜底：卡片恢复可交互态，绝不假死锁入队
                 await MainActor.run {
-                    dispatchAssistantReply(to: selection)
+                    if let blockIdx = messages[idx].blocks.firstIndex(where: {
+                        if case .clarify = $0 { return true }
+                        return false
+                    }) {
+                        if case .clarify(var c) = messages[idx].blocks[blockIdx] {
+                            c.isSubmitted = false
+                            c.submittedSelection = ""
+                            messages[idx].blocks[blockIdx] = .clarify(c)
+                        }
+                    }
+                    showToast("选项提交失败，请点击重试")
                 }
             }
         }
@@ -752,30 +782,55 @@ public struct ChatView: View {
                         messages[idx].pending = false
                         messages[idx].content += content
                         messages[idx].isStreaming = true
+                        // 收到正文时，将进行中的思考步骤状态置为 done
+                        updateReasoningSteps(for: idx) { steps in
+                            if let tIdx = steps.firstIndex(where: { $0.type == .thought && $0.status == "running" }) {
+                                steps[tIdx].status = "done"
+                            }
+                        }
                     }
                 case .thought(let content):
-                    // 实时思考流：追加进 ReasoningCard 的 thought 步骤
+                    // 实时思考流：累加到唯一的 thought 步骤中（绝不能按 token 产生新步骤）
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         messages[idx].pending = false
-                        var steps = reasoningSteps(for: idx)
-                        steps.append(ReasoningStep(type: .thought, title: "思考过程", detail: content))
-                        messages[idx].blocks = [.reasoning(steps)]
+                        updateReasoningSteps(for: idx) { steps in
+                            if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
+                                steps[tIdx].detail += content
+                                steps[tIdx].status = "running"
+                            } else {
+                                steps.insert(
+                                    ReasoningStep(
+                                        type: .thought,
+                                        title: "思考过程",
+                                        detail: content,
+                                        status: "running"
+                                    ),
+                                    at: 0
+                                )
+                            }
+                        }
                     }
                 case .toolStart(let id, let tool, let label):
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         messages[idx].pending = false
-                        var steps = reasoningSteps(for: idx)
-                        steps.append(ReasoningStep(type: .toolCall, title: "调用工具: \(tool)", detail: label, status: "running"))
-                        messages[idx].blocks = [.reasoning(steps)]
+                        updateReasoningSteps(for: idx) { steps in
+                            // 前序思考步骤置为 done
+                            if let tIdx = steps.firstIndex(where: { $0.type == .thought && $0.status == "running" }) {
+                                steps[tIdx].status = "done"
+                            }
+                            let stepType: ReasoningStepType = (tool == "skill_view" || tool == "skills_list") ? .skillLoad : (tool == "delegate_task" ? .agentSpawn : .toolCall)
+                            let title = tool == "skill_view" ? "加载技能: \(label)" : (tool == "delegate_task" ? "派发子智能体" : "调用工具: \(tool)")
+                            steps.append(ReasoningStep(id: id, type: stepType, title: title, detail: label, status: "running"))
+                        }
                     }
-                case .toolComplete(let id, _):
+                case .toolComplete(let id, let tool):
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         messages[idx].pending = false
-                        var steps = reasoningSteps(for: idx)
-                        if let last = steps.lastIndex(where: { $0.status == "running" }) {
-                            steps[last].status = "done"
+                        updateReasoningSteps(for: idx) { steps in
+                            if let matchIdx = steps.lastIndex(where: { $0.id == id || ($0.status == "running" && $0.title.contains(tool)) }) {
+                                steps[matchIdx].status = "done"
+                            }
                         }
-                        messages[idx].blocks = [.reasoning(steps)]
                     }
                 case .clarify(let question, let choices, let multiSelect):
                     let block = ClarifyBlock(
@@ -785,9 +840,16 @@ public struct ChatView: View {
                         submitLabel: "确认选择"
                     )
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        // 思考步骤全部置为 done
+                        updateReasoningSteps(for: idx) { steps in
+                            for i in steps.indices { steps[i].status = "done" }
+                        }
                         var blocks = messages[idx].blocks
-                        blocks.append(.clarify(block))
-                        messages[idx].blocks = blocks
+                        // 避免重复挂载澄清卡片
+                        if !blocks.contains(where: { if case .clarify = $0 { return true }; return false }) {
+                            blocks.append(.clarify(block))
+                            messages[idx].blocks = blocks
+                        }
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                     }
@@ -798,6 +860,10 @@ public struct ChatView: View {
                         appState.chatSessionId = sid
                     }
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        // 完成时所有步骤置为 done
+                        updateReasoningSteps(for: idx) { steps in
+                            for i in steps.indices { steps[i].status = "done" }
+                        }
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                     }
@@ -831,6 +897,28 @@ public struct ChatView: View {
             }
         }
         return []
+    }
+
+    /// 就地更新消息中的推理步骤（保持 blocks 结构稳定）
+    private func updateReasoningSteps(for idx: Int, update: (inout [ReasoningStep]) -> Void) {
+        guard idx < messages.count else { return }
+        var blocks = messages[idx].blocks
+        var steps: [ReasoningStep] = []
+        var reasoningBlockIdx: Int? = nil
+        for (i, block) in blocks.enumerated() {
+            if case .reasoning(let s) = block {
+                steps = s
+                reasoningBlockIdx = i
+                break
+            }
+        }
+        update(&steps)
+        if let rIdx = reasoningBlockIdx {
+            blocks[rIdx] = .reasoning(steps)
+        } else if !steps.isEmpty {
+            blocks.insert(.reasoning(steps), at: 0)
+        }
+        messages[idx].blocks = blocks
     }
 
     private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO) async {
