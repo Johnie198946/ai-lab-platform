@@ -576,7 +576,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
             result = asyncio.run(chat_status("sid", consume=False, payload={}))
         self.assertEqual(result["status"], "running")
-        mock.assert_called_once_with("sid", consume=False, offset=0)
+        mock.assert_called_once_with("main_agent-sid", consume=False, offset=0)
 
     def test_chat_status_route_consume_forward(self):
         from backend.api.chat import chat_status
@@ -584,7 +584,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         fake = {"status": "completed", "answer": "x"}
         with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
             asyncio.run(chat_status("sid", consume=True, payload={}))
-        mock.assert_called_once_with("sid", consume=True, offset=0)
+        mock.assert_called_once_with("main_agent-sid", consume=True, offset=0)
 
     def test_chat_status_route_offset_forward(self):
         """方案 v5：offset 参数透传 bridge（reasoning 增量轮询）。"""
@@ -594,7 +594,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
             result = asyncio.run(chat_status("sid", consume=False, offset=42, payload={}))
         self.assertEqual(result["phase"], "tool")
-        mock.assert_called_once_with("sid", consume=False, offset=42)
+        mock.assert_called_once_with("main_agent-sid", consume=False, offset=42)
 
 
 class TestInFlightUsers(unittest.TestCase):
