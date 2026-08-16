@@ -60,10 +60,10 @@ AGENT_EDGES: List[Dict[str, Any]] = [
 # agent_id → 角色扮演前缀（未命中身份规则时拼接 goal 发 bridge）
 # ---------------------------------------------------------------------------
 ROLE_PREFIX: Dict[str, str] = {
-    "main_agent": "以 Main 智能编排角色执行：",
-    "supervision": "以 Supervision 架构审查角色执行：",
-    "coder": "以 Coder 独立开发角色执行：",
-    "knowledge": "以 知识星海角色执行：",
+    "main_agent": "以 Main 智能编排角色回答：",
+    "supervision": "以 Supervision 架构审查角色回答：",
+    "coder": "以 Coder 独立开发角色回答：",
+    "knowledge": "以 知识星海角色回答：",
 }
 
 # agent_id → session_id 隔离前缀

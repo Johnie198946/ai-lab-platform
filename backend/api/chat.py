@@ -26,7 +26,7 @@ from backend.services.reasoning_extractor import ReasoningStep
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
-HERMES_TIMEOUT = 300
+HERMES_TIMEOUT = 180
 
 
 class ChatRequest(BaseModel):
