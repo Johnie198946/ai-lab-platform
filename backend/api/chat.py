@@ -381,7 +381,8 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
     if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", goal, re.IGNORECASE):
         goal += (
             "\n\n（输出要求：本问题涉及两个及以上主体对比，请使用 Markdown 表格呈现，"
-            "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。）"
+            "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。"
+            "表格内的关键差异与结论词请用 **加粗** 标注以突出重点。）"
         )
 
     _streaming_sessions.add(isolated_session_id)
