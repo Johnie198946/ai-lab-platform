@@ -927,9 +927,9 @@ def _build_in_process_agent(
             "tool": function_name,
         })
 
-    # 兼容服务器旧版 Hermes（v0.19.1 无 requested_provider 参数）：
-    # 用 kwargs 动态注入，缺失参数自动省略
-    agent_kwargs = dict(
+    # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
+    # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
+    agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
@@ -948,9 +948,6 @@ def _build_in_process_agent(
         tool_start_callback=_tool_start_cb,
         tool_complete_callback=_tool_complete_cb,
     )
-    if runtime.get("requested_provider"):
-        agent_kwargs["requested_provider"] = runtime.get("requested_provider")
-    agent = AIAgent(**agent_kwargs)
     return agent, session_db
 
 
