@@ -10,8 +10,8 @@ FROM nginx:alpine
 COPY --from=build /app/dist /usr/share/nginx/html
 # Quantum fork 官方 Web 引擎（web-dashboard dist → 9080 server 块；官方仓库零改动）
 COPY web-dashboard/dist /usr/share/nginx/html/web-dashboard
-COPY nginx/ailab.crt /etc/nginx/ssl/ailab.crt
-COPY nginx/ailab.key /etc/nginx/ssl/ailab.key
+COPY frontend/nginx/ailab.crt /etc/nginx/ssl/ailab.crt
+COPY frontend/nginx/ailab.key /etc/nginx/ssl/ailab.key
 RUN echo $'server {\n\
     listen 80;\n\
     location / {\n\
