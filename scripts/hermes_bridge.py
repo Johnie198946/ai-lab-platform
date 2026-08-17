@@ -1389,8 +1389,9 @@ def _build_in_process_agent(
             _qput(stream_q, {"type": "delta", "content": text})
 
     def _reasoning_cb(text) -> None:
-        if text:
-            _qput(stream_q, {"type": "thought", "content": text})
+        # 思考流治理（2026-08-17 固化）：禁止向前端逐 token 倾泻原始思考长文（防长条铺屏与无谓等待）
+        # 思考期仅由 status(reasoning) 与 tool_start 驱动极简胶囊单行，正文生成完成后一口气出结果
+        pass
 
     def _tool_start_cb(tool_call_id, function_name, function_args) -> None:
         _emit_tool_start(stream_q, tool_call_id, function_name, function_args)
