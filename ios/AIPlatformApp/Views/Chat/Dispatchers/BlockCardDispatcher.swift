@@ -11,13 +11,16 @@ import SwiftUI
 
 public struct BlockCardDispatcher: View {
     public let block: MessageBlock
+    public var isStreaming: Bool = false
     public var onClarifySubmit: ((String) -> Void)? = nil
 
     public init(
         block: MessageBlock,
+        isStreaming: Bool = false,
         onClarifySubmit: ((String) -> Void)? = nil
     ) {
         self.block = block
+        self.isStreaming = isStreaming
         self.onClarifySubmit = onClarifySubmit
     }
 
@@ -47,7 +50,7 @@ public struct BlockCardDispatcher: View {
             AttachmentCard(block: attachmentBlock)
 
         case .reasoning(let steps):
-            ReasoningCard(steps: steps)
+            ReasoningCard(steps: steps, isStreaming: isStreaming)
 
         case .clarify(let clarifyBlock):
             ClarifyCard(block: clarifyBlock, onSubmit: onClarifySubmit)

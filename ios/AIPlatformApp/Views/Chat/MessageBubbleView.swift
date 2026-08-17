@@ -195,7 +195,7 @@ public struct MessageBubbleView: View {
     // MARK: - 块分发（委托 BlockCardDispatcher 静态分发）
     @ViewBuilder
     private func blockCard(_ block: MessageBlock) -> some View {
-        BlockCardDispatcher(block: block)
+        BlockCardDispatcher(block: block, isStreaming: message.isStreaming)
     }
 
     // MARK: - Subcomponents

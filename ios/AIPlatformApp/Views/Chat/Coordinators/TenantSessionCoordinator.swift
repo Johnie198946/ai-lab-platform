@@ -215,8 +215,22 @@ public final class TenantSessionCoordinator: ObservableObject {
         let req = InFlightRequest(id: UUID().uuidString, sessionId: sid, text: text, quote: quote, regenerate: regenerate)
         inflight = req
 
+        let initialStep = ReasoningStep(
+            type: .thought,
+            title: "正在根据需求规划与执行…",
+            detail: text,
+            status: "running"
+        )
         messages.append(
-            ChatMessage(id: req.id, sessionId: sid, role: .assistant, content: "", isStreaming: true, pending: true)
+            ChatMessage(
+                id: req.id,
+                sessionId: sid,
+                role: .assistant,
+                content: "",
+                isStreaming: true,
+                blocks: [.reasoning([initialStep])],
+                pending: true
+            )
         )
         commitSession()
 
@@ -385,6 +399,24 @@ public final class TenantSessionCoordinator: ObservableObject {
                 case .status(let phase, let detail):
                     thinkingPhase = phase.isEmpty ? nil : phase
                     thinkingDetail = detail.isEmpty ? nil : detail
+                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                        updateReasoningSteps(for: idx) { steps in
+                            if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
+                                if !detail.isEmpty {
+                                    steps[tIdx].title = detail
+                                }
+                            } else {
+                                steps.insert(
+                                    ReasoningStep(
+                                        type: .thought,
+                                        title: detail.isEmpty ? "正在理解需求…" : detail,
+                                        status: "running"
+                                    ),
+                                    at: 0
+                                )
+                            }
+                        }
+                    }
 
                 case .done(_, let answer):
                     drainDeltaBuffer(messageId: req.id)
@@ -624,8 +656,6 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     // MARK: - Clarify 5态沙箱与 Watchdog 守护
 
-    // MARK: - Clarify 统一会话推进（选项卡 100% 就是对话）
-
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
 
@@ -641,7 +671,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         commitSession()
 
-        // 2. 核心：选项卡 100% 就是对话 —— 直接作为用户消息发送！
+        // 2. 核心：选项卡 100% 就是对话 —— 选项文本直接作为用户消息发送！
         //    立刻展示用户气泡 + 立刻调起 Assistant 思维链胶囊 + 后端流式直出
         sendMessage(text: selection, regenerate: true)
     }
