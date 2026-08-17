@@ -707,7 +707,15 @@ public enum AgentNodeStatus: String, Codable, Sendable {
     case running = "running"
     case completed = "completed"
     case error = "error"
-    case demo = "演示"
+    
+    public init(fromRaw statusStr: String) {
+        switch statusStr.lowercased() {
+        case "running", "运行中", "执行中": self = .running
+        case "completed", "完成": self = .completed
+        case "error", "异常", "失败": self = .error
+        default: self = .idle
+        }
+    }
     
     public var indicatorColor: Color {
         switch self {
@@ -715,17 +723,15 @@ public enum AgentNodeStatus: String, Codable, Sendable {
         case .running: return AppTheme.Colors.statusRunning
         case .completed: return AppTheme.Colors.statusCompleted
         case .error: return AppTheme.Colors.statusError
-        case .demo: return AppTheme.Colors.quantumCyan
         }
     }
     
     public var labelText: String {
         switch self {
-        case .idle: return "就绪 (Idle)"
-        case .running: return "执行中 (Running)"
-        case .completed: return "完成 (Completed)"
-        case .error: return "异常 (Error)"
-        case .demo: return "演示 (Demo)"
+        case .idle: return "就绪"
+        case .running: return "执行中"
+        case .completed: return "完成"
+        case .error: return "异常"
         }
     }
 }
@@ -825,7 +831,7 @@ public extension TopologyGraphDTO {
                 name: n.name,
                 roleCategory: n.roleDesc,
                 systemPromptSummary: n.roleDesc,
-                status: AgentNodeStatus(rawValue: n.status) ?? .demo,
+                status: AgentNodeStatus(fromRaw: n.status),
                 position: TopologyGraphDTO.layoutPosition(index: idx, total: self.nodes.count),
                 subscribedKnowledge: [],
                 inputDeps: (inputDeps[n.id] ?? []).compactMap { nameById[$0] },

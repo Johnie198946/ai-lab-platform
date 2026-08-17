@@ -108,7 +108,7 @@ def _scan_tenant_skills(tenant_id: str) -> List[TopologyNodeOut]:
                 role_category=f"租户技能 · {base_agent}",
                 role_desc=desc or f"基于 {base_agent} 的租户专属技能插件",
                 base_agent_id=base_agent,
-                status="就绪",
+                status="idle",
                 source="skill_plugin",
                 tools=["web_search", "wiki_retrieval"],
             )
