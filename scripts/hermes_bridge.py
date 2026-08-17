@@ -100,7 +100,7 @@ WATCHDOG_INTERVAL_SECONDS = float(os.environ.get("HERMES_WATCHDOG_INTERVAL", "10
 # clarify 等待用户响应超时（默认 180s，替代 Hermes 原生 3600s）
 CLARIFY_TIMEOUT_SECONDS = int(os.environ.get("HERMES_CLARIFY_TIMEOUT", "180"))
 # 事件队列容量（线程 → async 桥）
-STREAM_QUEUE_CAPACITY = 512
+STREAM_QUEUE_CAPACITY = 1024
 
 # user_id -> 在途流式运行状态（agent holder / 线程 / 队列 / 停止事件），供 cancel/clarify 端点寻址
 # 状态模型（保活机制 v6）：{agent_holder, queue, attached, start_ts, run_id[, clarify_issued]}
@@ -522,7 +522,8 @@ def _pending_clarify(user_id: str) -> dict | None:
                     "clarify_id": entry.clarify_id,
                     "question": entry.question,
                     "choices": list(entry.choices) if entry.choices else [],
-                    "multi_select": bool(entry.multi_select),
+                    # 兼容服务器 Hermes v0.19.0（_ClarifyEntry 无 multi_select 字段，仅 awaiting_text）
+                    "multi_select": bool(getattr(entry, "multi_select", False)),
                 }
     except Exception as e:
         print(f"[bridge] pending clarify 查询失败·忽略: {e}")
@@ -1162,11 +1163,31 @@ CLARIFY_GATE_PROMPT = """【AI Lab 全局交互与澄清规范】
 
 
 def _qput(stream_q: queue.Queue, item: dict) -> None:
-    """线程安全投递事件；队列满用 put_nowait 丢弃（绝不阻塞 agent 线程）。"""
+    """线程安全投递事件；队列满时优先丢队首 delta（正文可帧级重组），
+    绝不丢弃 clarify/done/error/tool_start/status（控制事件丢失 = 卡死）。"""
+    item_type = item.get("type")
     try:
         stream_q.put_nowait(item)
     except queue.Full:
-        print(f"[bridge] ⚠️ 流式事件队列满·丢弃事件: {item.get('type')}")
+        if item_type in ("delta",):
+            print(f"[bridge] ⚠️ 队列满·丢弃 delta（正文帧可重组）")
+            return
+        # 控制事件：挤出队首 delta 腾位（若无 delta 则丢弃事件并告警）
+        try:
+            with stream_q.mutex:
+                dropped = None
+                # 队内查找最早的 delta
+                for i, it in enumerate(list(stream_q.queue)):
+                    if it.get("type") == "delta":
+                        dropped = stream_q.queue.pop(i)
+                        break
+                if dropped is not None:
+                    stream_q.queue.append(item)
+                    print(f"[bridge] ⚠️ 队列满·挤出旧 delta 保 {item_type}")
+                    return
+        except Exception:
+            pass
+        print(f"[bridge] ⚠️ 流式事件队列满·丢弃事件: {item_type}")
 
 
 def _stream_run_register(user_id: str, state: dict) -> None:
