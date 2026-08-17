@@ -219,6 +219,21 @@ public struct TenantAgentDTO: Codable, Identifiable, Hashable {
     public let createdAt: String?
 }
 
+/// GET /api/v1/skills 响应（租户真实技能库）
+public struct TenantSkillsDTO: Codable {
+    public let tenantId: String
+    public let skills: [TenantSkillDTO]
+}
+
+public struct TenantSkillDTO: Codable, Identifiable, Hashable {
+    public let name: String
+    public let description: String
+    public let category: String
+    public let createdAt: String?
+
+    public var id: String { name }
+}
+
 /// GET /api/v1/hermes/serve-token 响应体（B-2-2：WKWebView 注入 token 来源）
 public struct ServeTokenDTO: Codable {
     public let token: String
@@ -273,10 +288,15 @@ public enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL: return "无效的请求地址"
         case .unauthorized: return "登录态失效，请重新登录"
-        case .server(let code, let msg): return "服务端错误 \(code): \(msg)"
+        case .server(let code, let msg):
+            // 502/503：服务端部署窗口/过载，明确提示而非笼统"不可用"
+            if code == 502 || code == 503 || code == 504 {
+                return "服务端正在更新或繁忙，请稍后重试（\(code)）"
+            }
+            return "服务端错误 \(code): \(msg)"
         case .network(let msg): return "网络不可用: \(msg)"
         case .decoding(let msg): return "数据解析失败: \(msg)"
-        case .timeout: return "响应超时"
+        case .timeout: return "响应超时，请重试"
         }
     }
 }
@@ -572,6 +592,12 @@ public final class APIClient: ObservableObject {
 
     public func fetchTenantAgents() async throws -> [TenantAgentDTO] {
         try await request([TenantAgentDTO].self, path: "tenant-agents")
+    }
+
+    /// GET /api/v1/skills：当前租户真实技能库（挂载目录扫描·非演示数据）
+    public func fetchTenantSkills() async throws -> [TenantSkillDTO] {
+        let dto: TenantSkillsDTO = try await request(TenantSkillsDTO.self, path: "skills")
+        return dto.skills
     }
 
     /// POST /api/v1/tenant-agents：创建租户私有 Agent 切片（base_agent_id 限基线 4 个）

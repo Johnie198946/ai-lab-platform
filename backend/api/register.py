@@ -39,13 +39,16 @@ class AdminCreateUserRequest(BaseModel):
 
 
 async def _provision_tenant(user_id: str) -> str:
-    """建/取 TenantMapping，返回 tenant_key。"""
+    """建/取 TenantMapping，返回 tenant_key。
+    平台租户统一：DEFAULT_TENANT_KEY 非空时新用户归入该租户（与 bridge TENANT_ID 一致，
+    保证对话创建技能与 API 数据同租户可见）；否则按 u-<user_id[:8]> 隔离。"""
     from backend.db import SessionLocal
     from backend.models.tenant import TenantMapping
 
     from sqlalchemy import select
 
-    tenant_key = "u-" + user_id[:8]
+    default_tenant = os.environ.get("DEFAULT_TENANT_KEY", "").strip()
+    tenant_key = default_tenant or ("u-" + user_id[:8])
     async with SessionLocal() as db:
         row = (
             await db.execute(
@@ -55,12 +58,18 @@ async def _provision_tenant(user_id: str) -> str:
         if row is None:
             db.add(TenantMapping(user_id=user_id, org_id="", tenant_key=tenant_key))
             await db.commit()
+        elif default_tenant and row.tenant_key != tenant_key:
+            # 平台租户统一：已有映射也归入默认租户（与 bridge TENANT_ID 对齐）
+            row.tenant_key = tenant_key
+            await db.commit()
     return tenant_key
 
 
 @router.post("/register")
 async def register(body: RegisterRequest):
-    """自助注册: 代理 Authen register/email（需要邮箱验证码）。"""
+    """自助注册: 代理 Authen register/email（需要邮箱验证码），成功后签发平台 JWT。
+    已存在用户（邮箱重复 422）时自动回退 login（identifier=email, password）取 Authen access_token，
+    保证老用户登录态可持续（同 secret 校验通过即视为平台 JWT）。"""
     async with httpx.AsyncClient(timeout=20) as client:
         r = await client.post(
             f"{AUTHEN_BASE}/api/v1/auth/register/email",
@@ -71,12 +80,45 @@ async def register(body: RegisterRequest):
                 "verification_code": body.verification_code,
             },
         )
-    if r.status_code != 200:
-        detail = r.json().get("detail") if r.content else "注册失败"
-        raise HTTPException(status_code=r.status_code, detail=detail)
+        if r.status_code != 200:
+            # 回退：已有账号 → 直接登录（identifier 兼容 email/手机号）
+            r2 = await client.post(
+                f"{AUTHEN_BASE}/api/v1/auth/login",
+                json={"identifier": body.email, "password": body.password},
+            )
+            if r2.status_code != 200:
+                detail = r.json().get("detail") if r.content else "注册失败"
+                raise HTTPException(status_code=r.status_code, detail=detail)
+            login_payload = r2.json()
+            user_id = str(login_payload.get("user", {}).get("id", ""))
+            tenant_key = await _provision_tenant(user_id)
+            # Authen access_token 与平台同 secret 签名，直接作为平台 JWT
+            token = login_payload.get("access_token", "") or _issue_jwt(user_id)
+            return {"success": True, "message": "登录成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
     user_id = r.json().get("user_id", "")
-    await _provision_tenant(user_id)
-    return {"success": True, "message": "注册成功", "user_id": user_id}
+    tenant_key = await _provision_tenant(user_id)
+    token = _issue_jwt(user_id)
+    return {"success": True, "message": "注册成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
+
+
+def _issue_jwt(user_id: str) -> str:
+    """签发平台 JWT（与 Authen 同 secret/算法，sub=user_id，供 require_auth 校验）。"""
+    from datetime import datetime, timedelta, timezone
+
+    from jose import jwt
+
+    secret = os.environ.get("AUTHEN_JWT_SECRET", "")
+    if not secret:
+        return ""
+    return jwt.encode(
+        {
+            "sub": user_id,
+            "username": "",
+            "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+        },
+        secret,
+        algorithm="HS256",
+    )
 
 
 @router.post("/admin/users")

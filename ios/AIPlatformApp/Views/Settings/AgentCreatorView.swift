@@ -79,12 +79,11 @@ public enum LocalAgentTemplateEngine {
 
 public struct AgentCreatorView: View {
     @EnvironmentObject private var appState: AppState
-    @ObservedObject private var store = LocalArtifactStore.shared
 
     @State private var purposeText: String = ""
     @State private var isCreating: Bool = false
     @State private var createdAgent: AgentNode? = nil
-    @State private var cloudWriteFailed: Bool = false
+    @State private var creationFailed: Bool = false
     @State private var creationError: String? = nil
 
     private let presetPurposes = [
@@ -254,9 +253,9 @@ public struct AgentCreatorView: View {
             }
             .buttonStyle(SoftButtonStyle())
 
-            Text(cloudWriteFailed ? (creationError ?? "云端写入失败 · 已存本地演示") : "已写入云端 PostgreSQL")
+            Text(creationFailed ? (creationError ?? "创建失败，请稍后重试") : "已写入云端 · 真实数据")
                 .font(.system(size: 10))
-                .foregroundColor(cloudWriteFailed ? AppTheme.Colors.securityYellow : AppTheme.Colors.textTertiary)
+                .foregroundColor(creationFailed ? AppTheme.Colors.securityRed : AppTheme.Colors.textTertiary)
                 .frame(maxWidth: .infinity, alignment: .center)
         }
     }
@@ -271,7 +270,7 @@ public struct AgentCreatorView: View {
         #endif
         isCreating = true
         createdAgent = nil
-        cloudWriteFailed = false
+        creationFailed = false
         creationError = nil
 
         let template = LocalAgentTemplateEngine.match(purpose)
@@ -286,7 +285,7 @@ public struct AgentCreatorView: View {
                 // 直写云端 PostgreSQL（201），base_agent_id 由后端白名单校验（非法 422）
                 let dto = try await APIClient.shared.createTenantAgent(body)
                 isCreating = false
-                let agent = AgentNode(
+                createdAgent = AgentNode(
                     id: dto.id,
                     name: dto.customName ?? dto.baseAgentId,
                     roleCategory: template.roleCategory,
@@ -294,34 +293,19 @@ public struct AgentCreatorView: View {
                     status: .idle,
                     position: CGPoint(x: 0, y: 0)
                 )
-                createdAgent = agent
-                // 双轨：本地 JSON 同步一份演示记录（原子写 + .bak 恢复）
-                store.addAgent(Self.record(from: agent))
                 #if os(iOS)
                 UINotificationFeedbackGenerator().notificationOccurred(.success)
                 #endif
             } catch {
-                // 云端写入失败：本地回滚（模板引擎落本地演示），诚实提示
+                // 云端失败：诚实报错，绝不落本地演示数据
                 isCreating = false
-                let agent = LocalAgentTemplateEngine.build(from: purpose)
-                createdAgent = agent
-                store.addAgent(Self.record(from: agent))
-                cloudWriteFailed = true
-                creationError = "云端写入失败，已保存到本地演示"
+                creationFailed = true
+                creationError = "创建失败：\(error.localizedDescription)"
+                #if os(iOS)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                #endif
             }
         }
-    }
-
-    /// AgentNode → 本地持久化记录（CreatedAgent）。
-    private static func record(from agent: AgentNode) -> CreatedAgent {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return CreatedAgent(
-            name: agent.name,
-            responsibility: agent.systemPromptSummary,
-            createdAt: formatter.string(from: Date()),
-            version: "v1.0"
-        )
     }
 
     private func goToChat() {

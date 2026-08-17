@@ -21,6 +21,7 @@ from backend.api.protocols import router as protocols_router
 from backend.api.agents import router as agents_router
 from backend.api.notifications import router as notifications_router
 from backend.api.topology import router as topology_router
+from backend.api.skills import router as skills_router
 from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
 from backend.db import init_db
@@ -103,6 +104,8 @@ app.include_router(agents_router, dependencies=[Depends(require_auth)])
 app.include_router(notifications_router, dependencies=[Depends(require_auth)])
 # 拓扑注册表（对话页 Agent 选择栏 + 拓扑页 DAG 同源消费）
 app.include_router(topology_router, dependencies=[Depends(require_auth)])
+# 租户真实技能库（挂载目录扫描·非演示数据）
+app.include_router(skills_router, dependencies=[Depends(require_auth)])
 # 租户 Agent 切片（基于基线 profile 的 Delta 角色扮演 · 多租户隔离）
 app.include_router(tenant_agents_router, dependencies=[Depends(require_auth)])
 # Hermes serve 集成（Tab 1 官方 Web 容器认证通道 · B-2-2）

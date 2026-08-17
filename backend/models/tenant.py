@@ -30,7 +30,8 @@ class TenantMapping(Base):
 
     user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     org_id: Mapped[str] = mapped_column(String(64), default="")
-    tenant_key: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    # 多用户共享租户：tenant_key 不得唯一（曾误设 unique 导致多用户无法同租户）
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     is_super_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     username: Mapped[str | None] = mapped_column(String(64), nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String(255), nullable=True)

@@ -10,11 +10,11 @@ import SwiftUI
 
 public struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
-    @ObservedObject private var store = LocalArtifactStore.shared
 
     @State private var showingProfileEdit: Bool = false
-    /// 云端租户 Agent（含对话中 skill_manage 创建的）：拓扑/设置同源展示
+    /// 云端真实数据（无任何演示数据）：拓扑/设置同源消费
     @State private var cloudAgents: [TenantAgentDTO] = []
+    @State private var cloudSkills: [TenantSkillDTO] = []
 
     public init() {}
 
@@ -61,9 +61,12 @@ public struct SettingsView: View {
                 ProfileEditSheet()
             }
             .task {
-                // 拉取云端租户 Agent（对话创建 + 设置页创建）：拓扑/设置同源展示
+                // 云端真实数据（非演示）：智能体 + 技能，拓扑/设置同源消费
                 if let list = try? await APIClient.shared.fetchTenantAgents() {
                     cloudAgents = list
+                }
+                if let skills = try? await APIClient.shared.fetchTenantSkills() {
+                    cloudSkills = skills
                 }
             }
         }
@@ -132,24 +135,20 @@ public struct SettingsView: View {
         .buttonStyle(SoftButtonStyle())
     }
 
-    // MARK: - 3.5 我创建的智能体 + 我制作的技能（演示数据·不可交互）
+    // MARK: - 3.5 我创建的智能体 + 我制作的技能（纯云端真实数据）
 
     private func createdAgentsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             artifactHeader(icon: "sparkles", title: "我创建的智能体", accent: AppTheme.Colors.quantumViolet)
-            let cloudRows = cloudAgents.map { agent in
+            let rows = cloudAgents.map { agent in
                 AgentRowData(
                     id: agent.id,
                     name: agent.customName ?? agent.baseAgentId,
                     responsibility: agent.privatePromptDelta.isEmpty ? "基于基线 \(agent.baseAgentId) 的租户私有切片" : agent.privatePromptDelta,
                     createdAt: agent.createdAt ?? "",
-                    version: "云端"
+                    accent: AppTheme.Colors.quantumViolet
                 )
             }
-            let localRows = store.agents.map { agent in
-                AgentRowData(id: agent.id, name: agent.name, responsibility: agent.responsibility, createdAt: agent.createdAt, version: "本地")
-            }
-            let rows = cloudRows + localRows
             if rows.isEmpty {
                 emptyArtifactHint("尚未创建智能体，使用上方「创建智能体」或在对话中提出「创建一个…的agent」")
             } else {
@@ -158,13 +157,12 @@ public struct SettingsView: View {
                         name: row.name,
                         responsibility: row.responsibility,
                         createdAt: row.createdAt,
-                        version: row.version,
                         accent: AppTheme.Colors.quantumViolet,
                         onDelete: {
-                            if row.version == "云端" {
-                                Task { _ = try? await APIClient.shared.deleteTenantAgent(id: row.id) }
-                            } else {
-                                store.removeAgent(id: row.id)
+                            Task {
+                                if (try? await APIClient.shared.deleteTenantAgent(id: row.id)) != nil {
+                                    cloudAgents.removeAll { $0.id == row.id }
+                                }
                             }
                         }
                     )
@@ -181,23 +179,22 @@ public struct SettingsView: View {
         let name: String
         let responsibility: String
         let createdAt: String
-        let version: String
+        let accent: Color
     }
 
     private func createdSkillsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             artifactHeader(icon: "bolt.fill", title: "我制作的技能", accent: AppTheme.Colors.quantumCyan)
-            if store.skills.isEmpty {
-                emptyArtifactHint("尚未制作技能（技能创建入口后续轮次接入）")
+            if cloudSkills.isEmpty {
+                emptyArtifactHint("尚未制作技能——在对话中提出「创建一个…的agent」将自动生成租户专属技能")
             } else {
-                ForEach(store.skills) { skill in
+                ForEach(cloudSkills) { skill in
                     artifactRow(
                         name: skill.name,
-                        responsibility: skill.responsibility,
-                        createdAt: skill.createdAt,
-                        version: skill.version,
+                        responsibility: skill.description.isEmpty ? "租户专属技能" : skill.description,
+                        createdAt: skill.createdAt ?? "",
                         accent: AppTheme.Colors.quantumCyan,
-                        onDelete: { store.removeSkill(id: skill.id) }
+                        onDelete: {}
                     )
                 }
             }
@@ -215,13 +212,6 @@ public struct SettingsView: View {
             Text(title)
                 .font(.system(size: 14, weight: .bold))
                 .foregroundColor(AppTheme.Colors.textPrimary)
-            Text("本地演示")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(AppTheme.Colors.textTertiary)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(AppTheme.Colors.tertiaryBackground)
-                .clipShape(Capsule())
             Spacer()
         }
     }
@@ -234,8 +224,8 @@ public struct SettingsView: View {
             .frame(maxWidth: .infinity)
     }
 
-    /// 本地持久化记录卡：名称 / 职责 / 创建时间 / 版本 + 删除（去 live 语义）。
-    private func artifactRow(name: String, responsibility: String, createdAt: String, version: String, accent: Color, onDelete: @escaping () -> Void) -> some View {
+    /// 云端真实记录卡：名称 / 职责 / 创建时间 + 删除。
+    private func artifactRow(name: String, responsibility: String, createdAt: String, accent: Color, onDelete: @escaping () -> Void) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle()
@@ -246,9 +236,6 @@ public struct SettingsView: View {
                     .foregroundColor(AppTheme.Colors.textPrimary)
                     .lineLimit(1)
                 Spacer()
-                Text(version)
-                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                    .foregroundColor(accent)
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 12))
@@ -260,9 +247,11 @@ public struct SettingsView: View {
                 .font(.system(size: 12))
                 .foregroundColor(AppTheme.Colors.textSecondary)
                 .lineSpacing(1)
-            Text("创建于 \(createdAt) · 本地演示")
-                .font(.system(size: 11))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+            if !createdAt.isEmpty {
+                Text("创建于 \(createdAt)")
+                    .font(.system(size: 11))
+                    .foregroundColor(AppTheme.Colors.textTertiary)
+            }
         }
         .padding(AppTheme.Spacing.sm)
         .background(AppTheme.Colors.secondaryBackground)

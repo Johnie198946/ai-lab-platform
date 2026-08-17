@@ -65,6 +65,8 @@ services:
       # 飞书通知(Agent 汇报通道 · 自定义机器人 webhook · 未配置则仅站内)
       FEISHU_WEBHOOK_URL: ${FEISHU_WEBHOOK_URL:-}
       # Hermes 桥接(容器 → 宿主机 Hermes)
+      # 平台租户统一：新注册用户归入该租户（与 bridge TENANT_ID 一致，保证对话技能与 API 数据同租户可见）
+      DEFAULT_TENANT_KEY: ${DEFAULT_TENANT_KEY:-}
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
       # Hermes Dashboard 会话 Token（Tab 1 官方 Web 容器认证通道 · B-2-2；
       # 部署时须与宿主机 hermes-serve 的 HERMES_DASHBOARD_SESSION_TOKEN 同值，否则 401）

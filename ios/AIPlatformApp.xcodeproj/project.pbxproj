@@ -36,7 +36,6 @@
 		8A5A9BA341A670FC81416FDE /* MarkdownCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA248235E4F8F54568B90C23 /* MarkdownCards.swift */; };
 		A080A729E179FA79032A414E /* SessionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEC763B7972BB3B1AF533EB4 /* SessionDrawerSheet.swift */; };
 		A90220533C07201C3B17C5B6 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6C3999D4D79E502B3827976F /* SettingsView.swift */; };
-		AE5A3CC965F3BF6DE4F2D9D4 /* LocalArtifactStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EBADA126A671C61D293BE967 /* LocalArtifactStore.swift */; };
 		AF3FBBCFB0CCECD37F56C829 /* AgentCreatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F1BB3C5ED04BDD0018FB3421 /* AgentCreatorView.swift */; };
 		B11A605E5DA136F4CEC7F3C3 /* ReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A8895E27447B9A9076EB1D59 /* ReasoningCard.swift */; };
 		BF6487D4B02C2A259642AFD4 /* AttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */; };
@@ -90,7 +89,6 @@
 		D1E31A390B5DA9F45A4E7E6F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		D8C3C41383CABE92AED74AF8 /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
 		DEA8E5B249F6B3A2259CE92A /* PlusMenuSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlusMenuSheet.swift; sourceTree = "<group>"; };
-		EBADA126A671C61D293BE967 /* LocalArtifactStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LocalArtifactStore.swift; sourceTree = "<group>"; };
 		EEC763B7972BB3B1AF533EB4 /* SessionDrawerSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionDrawerSheet.swift; sourceTree = "<group>"; };
 		EF73CD2E97B8DC153BDFD826 /* ChatMessageStreamView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageStreamView.swift; sourceTree = "<group>"; };
 		F1BB3C5ED04BDD0018FB3421 /* AgentCreatorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentCreatorView.swift; sourceTree = "<group>"; };
@@ -201,7 +199,6 @@
 			isa = PBXGroup;
 			children = (
 				F8E70EAC9E0B5B8A7FA5B187 /* InboxFileManager.swift */,
-				EBADA126A671C61D293BE967 /* LocalArtifactStore.swift */,
 				5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */,
 				C46EACC0E8183D29E10202F1 /* QuickCommandTracker.swift */,
 				AC6CC416750077F6D7DF859B /* SpeechRecognizerService.swift */,
@@ -382,7 +379,6 @@
 				EA5709C3A46D1DE62905B40C /* ImageCard.swift in Sources */,
 				C9A8805D56EF7F858B0ADD99 /* InboxFileManager.swift in Sources */,
 				EA82BF67AC18747EC5F3FA3E /* KnowledgeView.swift in Sources */,
-				AE5A3CC965F3BF6DE4F2D9D4 /* LocalArtifactStore.swift in Sources */,
 				C5628D34D35E19AAF03CA518 /* LoginView.swift in Sources */,
 				835F48448522A2A88E0C7165 /* MainTabView.swift in Sources */,
 				1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */,
