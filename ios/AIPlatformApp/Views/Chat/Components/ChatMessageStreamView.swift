@@ -2,30 +2,15 @@
 //  ChatMessageStreamView.swift
 //  AIPlatformApp
 //
-//  ChatGPT / Gemini Style Message Stream with Smart Auto-Scroll
-//  - ScrollViewReader + LazyVStack message canvas
-//  - Auto-follow while streaming; user drag-up pauses follow and shows "返回最新" floating capsule
+//  ChatGPT / Gemini Style Message Stream (v2 - Butter-Smooth & Zero-Jank)
+//  - Pure ScrollViewReader + LazyVStack message canvas
+//  - Stable scroll anchor without continuous GeometryReader preference loops
 //
 
 import SwiftUI
 
-// MARK: - Scroll Offset Preference
-
-public struct ChatScrollOffsetKey: PreferenceKey {
-    public static var defaultValue: CGFloat = 0
-    public static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
-// MARK: - Message Stream Canvas
-
 public struct ChatMessageStreamView: View {
     @ObservedObject public var coordinator: TenantSessionCoordinator
-
-    @State private var scrollOffset: CGFloat = 0
-    @State private var autoScroll: Bool = true
-    @State private var showBackToLatest: Bool = false
 
     public init(coordinator: TenantSessionCoordinator) {
         self.coordinator = coordinator
@@ -33,75 +18,41 @@ public struct ChatMessageStreamView: View {
 
     public var body: some View {
         ScrollViewReader { proxy in
-            ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    LazyVStack(spacing: AppTheme.Spacing.md) {
-                        ForEach(coordinator.messages) { message in
-                            messageRow(message).id(message.id)
-                        }
-                        ForEach(Array(coordinator.pendingQueue.enumerated()), id: \.element.id) { index, item in
-                            PendingPlaceholderView(
-                                position: index + 1,
-                                onCancel: { coordinator.cancelQueued(item.id) }
-                            ).id("pending_\(item.id)")
-                        }
+            ScrollView {
+                LazyVStack(spacing: AppTheme.Spacing.md) {
+                    ForEach(coordinator.messages) { message in
+                        messageRow(message).id(message.id)
                     }
-                    .padding(.vertical, AppTheme.Spacing.md)
-                    .background(
-                        GeometryReader { geo in
-                            Color.clear.preference(
-                                key: ChatScrollOffsetKey.self,
-                                value: geo.frame(in: .named("chatScroll")).minY
-                            )
-                        }
-                    )
-                }
-                .coordinateSpace(name: "chatScroll")
-                .onPreferenceChange(ChatScrollOffsetKey.self) { value in
-                    scrollOffset = value
-                    // 用户向上翻看历史（offset 变大）→ 暂停自动吸底并弹出悬浮按钮
-                    if value > 48 {
-                        autoScroll = false
-                        showBackToLatest = true
+                    ForEach(Array(coordinator.pendingQueue.enumerated()), id: \.element.id) { index, item in
+                        PendingPlaceholderView(
+                            position: index + 1,
+                            onCancel: { coordinator.cancelQueued(item.id) }
+                        ).id("pending_\(item.id)")
                     }
-                }
-                .onChange(of: coordinator.messages.count) { _, _ in
-                    if autoScroll { scrollToLatest(proxy) }
-                }
-                .onChange(of: coordinator.pendingQueue.count) { _, _ in
-                    if autoScroll { scrollToLatest(proxy) }
-                }
-                .onChange(of: coordinator.inflight?.id) { _, _ in
-                    if autoScroll { scrollToLatest(proxy) }
-                }
 
-                if showBackToLatest {
-                    Button(action: {
-                        withAnimation(.easeOut(duration: 0.3)) {
-                            autoScroll = true
-                            showBackToLatest = false
-                            scrollToLatest(proxy)
-                        }
-                    }) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.down")
-                                .font(.system(size: 11, weight: .bold))
-                            Text("返回最新")
-                                .font(.system(size: 12, weight: .semibold))
-                        }
-                        .foregroundColor(AppTheme.Colors.onPrimary)
-                        .padding(.horizontal, AppTheme.Spacing.md)
-                        .padding(.vertical, 8)
-                        .background(AppTheme.Colors.quantumBlue)
-                        .clipShape(Capsule())
-                        .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.4), radius: 8, x: 0, y: 3)
-                    }
-                    .buttonStyle(SoftButtonStyle())
-                    .padding(.trailing, AppTheme.Spacing.md)
-                    .padding(.bottom, AppTheme.Spacing.sm)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    // 底部锚点，确保可靠滚动吸底
+                    Color.clear
+                        .frame(height: 1)
+                        .id("bottom_anchor")
                 }
+                .padding(.vertical, AppTheme.Spacing.md)
             }
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: coordinator.messages.count) { _, _ in
+                scrollToBottom(proxy)
+            }
+            .onChange(of: coordinator.pendingQueue.count) { _, _ in
+                scrollToBottom(proxy)
+            }
+            .onChange(of: coordinator.inflight?.id) { _, _ in
+                scrollToBottom(proxy)
+            }
+        }
+    }
+
+    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+        withAnimation(.easeOut(duration: 0.25)) {
+            proxy.scrollTo("bottom_anchor", anchor: .bottom)
         }
     }
 
@@ -135,10 +86,8 @@ public struct ChatMessageStreamView: View {
         } else {
             MessageBubbleView(
                 message: message,
-                onQuoteFollowUp: { quote in
-                    withAnimation(.spring()) { coordinator.quotedContext = quote }
-                },
-                onRegenerate: { messageId in coordinator.retryMessage(messageId) }
+                onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted },
+                onRegenerate: { msgId in coordinator.retryMessage(msgId) }
             )
         }
     }
@@ -148,21 +97,21 @@ public struct ChatMessageStreamView: View {
     private func liveBlockCard(_ block: MessageBlock) -> some View {
         switch block {
         case .reasoning(let steps):
-            ReasoningCard(steps: steps, durationSeconds: nil, isStreaming: true)
-        case .clarify(let clarify):
-            ClarifyCard(block: clarify, onSubmit: { selection in
-                coordinator.sendClarifySelection(messageId: coordinator.inflight?.id ?? "", selection: selection)
-            })
+            ReasoningCard(steps: steps, isStreaming: true)
+        case .clarify(let clarifyBlock):
+            ClarifyCard(
+                block: clarifyBlock,
+                onSubmit: { selection in
+                    if let msg = coordinator.messages.first(where: {
+                        if case .clarify(let c) = $0.blocks.first { return c.id == clarifyBlock.id }
+                        return false
+                    }) {
+                        coordinator.sendClarifySelection(messageId: msg.id, selection: selection)
+                    }
+                }
+            )
         default:
             EmptyView()
-        }
-    }
-
-    private func scrollToLatest(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.25)) {
-            if let last = coordinator.messages.last {
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
         }
     }
 }
