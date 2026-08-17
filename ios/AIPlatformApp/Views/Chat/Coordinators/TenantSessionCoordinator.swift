@@ -624,14 +624,12 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     // MARK: - Clarify 5态沙箱与 Watchdog 守护
 
-    // MARK: - Clarify 统一会话推进（点击即出用户气泡 + 思维链胶囊 + 流式直推）
+    // MARK: - Clarify 统一会话推进（选项卡 100% 就是对话）
 
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        let sid = sessionManager.activeSessionID()
-        let clarifyId = messages[idx].clarifyBlock?.clarifyId
 
-        // 1. 立即标记卡片已提交（ClarifyCard 变成绿色已确认小条）
+        // 1. 标记当前卡片已确认
         if let blockIdx = messages[idx].blocks.firstIndex(where: {
             if case .clarify = $0 { return true }
             return false
@@ -643,33 +641,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         commitSession()
 
-        // 2. 后台异步通知 bridge clarify 解锁（若存在在途等待线程）
-        if let clarifyId {
-            Task {
-                _ = try? await APIClient.shared.submitClarify(
-                    sessionId: sid,
-                    response: selection,
-                    clarifyId: clarifyId
-                )
-            }
-        }
-
-        // 3. 顶层核心铁律（选项卡本质就是对话）：
-        //    点击选项的微秒级：立刻展示用户气泡 + 立刻弹出 Assistant Thinking 思维链胶囊 + 
-        //    以 regenerate: true 发起流式推进（强制让 bridge 接收并执行，绝不被并发防护拒绝）
-        #if os(iOS)
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        #endif
-
-        messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
-        commitSession()
-
-        // 立即设置思维链初始文案，绝不留白
-        thinkingPhase = "reasoning"
-        thinkingDetail = "正在根据您的选择推进方案…"
-
-        // 立即拉起流式生成（创建 pending Assistant 消息 + Thinking 胶囊立显）
-        startGeneration(text: selection, quote: nil, regenerate: true)
+        // 2. 核心：选项卡 100% 就是对话 —— 直接作为用户消息发送！
+        //    立刻展示用户气泡 + 立刻调起 Assistant 思维链胶囊 + 后端流式直出
+        sendMessage(text: selection, regenerate: true)
     }
 
     // MARK: - 辅助方法与操作
