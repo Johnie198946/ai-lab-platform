@@ -690,9 +690,14 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     public func sendClarifySelection(messageId: String, selection: String) {
-        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        print("👉 [Clarify Debug] 收到点击事件, messageId: \(messageId), selection: \(selection)")
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else {
+            print("❌ [Clarify Debug] 未找到 messageId: \(messageId)")
+            return
+        }
         let sid = sessionManager.activeSessionID()
         let clarifyId = messages[idx].clarifyBlock?.clarifyId
+        print("👉 [Clarify Debug] 开始提交选项: \(selection), clarifyId: \(clarifyId ?? "nil")")
 
         // 1. 立即标记卡片已确认（ClarifyCard 变绿色已确认小条）
         if let blockIdx = messages[idx].blocks.firstIndex(where: {
@@ -704,52 +709,26 @@ public final class TenantSessionCoordinator: ObservableObject {
                 messages[idx].blocks[blockIdx] = .clarify(c)
             }
         }
+
+        // 2. 立即追加单条用户选择气泡（保证对话连续性，且不重复插话）
+        messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
         commitSession()
 
-        // 2. 立即在卡片消息上插入「正在推进」思维链胶囊（用户点击即有反馈）
-        updateReasoningSteps(for: idx) { steps in
-            if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
-                steps[tIdx].title = "已收到选择，正在继续处理…"
-                steps[tIdx].status = "running"
-            } else {
-                steps.insert(
-                    ReasoningStep(
-                        type: .thought,
-                        title: "已收到选择，正在继续处理…",
-                        status: "running"
-                    ),
-                    at: 0
-                )
-            }
-        }
+        // 3. 立即重置生成状态并拉起 Assistant 流式生成（带 Thinking 胶囊）
+        finishGeneration()
+        thinkingPhase = "reasoning"
+        thinkingDetail = "已收到选择，正在继续处理…"
+        print("✅ [Clarify Debug] 准备开启 Assistant 流式响应 (regenerate: true)...")
+        startGeneration(text: selection, quote: nil, regenerate: true)
 
-        // 3. 提交澄清响应并唤醒 AI 流式响应（致命死锁根治）
-        Task { [weak self] in
-            guard let self = self else { return }
+        // 4. 异步通知后端 clarify 解锁
+        Task {
             let submitSuccess = (try? await APIClient.shared.submitClarify(
                 sessionId: sid,
                 response: selection,
                 clarifyId: clarifyId
             )) ?? false
-
-            await MainActor.run {
-                guard self.tenantEpoch == self.tenantEpoch else { return }
-                if submitSuccess {
-                    self.thinkingPhase = "reasoning"
-                    self.thinkingDetail = "已收到选择，正在继续处理…"
-
-                    // 💡【关键修复】：提交成功后，如果当前没有处于生成流中，需要启动 AI 流式响应
-                    if !self.isGenerating {
-                        self.startGeneration(text: selection, quote: nil)
-                    }
-                } else {
-                    // 提交失败兜底：释放 isGenerating 标志位防止死锁，并以 regenerate 重试发送
-                    if self.isGenerating {
-                        self.finishGeneration()
-                    }
-                    self.sendMessage(text: selection, regenerate: true)
-                }
-            }
+            print("👉 [Clarify Debug] 后端 submitClarify 结果: \(submitSuccess)")
         }
     }
 
