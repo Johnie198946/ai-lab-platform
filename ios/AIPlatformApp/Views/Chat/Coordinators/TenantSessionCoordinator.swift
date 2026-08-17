@@ -353,12 +353,19 @@ public final class TenantSessionCoordinator: ObservableObject {
             }
             guard self.tenantEpoch == taskEpoch else { return }
 
-            // 兜底补全：若流式连接提前断开或未收到 delta/done.answer，从 status 端点回读最终正文
+            // 兜底补全：若流式连接提前断开或未收到 delta/done.answer，从 status 端点或 non-stream 接口补全，确保绝不遗留空气泡
             if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                 if messages[idx].content.isEmpty && messages[idx].clarifyBlock == nil {
-                    if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId),
+                    if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId, consume: true),
                        let ans = status.answer, !ans.isEmpty {
                         messages[idx].content = ans
+                    } else if let chatResp = try? await APIClient.shared.chat(
+                        question: req.text,
+                        sessionId: req.sessionId,
+                        quotedContext: req.quote?.text,
+                        agentId: appState?.selectedAgentId
+                    ), !chatResp.answer.isEmpty {
+                        messages[idx].content = chatResp.answer
                     }
                 }
                 messages[idx].pending = false
