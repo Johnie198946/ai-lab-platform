@@ -427,11 +427,14 @@ public final class APIClient: ObservableObject {
     }
 
     /// 底层请求执行：统一处理 401（不重试→needsReauth）、状态码、离线降级标注与 GET 幂等单次重试。
-    /// 瞬态网络错误（DNS/连接拒绝/超时）对 GET 自动重试 1 次；重试成功复位 isOfflineMode，仍失败置 true。
+    /// 底层请求执行：统一处理 401（不重试→needsReauth）、状态码、离线降级标注与 GET 幂等单次重试。
+    /// - Parameter reauthOn401: 401 是否触发全局重登（清 token + needsReauth）。
+    ///   主链路请求传 true；辅助/探测请求（如断点状态回读）传 false——失败静默降级，不误踢登录页。
     private func perform(
         _ request: URLRequest,
         session: URLSession,
-        canRetry: Bool
+        canRetry: Bool,
+        reauthOn401: Bool = true
     ) async throws -> Data {
         var attempt = 0
         while true {
@@ -441,10 +444,12 @@ public final class APIClient: ObservableObject {
                     throw APIError.network("无效响应")
                 }
                 if http.statusCode == 401 {
-                    // 401 绝不重试：清 token 置 needsReauth，交由根协调器引导登录
-                    clearToken()
-                    isOfflineMode = false
-                    needsReauth = true
+                    // 401 绝不重试：主链路清 token 置 needsReauth 引导登录；探测链路仅抛错由调用方降级
+                    if reauthOn401 {
+                        clearToken()
+                        isOfflineMode = false
+                        needsReauth = true
+                    }
                     throw APIError.unauthorized
                 }
                 guard (200..<300).contains(http.statusCode) else {
@@ -881,7 +886,7 @@ public final class APIClient: ObservableObject {
         if let token = currentToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        let data = try await perform(request, session: session, canRetry: true)
+        let data = try await perform(request, session: session, canRetry: true, reauthOn401: false)
         do {
             return try decoder.decode(ChatStatusDTO.self, from: data)
         } catch {

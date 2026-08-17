@@ -832,6 +832,12 @@ public final class TenantSessionCoordinator: ObservableObject {
         let quote = messages[userIdx].quotedContext
         let sid = sessionManager.activeSessionID()
 
+        // 未登录/无有效 token：断点探测与重跑均需认证，先给出明确提示（不无声硬跳登录页）
+        guard APIClient.shared.currentToken() != nil else {
+            showToast("需要登录后继续会话，请先登录")
+            return
+        }
+
         // 先探测服务器：断点重续优先（避免重复烧 token + 完整上下文回显）
         let probeTask = Task { @MainActor in
             if !sid.isEmpty {
