@@ -2,10 +2,11 @@
 //  ReasoningCard.swift
 //  AIPlatformApp
 //
-//  ChatGPT / Gemini Style Thinking Capsule & Timeline
-//  - Streaming: Expands timeline with step reveal & breathing indicator.
-//  - Completed: Auto-collapses to a compact capsule with duration (e.g. "已深度思考 4 秒 · 展开").
-//  - User-Intent Aware: Preserves user's manual toggle choice.
+//  ChatGPT / Gemini Style Thinking Capsule & Timeline (v2)
+//  - Reasoning: subtle pulsing pill "思考中…" with live step chain streaming below.
+//  - Completed: collapses into a minimal pill "已深度思考 N 秒" (no step count noise,
+//    no "展开" text — just icon + duration + chevron), tap to expand.
+//  - Expanded: numbered step timeline with per-type accent dot.
 //
 
 import SwiftUI
@@ -24,6 +25,7 @@ public struct ReasoningCard: View {
         self.isStreaming = isStreaming
     }
 
+    /// 流式进行中默认展开（实时链可见）；完成后收起为胶囊；用户手动切换后尊重用户
     private var effectiveExpanded: Bool {
         if userToggled { return isExpanded }
         return isStreaming
@@ -34,110 +36,104 @@ public struct ReasoningCard: View {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                // 折叠胶囊头部
+                // ChatGPT 风格胶囊头部（极简：图标 + 文案 + 纯 chevron，无多余文字）
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.22)) {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         userToggled = true
                         isExpanded = !effectiveExpanded
                     }
                 }) {
-                    HStack(spacing: AppTheme.Spacing.xs) {
+                    HStack(spacing: 6) {
                         Image(systemName: isStreaming ? "brain.head.profile" : "sparkles")
-                            .font(.system(size: 12, weight: .semibold))
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundColor(AppTheme.Colors.quantumViolet)
                             .symbolEffect(.pulse, isActive: isStreaming)
 
                         Text(headerTitle)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(AppTheme.Colors.textPrimary)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(AppTheme.Colors.textSecondary)
+                            .lineLimit(1)
 
-                        Spacer()
+                        Spacer(minLength: 0)
 
-                        Text(effectiveExpanded ? "收起" : "展开")
-                            .font(.system(size: 11))
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(AppTheme.Colors.textTertiary)
-
-                        Image(systemName: effectiveExpanded ? "chevron.up" : "chevron.down")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
+                            .rotationEffect(.degrees(effectiveExpanded ? 90 : 0))
                     }
-                    .padding(.horizontal, AppTheme.Spacing.md)
+                    .padding(.horizontal, 12)
                     .padding(.vertical, 7)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(SoftButtonStyle())
 
-                // 展开时间线
+                // 展开时间线（编号步骤 + 类型色点）
                 if effectiveExpanded {
-                    Divider()
-                        .background(AppTheme.Colors.border.opacity(0.4))
-
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                            ReasoningStepRow(step: step, isLast: index == steps.count - 1)
+                            ReasoningStepRow(index: index + 1, step: step, isLast: index == steps.count - 1)
                         }
                     }
-                    .padding(.horizontal, AppTheme.Spacing.md)
-                    .padding(.vertical, AppTheme.Spacing.sm)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(AppTheme.Colors.quantumViolet.opacity(0.06))
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            .background(AppTheme.Colors.cardBackground.opacity(0.65))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                    .stroke(AppTheme.Colors.quantumViolet.opacity(0.18), lineWidth: 0.5)
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(AppTheme.Colors.border.opacity(0.6), lineWidth: 0.5)
             )
         }
     }
 
     private var headerTitle: String {
         if isStreaming {
-            return "深度思考中 (\(steps.count) 步)..."
+            return "思考中…"
         }
         if let sec = durationSeconds, sec > 0 {
-            return "已深度思考 \(sec) 秒 (\(steps.count) 步)"
+            return "已深度思考 \(sec) 秒"
         }
-        return "已深度思考 (\(steps.count) 步)"
+        return "已深度思考"
     }
 }
 
 public struct ReasoningStepRow: View {
+    public let index: Int
     public let step: ReasoningStep
     public let isLast: Bool
 
-    public init(step: ReasoningStep, isLast: Bool) {
+    public init(index: Int, step: ReasoningStep, isLast: Bool) {
+        self.index = index
         self.step = step
         self.isLast = isLast
     }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-            VStack(spacing: 0) {
+        HStack(alignment: .top, spacing: 8) {
+            // 编号徽标
+            ZStack {
                 Circle()
-                    .fill(dotColor)
-                    .frame(width: 8, height: 8)
-                    .padding(.top, 4)
-
-                if !isLast {
-                    Rectangle()
-                        .fill(AppTheme.Colors.border.opacity(0.6))
-                        .frame(width: 1)
-                        .frame(minHeight: 18)
-                }
+                    .fill(dotColor.opacity(0.12))
+                    .frame(width: 20, height: 20)
+                Text("\(index)")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(dotColor)
             }
-            .frame(width: 12)
+            .padding(.top, 2)
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Text(step.title)
                         .font(.system(size: 12, weight: .medium))
                         .foregroundColor(AppTheme.Colors.textPrimary)
 
                     if step.status == "running" {
                         ProgressView()
-                            .scaleEffect(0.6)
-                            .frame(width: 12, height: 12)
+                            .scaleEffect(0.55)
+                            .frame(width: 10, height: 10)
                     }
                 }
 
@@ -146,9 +142,10 @@ public struct ReasoningStepRow: View {
                         .font(.system(size: 11))
                         .foregroundColor(AppTheme.Colors.textSecondary)
                         .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(3)
                 }
             }
-            .padding(.bottom, isLast ? 0 : AppTheme.Spacing.xs)
+            .padding(.bottom, isLast ? 0 : 8)
 
             Spacer(minLength: 0)
         }
