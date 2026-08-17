@@ -90,7 +90,7 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
     """
     observed_during_stream: list[set] = []
 
-    async def fake_bridge_stream(goal: str, session_id: str):
+    async def fake_bridge_stream(goal: str, session_id: str, regenerate: bool = False):
         observed_during_stream.append(set(_streaming_sessions))
         yield "data: {\"type\":\"delta\",\"content\":\"你\"}\n\n"
         yield "data: {\"type\":\"delta\",\"content\":\"好\"}\n\n"
@@ -127,7 +127,7 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
 async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """bridge 返回非 200 时下发 error 帧而非崩溃。"""
 
-    async def fake_bridge_stream(goal: str, session_id: str):
+    async def fake_bridge_stream(goal: str, session_id: str, regenerate: bool = False):
         yield "data: {\"type\":\"error\",\"code\":\"bridge\",\"message\":\"HTTP 500\"}\n\n"
 
     import backend.api.chat as chat_mod

@@ -209,6 +209,9 @@ class GoalRequest(BaseModel):
     goal: str = Field(..., max_length=MAX_INPUT)
     session_id: str | None = None  # 前端传入的 user_id（用于映射 Hermes 原生 session）
     isolation: str = Field("standard", description="向后兼容·子Agent工厂使用")
+    # 重新生成语义（2026-08-17 修复）：true 时作废旧 run（interrupt 旧 agent + discard 注册）
+    # 再启动全新尝试——对齐 ChatGPT「重新生成」= 上次回答作废重跑，而非被并发防护拒绝
+    regenerate: bool = Field(False, description="重新生成：作废旧 run 后全新执行")
 
 
 # ---------- 映射持久化 ----------
@@ -925,8 +928,9 @@ async def chat_stream(body: GoalRequest):
     if IN_PROCESS_STREAM_ENABLED:
         # 并发防护（G-6）：同 session 已有活跃 run（attached 或 detached 后台保活中）
         # → 返回 running 状态事件流，绝不启动第二个 agent
+        # 例外：regenerate=true（重新生成）→ 作废旧 run 后全新执行，不被防护拦截
         existing = _stream_run_get(user_id)
-        if existing is not None:
+        if existing is not None and not body.regenerate:
             print(f"[bridge] 并发防护: user={user_id} 已有活跃 run·拒绝新 agent")
             return StreamingResponse(
                 _busy_sse(user_id),
@@ -938,6 +942,16 @@ async def chat_stream(body: GoalRequest):
                     "X-Session-ID": user_id,
                 },
             )
+        if existing is not None and body.regenerate:
+            # 重新生成：interrupt 旧 agent 线程（若可寻址）+ 作废注册，启动全新尝试
+            print(f"[bridge] 重新生成: user={user_id} 作废旧 run 后全新执行")
+            try:
+                old_agent = (existing.get("agent_holder") or [None])[0]
+                if old_agent is not None:
+                    old_agent.interrupt(message="superseded-by-regenerate")
+            except Exception:
+                pass
+            _stream_run_discard(user_id, existing.get("run_id"))
         try:
             print(f"[bridge] v7 进程内流式: user={user_id}")
             return StreamingResponse(

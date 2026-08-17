@@ -368,6 +368,8 @@ class StreamRequest(BaseModel):
     agent_id: Optional[str] = Field(None, max_length=50)
     # 引用回复上下文（从中间回复历史消息）：透传注入 agent goal
     quoted_context: Optional[str] = Field(None, max_length=2000)
+    # 重新生成语义：true 时 bridge 作废旧 run（interrupt+discard）后启动全新尝试
+    regenerate: bool = False
 
 
 class ClarifySubmitRequest(BaseModel):
@@ -393,14 +395,14 @@ def _identity_sse(answer: str) -> Iterator[str]:
 
 
 async def _call_bridge_stream(
-    goal: str, session_id: str
+    goal: str, session_id: str, regenerate: bool = False
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
         async with client.stream(
             "POST",
             HERMES_BRIDGE_STREAM_URL,
-            json={"goal": goal, "session_id": session_id},
+            json={"goal": goal, "session_id": session_id, "regenerate": regenerate},
         ) as resp:
             if resp.status_code != 200:
                 yield f"data: {json.dumps({'type': 'error', 'code': 'bridge', 'message': f'HTTP {resp.status_code}'}, ensure_ascii=False)}\n\n"
@@ -452,7 +454,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
 
     async def _gen():
         try:
-            async for frame in _call_bridge_stream(goal, isolated_session_id):
+            async for frame in _call_bridge_stream(goal, isolated_session_id, regenerate=req.regenerate):
                 yield frame
         finally:
             _streaming_sessions.discard(isolated_session_id)

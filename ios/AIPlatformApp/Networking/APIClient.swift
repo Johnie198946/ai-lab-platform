@@ -91,12 +91,14 @@ public struct ChatRequestDTO: Encodable {
     public let sessionId: String?
     public let quotedContext: String?
     public let agentId: String?
+    public let regenerate: Bool
 
-    public init(question: String, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil) {
+    public init(question: String, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false) {
         self.question = question
         self.sessionId = sessionId
         self.quotedContext = quotedContext
         self.agentId = agentId
+        self.regenerate = regenerate
     }
 
     enum CodingKeys: String, CodingKey {
@@ -104,6 +106,7 @@ public struct ChatRequestDTO: Encodable {
         case sessionId = "session_id"
         case quotedContext = "quoted_context"
         case agentId = "agent_id"
+        case regenerate
     }
 }
 
@@ -714,10 +717,13 @@ public final class APIClient: ObservableObject {
     }
 
     /// POST /api/chat/stream：URLSession.bytes 逐行消费 SSE 事件流（真实流式）
+    /// - Parameter quotedContext: 引用历史消息上下文（若有）
     /// - Returns: AsyncThrowingStream 事件流；客户端断连/取消时自动 POST /api/chat/stream/cancel 回收服务端
     public func chatStream(
         question: String,
         sessionId: String? = nil,
+        quotedContext: String? = nil,
+        regenerate: Bool = false,
         agentId: String? = nil
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -734,8 +740,9 @@ public final class APIClient: ObservableObject {
                 ChatRequestDTO(
                     question: question,
                     sessionId: sessionId,
-                    quotedContext: nil,
-                    agentId: agentId
+                    quotedContext: quotedContext,
+                    agentId: agentId,
+                    regenerate: regenerate
                 )
             )
 

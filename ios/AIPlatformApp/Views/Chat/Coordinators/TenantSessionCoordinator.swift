@@ -201,14 +201,14 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    public func startGeneration(text: String, quote: QuotedContext?) {
+    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false) {
         isGenerating = true
         waitingSeconds = 0
         thinkingPhase = nil
         thinkingDetail = nil
         generationStartDate = Date()
         let sid = sessionManager.activeSessionID()
-        let req = InFlightRequest(id: UUID().uuidString, sessionId: sid, text: text, quote: quote)
+        let req = InFlightRequest(id: UUID().uuidString, sessionId: sid, text: text, quote: quote, regenerate: regenerate)
         inflight = req
 
         messages.append(
@@ -231,6 +231,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         let stream = APIClient.shared.chatStream(
             question: req.text,
             sessionId: req.sessionId,
+            quotedContext: req.quote?.text,   // 引用历史消息上下文（若有），对齐后端 quoted_context 注入
+            regenerate: req.regenerate,        // 重新生成：服务端作废旧 run 后全新执行
             agentId: appState?.selectedAgentId
         )
         do {
@@ -763,6 +765,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         pendingQueue.removeAll { $0.id == id }
     }
 
+    /// 重新生成（完整工作流 v2）：
+    /// 1) 先从服务器探测该会话是否已产生完整答案（断点重续语义：会话可能已在后台完成，
+    ///    status 端点 consume 模式可直接取回最终正文，无需重新烧 token）
+    /// 2) 若确实未完成/无答案 → 携带用户原句 + 引用上下文全量重跑
     public func retryMessage(_ messageId: String) {
         guard !isGenerating else { return }
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
@@ -770,8 +776,29 @@ public final class TenantSessionCoordinator: ObservableObject {
 
         let userPrompt = messages[userIdx].content
         let quote = messages[userIdx].quotedContext
-        messages.removeSubrange(idx...)
-        startGeneration(text: userPrompt, quote: quote)
+        let sid = sessionManager.activeSessionID()
+
+        // 先探测服务器：断点重续优先（避免重复烧 token + 完整上下文回显）
+        let probeTask = Task { @MainActor in
+            if !sid.isEmpty {
+                if let status = try? await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true),
+                   status.status == "completed",
+                   let answer = status.answer, !answer.isEmpty {
+                    // 断点续接命中：直接用服务器已完成的答案回填（保留全部上下文）
+                    messages[idx].content = answer
+                    messages[idx].pending = false
+                    messages[idx].isStreaming = false
+                    messages[idx].degraded = false
+                    finalizeReasoningDuration(for: messageId)
+                    commitSession()
+                    return
+                }
+            }
+            // 未命中断点 → 全量重跑（携带上下文 + regenerate 标志，服务端作废旧 run 后全新执行）
+            messages.removeSubrange(idx...)
+            startGeneration(text: userPrompt, quote: quote, regenerate: true)
+        }
+        _ = probeTask
     }
 
     public func retryCurrentInFlight() {
