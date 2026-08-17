@@ -76,7 +76,7 @@ public struct ChatMessageStreamView: View {
             } else {
                 OrphanPendingCardView(onRetry: { coordinator.retryMessage(message.id) })
             }
-        } else if let clarify = message.clarifyBlock {
+        } else if let clarify = message.clarifyBlock, !clarify.isSubmitted {
             ClarifyCard(
                 block: clarify,
                 onSubmit: { selection in
@@ -84,6 +84,8 @@ public struct ChatMessageStreamView: View {
                 }
             )
         } else {
+            // 提交后（isSubmitted）：降级为完整气泡渲染——思维链胶囊 + 已提交澄清卡 + 正文
+            // 实时可见（同 SSE 流事件驱动，绝不因澄清卡独占遮住执行过程）
             MessageBubbleView(
                 message: message,
                 onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted },
