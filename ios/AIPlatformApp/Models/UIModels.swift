@@ -585,13 +585,6 @@ public final class SessionManager: ObservableObject {
         persist(id: id)
     }
 
-    /// 组装 API 上下文：强制过滤 .interrupted / .system / degraded，仅保留纯净 user/assistant 问答对。
-    public func apiContextMessages(for id: String) -> [ChatMessage] {
-        (sessions[id] ?? []).filter {
-            ($0.role == .user || $0.role == .assistant) && !$0.degraded
-        }
-    }
-
     /// 会话屏障：在途请求被切换拦截时，在原会话把 pending 占位替换为 .interrupted（不静默丢弃）。
     public func markInterrupted(sessionId: String) {
         guard var msgs = sessions[sessionId], !msgs.isEmpty else { return }

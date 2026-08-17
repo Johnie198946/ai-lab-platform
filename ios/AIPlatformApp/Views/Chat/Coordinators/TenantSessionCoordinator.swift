@@ -37,9 +37,6 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// 澄清提交后的断点续接轮询（原 SSE 流已断时兜底：completed 后回填最终答复，绝不无声等待）
     private var resumePollTask: Task<Void, Never>? = nil
     private var animationTasks: [String: Task<Void, Never>] = [:]
-    private var clarifyWatchdogs: [String: Task<Void, Never>] = [:]
-    private var submittingQuestionIds: Set<String> = []
-    private var activeAttemptIds: [String: String] = [:]
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
         self.sessionManager = sessionManager ?? SessionManager.shared
@@ -126,10 +123,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         stopStatusPolling()
         for task in animationTasks.values { task.cancel() }
         animationTasks.removeAll()
-        for watchdog in clarifyWatchdogs.values { watchdog.cancel() }
-        clarifyWatchdogs.removeAll()
-        submittingQuestionIds.removeAll()
-        activeAttemptIds.removeAll()
+        for watchdog in animationTasks.values { watchdog.cancel() }
+        animationTasks.removeAll()
+        resumePollTask?.cancel()
+        resumePollTask = nil
     }
 
     // MARK: - 快捷指令与计时器
@@ -659,90 +656,46 @@ public final class TenantSessionCoordinator: ObservableObject {
             return
         }
 
-        let attemptId = UUID().uuidString
-        activeAttemptIds[messageId] = attemptId
-        submittingQuestionIds.insert(messageId)
-
-        // 启动 15s 客户端 Watchdog 守护
-        clarifyWatchdogs[messageId]?.cancel()
-        let watchdogTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 15_000_000_000)
-            guard let self = self, !Task.isCancelled else { return }
-            if self.activeAttemptIds[messageId] == attemptId {
-                self.submittingQuestionIds.remove(messageId)
-                self.resetClarifyCard(messageId: messageId)
-                self.showToast("提交超时，已解锁可重试")
-            }
-        }
-        clarifyWatchdogs[messageId] = watchdogTask
-
+        // 单次提交解锁 agent 线程；失败（通道错配/审批卡残留/超时）时降级为普通消息重发：
+        // 选择文本必然送达后端 → 走思维链插件 → 结果回流（顶设：用户的选项永远有回应）
         Task { [weak self] in
             guard let self = self else { return }
-            var submitSuccess = false
-            for attempt in 0..<3 {
-                do {
-                    let ok = try await APIClient.shared.submitClarify(
-                        sessionId: resolvedSessionId,
-                        response: selection,
-                        clarifyId: clarifyId
-                    )
-                    if ok {
-                        submitSuccess = true
-                        break
-                    }
-                } catch {
-                    try? await Task.sleep(nanoseconds: UInt64((attempt + 1) * 300_000_000))
-                }
-            }
+            let ok = (try? await APIClient.shared.submitClarify(
+                sessionId: resolvedSessionId,
+                response: selection,
+                clarifyId: clarifyId
+            )) ?? false
 
             await MainActor.run {
-                guard self.activeAttemptIds[messageId] == attemptId else { return }
-                self.clarifyWatchdogs[messageId]?.cancel()
-                self.clarifyWatchdogs.removeValue(forKey: messageId)
-                self.submittingQuestionIds.remove(messageId)
-
-                if !submitSuccess {
-                    self.resetClarifyCard(messageId: messageId)
-                    self.showToast("选项提交失败，请点击重试")
-                } else if !self.isGenerating {
-                    // 原 SSE 流已断（断连/detach）：立即创建 Assistant 待办消息 + 激活 InFlight
-                    // 状态（Thinking 胶囊立即可见），并启动断点续接轮询——提交后必然有下文
-                    let replyId = UUID().uuidString
-                    self.inflight = InFlightRequest(
-                        id: replyId,
-                        sessionId: resolvedSessionId,
-                        text: selection,
-                        quote: nil,
-                        phase: .thinking
-                    )
-                    self.waitingSeconds = 0
-                    self.thinkingPhase = "reasoning"
-                    self.thinkingDetail = "正在根据您的选择推进方案…"
-                    self.messages.append(ChatMessage(
-                        id: replyId,
-                        sessionId: resolvedSessionId,
-                        role: .assistant,
-                        content: "",
-                        isStreaming: true,
-                        pending: true
-                    ))
-                    self.commitSession()
-                    self.startClarifyResumePolling(sessionId: resolvedSessionId, targetMessageId: replyId)
-                }
-            }
-        }
-    }
-
-    private func resetClarifyCard(messageId: String) {
-        if let idx = messages.firstIndex(where: { $0.id == messageId }) {
-            if let blockIdx = messages[idx].blocks.firstIndex(where: {
-                if case .clarify = $0 { return true }
-                return false
-            }) {
-                if case .clarify(var c) = messages[idx].blocks[blockIdx] {
-                    c.isSubmitted = false
-                    c.submittedSelection = ""
-                    messages[idx].blocks[blockIdx] = .clarify(c)
+                guard self.tenantEpoch == self.tenantEpoch else { return }
+                if !self.isGenerating {
+                    if ok {
+                        // 解锁成功且原流已断：创建待办消息 + Thinking 胶囊 + 断点续接轮询
+                        let replyId = UUID().uuidString
+                        self.inflight = InFlightRequest(
+                            id: replyId,
+                            sessionId: resolvedSessionId,
+                            text: selection,
+                            quote: nil,
+                            phase: .thinking
+                        )
+                        self.waitingSeconds = 0
+                        self.thinkingPhase = "reasoning"
+                        self.thinkingDetail = "正在根据您的选择推进方案…"
+                        self.messages.append(ChatMessage(
+                            id: replyId,
+                            sessionId: resolvedSessionId,
+                            role: .assistant,
+                            content: "",
+                            isStreaming: true,
+                            pending: true
+                        ))
+                        self.commitSession()
+                        self.startClarifyResumePolling(sessionId: resolvedSessionId, targetMessageId: replyId)
+                    } else {
+                        // 提交未命中：选择文本作为新消息发后端（用户选择必达，绝不弹失败静默）
+                        self.startGeneration(text: selection, quote: nil)
+                    }
                 }
             }
         }
