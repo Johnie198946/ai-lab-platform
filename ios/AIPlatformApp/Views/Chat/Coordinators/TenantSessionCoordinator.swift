@@ -654,12 +654,14 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - Clarify 5态沙箱与 Watchdog 守护
+    // MARK: - Clarify 统一会话推进（先解锁·后兜底·绝不静默）
 
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        let sid = sessionManager.activeSessionID()
+        let clarifyId = messages[idx].clarifyBlock?.clarifyId
 
-        // 1. 标记当前卡片已确认
+        // 1. 立即标记卡片已确认（ClarifyCard 变绿色已确认小条）
         if let blockIdx = messages[idx].blocks.firstIndex(where: {
             if case .clarify = $0 { return true }
             return false
@@ -671,9 +673,42 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         commitSession()
 
-        // 2. 核心：选项卡 100% 就是对话 —— 选项文本直接作为用户消息发送！
-        //    立刻展示用户气泡 + 立刻调起 Assistant 思维链胶囊 + 后端流式直出
-        sendMessage(text: selection, regenerate: true)
+        // 2. 立即在卡片消息上插入「正在推进」思维链胶囊（用户点击即有反馈）
+        updateReasoningSteps(for: idx) { steps in
+            if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
+                steps[tIdx].title = "正在根据您的选择推进方案…"
+                steps[tIdx].status = "running"
+            } else {
+                steps.insert(
+                    ReasoningStep(
+                        type: .thought,
+                        title: "正在根据您的选择推进方案…",
+                        status: "running"
+                    ),
+                    at: 0
+                )
+            }
+        }
+
+        // 3. 正确通道：submitClarify 唤醒阻塞的 agent 线程（保留完整上下文·原 SSE 流续推）
+        //    失败兜底：regenerate 重启（并发防护放行，必达）
+        Task { [weak self] in
+            guard let self = self else { return }
+            let ok = (try? await APIClient.shared.submitClarify(
+                sessionId: sid,
+                response: selection,
+                clarifyId: clarifyId
+            )) ?? false
+
+            await MainActor.run {
+                guard self.tenantEpoch == self.tenantEpoch else { return }
+                if !ok && !self.isGenerating {
+                    // 解锁失败且流已断：regenerate 重启（带用户选择上下文）
+                    self.sendMessage(text: selection, regenerate: true)
+                }
+                // ok 或原流存活：agent 线程已带选择继续，事件经原 SSE 流实时到达
+            }
+        }
     }
 
     // MARK: - 辅助方法与操作
