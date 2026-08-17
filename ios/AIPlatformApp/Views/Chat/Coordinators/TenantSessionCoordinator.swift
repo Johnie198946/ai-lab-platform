@@ -223,11 +223,55 @@ public final class TenantSessionCoordinator: ObservableObject {
         startStatusPolling(req: req, taskEpoch: taskEpoch)
     }
 
+    // MARK: - 流式 80ms 批量节流（Supervision 批复）
+    private var deltaBuffer: String = ""
+    private var flushScheduled: Bool = false
+    private var flushTask: Task<Void, Never>? = nil
+
+    private func drainDeltaBuffer(messageId: String) {
+        flushTask?.cancel()
+        flushTask = nil
+        flushScheduled = false
+        guard !deltaBuffer.isEmpty else { return }
+        if let idx = messages.firstIndex(where: { $0.id == messageId }) {
+            messages[idx].content += deltaBuffer
+            messages[idx].pending = false
+            messages[idx].isStreaming = true
+        }
+        deltaBuffer = ""
+    }
+
+    private func scheduleContentFlush(messageId: String, taskEpoch: Int) {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        flushTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            guard let self = self, !Task.isCancelled, self.tenantEpoch == taskEpoch else {
+                self?.flushScheduled = false
+                self?.deltaBuffer = ""
+                return
+            }
+            self.flushScheduled = false
+            guard let idx = self.messages.firstIndex(where: { $0.id == messageId }) else {
+                self.deltaBuffer = ""
+                return
+            }
+            if !self.deltaBuffer.isEmpty {
+                self.messages[idx].content += self.deltaBuffer
+                self.deltaBuffer = ""
+                self.messages[idx].pending = false
+                self.messages[idx].isStreaming = true
+            }
+        }
+    }
+
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
         if demoMode {
             await appendDemoReply(req: req)
             return
         }
+        deltaBuffer = ""
+        flushScheduled = false
         let stream = APIClient.shared.chatStream(
             question: req.text,
             sessionId: req.sessionId,
@@ -237,9 +281,16 @@ public final class TenantSessionCoordinator: ObservableObject {
         )
         do {
             for try await event in stream {
-                guard self.tenantEpoch == taskEpoch else { return }
-                guard inflight?.id == req.id else { return }
+                guard self.tenantEpoch == taskEpoch else {
+                    drainDeltaBuffer(messageId: req.id)
+                    return
+                }
+                guard inflight?.id == req.id else {
+                    drainDeltaBuffer(messageId: req.id)
+                    return
+                }
                 guard req.sessionId == sessionManager.activeSessionID() else {
+                    drainDeltaBuffer(messageId: req.id)
                     sessionManager.markInterrupted(sessionId: req.sessionId)
                     finishGeneration()
                     return
@@ -247,10 +298,9 @@ public final class TenantSessionCoordinator: ObservableObject {
 
                 switch event {
                 case .delta(let content):
+                    deltaBuffer += content
+                    scheduleContentFlush(messageId: req.id, taskEpoch: taskEpoch)
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
-                        messages[idx].pending = false
-                        messages[idx].content += content
-                        messages[idx].isStreaming = true
                         updateReasoningSteps(for: idx) { steps in
                             if let tIdx = steps.firstIndex(where: { $0.type == .thought && $0.status == "running" }) {
                                 steps[tIdx].status = "done"
@@ -303,6 +353,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .clarify(let question, let choices, let multiSelect, let source, let clarifyId):
+                    drainDeltaBuffer(messageId: req.id)
                     let block = ClarifyBlock(
                         clarifyId: clarifyId,
                         question: question,
@@ -332,6 +383,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     thinkingDetail = detail.isEmpty ? nil : detail
 
                 case .done(_, let answer):
+                    drainDeltaBuffer(messageId: req.id)
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         updateReasoningSteps(for: idx) { steps in
                             for i in steps.indices { steps[i].status = "done" }
@@ -345,6 +397,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .error(let code, let message):
+                    drainDeltaBuffer(messageId: req.id)
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
                         messages[idx].content = message.isEmpty ? "流式响应异常（\(code)）" : message
                         messages[idx].pending = false
@@ -354,6 +407,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
             }
             guard self.tenantEpoch == taskEpoch else { return }
+            drainDeltaBuffer(messageId: req.id)
 
             // 兜底补全：若流式连接提前断开或未收到 delta/done.answer，从 status 端点或 non-stream 接口补全，确保绝不遗留空气泡
             if let idx = messages.firstIndex(where: { $0.id == req.id }) {

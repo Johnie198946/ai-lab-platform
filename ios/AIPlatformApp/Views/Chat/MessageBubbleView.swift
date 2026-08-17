@@ -160,10 +160,12 @@ public struct MessageBubbleView: View {
         }
     }
 
-    /// 解析后的 Markdown 卡片块（NSCache 按 messageId + contentHash 缓存，避免长列表重复解析）。
+    /// 解析后的 Markdown 卡片块（流式期间缓存 key = messageId + isStreaming，剔除 content hash，
+    /// 流式期不重解析；done 时以完整内容解析一次——Supervision 条件 5）。
     private var markdownBlocks: [MarkdownBlock] {
         guard !message.content.isEmpty else { return [] }
-        return MarkdownBlockParser.shared.parse(message.content, messageId: message.id)
+        let cacheKey = message.isStreaming ? "\(message.id)_streaming" : "\(message.id)_done_\(message.content.hashValue)"
+        return MarkdownBlockParser.shared.parse(message.content, messageId: cacheKey)
     }
 
     // MARK: - 演示样例标注
@@ -213,13 +215,9 @@ public struct MessageBubbleView: View {
             Circle()
                 .fill(AppTheme.Colors.quantumCyan)
                 .frame(width: 6, height: 6)
-                .scaleEffect(1.0)
-                .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: message.isStreaming)
-            Text("正在生成…")
-                .font(.system(size: 12))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+                .opacity(0.85)
         }
-        .padding(.top, 4)
+        .padding(.vertical, 2)
     }
 
     @ViewBuilder

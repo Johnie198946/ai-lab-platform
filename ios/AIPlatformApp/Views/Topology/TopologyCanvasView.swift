@@ -41,49 +41,59 @@ public struct TopologyCanvasView: View {
                     .ignoresSafeArea()
                 
                 // MARK: - 1. Interactive DAG Canvas Area
-                GeometryReader { geometry in
-                    ZStack {
-                        // Background Grid Lines
-                        gridPatternBackground(geometry: geometry)
-                        
-                        // DAG Connections & Nodes Container
+                if graph.nodes.isEmpty && !isLoading && !loadFailed {
+                    tenantEmptyView
+                } else {
+                    GeometryReader { geometry in
                         ZStack {
-                            // Edge Layer (Bezier Curves with Arrows)
-                            edgesLayer
+                            // Background Grid Lines
+                            gridPatternBackground(geometry: geometry)
                             
-                            // Nodes Layer
-                            nodesLayer
-                        }
-                        .scaleEffect(scale)
-                        .offset(offset)
-                        .gesture(
-                            SimultaneousGesture(
-                                DragGesture()
-                                    .onChanged { value in
-                                        offset = CGSize(
-                                            width: lastOffset.width + value.translation.width,
-                                            height: lastOffset.height + value.translation.height
-                                        )
-                                    }
-                                    .onEnded { _ in
-                                        lastOffset = offset
-                                    },
-                                MagnificationGesture()
-                                    .onChanged { value in
-                                        let delta = value / lastScale
-                                        lastScale = value
-                                        let newScale = scale * delta
-                                        scale = min(max(newScale, 0.5), 2.5)
-                                    }
-                                    .onEnded { _ in
-                                        lastScale = 1.0
-                                    }
+                            // DAG Connections & Nodes Container
+                            ZStack {
+                                // Edge Layer (Bezier Curves with Arrows)
+                                edgesLayer
+                                
+                                // Nodes Layer
+                                nodesLayer
+                            }
+                            .scaleEffect(scale)
+                            .offset(offset)
+                            .gesture(
+                                SimultaneousGesture(
+                                    DragGesture()
+                                        .onChanged { value in
+                                            offset = CGSize(
+                                                width: lastOffset.width + value.translation.width,
+                                                height: lastOffset.height + value.translation.height
+                                            )
+                                        }
+                                        .onEnded { _ in
+                                            lastOffset = offset
+                                        },
+                                    MagnificationGesture()
+                                        .onChanged { value in
+                                            let delta = value / lastScale
+                                            lastScale = value
+                                            let newScale = scale * delta
+                                            scale = min(max(newScale, 0.5), 2.5)
+                                        }
+                                        .onEnded { _ in
+                                            lastScale = 1.0
+                                        }
+                                )
                             )
-                        )
+                        }
                     }
                 }
                 
-                // MARK: - 2. （底部长说明横幅已移除 → 精简为角落微型 Chip，见 guidanceChip）
+                // MARK: - 2. 状态提示与操作引导
+                VStack {
+                    guidanceChip
+                    Spacer()
+                    demonstrationBadge
+                }
+                .padding(AppTheme.Spacing.md)
             }
             .navigationTitle(isEditMode ? "协同拓扑 (布局编辑)" : "协同拓扑")
             .navigationBarTitleDisplayMode(.inline)
@@ -164,39 +174,63 @@ public struct TopologyCanvasView: View {
         do {
             let dto = try await APIClient.shared.fetchTopology()
             graph = dto.toTopologyGraph()
+            tenantAgentIds = Set(graph.nodes.map(\.id))
         } catch {
             loadFailed = true
-        }
-        // 本租户切片叠加渲染（同源 /api/v1/tenant-agents，多租户隔离由后端保证）
-        if let list = try? await APIClient.shared.fetchTenantAgents() {
-            mergeTenantAgents(list)
         }
         isLoading = false
     }
 
-    /// 将本租户 Agent 切片叠加为拓扑节点（第三列布局，仅切片可删除）。
-    private func mergeTenantAgents(_ list: [TenantAgentDTO]) {
-        var ids = Set<String>()
-        var nodes = graph.nodes
-        for (i, ta) in list.enumerated() {
-            ids.insert(ta.id)
-            nodes.append(
-                AgentNode(
-                    id: ta.id,
-                    name: ta.customName ?? ta.baseAgentId,
-                    roleCategory: "租户切片 · \(ta.baseAgentId)",
-                    systemPromptSummary: ta.privatePromptDelta.isEmpty ? "基于基线 \(ta.baseAgentId) 的租户私有切片" : ta.privatePromptDelta,
-                    status: ta.isActive ? .idle : .error,
-                    position: tenantLayout(index: i)
-                )
-            )
+    // MARK: - 3. 空态引导与诚实标注（Supervision 批复）
+
+    private var tenantEmptyView: some View {
+        VStack(spacing: AppTheme.Spacing.md) {
+            Image(systemName: "network")
+                .font(.system(size: 44, weight: .light))
+                .foregroundColor(AppTheme.Colors.quantumBlue)
+
+            Text("尚未创建租户专属 Agent")
+                .font(.system(size: 16, weight: .bold))
+                .foregroundColor(AppTheme.Colors.textPrimary)
+
+            Text("在对话中提出「创建一个…的agent」，或在个人与设置中一键创建专属智能体编队")
+                .font(.system(size: 13))
+                .foregroundColor(AppTheme.Colors.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, AppTheme.Spacing.xl)
+
+            Button(action: {
+                appState.activeTab = 3 // 切换到「个人与设置」Tab
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 13, weight: .bold))
+                    Text("前往创建智能体")
+                        .font(.system(size: 13, weight: .bold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, AppTheme.Spacing.lg)
+                .padding(.vertical, 10)
+                .background(AppTheme.Colors.quantumBlue)
+                .clipShape(Capsule())
+            }
+            .padding(.top, AppTheme.Spacing.xs)
         }
-        graph.nodes = nodes
-        tenantAgentIds = ids
+        .padding(AppTheme.Spacing.xl)
     }
 
-    private func tenantLayout(index: Int) -> CGPoint {
-        CGPoint(x: 380, y: 140 + CGFloat(index) * 100)
+    private var demonstrationBadge: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "info.circle")
+                .font(.system(size: 10))
+            Text("架构装配示意 · 演示态")
+                .font(.system(size: 10, weight: .medium))
+        }
+        .foregroundColor(AppTheme.Colors.textTertiary)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(AppTheme.Colors.cardBackground.opacity(0.8))
+        .clipShape(Capsule())
     }
 
     /// 删除切片：乐观更新（先本地移除）→ 云端删除失败则本地回滚恢复 + 错误提示。
