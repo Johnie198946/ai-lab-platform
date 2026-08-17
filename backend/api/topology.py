@@ -133,10 +133,11 @@ def _build_edges(nodes: List[TopologyNodeOut]) -> List[TopologyEdgeOut]:
     knowledge_nodes = [n for n in nodes if n.base_agent_id == "knowledge"]
     other_nodes = [n for n in nodes if n.base_agent_id not in ("main_agent", "knowledge")]
 
-    # 1. Main 中枢派发
+    # 1. Main 中枢派发：所有租户技能均基于 main_agent 内核（对话中由主 Agent 统一调度），
+    #    星型装配 hub -> 其余全部节点（含其它 main_agent 派生技能）
     if main_nodes:
         hub = main_nodes[0]
-        for target in other_nodes + knowledge_nodes:
+        for target in nodes:
             if target.id != hub.id and target.id in node_ids:
                 edges.append(TopologyEdgeOut(source=hub.id, target=target.id, label="任务协同"))
 

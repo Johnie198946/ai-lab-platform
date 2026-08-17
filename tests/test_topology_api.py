@@ -94,8 +94,10 @@ class TestTenantTopologyAPI(unittest.TestCase):
         node = nodes[0]
         self.assertEqual(node["id"], "skill_bayern-insight")
         self.assertEqual(node["name"], "bayern-insight")
-        self.assertEqual(node["status"], "就绪")  # 演示诚实：无实时心跳标「就绪」
+        self.assertEqual(node["status"], "idle")  # 状态标准化：就绪 = idle
         self.assertEqual(node["source"], "skill_plugin")
+        # 单节点：无边
+        self.assertEqual(body["edges"], [])
 
         # 绝对不含底层基线 4 Agent
         node_ids = {n["id"] for n in nodes}
@@ -122,7 +124,25 @@ class TestTenantTopologyAPI(unittest.TestCase):
         edge = body["edges"][0]
         self.assertEqual(edge["source"], "skill_hub-agent")
         self.assertEqual(edge["target"], "skill_vert-agent")
-        self.assertEqual(edge["label"], "任务协同")
+
+    def test_topology_star_edges_same_base(self):
+        """多技能同 base_agent（main_agent）：星型中枢装配，hub -> 其余全部节点"""
+        t_dir = Path(self._test_dir) / "tenants" / "u-topo"
+        for name in ("agent-a", "agent-b", "agent-c"):
+            d = t_dir / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\nbase_agent: main_agent\n---\n", encoding="utf-8"
+            )
+
+        r = self._get("/api/v1/topology")
+        self.assertEqual(r.status_code, 200)
+        body = r.json()
+        self.assertEqual(len(body["nodes"]), 3)
+        self.assertEqual(len(body["edges"]), 2)  # hub -> 其余 2 个
+        sources = {e["source"] for e in body["edges"]}
+        self.assertEqual(len(sources), 1)  # 星型：单一中枢
+        self.assertEqual(body["edges"][0]["label"], "任务协同")
 
     def test_path_traversal_protection(self):
         """Supervision 条件 9：tenant_id 路径穿越安全防护"""
