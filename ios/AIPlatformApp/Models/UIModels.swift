@@ -942,28 +942,6 @@ public struct KnowledgeItem: Identifiable, Codable, Sendable, Hashable {
 }
 
 // MARK: - Prompt Refinement Studio Draft
-public struct PromptRefinementDraft: Identifiable, Codable, Sendable, Hashable {
-    public let id: String
-    public var originalText: String
-    public var refinedSystemDirective: String
-    public var explanation: String
-    public var tags: [String]
-    
-    public init(
-        id: String = UUID().uuidString,
-        originalText: String,
-        refinedSystemDirective: String,
-        explanation: String,
-        tags: [String] = []
-    ) {
-        self.id = id
-        self.originalText = originalText
-        self.refinedSystemDirective = refinedSystemDirective
-        self.explanation = explanation
-        self.tags = tags
-    }
-}
-
 // MARK: - Global App State
 
 public extension Notification.Name {
@@ -1130,25 +1108,4 @@ public enum MockData {
             summary: "全员公开通用条目，介绍高并发清结算系统幂等性设计与三方对账差异核销机制。"
         )
     ]
-    
-    public static let promptRefinement = PromptRefinementDraft(
-        originalText: "帮我写一个专门检查制造产线异常的助手，要严谨点，别瞎说。",
-        refinedSystemDirective: """
-        ## Role & Objective
-        你是一名企业级制造产线质量监控与根因诊断专家（Manufacturing QA & Diagnostic Sentinel）。
-        
-        ## Core Constraints
-        1. 严格基于当前产线 IoT Telemetry 遥测数据与已订阅知识库（[[SMT设备健康指标]]）推理。
-        2. 严禁任何未经遥测验证的幻觉推断；置信度低于 0.85 时必须显式提示人工复核。
-        3. 遵守只读拓扑安全铁律，涉及设备写操作必须生成待审批工单。
-        
-        ## Workflow
-        1. 接收告警事件 ➔ 2. 提取传感器特征（气压/震动/温升）➔ 3. 计算偏离度 ➔ 4. 输出诊断结论与修复建议。
-        
-        ## Output Format
-        采用标准 Markdown 结构输出：【告警定级】、【根因推断】、【计算依据公式】、【建议处置指令】。
-        """,
-        explanation: "将口语化泛化需求重构为符合企业安全标准的结构化 System Directive，注入了角色约束、因果推理规范与输出标准模板。",
-        tags: ["制造", "QA质检", "工业安全", "结构化Prompt"]
-    )
 }

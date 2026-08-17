@@ -201,15 +201,27 @@ public struct ClarifyCard: View {
     // MARK: - 已提交态
 
     private var submittedView: some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(AppTheme.Colors.securityGreen)
-            Text("已确认：\(block.submittedSelection)")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(AppTheme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 0)
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(AppTheme.Colors.securityGreen)
+                Text("已确认：\\(block.submittedSelection)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            // 执行中状态：明确告知用户 Agent 正在继续工作（顶设铁律：下一步在干嘛不允许空着）
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(AppTheme.Colors.quantumCyan)
+                Text("已收到，Agent 继续执行中…")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(AppTheme.Colors.quantumBlue)
+            }
+            .padding(.top, 2)
         }
         .padding(AppTheme.Spacing.sm)
         .background(AppTheme.Colors.securityGreen.opacity(0.08))

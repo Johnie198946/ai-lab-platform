@@ -34,6 +34,8 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var generationStartDate: Date? = nil
     private var currentChatTask: Task<Void, Never>? = nil
     private var statusPollTask: Task<Void, Never>? = nil
+    /// 澄清提交后的断点续接轮询（原 SSE 流已断时兜底：completed 后回填最终答复，绝不无声等待）
+    private var resumePollTask: Task<Void, Never>? = nil
     private var animationTasks: [String: Task<Void, Never>] = [:]
     private var clarifyWatchdogs: [String: Task<Void, Never>] = [:]
     private var submittingQuestionIds: Set<String> = []
@@ -701,6 +703,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                 if !submitSuccess {
                     self.resetClarifyCard(messageId: messageId)
                     self.showToast("选项提交失败，请点击重试")
+                } else if !self.isGenerating {
+                    // 原 SSE 流已断（断连/detach）：启动断点续接轮询，
+                    // 确保澄清提交后必然有下文（completed 回填最终答复，绝不无声等待）
+                    self.startClarifyResumePolling(sessionId: resolvedSessionId)
                 }
             }
         }
@@ -717,6 +723,49 @@ public final class TenantSessionCoordinator: ObservableObject {
                     c.submittedSelection = ""
                     messages[idx].blocks[blockIdx] = .clarify(c)
                 }
+            }
+        }
+    }
+
+    /// 澄清提交后的断点续接轮询（原 SSE 流已断时兜底）：
+    /// 2s 间隔回读 status，completed 后把最终答复追加为新 assistant 消息；running 持续给
+    /// 「执行中」反馈；120s 未完成则诚实提示可稍后重试。顶设铁律：下一步在干嘛不允许空着。
+    private func startClarifyResumePolling(sessionId: String) {
+        resumePollTask?.cancel()
+        let taskEpoch = tenantEpoch
+        resumePollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var polls = 0
+            while polls < 60 && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if Task.isCancelled || self.tenantEpoch != taskEpoch { return }
+                do {
+                    let status = try await APIClient.shared.fetchChatStatus(sessionId: sessionId)
+                    if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                        // 完成：追加 assistant 消息（澄清后的最终答复）
+                        self.messages.append(ChatMessage(
+                            sessionId: sessionId,
+                            role: .assistant,
+                            content: answer,
+                            isStreaming: false,
+                            pending: false
+                        ))
+                        self.commitSession()
+                        self.showToast("已完成")
+                        return
+                    }
+                    if status.status == "error" {
+                        self.showToast("任务执行出错，请点击重试")
+                        return
+                    }
+                    // running/pending：ClarifyCard 已展示「Agent 继续执行中…」，继续轮询
+                } catch {
+                    // 网络抖动：继续轮询
+                }
+                polls += 1
+            }
+            if !Task.isCancelled && self.tenantEpoch == taskEpoch {
+                self.showToast("任务仍在后台执行，可稍后进入会话查看")
             }
         }
     }
