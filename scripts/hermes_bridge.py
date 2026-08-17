@@ -1109,9 +1109,26 @@ def _supports_reasoning_effort(model: str) -> bool:
 # AI Lab 全局交互与澄清铁律：
 # 1. 完整与详实输出：根据用户问题输出结构完整、详实准确的内容，严禁敷衍或人为截断。
 # 2. 模糊需求极速澄清：判定为模糊开发/方案/决策需求，思考并调用 clarify 工具弹选项卡片辅助收敛。
-# 3. 严禁手写文本问答题：必须用 clarify 工具 choices 选项卡片点选。
+# 3. 严禁手写文本问答：必须用 clarify 工具 choices 选项卡片点选。
 # 4. IPD Gate-by-Gate 步进：单轮交付当前阶段所需产物，清晰递进。
 # 5. 方案设计关卡（v3.1）：涉代码实现/系统开发的需求，收敛后必须先输出《方案设计》并 clarify 确认，确认后才可开工。
+
+# 知识库检索纪律（2026-08-17 固化·对齐微信通道体验）：
+# 事实/竞品/业务类问题必须先检索本地知识库（wiki/），严禁凭模型常识直接作答。
+# 实测教训：search_files 的 pattern 中「|」是字面量不是正则 OR，会静默返回 0（vault-knowledge-retrieval
+# 技能已警告但模型仍常踩坑）→ 必须在目标注入层强制约束。
+KB_RETRIEVAL_DISCIPLINE = (
+    "【知识库检索纪律·必须严格遵守】\n"
+    "1. 回答事实/竞品/业务/技术类问题前，必须先检索本地知识库 wiki/ 目录（唯一真理源），"
+    "知识库命中时以知识库内容为准作答；0 命中时才可凭模型常识或联网。\n"
+    "2. 定位条目：用 ls 或 search_files(target='files') 按目录定位，如 wiki/竞品/华为.md、wiki/产品/*.md。\n"
+    "3. search_files 搜索正文时 pattern 必须用【单个关键词】（如 \"华为\"），严禁用 | 连接多词"
+    "（管道符是字面量，会静默返回 0 结果，即使文件存在）。\n"
+    "4. 0 命中时二次核验：先 ls 目标目录 + read_file 直接读候选文件，确认确实无条目后再判定，"
+    "严禁仅凭一次搜索就断言\"知识库无此条目\"。\n"
+    "5. 命中知识库后，输出完整 Markdown（标题/列表/加粗/表格/引用），确保与微信端体验一致。"
+)
+
 CLARIFY_GATE_PROMPT = """【AI Lab 全局交互与澄清规范】
 1. 【输出完整详实】：根据用户指令提供结构清晰、逻辑完整、信息详实的解答与方案。除用户明确要求简要概述外，应当输出完整的分析与细节，不得人为做过激的字数压缩或省略必要内容。
 2. 【模糊需求结构化澄清】：用户输入范围过大、缺关键边界的开发/方案需求（如仅有一句"做电商平台"、"开发操作系统"）时：
@@ -1470,6 +1487,9 @@ def _sse_from_in_process(user_id: str, goal: str):
     - SSE 断连（客户端断开触发 finally）→ 仅 detach（attached=False，不 interrupt），
       agent 线程继续后台完成，结果落 state.db，由 status 端点回读 + watchdog 兜底超时
     """
+    # 知识库检索纪律注入（仅 bridge/iOS 通道）：对齐微信通道的知识库体验，
+    # 强制模型先查 wiki 再作答、单关键词搜索、0 命中二次核验
+    goal = KB_RETRIEVAL_DISCIPLINE + "\n\n【用户问题】" + goal
     stream_q: queue.Queue = queue.Queue(maxsize=STREAM_QUEUE_CAPACITY)
     agent_holder: list = [None]
     start_ts = time.monotonic()
