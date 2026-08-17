@@ -305,12 +305,12 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
         defer {
-            Task { @MainActor [weak self] in
-                guard let self = self, self.tenantEpoch == taskEpoch else { return }
-                self.drainDeltaBuffer(messageId: req.id)
-                self.finalizeReasoningDuration(for: req.id)
-                self.commitSession()
-                self.finishGeneration()
+            self.drainDeltaBuffer(messageId: req.id)
+            self.finalizeReasoningDuration(for: req.id)
+            self.commitSession()
+            // 💡 仅当当前请求仍为活跃请求时复位 isGenerating，避免异步延迟派发误杀新流
+            if self.inflight?.id == req.id && self.tenantEpoch == taskEpoch {
+                self.isGenerating = false
             }
         }
         if demoMode {
@@ -717,7 +717,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             commitSession()
         }
 
-        // 3. 提交 REST 接口并根据结果唤醒 AI 回答流
+        // 3. 提交 REST 接口唤醒阻塞的 agent 线程
         let submitSuccess = (try? await APIClient.shared.submitClarify(
             sessionId: sid,
             response: selection,
@@ -729,18 +729,22 @@ public final class TenantSessionCoordinator: ObservableObject {
             await MainActor.run {
                 self.thinkingPhase = "reasoning"
                 self.thinkingDetail = "已收到选择，正在继续处理…"
-                // 💡 修复：提交成功后，启动 SSE 响应接收后续 AI 回答
-                self.startGeneration(text: selection, quote: nil, regenerate: true)
+                // 💡 必须调用 startGeneration 唤醒 SSE 回答流
+                self.startGeneration(text: selection, quote: nil)
             }
             return .success(())
         } else {
-            print("❌ [Clarify Debug] 提交未命中旧线程，以全新流式推进...")
+            print("❌ [Clarify Debug] 提交失败，释放生成状态并提示...")
+            let errorMsg = "选项提交失败，请重试"
             await MainActor.run {
-                self.thinkingPhase = "reasoning"
-                self.thinkingDetail = "已收到选择，正在继续处理…"
-                self.startGeneration(text: selection, quote: nil, regenerate: true)
+                self.showToast(errorMsg)
+                self.finishGeneration()
             }
-            return .success(())
+            return .failure(NSError(
+                domain: "Harness",
+                code: 500,
+                userInfo: [NSLocalizedDescriptionKey: errorMsg]
+            ))
         }
     }
 
