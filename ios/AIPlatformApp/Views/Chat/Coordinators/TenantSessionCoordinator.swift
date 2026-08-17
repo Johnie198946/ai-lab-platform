@@ -34,8 +34,6 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var generationStartDate: Date? = nil
     private var currentChatTask: Task<Void, Never>? = nil
     private var statusPollTask: Task<Void, Never>? = nil
-    /// 澄清解锁成功但原流已断时的断点续接轮询
-    private var resumePollTask: Task<Void, Never>? = nil
     private var animationTasks: [String: Task<Void, Never>] = [:]
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
@@ -121,8 +119,6 @@ public final class TenantSessionCoordinator: ObservableObject {
         currentChatTask?.cancel()
         currentChatTask = nil
         stopStatusPolling()
-        resumePollTask?.cancel()
-        resumePollTask = nil
         for task in animationTasks.values { task.cancel() }
         animationTasks.removeAll()
     }
@@ -628,14 +624,14 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     // MARK: - Clarify 5态沙箱与 Watchdog 守护
 
-    // MARK: - Clarify 统一会话推进（先解锁·失败必达·绝不静默）
+    // MARK: - Clarify 统一会话推进（点击即出用户气泡 + 思维链胶囊 + 流式直推）
 
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         let sid = sessionManager.activeSessionID()
         let clarifyId = messages[idx].clarifyBlock?.clarifyId
 
-        // 1. 标记卡片已提交（ClarifyCard 变成绿色已确认小条）
+        // 1. 立即标记卡片已提交（ClarifyCard 变成绿色已确认小条）
         if let blockIdx = messages[idx].blocks.firstIndex(where: {
             if case .clarify = $0 { return true }
             return false
@@ -647,80 +643,33 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         commitSession()
 
-        // 2. 顶层设计铁律（日志实证 bridge 并发防护 G-6）：
-        //    - clarify 期间 agent 线程阻塞在 wait_for_response，run 保持活跃；
-        //    - 此时发普通消息会被 bridge 返回 busy 空流（选项文本丢失！）；
-        //    - 正确通道 = submitClarify 精确解锁该线程 → agent 带着选择继续；
-        //    - 解锁失败（卡过期/通道错配）→ regenerate 语义重发（作废旧 run，必达）。
-        Task { [weak self] in
-            guard let self = self else { return }
-            let ok = (try? await APIClient.shared.submitClarify(
-                sessionId: sid,
-                response: selection,
-                clarifyId: clarifyId
-            )) ?? false
-
-            await MainActor.run {
-                guard self.tenantEpoch == self.tenantEpoch else { return }
-                if ok {
-                    // 解锁成功：agent 线程已带着选择继续执行
-                    if self.isGenerating {
-                        // 原 SSE 流仍存活 → 事件自然到达（思维链/正文实时可见）
-                        return
-                    }
-                    // 原流已断（断连/detach）：启动断点续接轮询回填最终答复
-                    self.startClarifyResumePolling(sessionId: sid)
-                } else {
-                    // 解锁失败（旧卡残留/超时/通道错配）：选项文本以 regenerate 语义
-                    // 重发——bridge 作废旧 run 后全新执行，选项必达后端（并发防护放行）
-                    self.sendMessage(text: selection, regenerate: true)
-                }
+        // 2. 后台异步通知 bridge clarify 解锁（若存在在途等待线程）
+        if let clarifyId {
+            Task {
+                _ = try? await APIClient.shared.submitClarify(
+                    sessionId: sid,
+                    response: selection,
+                    clarifyId: clarifyId
+                )
             }
         }
-    }
 
-    /// 澄清解锁成功但原流已断时的断点续接轮询：2s 回读 status，
-    /// completed 后把最终答复追加为 assistant 消息；120s 超时诚实提示。
-    private func startClarifyResumePolling(sessionId: String) {
-        resumePollTask?.cancel()
-        let taskEpoch = tenantEpoch
-        resumePollTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            var polls = 0
-            while polls < 60 && !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                if Task.isCancelled || self.tenantEpoch != taskEpoch { return }
-                do {
-                    let status = try await APIClient.shared.fetchChatStatus(sessionId: sessionId)
-                    if status.status == "completed", let answer = status.answer, !answer.isEmpty {
-                        self.messages.append(ChatMessage(
-                            sessionId: sessionId,
-                            role: .assistant,
-                            content: answer,
-                            isStreaming: false,
-                            pending: false
-                        ))
-                        self.finishGeneration()
-                        self.commitSession()
-                        return
-                    }
-                    if status.status == "error" {
-                        self.finishGeneration()
-                        return
-                    }
-                    if let step = status.latestStep, !step.isEmpty {
-                        self.thinkingDetail = step
-                    }
-                } catch {
-                    // 网络抖动：继续轮询
-                }
-                polls += 1
-            }
-            if !Task.isCancelled && self.tenantEpoch == taskEpoch {
-                self.finishGeneration()
-                self.showToast("任务仍在后台执行，可稍后进入会话查看")
-            }
-        }
+        // 3. 顶层核心铁律（选项卡本质就是对话）：
+        //    点击选项的微秒级：立刻展示用户气泡 + 立刻弹出 Assistant Thinking 思维链胶囊 + 
+        //    以 regenerate: true 发起流式推进（强制让 bridge 接收并执行，绝不被并发防护拒绝）
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+
+        messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
+        commitSession()
+
+        // 立即设置思维链初始文案，绝不留白
+        thinkingPhase = "reasoning"
+        thinkingDetail = "正在根据您的选择推进方案…"
+
+        // 立即拉起流式生成（创建 pending Assistant 消息 + Thinking 胶囊立显）
+        startGeneration(text: selection, quote: nil, regenerate: true)
     }
 
     // MARK: - 辅助方法与操作
