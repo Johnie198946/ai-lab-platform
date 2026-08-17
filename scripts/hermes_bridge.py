@@ -46,18 +46,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
 
-# 保证仓库根在 sys.path：桥接服务独立运行时（systemd / uvicorn 直跑 scripts/）
-# 也能导入 backend 包（reasoning_extractor）。websockets 改为懒加载（WS PTY 默认禁用）。
+# 仓库根追加到 sys.path（不插 0 位）：仓库 tools/ 无 Hermes 网关模块，
+# 若插在最前会遮蔽 venv site-packages 的 Hermes tools（managed_tool_gateway/
+# clarify_gateway）与 run_agent，导致进程内 agent 构建失败。
+# append 后：tools/hermes_cli/run_agent 解析到已安装 hermes_agent 0.19.0，
+# backend 包仍可从仓库根解析（仅仓库持有）。
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
-
-# Hermes Agent 安装目录必须【优先于仓库根】入 sys.path：
-# 仓库 tools/（无 managed_tool_gateway/clarify_gateway）若排在前面会遮蔽
-# Hermes tools/ 包，导致进程内 agent 构建失败（No module named 'tools.managed_tool_gateway'）。
-_HERMES_AGENT = Path(os.environ.get("HERMES_AGENT_HOME", str(Path.home() / ".hermes" / "hermes-agent")))
-if _HERMES_AGENT.is_dir() and str(_HERMES_AGENT) not in sys.path:
-    sys.path.insert(0, str(_HERMES_AGENT))
+    sys.path.append(str(_REPO_ROOT))
 
 from backend.services.reasoning_extractor import extract_steps  # noqa: E402
 
