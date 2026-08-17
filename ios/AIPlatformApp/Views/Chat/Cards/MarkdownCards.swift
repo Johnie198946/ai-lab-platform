@@ -2,47 +2,29 @@
 //  MarkdownCards.swift
 //  AIPlatformApp
 //
-//  Markdown 卡片渲染组件：将 MarkdownBlockParser 解析出的 10 类块，
-//  渲染为精致的流式卡片容器（彻底消除原始 Markdown 横线与文本堆砌）。
+//  Markdown 卡片渲染组件：极简 SwiftUI 原生流式卡片容器。
+//  零自定义字符串拼接，利用 SwiftUI 原生 LocalizedStringKey 零开销高帧率渲染。
 //
 
 import SwiftUI
 
-// MARK: - 行内富文本（Code Span 优先 + 粗体/斜体）
+// MARK: - 极简 Markdown 文本（利用原生 LocalizedStringKey 零开销渲染加粗/斜体/代码）
 
-public struct MarkdownInlineText: View {
-    public let segments: [InlineSegment]
-    public var baseFont: Font = .system(size: 15)
-    public var baseColor: Color = AppTheme.Colors.textPrimary
+public struct MarkdownText: View {
+    public let text: String
+    public var font: Font = .system(size: 15)
+    public var color: Color = AppTheme.Colors.textPrimary
 
-    public init(segments: [InlineSegment], baseFont: Font = .system(size: 15), baseColor: Color = AppTheme.Colors.textPrimary) {
-        self.segments = segments
-        self.baseFont = baseFont
-        self.baseColor = baseColor
+    public init(_ text: String, font: Font = .system(size: 15), color: Color = AppTheme.Colors.textPrimary) {
+        self.text = text
+        self.font = font
+        self.color = color
     }
 
     public var body: some View {
-        segments.reduce(Text("")) { acc, seg in
-            acc + segmentText(seg)
-        }
-        .font(baseFont)
-        .foregroundColor(baseColor)
-    }
-
-    private func segmentText(_ seg: InlineSegment) -> Text {
-        switch seg {
-        case .text(let s): return Text(s)
-        case .code(let s):
-            return Text(s)
-                .font(.system(size: 13, design: .monospaced))
-                .foregroundColor(AppTheme.Colors.quantumViolet)
-        case .bold(let s):
-            // 重点提亮：加粗 + 品牌蓝，与正文明确区分（对标微信端加粗语义）
-            return Text(s)
-                .fontWeight(.bold)
-                .foregroundColor(AppTheme.Colors.textPrimary)
-        case .italic(let s): return Text(s).italic()
-        }
+        Text(LocalizedStringKey(text))
+            .font(font)
+            .foregroundColor(color)
     }
 }
 
@@ -62,7 +44,9 @@ public struct MarkdownBlockCard: View {
         case .callout(let label, let text):
             MarkdownCalloutCard(label: label, text: text)
         case .paragraph(let text):
-            MarkdownParagraphCard(text: text)
+            MarkdownText(text)
+                .fixedSize(horizontal: false, vertical: true)
+                .lineSpacing(3)
         case .bulletList(let items):
             MarkdownBulletListCard(items: items)
         case .numberedList(let items):
@@ -72,7 +56,10 @@ public struct MarkdownBlockCard: View {
         case .quote(let text):
             MarkdownQuoteCard(text: text)
         case .divider:
-            MarkdownDividerCard()
+            Rectangle()
+                .fill(AppTheme.Colors.border.opacity(0.5))
+                .frame(height: 0.5)
+                .padding(.vertical, AppTheme.Spacing.xs)
         case .table(let tableBlock):
             TableCard(block: tableBlock)
         case .chart(let chartBlock):
@@ -83,7 +70,136 @@ public struct MarkdownBlockCard: View {
     }
 }
 
-// MARK: - 知识库来源条目卡（视觉区分：图标 + 次级色 + 等宽路径）
+// MARK: - 标题卡（分级视觉：L1 大标题渐变条 + L2 中文序号蓝条 + L3 青色点）
+
+private struct MarkdownHeadingCard: View {
+    let level: Int
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
+            if level == 1 {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.Colors.quantumGradient)
+                    .frame(width: 4, height: 18)
+            } else {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.Colors.quantumBlue)
+                    .frame(width: 3.5, height: 16)
+            }
+
+            MarkdownText(
+                text,
+                font: .system(size: level == 1 ? 19 : (level == 2 ? 17 : 15.5), weight: .bold),
+                color: AppTheme.Colors.textPrimary
+            )
+        }
+        .padding(.top, level <= 2 ? AppTheme.Spacing.xs : 2)
+    }
+}
+
+// MARK: - 语义结论卡（Callout）
+
+private struct MarkdownCalloutCard: View {
+    let label: String
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(AppTheme.Colors.quantumBlue)
+                .padding(.top, 2)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(label)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(AppTheme.Colors.quantumBlue)
+                MarkdownText(text, font: .system(size: 14, weight: .medium))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(
+                colors: [
+                    AppTheme.Colors.quantumBlue.opacity(0.10),
+                    AppTheme.Colors.quantumViolet.opacity(0.04)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .stroke(AppTheme.Colors.quantumBlue.opacity(0.25), lineWidth: 0.5)
+        )
+    }
+}
+
+// MARK: - 列表卡
+
+private struct MarkdownBulletListCard: View {
+    let items: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                    Circle()
+                        .fill(AppTheme.Colors.quantumCyan)
+                        .frame(width: 5, height: 5)
+                        .padding(.top, 7)
+                    MarkdownText(item, font: .system(size: 14.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+private struct MarkdownNumberedListCard: View {
+    let items: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                    Text("\(index + 1).")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.quantumBlue)
+                        .frame(minWidth: 22, alignment: .leading)
+                    MarkdownText(item, font: .system(size: 14.5))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 引用卡
+
+private struct MarkdownQuoteCard: View {
+    let text: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            Rectangle()
+                .fill(AppTheme.Colors.quantumViolet.opacity(0.4))
+                .frame(width: 3)
+            MarkdownText(text, font: .system(size: 14), color: AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(AppTheme.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.quantumViolet.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+    }
+}
+
+// MARK: - 知识库来源条目卡（视觉区分：图书图标 + 次级色 + 紧凑单项）
 
 public struct SourceCitationsCard: View {
     public let items: [String]
@@ -109,10 +225,9 @@ public struct SourceCitationsCard: View {
                         .font(.system(size: 10))
                         .foregroundColor(AppTheme.Colors.textTertiary)
                         .padding(.top, 2)
-                    Text(item)
+                    Text(item.trimmingCharacters(in: CharacterSet(charactersIn: "`*- ")))
                         .font(.system(size: 12, design: .monospaced))
                         .foregroundColor(AppTheme.Colors.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
                         .lineLimit(2)
                 }
             }
@@ -125,204 +240,5 @@ public struct SourceCitationsCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                 .stroke(AppTheme.Colors.quantumCyan.opacity(0.25), lineWidth: 0.5)
         )
-    }
-}
-
-// MARK: - 标题卡（分级视觉：L1 大标题渐变条 + L2 中文序号蓝条 + L3 青色点）
-
-private struct MarkdownHeadingCard: View {
-    let level: Int
-    let text: String
-
-    private var fontSize: CGFloat {
-        switch level {
-        case 1: return 20
-        case 2: return 17
-        case 3: return 15.5
-        default: return 15
-        }
-    }
-
-    private var fontWeight: Font.Weight {
-        level <= 2 ? .bold : .semibold
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 8) {
-            // 分级品牌色条（L1 量子渐变 / L2 量子蓝 / L3 量子青）
-            switch level {
-            case 1:
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(AppTheme.Colors.quantumGradient)
-                    .frame(width: 4, height: 20)
-            case 2:
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(AppTheme.Colors.quantumBlue)
-                    .frame(width: 3.5, height: 18)
-            case 3:
-                Circle()
-                    .fill(AppTheme.Colors.quantumCyan)
-                    .frame(width: 5, height: 5)
-                    .padding(.leading, 1)
-            default:
-                Circle()
-                    .fill(AppTheme.Colors.quantumCyan.opacity(0.5))
-                    .frame(width: 4, height: 4)
-                    .padding(.leading, 1)
-            }
-
-            MarkdownInlineText(
-                segments: MarkdownBlockParser.parseInline(text),
-                baseFont: .system(size: fontSize, weight: fontWeight),
-                baseColor: AppTheme.Colors.textPrimary
-            )
-        }
-        .padding(.top, level <= 2 ? AppTheme.Spacing.xs : 2)
-    }
-}
-
-// MARK: - 语义结论卡（Callout）
-
-private struct MarkdownCalloutCard: View {
-    let label: String
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(AppTheme.Colors.quantumBlue)
-                .padding(.top, 2)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(label)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(AppTheme.Colors.quantumBlue)
-                MarkdownInlineText(
-                    segments: MarkdownBlockParser.parseInline(text),
-                    baseFont: .system(size: 14, weight: .medium),
-                    baseColor: AppTheme.Colors.textPrimary
-                )
-                .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(AppTheme.Spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(
-                colors: [
-                    AppTheme.Colors.quantumBlue.opacity(0.10),
-                    AppTheme.Colors.quantumViolet.opacity(0.04)
-                ],
-                startPoint: .leading,
-                endPoint: .trailing
-            )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                .stroke(AppTheme.Colors.quantumBlue.opacity(0.25), lineWidth: 0.5)
-        )
-    }
-}
-
-// MARK: - 段落卡
-
-private struct MarkdownParagraphCard: View {
-    let text: String
-
-    var body: some View {
-        MarkdownInlineText(
-            segments: MarkdownBlockParser.parseInline(text),
-            baseFont: .system(size: 15),
-            baseColor: AppTheme.Colors.textPrimary
-        )
-        .fixedSize(horizontal: false, vertical: true)
-        .lineSpacing(3)
-    }
-}
-
-// MARK: - 列表卡
-
-private struct MarkdownBulletListCard: View {
-    let items: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-                    Circle()
-                        .fill(AppTheme.Colors.quantumCyan)
-                        .frame(width: 5, height: 5)
-                        .padding(.top, 7)
-                    MarkdownInlineText(
-                        segments: MarkdownBlockParser.parseInline(item),
-                        baseFont: .system(size: 14),
-                        baseColor: AppTheme.Colors.textPrimary
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-}
-
-private struct MarkdownNumberedListCard: View {
-    let items: [String]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
-                HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-                    Text("\(index + 1).")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(AppTheme.Colors.quantumBlue)
-                        .frame(minWidth: 22, alignment: .leading)
-                    MarkdownInlineText(
-                        segments: MarkdownBlockParser.parseInline(item),
-                        baseFont: .system(size: 14),
-                        baseColor: AppTheme.Colors.textPrimary
-                    )
-                    .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - 引用卡
-
-private struct MarkdownQuoteCard: View {
-    let text: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-            Rectangle()
-                .fill(AppTheme.Colors.quantumViolet.opacity(0.4))
-                .frame(width: 3)
-            MarkdownInlineText(
-                segments: MarkdownBlockParser.parseInline(text),
-                baseFont: .system(size: 14),
-                baseColor: AppTheme.Colors.textSecondary
-            )
-            .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(AppTheme.Spacing.sm)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(AppTheme.Colors.quantumViolet.opacity(0.04))
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-    }
-}
-
-// MARK: - 分隔卡
-
-private struct MarkdownDividerCard: View {
-    var body: some View {
-        HStack(spacing: 8) {
-            Rectangle()
-                .fill(AppTheme.Colors.border.opacity(0.5))
-                .frame(height: 0.5)
-        }
-        .padding(.vertical, AppTheme.Spacing.xs)
     }
 }
