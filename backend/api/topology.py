@@ -1,11 +1,12 @@
 """租户专属 Agent 拓扑接口 — 动态装配租户业务 Agent DAG。
 
-遵循三方协议 Supervision 批复要求（2026-08-17）：
-1. 彻底剔除平台底层 4 大基线 Agent（main/supervision/coder/knowledge 是系统基础设施，不属于租户业务）；
-2. 租户专属动态聚合：DB 切片（TenantAgentModel）+ 租户技能目录（_scan_tenant_skill_agents）；
-3. 安全防护：tenant_id 严格正则净化，杜绝路径穿越；
-4. 演示诚实：无实时心跳统一标注「就绪」，UI 标注架构装配示意；
-5. 边装配闭合规则：main_agent 担任协同中枢，knowledge 供给垂直技能，单节点独立星标。
+遵循原则（2026-08-17 迭代）：
+1. 100% 租户专属：DB 切片（TenantAgentModel）+ 租户技能目录（_scan_tenant_skill_agents）；
+2. 彻底剔除底层基线 4 Agent，零基线泄露；
+3. 真实关系连线：严格基于 SKILL.md 中的 depends_on/related_skills 与业务工作流连接，
+   连线上必须携带明确语义动作标注（如『输入转会数据』『输出需求规格』『调用xxx』）；
+   无关系的 Agent 保持独立节点，严禁无根据乱连；
+4. 演示诚实：状态统一输出标准 idle（就绪）。
 """
 
 from __future__ import annotations
@@ -15,19 +16,15 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from backend.api.auth import require_auth
-from backend.api.tenant import current_tenant
+from backend.api.auth import current_tenant, require_auth
 from backend.db import SessionLocal
 from backend.models.tenant_agent import TenantAgentModel
 
 router = APIRouter(prefix="/api/v1", tags=["topology"])
-
-# 安全正则：tenant_id 仅允许字母、数字、下划线、短横线
-TENANT_ID_SAFE_PATTERN = re.compile(r"^[A-Za-z0-9_\-]+$")
 
 
 class TopologyNodeOut(BaseModel):
@@ -35,16 +32,17 @@ class TopologyNodeOut(BaseModel):
     name: str
     role_category: str
     role_desc: str
-    base_agent_id: str = "main_agent"
-    status: str = "就绪"  # 演示诚实：无心跳统一标「就绪」，绝不伪装 live
-    source: str = "db"   # "db" 或 "skill_plugin"
-    tools: List[str] = []
+    base_agent_id: str
+    status: str = "idle"
+    source: str = "custom_agent"
+    tools: List[str] = Field(default_factory=list)
+    depends_on: List[str] = Field(default_factory=list)
 
 
 class TopologyEdgeOut(BaseModel):
     source: str
     target: str
-    label: str
+    label: Optional[str] = None
 
 
 class TenantTopologyOut(BaseModel):
@@ -54,20 +52,24 @@ class TenantTopologyOut(BaseModel):
 
 
 def _sanitize_tenant_id(tenant_id: str) -> str:
-    """净化 tenant_id，防范路径穿越（../ 等非法字符）。"""
-    cleaned = (tenant_id or "").strip()
-    if not cleaned or not TENANT_ID_SAFE_PATTERN.match(cleaned):
-        return "demo"
-    return cleaned
+    """仅允许字母、数字、下划线、短横线，防御路径穿越。"""
+    cleaned = re.sub(r"[^A-Za-z0-9_-]", "", tenant_id.strip())
+    return cleaned or "demo"
 
 
-def _scan_tenant_skills(tenant_id: str) -> List[TopologyNodeOut]:
-    """安全扫描租户专属技能目录（插件即 Agent）。"""
-    safe_tenant = _sanitize_tenant_id(tenant_id)
-    skills_root = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
-    tenant_dir = skills_root / "tenants" / safe_tenant
+def _get_skills_dir() -> Path:
+    env_path = os.environ.get("HERMES_SKILLS_DIR", "")
+    if env_path:
+        return Path(env_path)
+    return Path(os.path.expanduser("~/.hermes/skills"))
 
-    # 防御路径穿越：确保解析出的绝对路径仍在 skills_root 下
+
+def _scan_tenant_skill_agents(tenant_id: str) -> List[TopologyNodeOut]:
+    """扫描 skills/tenants/<tenant>/<name>/SKILL.md 动态生成技能 Agent 节点。"""
+    skills_root = _get_skills_dir()
+    tenant_dir = skills_root / "tenants" / tenant_id
+
+    # 防御路径穿越
     try:
         tenant_dir_resolved = tenant_dir.resolve()
         skills_root_resolved = skills_root.resolve()
@@ -90,14 +92,20 @@ def _scan_tenant_skills(tenant_id: str) -> List[TopologyNodeOut]:
         name = skill_dir.name
         base_agent = "main_agent"
         desc = ""
+        deps: List[str] = []
         try:
-            head = skill_md.read_text(encoding="utf-8", errors="replace")[:2000]
+            head = skill_md.read_text(encoding="utf-8", errors="replace")[:3000]
             for line in head.splitlines():
                 line = line.strip()
                 if line.startswith("base_agent:"):
                     base_agent = line.split(":", 1)[1].strip() or "main_agent"
                 elif line.startswith("description:"):
                     desc = line.split(":", 1)[1].strip()
+                elif line.startswith("depends_on:") or line.startswith("related_skills:"):
+                    raw_deps = line.split(":", 1)[1].strip()
+                    if raw_deps.startswith("[") and raw_deps.endswith("]"):
+                        items_raw = raw_deps[1:-1].split(",")
+                        deps = [d.strip().strip("'\"") for d in items_raw if d.strip()]
         except Exception:
             pass
 
@@ -111,42 +119,75 @@ def _scan_tenant_skills(tenant_id: str) -> List[TopologyNodeOut]:
                 status="idle",
                 source="skill_plugin",
                 tools=["web_search", "wiki_retrieval"],
+                depends_on=deps,
             )
         )
     return items
 
 
+# 预置的已知业务协同工作流（无明确声明时的语义拓扑补齐）
+KNOWN_PIPELINES = {
+    # 需求收敛 → 脚手架
+    ("product-drill-me", "clarify-ladder-scoping"): "痛点诊断输入",
+    ("clarify-ladder-scoping", "backend-mvp-scaffolding"): "输出需求规格",
+    # 足球洞察 → 经营推演
+    ("bayern-transfer-insight", "bayern-football-manager"): "输入转会数据",
+    ("bayern-transfer-insight", "拜仁足球经理"): "输入转会数据",
+    ("拜仁转会洞察", "bayern-football-manager"): "输入转会数据",
+    ("拜仁转会洞察", "拜仁足球经理"): "输入转会数据",
+}
+
+
 def _build_edges(nodes: List[TopologyNodeOut]) -> List[TopologyEdgeOut]:
-    """闭合边装配规则（Supervision 条件 8）：
-    1. 单节点：无边（独立星标）；
-    2. 多个节点：
-       - 若存在 main_agent 切片，作为中枢派发至其它垂直 Agent（main -> other）；
-       - 若存在 knowledge 切片，作为知识供给（knowledge -> other）；
-       - 无中枢时，若有 knowledge 则供给各 skill，否则节点间无伪连线。
+    """构建真实协同边（有真实关系才连线，严禁无依据乱连）：
+    1. 优先消费 SKILL.md 中声明的 depends_on / related_skills；
+    2. 匹配预置的已知业务管道（如 转会洞察 ➔ 足球经理、需求诊断 ➔ 澄清 ➔ 脚手架）；
+    3. 连线上必须标注清晰的语义动作（如『输入转会数据』『输出需求规格』『调用xxx』）；
+    4. 无关系的 Agent 保持独立节点，不强行建立伪连线。
     """
     if len(nodes) <= 1:
         return []
 
     edges: List[TopologyEdgeOut] = []
-    node_ids: Set[str] = {n.id for n in nodes}
-    main_nodes = [n for n in nodes if n.base_agent_id == "main_agent"]
-    knowledge_nodes = [n for n in nodes if n.base_agent_id == "knowledge"]
-    other_nodes = [n for n in nodes if n.base_agent_id not in ("main_agent", "knowledge")]
+    seen_pairs: Set[tuple] = set()
 
-    # 1. Main 中枢派发：所有租户技能均基于 main_agent 内核（对话中由主 Agent 统一调度），
-    #    星型装配 hub -> 其余全部节点（含其它 main_agent 派生技能）
-    if main_nodes:
-        hub = main_nodes[0]
-        for target in nodes:
-            if target.id != hub.id and target.id in node_ids:
-                edges.append(TopologyEdgeOut(source=hub.id, target=target.id, label="任务协同"))
+    # 映射表：纯名称 & ID 寻址
+    name_to_node = {n.name: n for n in nodes}
+    id_to_node = {n.id: n for n in nodes}
+    raw_name_to_node = {n.id.replace("skill_", "").replace("db_", ""): n for n in nodes}
 
-    # 2. Knowledge 知识供给
-    if knowledge_nodes:
-        k_hub = knowledge_nodes[0]
-        for target in other_nodes:
-            if target.id != k_hub.id and target.id in node_ids:
-                edges.append(TopologyEdgeOut(source=k_hub.id, target=target.id, label="知识供给"))
+    # 1. 消费预置的真实业务工作流管道（优先权威定义）
+    for (src_key, dst_key), action_label in KNOWN_PIPELINES.items():
+        src = name_to_node.get(src_key) or raw_name_to_node.get(src_key)
+        dst = name_to_node.get(dst_key) or raw_name_to_node.get(dst_key)
+        if src and dst and src.id != dst.id:
+            pair = (src.id, dst.id)
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                edges.append(
+                    TopologyEdgeOut(
+                        source=src.id,
+                        target=dst.id,
+                        label=action_label,
+                    )
+                )
+
+    # 2. 消费节点自身的 depends_on 声明（补充其它自定义 Agent 的调用依赖）
+    for target_node in nodes:
+        for dep in target_node.depends_on:
+            src = name_to_node.get(dep) or id_to_node.get(dep) or raw_name_to_node.get(dep)
+            if src and src.id != target_node.id:
+                pair = (src.id, target_node.id)
+                # 防重复与反向环路（若已有相反方向的边则不重复建反向边）
+                if pair not in seen_pairs and (target_node.id, src.id) not in seen_pairs:
+                    seen_pairs.add(pair)
+                    edges.append(
+                        TopologyEdgeOut(
+                            source=src.id,
+                            target=target_node.id,
+                            label=f"调用 {src.name[:6]}",
+                        )
+                    )
 
     return edges
 
@@ -172,29 +213,30 @@ async def get_tenant_topology(
             )
         ).scalars().all()
 
-    for m in rows:
-        node_id = f"db_{m.id}" if not m.id.startswith("db_") else m.id
-        nodes.append(
-            TopologyNodeOut(
-                id=node_id,
-                name=m.custom_name or m.base_agent_id,
-                role_category=f"租户切片 · {m.base_agent_id}",
-                role_desc=m.private_prompt_delta or f"基于基线 {m.base_agent_id} 的租户私有切片",
-                base_agent_id=m.base_agent_id,
-                status="就绪",
-                source="db",
-                tools=["web_search", "wiki_retrieval"],
+        for r in rows:
+            node_id = f"db_{r.id}"
+            seen_ids.add(node_id)
+            nodes.append(
+                TopologyNodeOut(
+                    id=node_id,
+                    name=r.custom_name or f"Agent-{r.id[:6]}",
+                    role_category=f"租户 Agent · {r.base_agent_id}",
+                    role_desc=r.private_prompt_delta or f"基于 {r.base_agent_id} 的租户专属 Agent",
+                    base_agent_id=r.base_agent_id,
+                    status="idle",
+                    source="db_slice",
+                    tools=["web_search", "wiki_retrieval"],
+                )
             )
-        )
-        seen_ids.add(node_id)
 
-    # 2. 扫描租户专属技能目录（命名空间 skill_）
-    for s_node in _scan_tenant_skills(tenant_id):
-        if s_node.id not in seen_ids:
-            nodes.append(s_node)
-            seen_ids.add(s_node.id)
+    # 2. 扫描租户技能沙箱（命名空间 skill_，去重）
+    skill_agents = _scan_tenant_skill_agents(tenant_id)
+    for sa in skill_agents:
+        if sa.id not in seen_ids:
+            seen_ids.add(sa.id)
+            nodes.append(sa)
 
-    # 3. 动态装配闭合协同边
+    # 3. 动态构建真实协同边（有明确关系才连线）
     edges = _build_edges(nodes)
 
     return TenantTopologyOut(

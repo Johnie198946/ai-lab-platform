@@ -71,7 +71,8 @@ public struct MessageBubbleView: View {
     }
 
     private var assistantBubbleContent: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+        let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        return VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             // 演示样例标注
             if message.isDemoSample {
                 demoSampleBadge
@@ -82,14 +83,14 @@ public struct MessageBubbleView: View {
                 blockCard(reasoningBlock)
             }
 
-            // 2. Markdown 正文卡片（非空或流式中才渲染容器）
-            if !message.content.isEmpty || message.isStreaming {
+            // 2. Markdown 正文卡片（正文非空 或 流式中）
+            if !trimmed.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                     if !markdownBlocks.isEmpty {
                         ForEach(markdownBlocks) { block in
                             MarkdownBlockCard(block: block)
                         }
-                    } else if !message.content.isEmpty {
+                    } else if !trimmed.isEmpty {
                         Text(message.content)
                             .font(.system(size: 15))
                             .foregroundColor(AppTheme.Colors.textPrimary)
@@ -114,29 +115,37 @@ public struct MessageBubbleView: View {
                 blockCard(block)
             }
 
-            // 4. 空气泡兜底：正文为空且已完成非待办时，给出明确异常提示 + 重试按钮（绝不裸露操作条）
-            if message.content.isEmpty && !message.isStreaming && !message.pending && message.clarifyBlock == nil {
+            // 4. 空气泡兜底（正文为空且非流式非待办且无澄清卡）：显式给出异常提示 + 重新生成（绝不只露底部操作条）
+            if trimmed.isEmpty && !message.isStreaming && !message.pending && message.clarifyBlock == nil {
                 HStack(spacing: AppTheme.Spacing.sm) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 13))
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 14))
                         .foregroundColor(AppTheme.Colors.securityYellow)
-                    Text("未能生成完整内容")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(AppTheme.Colors.textSecondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("未能生成有效回答")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(AppTheme.Colors.textPrimary)
+                        Text("大模型未返回完整响应，请点击重新生成")
+                            .font(.system(size: 11))
+                            .foregroundColor(AppTheme.Colors.textSecondary)
+                    }
                     Spacer()
                     Button(action: { onRegenerate?(message.id) }) {
-                        Text("重新生成")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(AppTheme.Colors.primary)
-                            .padding(.horizontal, AppTheme.Spacing.sm)
-                            .padding(.vertical, 4)
-                            .background(AppTheme.Colors.primary.opacity(0.08))
-                            .clipShape(Capsule())
+                        HStack(spacing: 4) {
+                            Image(systemName: "arrow.clockwise")
+                            Text("重新生成")
+                        }
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.primary)
+                        .padding(.horizontal, AppTheme.Spacing.sm + 2)
+                        .padding(.vertical, 6)
+                        .background(AppTheme.Colors.primary.opacity(0.08))
+                        .clipShape(Capsule())
                     }
                     .buttonStyle(SoftButtonStyle())
                 }
                 .padding(.horizontal, AppTheme.Spacing.md)
-                .padding(.vertical, AppTheme.Spacing.sm)
+                .padding(.vertical, AppTheme.Spacing.sm + 2)
                 .background(AppTheme.Colors.cardBackground)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
                 .overlay(
@@ -146,7 +155,7 @@ public struct MessageBubbleView: View {
             }
 
             // 5. ChatGPT 风格气泡操作条（仅在正文非空且已完成时展示，绝不单独裸露）
-            if message.role == .assistant && !message.content.isEmpty && !message.isStreaming && !message.pending {
+            if message.role == .assistant && !trimmed.isEmpty && !message.isStreaming && !message.pending {
                 BubbleActionBar(
                     messageId: message.id,
                     content: message.content,

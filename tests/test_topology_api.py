@@ -105,7 +105,7 @@ class TestTenantTopologyAPI(unittest.TestCase):
             self.assertNotIn(baseline, node_ids)
 
     def test_topology_edges_construction(self):
-        """Supervision 条件 8：main_agent 作为中枢向垂直领域派发边"""
+        """消费 SKILL.md 中的 depends_on 声明，并标注具体调用动作"""
         t_dir = Path(self._test_dir) / "tenants" / "u-topo"
         (t_dir / "hub-agent").mkdir(parents=True, exist_ok=True)
         (t_dir / "hub-agent" / "SKILL.md").write_text(
@@ -113,7 +113,7 @@ class TestTenantTopologyAPI(unittest.TestCase):
         )
         (t_dir / "vert-agent").mkdir(parents=True, exist_ok=True)
         (t_dir / "vert-agent" / "SKILL.md").write_text(
-            "---\nname: 垂直分析\nbase_agent: coder\n---\n", encoding="utf-8"
+            "---\nname: 垂直分析\nbase_agent: coder\ndepends_on: [hub-agent]\n---\n", encoding="utf-8"
         )
 
         r = self._get("/api/v1/topology")
@@ -124,33 +124,35 @@ class TestTenantTopologyAPI(unittest.TestCase):
         edge = body["edges"][0]
         self.assertEqual(edge["source"], "skill_hub-agent")
         self.assertEqual(edge["target"], "skill_vert-agent")
+        self.assertIn("调用", edge["label"])
 
-    def test_topology_star_edges_same_base(self):
-        """多技能同 base_agent（main_agent）：星型中枢装配，hub -> 其余全部节点"""
+    def test_topology_known_pipelines(self):
+        """预置真实业务管道连线与精确语义动作标注（有关系才连，无关系独立）"""
         t_dir = Path(self._test_dir) / "tenants" / "u-topo"
-        for name in ("agent-a", "agent-b", "agent-c"):
+        for name in ("product-drill-me", "clarify-ladder-scoping", "backend-mvp-scaffolding", "isolated-agent"):
             d = t_dir / name
             d.mkdir(parents=True, exist_ok=True)
-            (d / "SKILL.md").write_text(
-                f"---\nname: {name}\nbase_agent: main_agent\n---\n", encoding="utf-8"
-            )
+            (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
 
         r = self._get("/api/v1/topology")
         self.assertEqual(r.status_code, 200)
         body = r.json()
-        self.assertEqual(len(body["nodes"]), 3)
-        self.assertEqual(len(body["edges"]), 2)  # hub -> 其余 2 个
-        sources = {e["source"] for e in body["edges"]}
-        self.assertEqual(len(sources), 1)  # 星型：单一中枢
-        self.assertEqual(body["edges"][0]["label"], "任务协同")
+        self.assertEqual(len(body["nodes"]), 4)
+        # 4 个节点中：product-drill-me -> clarify-ladder-scoping -> backend-mvp-scaffolding (2条边)，isolated-agent 孤立 (0边)
+        self.assertEqual(len(body["edges"]), 2)
+        edge_labels = {(e["source"], e["target"]): e["label"] for e in body["edges"]}
+        self.assertIn(("skill_product-drill-me", "skill_clarify-ladder-scoping"), edge_labels)
+        self.assertEqual(edge_labels[("skill_product-drill-me", "skill_clarify-ladder-scoping")], "痛点诊断输入")
+        self.assertIn(("skill_clarify-ladder-scoping", "skill_backend-mvp-scaffolding"), edge_labels)
+        self.assertEqual(edge_labels[("skill_clarify-ladder-scoping", "skill_backend-mvp-scaffolding")], "输出需求规格")
 
     def test_path_traversal_protection(self):
         """Supervision 条件 9：tenant_id 路径穿越安全防护"""
-        from backend.api.topology import _sanitize_tenant_id, _scan_tenant_skills
-        self.assertEqual(_sanitize_tenant_id("../../etc/passwd"), "demo")
+        from backend.api.topology import _sanitize_tenant_id, _scan_tenant_skill_agents
+        self.assertEqual(_sanitize_tenant_id("../../etc/passwd"), "etcpasswd")
         self.assertEqual(_sanitize_tenant_id("normal_tenant-123"), "normal_tenant-123")
         # 恶意路径返回空
-        items = _scan_tenant_skills("../../root")
+        items = _scan_tenant_skill_agents("../../root")
         self.assertEqual(items, [])
 
 
