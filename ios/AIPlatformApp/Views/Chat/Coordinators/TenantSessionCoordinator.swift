@@ -679,7 +679,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - Clarify 统一会话推进（先解锁·后兜底·绝不静默）
+    // MARK: - Clarify 统一会话推进（精确唤醒 AI 流 + 释放死锁标志）
 
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
@@ -701,13 +701,13 @@ public final class TenantSessionCoordinator: ObservableObject {
         // 2. 立即在卡片消息上插入「正在推进」思维链胶囊（用户点击即有反馈）
         updateReasoningSteps(for: idx) { steps in
             if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
-                steps[tIdx].title = "正在根据您的选择推进方案…"
+                steps[tIdx].title = "已收到选择，正在继续处理…"
                 steps[tIdx].status = "running"
             } else {
                 steps.insert(
                     ReasoningStep(
                         type: .thought,
-                        title: "正在根据您的选择推进方案…",
+                        title: "已收到选择，正在继续处理…",
                         status: "running"
                     ),
                     at: 0
@@ -715,11 +715,10 @@ public final class TenantSessionCoordinator: ObservableObject {
             }
         }
 
-        // 3. 正确通道：submitClarify 唤醒阻塞的 agent 线程（保留完整上下文·原 SSE 流续推）
-        //    失败兜底：regenerate 重启（并发防护放行，必达）
+        // 3. 提交澄清响应并唤醒 AI 流式响应（致命死锁根治）
         Task { [weak self] in
             guard let self = self else { return }
-            let ok = (try? await APIClient.shared.submitClarify(
+            let submitSuccess = (try? await APIClient.shared.submitClarify(
                 sessionId: sid,
                 response: selection,
                 clarifyId: clarifyId
@@ -727,11 +726,21 @@ public final class TenantSessionCoordinator: ObservableObject {
 
             await MainActor.run {
                 guard self.tenantEpoch == self.tenantEpoch else { return }
-                if !ok && !self.isGenerating {
-                    // 解锁失败且流已断：regenerate 重启（带用户选择上下文）
+                if submitSuccess {
+                    self.thinkingPhase = "reasoning"
+                    self.thinkingDetail = "已收到选择，正在继续处理…"
+
+                    // 💡【关键修复】：提交成功后，如果当前没有处于生成流中，需要启动 AI 流式响应
+                    if !self.isGenerating {
+                        self.startGeneration(text: selection, quote: nil)
+                    }
+                } else {
+                    // 提交失败兜底：释放 isGenerating 标志位防止死锁，并以 regenerate 重试发送
+                    if self.isGenerating {
+                        self.finishGeneration()
+                    }
                     self.sendMessage(text: selection, regenerate: true)
                 }
-                // ok 或原流存活：agent 线程已带选择继续，事件经原 SSE 流实时到达
             }
         }
     }
