@@ -52,6 +52,13 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+# Hermes Agent 安装目录必须【优先于仓库根】入 sys.path：
+# 仓库 tools/（无 managed_tool_gateway/clarify_gateway）若排在前面会遮蔽
+# Hermes tools/ 包，导致进程内 agent 构建失败（No module named 'tools.managed_tool_gateway'）。
+_HERMES_AGENT = Path(os.environ.get("HERMES_AGENT_HOME", str(Path.home() / ".hermes" / "hermes-agent")))
+if _HERMES_AGENT.is_dir() and str(_HERMES_AGENT) not in sys.path:
+    sys.path.insert(0, str(_HERMES_AGENT))
+
 from backend.services.reasoning_extractor import extract_steps  # noqa: E402
 
 app = FastAPI(title="Hermes Bridge v6.0")
