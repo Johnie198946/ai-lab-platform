@@ -45,12 +45,16 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     // MARK: - 会话恢复与持久化
 
-    public func makeRenderContext(for message: ChatMessage) -> PluginRenderContext {
+    public func makeRenderContext(for message: ChatMessage? = nil) -> PluginRenderContext {
         PluginRenderContext(
-            messageId: message.id,
-            isStreaming: message.isStreaming,
+            messageId: message?.id ?? "active",
+            isStreaming: message?.isStreaming ?? isGenerating,
             onClarifySubmit: { [weak self] selection in
-                self?.sendClarifySelection(messageId: message.id, selection: selection)
+                if let messageId = message?.id {
+                    self?.sendClarifySelection(messageId: messageId, selection: selection)
+                } else if let lastClarify = self?.messages.last(where: { $0.clarifyBlock != nil }) {
+                    self?.sendClarifySelection(messageId: lastClarify.id, selection: selection)
+                }
             },
             onQuoteFollowUp: { [weak self] quote in
                 self?.quotedContext = quote
@@ -680,6 +684,10 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     // MARK: - Clarify 统一会话推进（精确唤醒 AI 流 + 释放死锁标志）
+
+    public func submitClarifyAction(messageId: String, selection: String) {
+        sendClarifySelection(messageId: messageId, selection: selection)
+    }
 
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
