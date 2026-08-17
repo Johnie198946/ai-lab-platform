@@ -461,10 +461,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].isStreaming = false
                     }
 
-                case .error(let code, let message):
+                case .error(let code, _):
                     drainDeltaBuffer(messageId: req.id)
                     if let idx = messages.firstIndex(where: { $0.id == req.id }) {
-                        messages[idx].content = message.isEmpty ? "流式响应异常（\(code)）" : message
+                        messages[idx].content = "流式响应异常（\(code)）"
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                         messages[idx].degraded = true
@@ -685,50 +685,68 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     // MARK: - Clarify 统一会话推进（精确唤醒 AI 流 + 释放死锁标志）
 
-    public func submitClarifyAction(messageId: String, selection: String) {
-        sendClarifySelection(messageId: messageId, selection: selection)
-    }
-
-    public func sendClarifySelection(messageId: String, selection: String) {
-        print("👉 [Clarify Debug] 收到点击事件, messageId: \(messageId), selection: \(selection)")
+    @discardableResult
+    public func submitClarifyAction(
+        messageId: String,
+        selection: String
+    ) async -> Result<Void, Error> {
+        print("👉 [Clarify Debug] 收到点击事件, messageId: \(messageId)")
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else {
             print("❌ [Clarify Debug] 未找到 messageId: \(messageId)")
-            return
+            await MainActor.run { self.finishGeneration() }
+            return .failure(APIError.server(404, "消息未找到"))
         }
         let sid = sessionManager.activeSessionID()
         let clarifyId = messages[idx].clarifyBlock?.clarifyId
         print("👉 [Clarify Debug] 开始提交选项: \(selection), clarifyId: \(clarifyId ?? "nil")")
 
-        // 1. 立即标记卡片已确认（ClarifyCard 变绿色已确认小条）
-        if let blockIdx = messages[idx].blocks.firstIndex(where: {
-            if case .clarify = $0 { return true }
-            return false
-        }) {
-            if case .clarify(var c) = messages[idx].blocks[blockIdx] {
-                c.markSubmitted(selection: selection)
-                messages[idx].blocks[blockIdx] = .clarify(c)
+        await MainActor.run {
+            // 1. 立即标记卡片已确认（ClarifyCard 变绿色已确认小条）
+            if let blockIdx = messages[idx].blocks.firstIndex(where: {
+                if case .clarify = $0 { return true }
+                return false
+            }) {
+                if case .clarify(var c) = messages[idx].blocks[blockIdx] {
+                    c.markSubmitted(selection: selection)
+                    messages[idx].blocks[blockIdx] = .clarify(c)
+                }
             }
+
+            // 2. 立即追加单条用户选择气泡（保证对话连续性，且不重复插话）
+            messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
+            commitSession()
         }
 
-        // 2. 立即追加单条用户选择气泡（保证对话连续性，且不重复插话）
-        messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
-        commitSession()
+        // 3. 提交 REST 接口并根据结果唤醒 AI 回答流
+        let submitSuccess = (try? await APIClient.shared.submitClarify(
+            sessionId: sid,
+            response: selection,
+            clarifyId: clarifyId
+        )) ?? false
 
-        // 3. 立即重置生成状态并拉起 Assistant 流式生成（带 Thinking 胶囊）
-        finishGeneration()
-        thinkingPhase = "reasoning"
-        thinkingDetail = "已收到选择，正在继续处理…"
-        print("✅ [Clarify Debug] 准备开启 Assistant 流式响应 (regenerate: true)...")
-        startGeneration(text: selection, quote: nil, regenerate: true)
+        if submitSuccess {
+            print("✅ [Clarify Debug] 后端 submitClarify 成功，启动 SSE 响应接收后续 AI 回答...")
+            await MainActor.run {
+                self.thinkingPhase = "reasoning"
+                self.thinkingDetail = "已收到选择，正在继续处理…"
+                // 💡 修复：提交成功后，启动 SSE 响应接收后续 AI 回答
+                self.startGeneration(text: selection, quote: nil, regenerate: true)
+            }
+            return .success(())
+        } else {
+            print("❌ [Clarify Debug] 提交未命中旧线程，以全新流式推进...")
+            await MainActor.run {
+                self.thinkingPhase = "reasoning"
+                self.thinkingDetail = "已收到选择，正在继续处理…"
+                self.startGeneration(text: selection, quote: nil, regenerate: true)
+            }
+            return .success(())
+        }
+    }
 
-        // 4. 异步通知后端 clarify 解锁
+    public func sendClarifySelection(messageId: String, selection: String) {
         Task {
-            let submitSuccess = (try? await APIClient.shared.submitClarify(
-                sessionId: sid,
-                response: selection,
-                clarifyId: clarifyId
-            )) ?? false
-            print("👉 [Clarify Debug] 后端 submitClarify 结果: \(submitSuccess)")
+            await submitClarifyAction(messageId: messageId, selection: selection)
         }
     }
 
