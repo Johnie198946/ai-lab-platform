@@ -45,6 +45,22 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     // MARK: - 会话恢复与持久化
 
+    public func makeRenderContext(for message: ChatMessage) -> PluginRenderContext {
+        PluginRenderContext(
+            messageId: message.id,
+            isStreaming: message.isStreaming,
+            onClarifySubmit: { [weak self] selection in
+                self?.sendClarifySelection(messageId: message.id, selection: selection)
+            },
+            onQuoteFollowUp: { [weak self] quote in
+                self?.quotedContext = quote
+            },
+            onRegenerate: { [weak self] mid in
+                self?.retryMessage(mid)
+            }
+        )
+    }
+
     public func restoreActiveSession() {
         let sid = sessionManager.activeSessionID()
         self.messages = sessionManager.messages(for: sid)
@@ -284,6 +300,15 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
+        defer {
+            Task { @MainActor [weak self] in
+                guard let self = self, self.tenantEpoch == taskEpoch else { return }
+                self.drainDeltaBuffer(messageId: req.id)
+                self.finalizeReasoningDuration(for: req.id)
+                self.commitSession()
+                self.finishGeneration()
+            }
+        }
         if demoMode {
             await appendDemoReply(req: req)
             return

@@ -41,6 +41,7 @@
 		BF6487D4B02C2A259642AFD4 /* AttachmentCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */; };
 		C5628D34D35E19AAF03CA518 /* LoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1490C2A9375CE8604477437E /* LoginView.swift */; };
 		C9A8805D56EF7F858B0ADD99 /* InboxFileManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8E70EAC9E0B5B8A7FA5B187 /* InboxFileManager.swift */; };
+		CA2644A033D838AAF6B53339 /* PluginRenderContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = 154956AEA3EB99E3828A50FC /* PluginRenderContext.swift */; };
 		D2BBAD0E6CB91667F92E60EA /* VoiceInputView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE840AF43A4B6B0BA1587D11 /* VoiceInputView.swift */; };
 		D5E5539813EF231D57471760 /* ProfileEditSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77831964D4BC5807CFED21D0 /* ProfileEditSheet.swift */; };
 		EA5709C3A46D1DE62905B40C /* ImageCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42A09EB0901BFFE6D59012F0 /* ImageCard.swift */; };
@@ -55,6 +56,7 @@
 		064407015708A682A63CF7D8 /* ChatTopBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTopBarView.swift; sourceTree = "<group>"; };
 		13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentCard.swift; sourceTree = "<group>"; };
 		1490C2A9375CE8604477437E /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
+		154956AEA3EB99E3828A50FC /* PluginRenderContext.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PluginRenderContext.swift; sourceTree = "<group>"; };
 		2358634EFA73CA1C68794682 /* BlockCardDispatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BlockCardDispatcher.swift; sourceTree = "<group>"; };
 		2DF83086061F218C1259F32C /* ChartCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChartCard.swift; sourceTree = "<group>"; };
 		372859EF56AE692E12D52C31 /* ChatInFlightPlaceholderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatInFlightPlaceholderView.swift; sourceTree = "<group>"; };
@@ -151,6 +153,7 @@
 			isa = PBXGroup;
 			children = (
 				2358634EFA73CA1C68794682 /* BlockCardDispatcher.swift */,
+				154956AEA3EB99E3828A50FC /* PluginRenderContext.swift */,
 			);
 			path = Dispatchers;
 			sourceTree = "<group>";
@@ -384,6 +387,7 @@
 				1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */,
 				8A5A9BA341A670FC81416FDE /* MarkdownCards.swift in Sources */,
 				85D4C80001C8700309C59875 /* MessageBubbleView.swift in Sources */,
+				CA2644A033D838AAF6B53339 /* PluginRenderContext.swift in Sources */,
 				3FFEAF19DF3D4DE1A028D6F0 /* PlusMenuSheet.swift in Sources */,
 				D5E5539813EF231D57471760 /* ProfileEditSheet.swift in Sources */,
 				44364A0B81BC8C873E2A107F /* QuantumAvatarView.swift in Sources */,

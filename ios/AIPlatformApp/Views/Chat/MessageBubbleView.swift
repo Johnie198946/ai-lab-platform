@@ -11,6 +11,7 @@ import SwiftUI
 
 public struct MessageBubbleView: View {
     public let message: ChatMessage
+    public var context: PluginRenderContext? = nil
     public var onQuoteFollowUp: ((QuotedContext) -> Void)? = nil
     public var onRegenerate: ((String) -> Void)? = nil
 
@@ -18,10 +19,12 @@ public struct MessageBubbleView: View {
 
     public init(
         message: ChatMessage,
+        context: PluginRenderContext? = nil,
         onQuoteFollowUp: ((QuotedContext) -> Void)? = nil,
         onRegenerate: ((String) -> Void)? = nil
     ) {
         self.message = message
+        self.context = context
         self.onQuoteFollowUp = onQuoteFollowUp
         self.onRegenerate = onRegenerate
     }
@@ -195,7 +198,13 @@ public struct MessageBubbleView: View {
     // MARK: - 块分发（委托 BlockCardDispatcher 静态分发）
     @ViewBuilder
     private func blockCard(_ block: MessageBlock) -> some View {
-        BlockCardDispatcher(block: block, isStreaming: message.isStreaming)
+        BlockCardDispatcher(
+            block: block,
+            isStreaming: message.isStreaming,
+            onClarifySubmit: { selection in
+                context?.onClarifySubmit?(selection)
+            }
+        )
     }
 
     // MARK: - Subcomponents

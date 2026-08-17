@@ -88,6 +88,7 @@ public struct ChatMessageStreamView: View {
             // 实时可见（同 SSE 流事件驱动，绝不因澄清卡独占遮住执行过程）
             MessageBubbleView(
                 message: message,
+                context: coordinator.makeRenderContext(for: message),
                 onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted },
                 onRegenerate: { msgId in coordinator.retryMessage(msgId) }
             )
