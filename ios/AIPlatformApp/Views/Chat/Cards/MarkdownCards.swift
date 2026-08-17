@@ -36,7 +36,11 @@ public struct MarkdownInlineText: View {
             return Text(s)
                 .font(.system(size: 13, design: .monospaced))
                 .foregroundColor(AppTheme.Colors.quantumViolet)
-        case .bold(let s): return Text(s).bold()
+        case .bold(let s):
+            // 重点提亮：加粗 + 品牌蓝，与正文明确区分（对标微信端加粗语义）
+            return Text(s)
+                .fontWeight(.bold)
+                .foregroundColor(AppTheme.Colors.textPrimary)
         case .italic(let s): return Text(s).italic()
         }
     }
@@ -73,11 +77,58 @@ public struct MarkdownBlockCard: View {
             TableCard(block: tableBlock)
         case .chart(let chartBlock):
             ChartCard(block: chartBlock)
+        case .sourceCitations(let items):
+            SourceCitationsCard(items: items)
         }
     }
 }
 
-// MARK: - 标题卡
+// MARK: - 知识库来源条目卡（视觉区分：图标 + 次级色 + 等宽路径）
+
+public struct SourceCitationsCard: View {
+    public let items: [String]
+
+    public init(items: [String]) {
+        self.items = items
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: "books.vertical.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(AppTheme.Colors.quantumCyan)
+                Text("来源条目")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(AppTheme.Colors.quantumCyan)
+            }
+
+            ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 10))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .padding(.top, 2)
+                    Text(item)
+                        .font(.system(size: 12, design: .monospaced))
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .lineLimit(2)
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.quantumCyan.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .stroke(AppTheme.Colors.quantumCyan.opacity(0.25), lineWidth: 0.5)
+        )
+    }
+}
+
+// MARK: - 标题卡（分级视觉：L1 大标题渐变条 + L2 中文序号蓝条 + L3 青色点）
 
 private struct MarkdownHeadingCard: View {
     let level: Int
@@ -86,8 +137,8 @@ private struct MarkdownHeadingCard: View {
     private var fontSize: CGFloat {
         switch level {
         case 1: return 20
-        case 2: return 18
-        case 3: return 16
+        case 2: return 17
+        case 3: return 15.5
         default: return 15
         }
     }
@@ -97,11 +148,35 @@ private struct MarkdownHeadingCard: View {
     }
 
     var body: some View {
-        MarkdownInlineText(
-            segments: MarkdownBlockParser.parseInline(text),
-            baseFont: .system(size: fontSize, weight: fontWeight),
-            baseColor: AppTheme.Colors.textPrimary
-        )
+        HStack(alignment: .center, spacing: 8) {
+            // 分级品牌色条（L1 量子渐变 / L2 量子蓝 / L3 量子青）
+            switch level {
+            case 1:
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.Colors.quantumGradient)
+                    .frame(width: 4, height: 20)
+            case 2:
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(AppTheme.Colors.quantumBlue)
+                    .frame(width: 3.5, height: 18)
+            case 3:
+                Circle()
+                    .fill(AppTheme.Colors.quantumCyan)
+                    .frame(width: 5, height: 5)
+                    .padding(.leading, 1)
+            default:
+                Circle()
+                    .fill(AppTheme.Colors.quantumCyan.opacity(0.5))
+                    .frame(width: 4, height: 4)
+                    .padding(.leading, 1)
+            }
+
+            MarkdownInlineText(
+                segments: MarkdownBlockParser.parseInline(text),
+                baseFont: .system(size: fontSize, weight: fontWeight),
+                baseColor: AppTheme.Colors.textPrimary
+            )
+        }
         .padding(.top, level <= 2 ? AppTheme.Spacing.xs : 2)
     }
 }
