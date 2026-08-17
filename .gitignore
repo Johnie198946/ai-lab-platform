@@ -28,6 +28,11 @@ data/*
 !data/runtime/
 *.log
 docx_build/
+
+# iOS 构建产物与残留工程（仅源码入库）
+ios/build_derived/
+ios/AIPlatformApp 2.xcodeproj/
+ios/*.png
 .hermes/
 *.csv
 

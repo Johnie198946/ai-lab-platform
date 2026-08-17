@@ -11,7 +11,7 @@ import json
 import os
 import re
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -385,6 +385,13 @@ class CancelRequest(BaseModel):
 _streaming_sessions: set[str] = set()
 
 
+def _identity_sse(answer: str) -> Iterator[str]:
+    """身份规则秒回合成 SSE 流：boot → delta → done（契约与真实流一致，零 agent 拉起）。"""
+    yield f"data: {json.dumps({'type': 'status', 'phase': 'boot', 'detail': '正在初始化推理引擎…'}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'delta', 'content': answer}, ensure_ascii=False)}\n\n"
+    yield f"data: {json.dumps({'type': 'done', 'session_id': '', 'answer': answer}, ensure_ascii=False)}\n\n"
+
+
 async def _call_bridge_stream(
     goal: str, session_id: str
 ) -> AsyncIterator[str]:
@@ -409,7 +416,21 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
 
     澄清统一由 agent 原生 CLARIFY_GATE 门禁触发（source=bridge），无规则预分诊直出路径。
+    身份话术规则秒回：命中即合成 SSE 流直接返回，零 agent 拉起（「你是谁」秒答）。
     """
+    # 身份规则秒回快速通道：避免全量拉起 agent（11s → <1s）
+    fixed = match_identity_rule(req.question)
+    if fixed:
+        return StreamingResponse(
+            _identity_sse(fixed),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）

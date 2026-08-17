@@ -199,6 +199,8 @@ public struct ClarifyOption: Identifiable, Sendable, Hashable {
 /// 澄清卡片数据块（单选/多选 + 自定义输入 + 已提交态）
 public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public let id: String
+    /// 后端澄清 ID（bridge clarify 事件携带）：提交时透传，精确解锁阻塞的 agent 线程（P0 修复）
+    public var clarifyId: String?
     public var question: String
     public var choices: [ClarifyOption]
     /// true = 多选（Checkbox），false = 单选（Radio）
@@ -212,6 +214,7 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
 
     public init(
         id: String = UUID().uuidString,
+        clarifyId: String? = nil,
         question: String,
         choices: [String],
         multiSelect: Bool = false,
@@ -221,6 +224,7 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
         submittedSelection: String = ""
     ) {
         self.id = id
+        self.clarifyId = clarifyId
         self.question = question
         self.choices = choices.map { ClarifyOption(label: $0) }
         self.multiSelect = multiSelect
@@ -382,6 +386,8 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
     public var pending: Bool
     /// 502 降级标记：degraded=true 的消息跳过 ReasoningCard、不入 API 上下文、渲染降级卡
     public var degraded: Bool
+    /// ChatGPT 风格思考胶囊真实耗时（秒）：流式完成时原子落盘，历史冷启动真实回显；无记录时优雅降级
+    public var reasoningDuration: Int?
 
     public init(
         id: String = UUID().uuidString,
@@ -394,7 +400,8 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         quotedContext: QuotedContext? = nil,
         isDemoSample: Bool = false,
         pending: Bool = false,
-        degraded: Bool = false
+        degraded: Bool = false,
+        reasoningDuration: Int? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -407,6 +414,7 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         self.isDemoSample = isDemoSample
         self.pending = pending
         self.degraded = degraded
+        self.reasoningDuration = reasoningDuration
     }
 }
 
@@ -422,6 +430,7 @@ public struct PersistedMessage: Codable, Sendable {
     public let pending: Bool
     public let degraded: Bool
     public let isDemoSample: Bool
+    public let reasoningDuration: Int?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -431,6 +440,7 @@ public struct PersistedMessage: Codable, Sendable {
         self.pending = m.pending
         self.degraded = m.degraded
         self.isDemoSample = m.isDemoSample
+        self.reasoningDuration = m.reasoningDuration
     }
 
     public func toChatMessage(sessionId: String) -> ChatMessage {
@@ -440,12 +450,10 @@ public struct PersistedMessage: Codable, Sendable {
             role: MessageRole(rawValue: role) ?? .assistant,
             content: content,
             createdAt: createdAt,
-            isStreaming: false,
-            blocks: [],
-            quotedContext: nil,
             isDemoSample: isDemoSample,
             pending: pending,
-            degraded: degraded
+            degraded: degraded,
+            reasoningDuration: reasoningDuration
         )
     }
 }

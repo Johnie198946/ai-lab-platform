@@ -78,7 +78,7 @@ public struct MessageBubbleView: View {
                 demoSampleBadge
             }
 
-            // Markdown 卡片流：解析 message.content 为 8 类块，逐块卡片化呈现（彻底消除原始横线/符号堆砌）
+            // Markdown 卡片流：解析 message.content 为 10 类块，逐块卡片化呈现（彻底消除原始横线/符号堆砌）
             if !markdownBlocks.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                     ForEach(markdownBlocks) { block in
@@ -102,6 +102,47 @@ public struct MessageBubbleView: View {
             // 富媒体块（单 ForEach 按 blocks 数组序）
             ForEach(message.blocks) { block in
                 blockCard(block)
+            }
+
+            // 空气泡兜底：正文与富媒体块均为空且已完成 → 明确占位提示，绝不渲染成"只有操作条"的空行
+            if message.content.isEmpty && message.blocks.isEmpty && !message.isStreaming && !message.pending {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: "exclamationmark.bubble")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                    Text("该回复未生成完整内容")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                    Spacer()
+                    Button(action: { onRegenerate?(message.id) }) {
+                        Text("重新生成")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(AppTheme.Colors.primary)
+                            .padding(.horizontal, AppTheme.Spacing.sm)
+                            .padding(.vertical, 4)
+                            .background(AppTheme.Colors.primary.opacity(0.08))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                }
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .padding(.vertical, AppTheme.Spacing.sm)
+                .background(AppTheme.Colors.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 0.5)
+                )
+            }
+
+            // ChatGPT 风格气泡操作条（已完成且非用户消息时展示）
+            if message.role == .assistant && !message.isStreaming && !message.pending {
+                BubbleActionBar(
+                    messageId: message.id,
+                    content: message.content,
+                    onRegenerate: { onRegenerate?(message.id) }
+                )
+                .padding(.leading, 4)
             }
         }
         .contextMenu {
@@ -139,7 +180,11 @@ public struct MessageBubbleView: View {
         case .image(let image): ImageCard(block: image)
         case .table(let table): TableCard(block: table)
         case .attachment(let attachment): AttachmentCard(block: attachment)
-        case .reasoning(let steps): ReasoningCard(steps: steps)
+        case .reasoning(let steps): ReasoningCard(
+            steps: steps,
+            durationSeconds: message.reasoningDuration,
+            isStreaming: message.isStreaming
+        )
         case .clarify(let clarify): ClarifyCard(block: clarify, onSubmit: nil)
         }
     }

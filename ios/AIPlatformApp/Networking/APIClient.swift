@@ -656,7 +656,7 @@ public final class APIClient: ObservableObject {
         case thought(String)
         case toolStart(id: String, tool: String, label: String)
         case toolComplete(id: String, tool: String)
-        case clarify(question: String, choices: [String], multiSelect: Bool, source: String)
+        case clarify(question: String, choices: [String], multiSelect: Bool, source: String, clarifyId: String?)
         case clarifyRejected
         case status(phase: String, detail: String)
         case done(sessionId: String?, answer: String?)
@@ -686,7 +686,8 @@ public final class APIClient: ObservableObject {
                     question: json["question"] as? String ?? "",
                     choices: json["choices"] as? [String] ?? [],
                     multiSelect: json["multi_select"] as? Bool ?? false,
-                    source: json["source"] as? String ?? "bridge"
+                    source: json["source"] as? String ?? "bridge",
+                    clarifyId: json["clarify_id"] as? String
                 )
             case "clarify_rejected":
                 return .clarifyRejected
@@ -805,7 +806,8 @@ public final class APIClient: ObservableObject {
     }
 
     /// POST /api/chat/stream/clarify：提交澄清响应（解锁 agent 线程）
-    public func submitClarify(sessionId: String?, response: String) async throws -> Bool {
+    /// - Parameter clarifyId: bridge clarify 事件携带的 ID；透传后后端按 ID 精确解锁对应阻塞线程（P0：多卡场景防错配）
+    public func submitClarify(sessionId: String?, response: String, clarifyId: String? = nil) async throws -> Bool {
         guard let sessionId, !sessionId.isEmpty else { return false }
         let url = baseURL.appendingPathComponent("api/chat/stream/clarify")
         var request = URLRequest(url: url)
@@ -815,10 +817,14 @@ public final class APIClient: ObservableObject {
         if let token = currentToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try? JSONEncoder().encode([
+        var body: [String: Any] = [
             "session_id": sessionId,
             "response": response,
-        ])
+        ]
+        if let clarifyId, !clarifyId.isEmpty {
+            body["clarify_id"] = clarifyId
+        }
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let (data, _) = try await chatSession.data(for: request)
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         return (json?["ok"] as? Bool) ?? false
