@@ -3,8 +3,8 @@
 //  AIPlatformApp
 //
 //  Markdown Message Bubble with Syntax-Highlighted Code Cards, Math Formulas & Context Menu
-//  统一 blocks 数组序渲染 7 类块 + 真实思维链卡片 + 富媒体引用上下文（剔除 reasoning）
-//  SwiftUI Native 60fps Rendering (Zero WebView Dependency)
+//  统一 blocks 数组序渲染 7 类块 + 真实思维链卡片 + 富媒体引用上下文
+//  ChatGPT / Claude 规范：思维链胶囊置顶 -> 正文卡片居中 -> 操作条在底部（有正文时才展示）
 //
 
 import SwiftUI
@@ -66,7 +66,6 @@ public struct MessageBubbleView: View {
 
     // MARK: - Assistant Bubble
     private var assistantAvatarView: some View {
-        // Quantum 品牌头像（自适应托盘 + 原色球体 + 暗色微光描边）
         QuantumAvatarView(size: 32)
             .padding(.top, 2)
     }
@@ -78,11 +77,22 @@ public struct MessageBubbleView: View {
                 demoSampleBadge
             }
 
-            // Markdown 卡片流：解析 message.content 为 10 类块，逐块卡片化呈现（彻底消除原始横线/符号堆砌）
-            if !markdownBlocks.isEmpty || message.isStreaming {
+            // 1. 思维链胶囊（置顶展示，对标 ChatGPT）
+            if let reasoningBlock = message.blocks.first(where: { if case .reasoning = $0 { return true }; return false }) {
+                blockCard(reasoningBlock)
+            }
+
+            // 2. Markdown 正文卡片（非空或流式中才渲染容器）
+            if !message.content.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                    ForEach(markdownBlocks) { block in
-                        MarkdownBlockCard(block: block)
+                    if !markdownBlocks.isEmpty {
+                        ForEach(markdownBlocks) { block in
+                            MarkdownBlockCard(block: block)
+                        }
+                    } else if !message.content.isEmpty {
+                        Text(message.content)
+                            .font(.system(size: 15))
+                            .foregroundColor(AppTheme.Colors.textPrimary)
                     }
 
                     if message.isStreaming {
@@ -99,20 +109,20 @@ public struct MessageBubbleView: View {
                 )
             }
 
-            // 富媒体块（单 ForEach 按 blocks 数组序）
-            ForEach(message.blocks) { block in
+            // 3. 其他富媒体块（非 reasoning，如表格、图表、代码、澄清卡等）
+            ForEach(message.blocks.filter { if case .reasoning = $0 { return false }; return true }) { block in
                 blockCard(block)
             }
 
-            // 空气泡兜底：正文与富媒体块均为空且已完成 → 明确占位提示，绝不渲染成"只有操作条"的空行
-            if message.content.isEmpty && message.blocks.isEmpty && !message.isStreaming && !message.pending {
+            // 4. 空气泡兜底：正文为空且已完成非待办时，给出明确异常提示 + 重试按钮（绝不裸露操作条）
+            if message.content.isEmpty && !message.isStreaming && !message.pending && message.clarifyBlock == nil {
                 HStack(spacing: AppTheme.Spacing.sm) {
-                    Image(systemName: "exclamationmark.bubble")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
-                    Text("该回复未生成完整内容")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 13))
+                        .foregroundColor(AppTheme.Colors.securityYellow)
+                    Text("未能生成完整内容")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(AppTheme.Colors.textSecondary)
                     Spacer()
                     Button(action: { onRegenerate?(message.id) }) {
                         Text("重新生成")
@@ -135,8 +145,8 @@ public struct MessageBubbleView: View {
                 )
             }
 
-            // ChatGPT 风格气泡操作条（已完成且非用户消息时展示）
-            if message.role == .assistant && !message.isStreaming && !message.pending {
+            // 5. ChatGPT 风格气泡操作条（仅在正文非空且已完成时展示，绝不单独裸露）
+            if message.role == .assistant && !message.content.isEmpty && !message.isStreaming && !message.pending {
                 BubbleActionBar(
                     messageId: message.id,
                     content: message.content,
@@ -152,7 +162,8 @@ public struct MessageBubbleView: View {
 
     /// 解析后的 Markdown 卡片块（NSCache 按 messageId + contentHash 缓存，避免长列表重复解析）。
     private var markdownBlocks: [MarkdownBlock] {
-        MarkdownBlockParser.shared.parse(message.content, messageId: message.id)
+        guard !message.content.isEmpty else { return [] }
+        return MarkdownBlockParser.shared.parse(message.content, messageId: message.id)
     }
 
     // MARK: - 演示样例标注
@@ -170,23 +181,10 @@ public struct MessageBubbleView: View {
         .clipShape(Capsule())
     }
 
-    // MARK: - 块分发（8 case 统一渲染）
+    // MARK: - 块分发（委托 BlockCardDispatcher 静态分发）
     @ViewBuilder
     private func blockCard(_ block: MessageBlock) -> some View {
-        switch block {
-        case .code(let snippet): CodeBlockCard(snippet: snippet)
-        case .formula(let formula): FormulaCard(formula: formula)
-        case .chart(let chart): ChartCard(block: chart)
-        case .image(let image): ImageCard(block: image)
-        case .table(let table): TableCard(block: table)
-        case .attachment(let attachment): AttachmentCard(block: attachment)
-        case .reasoning(let steps): ReasoningCard(
-            steps: steps,
-            durationSeconds: message.reasoningDuration,
-            isStreaming: message.isStreaming
-        )
-        case .clarify(let clarify): ClarifyCard(block: clarify, onSubmit: nil)
-        }
+        BlockCardDispatcher(block: block)
     }
 
     // MARK: - Subcomponents
@@ -203,58 +201,57 @@ public struct MessageBubbleView: View {
                     .foregroundColor(AppTheme.Colors.textSecondary)
                     .lineLimit(2)
             }
-            if let summary = quote.blockSummary, !summary.isEmpty {
-                Text(summary)
-                    .font(.system(size: 10))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
-                    .lineLimit(1)
-                    .padding(.leading, AppTheme.Spacing.xs + 3)
-            }
+            .padding(.horizontal, AppTheme.Spacing.sm)
+            .padding(.vertical, 4)
+            .background(AppTheme.Colors.primary.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xs))
         }
-        .padding(AppTheme.Spacing.xs)
-        .background(AppTheme.Colors.secondaryBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xs))
     }
 
     private var streamingCursorView: some View {
         HStack(spacing: 4) {
             Circle()
-                .fill(AppTheme.Colors.primary)
+                .fill(AppTheme.Colors.quantumCyan)
                 .frame(width: 6, height: 6)
-            Circle()
-                .fill(AppTheme.Colors.primary.opacity(0.6))
-                .frame(width: 6, height: 6)
-            Circle()
-                .fill(AppTheme.Colors.primary.opacity(0.3))
-                .frame(width: 6, height: 6)
+                .scaleEffect(1.0)
+                .animation(.easeInOut(duration: 0.6).repeatForever(autoreverses: true), value: message.isStreaming)
+            Text("正在生成…")
+                .font(.system(size: 12))
+                .foregroundColor(AppTheme.Colors.textTertiary)
         }
-        .padding(.top, 2)
+        .padding(.top, 4)
     }
 
-    // MARK: - Context Menu
     @ViewBuilder
     private var contextMenuActions: some View {
-        Button(action: {
-            #if os(iOS)
-            UIPasteboard.general.string = message.content
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            #endif
-        }) {
-            Label("复制全文", systemImage: "doc.on.doc")
+        Button(action: copyToClipboard) {
+            Label(isCopied ? "已复制" : "复制全文", systemImage: isCopied ? "checkmark" : "doc.on.doc")
         }
 
-        Button(action: {
-            onQuoteFollowUp?(message.quoteContext)
-        }) {
-            Label("引用此消息追问", systemImage: "quote.bubble")
-        }
-
-        if message.role == .assistant {
+        if let quoteAction = onQuoteFollowUp, !message.content.isEmpty {
             Button(action: {
-                onRegenerate?(message.id)
+                quoteAction(QuotedContext(text: message.content))
             }) {
+                Label("引用追问", systemImage: "quote.bubble")
+            }
+        }
+
+        if message.role == .assistant, let regenAction = onRegenerate {
+            Button(action: { regenAction(message.id) }) {
                 Label("重新生成", systemImage: "arrow.clockwise")
             }
+        }
+    }
+
+    private func copyToClipboard() {
+        #if os(iOS)
+        UIPasteboard.general.string = message.content
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+        isCopied = true
+        Task {
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            isCopied = false
         }
     }
 }
@@ -309,7 +306,6 @@ public struct CodeBlockCard: View {
             // Code Lines Content
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
-                    // Line numbers
                     let lines = snippet.code.components(separatedBy: "\n")
                     VStack(alignment: .trailing, spacing: 3) {
                         ForEach(0..<lines.count, id: \.self) { idx in
@@ -319,7 +315,6 @@ public struct CodeBlockCard: View {
                         }
                     }
 
-                    // Code Text
                     VStack(alignment: .leading, spacing: 3) {
                         ForEach(0..<lines.count, id: \.self) { idx in
                             Text(lines[idx])
@@ -376,23 +371,4 @@ public struct FormulaCard: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
     }
-}
-
-// MARK: - Xcode #Preview
-
-#Preview("MessageBubbleView - Light") {
-    VStack(spacing: 16) {
-        MessageBubbleView(message: MockData.messages[0])
-        MessageBubbleView(message: MockData.messages[1])
-    }
-    .background(AppTheme.Colors.groupedBackground)
-}
-
-#Preview("MessageBubbleView - Dark") {
-    VStack(spacing: 16) {
-        MessageBubbleView(message: MockData.messages[0])
-        MessageBubbleView(message: MockData.messages[1])
-    }
-    .background(AppTheme.Colors.groupedBackground)
-    .preferredColorScheme(.dark)
 }

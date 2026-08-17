@@ -352,6 +352,19 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
             }
             guard self.tenantEpoch == taskEpoch else { return }
+
+            // 兜底补全：若流式连接提前断开或未收到 delta/done.answer，从 status 端点回读最终正文
+            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                if messages[idx].content.isEmpty && messages[idx].clarifyBlock == nil {
+                    if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId),
+                       let ans = status.answer, !ans.isEmpty {
+                        messages[idx].content = ans
+                    }
+                }
+                messages[idx].pending = false
+                messages[idx].isStreaming = false
+            }
+
             finalizeReasoningDuration(for: req.id)
             commitSession()
             finishGeneration()
