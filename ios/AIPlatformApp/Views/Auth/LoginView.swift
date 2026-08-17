@@ -306,7 +306,7 @@ public struct LoginView: View {
 
         Task { @MainActor in
             var isDev = false
-            // 1. 真实注册（开发态 Authen 未起 → 连接失败，降级开发模式）
+            // 1. 真实注册（后端内建兜底：注册失败自动回退登录，返回平台 JWT）
             do {
                 let resp = try await APIClient.shared.register(
                     email: email,
@@ -314,11 +314,17 @@ public struct LoginView: View {
                     password: password,
                     verificationCode: code
                 )
-                if let token = resp.token, !token.isEmpty {
-                    APIClient.shared.saveToken(token)
+                guard let token = resp.token, !token.isEmpty else {
+                    // 顶设铁律：未拿到凭证绝不进入主界面（避免"假装登录成功"后被 401 踢回）
+                    isLoading = false
+                    errorMessage = "登录失败：未获取到访问凭证，请稍后重试"
+                    return
                 }
+                APIClient.shared.saveToken(token)
             } catch {
-                isDev = true
+                isLoading = false
+                errorMessage = "登录失败：\(error.localizedDescription)"
+                return
             }
 
             // 2. 探测 /me 判定开发态（dev 载荷 tenant_key=demo）或连接失败
