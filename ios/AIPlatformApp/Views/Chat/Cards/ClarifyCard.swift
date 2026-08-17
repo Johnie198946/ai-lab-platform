@@ -47,7 +47,10 @@ public struct ClarifyCard: View {
                 if block.choices.isEmpty {
                     customInputView
                 }
-                submitButton
+                // 单选模式点选项即自动提交，无需冗余底按钮；多选或自定义输入时展示提交按钮
+                if block.multiSelect || block.choices.isEmpty {
+                    submitButton
+                }
             }
         }
         .padding(AppTheme.Spacing.md)
@@ -84,16 +87,19 @@ public struct ClarifyCard: View {
     private func optionRow(_ option: ClarifyOption) -> some View {
         let isSelected = selectedIDs.contains(option.id)
         return Button(action: {
-            withAnimation(.easeInOut(duration: 0.18)) {
-                if block.multiSelect {
+            if block.isSubmitted { return }
+            if block.multiSelect {
+                withAnimation(.easeInOut(duration: 0.18)) {
                     if isSelected {
                         selectedIDs.remove(option.id)
                     } else {
                         selectedIDs.insert(option.id)
                     }
-                } else {
-                    selectedIDs = [option.id]
                 }
+            } else {
+                // 单选模式：点击立即选中并自动提交（对标 ChatGPT 极速交互，绝不因多一步按钮导致卡顿假象）
+                selectedIDs = [option.id]
+                onSubmit?(option.label)
             }
         }) {
             HStack(spacing: AppTheme.Spacing.sm) {
