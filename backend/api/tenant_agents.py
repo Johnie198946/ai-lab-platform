@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import os
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -110,8 +111,17 @@ async def create_tenant_agent(
 async def list_tenant_agents(
     payload: Dict[str, Any] = Depends(require_auth),
 ) -> List[TenantAgentOut]:
-    """列出当前租户的切片列表（按 tenant_id 过滤，多租户隔离）。"""
+    """列出当前租户的切片列表（多租户隔离，双源合并）：
+
+    1. DB 切片（设置页 POST /tenant-agents 创建）
+    2. 租户技能目录（对话中 skill_manage create 自动租户化到
+       skills/tenants/<tenant>/<name>/SKILL.md —— 即"对话创建 agent"的插件化载体，
+       经 /root/.hermes/skills 挂载点直接扫描，无需 DB 行）
+    """
     tenant_id = _tenant_id()
+    combined: List[TenantAgentOut] = []
+    seen: set[str] = set()
+
     async with SessionLocal() as db:
         rows = (
             await db.execute(
@@ -120,7 +130,68 @@ async def list_tenant_agents(
                 .order_by(TenantAgentModel.created_at)
             )
         ).scalars().all()
-    return [_to_out(m) for m in rows]
+    for m in rows:
+        combined.append(_to_out(m))
+        seen.add(m.id)
+
+    # 租户技能 → 租户 Agent（对话创建载体）：skills/tenants/<tenant>/<name>/SKILL.md
+    for skill_agent in _scan_tenant_skill_agents(tenant_id):
+        if skill_agent.id not in seen:
+            combined.append(skill_agent)
+            seen.add(skill_agent.id)
+
+    return combined
+
+
+def _scan_tenant_skill_agents(tenant_id: str) -> List[TenantAgentOut]:
+    """扫描挂载的租户技能目录，将技能登记为租户 Agent（前端拓扑/设置同源展示）。
+
+    每个租户技能目录 = 一个 Agent：SKILL.md frontmatter 提供 name/description/base_agent，
+    正文即该 Agent 的角色提示词（private_prompt_delta）。
+    路径约定：<skills_root>/tenants/<tenant>/<name>/SKILL.md
+    """
+    try:
+        from pathlib import Path
+
+        skills_root = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
+        tenant_dir = skills_root / "tenants" / tenant_id
+        if not tenant_dir.is_dir():
+            return []
+        items: List[TenantAgentOut] = []
+        for skill_dir in sorted(tenant_dir.iterdir()):
+            if not skill_dir.is_dir():
+                continue
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.is_file():
+                continue
+            name = skill_dir.name
+            base_agent = "main_agent"
+            description = ""
+            try:
+                head = skill_md.read_text(encoding="utf-8", errors="replace")[:2000]
+                for line in head.splitlines():
+                    line = line.strip()
+                    if line.startswith("base_agent:"):
+                        base_agent = line.split(":", 1)[1].strip() or "main_agent"
+                    elif line.startswith("description:"):
+                        description = line.split(":", 1)[1].strip()
+            except Exception:
+                pass
+            items.append(
+                TenantAgentOut(
+                    id=f"skill_{name}",
+                    tenant_id=tenant_id,
+                    base_agent_id=base_agent,
+                    custom_name=name,
+                    private_prompt_delta=description,
+                    subscribed_knowledge_packs=[],
+                    is_active=True,
+                    created_at=None,
+                )
+            )
+        return items
+    except Exception:
+        return []
 
 
 @router.delete("/tenant-agents/{agent_id}", status_code=204)

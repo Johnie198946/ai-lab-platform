@@ -13,6 +13,8 @@ public struct SettingsView: View {
     @ObservedObject private var store = LocalArtifactStore.shared
 
     @State private var showingProfileEdit: Bool = false
+    /// 云端租户 Agent（含对话中 skill_manage 创建的）：拓扑/设置同源展示
+    @State private var cloudAgents: [TenantAgentDTO] = []
 
     public init() {}
 
@@ -57,6 +59,12 @@ public struct SettingsView: View {
             .navigationTitle("个人与设置")
             .sheet(isPresented: $showingProfileEdit) {
                 ProfileEditSheet()
+            }
+            .task {
+                // 拉取云端租户 Agent（对话创建 + 设置页创建）：拓扑/设置同源展示
+                if let list = try? await APIClient.shared.fetchTenantAgents() {
+                    cloudAgents = list
+                }
             }
         }
     }
@@ -129,17 +137,36 @@ public struct SettingsView: View {
     private func createdAgentsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             artifactHeader(icon: "sparkles", title: "我创建的智能体", accent: AppTheme.Colors.quantumViolet)
-            if store.agents.isEmpty {
-                emptyArtifactHint("尚未创建智能体，使用上方「创建智能体」入口")
+            let cloudRows = cloudAgents.map { agent in
+                AgentRowData(
+                    id: agent.id,
+                    name: agent.customName ?? agent.baseAgentId,
+                    responsibility: agent.privatePromptDelta.isEmpty ? "基于基线 \(agent.baseAgentId) 的租户私有切片" : agent.privatePromptDelta,
+                    createdAt: agent.createdAt ?? "",
+                    version: "云端"
+                )
+            }
+            let localRows = store.agents.map { agent in
+                AgentRowData(id: agent.id, name: agent.name, responsibility: agent.responsibility, createdAt: agent.createdAt, version: "本地")
+            }
+            let rows = cloudRows + localRows
+            if rows.isEmpty {
+                emptyArtifactHint("尚未创建智能体，使用上方「创建智能体」或在对话中提出「创建一个…的agent」")
             } else {
-                ForEach(store.agents) { agent in
+                ForEach(rows) { row in
                     artifactRow(
-                        name: agent.name,
-                        responsibility: agent.responsibility,
-                        createdAt: agent.createdAt,
-                        version: agent.version,
+                        name: row.name,
+                        responsibility: row.responsibility,
+                        createdAt: row.createdAt,
+                        version: row.version,
                         accent: AppTheme.Colors.quantumViolet,
-                        onDelete: { store.removeAgent(id: agent.id) }
+                        onDelete: {
+                            if row.version == "云端" {
+                                Task { _ = try? await APIClient.shared.deleteTenantAgent(id: row.id) }
+                            } else {
+                                store.removeAgent(id: row.id)
+                            }
+                        }
                     )
                 }
             }
@@ -147,6 +174,14 @@ public struct SettingsView: View {
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+    }
+
+    private struct AgentRowData: Identifiable {
+        let id: String
+        let name: String
+        let responsibility: String
+        let createdAt: String
+        let version: String
     }
 
     private func createdSkillsSection() -> some View {

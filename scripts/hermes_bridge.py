@@ -1150,7 +1150,15 @@ CLARIFY_GATE_PROMPT = """【AI Lab 全局交互与澄清规范】
    - 及时调用 clarify 工具抛出 2~4 个结构化选项卡片协助用户快速收敛方向。
 3. 【严禁文本问答】：需要用户选择确认时，避免在正文手写让用户在手机上大量打字的问答题，走 clarify 工具卡片点选。
 4. 【分步推进与确认】：对于复杂系统工程，按阶段清晰输出当前产物（如架构/模块/技术选型/里程碑）。
-5. 【方案设计关卡】：凡涉及代码实现与系统开发的需求，在需求明确后先输出完整的《方案设计》，并通过 clarify 确认开工或调整。"""
+5. 【方案设计关卡】：凡涉及代码实现与系统开发的需求，在需求明确后先输出完整的《方案设计》，并通过 clarify 确认开工或调整。
+
+【创建智能体·插件化标准流程】（用户提出"创建/做一个…的agent/智能体"时强制执行）
+1. 用 skill_manage(action=create) 创建租户专属技能作为该 Agent 的载体（技能即 Agent，插件化落地）：
+   - name：中文智能体名（如"拜仁转会洞察"），description 一行概括职责；
+   - frontmatter 额外标注 base_agent: main_agent（继承的基线 Agent：main_agent/supervision/coder/knowledge）；
+   - 正文 = 该 Agent 的角色提示词：职责、工作流、调用哪些底层技能（如 web_search/知识库检索/wiki_retrieval）、输出格式。
+2. 创建完成后自动租户化到 skills/tenants/<TENANT_ID>/，仅当前租户可见，绝不污染全局技能库与其他租户；
+3. 回复用户：Agent 已创建 + 名称 + 职责 + 可在「拓扑/设置」页面查看使用。"""
 
 
 def _qput(stream_q: queue.Queue, item: dict) -> None:
