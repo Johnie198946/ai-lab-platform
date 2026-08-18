@@ -9,6 +9,7 @@ GET /api/screens/{id}     — 获取单屏配置 (含 data_bindings)
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,8 @@ def _load_all() -> dict[str, dict[str, Any]]:
     if not SCREENS_DIR.is_dir():
         return screens
     for yaml_path in sorted(SCREENS_DIR.glob("screen-*.yaml")):
+        if not re.fullmatch(r"screen-\d{2}\.yaml", yaml_path.name):
+            continue
         with open(yaml_path, encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
             if data and "screen_id" in data:
