@@ -34,6 +34,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var generationStartDate: Date? = nil
     private var currentChatTask: Task<Void, Never>? = nil
     private var statusPollTask: Task<Void, Never>? = nil
+    private var clarifySubmissionTask: Task<Void, Never>? = nil
+    /// Agent 请求 ID -> 当前 UI 输出消息 ID。Clarify 后仍消费同一 SSE，但把续写放到用户选择之后。
+    private var streamOutputMessageIds: [String: String] = [:]
     private var animationTasks: [String: Task<Void, Never>] = [:]
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
@@ -138,6 +141,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func cancelAllTasksAndAnimations() {
         currentChatTask?.cancel()
         currentChatTask = nil
+        clarifySubmissionTask?.cancel()
+        clarifySubmissionTask = nil
+        streamOutputMessageIds.removeAll()
         stopStatusPolling()
         for task in animationTasks.values { task.cancel() }
         animationTasks.removeAll()
@@ -234,6 +240,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         let sid = sessionManager.activeSessionID()
         let req = InFlightRequest(id: UUID().uuidString, sessionId: sid, text: text, quote: quote, regenerate: regenerate)
         inflight = req
+        streamOutputMessageIds[req.id] = req.id
 
         let initialStep = ReasoningStep(
             type: .thought,
@@ -305,13 +312,15 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
         defer {
-            self.drainDeltaBuffer(messageId: req.id)
-            self.finalizeReasoningDuration(for: req.id)
+            let outputId = self.outputMessageId(for: req)
+            self.drainDeltaBuffer(messageId: outputId)
+            self.finalizeReasoningDuration(for: outputId)
             self.commitSession()
             // 💡 仅当当前请求仍为活跃请求时复位 isGenerating，避免异步延迟派发误杀新流
             if self.inflight?.id == req.id && self.tenantEpoch == taskEpoch {
                 self.isGenerating = false
             }
+            self.streamOutputMessageIds.removeValue(forKey: req.id)
         }
         if demoMode {
             await appendDemoReply(req: req)
@@ -337,17 +346,18 @@ public final class TenantSessionCoordinator: ObservableObject {
                     return
                 }
                 guard req.sessionId == sessionManager.activeSessionID() else {
-                    drainDeltaBuffer(messageId: req.id)
+                    drainDeltaBuffer(messageId: outputMessageId(for: req))
                     sessionManager.markInterrupted(sessionId: req.sessionId)
                     finishGeneration()
                     return
                 }
 
+                let outputId = outputMessageId(for: req)
                 switch event {
                 case .delta(let content):
                     deltaBuffer += content
-                    scheduleContentFlush(messageId: req.id, taskEpoch: taskEpoch)
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    scheduleContentFlush(messageId: outputId, taskEpoch: taskEpoch)
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         updateReasoningSteps(for: idx) { steps in
                             if let tIdx = steps.firstIndex(where: { $0.type == .thought && $0.status == "running" }) {
                                 steps[tIdx].status = "done"
@@ -356,7 +366,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .thought(let content):
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         messages[idx].pending = false
                         updateReasoningSteps(for: idx) { steps in
                             if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
@@ -377,7 +387,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .toolStart(let id, let tool, let label):
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         messages[idx].pending = false
                         updateReasoningSteps(for: idx) { steps in
                             if let tIdx = steps.firstIndex(where: { $0.type == .thought && $0.status == "running" }) {
@@ -390,7 +400,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .toolComplete(let id, let tool):
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         messages[idx].pending = false
                         updateReasoningSteps(for: idx) { steps in
                             if let matchIdx = steps.lastIndex(where: { $0.id == id || ($0.status == "running" && $0.title.contains(tool)) }) {
@@ -400,7 +410,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .clarify(let question, let choices, let multiSelect, let source, let clarifyId):
-                    drainDeltaBuffer(messageId: req.id)
+                    drainDeltaBuffer(messageId: outputId)
                     let block = ClarifyBlock(
                         clarifyId: clarifyId,
                         question: question,
@@ -409,7 +419,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         submitLabel: "确认选择",
                         source: source
                     )
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         updateReasoningSteps(for: idx) { steps in
                             for i in steps.indices { steps[i].status = "done" }
                         }
@@ -428,7 +438,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 case .status(let phase, let detail):
                     thinkingPhase = phase.isEmpty ? nil : phase
                     thinkingDetail = detail.isEmpty ? nil : detail
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         updateReasoningSteps(for: idx) { steps in
                             if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
                                 if !detail.isEmpty {
@@ -448,8 +458,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .done(_, let answer):
-                    drainDeltaBuffer(messageId: req.id)
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    drainDeltaBuffer(messageId: outputId)
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         updateReasoningSteps(for: idx) { steps in
                             for i in steps.indices { steps[i].status = "done" }
                         }
@@ -462,8 +472,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                     }
 
                 case .error(let code, _):
-                    drainDeltaBuffer(messageId: req.id)
-                    if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+                    drainDeltaBuffer(messageId: outputId)
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         messages[idx].content = "流式响应异常（\(code)）"
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
@@ -472,10 +482,11 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
             }
             guard self.tenantEpoch == taskEpoch else { return }
-            drainDeltaBuffer(messageId: req.id)
+            let outputId = outputMessageId(for: req)
+            drainDeltaBuffer(messageId: outputId)
 
             // 兜底补全：若流式连接提前断开或未收到 delta/done.answer，从 status 端点或 non-stream 接口补全，确保绝不遗留空气泡
-            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 if messages[idx].content.isEmpty && messages[idx].clarifyBlock == nil {
                     if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId, consume: true),
                        let ans = status.answer, !ans.isEmpty {
@@ -493,12 +504,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                 messages[idx].isStreaming = false
             }
 
-            finalizeReasoningDuration(for: req.id)
+            finalizeReasoningDuration(for: outputId)
             commitSession()
             finishGeneration()
         } catch {
             guard self.tenantEpoch == taskEpoch else { return }
-            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            if let idx = messages.firstIndex(where: { $0.id == outputMessageId(for: req) }) {
                 messages[idx].content = ""
                 messages[idx].blocks = []
             }
@@ -528,6 +539,7 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO, taskEpoch: Int) async {
         guard self.tenantEpoch == taskEpoch else { return }
+        let outputId = outputMessageId(for: req)
 
         if inflight?.id != req.id {
             sessionManager.applyResponse(sessionId: req.sessionId, requestId: req.id, response: response)
@@ -541,7 +553,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         if response.degraded == true {
-            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 messages[idx].content = response.answer.isEmpty ? "服务暂时不可用，请稍后重试" : response.answer
                 messages[idx].degraded = true
                 messages[idx].pending = false
@@ -549,7 +561,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 messages[idx].blocks = []
             }
             inflight = nil
-            finalizeReasoningDuration(for: req.id)
+            finalizeReasoningDuration(for: outputId)
             commitSession()
             finishGeneration()
             return
@@ -560,7 +572,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         let steps = (response.reasoning ?? []).map { $0.toReasoningStep() }
-        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+        if let idx = messages.firstIndex(where: { $0.id == outputId }) {
             messages[idx].blocks = steps.isEmpty ? [] : [.reasoning([])]
         }
         inflight = nil
@@ -572,7 +584,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 multiSelect: payload.multiSelect,
                 submitLabel: "确认选择"
             )
-            if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 var blocks = messages[idx].blocks
                 blocks.append(.clarify(clarify))
                 messages[idx].content = response.answer.isEmpty ? "" : String(response.answer.prefix(40))
@@ -580,22 +592,22 @@ public final class TenantSessionCoordinator: ObservableObject {
                 messages[idx].pending = false
                 messages[idx].isStreaming = false
             }
-            finalizeReasoningDuration(for: req.id)
+            finalizeReasoningDuration(for: outputId)
             commitSession()
             finishGeneration()
             return
         }
 
         if !steps.isEmpty {
-            await revealReasoning(messageId: req.id, steps: steps)
+            await revealReasoning(messageId: outputId, steps: steps)
         }
 
-        await typewriter(messageId: req.id, answer: response.answer)
+        await typewriter(messageId: outputId, answer: response.answer)
 
-        if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+        if let idx = messages.firstIndex(where: { $0.id == outputId }) {
             messages[idx].pending = false
         }
-        finalizeReasoningDuration(for: req.id)
+        finalizeReasoningDuration(for: outputId)
         commitSession()
         finishGeneration()
     }
@@ -683,44 +695,132 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - Clarify 选项卡会话推进（全新重写：极简直连 · 0ms 响应 · 零死锁）
+    // MARK: - Clarify 选项卡会话推进（原 SSE 解锁续跑）
 
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        guard let clarify = messages[idx].clarifyBlock, !clarify.isSubmitted else { return }
         let sid = sessionManager.activeSessionID()
-        let clarifyId = messages[idx].clarifyBlock?.clarifyId
+        let clarifyId = clarify.clarifyId
 
-        // 1. 立即标记卡片为已确认
-        if let blockIdx = messages[idx].blocks.firstIndex(where: {
-            if case .clarify = $0 { return true }
-            return false
-        }) {
-            if case .clarify(var c) = messages[idx].blocks[blockIdx] {
-                c.markSubmitted(selection: selection)
-                messages[idx].blocks[blockIdx] = .clarify(c)
+        // 本地预分类卡没有正在等待解锁的 Agent，按普通新问题处理。
+        if clarify.source != "bridge" {
+            markClarifySubmitted(messageIndex: idx, selection: selection)
+            messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
+            commitSession()
+            if isGenerating {
+                pendingQueue.append(PendingItem(id: UUID().uuidString, text: selection, quote: nil))
+            } else {
+                startGeneration(text: selection, quote: nil)
             }
+            return
         }
 
-        // 2. 立即追加用户选择气泡
-        messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
-        commitSession()
+        // Bridge clarify 必须仍归属于当前 SSE。绝不能 finishGeneration/startGeneration：
+        // regenerate 会在服务端 interrupt 掉正在 wait_for_response 的旧 Agent。
+        // 多轮 Drill-me 中，第二张及后续卡片位于 continuation message；反查它所属的原始 run ID，
+        // 确保每次选择都只是解锁同一个 Agent，而不是被当作一条新 prompt。
+        let requestId = streamOutputMessageIds.first(where: { $0.value == messageId })?.key ?? messageId
+        guard let req = inflight, req.id == requestId, req.sessionId == sid, isGenerating else {
+            showToast("该确认请求已失效，请重新生成")
+            return
+        }
 
-        // 3. 立即重置旧锁并拉起全新 Assistant 流式生成（带思维链胶囊）
-        finishGeneration()
+        markClarifySubmitted(messageIndex: idx, selection: selection)
+        let userMessageId = UUID().uuidString
+        messages.append(ChatMessage(id: userMessageId, sessionId: sid, role: .user, content: selection))
+        let continuationMessageId = UUID().uuidString
+        let continuationStep = ReasoningStep(
+            type: .thought,
+            title: "已收到选择，正在继续处理…",
+            detail: selection,
+            status: "running"
+        )
+        messages.append(ChatMessage(
+            id: continuationMessageId,
+            sessionId: sid,
+            role: .assistant,
+            content: "",
+            isStreaming: true,
+            blocks: [.reasoning([continuationStep])]
+        ))
+        streamOutputMessageIds[req.id] = continuationMessageId
         thinkingPhase = "reasoning"
         thinkingDetail = "已收到选择，正在继续处理…"
-        startGeneration(text: selection, quote: nil, regenerate: true)
+        commitSession()
 
-        // 4. 后台异步解锁 bridge 挂起线程
-        if let clarifyId {
-            Task {
-                _ = try? await APIClient.shared.submitClarify(
+        clarifySubmissionTask?.cancel()
+        clarifySubmissionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let accepted = try await APIClient.shared.submitClarify(
                     sessionId: sid,
                     response: selection,
-                    clarifyId: clarifyId
+                    clarifyId: clarifyId,
+                    agentId: self.appState?.selectedAgentId
+                )
+                guard !Task.isCancelled else { return }
+                guard accepted else {
+                    self.rollbackClarifySubmission(
+                        messageId: messageId,
+                        requestId: requestId,
+                        userMessageId: userMessageId,
+                        continuationMessageId: continuationMessageId,
+                        toast: "选项未被服务端接受，请重试"
+                    )
+                    return
+                }
+                print("[Clarify] accepted message=\(messageId) clarify=\(clarifyId ?? "nil") session=\(sid)")
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                print("[Clarify] failed message=\(messageId) clarify=\(clarifyId ?? "nil") error=\(error.localizedDescription)")
+                self.rollbackClarifySubmission(
+                    messageId: messageId,
+                    requestId: requestId,
+                    userMessageId: userMessageId,
+                    continuationMessageId: continuationMessageId,
+                    toast: error.localizedDescription
                 )
             }
         }
+    }
+
+    private func markClarifySubmitted(messageIndex: Int, selection: String) {
+        if let blockIdx = messages[messageIndex].blocks.firstIndex(where: {
+            if case .clarify = $0 { return true }
+            return false
+        }) {
+            if case .clarify(var c) = messages[messageIndex].blocks[blockIdx] {
+                c.markSubmitted(selection: selection)
+                messages[messageIndex].blocks[blockIdx] = .clarify(c)
+            }
+        }
+    }
+
+    private func rollbackClarifySubmission(
+        messageId: String,
+        requestId: String,
+        userMessageId: String,
+        continuationMessageId: String,
+        toast: String
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        if let blockIdx = messages[idx].blocks.firstIndex(where: {
+            if case .clarify = $0 { return true }
+            return false
+        }), case .clarify(var c) = messages[idx].blocks[blockIdx] {
+            c.isSubmitted = false
+            c.submittedSelection = ""
+            messages[idx].blocks[blockIdx] = .clarify(c)
+        }
+        messages.removeAll { $0.id == userMessageId || $0.id == continuationMessageId }
+        streamOutputMessageIds[requestId] = messageId
+        thinkingPhase = nil
+        thinkingDetail = nil
+        commitSession()
+        showToast(toast)
     }
 
     public func submitClarifyAction(messageId: String, selection: String) {
@@ -728,6 +828,10 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     // MARK: - 辅助方法与操作
+
+    private func outputMessageId(for req: InFlightRequest) -> String {
+        streamOutputMessageIds[req.id] ?? req.id
+    }
 
     private func updateReasoningSteps(for idx: Int, update: (inout [ReasoningStep]) -> Void) {
         guard idx < messages.count else { return }

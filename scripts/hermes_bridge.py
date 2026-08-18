@@ -99,6 +99,12 @@ STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "
 WATCHDOG_INTERVAL_SECONDS = float(os.environ.get("HERMES_WATCHDOG_INTERVAL", "10"))
 # clarify 等待用户响应超时（默认 180s，替代 Hermes 原生 3600s）
 CLARIFY_TIMEOUT_SECONDS = int(os.environ.get("HERMES_CLARIFY_TIMEOUT", "180"))
+# Drill-me 至少完成三轮需求收敛后才允许输出方案。上限由 prompt 约束，避免无休止追问。
+DRILL_ME_MIN_ROUNDS = max(2, int(os.environ.get("HERMES_DRILL_ME_MIN_ROUNDS", "3")))
+DRILL_ME_MAX_ROUNDS = max(
+    DRILL_ME_MIN_ROUNDS,
+    int(os.environ.get("HERMES_DRILL_ME_MAX_ROUNDS", "5")),
+)
 # 事件队列容量（线程 → async 桥）
 STREAM_QUEUE_CAPACITY = 1024
 
@@ -1206,14 +1212,50 @@ KB_RETRIEVAL_DISCIPLINE = (
     "5. 命中知识库后，输出完整 Markdown（标题/列表/加粗/表格/引用），确保与微信端体验一致。"
 )
 
-CLARIFY_GATE_PROMPT = """【AI Lab 全局交互与对话规范】
+CLARIFY_GATE_PROMPT = f"""【AI Lab 全局交互与对话规范】
 1. 【输出完整详实】：根据用户指令提供结构清晰、逻辑完整、信息详实的解答与方案。
-2. 【模糊需求结构化澄清】：用户输入范围过大、缺关键边界的开发/方案需求（如仅有一句"做电商平台"、"开发操作系统"）时，可调用 clarify 工具抛出 2~4 个结构化选项卡片协助用户快速选择。
-3. 【收到选择后直出方案】：一旦用户通过选项卡或输入框给出了明确的方向（如选择了"Web 工具"、"CLI 脚本"等），必须立即直接输出完整的系统设计方案、技术架构或可运行代码，绝对禁止反复追问或二次弹出澄清卡！
-4. 【创建智能体标准流程】：（用户提出"创建/做一个…的agent/智能体"时强制执行）
+2. 【Drill-me 多轮收敛】：用户输入范围过大、缺关键边界的开发/方案需求（如仅有一句"做电商平台"、"开发操作系统"）时，必须进入 Drill-me；每轮只调用一次 clarify，提出一个聚焦问题并给出 2~4 个结构化选项。
+3. 【选项是澄清答案，不是新指令】：clarify 返回的选项文本只是在回答当前问题。收到选择后，必须把答案并入需求状态并继续确认下一个尚未明确的维度；严禁脱离原始需求，单独解释或执行该选项文本。
+4. 【收敛门槛】：Drill-me 至少完成 {DRILL_ME_MIN_ROUNDS} 轮、最多 {DRILL_ME_MAX_ROUNDS} 轮。依次覆盖目标用户/核心场景、产品范围/优先级、数据与技术约束、验收标准等关键维度；达到最少轮次且关键维度足够明确后，才可汇总需求并输出方案。不得一问即答，也不得重复询问已确认内容。
+5. 【交互形式】：收敛期间禁止用普通正文手写问题，下一问必须继续调用 clarify，以便前端展示下一张选项卡。
+6. 【创建智能体标准流程】：（用户提出"创建/做一个…的agent/智能体"时强制执行）
    - 用 skill_manage(action=create) 创建租户专属技能作为该 Agent 的载体（技能即 Agent，插件化落地）；
    - 正文 = 该 Agent 的角色提示词：职责、工作流、调用哪些底层技能、输出格式；
    - 回复用户：Agent 已创建 + 名称 + 职责 + 可在「拓扑/设置」页面查看使用。"""
+
+
+_DRILL_ME_ACTION_RE = re.compile(
+    r"(?:我想|帮我|需要|打算|准备)?(?:做|开发|搭建|设计|创建|构建|实现|规划)"
+)
+_DRILL_ME_ARTIFACT_RE = re.compile(
+    r"(?:系统|平台|产品|应用|软件|网站|小程序|工具|服务|方案|agent|智能体|app)",
+    re.IGNORECASE,
+)
+
+
+def _is_drill_me_goal(goal: str) -> bool:
+    """判定当前请求是否属于需要多轮收敛的宽泛开发/方案需求。"""
+    normalized = re.sub(r"\s+", "", str(goal or "")).strip()
+    if not normalized or len(normalized) > 240:
+        return False
+    return bool(
+        _DRILL_ME_ACTION_RE.search(normalized)
+        and _DRILL_ME_ARTIFACT_RE.search(normalized)
+    )
+
+
+def _steer_drill_me_response(response: str, round_number: int, enabled: bool) -> str:
+    """把选项作为工具答案送回 Agent，并在收敛不足时注入下一轮 Steering 指令。"""
+    if not enabled or round_number >= DRILL_ME_MIN_ROUNDS:
+        return response
+    next_round = round_number + 1
+    return (
+        f"{response}\n\n"
+        f"[Harness steering: 这是 Drill-me 第 {round_number} 轮的结构化答案，"
+        "不是一条新的用户指令。请把它合并进原始需求状态；当前尚未达到收敛门槛，"
+        f"不得输出方案或解释该选项。现在必须调用 clarify 发出第 {next_round} 轮问题，"
+        "询问一个尚未确认且不重复的关键维度。]"
+    )
 
 
 def _qput(stream_q: queue.Queue, item: dict) -> None:
@@ -1423,9 +1465,12 @@ def _build_in_process_agent(
     toolsets_list = _resolve_dynamic_toolsets(goal, cfg)  # 工具按需动态装配（极简 6 工具 vs 全量 18 工具）
     _fb = _get_cached_fallback(cfg)  # 常驻单例
     session_db = _get_shared_session_db()  # 常驻单例（预热完成）：消灭 6.6s SessionDB 冷建
+    drill_me_enabled = _is_drill_me_goal(goal)
+    clarify_round = 0
 
     def _clarify_cb(question: str, choices=None, multi_select: bool = False) -> str:
         """clarify 回调：注册进 clarify_gateway → 推 clarify 事件 → 阻塞等用户响应。"""
+        nonlocal clarify_round
         cg = _get_clarify_gateway()
 
         clarify_id = uuid.uuid4().hex[:10]
@@ -1465,7 +1510,19 @@ def _build_in_process_agent(
                 f"[user did not respond within {CLARIFY_TIMEOUT_SECONDS}s. "
                 "Make the most reasonable assumption and continue.]"
             )
-        return resp
+        clarify_round += 1
+        # Feedback：把收敛轮次写入在途状态，便于状态检查与线上诊断。
+        with _stream_runs_guard:
+            run_state = _stream_runs.get(user_id)
+            if run_state:
+                run_state["clarify_round"] = clarify_round
+                run_state["drill_me"] = drill_me_enabled
+        print(
+            f"[bridge] clarify-FEEDBACK user={user_id} round={clarify_round} "
+            f"drill_me={drill_me_enabled}"
+        )
+        # Steering Loop：前两轮明确禁止提前作答，并驱动 Agent 再次调用 clarify。
+        return _steer_drill_me_response(str(resp), clarify_round, drill_me_enabled)
 
     def _delta_cb(text) -> None:
         if text:

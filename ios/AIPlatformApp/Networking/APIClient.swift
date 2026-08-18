@@ -830,7 +830,12 @@ public final class APIClient: ObservableObject {
 
     /// POST /api/chat/stream/clarify：提交澄清响应（解锁 agent 线程）
     /// - Parameter clarifyId: bridge clarify 事件携带的 ID；透传后后端按 ID 精确解锁对应阻塞线程（P0：多卡场景防错配）
-    public func submitClarify(sessionId: String?, response: String, clarifyId: String? = nil) async throws -> Bool {
+    public func submitClarify(
+        sessionId: String?,
+        response: String,
+        clarifyId: String? = nil,
+        agentId: String? = nil
+    ) async throws -> Bool {
         guard let sessionId, !sessionId.isEmpty else { return false }
         let url = baseURL.appendingPathComponent("api/chat/stream/clarify")
         var request = URLRequest(url: url)
@@ -847,8 +852,11 @@ public final class APIClient: ObservableObject {
         if let clarifyId, !clarifyId.isEmpty {
             body["clarify_id"] = clarifyId
         }
+        if let agentId, !agentId.isEmpty {
+            body["agent_id"] = agentId
+        }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let (data, _) = try await chatSession.data(for: request)
+        let data = try await perform(request, session: chatSession, canRetry: false)
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         return (json?["ok"] as? Bool) ?? false
     }

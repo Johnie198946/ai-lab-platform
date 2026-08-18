@@ -242,5 +242,44 @@ class TestConcurrencyIsolation(unittest.TestCase):
         bridge._user_session_map = {}
 
 
+class TestDrillMeSteering(unittest.TestCase):
+    """Drill-me 前馈、反馈与 Steering Loop 的回归测试。"""
+
+    def test_broad_product_goal_enters_drill_me(self):
+        from scripts.hermes_bridge import _is_drill_me_goal
+
+        self.assertTrue(_is_drill_me_goal("我想做一个个人脸识别系统"))
+        self.assertTrue(_is_drill_me_goal("帮我搭建一个数据分析平台"))
+
+    def test_direct_question_does_not_enter_drill_me(self):
+        from scripts.hermes_bridge import _is_drill_me_goal
+
+        self.assertFalse(_is_drill_me_goal("FastAPI 的依赖注入怎么用？"))
+        self.assertFalse(_is_drill_me_goal("解释一下 OAuth 2.0"))
+
+    def test_early_selection_is_steered_to_next_clarify(self):
+        from scripts.hermes_bridge import _steer_drill_me_response
+
+        result = _steer_drill_me_response("演示原型", round_number=1, enabled=True)
+        self.assertIn("演示原型", result)
+        self.assertIn("不是一条新的用户指令", result)
+        self.assertIn("必须调用 clarify", result)
+        self.assertIn("第 2 轮", result)
+
+    def test_minimum_round_allows_convergence(self):
+        from scripts.hermes_bridge import DRILL_ME_MIN_ROUNDS, _steer_drill_me_response
+
+        result = _steer_drill_me_response(
+            "本地优先", round_number=DRILL_ME_MIN_ROUNDS, enabled=True
+        )
+        self.assertEqual(result, "本地优先")
+
+    def test_non_drill_clarify_is_not_forced_multi_round(self):
+        from scripts.hermes_bridge import _steer_drill_me_response
+
+        result = _steer_drill_me_response("确认开工", round_number=1, enabled=False)
+        self.assertEqual(result, "确认开工")
+
+
 if __name__ == "__main__":
     unittest.main()
