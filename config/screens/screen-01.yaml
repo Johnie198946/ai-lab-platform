@@ -3,8 +3,6 @@ title: "迎宾与合影"
 role: "welcome-photo"
 layout: "ultra-wide"
 theme: "aurora-light"
-data_bindings:
-  - source: "/api/showroom/bootstrap"
-    component: "welcome-stage"
-    refresh: "startup+websocket"
+mode: "static-display"
+data_bindings: []
 auto_fullscreen: true

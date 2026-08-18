@@ -63,6 +63,8 @@ screens:
       latency: {label: 平均任务响应, value: "1.8s", note: 高优任务已自动分配到最优资源}
   screen-03:
     headline: "把一句想法，收敛成一个可行动的问题。"
+    conversation_skill: solution-consultant-persona
+    conversation_role: 超聚变首席解决方案架构师
   screen-04:
     report_title: "不是“换模慢”，而是经验没有成为组织能力。"
   screen-07:

@@ -29,7 +29,14 @@ const state = {
   activeReview: null,
   reviewDecision: null,
   introSkipped: false,
+  pendingClarify: null,
 };
+
+const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
+
+function isStaticDisplayView(view = state.view) {
+  return STATIC_DISPLAY_VIEWS.has(view);
+}
 
 const motionSystem = {
   gsap: window.gsap || null,
@@ -566,9 +573,12 @@ function buildTourSteps() {
 }
 
 function screenHeader(title, status = '现场联机') {
+  const sessionLabel = isStaticDisplayView() && !state.bootstrapped
+    ? 'DISPLAY MODE'
+    : (state.session?.session_id || 'SESSION CONNECTING');
   return `<header class="screen-header">
     <div class="screen-brand"><i></i>AI LAB · ${title}</div>
-    <div class="screen-state"><span>${escapeHtml(state.session?.session_id || 'SESSION CONNECTING')}</span><b>${status}</b><span>${escapeHtml(state.content?.venue || '共创体验中心')}</span></div>
+    <div class="screen-state"><span>${escapeHtml(sessionLabel)}</span><b>${status}</b><span>${escapeHtml(state.content?.venue || '共创体验中心')}</span></div>
   </header>`;
 }
 
@@ -629,7 +639,7 @@ function dashboardView() {
   return `<div class="screen">
     ${screenHeader('TOKENOPS', '算力运行正常')}
     <div class="screen-content">
-      <div class="dashboard-head"><div><p class="kicker">FUSIONONE · COMPUTE OPERATIONS</p><h2 class="hero-title">${escapeHtml(content.headline || '')}</h2></div><div><span class="tag mint">后端实时数据</span> <span class="tag">知识文档 ${Number(state.knowledge.total_md_files || 0)}</span></div></div>
+      <div class="dashboard-head"><div><p class="kicker">FUSIONONE · COMPUTE OPERATIONS</p><h2 class="hero-title">${escapeHtml(content.headline || '')}</h2></div><div><span class="tag mint">现场展示模式</span> <span class="tag">无需业务后端</span></div></div>
       <div class="dashboard-grid">
         <section class="panel dash-main"><span class="tag blue">${escapeHtml(utilization.label)}</span><div class="dash-value"><strong class="metric">${escapeHtml(utilization.value)}</strong><span>${escapeHtml(utilization.delta)}</span></div><div class="area-chart" aria-label="算力利用率趋势图"><svg viewBox="0 0 500 150" preserveAspectRatio="none"><path d="M0 130 C70 125 85 105 140 110 S220 85 270 92 S350 52 400 62 S455 24 500 32 L500 150 L0 150Z" fill="#eaf0ff"/><path d="M0 130 C70 125 85 105 140 110 S220 85 270 92 S350 52 400 62 S455 24 500 32" fill="none" stroke="#2868f0" stroke-width="4" stroke-linecap="round"/></svg></div><div class="chart-legend"><span><i style="background:var(--blue)"></i>实际利用率</span><span><i style="background:var(--silver-2)"></i>行业基线</span></div></section>
         <section class="panel dash-card orange"><h3>${escapeHtml(metrics.saving?.label)}</h3><strong class="metric">${escapeHtml(metrics.saving?.value)}</strong><p>${escapeHtml(metrics.saving?.note)}</p></section>
@@ -641,16 +651,24 @@ function dashboardView() {
   </div>`;
 }
 
+function clarifyCard() {
+  const clarify = state.pendingClarify;
+  if (!clarify?.question) return '';
+  const choices = clarify.choices || [];
+  return `<section class="clarify-card" aria-label="架构师需求澄清"><span>架构师正在确认</span><b>${escapeHtml(clarify.question)}</b><div>${choices.map((choice) => `<button data-clarify-choice="${escapeHtml(choice)}">${escapeHtml(choice)}</button>`).join('')}</div></section>`;
+}
+
 function clinicView() {
   const session = currentSessionData();
   const demand = currentDemand();
   const messages = session.messages || [];
+  const architectRole = state.content?.screens?.['screen-03']?.conversation_role || '首席解决方案架构师';
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
       <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">${state.content?.screens?.['screen-03']?.headline || '把一句想法，收敛成一个可行动的问题。'}</h2></div><div><span class="tag orange">${escapeHtml(demand.industry || '待识别行业')}</span> <span class="tag blue">第 ${Math.max(1, Math.ceil(messages.length / 2))} 轮</span></div></div>
       <div class="clinic-grid">
-        <section class="panel chat-panel"><div class="panel-head"><strong>与用户的对话</strong><span class="status">${state.avatarSpeaking ? 'AI 正在回复' : '实时保存'}</span></div><div class="chat-body">${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}<div class="bubble-note"><i></i>对话写入独立会话 ${escapeHtml(state.session?.session_id || '')}</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="继续补充背景，或修改右侧需求单…"><button data-demand-send aria-label="发送需求">${icon('send')}</button></div></section>
+        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status">${state.avatarSpeaking ? '架构师正在研判' : '专属技能已加载'}</span></div><div class="chat-body">${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}<div class="bubble-note"><i></i>${escapeHtml(state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona')} · 独立会话 ${escapeHtml(state.session?.session_id || '')}</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向架构师描述你的业务问题…"><button data-demand-send aria-label="发送需求">${icon('send')}</button></div></section>
         <section class="panel form-panel"><div class="panel-head"><strong>需求收敛确认单</strong><span>${demand.confirmed ? '已确认' : '自动保存'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem">${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}"></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}"></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}"></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}"></label><label class="field wide">下一步行动<textarea data-demand-field="next_action">${escapeHtml(demand.next_action)}</textarea></label></div><button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>
       </div>
     </div>
@@ -785,11 +803,11 @@ function experienceMiddle(step) {
     5: ['现在，请亲手试一试', '修改结果会持续写回当前会话。'],
   }[step];
   let preview = '';
-  if (step === 1) preview = `<div class="experience-chat-log">${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="说出你的真实业务问题…"><button data-experience-send aria-label="发送">${icon('send')}</button></div>`;
+  if (step === 1) preview = `<div class="experience-chat-log">${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向架构师说出你的真实业务问题…"><button data-experience-send aria-label="发送">${icon('send')}</button></div>`;
   else if (step === 2) preview = `<div class="score-card"><strong>${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${escapeHtml(demand.core_problem || '等待收敛')}</b></div></div><div class="action-box"><span>目标指标</span><b>${escapeHtml(demand.target_metric || '待确认')}</b></div>`;
   else if (step === 3) preview = `<div class="score-card"><strong>${(insight.causes || []).length}</strong><div><span>关键根因</span><b>${escapeHtml(insight.judgment || '等待生成')}</b></div></div><div class="action-box"><span>第一步建议</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b></div>`;
   else preview = `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${escapeHtml(prototype.title || '等待生成原型')} · ${Number(prototype.progress || 0)}%</p>`;
-  return `<div class="experience-step"><section class="panel step-copy"><span class="tag orange">步骤 0${step + 1}</span><h2 style="margin-top:16px">${copy[0]}</h2><p>${copy[1]}</p><div class="step-actions"><button class="back" data-exp-back>上一步</button><button class="next" data-exp-next>${step === 5 ? '生成建设方案' : '保存并继续'}</button></div></section><section class="panel step-preview"><div class="panel-head" style="margin:-17px -17px 16px"><strong>${step === 1 ? '与 AI 对话' : step >= 4 ? '可操作原型' : '当前会话数据'}</strong><span class="status">后端已连接</span></div>${preview}</section></div>`;
+  return `<div class="experience-step"><section class="panel step-copy"><span class="tag orange">步骤 0${step + 1}</span><h2 style="margin-top:16px">${copy[0]}</h2><p>${copy[1]}</p><div class="step-actions"><button class="back" data-exp-back>上一步</button><button class="next" data-exp-next>${step === 5 ? '生成建设方案' : '保存并继续'}</button></div></section><section class="panel step-preview"><div class="panel-head" style="margin:-17px -17px 16px"><strong>${step === 1 ? '与首席解决方案架构师对话' : step >= 4 ? '可操作原型' : '当前会话数据'}</strong><span class="status">${step === 1 ? '专属技能已加载' : '后端已连接'}</span></div>${preview}</section></div>`;
 }
 
 function experienceResult() {
@@ -827,11 +845,21 @@ async function sendSessionMessage(inputId) {
     const userSession = await window.showroomApi.appendMessage('user', question);
     state.session = userSession;
     render('refresh');
-    const answer = await window.showroomApi.streamChat(question, { agentId: 'main_agent' });
+    const answer = await window.showroomApi.streamChat(question, {
+      agentId: 'main_agent',
+      skillId: state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona',
+      onEvent: (event) => {
+        if (event.type === 'clarify') {
+          state.pendingClarify = event;
+          render('refresh');
+        }
+      },
+    });
     if (answer) {
       const assistantSession = await window.showroomApi.appendMessage('assistant', answer);
       state.session = assistantSession;
     }
+    state.pendingClarify = null;
   } catch (error) {
     showToast(`对话保存失败：${error.message}`);
   } finally {
@@ -888,6 +916,21 @@ function attachScreenActions() {
   document.getElementById('demand-chat-input')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') sendSessionMessage('demand-chat-input');
   });
+  document.querySelectorAll('[data-clarify-choice]').forEach((button) => button.addEventListener('click', async () => {
+    const choice = button.dataset.clarifyChoice;
+    const clarifyId = state.pendingClarify?.clarify_id;
+    if (!choice || !clarifyId) return;
+    document.querySelectorAll('[data-clarify-choice]').forEach((item) => { item.disabled = true; });
+    try {
+      state.session = await window.showroomApi.appendMessage('user', choice);
+      await window.showroomApi.submitClarify(choice, clarifyId, 'main_agent');
+      state.pendingClarify = null;
+      render('refresh');
+    } catch (error) {
+      showToast(`提交澄清失败：${error.message}`);
+      render('refresh');
+    }
+  }));
   document.querySelectorAll('[data-demand-field]').forEach((field) => field.addEventListener('change', async () => {
     try {
       const session = await window.showroomApi.saveSession({ data: { demand: { [field.dataset.demandField]: field.value.trim() } } });
@@ -1116,12 +1159,13 @@ function render(intent = 'refresh') {
   const commit = () => {
     if (token !== motionSystem.renderToken) return;
     stopScreenMotion();
-    if (!state.bootstrapped && state.backendStatus === 'auth-required') {
+    const staticDisplay = isStaticDisplayView();
+    if (!staticDisplay && !state.bootstrapped && ['auth-required', 'display'].includes(state.backendStatus)) {
       canvas.innerHTML = `<div class="screen"><div class="screen-content"><section class="panel" style="margin:auto;max-width:720px;text-align:center"><p class="kicker">AUTHENTICATION REQUIRED</p><h2 class="hero-title">登录后加载真实业务数据</h2><p class="lead">页面不会在未连接后端时展示伪造的在线数据。</p><button class="form-cta" data-login-showroom>登录 AI Lab Platform</button></section></div></div>`;
       canvas.querySelector('[data-login-showroom]')?.addEventListener('click', () => document.getElementById('network-status').click());
       return;
     }
-    if (!state.bootstrapped && !['demo', 'offline'].includes(state.backendStatus)) {
+    if (!staticDisplay && !state.bootstrapped && !['demo', 'offline'].includes(state.backendStatus)) {
       canvas.innerHTML = `<div class="screen"><div class="screen-content"><section class="panel" style="margin:auto;max-width:720px;text-align:center"><p class="kicker">AI LAB DATA CONTRACT</p><h2 class="hero-title">正在加载后端数据…</h2><p class="lead">读取屏幕配置、体验会话、IPD 交付件和全场状态。</p></section></div></div>`;
       return;
     }
@@ -1161,6 +1205,9 @@ function setView(view, intent = 'view') {
   history.replaceState({}, '', `${location.pathname}?${params}`);
   buildNavigation();
   render(intent);
+  if (!isStaticDisplayView(view) && !state.bootstrapped) {
+    window.showroomApi?.init({ force: true });
+  }
 }
 
 function setDirectMode(enabled) {
@@ -1206,12 +1253,12 @@ function setBackendStatus(status, detail = '') {
   if (!button) return;
   const labels = {
     online: '后端实时连接', connecting: '正在连接', reconnecting: '正在重连',
-    'auth-required': '需要登录', offline: '后端离线', demo: '本地演示',
+    'auth-required': '需要登录', offline: '后端离线', demo: '本地演示', display: '纯展示模式',
   };
   button.dataset.status = status;
   button.querySelector('span').textContent = labels[status] || status;
   button.title = detail || labels[status] || status;
-  if (!state.bootstrapped && ['auth-required', 'offline', 'demo'].includes(status)) render('refresh');
+  if (!state.bootstrapped && ['auth-required', 'offline', 'demo', 'display'].includes(status)) render('refresh');
 }
 
 async function commitTourStage(nextStage) {

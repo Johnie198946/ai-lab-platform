@@ -11,6 +11,7 @@ import json
 import os
 import re
 import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 import httpx
@@ -51,6 +52,13 @@ HERMES_BRIDGE_CANCEL_URL = os.environ.get(
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
+
+HERMES_SKILLS_DIR = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
+CHAT_SKILLS = {
+    "solution-consultant-persona": Path(
+        "productivity/solution-consultant-persona/SKILL.md"
+    ),
+}
 
 # ---------------------------------------------------------------------------
 # 首屏滑动窗口熔断器与 Citation 提取器（2026-08-16 增强：多层嵌套前缀 + 破折号变体）
@@ -115,6 +123,42 @@ class ChatRequest(BaseModel):
     quoted_context: Optional[str] = Field(None, max_length=2000)
     # 选中 Agent（三方协议角色扮演）；None 视为 main_agent
     agent_id: Optional[str] = Field(None, max_length=50)
+    # 指定展厅对话使用的Hermes技能；只允许服务端白名单，禁止任意路径读取。
+    skill_id: Optional[str] = Field(None, max_length=80)
+
+
+def expand_chat_skill(skill_id: Optional[str], question: str) -> str:
+    """按Hermes官方skill scaffolding协议展开一个白名单技能。"""
+    if not skill_id:
+        return question
+    relative_path = CHAT_SKILLS.get(skill_id)
+    if relative_path is None:
+        raise HTTPException(status_code=400, detail=f"不支持的对话技能: {skill_id}")
+    skill_path = HERMES_SKILLS_DIR / relative_path
+    try:
+        content = skill_path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"对话技能未安装: {skill_id}"
+        ) from exc
+    return "\n".join(
+        [
+            (
+                f'[IMPORTANT: The user has invoked the "{skill_id}" skill, '
+                "indicating they want you to follow its instructions. "
+                "The full skill content is loaded below.]"
+            ),
+            "",
+            content,
+            "",
+            f"[Skill directory: {skill_path.parent}]",
+            "",
+            (
+                "The user has provided the following instruction alongside the "
+                f"skill invocation: {question}"
+            ),
+        ]
+    )
 
 
 class ClarifyPayload(BaseModel):
@@ -286,8 +330,8 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             citations=extract_citations(fixed),
         )
 
-    # 废除向用户 query 拼接 ROLE_PREFIX 硬编码，直接透传原汁原味 question
-    goal = req.question
+    # 普通对话原样透传；显式skill_id按Hermes官方scaffolding协议加载技能。
+    goal = expand_chat_skill(req.skill_id, req.question)
     isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
 
     # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
@@ -366,6 +410,7 @@ class StreamRequest(BaseModel):
     question: str = Field(..., min_length=1)
     session_id: Optional[str] = Field(None, max_length=100)
     agent_id: Optional[str] = Field(None, max_length=50)
+    skill_id: Optional[str] = Field(None, max_length=80)
     # 引用回复上下文（从中间回复历史消息）：透传注入 agent goal
     quoted_context: Optional[str] = Field(None, max_length=2000)
     # 重新生成语义：true 时 bridge 作废旧 run（interrupt+discard）后启动全新尝试
@@ -449,6 +494,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。"
             "表格内的关键差异与结论词请用 **加粗** 标注以突出重点。）"
         )
+    goal = expand_chat_skill(req.skill_id, goal)
 
     _streaming_sessions.add(isolated_session_id)
 

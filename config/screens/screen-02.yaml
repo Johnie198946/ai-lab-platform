@@ -3,8 +3,6 @@ title: "算力运营大盘"
 role: "tokenops-dashboard"
 layout: "panorama-dashboard"
 theme: "aurora-light"
-data_bindings:
-  - source: "/api/showroom/bootstrap"
-    component: "tokenops-kpi"
-    refresh: "startup"
+mode: "static-display"
+data_bindings: []
 auto_fullscreen: true

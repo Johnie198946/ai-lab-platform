@@ -1,6 +1,5 @@
 """测试 v7 真实流式端点（/api/chat/stream）与配套控制端点。"""
 import asyncio
-import json
 import os
 
 import httpx
@@ -64,10 +63,16 @@ def transport(app: FastAPI):
 # ---------------------------------------------------------------------------
 
 def test_stream_request_model():
-    req = StreamRequest(question="你好", session_id="s1", agent_id="main_agent")
+    req = StreamRequest(
+        question="你好",
+        session_id="s1",
+        agent_id="main_agent",
+        skill_id="solution-consultant-persona",
+    )
     assert req.question == "你好"
     assert req.session_id == "s1"
     assert req.agent_id == "main_agent"
+    assert req.skill_id == "solution-consultant-persona"
 
 
 def test_clarify_submit_model():
@@ -121,6 +126,43 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
     assert '"content":"好"' in body
     assert '"type":"done"' in body
     assert sid  # 非空
+
+
+@pytest.mark.asyncio
+async def test_stream_expands_requested_skill(
+    app: FastAPI, transport: httpx.ASGITransport, monkeypatch
+):
+    import backend.api.chat as chat_mod
+
+    observed: list[str] = []
+
+    def fake_expand(skill_id: str | None, question: str) -> str:
+        assert skill_id == "solution-consultant-persona"
+        return f"ARCHITECT-SKILL::{question}"
+
+    async def fake_bridge_stream(goal: str, session_id: str, regenerate: bool = False):
+        observed.append(goal)
+        yield 'data: {"type":"done","answer":"ok"}\n\n'
+
+    monkeypatch.setattr(chat_mod, "expand_chat_skill", fake_expand)
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+    monkeypatch.setattr(
+        chat_mod, "derive_isolated_session_id", lambda agent_id, sid: "main_agent-x"
+    )
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/stream",
+            json={
+                "question": "我们要缩短换模时间",
+                "session_id": "s1",
+                "skill_id": "solution-consultant-persona",
+            },
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert observed == ["ARCHITECT-SKILL::我们要缩短换模时间"]
 
 
 @pytest.mark.asyncio

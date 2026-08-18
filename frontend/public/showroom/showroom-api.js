@@ -33,6 +33,11 @@
     return matched?.[1] || "main";
   }
 
+  function isStaticDisplayView() {
+    const view = new URLSearchParams(global.location.search).get("view") || "controller";
+    return ["screen-00", "screen-01", "screen-02"].includes(view);
+  }
+
   class ShowroomApi {
     constructor() {
       this.ws = null;
@@ -83,8 +88,13 @@
       return response.status === 204 ? null : response.json();
     }
 
-    async init() {
+    async init(options = {}) {
       try {
+        if (!options.force && isStaticDisplayView()) {
+          this.setStatus("display", "纯展示页面，不连接业务后端");
+          return;
+        }
+        this.setStatus("connecting", "正在连接业务后端");
         if (!accessToken()) {
           if (["localhost", "127.0.0.1"].includes(global.location.hostname)) {
             this.setStatus("demo", "本地演示模式");
@@ -241,6 +251,7 @@
           question,
           session_id: this.sessionId,
           agent_id: options.agentId || "main_agent",
+          skill_id: options.skillId || undefined,
         }),
       });
       if (!response.ok || !response.body) {
@@ -271,6 +282,18 @@
         }
       }
       return answer;
+    }
+
+    async submitClarify(response, clarifyId, agentId = "main_agent") {
+      return this.request("/api/chat/stream/clarify", {
+        method: "POST",
+        body: {
+          session_id: this.sessionId,
+          response,
+          clarify_id: clarifyId,
+          agent_id: agentId,
+        },
+      });
     }
   }
 

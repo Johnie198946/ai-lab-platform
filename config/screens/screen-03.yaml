@@ -10,4 +10,6 @@ data_bindings:
   - source: "/api/chat/stream"
     component: "demand-conversation"
     refresh: "sse"
+    request:
+      skill_id: "solution-consultant-persona"
 auto_fullscreen: false
