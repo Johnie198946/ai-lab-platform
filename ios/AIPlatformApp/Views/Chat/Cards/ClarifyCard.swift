@@ -2,20 +2,17 @@
 //  ClarifyCard.swift
 //  AIPlatformApp
 //
-//  澄清选项卡片（对齐 Hermes clarify 协议：question / choices / multi_select）。
-//  - 单选（Radio）：轻触即选，点「确认选择」提交；
-//  - 多选（Checkbox）：可多选，点「确认选择」批量提交；
-//  - 自定义输入：choices 为空时提供自由文本输入框；
-//  - 提交后 isSubmitted=true，展示已选结果并禁用重复提交。
-//  视觉严格对齐 Quantum 品牌光谱（Cyan #56C8EB / Blue #5B7CEE / Violet #9E6EE8）。
+//  Clean Native Option Selection Card (Ground-up Rewrite)
+//  - Single-select: Tap option -> immediate haptic -> submit -> stream
+//  - Multi-select: Checkboxes -> submit button
+//  - Submitted state: Compact green badge with confirmed label
 //
 
 import SwiftUI
 
 public struct ClarifyCard: View {
     public let block: ClarifyBlock
-    /// 提交回调（nil 时仅展示态：消息流中的非交互预览）
-    public var onSubmit: ((String) -> Void)?
+    public var onSubmit: ((String) -> Void)? = nil
 
     @State private var selectedIDs: Set<String> = []
     @State private var customText: String = ""
@@ -27,56 +24,67 @@ public struct ClarifyCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            // 头部：图标 + 提问
-            HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "questionmark.circle.fill")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.quantumBlue)
-                Text(block.question)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-
-            // 已提交态：显示选择结果，替代选项列表
+            headerView
             if block.isSubmitted {
-                submittedView
+                submittedBadgeView
             } else {
-                optionsView
+                optionsListView
                 if block.choices.isEmpty {
                     customInputView
                 }
-                // 单选模式点选项即自动提交，无需冗余底按钮；多选或自定义输入时展示提交按钮
                 if block.multiSelect || block.choices.isEmpty {
-                    submitButton
+                    submitButtonView
                 }
             }
         }
         .padding(AppTheme.Spacing.md)
-        .frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                .stroke(
-                    LinearGradient(
-                        colors: [
-                            AppTheme.Colors.quantumCyan.opacity(0.45),
-                            AppTheme.Colors.quantumBlue.opacity(0.45),
-                            AppTheme.Colors.quantumViolet.opacity(0.45),
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: 1
-                )
+                .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.3), lineWidth: 0.5)
         )
+        .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 2)
     }
 
-    // MARK: - 选项列表（单选/多选统一胶囊行）
+    // MARK: - Header
+    private var headerView: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "questionmark.circle.fill")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(AppTheme.Colors.quantumCyan)
+                .padding(.top, 1)
 
-    private var optionsView: some View {
+            Text(block.question)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(AppTheme.Colors.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    // MARK: - Submitted Badge
+    private var submittedBadgeView: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(AppTheme.Colors.securityGreen)
+
+            Text("已确认：\(block.submittedSelection.isEmpty ? "已提交" : block.submittedSelection)")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(AppTheme.Colors.textSecondary)
+
+            Spacer()
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, 8)
+        .background(AppTheme.Colors.securityGreen.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+    }
+
+    // MARK: - Options List
+    private var optionsListView: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             ForEach(block.choices) { option in
                 optionRow(option)
@@ -87,35 +95,19 @@ public struct ClarifyCard: View {
     private func optionRow(_ option: ClarifyOption) -> some View {
         let isSelected = selectedIDs.contains(option.id)
         return Button(action: {
-            if block.isSubmitted { return }
-            if block.multiSelect {
-                withAnimation(.easeInOut(duration: 0.18)) {
-                    if isSelected {
-                        selectedIDs.remove(option.id)
-                    } else {
-                        selectedIDs.insert(option.id)
-                    }
-                }
-            } else {
-                // 单选模式：点击立即选中并自动提交（对标 ChatGPT 极速交互，绝不因多一步按钮导致卡顿假象）
-                selectedIDs = [option.id]
-                onSubmit?(option.label)
-            }
+            handleOptionTap(option)
         }) {
             HStack(spacing: AppTheme.Spacing.sm) {
                 Image(systemName: block.multiSelect
                       ? (isSelected ? "checkmark.square.fill" : "square")
                       : (isSelected ? "largecircle.fill.circle" : "circle"))
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(isSelected
-                                     ? AppTheme.Colors.quantumBlue
-                                     : AppTheme.Colors.textTertiary)
+                    .foregroundColor(isSelected ? AppTheme.Colors.quantumBlue : AppTheme.Colors.textTertiary)
 
                 Text(option.label)
                     .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
-                    .foregroundColor(isSelected
-                                     ? AppTheme.Colors.textPrimary
-                                     : AppTheme.Colors.textSecondary)
+                    .foregroundColor(isSelected ? AppTheme.Colors.textPrimary : AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
@@ -124,23 +116,39 @@ public struct ClarifyCard: View {
             .padding(.vertical, AppTheme.Spacing.sm)
             .background(
                 RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                    .fill(isSelected
-                          ? AppTheme.Colors.quantumBlue.opacity(0.08)
-                          : AppTheme.Colors.secondaryBackground)
+                    .fill(isSelected ? AppTheme.Colors.quantumBlue.opacity(0.08) : AppTheme.Colors.secondaryBackground)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                    .stroke(isSelected
-                            ? AppTheme.Colors.quantumBlue.opacity(0.5)
-                            : AppTheme.Colors.border.opacity(0.4),
+                    .stroke(isSelected ? AppTheme.Colors.quantumBlue.opacity(0.5) : AppTheme.Colors.border.opacity(0.4),
                             lineWidth: isSelected ? 1 : 0.5)
             )
         }
         .buttonStyle(SoftButtonStyle())
     }
 
-    // MARK: - 自定义输入（choices 为空时）
+    private func handleOptionTap(_ option: ClarifyOption) {
+        guard !block.isSubmitted else { return }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
 
+        if block.multiSelect {
+            withAnimation(.easeInOut(duration: 0.15)) {
+                if selectedIDs.contains(option.id) {
+                    selectedIDs.remove(option.id)
+                } else {
+                    selectedIDs.insert(option.id)
+                }
+            }
+        } else {
+            // 单选：点击直接触发提交
+            selectedIDs = [option.id]
+            onSubmit?(option.label)
+        }
+    }
+
+    // MARK: - Custom Input (if no choices)
     private var customInputView: some View {
         TextField("请输入您的需求…", text: $customText, axis: .vertical)
             .font(.system(size: 14))
@@ -155,11 +163,10 @@ public struct ClarifyCard: View {
             )
     }
 
-    // MARK: - 提交按钮
-
-    private var submitButton: some View {
+    // MARK: - Multi-select Submit Button
+    private var submitButtonView: some View {
         let hasSelection = !selectedIDs.isEmpty || !customText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        return Button(action: submit) {
+        return Button(action: submitMultiSelect) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up.circle.fill")
                     .font(.system(size: 14, weight: .semibold))
@@ -171,11 +178,7 @@ public struct ClarifyCard: View {
             .padding(.vertical, 10)
             .background(
                 LinearGradient(
-                    colors: [
-                        AppTheme.Colors.quantumCyan,
-                        AppTheme.Colors.quantumBlue,
-                        AppTheme.Colors.quantumViolet,
-                    ],
+                    colors: [AppTheme.Colors.quantumCyan, AppTheme.Colors.quantumBlue, AppTheme.Colors.quantumViolet],
                     startPoint: .leading,
                     endPoint: .trailing
                 )
@@ -183,54 +186,25 @@ public struct ClarifyCard: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
         }
-        .buttonStyle(SoftButtonStyle())
         .disabled(!hasSelection)
+        .buttonStyle(SoftButtonStyle())
     }
 
-    private func submit() {
+    private func submitMultiSelect() {
         guard !block.isSubmitted else { return }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+
         let selection: String
         if block.multiSelect {
             selection = selectedIDs
                 .compactMap { id in block.choices.first { $0.id == id }?.label }
                 .joined(separator: "、")
-        } else if let onlyID = selectedIDs.first,
-                  let option = block.choices.first(where: { $0.id == onlyID }) {
-            selection = option.label
         } else {
             selection = customText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         guard !selection.isEmpty else { return }
         onSubmit?(selection)
-    }
-
-    // MARK: - 已提交态
-
-    private var submittedView: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            HStack(spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.securityGreen)
-                Text("已确认：\\(block.submittedSelection)")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 0)
-            }
-            // 执行中状态：明确告知用户 Agent 正在继续工作（顶设铁律：下一步在干嘛不允许空着）
-            HStack(spacing: 8) {
-                ProgressView()
-                    .controlSize(.small)
-                    .tint(AppTheme.Colors.quantumCyan)
-                Text("已收到，Agent 继续执行中…")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(AppTheme.Colors.quantumBlue)
-            }
-            .padding(.top, 2)
-        }
-        .padding(AppTheme.Spacing.sm)
-        .background(AppTheme.Colors.securityGreen.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
     }
 }

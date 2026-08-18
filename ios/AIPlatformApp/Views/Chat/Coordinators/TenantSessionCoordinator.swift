@@ -683,75 +683,48 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    // MARK: - Clarify 统一会话推进（精确唤醒 AI 流 + 释放死锁标志）
+    // MARK: - Clarify 选项卡会话推进（全新重写：极简直连 · 0ms 响应 · 零死锁）
 
-    @discardableResult
-    public func submitClarifyAction(
-        messageId: String,
-        selection: String
-    ) async -> Result<Void, Error> {
-        print("👉 [Clarify Debug] 收到点击事件, messageId: \(messageId)")
-        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else {
-            print("❌ [Clarify Debug] 未找到 messageId: \(messageId)")
-            await MainActor.run { self.finishGeneration() }
-            return .failure(APIError.server(404, "消息未找到"))
-        }
+    public func sendClarifySelection(messageId: String, selection: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         let sid = sessionManager.activeSessionID()
         let clarifyId = messages[idx].clarifyBlock?.clarifyId
-        print("👉 [Clarify Debug] 开始提交选项: \(selection), clarifyId: \(clarifyId ?? "nil")")
 
-        await MainActor.run {
-            // 1. 立即标记卡片已确认（ClarifyCard 变绿色已确认小条）
-            if let blockIdx = messages[idx].blocks.firstIndex(where: {
-                if case .clarify = $0 { return true }
-                return false
-            }) {
-                if case .clarify(var c) = messages[idx].blocks[blockIdx] {
-                    c.markSubmitted(selection: selection)
-                    messages[idx].blocks[blockIdx] = .clarify(c)
-                }
+        // 1. 立即标记卡片为已确认
+        if let blockIdx = messages[idx].blocks.firstIndex(where: {
+            if case .clarify = $0 { return true }
+            return false
+        }) {
+            if case .clarify(var c) = messages[idx].blocks[blockIdx] {
+                c.markSubmitted(selection: selection)
+                messages[idx].blocks[blockIdx] = .clarify(c)
             }
-
-            // 2. 立即追加单条用户选择气泡（保证对话连续性，且不重复插话）
-            messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
-            commitSession()
         }
 
-        // 3. 提交 REST 接口唤醒阻塞的 agent 线程
-        let submitSuccess = (try? await APIClient.shared.submitClarify(
-            sessionId: sid,
-            response: selection,
-            clarifyId: clarifyId
-        )) ?? false
+        // 2. 立即追加用户选择气泡
+        messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
+        commitSession()
 
-        if submitSuccess {
-            print("✅ [Clarify Debug] 后端 submitClarify 成功，启动 SSE 响应接收后续 AI 回答...")
-            await MainActor.run {
-                self.thinkingPhase = "reasoning"
-                self.thinkingDetail = "已收到选择，正在继续处理…"
-                // 💡 必须调用 startGeneration 唤醒 SSE 回答流
-                self.startGeneration(text: selection, quote: nil)
+        // 3. 立即重置旧锁并拉起全新 Assistant 流式生成（带思维链胶囊）
+        finishGeneration()
+        thinkingPhase = "reasoning"
+        thinkingDetail = "已收到选择，正在继续处理…"
+        startGeneration(text: selection, quote: nil, regenerate: true)
+
+        // 4. 后台异步解锁 bridge 挂起线程
+        if let clarifyId {
+            Task {
+                _ = try? await APIClient.shared.submitClarify(
+                    sessionId: sid,
+                    response: selection,
+                    clarifyId: clarifyId
+                )
             }
-            return .success(())
-        } else {
-            print("❌ [Clarify Debug] 提交失败，释放生成状态并提示...")
-            let errorMsg = "选项提交失败，请重试"
-            await MainActor.run {
-                self.showToast(errorMsg)
-                self.finishGeneration()
-            }
-            return .failure(NSError(
-                domain: "Harness",
-                code: 500,
-                userInfo: [NSLocalizedDescriptionKey: errorMsg]
-            ))
         }
     }
 
-    public func sendClarifySelection(messageId: String, selection: String) {
-        Task {
-            await submitClarifyAction(messageId: messageId, selection: selection)
-        }
+    public func submitClarifyAction(messageId: String, selection: String) {
+        sendClarifySelection(messageId: messageId, selection: selection)
     }
 
     // MARK: - 辅助方法与操作
