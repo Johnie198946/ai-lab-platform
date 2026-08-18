@@ -4,7 +4,7 @@ role: "ipd-orchestration"
 layout: "focused-workbench"
 theme: "aurora-light"
 data_bindings:
-  - source: "/api/showroom/state"
+  - source: "/api/showroom/bootstrap"
     component: "ipd-state"
     refresh: "websocket"
   - source: "/api/showroom/reviews/{gate}"

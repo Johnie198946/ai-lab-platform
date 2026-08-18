@@ -24,6 +24,15 @@
     return created;
   }
 
+  function workstationSlot() {
+    const params = new URLSearchParams(global.location.search);
+    const explicit = params.get("slot");
+    if (explicit && /^[1-5]$/.test(explicit)) return explicit;
+    const view = params.get("view") || "";
+    const matched = view.match(/^experience-0?([1-5])$/);
+    return matched?.[1] || "main";
+  }
+
   class ShowroomApi {
     constructor() {
       this.ws = null;
@@ -31,8 +40,11 @@
       this.retryCount = 0;
       this.listeners = new Map();
       this.sessionId = showroomSessionId();
+      this.slot = workstationSlot();
       this.status = "connecting";
       this.state = null;
+      this.session = null;
+      this.bootstrap = null;
     }
 
     on(type, listener) {
@@ -82,12 +94,13 @@
           return;
         }
         await this.request("/health");
-        const [screens, state] = await Promise.all([
-          this.request("/api/screens"),
-          this.request("/api/showroom/state"),
-        ]);
-        this.state = state;
-        this.emit("bootstrap", { screens, state });
+        const bootstrap = await this.request(
+          `/api/showroom/bootstrap?session_id=${encodeURIComponent(this.sessionId)}&slot=${encodeURIComponent(this.slot)}`,
+        );
+        this.bootstrap = bootstrap;
+        this.state = bootstrap.runtime;
+        this.session = bootstrap.session;
+        this.emit("bootstrap", bootstrap);
         this.connect();
       } catch (error) {
         this.setStatus(error.status === 401 ? "auth-required" : "offline", error.message);
@@ -155,6 +168,65 @@
       return state;
     }
 
+    async saveSession(patch) {
+      const session = await this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}`, {
+        method: "PATCH",
+        body: patch,
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async appendMessage(role, content) {
+      const session = await this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/messages`, {
+        method: "POST",
+        body: { role, content },
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async confirmDemand(demand) {
+      const session = await this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/demand/confirm`, {
+        method: "POST",
+        body: { demand },
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async generateInsight() {
+      const session = await this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/generate`, {
+        method: "POST",
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async generateIpdArtifacts(phaseIndex = 0) {
+      const session = await this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/ipd/${phaseIndex}/generate`, {
+        method: "POST",
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async saveArtifact(key, title, content) {
+      return this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/artifacts/${encodeURIComponent(key)}`, {
+        method: "PUT",
+        body: { title, content },
+      });
+    }
+
+    async searchKnowledge(query, limit = 8) {
+      return this.request(`/api/knowledge/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+    }
+
     async streamChat(question, options = {}) {
       const headers = new Headers({
         Accept: "text/event-stream",
@@ -189,6 +261,8 @@
           if (!raw) continue;
           let data;
           try { data = JSON.parse(raw); } catch { continue; }
+          options.onEvent?.(data);
+          this.emit("stream", data);
           const delta = data.delta || data.content || data.answer || "";
           if (["delta", "answer", "done"].includes(data.type) && delta) {
             answer += delta;

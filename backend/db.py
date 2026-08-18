@@ -41,6 +41,7 @@ async def init_db() -> None:
     import backend.models.agent  # noqa: F401  (注册子 Agent 模型)
     import backend.models.notification  # noqa: F401  (注册通知模型)
     import backend.models.tenant_agent  # noqa: F401  (注册租户 Agent 切片模型)
+    import backend.models.showroom  # noqa: F401  (注册共创体验中心会话模型)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

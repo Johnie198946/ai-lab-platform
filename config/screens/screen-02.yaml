@@ -4,7 +4,7 @@ role: "tokenops-dashboard"
 layout: "panorama-dashboard"
 theme: "aurora-light"
 data_bindings:
-  - source: "/api/knowledge/stats"
+  - source: "/api/showroom/bootstrap"
     component: "tokenops-kpi"
-    refresh: "10s"
+    refresh: "startup"
 auto_fullscreen: true

@@ -4,7 +4,7 @@ role: "welcome-photo"
 layout: "ultra-wide"
 theme: "aurora-light"
 data_bindings:
-  - source: "/api/showroom/state"
+  - source: "/api/showroom/bootstrap"
     component: "welcome-stage"
-    refresh: "websocket"
+    refresh: "startup+websocket"
 auto_fullscreen: true

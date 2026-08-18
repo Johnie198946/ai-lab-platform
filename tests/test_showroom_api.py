@@ -7,13 +7,20 @@ from fastapi import HTTPException
 from jose import JWTError, jwt
 
 from backend.api.showroom import (
+    DemandConfirmation,
+    SessionCreate,
     ReviewSubmission,
     ShowroomCommand,
     _validate_websocket_token,
     apply_showroom_command,
+    content_manifest,
+    create_showroom_session,
+    generate_showroom_insight,
+    generate_showroom_ipd_artifacts,
     hub,
     submit_showroom_review,
 )
+from backend.models.showroom import ShowroomRuntime, ShowroomSession
 
 
 def auth_token() -> str:
@@ -105,3 +112,72 @@ def test_websocket_token_validation() -> None:
     assert _validate_websocket_token(auth_token())["username"] == "guide"
     with pytest.raises(JWTError):
         _validate_websocket_token("not-a-token")
+
+
+def test_content_contract_covers_all_screens_and_ipd() -> None:
+    screen_ids = {
+        item["id"]
+        for group in content_manifest["navigation"]
+        for item in group["items"]
+        if item["id"].startswith("screen-")
+    }
+    assert {f"screen-{index:02d}" for index in range(1, 10)} <= screen_ids
+    assert len(content_manifest["ipd_phases"]) == 6
+    assert all(phase["outputs"] for phase in content_manifest["ipd_phases"])
+
+
+def test_session_demand_insight_and_ipd_are_persisted(monkeypatch) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import backend.api.knowledge as knowledge_api
+    import backend.api.showroom as showroom_api
+
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(ShowroomSession.__table__.create)
+            await connection.run_sync(ShowroomRuntime.__table__.create)
+        monkeypatch.setattr(showroom_api, "SessionLocal", maker)
+        monkeypatch.setattr(
+            knowledge_api,
+            "search",
+            lambda query, limit: {
+                "docs": [
+                    {
+                        "title": "制造知识条目",
+                        "path": "wiki/制造知识条目.md",
+                        "snippet": "换模步骤标准化",
+                        "score": 9,
+                    }
+                ]
+            },
+        )
+
+        created = await create_showroom_session(
+            SessionCreate(session_id="showroom-integration", slot="1"), payload()
+        )
+        assert created["slot"] == "1"
+
+        confirmed = await showroom_api.confirm_showroom_demand(
+            "showroom-integration",
+            DemandConfirmation(
+                demand={
+                    "core_problem": "换模依赖经验",
+                    "target_metric": "45 分钟 → 20 分钟",
+                }
+            ),
+            payload(),
+        )
+        assert confirmed["data"]["demand"]["confirmed"] is True
+
+        insight = await generate_showroom_insight("showroom-integration", payload())
+        assert insight["data"]["insight"]["sources"][0]["score"] == 9
+
+        ipd = await generate_showroom_ipd_artifacts(
+            "showroom-integration", 0, payload()
+        )
+        assert "需求合理性·调研支撑" in ipd["data"]["artifacts"]
+        await engine.dispose()
+
+    asyncio.run(scenario())

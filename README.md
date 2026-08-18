@@ -176,6 +176,15 @@ npm run dev
 - `POST /api/showroom/commands`：PREPARE / COMMIT 两阶段动线切换；
 - `WS /api/showroom/ws`：全场屏幕广播、READY 与心跳；
 - `POST /api/showroom/reviews/{gate}`：IPD 人工结论写回及飞书通知；
+- `GET /api/showroom/bootstrap`：前端唯一启动契约，返回 9 屏配置、内容清单、知识统计、全场状态和当前独立会话；
+- `PATCH /api/showroom/sessions/{session_id}`：按租户、工位持久化体验步骤与结构化业务数据；
+- `POST /api/showroom/sessions/{session_id}/messages`：保存用户与 AI 对话；
+- `POST /api/showroom/sessions/{session_id}/demand/confirm`：确认需求并形成 IPD 唯一输入；
+- `POST /api/showroom/sessions/{session_id}/insight/generate`：基于当前需求检索知识库并生成带来源洞察；
+- `POST /api/showroom/sessions/{session_id}/ipd/{phase}/generate`：按 IPD 阶段生成、保存交付件索引和来源；
+- `PUT /api/showroom/sessions/{session_id}/artifacts/{key}`：回写实际交付件内容。
+
+生产环境不再直接渲染前端样例数据：页面等待 `/api/showroom/bootstrap` 成功后再展示。YAML 内容清单仅作为后端管理的展示基线和断网兜底；需求、对话、洞察、IPD 交付件、审批和五工位进度均从后端会话读取并写回 PostgreSQL。
 - `POST /api/chat/stream`：数字人知识问答 SSE。
 
 未登录的生产访问会提示先登录平台；localhost 下自动进入不联网的原型兜底模式。

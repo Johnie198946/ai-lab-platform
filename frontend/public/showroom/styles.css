@@ -655,3 +655,10 @@ button.network-pill { cursor:pointer;font-family:inherit; }
 .network-pill[data-status="offline"] i,.network-pill[data-status="auth-required"] i { background:#e45d72;box-shadow:0 0 0 4px rgba(228,93,114,.12); }
 .network-pill[data-status="demo"] i { background:#7b72e9;box-shadow:0 0 0 4px rgba(123,114,233,.12); }
 .network-pill[data-status="online"] i { background:var(--mint);box-shadow:0 0 0 4px rgba(39,189,166,.12); }
+
+/* Backend-backed editable demand and conversation fields */
+.chat-composer input { flex:1;min-width:0;border:0;outline:0;background:transparent;color:var(--ink);font:inherit; }
+.field input,.field textarea { width:100%;margin-top:7px;padding:10px 12px;border:1px solid rgba(86,102,132,.18);border-radius:10px;outline:0;background:rgba(255,255,255,.74);color:var(--ink);font:inherit;font-weight:650;line-height:1.45;resize:vertical; }
+.field textarea { min-height:64px; }
+.field input:focus,.field textarea:focus { border-color:rgba(65,102,231,.62);box-shadow:0 0 0 3px rgba(65,102,231,.1); }
+.experience-chat-log { max-height:250px;overflow:auto;padding-right:4px; }

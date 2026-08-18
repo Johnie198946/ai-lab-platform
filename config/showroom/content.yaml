@@ -1,0 +1,222 @@
+version: "1.0"
+venue: "郑州共创体验中心"
+navigation:
+  - label: "CONTROL"
+    items:
+      - {id: controller, number: C, name: 导览主控台, sub: iPad Controller}
+  - label: "MAIN TOUR · 主演示"
+    items:
+      - {id: screen-00, number: "00", name: AI Lab 序章, sub: 揭幕与简短介绍}
+      - {id: screen-01, number: "01", name: 迎宾与合影, sub: 入口宽屏}
+      - {id: screen-02, number: "02", name: 算力运营大盘, sub: FUSIONONE}
+      - {id: screen-03, number: "03", name: 需求问诊台, sub: 用户对话与确认单}
+      - {id: screen-04, number: "04", name: 深度洞察报告, sub: 根因与行动建议}
+      - {id: screen-05, number: "05", name: IPD 流水线, sub: 六阶段点火器}
+      - {id: screen-06, number: "06", name: 001 实战主屏, sub: 7290 工作台}
+      - {id: screen-07, number: "07", name: 运行原型, sub: WorkBuddy Window}
+      - {id: screen-08, number: "08", name: 五工位总览, sub: 并行体验状态}
+      - {id: screen-09, number: "09", name: 专属方案, sub: 提交与扫码带走}
+  - label: "CO-CREATION · 独立体验中心"
+    items:
+      - {id: experience-01, number: E1, name: 体验中心 01, sub: 完整独立全流程, experience: true}
+      - {id: experience-02, number: E2, name: 体验中心 02, sub: 完整独立全流程, experience: true}
+      - {id: experience-03, number: E3, name: 体验中心 03, sub: 完整独立全流程, experience: true}
+      - {id: experience-04, number: E4, name: 体验中心 04, sub: 完整独立全流程, experience: true}
+      - {id: experience-05, number: E5, name: 体验中心 05, sub: 完整独立全流程, experience: true}
+views:
+  controller: [导览主控台, "CONTROLLER / iPAD", "1366 × 1024"]
+  screen-00: [AI Lab 序章, "SCREEN 00 / OPENING", "5280 × 1080"]
+  screen-01: [迎宾与合影, "SCREEN 01 / ENTRANCE", "5280 × 1080"]
+  screen-02: [TokenOps 算力运营, "SCREEN 02 / DASHBOARD", "3840 × 1080"]
+  screen-03: [001 需求即时问诊台, "SCREEN 03 / INTERACTIVE", "1920 × 1080"]
+  screen-04: [需求深度洞察报告, "SCREEN 04 / INSIGHT", "1920 × 1080"]
+  screen-05: [IPD 微缩流水线, "SCREEN 05 / PIPELINE", "1920 × 1080"]
+  screen-06: [IPD 001 实战主屏, "SCREEN 06 / WORKBENCH", "7290 × 1080"]
+  screen-07: [生成原型运行窗口, "SCREEN 07 / LIVE APP", "1080 × 1920"]
+  screen-08: [五工位并行体验中心, "SCREEN 08 / PARALLEL", "1920 × 1080"]
+  screen-09: [专属方案与二维码, "SCREEN 09 / EXPORT", "1920 × 1080"]
+  experience-01: [独立体验中心 01, "EXPERIENCE CENTER 01", "1920 × 1080"]
+  experience-02: [独立体验中心 02, "EXPERIENCE CENTER 02", "1920 × 1080"]
+  experience-03: [独立体验中心 03, "EXPERIENCE CENTER 03", "1920 × 1080"]
+  experience-04: [独立体验中心 04, "EXPERIENCE CENTER 04", "1920 × 1080"]
+  experience-05: [独立体验中心 05, "EXPERIENCE CENTER 05", "1920 × 1080"]
+stages:
+  - [站 1, 迎宾]
+  - [站 2, 算力]
+  - [站 3, 问诊]
+  - [站 4, 实战]
+  - [站 5, 共创]
+screens:
+  screen-01:
+    headline: "欢迎来到 AI 共创体验中心。"
+    lead: "提出一个真实问题，与 AI 一起完成需求收敛、洞察、原型和建设方案。"
+    stats:
+      - {value: 10s, label: 生成首个可用原型}
+      - {value: "5×", label: 独立体验中心并行}
+      - {value: 1份, label: 专属方案扫码带走}
+  screen-02:
+    headline: "每一份算力，都在创造可见的价值。"
+    metrics:
+      utilization: {label: 算力利用率, value: "72%", delta: "较改造前 +44%"}
+      saving: {label: 本月节约成本, value: "40%", note: 智能路由和资源池化共同贡献}
+      workloads: {label: 活跃 AI 工作负载, value: "186", note: 跨研发、制造与运营场景}
+      latency: {label: 平均任务响应, value: "1.8s", note: 高优任务已自动分配到最优资源}
+  screen-03:
+    headline: "把一句想法，收敛成一个可行动的问题。"
+  screen-04:
+    report_title: "不是“换模慢”，而是经验没有成为组织能力。"
+  screen-07:
+    title: "换模辅助工作台 V1"
+    task_id: "#0248"
+    steps: [安全确认, 拆卸旧模具, 清洁定位面, 安装新模具, 首件试制, 完成复盘]
+base_agents:
+  Main: {label: Main, verb: 主持与起草, desc: 理解目标、调用知识与技能，组织专业角色完成初稿。}
+  Supervision: {label: Supervision, verb: 质询与把关, desc: 独立审查证据、提出修改意见，并控制评审门。}
+  Coder: {label: Coder, verb: 工程化落实, desc: 只在批准后，把方案变成规格、代码和可验证结果。}
+reviewers:
+  TR1: {person: 王敏（示例）, role: 需求管理专家, group: PDT 需求评审组, focus: 需求完整性、客户证据、产品边界}
+  CDCP: {person: 李哲（示例）, role: 产品线投资代表, group: IPMT 决策委员会, focus: 市场机会、战略匹配、是否进入计划}
+  TR2: {person: 周航（示例）, role: 系统工程负责人, group: 技术评审组, focus: 需求到规格的完整映射}
+  TR3: {person: 孙凯（示例）, role: 架构评审主席, group: 架构与技术委员会, focus: 概要设计、关键技术路径、风险}
+  PDCP: {person: 赵宁（示例）, role: IPMT 投资决策人, group: 产品投资委员会, focus: 产品合同、资源、财务与合规承诺}
+  TR4: {person: 刘磊（示例）, role: 开发代表, group: 系统开发评审组, focus: 系统级构建前的规格完整性}
+  TR4A: {person: 何静（示例）, role: 测试与制造代表, group: 技术成熟度评审组, focus: SDV 证据、供应与制造支撑能力}
+  TR5: {person: 陈璐（示例）, role: 质量与验证负责人, group: 产品验证评审组, focus: 客户、制造、性能与可靠性验证}
+  EDCP: {person: 赵宁（示例）, role: IPMT 早期销售授权人, group: 产品投资委员会, focus: 少量提前上市的风险与边界}
+  TR6: {person: 贺斌（示例）, role: 制造与交付负责人, group: 系统上市评审组, focus: 量产、交付与全球发货准备度}
+  ADCP: {person: 李哲（示例）, role: 产品线投资代表, group: IPMT 决策委员会, focus: 正式上市与可获得性决策}
+  MOR: {person: 梁舒（示例）, role: MO 负责人, group: 营销运作评审组, focus: 营销交付件与发布口径衔接}
+  EOP: {person: 蒋雯（示例）, role: 产品经营负责人, group: 生命周期委员会, focus: 停止生产的业务与客户影响}
+  EOM: {person: 许阳（示例）, role: 市场与服务负责人, group: 生命周期委员会, focus: 停售节奏、渠道和存量客户保障}
+  EOS: {person: 李哲（示例）, role: 产品线总经理, group: 生命周期委员会, focus: 停服、迁移与最终退出授权}
+ipd_phases:
+  - name: 概念
+    short: 问题值得做吗？
+    objective: 从客户需求出发，判断市场成立、战略匹配和需求完备性。
+    reviews: [TR1, CDCP]
+    inputs: [需求确认单, 客户痛点, 产品战略边界]
+    outputs: [需求合理性·调研支撑, 需求评审结论, 初始产品包]
+    agents:
+      - {id: IPD-01, name: 市场洞察, role: MI 研判者, base: Main, job: 围绕已确认需求完成市场、客户、竞品和产业四维研判。, status: working}
+      - {id: IPD-02, name: 需求分析, role: 需求评审官, base: Supervision, job: 判断需求合理性并输出建议产品、条件接纳或明确拒绝。, status: waiting}
+  - name: 计划
+    short: 具体做成什么？
+    objective: 完成产品定义、商业计划、架构与资源承诺，形成正式开发合同。
+    reviews: [TR2, TR3, PDCP]
+    inputs: [需求评审结论, 初始产品包, 市场机会]
+    outputs: [产品组合规划书, 产品包定义, 架构方案, 资源与财务计划]
+    agents:
+      - {id: IPD-03, name: 产品规划, role: 产品管理部, base: Main, job: 形成组合、节奏、投资和收益判断。, status: locked}
+      - {id: IPD-04, name: 架构设计, role: 系统架构师, base: Main, job: 把产品决策转化为可评审的系统架构与关键技术路径。, status: locked}
+  - name: 开发
+    short: 怎样工程化实现？
+    objective: 把产品定义转化为可开发、可测试、可追溯的实现规格。
+    reviews: [TR4, TR4A]
+    inputs: [PDCP 合同, 架构方案, 完整规格]
+    outputs: [开发方案, 56 项可测验收, 实现规格, SDV/SIT 方案]
+    agents:
+      - {id: IPD-05, name: 开发方案, role: 方案与验收设计, base: Main, job: 输出可执行方案与可测验收体系。, status: locked}
+      - {id: IPD-06, name: 实现规格, role: 规格设计师, base: Coder, job: 把架构细化成模块、接口、数据与异常处理规格。, status: locked}
+      - {id: IPD-07, name: 集成测试, role: SDV/SIT 设计师, base: Supervision, job: 建立需求—规格—用例追溯并设计系统集成验证。, status: locked}
+  - name: 验证
+    short: 真的可用且合规吗？
+    objective: 完成客户、制造、压力、认证和合规验证，确认发布准备度。
+    reviews: [TR5, EDCP]
+    inputs: [系统构建, 测试基线, 合规红线]
+    outputs: [验证方案, BETA 反馈, 合规评审意见, 发布风险清单]
+    agents:
+      - {id: IPD-08, name: 验证测试, role: TR5 验证官, base: Supervision, job: 为功能、性能、客户和制造验证设置明确阈值。, status: locked}
+      - {id: IPD-09, name: 合规评审, role: 独立守门人, base: Supervision, job: 核查出口管制、网络安全和隐私红线。, status: locked}
+  - name: 发布
+    short: 怎样可靠上市？
+    objective: 完成量产、营销、产能爬坡和开发到维护的平稳过渡。
+    reviews: [TR6, ADCP, MOR]
+    inputs: [TR5 结论, 验证证据, 上市准备]
+    outputs: [上市方案, 量产准备清单, 营销衔接方案, 维护移交包]
+    agents:
+      - {id: IPD-10, name: 发布管理, role: 上市经理, base: Main, job: 统筹量产、渠道、交付和可获得性决策输入。, status: locked}
+      - {id: IPD-11, name: 营销推广, role: MOR 衔接者, base: Main, job: 把产品证据转化为合规的市场表达与推广节奏。, status: locked}
+  - name: 生命周期
+    short: 怎样持续经营？
+    objective: 持续监控销售、服务和产品健康度，并管理安全退出。
+    reviews: [EOP, EOM, EOS]
+    inputs: [上市产品, 运营与服务数据, 客户反馈]
+    outputs: [生命周期看板, 版本路线图, 退出计划, 知识回流]
+    agents:
+      - {id: IPD-12, name: 生命周期, role: 产品经营官, base: Main, job: 监控全生命周期表现并管理演进、停产、停售和停服。, status: locked}
+artifacts:
+  需求确认单: {summary: 把现场对话收敛为问题、目标、用户、范围与约束，作为 IPD 唯一需求入口。}
+  客户痛点: {summary: 记录停机损失、经验依赖和新员工上手困难，并保留客户原话与现场证据。}
+  产品战略边界: {summary: 明确首期只覆盖一条典型产线，不替代 MES，不触碰设备安全控制。}
+  需求合理性·调研支撑: {summary: 从客户、市场、竞品与产业四个维度证明问题真实且值得投入。, owner: IPD-01}
+  需求评审结论: {summary: 形成建议产品、条件接纳或拒绝的正式判断，并列出前置条件。, owner: IPD-02}
+  初始产品包: {summary: 将换模辅助工作台定义为软件、服务、数据采集和现场验证的组合交付。, owner: IPD-02}
+  产品组合规划书: {summary: 说明与现有智能制造能力的组合关系、投资顺序和版本节奏。, owner: IPD-03}
+  产品包定义: {summary: 定义功能、服务、实施边界、成功标准与商业承诺。, owner: IPD-03}
+  架构方案: {summary: 把需求映射为数据采集、步骤引导、异常提示、复盘和知识沉淀五层架构。, owner: IPD-04, kind: architecture}
+  资源与财务计划: {summary: 列出人力、算力、现场资源、预算与收益假设。, owner: IPD-03, kind: metrics}
+  开发方案: {summary: 把产品包拆成模块、里程碑、依赖、风险和工程任务。, owner: IPD-05, kind: architecture}
+  56 项可测验收: {summary: 用可观察、可测量、可复现的条目约束交付。, owner: IPD-05, kind: checklist}
+  实现规格: {summary: 细化模块、接口、数据字典、异常处理、权限和审计要求。, owner: IPD-06, kind: architecture}
+  SDV/SIT 方案: {summary: 定义设计验证和系统集成测试的用例、环境、阈值及追溯关系。, owner: IPD-07, kind: architecture}
+  验证方案: {summary: 覆盖功能、性能、客户现场、制造适配和可靠性验证。, owner: IPD-08, kind: checklist}
+  BETA 反馈: {summary: 汇总实操反馈、问题严重度和关闭计划。, owner: IPD-08, kind: feedback}
+  合规评审意见: {summary: 独立检查数据安全、隐私、网络安全及行业合规红线。, owner: IPD-09, kind: checklist}
+  发布风险清单: {summary: 列出上市前未关闭风险、影响、责任人、缓解措施与接受条件。, owner: IPD-09, kind: checklist}
+  上市方案: {summary: 定义目标客户、首发场景、发布节奏、渠道和成功指标。, owner: IPD-10, kind: roadmap}
+  量产准备清单: {summary: 核对交付、安装、运维、培训、供应和服务能力。, owner: IPD-10, kind: checklist}
+  营销衔接方案: {summary: 将验证证据转化为可公开、可追溯的市场表达。, owner: IPD-11, kind: roadmap}
+  维护移交包: {summary: 把版本、缺陷、监控、服务手册和责任界面移交维护团队。, owner: IPD-10, kind: checklist}
+  生命周期看板: {summary: 观察采用率、业务价值、质量、服务成本和产品健康度。, owner: IPD-12, kind: metrics}
+  版本路线图: {summary: 根据运营证据规划增强版本、兼容策略和资源投入。, owner: IPD-12, kind: roadmap}
+  退出计划: {summary: 定义停产、停售、停服的通知、迁移、备件和客户保障。, owner: IPD-12, kind: checklist}
+  知识回流: {summary: 将现场数据、复盘结论和反馈沉淀回需求与产品知识库。, owner: IPD-12}
+default_session:
+  role: 业务负责人
+  messages:
+    - {role: assistant, content: "您提到“换模慢”。更影响经营结果的是停机时间、良品率，还是订单交付周期？"}
+    - {role: user, content: "主要是停机。现在换一次模具要 45 分钟，老师傅经验也很难复制。"}
+    - {role: assistant, content: "如果三个月内完成第一阶段，您希望达到什么结果？"}
+    - {role: user, content: "先降到 20 分钟以内，让新员工也能按标准完成。"}
+  demand:
+    confirmed: false
+    completeness: 86
+    industry: 制造业
+    core_problem: 换模依赖老师傅经验，停机时间长且标准难以复制
+    target_metric: 45 分钟 → 20 分钟内
+    cycle: 12 周
+    users: 班组长 / 新员工
+    solution: 换模辅助工作台
+    next_action: 采集一条典型产线的 20 次换模过程，建立动作基线
+  insight:
+    title: "不是“换模慢”，而是经验没有成为组织能力。"
+    judgment: 经验隐性化是首要根因
+    gap: 25 min
+    recommendation: 先验证 1 条产线
+    causes:
+      - {title: 经验隐性化, detail: 关键动作仅掌握在老师傅手中}
+      - {title: 过程不可见, detail: 没有步骤耗时与异常数据}
+      - {title: 反馈未闭环, detail: 换模结束后缺少结构化复盘}
+    impacts:
+      - {label: 产线停机损失, score: 92}
+      - {label: 人员培养周期, score: 76}
+      - {label: 交付稳定性, score: 62}
+      - {label: 质量追溯成本, score: 54}
+    evidence:
+      - [现场访谈, 关键动作依赖老师傅口授, 高, 已验证]
+      - [换模记录, 平均耗时 45 分钟, 中高, 已采集]
+      - [步骤级数据, 尚无统一埋点与异常分类, "—", 待补齐]
+      - [新员工测试, 独立完成率尚未量化, 低, 待验证]
+  prototype:
+    title: 换模辅助工作台 V1
+    goal: 通过步骤引导和实时计时，将换模过程标准化
+    target_time: "20:00"
+    elapsed: "06:42"
+    progress: 33
+experience:
+  labels: [进入体验, 需求问诊, 确认需求, 深度洞察, 生成原型, 体验修改, 方案带走]
+  roles:
+    - {name: 企业经营者, description: 增长、效率和管理问题}
+    - {name: 业务负责人, description: 流程、协同和执行问题}
+    - {name: 技术负责人, description: 系统、数据和 AI 落地}
+    - {name: 自由探索, description: 从一句想法开始}

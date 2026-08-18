@@ -7,7 +7,7 @@ data_bindings:
   - source: "/api/chat/stream"
     component: "ai-presenter"
     refresh: "sse"
-  - source: "/api/showroom/state"
+  - source: "/api/showroom/bootstrap"
     component: "cast-state"
     refresh: "websocket"
 auto_fullscreen: true

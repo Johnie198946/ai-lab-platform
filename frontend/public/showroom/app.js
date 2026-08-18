@@ -18,6 +18,13 @@ const state = {
   assistantAnswer: '',
   backendStatus: 'connecting',
   backendDetail: '',
+  bootstrapped: false,
+  screenConfigs: [],
+  content: null,
+  session: null,
+  knowledge: {},
+  capabilities: {},
+  centers: [],
   reviewStates: {},
   activeReview: null,
   reviewDecision: null,
@@ -332,6 +339,52 @@ const reviewStatus = {
   pending: ['待评审', 'pending'], approved: ['已通过', 'approved'], changes: ['需修改', 'changes'], rejected: ['已拒绝', 'rejected'],
 };
 
+function currentSessionData() {
+  return state.session?.data || state.content?.default_session || {};
+}
+
+function currentDemand() {
+  return currentSessionData().demand || {};
+}
+
+function currentInsight() {
+  return currentSessionData().insight || {};
+}
+
+function currentPrototype() {
+  return currentSessionData().prototype || {};
+}
+
+function hydrateContent(content = {}) {
+  state.content = content;
+  if (Array.isArray(content.navigation)) viewGroups.splice(0, viewGroups.length, ...content.navigation);
+  if (content.views) {
+    Object.keys(viewMeta).forEach((key) => delete viewMeta[key]);
+    Object.assign(viewMeta, content.views);
+  }
+  if (Array.isArray(content.stages)) stages.splice(0, stages.length, ...content.stages);
+  if (Array.isArray(content.ipd_phases)) ipdPhases.splice(0, ipdPhases.length, ...content.ipd_phases);
+  if (content.base_agents) {
+    Object.keys(baseAgents).forEach((key) => delete baseAgents[key]);
+    Object.assign(baseAgents, content.base_agents);
+  }
+  if (content.reviewers) {
+    Object.keys(humanReviewers).forEach((key) => delete humanReviewers[key]);
+    Object.assign(humanReviewers, content.reviewers);
+  }
+  if (content.artifacts) {
+    Object.keys(artifactDescriptions).forEach((key) => delete artifactDescriptions[key]);
+    Object.keys(artifactOwners).forEach((key) => delete artifactOwners[key]);
+    Object.entries(content.artifacts).forEach(([title, artifact]) => {
+      artifactDescriptions[title] = artifact.summary || '';
+      if (artifact.owner) artifactOwners[title] = artifact.owner;
+    });
+  }
+  if (Array.isArray(content.experience?.labels)) {
+    experienceSteps.splice(0, experienceSteps.length, ...content.experience.labels);
+  }
+}
+
 function getReviewState(gate) {
   return state.reviewStates[gate] || 'pending';
 }
@@ -340,7 +393,8 @@ function approvalRouteBar(phase, giant = false) {
   const approved = phase.reviews.filter((gate) => getReviewState(gate) === 'approved').length;
   const nextGate = phase.reviews.find((gate) => getReviewState(gate) !== 'approved') || phase.reviews.at(-1);
   const reviewer = humanReviewers[nextGate] || humanReviewers.TR1;
-  return `<div class="approval-route ${giant ? 'giant-approval-route' : ''}"><div class="approval-principle"><span>AI WORK</span><b>AI 负责产出</b><i>→</i><span>FEISHU</span><b>自动派审批</b><i>→</i><span>HUMAN</span><b>人负责评审确认</b></div><button data-review-gate="${nextGate}"><span class="feishu-mark">飞</span><div><small>下一人工关口 · ${nextGate}</small><b>${reviewer.role} · ${reviewer.person}</b></div><em>${approved}/${phase.reviews.length} 已通过　打开审批</em></button></div>`;
+  const channel = state.capabilities.feishu_configured ? '飞书自动派审批' : '平台审批（飞书待配置）';
+  return `<div class="approval-route ${giant ? 'giant-approval-route' : ''}"><div class="approval-principle"><span>AI WORK</span><b>AI 负责产出</b><i>→</i><span>REVIEW</span><b>${channel}</b><i>→</i><span>HUMAN</span><b>人负责评审确认</b></div><button data-review-gate="${nextGate}"><span class="feishu-mark">飞</span><div><small>下一人工关口 · ${nextGate}</small><b>${reviewer.role} · ${reviewer.person}</b></div><em>${approved}/${phase.reviews.length} 已通过　打开审批</em></button></div>`;
 }
 
 function feishuReviewOverlay() {
@@ -351,7 +405,7 @@ function feishuReviewOverlay() {
   const detail = reviewStatus[status];
   const phase = ipdPhases.find((item) => item.reviews.includes(gate)) || ipdPhases[state.selectedPhase];
   const decisionMode = status === 'pending';
-  return `<div class="review-overlay" role="dialog" aria-modal="true" aria-label="飞书 ${gate} 人工审批"><div class="feishu-review"><header><div class="feishu-brand"><span class="feishu-mark">飞</span><div><small>FEISHU APPROVAL · IPD 人工关口</small><b>${gate} ${gate.startsWith('TR') ? '技术评审' : '决策评审'}</b></div></div><span class="review-status ${detail[1]}">${detail[0]}</span><button data-review-close aria-label="关闭飞书审批">${icon('close')}</button></header><div class="feishu-review-grid"><aside><div class="reviewer-avatar">${reviewer.person.slice(0, 1)}</div><span>审批人（演示映射）</span><h3>${reviewer.person}</h3><b>${reviewer.role}</b><small>${reviewer.group}</small><dl><div><dt>评审重点</dt><dd>${reviewer.focus}</dd></div><div><dt>来自阶段</dt><dd>0${ipdPhases.indexOf(phase) + 1} · ${phase.name}</dd></div><div><dt>响应时限</dt><dd>24 小时内</dd></div></dl></aside><main><div class="feishu-message"><div class="bot-avatar">AI</div><div><span>AI Lab IPD 助手　刚刚</span><p>您好，AI 已完成 <b>${phase.name}阶段</b> 的交付件生产，请您对 <b>${gate}</b> 关口进行人工评审。AI 不会代替您做通过决定。</p></div></div><section class="review-package"><header><span>待审材料包</span><em>${phase.outputs.length} 个交付件 · 来源完整</em></header>${phase.outputs.map((output, i) => `<button data-artifact-from-review="${output}"><span>0${i + 1}</span><div><b>${output}</b><small>${artifactDescriptions[output]}</small></div><em>预览 ↗</em></button>`).join('')}</section>${decisionMode ? `<section class="review-decision"><span>请选择评审结论</span><div><button class="approve ${state.reviewDecision === 'approved' ? 'active' : ''}" data-review-decision="approved"><i>✓</i><b>通过</b><small>允许进入下一关口</small></button><button class="change ${state.reviewDecision === 'changes' ? 'active' : ''}" data-review-decision="changes"><i>↻</i><b>要求修改</b><small>退回 AI 补充后复审</small></button><button class="reject ${state.reviewDecision === 'rejected' ? 'active' : ''}" data-review-decision="rejected"><i>×</i><b>拒绝</b><small>终止当前方案</small></button></div><label for="review-comment">审批意见</label><textarea id="review-comment" placeholder="请说明通过依据，或需要修改/拒绝的原因…"></textarea><button class="review-submit" data-review-submit>确认提交到飞书</button></section>` : `<section class="review-result ${detail[1]}"><span>${detail[0]}</span><h3>${status === 'approved' ? '人工评审已完成，结论已写入 IPD 单据链。' : status === 'changes' ? '材料已退回 AI，等待根据审批意见修订。' : '当前方案已被人工拒绝，后续阶段不会启动。'}</h3><p>审批人：${reviewer.person} · 结论时间：刚刚 · 全程可追溯</p>${status !== 'approved' ? '<button data-review-resubmit>模拟 AI 完成修订并重新提交</button>' : '<button data-review-close>完成</button>'}</section>`}</main></div></div></div>`;
+  return `<div class="review-overlay" role="dialog" aria-modal="true" aria-label="${gate} 人工审批"><div class="feishu-review"><header><div class="feishu-brand"><span class="feishu-mark">飞</span><div><small>${state.capabilities.feishu_configured ? 'FEISHU APPROVAL' : 'PLATFORM APPROVAL · FEISHU PENDING'} · IPD 人工关口</small><b>${gate} ${gate.startsWith('TR') ? '技术评审' : '决策评审'}</b></div></div><span class="review-status ${detail[1]}">${detail[0]}</span><button data-review-close aria-label="关闭审批">${icon('close')}</button></header><div class="feishu-review-grid"><aside><div class="reviewer-avatar">${reviewer.person.slice(0, 1)}</div><span>审批人映射</span><h3>${reviewer.person}</h3><b>${reviewer.role}</b><small>${reviewer.group}</small><dl><div><dt>评审重点</dt><dd>${reviewer.focus}</dd></div><div><dt>来自阶段</dt><dd>0${ipdPhases.indexOf(phase) + 1} · ${phase.name}</dd></div><div><dt>响应时限</dt><dd>24 小时内</dd></div></dl></aside><main><div class="feishu-message"><div class="bot-avatar">AI</div><div><span>AI Lab IPD 助手　刚刚</span><p>AI 已完成 <b>${phase.name}阶段</b> 的交付件生产，请对 <b>${gate}</b> 关口进行人工评审。</p></div></div><section class="review-package"><header><span>待审材料包</span><em>${phase.outputs.length} 个交付件</em></header>${phase.outputs.map((output, i) => `<button data-artifact-from-review="${output}"><span>0${i + 1}</span><div><b>${output}</b><small>${artifactDescriptions[output]}</small></div><em>预览 ↗</em></button>`).join('')}</section>${decisionMode ? `<section class="review-decision"><span>请选择评审结论</span><div><button class="approve ${state.reviewDecision === 'approved' ? 'active' : ''}" data-review-decision="approved"><i>✓</i><b>通过</b><small>允许进入下一关口</small></button><button class="change ${state.reviewDecision === 'changes' ? 'active' : ''}" data-review-decision="changes"><i>↻</i><b>要求修改</b><small>退回 AI 补充后复审</small></button><button class="reject ${state.reviewDecision === 'rejected' ? 'active' : ''}" data-review-decision="rejected"><i>×</i><b>拒绝</b><small>终止当前方案</small></button></div><label for="review-comment">审批意见</label><textarea id="review-comment" placeholder="请说明通过依据，或需要修改/拒绝的原因…"></textarea><button class="review-submit" data-review-submit>确认提交审批</button></section>` : `<section class="review-result ${detail[1]}"><span>${detail[0]}</span><h3>${status === 'approved' ? '人工评审已完成，结论已写入 IPD 单据链。' : status === 'changes' ? '材料已退回 AI，等待修订。' : '当前方案已被人工拒绝。'}</h3><p>审批人：${reviewer.person} · 全程可追溯</p>${status !== 'approved' ? '<button data-review-resubmit>重新提交</button>' : '<button data-review-close>完成</button>'}</section>`}</main></div></div></div>`;
 }
 
 const artifactDescriptions = {
@@ -408,14 +462,17 @@ function artifactKind(title) {
 
 function getArtifactDetail(title) {
   const { index, phase } = findArtifactPhase(title);
-  const ownerId = artifactOwners[title];
+  const manifest = state.content?.artifacts?.[title] || {};
+  const saved = currentSessionData().artifacts?.[title] || {};
+  const ownerId = manifest.owner || artifactOwners[title];
   const owner = phase.agents.find((agent) => agent.id === ownerId) || phase.agents[0];
   return {
     title,
     phase,
     phaseIndex: index,
-    kind: artifactKind(title),
-    summary: artifactDescriptions[title] || `这是${phase.name}阶段围绕“换模 45 → 20 分钟”形成的结构化交付件。`,
+    kind: manifest.kind || artifactKind(title),
+    summary: saved.content?.summary || manifest.summary || artifactDescriptions[title] || `这是${phase.name}阶段形成的结构化交付件。`,
+    content: saved.content || manifest.content || {},
     owner,
   };
 }
@@ -511,15 +568,16 @@ function buildTourSteps() {
 function screenHeader(title, status = '现场联机') {
   return `<header class="screen-header">
     <div class="screen-brand"><i></i>AI LAB · ${title}</div>
-    <div class="screen-state"><span>SESSION 001-A</span><b>${status}</b><span>郑州共创体验中心</span></div>
+    <div class="screen-state"><span>${escapeHtml(state.session?.session_id || 'SESSION CONNECTING')}</span><b>${status}</b><span>${escapeHtml(state.content?.venue || '共创体验中心')}</span></div>
   </header>`;
 }
 
 function controllerView() {
-  const screenNames = ['序章','迎宾','TokenOps','问诊','洞察','IPD','7290 主屏','运行原型'];
-  const centerStates = [
-    ['王女士','需求问诊','运行中'], ['赵总','原型体验','运行中'], ['—','空闲可用','可进入'], ['李经理','方案生成','即将完成'], ['—','空闲可用','可进入'],
-  ];
+  const screenNames = state.screenConfigs.map((screen) => screen.title).slice(0, 9);
+  const centers = Array.from({ length: 5 }, (_, index) => {
+    const live = state.centers.find((center) => Number(center.slot) === index + 1);
+    return live || { slot: String(index + 1), role: '—', step: 0, status: 'idle' };
+  });
   return `<div class="screen">
     ${screenHeader('TOUR CONTROL')}
     <div class="screen-content control-grid">
@@ -529,12 +587,12 @@ function controllerView() {
         <div class="route-strip">${stages.map((s, i) => `<div class="route-card ${i === state.stage ? 'active' : ''}"><b>${s[0]} · ${s[1]}</b><span>${i < state.stage ? '已完成' : i === state.stage ? '正在进行' : '等待进入'}</span></div>`).join('')}</div>
       </section>
       <section class="panel device-panel">
-        <div class="panel-head"><strong>主演示屏幕</strong><span class="status">8 / 8 在线</span></div>
-        <div class="device-grid">${screenNames.map((name, i) => `<div class="device-card"><div><b>SCREEN 0${i + 1}</b><i></i></div><p>${name}</p><small class="metric">${10 + i} ms · 60 FPS</small></div>`).join('')}</div>
+        <div class="panel-head"><strong>主演示屏幕</strong><span class="status">${state.backendStatus === 'online' ? `${screenNames.length} 屏已配置` : '连接中'}</span></div>
+        <div class="device-grid">${screenNames.map((name, i) => `<div class="device-card"><div><b>SCREEN 0${i + 1}</b><i></i></div><p>${escapeHtml(name)}</p><small class="metric">配置来自 /api/screens</small></div>`).join('')}</div>
       </section>
       <section class="panel center-panel">
         <div class="panel-head"><strong>五个独立体验中心</strong><span>仅显示授权摘要</span></div>
-        <div class="center-list">${centerStates.map((row, i) => `<div class="center-row"><span class="num">0${i + 1}</span><div><b>${row[0]}</b><small>${row[1]}</small></div><span class="state">${row[2]}</span></div>`).join('')}</div>
+        <div class="center-list">${centers.map((center, i) => `<div class="center-row"><span class="num">0${i + 1}</span><div><b>${escapeHtml(center.role || '访客')}</b><small>${experienceSteps[center.step] || '进入体验'}</small></div><span class="state">${center.status === 'idle' ? '可进入' : center.status === 'submitted' ? '已提交' : '运行中'}</span></div>`).join('')}</div>
       </section>
     </div>
   </div>`;
@@ -548,15 +606,16 @@ function introView() {
 }
 
 function welcomeView() {
+  const content = state.content?.screens?.['screen-01'] || {};
   return `<div class="screen welcome-screen">
     ${screenHeader('WELCOME', '欢迎到访')}
     <div class="screen-content welcome-layout">
       <div class="welcome-copy">
         <div class="welcome-chip"><i></i>今天，一起把想法变成现实</div>
         <p class="kicker">WELCOME TO AI LAB</p>
-        <h2 class="hero-title">欢迎来到<br><span class="orange">AI 共创体验中心。</span></h2>
-        <p class="lead">这里不只是看 AI。你会提出一个真实问题，与 AI 一起完成需求收敛、洞察、原型和建设方案。</p>
-        <div class="welcome-stats"><div><strong>10s</strong><span>生成首个可用原型</span></div><div><strong>5×</strong><span>独立体验中心并行</span></div><div><strong>1份</strong><span>专属方案扫码带走</span></div></div>
+        <h2 class="hero-title">${escapeHtml(content.headline || '欢迎来到 AI 共创体验中心。')}</h2>
+        <p class="lead">${escapeHtml(content.lead || '')}</p>
+        <div class="welcome-stats">${(content.stats || []).map((item) => `<div><strong>${escapeHtml(item.value)}</strong><span>${escapeHtml(item.label)}</span></div>`).join('')}</div>
       </div>
       <div class="welcome-art" aria-label="彩色 AI 共创入口视觉"><div class="portal"></div></div>
     </div>
@@ -564,47 +623,58 @@ function welcomeView() {
 }
 
 function dashboardView() {
+  const content = state.content?.screens?.['screen-02'] || {};
+  const metrics = content.metrics || {};
+  const utilization = metrics.utilization || {};
   return `<div class="screen">
     ${screenHeader('TOKENOPS', '算力运行正常')}
     <div class="screen-content">
-      <div class="dashboard-head"><div><p class="kicker">FUSIONONE · COMPUTE OPERATIONS</p><h2 class="hero-title">每一份算力，都在创造<em>可见的价值。</em></h2></div><div><span class="tag mint">实时刷新 2s</span> <span class="tag">本月</span></div></div>
+      <div class="dashboard-head"><div><p class="kicker">FUSIONONE · COMPUTE OPERATIONS</p><h2 class="hero-title">${escapeHtml(content.headline || '')}</h2></div><div><span class="tag mint">后端实时数据</span> <span class="tag">知识文档 ${Number(state.knowledge.total_md_files || 0)}</span></div></div>
       <div class="dashboard-grid">
-        <section class="panel dash-main"><span class="tag blue">算力利用率</span><div class="dash-value"><strong class="metric">72%</strong><span>较改造前 +44%</span></div><div class="area-chart" aria-label="算力利用率从28%提升至72%的趋势图"><svg viewBox="0 0 500 150" preserveAspectRatio="none"><path d="M0 130 C70 125 85 105 140 110 S220 85 270 92 S350 52 400 62 S455 24 500 32 L500 150 L0 150Z" fill="#eaf0ff"/><path d="M0 130 C70 125 85 105 140 110 S220 85 270 92 S350 52 400 62 S455 24 500 32" fill="none" stroke="#2868f0" stroke-width="4" stroke-linecap="round"/></svg></div><div class="chart-legend"><span><i style="background:var(--blue)"></i>实际利用率</span><span><i style="background:var(--silver-2)"></i>行业基线</span></div></section>
-        <section class="panel dash-card orange"><h3>本月节约成本</h3><strong class="metric">40%</strong><p>智能路由和资源池化共同贡献</p></section>
-        <section class="panel dash-card mint"><h3>活跃 AI 工作负载</h3><strong class="metric">186</strong><p>跨研发、制造与运营场景</p></section>
+        <section class="panel dash-main"><span class="tag blue">${escapeHtml(utilization.label)}</span><div class="dash-value"><strong class="metric">${escapeHtml(utilization.value)}</strong><span>${escapeHtml(utilization.delta)}</span></div><div class="area-chart" aria-label="算力利用率趋势图"><svg viewBox="0 0 500 150" preserveAspectRatio="none"><path d="M0 130 C70 125 85 105 140 110 S220 85 270 92 S350 52 400 62 S455 24 500 32 L500 150 L0 150Z" fill="#eaf0ff"/><path d="M0 130 C70 125 85 105 140 110 S220 85 270 92 S350 52 400 62 S455 24 500 32" fill="none" stroke="#2868f0" stroke-width="4" stroke-linecap="round"/></svg></div><div class="chart-legend"><span><i style="background:var(--blue)"></i>实际利用率</span><span><i style="background:var(--silver-2)"></i>行业基线</span></div></section>
+        <section class="panel dash-card orange"><h3>${escapeHtml(metrics.saving?.label)}</h3><strong class="metric">${escapeHtml(metrics.saving?.value)}</strong><p>${escapeHtml(metrics.saving?.note)}</p></section>
+        <section class="panel dash-card mint"><h3>${escapeHtml(metrics.workloads?.label)}</h3><strong class="metric">${escapeHtml(metrics.workloads?.value)}</strong><p>${escapeHtml(metrics.workloads?.note)}</p></section>
         <section class="panel dash-card blue"><h3>vGPU 细粒度池化</h3><div class="resource-bars" aria-label="四组资源池利用率"><i style="height:66%"></i><i></i><i></i><i></i></div></section>
-        <section class="panel dash-card"><h3>平均任务响应</h3><strong class="metric">1.8s</strong><p>高优任务已自动分配到最优资源</p></section>
+        <section class="panel dash-card"><h3>${escapeHtml(metrics.latency?.label)}</h3><strong class="metric">${escapeHtml(metrics.latency?.value)}</strong><p>${escapeHtml(metrics.latency?.note)}</p></section>
       </div>
     </div>
   </div>`;
 }
 
 function clinicView() {
+  const session = currentSessionData();
+  const demand = currentDemand();
+  const messages = session.messages || [];
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
-      <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">把一句想法，收敛成一个<em>可行动的问题。</em></h2></div><div><span class="tag orange">制造业</span> <span class="tag blue">第 4 轮</span></div></div>
+      <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">${state.content?.screens?.['screen-03']?.headline || '把一句想法，收敛成一个可行动的问题。'}</h2></div><div><span class="tag orange">${escapeHtml(demand.industry || '待识别行业')}</span> <span class="tag blue">第 ${Math.max(1, Math.ceil(messages.length / 2))} 轮</span></div></div>
       <div class="clinic-grid">
-        <section class="panel chat-panel"><div class="panel-head"><strong>与用户的对话</strong><span class="status">正在收敛</span></div><div class="chat-body"><div class="bubble ai">您提到“换模慢”。更影响经营结果的是停机时间、良品率，还是订单交付周期？</div><div class="bubble user">主要是停机。现在换一次模具要 45 分钟，老师傅经验也很难复制。</div><div class="bubble ai">如果三个月内完成第一阶段，您希望达到什么结果？</div><div class="bubble user">先降到 20 分钟以内，让新员工也能按标准完成。</div><div class="bubble-note"><i></i>已识别目标指标与关键用户，正在补全约束条件</div></div><div class="chat-composer"><span>继续补充背景，或确认右侧需求单…</span><button aria-label="发送需求">${icon('send')}</button></div></section>
-        <section class="panel form-panel"><div class="panel-head"><strong>需求收敛确认单</strong><span>自动保存 · 刚刚</span></div><div class="form-body"><div class="score-card"><strong class="metric">86%</strong><div><span>需求完整度</span><b>具备进入概念验证的条件</b></div></div><div class="field-grid"><div class="field wide"><label>核心问题</label><b>换模依赖老师傅经验，停机时间长且标准难以复制</b></div><div class="field"><label>目标指标</label><b>45 分钟 → 20 分钟内</b></div><div class="field"><label>首期周期</label><b>12 周</b></div><div class="field"><label>关键用户</label><b>班组长 / 新员工</b></div><div class="field"><label>建议形态</label><b>换模辅助工作台</b></div><div class="field wide"><label>下一步行动</label><b>采集一条典型产线的 20 次换模过程，建立动作基线</b></div></div><button class="form-cta" data-action="confirm-demand">确认需求，进入深度洞察</button></div></section>
+        <section class="panel chat-panel"><div class="panel-head"><strong>与用户的对话</strong><span class="status">${state.avatarSpeaking ? 'AI 正在回复' : '实时保存'}</span></div><div class="chat-body">${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}<div class="bubble-note"><i></i>对话写入独立会话 ${escapeHtml(state.session?.session_id || '')}</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="继续补充背景，或修改右侧需求单…"><button data-demand-send aria-label="发送需求">${icon('send')}</button></div></section>
+        <section class="panel form-panel"><div class="panel-head"><strong>需求收敛确认单</strong><span>${demand.confirmed ? '已确认' : '自动保存'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem">${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}"></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}"></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}"></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}"></label><label class="field wide">下一步行动<textarea data-demand-field="next_action">${escapeHtml(demand.next_action)}</textarea></label></div><button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>
       </div>
     </div>
   </div>`;
 }
 
 function insightView() {
+  const insight = currentInsight();
+  const demand = currentDemand();
+  const causes = insight.causes || [];
+  const impacts = insight.impacts || [];
+  const evidence = insight.evidence || [];
   return `<div class="screen">
     ${screenHeader('DEEP INSIGHT', '洞察已生成')}
     <div class="insight-report-shell">
       <aside class="insight-toc"><span>REPORT OUTLINE</span><h3>深度洞察报告</h3><p>Markdown · V0.1</p><nav><button class="active" data-insight-section="insight-summary"><i>01</i>执行摘要</button><button data-insight-section="insight-root"><i>02</i>根因图谱</button><button data-insight-section="insight-impact"><i>03</i>影响分析</button><button data-insight-section="insight-evidence"><i>04</i>证据明细</button><button data-insight-section="insight-action"><i>05</i>行动建议</button></nav><div><span>阅读进度</span><b>5 个章节 · 8 分钟</b></div></aside>
       <article class="insight-report-page" aria-label="需求深度洞察完整报告">
-        <header id="insight-summary" class="insight-cover"><div><span>DEEP INSIGHT · 2026.08.18</span><h1>不是“换模慢”，而是<br><em>经验没有成为组织能力。</em></h1><p>AI 将需求对话转化为问题结构、影响判断与可执行建议；报告中的每项结论均保留证据入口，供人工确认。</p></div><div class="insight-cover-visual" role="img" aria-label="生产线换模场景抽象示意图"><span>45</span><b>MIN</b><i></i><i></i><i></i><small>当前换模基线</small></div></header>
-        <section class="insight-summary-grid"><div><span>核心判断</span><b>经验隐性化是首要根因</b><p>关键步骤依赖老师傅现场口授，无法稳定复制。</p></div><div><span>目标差距</span><b>25 min</b><p>当前 45 分钟，业务目标为 20 分钟以内。</p></div><div><span>建议动作</span><b>先验证 1 条产线</b><p>两周建立动作—耗时—异常数据基线。</p></div></section>
-        <section id="insight-root" class="insight-report-section"><div class="report-section-title"><span>02 · ROOT CAUSE</span><h2>问题根因图谱</h2><p>从可见症状追溯到流程、知识和反馈机制。</p></div><figure class="insight-root-figure"><div class="root-core"><small>表层症状</small><strong>平均换模停机 45 分钟</strong></div><div class="root-branch"><span></span><i></i><i></i><i></i></div><div class="root-causes"><div class="cause"><b>经验隐性化</b><span>关键动作仅掌握在老师傅手中</span></div><div class="cause"><b>过程不可见</b><span>没有步骤耗时与异常数据</span></div><div class="cause"><b>反馈未闭环</b><span>换模结束后缺少结构化复盘</span></div></div><figcaption>图 1 · 根因关系基于 4 轮需求对话与现场观察生成，综合置信度 88%。</figcaption></figure></section>
-        <section id="insight-impact" class="insight-report-section"><div class="report-section-title"><span>03 · BUSINESS IMPACT</span><h2>价值影响排序</h2></div><figure class="insight-impact-chart"><div><span>产线停机损失</span><i style="--w:92%"></i><b>92</b></div><div><span>人员培养周期</span><i style="--w:76%"></i><b>76</b></div><div><span>交付稳定性</span><i style="--w:62%"></i><b>62</b></div><div><span>质量追溯成本</span><i style="--w:54%"></i><b>54</b></div><figcaption>图 2 · 影响指数（0–100），数值标签始终可见，不仅依赖颜色区分。</figcaption></figure></section>
-        <section id="insight-evidence" class="insight-report-section"><div class="report-section-title"><span>04 · EVIDENCE</span><h2>证据与缺口明细</h2></div><div class="report-table-wrap"><table class="report-table"><thead><tr><th>证据</th><th>观察结果</th><th>可信度</th><th>状态</th></tr></thead><tbody><tr><th>现场访谈</th><td>关键动作依赖老师傅口授</td><td>高</td><td>已验证</td></tr><tr><th>换模记录</th><td>平均耗时 45 分钟</td><td>中高</td><td>已采集</td></tr><tr><th>步骤级数据</th><td>尚无统一埋点与异常分类</td><td>—</td><td>待补齐</td></tr><tr><th>新员工测试</th><td>独立完成率尚未量化</td><td>低</td><td>待验证</td></tr></tbody></table></div></section>
-        <section id="insight-action" class="insight-report-section insight-action-section"><div class="report-section-title"><span>05 · RECOMMENDATION</span><h2>IPD 第一步行动</h2></div><div class="insight-action-card"><span>建议从小范围验证开始</span><h3>选择 1 条高频换模产线，建立“动作—耗时—异常”数据基线。</h3><p>预计两周获得首批有效数据，不改造 MES、不触碰设备安全控制；完成后提交 TR1 人工评审。</p><div><b>负责人：需求分析 Agent</b><b>人工确认：需求管理专家</b><b>输出：需求合理性调研支撑</b></div></div></section>
-        <footer class="insight-report-footer"><b>参考来源</b><span>[1] 需求确认单　[2] 现场访谈第 1–4 轮　[3] AI Lab 制造业知识库</span></footer>
+        <header id="insight-summary" class="insight-cover"><div><span>DEEP INSIGHT · ${new Date().toLocaleDateString('zh-CN')}</span><h1>${escapeHtml(insight.title || '等待需求确认后生成洞察')}</h1><p>AI 将已确认需求转化为问题结构、影响判断与行动建议；结论保留知识证据入口，供人工确认。</p></div><div class="insight-cover-visual" role="img" aria-label="当前业务基线"><span>${escapeHtml(String(demand.target_metric || '').match(/\d+/)?.[0] || '—')}</span><b>MIN</b><i></i><i></i><i></i><small>当前业务基线</small></div></header>
+        <section class="insight-summary-grid"><div><span>核心判断</span><b>${escapeHtml(insight.judgment || '等待分析')}</b><p>${escapeHtml(causes[0]?.detail || '')}</p></div><div><span>目标差距</span><b>${escapeHtml(insight.gap || '待计算')}</b><p>${escapeHtml(demand.target_metric || '')}</p></div><div><span>建议动作</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b><p>${escapeHtml(demand.next_action || '')}</p></div></section>
+        <section id="insight-root" class="insight-report-section"><div class="report-section-title"><span>02 · ROOT CAUSE</span><h2>问题根因图谱</h2><p>从可见症状追溯到流程、知识和反馈机制。</p></div><figure class="insight-root-figure"><div class="root-core"><small>表层症状</small><strong>${escapeHtml(demand.core_problem || '等待需求确认')}</strong></div><div class="root-branch"><span></span><i></i><i></i><i></i></div><div class="root-causes">${causes.map((cause) => `<div class="cause"><b>${escapeHtml(cause.title)}</b><span>${escapeHtml(cause.detail)}</span></div>`).join('')}</div><figcaption>图 1 · 根因关系来自当前独立会话和知识检索结果。</figcaption></figure></section>
+        <section id="insight-impact" class="insight-report-section"><div class="report-section-title"><span>03 · BUSINESS IMPACT</span><h2>价值影响排序</h2></div><figure class="insight-impact-chart">${impacts.map((item) => `<div><span>${escapeHtml(item.label)}</span><i style="--w:${Number(item.score || 0)}%"></i><b>${Number(item.score || 0)}</b></div>`).join('')}<figcaption>图 2 · 影响指数（0–100），来自当前报告数据。</figcaption></figure></section>
+        <section id="insight-evidence" class="insight-report-section"><div class="report-section-title"><span>04 · EVIDENCE</span><h2>证据与缺口明细</h2></div><div class="report-table-wrap"><table class="report-table"><thead><tr><th>证据</th><th>观察结果</th><th>可信度</th><th>状态</th></tr></thead><tbody>${evidence.map((row) => `<tr><th>${escapeHtml(row[0])}</th><td>${escapeHtml(row[1])}</td><td>${escapeHtml(row[2])}</td><td>${escapeHtml(row[3])}</td></tr>`).join('')}</tbody></table></div></section>
+        <section id="insight-action" class="insight-report-section insight-action-section"><div class="report-section-title"><span>05 · RECOMMENDATION</span><h2>IPD 第一步行动</h2></div><div class="insight-action-card"><span>${escapeHtml(insight.recommendation || '建议从小范围验证开始')}</span><h3>${escapeHtml(demand.next_action || '等待需求确认')}</h3><p>完成后提交 TR1 人工评审，AI 负责准备材料，人负责确认。</p><div><b>负责人：需求分析 Agent</b><b>人工确认：${escapeHtml(humanReviewers.TR1?.role || '需求管理专家')}</b><b>输出：需求合理性调研支撑</b></div></div></section>
+        <footer class="insight-report-footer"><b>参考来源</b><span>${(insight.sources || []).length ? (insight.sources || []).slice(0, 6).map((source, index) => `[${index + 1}] ${escapeHtml(source.title || source.path)}`).join('　') : '[1] 当前需求确认单　[2] 后端内容基线（等待知识命中）'}</span></footer>
       </article>
     </div>
   </div>`;
@@ -612,6 +682,7 @@ function insightView() {
 
 function pipelineView() {
   const phase = ipdPhases[state.selectedPhase];
+  const demand = currentDemand();
   const selectedAgent = phase.agents.find((agent) => agent.id === state.selectedAgent) || phase.agents[0];
   const statusLabel = { working: '正在研判', waiting: '等待上游', locked: '阶段锁定' };
   const canAdvance = phase.reviews.every((review) => getReviewState(review) === 'approved');
@@ -628,7 +699,7 @@ function pipelineView() {
       <div class="ipd-phase-rail" aria-label="IPD 六阶段导航">${ipdPhases.map((item, i) => `<button class="ipd-phase ${i === state.selectedPhase ? 'active' : ''} ${i < state.selectedPhase ? 'done' : ''}" data-ipd-phase="${i}" aria-current="${i === state.selectedPhase ? 'step' : 'false'}"><span>0${i + 1}</span><div><b>${item.name}</b><small>${i === state.selectedPhase ? item.short : item.reviews.join(' · ')}</small></div></button>`).join('')}</div>
       <div class="ipd-focus-grid">
         <section class="panel ipd-focus-main ${state.pipelinePlaying ? 'is-playing' : ''}">
-          <header class="ipd-focus-head"><div><span>01 · AI 当前工作</span><h3>${phase.objective}</h3><p>需求上下文：换模停机 <b>45 → 20 分钟</b></p></div><button data-artifact-title="${currentOutput}"><small>当前主交付件</small><b>${currentOutput}</b><em>打开演示 ↗</em></button></header>
+          <header class="ipd-focus-head"><div><span>01 · AI 当前工作</span><h3>${phase.objective}</h3><p>需求上下文：<b>${escapeHtml(demand.core_problem || '等待已确认需求')}</b> · ${escapeHtml(demand.target_metric || '')}</p></div><button data-artifact-title="${currentOutput}"><small>当前主交付件</small><b>${currentOutput}</b><em>打开演示 ↗</em></button></header>
           <div class="ipd-workflow-label"><div><b>多 Agent 协作</b><span>${phase.agents.length} 个专业角色编排在基础 Agent 上</span></div><div class="ipd-agent-key"><span>Main · 主持</span><span>Supervision · 把关</span><span>Coder · 落实</span></div></div>
           <div class="agent-lane ipd-focus-lane"><div class="demand-node"><small>INPUT</small><b>已确认需求</b><span>${phase.inputs.length} 项材料</span></div><div class="flow-arrow"><i></i><i></i><i></i></div><div class="agent-stack">${phase.agents.map((agent) => `<button class="agent-node ${agent.id === selectedAgent.id ? 'selected' : ''} ${agent.status}" data-ipd-agent="${agent.id}"><span>${agent.base} × ${agent.id}</span><b>${agent.name}</b><small>${agent.role}</small><em>${statusLabel[agent.status]}</em></button>`).join('')}</div><div class="flow-arrow merge"><i></i><i></i><i></i></div><div class="human-node"><span>HUMAN</span><b>${pendingReview}</b><small>人工签字</small></div></div>
           <button class="agent-detail-toggle" data-agent-detail aria-expanded="${state.agentDetailOpen}"><span><b>${selectedAgent.id} · ${selectedAgent.name}</b><small>${selectedAgent.base} 基础 Agent × ${selectedAgent.role}</small></span><em>${state.agentDetailOpen ? '收起职责 ↑' : '查看职责 ↓'}</em></button>
@@ -655,17 +726,21 @@ function pipelineView() {
 function giantWorkbenchView() {
   if (state.giantMode === 'artifact') return giantArtifactView();
   if (state.giantMode === 'orchestration') return giantOrchestrationView();
+  const demand = currentDemand();
+  const prototype = currentPrototype();
+  const messages = currentSessionData().messages || [];
   return `<div class="giant-workbench">
-    <section class="giant-col"><span class="giant-label">01 · 用户对话 / CONVERSATION</span><div class="giant-chat"><div class="bubble ai">如果把换模时间降到 20 分钟，最先受益的会是谁？</div><div class="bubble user">班组长和新员工，他们需要一套能边做边提示的工具。</div><div class="bubble ai">明白。我们将优先生成“换模辅助工作台”，包含步骤、计时、异常提示和复盘。</div></div><div class="summary-card"><h3>对话已确认</h3><dl><div><dt>目标用户</dt><dd>班组长 / 新员工</dd></div><div><dt>核心指标</dt><dd>换模 ≤ 20 分钟</dd></div><div><dt>首期范围</dt><dd>1 条典型产线</dd></div></dl></div></section>
-    <section class="giant-col"><span class="giant-label">02 · 共创工作台 / LIVE WORKBENCH</span><h2 class="giant-title">换模辅助工作台 <span style="color:var(--orange)">V1</span></h2><p class="giant-sub">需求确认后，表单与可操作原型同步生成</p><div class="giant-form"><div class="giant-field wide"><span>任务目标</span><b>通过步骤引导和实时计时，将换模过程标准化</b></div><div class="giant-field"><span>当前步骤</span><b>02 · 拆卸旧模具</b></div><div class="giant-field"><span>本次计时</span><b class="metric">06:42</b></div></div><div class="prototype-window"><header><i></i><i></i><i></i></header><div class="proto-body"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div></section>
-    <section class="giant-col"><span class="giant-label">03 · 需求与价值 / OUTCOME</span><div class="summary-card"><h3>需求确认单</h3><dl><div><dt>问题完整度</dt><dd>86%</dd></div><div><dt>方案可验证性</dt><dd>高</dd></div><div><dt>预计验证周期</dt><dd>12 周</dd></div><div><dt>数据准备度</dt><dd>需采集</dd></div></dl></div><div class="summary-card"><h3>第一阶段交付</h3><dl><div><dt>交互原型</dt><dd>已生成</dd></div><div><dt>需求说明</dt><dd>已生成</dd></div><div><dt>验证清单</dt><dd>6 项</dd></div></dl></div><div class="value-card"><span>目标改善</span><b class="metric">45 → 20 min</b><small>换模停机时间预计降低 55%</small></div></section>
+    <section class="giant-col"><span class="giant-label">01 · 用户对话 / CONVERSATION</span><div class="giant-chat">${messages.slice(-3).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}</div><div class="summary-card"><h3>${demand.confirmed ? '对话已确认' : '需求收敛中'}</h3><dl><div><dt>目标用户</dt><dd>${escapeHtml(demand.users || '待确认')}</dd></div><div><dt>核心指标</dt><dd>${escapeHtml(demand.target_metric || '待确认')}</dd></div><div><dt>首期范围</dt><dd>${escapeHtml(demand.cycle || '待确认')}</dd></div></dl></div></section>
+    <section class="giant-col"><span class="giant-label">02 · 共创工作台 / LIVE WORKBENCH</span><h2 class="giant-title">${escapeHtml(prototype.title || demand.solution || '等待生成原型')}</h2><p class="giant-sub">数据来自 ${escapeHtml(state.session?.session_id || '当前会话')}</p><div class="giant-form"><div class="giant-field wide"><span>任务目标</span><b>${escapeHtml(prototype.goal || demand.core_problem || '等待确认')}</b></div><div class="giant-field"><span>当前进度</span><b>${Number(prototype.progress || 0)}%</b></div><div class="giant-field"><span>本次计时</span><b class="metric">${escapeHtml(prototype.elapsed || '00:00')}</b></div></div><div class="prototype-window"><header><i></i><i></i><i></i></header><div class="proto-body"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div></section>
+    <section class="giant-col"><span class="giant-label">03 · 需求与价值 / OUTCOME</span><div class="summary-card"><h3>需求确认单</h3><dl><div><dt>问题完整度</dt><dd>${Number(demand.completeness || 0)}%</dd></div><div><dt>确认状态</dt><dd>${demand.confirmed ? '已确认' : '待确认'}</dd></div><div><dt>预计验证周期</dt><dd>${escapeHtml(demand.cycle || '待确认')}</dd></div><div><dt>数据准备</dt><dd>${escapeHtml(demand.next_action || '待确认')}</dd></div></dl></div><div class="summary-card"><h3>第一阶段交付</h3><dl>${ipdPhases[0].outputs.map((output) => `<div><dt>${escapeHtml(output)}</dt><dd>${currentSessionData().artifacts?.[output] ? '已更新' : '基线版本'}</dd></div>`).join('')}</dl></div><div class="value-card"><span>目标改善</span><b class="metric">${escapeHtml(demand.target_metric || '待确认')}</b><small>${escapeHtml(currentInsight().judgment || '')}</small></div></section>
   </div>`;
 }
 
 function giantOrchestrationView() {
   const phase = ipdPhases[state.selectedPhase];
+  const demand = currentDemand();
   return `<div class="giant-ipd ${state.pipelinePlaying ? 'is-playing' : ''}">
-    <section class="giant-ipd-left"><div class="giant-ipd-label">01 · 需求如何进入 IPD</div><div class="giant-demand"><span>已收敛需求</span><h2>把换模停机从<br><em>45 分钟降至 20 分钟</em></h2><p>让班组长和新员工都能按照标准完成换模，并持续沉淀现场经验。</p><div><b>关键用户</b><span>班组长 / 新员工</span></div><div><b>首期范围</b><span>1 条典型产线 · 12 周</span></div></div><div class="giant-phase-list">${ipdPhases.map((item, i) => `<button class="${i === state.selectedPhase ? 'active' : ''}" data-ipd-phase="${i}"><span>0${i + 1}</span><div><b>${item.name}</b><small>${item.short}</small></div></button>`).join('')}</div></section>
+    <section class="giant-ipd-left"><div class="giant-ipd-label">01 · 需求如何进入 IPD</div><div class="giant-demand"><span>${demand.confirmed ? '已确认需求' : '待确认需求'}</span><h2>${escapeHtml(demand.core_problem || '等待需求输入')}</h2><p>${escapeHtml(demand.target_metric || '')}</p><div><b>关键用户</b><span>${escapeHtml(demand.users || '待确认')}</span></div><div><b>首期范围</b><span>${escapeHtml(demand.cycle || '待确认')}</span></div></div><div class="giant-phase-list">${ipdPhases.map((item, i) => `<button class="${i === state.selectedPhase ? 'active' : ''}" data-ipd-phase="${i}"><span>0${i + 1}</span><div><b>${item.name}</b><small>${item.short}</small></div></button>`).join('')}</div></section>
     <section class="giant-ipd-center"><div class="giant-ipd-label">02 · ${phase.name}阶段 · MULTI-AGENT COLLABORATION</div><div class="giant-stage-head"><div><span>当前阶段</span><h2>${phase.name}：${phase.short}</h2><p>${phase.objective}</p></div><strong>${phase.agents.length} AGENTS</strong></div>${approvalRouteBar(phase, true)}<div class="giant-agent-flow"><div class="giant-source"><span>INPUT</span><b>${phase.inputs[0]}</b></div><div class="giant-stream"><i></i><i></i><i></i></div><div class="giant-agent-grid">${phase.agents.map(agent => `<button class="giant-agent ${agent.id === state.selectedAgent ? 'active' : ''}" data-ipd-agent="${agent.id}"><span>${agent.base} × ${agent.id}</span><b>${agent.name}</b><small>${agent.role}</small><em>${baseAgents[agent.base].verb}</em></button>`).join('')}</div><div class="giant-stream"><i></i><i></i><i></i></div><div class="giant-human"><span>HUMAN GATE</span><b>专家确认</b><small>拒绝 / 补充 / 通过</small></div></div><div class="collab-ticker"><span class="pulse"></span><b>${state.pipelinePlaying ? '协作演示进行中' : '协作演示已暂停'}</b><p>${phase.agents[0].base} 挂载“${phase.agents[0].name}”专业角色；所有判断都将附带证据来源。</p><button data-ipd-play>${state.pipelinePlaying ? '暂停' : '播放协作'}</button></div></section>
     <section class="giant-ipd-right"><div class="giant-ipd-label">03 · 交付件与评审门</div><div class="giant-gates">${phase.reviews.map((review) => { const reviewer = humanReviewers[review] || humanReviewers.TR1; const reviewState = reviewStatus[getReviewState(review)]; return `<button class="giant-gate ${reviewState[1]}" data-review-gate="${review}"><span>${review}</span><div><b>${reviewer.role}</b><small>${reviewer.person} · ${reviewState[0]}</small></div></button>`; }).join('')}</div><div class="giant-output-list"><h3>本阶段计划产出 · 点击演示</h3>${phase.outputs.map((output, i) => `<button data-artifact-title="${output}"><span>${i + 1}</span><b>${output}</b><em>${i === 0 && state.selectedPhase === 0 ? '生成中' : '打开 ↗'}</em></button>`).join('')}</div><div class="giant-redline"><span>IPD REDLINE</span><b>AI 不拥有评审签字权</b><p>技术与投资决策必须由对应层级的人在飞书完成确认。</p></div><button class="giant-back" data-giant-back>返回成果工作台</button></section>
     ${artifactOverlay()}${feishuReviewOverlay()}${assistantDock()}
@@ -680,33 +755,46 @@ function giantArtifactView() {
 }
 
 function livePrototypeView() {
+  const prototype = currentPrototype();
+  const configured = state.content?.screens?.['screen-07'] || {};
+  const steps = configured.steps || [];
   return `<div class="screen">
     ${screenHeader('LIVE PROTOTYPE', '原型可操作')}
-    <div class="screen-content"><p class="kicker">WORKBUDDY · GENERATED EXPERIENCE</p><h2 class="hero-title">换模辅助工作台 <span class="orange">V1</span></h2><p class="lead">这是根据刚才的对话即时生成的可操作原型。</p><div class="live-layout"><aside class="panel live-side"><h3>换模任务 #0248</h3><div class="live-nav"><div>01 · 安全确认</div><div class="active">02 · 拆卸旧模具</div><div>03 · 清洁定位面</div><div>04 · 安装新模具</div><div>05 · 首件试制</div><div>06 · 完成复盘</div></div></aside><section class="panel live-main"><div class="panel-head" style="margin:-16px -16px 14px"><strong>现场执行面板</strong><span class="status">计时中 · 06:42</span></div><div class="live-kpis"><div class="live-kpi"><span>目标总时长</span><b class="metric">20:00</b></div><div class="live-kpi"><span>当前进度</span><b class="metric">33%</b></div><div class="live-kpi"><span>安全检查</span><b style="color:var(--mint)">已通过</b></div></div><div class="task-board"><div class="task-col"><h4>当前操作</h4><div class="task">确认吊装设备处于待机位<b>已完成</b></div><div class="task">松开四角固定螺栓<b>进行中 · 2/4</b></div></div><div class="task-col"><h4>智能提示</h4><div class="task">右后角螺栓上次出现扭矩异常，请优先检查。<b>查看历史记录</b></div></div><div class="task-col"><h4>现场记录</h4><div class="task">点击记录异常、拍照或语音补充。<b>添加一条记录</b></div></div></div></section></div></div>
+    <div class="screen-content"><p class="kicker">WORKBUDDY · GENERATED EXPERIENCE</p><h2 class="hero-title">${escapeHtml(prototype.title || configured.title || '等待生成原型')}</h2><p class="lead">${escapeHtml(prototype.goal || '需求确认后由 AI 生成可操作原型。')}</p><div class="live-layout"><aside class="panel live-side"><h3>任务 ${escapeHtml(configured.task_id || '')}</h3><div class="live-nav">${steps.map((step, index) => `<div class="${index === 1 ? 'active' : ''}">0${index + 1} · ${escapeHtml(step)}</div>`).join('')}</div></aside><section class="panel live-main"><div class="panel-head" style="margin:-16px -16px 14px"><strong>现场执行面板</strong><span class="status">计时中 · ${escapeHtml(prototype.elapsed || '00:00')}</span></div><div class="live-kpis"><div class="live-kpi"><span>目标总时长</span><b class="metric">${escapeHtml(prototype.target_time || '—')}</b></div><div class="live-kpi"><span>当前进度</span><b class="metric">${Number(prototype.progress || 0)}%</b></div><div class="live-kpi"><span>会话状态</span><b style="color:var(--mint)">${escapeHtml(state.session?.status || 'active')}</b></div></div><div class="task-board"><div class="task-col"><h4>当前操作</h4><div class="task">${escapeHtml(steps[1] || '等待任务')}<b>进行中</b></div></div><div class="task-col"><h4>数据来源</h4><div class="task">当前会话原型数据<b>${escapeHtml(state.session?.session_id || '')}</b></div></div><div class="task-col"><h4>现场记录</h4><div class="task">记录将写入独立会话<b>支持继续完善</b></div></div></div></section></div></div>
   </div>`;
 }
 
 const experienceSteps = ['进入体验','需求问诊','确认需求','深度洞察','生成原型','体验修改','方案带走'];
 
 function experienceWelcome(station) {
-  return `<div class="experience-welcome"><section class="panel welcome-card"><p class="kicker">START YOUR OWN AI JOURNEY</p><h2 class="hero-title">今天，你想让 AI<br>帮你解决<em>什么问题？</em></h2><p class="lead">选择一个角色开始，或者直接说出你正在面对的真实业务问题。</p><div class="role-grid"><button class="role-card" data-exp-next><b>企业经营者</b><span>增长、效率和管理问题</span></button><button class="role-card" data-exp-next><b>业务负责人</b><span>流程、协同和执行问题</span></button><button class="role-card" data-exp-next><b>技术负责人</b><span>系统、数据和 AI 落地</span></button><button class="role-card" data-exp-next><b>自由探索</b><span>从一句想法开始</span></button></div></section><aside class="panel station-guide"><h3>体验中心 ${station}</h3><ol><li>全过程约 8–12 分钟</li><li>你的需求拥有独立会话，不会与其他工位串扰</li><li>最后会生成专属建设方案和短效二维码</li></ol><div class="privacy">你的详细对话仅在本工位显示。主控端默认只看到体验阶段和授权后的需求摘要。</div></aside></div>`;
+  const roles = state.content?.experience?.roles || [];
+  return `<div class="experience-welcome"><section class="panel welcome-card"><p class="kicker">START YOUR OWN AI JOURNEY</p><h2 class="hero-title">今天，你想让 AI<br>帮你解决<em>什么问题？</em></h2><p class="lead">选择一个角色开始，后续内容将写入本工位独立会话。</p><div class="role-grid">${roles.map((role) => `<button class="role-card" data-exp-role="${escapeHtml(role.name)}" data-exp-next><b>${escapeHtml(role.name)}</b><span>${escapeHtml(role.description)}</span></button>`).join('')}</div></section><aside class="panel station-guide"><h3>体验中心 ${station}</h3><ol><li>全过程约 8–12 分钟</li><li>当前 Session：${escapeHtml(state.session?.session_id || '连接中')}</li><li>每个工位拥有独立持久化会话</li></ol><div class="privacy">主控端只读取工位、阶段和状态，不读取详细对话。</div></aside></div>`;
 }
 
 function experienceMiddle(step) {
-  const configs = {
-    1: ['先聊聊你的真实问题','AI 会通过几轮对话，帮助你从现象找到真正需要解决的问题。','您最希望改善的是效率、成本、质量，还是客户体验？','我们订单品种越来越多，排产经常临时调整。'],
-    2: ['确认我们理解得对不对','所有信息都可以修改；只有你确认后，才会进入下一步。','核心问题：多品种订单下，人工排产调整慢且容易遗漏约束。','目标：把临时订单的响应时间从 2 小时缩短至 20 分钟。'],
-    3: ['看见问题背后的机会','AI 正在把需求转化为根因、价值影响和第一步行动建议。','根因：订单、产能和物料约束分散在多个系统与个人经验中。','建议：先选择一个车间，建立统一排产约束表并验证推荐效果。'],
-    4: ['第一个原型已经生成','这不是最终产品，而是用于快速验证方向的可操作版本。','智能排产工作台 V1','包含订单优先级、产能约束、缺料提醒和方案对比。'],
-    5: ['现在，请亲手试一试','修改条件、点击方案，告诉 AI 哪些地方不符合你的实际工作。','体验任务：插入一个紧急订单','观察推荐方案是否保持关键客户订单按期交付。'],
-  };
-  const c = configs[step];
-  return `<div class="experience-step"><section class="panel step-copy"><span class="tag orange">步骤 0${step + 1}</span><h2 style="margin-top:16px">${c[0]}</h2><p>${c[1]}</p><div class="step-actions"><button class="back" data-exp-back>上一步</button><button class="next" data-exp-next>${step === 5 ? '生成建设方案' : '继续下一步'}</button></div></section><section class="panel step-preview"><div class="panel-head" style="margin:-17px -17px 16px"><strong>${step === 1 ? '与 AI 对话' : step === 4 || step === 5 ? '可操作原型' : 'AI 生成内容'}</strong><span class="status">实时保存</span></div>${step === 1 ? `<div class="bubble ai">${c[2]}</div><div class="bubble user" style="margin:10px 0 0 auto">${c[3]}</div><div class="chat-composer" style="margin:18px 0 0"><span>继续补充你的情况…</span><button aria-label="发送">${icon('send')}</button></div>` : step === 4 || step === 5 ? `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${c[3]}</p>` : `<div class="score-card"><strong>${step === 2 ? '92%' : '3×'}</strong><div><span>${step === 2 ? '需求完整度' : '关键根因'}</span><b>${c[2]}</b></div></div><div class="action-box"><span>${step === 2 ? '目标指标' : '第一步建议'}</span><b>${c[3]}</b></div>`}</section></div>`;
+  const session = currentSessionData();
+  const demand = currentDemand();
+  const insight = currentInsight();
+  const prototype = currentPrototype();
+  const messages = session.messages || [];
+  const copy = {
+    1: ['先聊聊你的真实问题', '每条消息都会进入本工位独立会话。'],
+    2: ['确认我们理解得对不对', '只有确认后的结构化需求才会进入 IPD。'],
+    3: ['看见问题背后的机会', '洞察来自当前需求、知识检索和 AI 分析。'],
+    4: ['第一个原型已经生成', '原型数据与当前会话关联，可继续修改。'],
+    5: ['现在，请亲手试一试', '修改结果会持续写回当前会话。'],
+  }[step];
+  let preview = '';
+  if (step === 1) preview = `<div class="experience-chat-log">${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="说出你的真实业务问题…"><button data-experience-send aria-label="发送">${icon('send')}</button></div>`;
+  else if (step === 2) preview = `<div class="score-card"><strong>${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${escapeHtml(demand.core_problem || '等待收敛')}</b></div></div><div class="action-box"><span>目标指标</span><b>${escapeHtml(demand.target_metric || '待确认')}</b></div>`;
+  else if (step === 3) preview = `<div class="score-card"><strong>${(insight.causes || []).length}</strong><div><span>关键根因</span><b>${escapeHtml(insight.judgment || '等待生成')}</b></div></div><div class="action-box"><span>第一步建议</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b></div>`;
+  else preview = `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${escapeHtml(prototype.title || '等待生成原型')} · ${Number(prototype.progress || 0)}%</p>`;
+  return `<div class="experience-step"><section class="panel step-copy"><span class="tag orange">步骤 0${step + 1}</span><h2 style="margin-top:16px">${copy[0]}</h2><p>${copy[1]}</p><div class="step-actions"><button class="back" data-exp-back>上一步</button><button class="next" data-exp-next>${step === 5 ? '生成建设方案' : '保存并继续'}</button></div></section><section class="panel step-preview"><div class="panel-head" style="margin:-17px -17px 16px"><strong>${step === 1 ? '与 AI 对话' : step >= 4 ? '可操作原型' : '当前会话数据'}</strong><span class="status">后端已连接</span></div>${preview}</section></div>`;
 }
 
 function experienceResult() {
   const squares = Array.from({ length: 49 }, (_, i) => `<i style="${(i * 7 + 3) % 11 === 0 ? 'background:transparent' : ''}"></i>`).join('');
-  return `<section class="panel qr-card"><div><span class="tag mint">全流程已完成</span><h2 style="margin-top:17px">你的《AI 建设建议方案》<br>已经生成。</h2><p>包括需求摘要、问题洞察、原型方向、首期验证范围和下一步推进建议。二维码将在 24 小时后失效。</p><div style="display:flex;gap:8px;margin-top:20px"><button class="soft-button" data-exp-back>返回修改</button><button class="mini-action" style="min-height:44px">提交需求并预约沟通</button></div></div><div class="qr-box" aria-label="专属方案二维码">${squares}</div></section>`;
+  return `<section class="panel qr-card"><div><span class="tag mint">全流程已完成</span><h2 style="margin-top:17px">你的《AI 建设建议方案》<br>已经生成。</h2><p>方案关联会话 ${escapeHtml(state.session?.session_id || '')}，包括需求摘要、洞察、原型方向和验证范围。</p><div style="display:flex;gap:8px;margin-top:20px"><button class="soft-button" data-exp-back>返回修改</button><button class="mini-action" data-experience-submit style="min-height:44px">提交需求并预约沟通</button></div></div><div class="qr-box" aria-label="专属方案二维码">${squares}</div></section>`;
 }
 
 function experienceView() {
@@ -715,6 +803,41 @@ function experienceView() {
   return `<div class="screen experience-screen">${screenHeader(`EXPERIENCE CENTER ${station}`, '独立会话')}
     <div class="screen-content"><div class="experience-top"><div><p class="kicker">YOUR OWN AI CO-CREATION</p><h2 class="hero-title" style="font-size:34px">完整体验，从一个<em>真实问题</em>开始。</h2></div><div class="station-badge"><small>当前工位</small><b>CENTER ${station}</b></div></div><div class="journey">${experienceSteps.map((label,i)=>`<button data-exp-step="${i}" class="${i<state.experienceStep?'done':''} ${i===state.experienceStep?'active':''}"><span>${i+1}</span>${label}</button>`).join('')}</div><div class="experience-body">${body}</div></div>
   </div>`;
+}
+
+function parallelWorkbenchView() {
+  const centers = Array.from({ length: 5 }, (_, index) => {
+    const center = state.centers.find((item) => Number(item.slot) === index + 1);
+    return center || { slot: String(index + 1), role: '等待访客', step: 0, status: 'idle' };
+  });
+  return `<div class="screen">${screenHeader('PARALLEL EXPERIENCE', '五工位独立会话')}<div class="screen-content"><div class="experience-top"><div><p class="kicker">5 ISOLATED SESSIONS</p><h2 class="hero-title">五个人，同时完成自己的<em>全流程体验。</em></h2></div><span class="tag mint">${centers.filter((item) => item.status !== 'idle').length} / 5 使用中</span></div><div class="role-grid" style="grid-template-columns:repeat(5,minmax(0,1fr));margin-top:24px">${centers.map((center) => `<button class="role-card" data-view="experience-0${center.slot}"><span>CENTER 0${center.slot}</span><b>${escapeHtml(center.role)}</b><small>${escapeHtml(experienceSteps[center.step] || '进入体验')}</small><em>${center.status === 'submitted' ? '已提交' : center.status === 'idle' ? '可进入' : '运行中'}</em></button>`).join('')}</div></div></div>`;
+}
+
+function schemeExportView() {
+  return `<div class="screen">${screenHeader('SCHEME EXPORT', state.session?.status === 'submitted' ? '方案已提交' : '等待提交')}<div class="screen-content">${experienceResult()}</div></div>`;
+}
+
+async function sendSessionMessage(inputId) {
+  const input = document.getElementById(inputId);
+  const question = input?.value.trim();
+  if (!question || state.backendStatus !== 'online') return;
+  input.value = '';
+  state.avatarSpeaking = true;
+  try {
+    const userSession = await window.showroomApi.appendMessage('user', question);
+    state.session = userSession;
+    render('refresh');
+    const answer = await window.showroomApi.streamChat(question, { agentId: 'main_agent' });
+    if (answer) {
+      const assistantSession = await window.showroomApi.appendMessage('assistant', answer);
+      state.session = assistantSession;
+    }
+  } catch (error) {
+    showToast(`对话保存失败：${error.message}`);
+  } finally {
+    state.avatarSpeaking = false;
+    render('refresh');
+  }
 }
 
 const builders = {
@@ -727,9 +850,12 @@ const builders = {
   'screen-05': pipelineView,
   'screen-06': giantWorkbenchView,
   'screen-07': livePrototypeView,
+  'screen-08': parallelWorkbenchView,
+  'screen-09': schemeExportView,
 };
 
 function attachScreenActions() {
+  document.querySelectorAll('#screen-canvas [data-view]').forEach((button) => button.addEventListener('click', () => setView(button.dataset.view)));
   document.querySelector('[data-intro-replay]')?.addEventListener('click', () => {
     state.introSkipped = false;
     render();
@@ -743,7 +869,34 @@ function attachScreenActions() {
     target?.scrollIntoView({ behavior: state.paused ? 'auto' : 'smooth', block: 'start' });
     document.querySelectorAll('[data-insight-section]').forEach((item) => item.classList.toggle('active', item === button));
   }));
-  document.querySelector('[data-action="confirm-demand"]')?.addEventListener('click', () => showToast('需求已确认 · 洞察报告正在生成'));
+  document.querySelector('[data-action="confirm-demand"]')?.addEventListener('click', async () => {
+    const demand = { ...currentDemand() };
+    document.querySelectorAll('[data-demand-field]').forEach((field) => {
+      demand[field.dataset.demandField] = field.value.trim();
+    });
+    try {
+      state.session = await window.showroomApi.confirmDemand(demand);
+      showToast('需求已写入后端 · 正在检索知识并生成洞察');
+      state.session = await window.showroomApi.generateInsight();
+      state.session = await window.showroomApi.generateIpdArtifacts(0);
+      setView('screen-04');
+    } catch (error) {
+      showToast(`需求确认失败：${error.message}`);
+    }
+  });
+  document.querySelector('[data-demand-send]')?.addEventListener('click', () => sendSessionMessage('demand-chat-input'));
+  document.getElementById('demand-chat-input')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') sendSessionMessage('demand-chat-input');
+  });
+  document.querySelectorAll('[data-demand-field]').forEach((field) => field.addEventListener('change', async () => {
+    try {
+      const session = await window.showroomApi.saveSession({ data: { demand: { [field.dataset.demandField]: field.value.trim() } } });
+      state.session = session;
+      showToast('需求字段已保存');
+    } catch (error) {
+      showToast(`自动保存失败：${error.message}`);
+    }
+  }));
   document.querySelector('[data-action="ignite"]')?.addEventListener('click', () => { setView('screen-06'); showToast('001 实战主屏已启动'); });
   document.querySelectorAll('[data-ipd-phase]').forEach((button) => button.addEventListener('click', () => {
     state.selectedPhase = Number(button.dataset.ipdPhase);
@@ -780,8 +933,15 @@ function attachScreenActions() {
     setView('screen-06', 'cast');
     showToast('IPD 编排沙盘已投送到 06 主屏');
   });
-  document.querySelector('[data-ipd-advance]')?.addEventListener('click', () => {
+  document.querySelector('[data-ipd-advance]')?.addEventListener('click', async () => {
     state.selectedPhase = Math.min(ipdPhases.length - 1, state.selectedPhase + 1);
+    if (state.backendStatus === 'online') {
+      try {
+        state.session = await window.showroomApi.generateIpdArtifacts(state.selectedPhase);
+      } catch (error) {
+        showToast(`交付件生成失败：${error.message}`);
+      }
+    }
     state.selectedAgent = ipdPhases[state.selectedPhase].agents[0].id;
     state.ipdDrawer = null;
     state.agentDetailOpen = false;
@@ -827,10 +987,10 @@ function attachScreenActions() {
       }
       state.reviewDecision = null;
       render('review-result');
-      showToast(`飞书审批已提交：${resultText}`);
+      showToast(`${state.capabilities.feishu_configured ? '飞书审批' : '平台审批'}已提交：${resultText}`);
     } catch (error) {
       event.currentTarget.disabled = false;
-      event.currentTarget.textContent = '确认提交到飞书';
+      event.currentTarget.textContent = '确认提交审批';
       showToast(`提交失败：${error.message}`);
     }
   });
@@ -916,18 +1076,37 @@ function attachScreenActions() {
     history.replaceState({}, '', `${location.pathname}?${params.toString()}`);
     render();
   });
-  document.querySelectorAll('[data-exp-step]').forEach((button) => button.addEventListener('click', () => {
+  document.querySelectorAll('[data-exp-step]').forEach((button) => button.addEventListener('click', async () => {
     state.experienceStep = Number(button.dataset.expStep);
+    if (state.backendStatus === 'online') state.session = await window.showroomApi.saveSession({ step: state.experienceStep });
     render();
   }));
-  document.querySelectorAll('[data-exp-next]').forEach((button) => button.addEventListener('click', () => {
+  document.querySelectorAll('[data-exp-next]').forEach((button) => button.addEventListener('click', async () => {
     state.experienceStep = Math.min(6, state.experienceStep + 1);
+    if (state.backendStatus === 'online') {
+      const data = button.dataset.expRole ? { role: button.dataset.expRole } : {};
+      state.session = await window.showroomApi.saveSession({ step: state.experienceStep, data });
+    }
     render();
   }));
-  document.querySelectorAll('[data-exp-back]').forEach((button) => button.addEventListener('click', () => {
+  document.querySelectorAll('[data-exp-back]').forEach((button) => button.addEventListener('click', async () => {
     state.experienceStep = Math.max(0, state.experienceStep - 1);
+    if (state.backendStatus === 'online') state.session = await window.showroomApi.saveSession({ step: state.experienceStep });
     render();
   }));
+  document.querySelector('[data-experience-send]')?.addEventListener('click', () => sendSessionMessage('experience-chat-input'));
+  document.getElementById('experience-chat-input')?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') sendSessionMessage('experience-chat-input');
+  });
+  document.querySelector('[data-experience-submit]')?.addEventListener('click', async () => {
+    try {
+      state.session = await window.showroomApi.saveSession({ status: 'submitted', step: 6 });
+      showToast('需求与方案已提交，工作人员可在后台继续跟进');
+      render();
+    } catch (error) {
+      showToast(`提交失败：${error.message}`);
+    }
+  });
 }
 
 function render(intent = 'refresh') {
@@ -937,6 +1116,15 @@ function render(intent = 'refresh') {
   const commit = () => {
     if (token !== motionSystem.renderToken) return;
     stopScreenMotion();
+    if (!state.bootstrapped && state.backendStatus === 'auth-required') {
+      canvas.innerHTML = `<div class="screen"><div class="screen-content"><section class="panel" style="margin:auto;max-width:720px;text-align:center"><p class="kicker">AUTHENTICATION REQUIRED</p><h2 class="hero-title">登录后加载真实业务数据</h2><p class="lead">页面不会在未连接后端时展示伪造的在线数据。</p><button class="form-cta" data-login-showroom>登录 AI Lab Platform</button></section></div></div>`;
+      canvas.querySelector('[data-login-showroom]')?.addEventListener('click', () => document.getElementById('network-status').click());
+      return;
+    }
+    if (!state.bootstrapped && !['demo', 'offline'].includes(state.backendStatus)) {
+      canvas.innerHTML = `<div class="screen"><div class="screen-content"><section class="panel" style="margin:auto;max-width:720px;text-align:center"><p class="kicker">AI LAB DATA CONTRACT</p><h2 class="hero-title">正在加载后端数据…</h2><p class="lead">读取屏幕配置、体验会话、IPD 交付件和全场状态。</p></section></div></div>`;
+      return;
+    }
     const builder = state.view.startsWith('experience-') ? experienceView : (builders[state.view] || controllerView);
     canvas.innerHTML = builder();
     document.getElementById('page-title').textContent = meta[0];
@@ -1023,6 +1211,7 @@ function setBackendStatus(status, detail = '') {
   button.dataset.status = status;
   button.querySelector('span').textContent = labels[status] || status;
   button.title = detail || labels[status] || status;
+  if (!state.bootstrapped && ['auth-required', 'offline', 'demo'].includes(status)) render('refresh');
 }
 
 async function commitTourStage(nextStage) {
@@ -1124,9 +1313,30 @@ setDirectMode(new URLSearchParams(location.search).get('direct') === '1');
 render();
 
 window.showroomApi?.on('status', ({ status, detail }) => setBackendStatus(status, detail));
-window.showroomApi?.on('bootstrap', ({ screens, state: snapshot }) => {
+window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowledge, centers, capabilities }) => {
+  hydrateContent(content);
+  state.screenConfigs = screens || [];
+  state.session = session;
+  Object.entries(session?.data?.reviews || {}).forEach(([gate, record]) => {
+    if (record?.decision) state.reviewStates[gate] = record.decision;
+  });
+  state.experienceStep = Number(session?.step || 0);
+  state.knowledge = knowledge || {};
+  state.centers = centers || [];
+  state.capabilities = capabilities || {};
+  state.bootstrapped = true;
   document.body.dataset.screenConfigCount = String(screens.length);
-  applyBackendSnapshot(snapshot);
+  buildNavigation();
+  buildTourSteps();
+  applyBackendSnapshot(runtime, false);
+  render('refresh');
+});
+window.showroomApi?.on('session', (session) => {
+  state.session = session;
+  state.experienceStep = Number(session?.step || state.experienceStep);
+  Object.entries(session?.data?.reviews || {}).forEach(([gate, record]) => {
+    if (record?.decision) state.reviewStates[gate] = record.decision;
+  });
 });
 window.showroomApi?.on('message', (message) => {
   if (message.type === 'STATE' || message.type === 'COMMIT' || message.type === 'REVIEW') {
