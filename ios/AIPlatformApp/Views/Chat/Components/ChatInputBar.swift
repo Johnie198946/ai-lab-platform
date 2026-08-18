@@ -39,71 +39,84 @@ public struct ChatInputBar: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            // Suggestion Chips
-            suggestionChipsBar
+        VStack(spacing: AppTheme.Spacing.sm) {
+            if inputText.isEmpty && quotedContext == nil && !quickCommands.isEmpty {
+                suggestionChipsBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
 
-            // Quoted Follow-Up Banner
             if let quote = quotedContext {
                 quotedFollowUpBanner(quote: quote)
             }
 
-            // Input Row
             inputRow
         }
+        .padding(.top, AppTheme.Spacing.sm)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(AppTheme.Colors.border.opacity(0.55))
+                .frame(height: 0.5)
+        }
+        .animation(AppTheme.Motion.standard, value: inputText.isEmpty)
     }
 
     private var suggestionChipsBar: some View {
-        VStack(spacing: 2) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: AppTheme.Spacing.xs) {
-                    ForEach(quickCommands, id: \.self) { chip in
-                        Button(action: {
-                            onCommandSelected(chip)
-                        }) {
-                            Text(chip)
-                                .font(.system(size: 12))
-                                .foregroundColor(AppTheme.Colors.textSecondary)
-                                .padding(.horizontal, AppTheme.Spacing.sm + 2)
-                                .padding(.vertical, 4)
-                                .background(AppTheme.Colors.cardBackground)
-                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: AppTheme.Radius.sm)
-                                        .stroke(AppTheme.Colors.border, lineWidth: 0.5)
-                                )
+        HStack(spacing: AppTheme.Spacing.sm) {
+            ForEach(Array(quickCommands.prefix(2)), id: \.self) { chip in
+                Button(action: { onCommandSelected(chip) }) {
+                    Text(chip)
+                        .font(AppTheme.Typography.label)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .minimumTouchTarget()
+                        .padding(.horizontal, AppTheme.Spacing.sm)
+                        .background(AppTheme.Colors.cardBackground.opacity(0.88))
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
                         }
-                        .buttonStyle(SoftButtonStyle())
-                    }
                 }
-                .padding(.horizontal, AppTheme.Spacing.md)
-                .padding(.vertical, AppTheme.Spacing.xs)
+                .buttonStyle(SoftButtonStyle())
             }
 
-            // 隐私标注：快捷指令仅本地计算
-            HStack(spacing: 4) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 9))
-                Text("仅本地计算 · 保护隐私")
-                    .font(.system(size: 10))
+            if quickCommands.count > 2 {
+                Menu {
+                    ForEach(Array(quickCommands.dropFirst(2)), id: \.self) { chip in
+                        Button(chip) { onCommandSelected(chip) }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.body.weight(.semibold))
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .minimumTouchTarget()
+                        .background(AppTheme.Colors.cardBackground.opacity(0.88))
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                        }
+                }
+                .accessibilityLabel("更多快捷指令")
             }
-            .foregroundColor(AppTheme.Colors.textTertiary)
-            .padding(.bottom, 2)
         }
+        .padding(.horizontal, AppTheme.Metrics.contentGutter)
     }
 
     private func quotedFollowUpBanner(quote: QuotedContext) -> some View {
-        HStack {
+        HStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "quote.bubble.fill")
                 .foregroundColor(AppTheme.Colors.primary)
-                .font(.system(size: 14))
+                .font(.body)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("引用追问中")
-                    .font(.system(size: 10, weight: .bold))
+                    .font(AppTheme.Typography.micro)
                     .foregroundColor(AppTheme.Colors.primary)
                 Text(quote.text)
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundColor(AppTheme.Colors.textSecondary)
                     .lineLimit(1)
             }
@@ -111,80 +124,99 @@ public struct ChatInputBar: View {
             Spacer()
 
             Button(action: {
-                withAnimation(.spring()) {
+                withAnimation(AppTheme.Motion.spring) {
                     quotedContext = nil
                 }
             }) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundColor(AppTheme.Colors.textTertiary)
-                    .font(.system(size: 16))
+                    .font(.body)
             }
+            .minimumTouchTarget()
+            .accessibilityLabel("取消引用")
         }
-        .padding(.horizontal, AppTheme.Spacing.md)
-        .padding(.vertical, 6)
+        .padding(.leading, AppTheme.Metrics.contentGutter)
+        .padding(.trailing, AppTheme.Spacing.sm)
+        .padding(.vertical, AppTheme.Spacing.sm)
         .background(AppTheme.Colors.primary.opacity(0.08))
         .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     private var inputRow: some View {
-        HStack(alignment: .bottom, spacing: AppTheme.Spacing.sm) {
-            Button(action: onPlusTap) {
-                Image(systemName: "plus.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-            }
-            .padding(.bottom, 6)
+        VStack(spacing: AppTheme.Spacing.xs) {
+            HStack(alignment: .bottom, spacing: AppTheme.Spacing.sm) {
+                Button(action: onPlusTap) {
+                    Image(systemName: "plus")
+                        .font(.body.weight(.semibold))
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .minimumTouchTarget()
+                        .background(AppTheme.Colors.secondaryBackground)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(SoftButtonStyle())
+                .accessibilityLabel("添加附件或引用知识")
 
-            HStack {
-                TextField("发送指令或提出问题...", text: $inputText, axis: .vertical)
-                    .lineLimit(1...5)
-                    .font(.system(size: 15))
-                    .padding(.horizontal, AppTheme.Spacing.sm)
-                    .padding(.vertical, 8)
+                HStack(spacing: AppTheme.Spacing.xs) {
+                    TextField("给 Quantum 发送消息", text: $inputText, axis: .vertical)
+                        .lineLimit(1...5)
+                        .font(AppTheme.Typography.body)
+                        .padding(.leading, AppTheme.Spacing.md)
+                        .padding(.vertical, 11)
 
-                if !inputText.isEmpty {
-                    Button(action: { inputText = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 14))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
+                    if !inputText.isEmpty {
+                        Button(action: { inputText = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.body)
+                                .foregroundColor(AppTheme.Colors.textTertiary)
+                                .minimumTouchTarget()
+                        }
+                        .accessibilityLabel("清空输入")
                     }
-                    .padding(.trailing, 6)
                 }
-            }
-            .background(AppTheme.Colors.secondaryBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                .frame(minHeight: AppTheme.Metrics.inputHeight)
+                .background(AppTheme.Colors.secondaryBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                }
 
-            if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button(action: onVoiceTap) {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 18))
-                        .foregroundColor(AppTheme.Colors.onPrimary)
-                        .frame(width: 36, height: 36)
-                        .background(AppTheme.Colors.accent)
-                        .clipShape(Circle())
-                        .overlay(
-                            Circle()
-                                .stroke(AppTheme.Colors.quantumCyan.opacity(0.6), lineWidth: 1.5)
-                        )
-                        .shadow(color: AppTheme.Colors.quantumCyan.opacity(0.55), radius: 8, x: 0, y: 0)
+                if inputText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button(action: onVoiceTap) {
+                        Image(systemName: "mic.fill")
+                            .font(.body.weight(.semibold))
+                            .foregroundColor(AppTheme.Colors.quantumBlue)
+                            .minimumTouchTarget()
+                            .background(AppTheme.Colors.surfaceTint)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                    .accessibilityLabel("语音输入")
+                } else {
+                    Button(action: onSend) {
+                        Image(systemName: "arrow.up")
+                            .font(.body.weight(.bold))
+                            .foregroundColor(AppTheme.Colors.onPrimary)
+                            .minimumTouchTarget()
+                            .background(AppTheme.Colors.quantumGradient)
+                            .clipShape(Circle())
+                            .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.24), radius: 8, y: 3)
+                    }
+                    .buttonStyle(SoftButtonStyle())
+                    .accessibilityLabel(isGenerating ? "加入消息队列" : "发送消息")
                 }
-                .buttonStyle(SoftButtonStyle())
-                .padding(.bottom, 2)
-            } else {
-                Button(action: onSend) {
-                    Image(systemName: "arrow.up")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(AppTheme.Colors.onPrimary)
-                        .frame(width: 36, height: 36)
-                        .background(AppTheme.Colors.quantumGradient)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(SoftButtonStyle())
-                .padding(.bottom, 2)
             }
+
+            Label(
+                isGenerating ? "任务执行中 · 新消息将自动排队" : "本地加密上下文 · 内容仅用于当前任务",
+                systemImage: isGenerating ? "clock.badge.checkmark" : "lock.fill"
+            )
+            .font(AppTheme.Typography.micro)
+            .foregroundColor(AppTheme.Colors.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .center)
         }
-        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.horizontal, AppTheme.Metrics.contentGutter)
         .padding(.vertical, AppTheme.Spacing.sm)
-        .background(AppTheme.Colors.cardBackground)
+        .padding(.bottom, 1)
     }
 }

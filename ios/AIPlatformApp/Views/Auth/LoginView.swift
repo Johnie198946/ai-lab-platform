@@ -27,9 +27,19 @@ public struct LoginView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                // Background Gradient Surface
                 AppTheme.Colors.groupedBackground
                     .ignoresSafeArea()
+
+                LinearGradient(
+                    colors: [
+                        AppTheme.Colors.quantumCyan.opacity(colorScheme == .dark ? 0.10 : 0.12),
+                        AppTheme.Colors.quantumViolet.opacity(colorScheme == .dark ? 0.08 : 0.06),
+                        .clear
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .center
+                )
+                .ignoresSafeArea()
                 
                 GeometryReader { geometry in
                     ScrollView(showsIndicators: false) {
@@ -44,6 +54,15 @@ public struct LoginView: View {
                             
                             // MARK: - 2. Authentication Container Card
                             VStack(spacing: AppTheme.Spacing.xl) {
+                                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                                    Text("登录 Quantum")
+                                        .font(AppTheme.Typography.sectionTitle)
+                                        .foregroundColor(AppTheme.Colors.textPrimary)
+                                    Text("继续进入你的智能体工作台")
+                                        .font(AppTheme.Typography.supporting)
+                                        .foregroundColor(AppTheme.Colors.textSecondary)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
                                 
                                 // Phone & SMS OTP Input Fields
                                 phoneLoginSection
@@ -53,7 +72,7 @@ public struct LoginView: View {
                             }
                             .padding(AppTheme.Spacing.xl)
                             .background(AppTheme.Colors.cardBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
                             .cardShadow(colorScheme: colorScheme)
                             .padding(.horizontal, AppTheme.Spacing.lg)
                             
@@ -87,71 +106,97 @@ public struct LoginView: View {
     // MARK: - Subviews
     
     private var brandHeaderSection: some View {
-        VStack(spacing: AppTheme.Spacing.md) {
+        VStack(spacing: AppTheme.Spacing.sm) {
             // Quantum 官方主 Logo（Any=彩色主标 / Dark=反白主标，自适应亮暗模式）
             // 仅保留官方集成完整 Logo（球体 + 官方标准字），无任何手写文字 / 副标题
             Image("quantum_logo_full")
                 .resizable()
                 .renderingMode(.original)
                 .scaledToFit()
-                .frame(maxWidth: 260, maxHeight: 120)
+                .frame(maxWidth: 220, maxHeight: 96)
                 .padding(.horizontal, AppTheme.Spacing.lg)
+
+            Text("把复杂工作，变成清晰的下一步")
+                .font(AppTheme.Typography.supporting.weight(.medium))
+                .foregroundColor(AppTheme.Colors.textSecondary)
+                .multilineTextAlignment(.center)
         }
     }
     
     private var phoneLoginSection: some View {
         VStack(spacing: AppTheme.Spacing.md) {
-            // Phone Field
-            HStack(spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "iphone")
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                Text("手机号码")
+                    .font(AppTheme.Typography.label)
                     .foregroundColor(AppTheme.Colors.textSecondary)
-                    .frame(width: 24)
-                
-                Text("+86")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                
-                Divider()
-                    .frame(height: 18)
-                
-                TextField("请输入手机号", text: $phoneNumber)
-                    .keyboardType(.numberPad)
-                    .font(.system(size: 15))
-            }
-            .padding(AppTheme.Spacing.md)
-            .background(AppTheme.Colors.secondaryBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-            
-            // SMS Code Field
-            HStack(spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "lock.shield")
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                    .frame(width: 24)
-                
-                TextField("6 位短信验证码", text: $smsCode)
-                    .keyboardType(.numberPad)
-                    .font(.system(size: 15))
-                
-                Button(action: sendSmsCode) {
-                    if isCountdownActive {
-                        Text("\(countdownSeconds)s 后重发")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
-                    } else {
-                        Text("获取验证码")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(AppTheme.Colors.primary)
-                    }
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: "iphone")
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .frame(width: 24)
+
+                    Text("+86")
+                        .font(AppTheme.Typography.body.weight(.semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+
+                    Divider()
+                        .frame(height: 20)
+
+                    TextField("请输入手机号", text: $phoneNumber)
+                        .keyboardType(.numberPad)
+                        .textContentType(.telephoneNumber)
+                        .font(AppTheme.Typography.body)
                 }
-                .disabled(isCountdownActive || phoneNumber.count < 11)
+                .frame(minHeight: AppTheme.Metrics.inputHeight)
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .background(AppTheme.Colors.secondaryBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                }
             }
-            .padding(AppTheme.Spacing.md)
-            .background(AppTheme.Colors.secondaryBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                Text("短信验证码")
+                    .font(AppTheme.Typography.label)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: "lock.shield")
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .frame(width: 24)
+
+                    TextField("输入 6 位验证码", text: $smsCode)
+                        .keyboardType(.numberPad)
+                        .textContentType(.oneTimeCode)
+                        .font(AppTheme.Typography.body)
+
+                    Button(action: sendSmsCode) {
+                        if isCountdownActive {
+                            Text("\(countdownSeconds)s 后重发")
+                                .font(AppTheme.Typography.label)
+                                .foregroundColor(AppTheme.Colors.textTertiary)
+                        } else {
+                            Text("获取验证码")
+                                .font(AppTheme.Typography.label)
+                                .foregroundColor(AppTheme.Colors.primary)
+                        }
+                    }
+                    .minimumTouchTarget()
+                    .disabled(isCountdownActive || phoneNumber.count < 11)
+                }
+                .frame(minHeight: AppTheme.Metrics.inputHeight)
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .background(AppTheme.Colors.secondaryBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                }
+            }
             
             if let error = errorMessage {
                 Text(error)
-                    .font(.system(size: 12))
+                    .font(.caption)
                     .foregroundColor(AppTheme.Colors.securityRed)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -164,13 +209,13 @@ public struct LoginView: View {
                             .tint(AppTheme.Colors.onPrimary)
                             .padding(.trailing, AppTheme.Spacing.xs)
                     }
-                    Text("登 录 / 注 册")
-                        .font(.system(size: 16, weight: .bold))
+                    Text("登录 / 注册")
+                        .font(.headline.weight(.semibold))
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
                 .foregroundColor(AppTheme.Colors.onPrimary)
-                .background(AppTheme.Colors.primary)
+                .background(AppTheme.Colors.quantumGradient)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
             }
             .buttonStyle(SoftButtonStyle())
@@ -182,7 +227,7 @@ public struct LoginView: View {
     private var thirdPartyChannelsSection: some View {
         VStack(spacing: AppTheme.Spacing.sm) {
             Text("其他企业与协同登录方式")
-                .font(.system(size: 12))
+                .font(.caption)
                 .foregroundColor(AppTheme.Colors.textTertiary)
             
             HStack(spacing: AppTheme.Spacing.xl) {
@@ -255,8 +300,10 @@ public struct LoginView: View {
             HStack(spacing: AppTheme.Spacing.xs) {
                 Image(systemName: "person.crop.circle.badge.questionmark")
                     .font(.system(size: 15))
-                Text("暂不登录，以游客身份体验 (Guest Mode) ➔")
-                    .font(.system(size: 14, weight: .semibold))
+                Text("暂不登录，以游客身份体验")
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                Image(systemName: "arrow.right")
+                    .font(.caption.weight(.bold))
             }
             .foregroundColor(AppTheme.Colors.primary)
             .padding(.vertical, AppTheme.Spacing.sm)
@@ -265,6 +312,8 @@ public struct LoginView: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
         }
         .buttonStyle(SoftButtonStyle())
+        .minimumTouchTarget()
+        .accessibilityHint("进入演示工作台，不会创建账号")
     }
     
     private var footerTermsSection: some View {

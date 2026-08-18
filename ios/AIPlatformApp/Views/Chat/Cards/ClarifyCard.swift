@@ -38,25 +38,19 @@ public struct ClarifyCard: View {
             }
         }
         .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.3), lineWidth: 0.5)
-        )
-        .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 2)
+        .quantumCard()
     }
 
     // MARK: - Header
     private var headerView: some View {
         HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
             Image(systemName: "questionmark.circle.fill")
-                .font(.system(size: 16, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundColor(AppTheme.Colors.quantumCyan)
                 .padding(.top, 1)
 
             Text(block.question)
-                .font(.system(size: 14, weight: .semibold))
+                .font(AppTheme.Typography.cardTitle)
                 .foregroundColor(AppTheme.Colors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -68,11 +62,11 @@ public struct ClarifyCard: View {
     private var submittedBadgeView: some View {
         HStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.body.weight(.semibold))
                 .foregroundColor(AppTheme.Colors.securityGreen)
 
             Text("已确认：\(block.submittedSelection.isEmpty ? "已提交" : block.submittedSelection)")
-                .font(.system(size: 13, weight: .medium))
+                .font(AppTheme.Typography.supporting.weight(.medium))
                 .foregroundColor(AppTheme.Colors.textSecondary)
 
             Spacer()
@@ -101,19 +95,20 @@ public struct ClarifyCard: View {
                 Image(systemName: block.multiSelect
                       ? (isSelected ? "checkmark.square.fill" : "square")
                       : (isSelected ? "largecircle.fill.circle" : "circle"))
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundColor(isSelected ? AppTheme.Colors.quantumBlue : AppTheme.Colors.textTertiary)
 
                 Text(option.label)
-                    .font(.system(size: 14, weight: isSelected ? .semibold : .regular))
+                    .font(AppTheme.Typography.body.weight(isSelected ? .semibold : .regular))
                     .foregroundColor(isSelected ? AppTheme.Colors.textPrimary : AppTheme.Colors.textSecondary)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
 
                 Spacer(minLength: 0)
             }
+            .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
             .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.sm)
+            .padding(.vertical, AppTheme.Spacing.xs)
             .background(
                 RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                     .fill(isSelected ? AppTheme.Colors.quantumBlue.opacity(0.08) : AppTheme.Colors.secondaryBackground)
@@ -125,6 +120,8 @@ public struct ClarifyCard: View {
             )
         }
         .buttonStyle(SoftButtonStyle())
+        .accessibilityLabel("\(isSelected ? "已选择" : "未选择")，\(option.label)")
+        .accessibilityHint(block.multiSelect ? "轻点切换选择" : "轻点确认并进入下一步")
     }
 
     private func handleOptionTap(_ option: ClarifyOption) {
@@ -151,10 +148,11 @@ public struct ClarifyCard: View {
     // MARK: - Custom Input (if no choices)
     private var customInputView: some View {
         TextField("请输入您的需求…", text: $customText, axis: .vertical)
-            .font(.system(size: 14))
+            .font(AppTheme.Typography.body)
             .lineLimit(1...4)
             .padding(.horizontal, AppTheme.Spacing.md)
             .padding(.vertical, AppTheme.Spacing.sm)
+            .frame(minHeight: AppTheme.Metrics.inputHeight)
             .background(AppTheme.Colors.secondaryBackground)
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
             .overlay(
@@ -169,13 +167,13 @@ public struct ClarifyCard: View {
         return Button(action: submitMultiSelect) {
             HStack(spacing: 6) {
                 Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(.body.weight(.semibold))
                 Text(block.submitLabel)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(AppTheme.Typography.body.weight(.semibold))
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
-            .padding(.vertical, 10)
+            .frame(minHeight: AppTheme.Metrics.inputHeight)
             .background(
                 LinearGradient(
                     colors: [AppTheme.Colors.quantumCyan, AppTheme.Colors.quantumBlue, AppTheme.Colors.quantumViolet],

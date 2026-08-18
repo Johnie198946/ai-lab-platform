@@ -20,6 +20,12 @@ public struct ChatMessageStreamView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: AppTheme.Spacing.md) {
+                    if coordinator.messages.isEmpty && coordinator.pendingQueue.isEmpty {
+                        ChatWelcomeView()
+                            .frame(minHeight: 420)
+                            .transition(.opacity)
+                    }
+
                     ForEach(coordinator.messages) { message in
                         messageRow(message).id(message.id)
                     }
@@ -35,6 +41,8 @@ public struct ChatMessageStreamView: View {
                         .frame(height: 1)
                         .id("bottom_anchor")
                 }
+                .frame(maxWidth: AppTheme.Metrics.readableContentWidth)
+                .frame(maxWidth: .infinity)
                 .padding(.vertical, AppTheme.Spacing.md)
             }
             .scrollDismissesKeyboard(.interactively)
@@ -140,6 +148,76 @@ public struct ChatMessageStreamView: View {
             )
         default:
             EmptyView()
+        }
+    }
+}
+
+private struct ChatWelcomeView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    var body: some View {
+        VStack(spacing: AppTheme.Spacing.xl) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.Colors.quantumBlue.opacity(0.08))
+                    .frame(width: 104, height: 104)
+                Circle()
+                    .fill(AppTheme.Colors.quantumGradient)
+                    .frame(width: 72, height: 72)
+                    .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.2), radius: 18, y: 8)
+                Image(systemName: "sparkles")
+                    .font(.title.weight(.semibold))
+                    .foregroundColor(.white)
+            }
+
+            VStack(spacing: AppTheme.Spacing.sm) {
+                Text("今天想推进什么？")
+                    .font(AppTheme.Typography.screenTitle)
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+
+                Text("描述目标即可。Quantum 会先确认需求，再组织 Agent、知识与工具完成任务。")
+                    .font(AppTheme.Typography.body)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+                    .lineSpacing(3)
+                    .frame(maxWidth: 360)
+            }
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                capability("需求澄清", icon: "checklist")
+                capability("智能编排", icon: "point.3.connected.trianglepath.dotted")
+                capability("知识增强", icon: "books.vertical")
+            }
+        }
+        .padding(.horizontal, AppTheme.Spacing.xl)
+        .opacity(appeared ? 1 : 0)
+        .offset(y: appeared ? 0 : (reduceMotion ? 0 : 10))
+        .onAppear {
+            withAnimation(reduceMotion ? nil : AppTheme.Motion.standard) {
+                appeared = true
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Quantum 助手已就绪。可以进行需求澄清、智能编排和知识增强。")
+    }
+
+    private func capability(_ title: String, icon: String) -> some View {
+        VStack(spacing: AppTheme.Spacing.xs) {
+            Image(systemName: icon)
+                .font(.body.weight(.semibold))
+                .foregroundColor(AppTheme.Colors.quantumBlue)
+            Text(title)
+                .font(AppTheme.Typography.micro)
+                .foregroundColor(AppTheme.Colors.textSecondary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 64)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
         }
     }
 }

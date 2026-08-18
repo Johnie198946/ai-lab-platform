@@ -35,9 +35,9 @@ public struct ChatView: View {
                         title: coordinator.sessionManager.title(for: coordinator.sessionManager.activeSessionID()),
                         onTitleTap: { showingSessionDrawer = true },
                         onNewSession: { coordinator.newSession() },
-                        onHistoryTap: { showingSessionDrawer = true }
+                        onHistoryTap: { showingSessionDrawer = true },
+                        onClearTap: { isShowingClearAlert = true }
                     )
-                    Divider().background(AppTheme.Colors.border)
                     ChatMessageStreamView(coordinator: coordinator)
                     ChatInputBar(
                         inputText: $coordinator.inputText,
@@ -53,15 +53,7 @@ public struct ChatView: View {
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { isShowingClearAlert = true }) {
-                        Image(systemName: "trash")
-                            .font(.system(size: 14))
-                            .foregroundColor(AppTheme.Colors.textSecondary)
-                    }
-                }
-            }
+            .toolbar(.hidden, for: .navigationBar)
             .alert("清空当前对话？", isPresented: $isShowingClearAlert) {
                 Button("取消", role: .cancel) {}
                 Button("清空", role: .destructive) { coordinator.clearCurrentSession() }
@@ -117,13 +109,13 @@ public struct ChatView: View {
     private var toastOverlay: some View {
         if let toast = coordinator.toastMessage {
             Text(toast)
-                .font(.system(size: 13, weight: .medium))
+                .font(AppTheme.Typography.supporting.weight(.medium))
                 .foregroundColor(AppTheme.Colors.onPrimary)
                 .padding(.horizontal, AppTheme.Spacing.md)
                 .padding(.vertical, 8)
                 .background(AppTheme.Colors.quantumBlue)
                 .clipShape(Capsule())
-                .shadow(radius: 8)
+                .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.24), radius: 12, y: 5)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .padding(.bottom, 90)
         }

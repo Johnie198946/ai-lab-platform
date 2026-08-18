@@ -114,12 +114,16 @@ public enum AppTheme {
         public static let codeWindowGreen = Color(hex: "27C93F")
         public static let codeSyntaxForeground = Color(hex: "E6EDF3")
         
-        // Adaptive Backgrounds — Quantum 冷调（亮 #F8FAFC 冷白 · 暗 #121316 黑曜石）
-        public static var background: Color { adaptive("F8FAFC", "121316") }
-        public static var secondaryBackground: Color { adaptive("F1F5F9", "26282F") }
-        public static var tertiaryBackground: Color { adaptive("E2E8F0", "303239") }
-        public static var cardBackground: Color { adaptive("FFFFFF", "1A1C22") }
-        public static var groupedBackground: Color { adaptive("F8FAFC", "121316") }
+        // Layered surfaces — calm in light mode, cinematic rather than pure black in dark mode.
+        public static var background: Color { adaptive("F6F7FB", "0D0F14") }
+        public static var secondaryBackground: Color { adaptive("EEF1F7", "171A22") }
+        public static var tertiaryBackground: Color { adaptive("E4E8F1", "222631") }
+        public static var cardBackground: Color { adaptive("FFFFFF", "151821") }
+        public static var surfaceElevated: Color { adaptive("FFFFFF", "1C202A") }
+        public static var groupedBackground: Color { background }
+        public static var surfaceTint: Color { adaptive("EEF2FF", "20243A") }
+        public static var focusRing: Color { quantumBlue.opacity(0.28) }
+        public static var scrim: Color { Color.black.opacity(0.52) }
 
         // 头像自适应托盘：暗色下底板 #121316 < 托盘 #16171D < 卡片 #1A1C22（三级亮度递增，杜绝暗色白斑）
         public static let avatarBackplate = adaptive("FFFFFF", "16171D")
@@ -133,12 +137,12 @@ public enum AppTheme {
         public static let codeSyntaxType = Color(hex: "6BDFFF")
         
         // Dynamic Label Colors — Quantum 同源文字（亮 #333333 · 暗 #F5F5F7）
-        public static var textPrimary: Color { adaptive("333333", "F5F5F7") }
-        public static var textSecondary: Color { adaptive("64748B", "94A3B8") }
-        public static var textTertiary: Color { adaptive("94A3B8", "64748B") }
+        public static var textPrimary: Color { adaptive("172033", "F4F6FC") }
+        public static var textSecondary: Color { adaptive("526079", "B4BECE") }
+        public static var textTertiary: Color { adaptive("738098", "8F9AAD") }
         
         // Border & Divider — Quantum 冷调发丝线
-        public static var border: Color { adaptive("E2E8F0", "2E3038") }
+        public static var border: Color { adaptive("DDE3EE", "303541") }
         
         // MARK: - 双模式自适应色辅助
         private static func adaptive(_ light: String, _ dark: String) -> Color {
@@ -163,6 +167,30 @@ public enum AppTheme {
         public static let xxl: CGFloat = 24
         public static let xxxl: CGFloat = 32
         public static let section: CGFloat = 40
+    }
+
+    // MARK: - Semantic Type (Dynamic Type by default)
+    public enum Typography {
+        public static let screenTitle = Font.title2.weight(.bold)
+        public static let sectionTitle = Font.headline.weight(.semibold)
+        public static let cardTitle = Font.subheadline.weight(.semibold)
+        public static let body = Font.body
+        public static let supporting = Font.subheadline
+        public static let label = Font.caption.weight(.semibold)
+        public static let micro = Font.caption2.weight(.medium)
+    }
+
+    public enum Metrics {
+        public static let minimumTouchTarget: CGFloat = 44
+        public static let inputHeight: CGFloat = 48
+        public static let contentGutter: CGFloat = 16
+        public static let readableContentWidth: CGFloat = 720
+    }
+
+    public enum Motion {
+        public static let quick = Animation.easeOut(duration: 0.18)
+        public static let standard = Animation.easeOut(duration: 0.24)
+        public static let spring = Animation.spring(response: 0.32, dampingFraction: 0.86)
     }
     
     // MARK: - Corner Radius Tokens
@@ -261,7 +289,39 @@ public struct SoftButtonStyle: ButtonStyle {
     
     public func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
-            .animation(.easeInOut(duration: 0.12), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .opacity(configuration.isPressed ? 0.86 : 1.0)
+            .animation(AppTheme.Motion.quick, value: configuration.isPressed)
+    }
+}
+
+public struct QuantumCardModifier: ViewModifier {
+    @Environment(\.colorScheme) private var colorScheme
+
+    public func body(content: Content) -> some View {
+        content
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.border.opacity(colorScheme == .dark ? 0.9 : 0.7), lineWidth: 0.75)
+            }
+            .shadow(
+                color: Color.black.opacity(colorScheme == .dark ? 0.18 : 0.045),
+                radius: 12,
+                x: 0,
+                y: 5
+            )
+    }
+}
+
+public extension View {
+    func quantumCard() -> some View {
+        modifier(QuantumCardModifier())
+    }
+
+    func minimumTouchTarget() -> some View {
+        frame(minWidth: AppTheme.Metrics.minimumTouchTarget, minHeight: AppTheme.Metrics.minimumTouchTarget)
+            .contentShape(Rectangle())
     }
 }

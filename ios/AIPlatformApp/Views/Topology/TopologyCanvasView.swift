@@ -134,7 +134,6 @@ public struct TopologyCanvasView: View {
                 Task { await loadTopology() }
             }
             .overlay(alignment: .top) { loadStatusBadge }
-            .overlay(alignment: .bottomLeading) { guidanceChip }
         }
     }
 

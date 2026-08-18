@@ -46,6 +46,8 @@ public struct MainTabView: View {
                 .tag(3)
         }
         .tint(AppTheme.Colors.quantumBlue)
+        .toolbarBackground(.visible, for: .tabBar)
+        .toolbarBackground(AppTheme.Colors.cardBackground.opacity(0.96), for: .tabBar)
         .safeAreaInset(edge: .top, spacing: 0) {
             if appState.isDevMode {
                 DevModeBanner()
@@ -64,14 +66,15 @@ public struct DevModeBanner: View {
     public var body: some View {
         HStack(spacing: AppTheme.Spacing.xs) {
             Image(systemName: "shield.lefthalf.filled.badge.checkmark")
-                .font(.system(size: 11, weight: .semibold))
+                .font(.caption2.weight(.semibold))
             Text("开发模式·免鉴权")
-                .font(.system(size: 11, weight: .semibold))
+                .font(AppTheme.Typography.micro)
         }
         .foregroundColor(AppTheme.Colors.onPrimary)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 4)
-        .background(AppTheme.Colors.quantumBlue)
+        .padding(.vertical, 5)
+        .background(AppTheme.Colors.quantumGradient)
+        .accessibilityElement(children: .combine)
     }
 }
 
