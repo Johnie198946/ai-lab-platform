@@ -1,10 +1,13 @@
 screen_id: "screen-04"
-title: "分析"
+title: "需求深度洞察报告"
 role: "insight-report"
-layout: "report"
-theme: "dark"
+layout: "markdown-report"
+theme: "aurora-light"
 data_bindings:
-  - source: "insight/report"
-    component: "insight-report"
-    refresh: "60s"
-auto_fullscreen: false
+  - source: "/api/knowledge/search"
+    component: "evidence-search"
+    refresh: "on-demand"
+  - source: "/api/chat/stream"
+    component: "insight-generation"
+    refresh: "sse"
+auto_fullscreen: true

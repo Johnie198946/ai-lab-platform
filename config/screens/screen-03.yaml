@@ -1,10 +1,10 @@
 screen_id: "screen-03"
-title: "信息收集"
-role: "competitor-radar"
-layout: "radar"
-theme: "dark"
+title: "需求即时问诊台"
+role: "demand-clinic"
+layout: "conversation-form"
+theme: "aurora-light"
 data_bindings:
-  - source: "intel/competitor"
-    component: "competitor-radar"
-    refresh: "60s"
+  - source: "/api/chat/stream"
+    component: "demand-conversation"
+    refresh: "sse"
 auto_fullscreen: false

@@ -1,10 +1,10 @@
 screen_id: "screen-07"
-title: "营销经理"
-role: "marketing-materials"
-layout: "materials"
-theme: "dark"
+title: "WorkBuddy 运行原型"
+role: "live-prototype"
+layout: "portrait-workbench"
+theme: "aurora-light"
 data_bindings:
-  - source: "marketing/materials"
-    component: "marketing-materials"
-    refresh: "30s"
-auto_fullscreen: false
+  - source: "/api/chat/stream"
+    component: "prototype-generator"
+    refresh: "sse"
+auto_fullscreen: true

@@ -159,3 +159,23 @@ npm run dev
 - `VITE_API_BASE_URL=` 保持为空时，前端优先通过同源或 Vite 代理访问后端
 - `VITE_API_TOKEN=` 用于填入 Authen Bearer JWT；未配置时仅 `/health` 可直接访问，编排接口会因鉴权失败转入前端受控兜底
 - `VITE_ENABLE_DEMO_FALLBACK=true` 时，后端不可用或鉴权失败会保留本地可编辑流程
+
+### 共创体验中心多屏前端
+
+生产构建会把多屏前端发布到 `/showroom/`：
+
+- `/showroom/`：讲解员主控台
+- `/showroom/?view=screen-05&direct=1`：第五屏 IPD 工作台直接上屏
+- `/showroom/?view=screen-06&direct=1`：第六屏实战主屏直接上屏
+- `/showroom/?view=experience-01&direct=1`：独立体验中心 01
+
+多屏前端复用平台登录态（`ai-lab-platform.auth`），并接入：
+
+- `GET /api/screens`：屏幕配置；
+- `GET /api/showroom/state`：当前动线、epoch 与 IPD 审批状态；
+- `POST /api/showroom/commands`：PREPARE / COMMIT 两阶段动线切换；
+- `WS /api/showroom/ws`：全场屏幕广播、READY 与心跳；
+- `POST /api/showroom/reviews/{gate}`：IPD 人工结论写回及飞书通知；
+- `POST /api/chat/stream`：数字人知识问答 SSE。
+
+未登录的生产访问会提示先登录平台；localhost 下自动进入不联网的原型兜底模式。

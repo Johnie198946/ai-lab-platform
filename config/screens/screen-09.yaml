@@ -1,10 +1,10 @@
 screen_id: "screen-09"
-title: "老板·TokenBox"
-role: "tokenbox-dashboard"
-layout: "dashboard"
-theme: "dark"
+title: "专属方案与二维码"
+role: "scheme-export"
+layout: "qr-export"
+theme: "aurora-light"
 data_bindings:
-  - source: "tokenbox/dashboard"
-    component: "tokenbox-dashboard"
-    refresh: "5s"
-auto_fullscreen: false
+  - source: "/api/showroom/state"
+    component: "session-result"
+    refresh: "websocket"
+auto_fullscreen: true

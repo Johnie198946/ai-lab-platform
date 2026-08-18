@@ -24,6 +24,7 @@ from backend.api.topology import router as topology_router
 from backend.api.skills import router as skills_router
 from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
+from backend.api.showroom import router as showroom_router
 from backend.db import init_db
 
 
@@ -110,6 +111,8 @@ app.include_router(skills_router, dependencies=[Depends(require_auth)])
 app.include_router(tenant_agents_router, dependencies=[Depends(require_auth)])
 # Hermes serve 集成（Tab 1 官方 Web 容器认证通道 · B-2-2）
 app.include_router(hermes_router, dependencies=[Depends(require_auth)])
+# 展厅运行态：HTTP 端点在路由内鉴权，WebSocket 使用 query token 单独验签。
+app.include_router(showroom_router)
 
 # ---------- 健康检查 ----------
 @app.get("/health")

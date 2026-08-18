@@ -1,10 +1,10 @@
 screen_id: "screen-02"
-title: "知识库进化"
-role: "evolution-timeline"
-layout: "timeline"
-theme: "dark"
+title: "算力运营大盘"
+role: "tokenops-dashboard"
+layout: "panorama-dashboard"
+theme: "aurora-light"
 data_bindings:
-  - source: "wiki/evolution"
-    component: "evolution-timeline"
-    refresh: "30s"
-auto_fullscreen: false
+  - source: "/api/knowledge/stats"
+    component: "tokenops-kpi"
+    refresh: "10s"
+auto_fullscreen: true

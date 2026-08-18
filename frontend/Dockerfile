@@ -29,6 +29,14 @@ RUN echo $'server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         client_max_body_size 50M;\n\
     }\n\
+    location = /api/showroom/ws {\n\
+        proxy_pass http://api:8000/api/showroom/ws;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+        proxy_set_header Host $host;\n\
+        proxy_read_timeout 3600s;\n\
+    }\n\
     # B-2-1 最小 server 块：官方 Hermes WS 反代（精确路径优先于 /api/ → api:8000）\n\
     location = /api/ws {\n\
         proxy_pass http://host.docker.internal:9121;\n\
@@ -132,6 +140,14 @@ server {\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         client_max_body_size 50M;\n\
+    }\n\
+    location = /api/showroom/ws {\n\
+        proxy_pass http://api:8000/api/showroom/ws;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+        proxy_set_header Host $host;\n\
+        proxy_read_timeout 3600s;\n\
     }\n\
     # B-2-1：443 同样支持官方 Hermes WS 反代（精确路径）\n\
     location = /api/ws {\n\

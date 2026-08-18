@@ -1,10 +1,13 @@
 screen_id: "screen-06"
-title: "开发工程师"
-role: "ai-coding"
-layout: "coding"
-theme: "dark"
+title: "001 实战主屏"
+role: "giant-arena"
+layout: "left-center-right"
+theme: "aurora-light"
 data_bindings:
-  - source: "coding/agent"
-    component: "ai-coding"
-    refresh: "10s"
-auto_fullscreen: false
+  - source: "/api/chat/stream"
+    component: "ai-presenter"
+    refresh: "sse"
+  - source: "/api/showroom/state"
+    component: "cast-state"
+    refresh: "websocket"
+auto_fullscreen: true

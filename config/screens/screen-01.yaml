@@ -1,10 +1,10 @@
 screen_id: "screen-01"
-title: "总览·故事线主控"
-role: "overview"
-layout: "overview"
-theme: "dark"
+title: "迎宾与合影"
+role: "welcome-photo"
+layout: "ultra-wide"
+theme: "aurora-light"
 data_bindings:
-  - source: "overview/dashboard"
-    component: "storyline-progress"
-    refresh: "10s"
+  - source: "/api/showroom/state"
+    component: "welcome-stage"
+    refresh: "websocket"
 auto_fullscreen: true
