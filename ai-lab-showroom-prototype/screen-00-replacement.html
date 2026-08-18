@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#05060a">
+  <title>AI Lab · 从灵感到价值</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --black: #05060a;
+      --black-2: #0a0c13;
+      --white: #fbfbfd;
+      --ink: #11131b;
+      --muted-dark: #9299ad;
+      --muted-light: #686d7c;
+      --line-dark: rgba(255,255,255,.18);
+      --line-light: rgba(17,19,27,.16);
+      --blue: #2054ff;
+      --cyan: #18e0d1;
+      --violet: #7536ff;
+      --pink: #f42bb8;
+      --aurora: linear-gradient(90deg,var(--blue),var(--violet) 38%,var(--pink) 64%,var(--cyan));
+      --ease: cubic-bezier(.22,1,.36,1);
+      font-family: Inter,"SF Pro Display","SF Pro Text","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html,body { width:100%;min-height:100%; }
+    body { margin:0;min-width:320px;overflow:hidden;background:var(--black);color:var(--white); }
+    button { font:inherit;cursor:pointer;touch-action:manipulation; }
+    button:focus-visible { outline:3px solid rgba(77,127,255,.78);outline-offset:3px; }
+    .sr-only { position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0; }
+
+    .opening { position:relative;width:100vw;height:100dvh;min-height:560px;overflow:hidden;isolation:isolate;background:var(--black); }
+    .scene { position:absolute;inset:0;display:grid;place-items:center;overflow:hidden;visibility:hidden;opacity:0; }
+    .scene-final { visibility:visible;opacity:1; }
+    .scene-inner { position:relative;z-index:3;width:min(88vw,1500px);height:100%;margin:auto;display:grid;place-items:center; }
+    .noise { position:absolute;z-index:20;inset:0;pointer-events:none;opacity:.025;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 180 180' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.9'/%3E%3C/svg%3E");mix-blend-mode:screen; }
+
+    .topline { position:absolute;z-index:60;top:clamp(20px,3vw,44px);left:clamp(24px,4vw,68px);display:flex;align-items:center;gap:12px;color:rgba(255,255,255,.72);font-size:clamp(10px,.72vw,13px);font-weight:650;letter-spacing:.17em; }
+    .topline i { width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 0 5px rgba(24,224,209,.12),0 0 18px rgba(24,224,209,.75); }
+    .topline b { color:white;font-weight:720; }
+
+    .controls { position:absolute;z-index:70;top:clamp(16px,2.4vw,36px);right:clamp(18px,3vw,52px);display:flex;align-items:center;gap:8px; }
+    body.embedded-direct .controls { right:168px; }
+    .status-pill,.control { min-height:44px;border:1px solid rgba(255,255,255,.16);border-radius:999px;color:white;background:rgba(11,13,22,.68);box-shadow:0 10px 30px rgba(0,0,0,.24);backdrop-filter:blur(18px) saturate(125%); }
+    .status-pill { min-width:128px;padding:0 16px;display:flex;align-items:center;justify-content:center;color:#cdd1de;font-size:11px;font-variant-numeric:tabular-nums;letter-spacing:.08em; }
+    .control { min-width:44px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;font-size:11px;font-weight:680;transition:background 180ms ease,border-color 180ms ease,transform 180ms ease; }
+    .control:hover { border-color:rgba(255,255,255,.42);background:rgba(32,36,57,.9); }
+    .control:active { transform:scale(.97); }
+    .control svg { width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round; }
+    .progress { position:absolute;z-index:80;left:0;right:0;top:0;height:2px;background:rgba(255,255,255,.1); }
+    .progress i { display:block;width:100%;height:100%;transform:scaleX(0);transform-origin:left;background:var(--aurora);box-shadow:0 0 12px rgba(68,105,255,.6); }
+
+    .scene-index { position:absolute;left:0;top:50%;transform:translateY(-50%);display:flex;flex-direction:column;gap:8px;color:#858ca0;font-size:10px;letter-spacing:.16em; }
+    .scene-index::after { content:"";width:1px;height:64px;margin:5px 0 0 5px;background:linear-gradient(rgba(255,255,255,.42),transparent); }
+    .copy { position:absolute;left:50%;top:25%;width:min(78vw,980px);transform:translateX(-50%);text-align:center; }
+    .copy-kicker { margin:0 0 12px;color:#9aa1b6;font-size:clamp(10px,.75vw,14px);font-weight:650;letter-spacing:.18em; }
+    .copy h1,.copy h2 { margin:0;font-weight:420;letter-spacing:-.045em; }
+    .copy h1 { font-size:clamp(38px,4.6vw,82px); }
+    .copy h2 { font-size:clamp(32px,4vw,70px); }
+    .copy p:last-child { margin:14px auto 0;color:#9ca3b5;font-size:clamp(13px,1vw,18px);line-height:1.6; }
+    .copy em { color:transparent;font-style:normal;background:var(--aurora);background-clip:text;-webkit-background-clip:text; }
+
+    /* Scene 1 · a real problem becomes a point */
+    .seed-stage { position:absolute;left:50%;top:62%;width:340px;height:280px;transform:translate(-50%,-50%); }
+    .seed-line { position:absolute;left:50%;bottom:18px;width:1px;height:230px;transform:translateX(-50%);background:linear-gradient(transparent,rgba(255,255,255,.65),transparent);transform-origin:bottom; }
+    .seed { position:absolute;z-index:3;left:50%;top:72px;width:12px;height:12px;margin:-6px;border-radius:50%;background:white;box-shadow:0 0 0 7px rgba(255,255,255,.04),0 0 20px rgba(255,255,255,.85),0 0 44px rgba(49,91,255,.7);will-change:transform,opacity; }
+    .seed-halo { position:absolute;left:50%;top:76px;width:170px;height:34px;transform:translateX(-50%);border-radius:50%;background:radial-gradient(ellipse,rgba(20,223,218,.92),rgba(28,82,255,.42) 43%,transparent 72%);filter:blur(5px);will-change:transform,opacity; }
+    .seed-halo.second { top:188px;width:255px;height:50px;opacity:.72; }
+    .seed-curve { position:absolute;inset:0;width:100%;height:100%;fill:none;stroke:rgba(255,255,255,.7);stroke-width:1.2;stroke-linecap:round; }
+
+    /* Scene 2 · system */
+    .system-stage { position:absolute;left:50%;top:66%;width:min(52vw,650px);aspect-ratio:1;transform:translate(-50%,-50%); }
+    .system-svg { width:100%;height:100%;overflow:visible; }
+    .system-svg path,.system-svg circle { fill:none;stroke-linecap:round;stroke-linejoin:round; }
+    .system-ring { stroke:url(#systemGradient);stroke-width:9;filter:url(#glow); }
+    .system-diamond { stroke:url(#systemGradient);stroke-width:8;filter:url(#glow); }
+    .system-guide { stroke:rgba(255,255,255,.18);stroke-width:1; }
+    .system-node { fill:#fff!important;stroke:none!important;filter:url(#nodeGlow);transform-box:fill-box;transform-origin:center; }
+    .system-label { position:absolute;inset:0;display:grid;place-items:center;text-align:center; }
+    .system-label b { display:block;font-size:clamp(22px,2.1vw,38px);font-weight:430;letter-spacing:-.03em; }
+    .system-label span { display:block;margin-top:7px;color:#989fb1;font-size:clamp(11px,.78vw,14px);letter-spacing:.12em; }
+
+    /* Scene 3 · white structure */
+    .scene-white { color:var(--ink); }
+    .white-bg { position:absolute;z-index:0;inset:0;background:var(--white);transform-origin:left; }
+    .white-topline { position:absolute;z-index:3;top:clamp(34px,5vw,76px);left:0;right:clamp(320px,28vw,440px);display:flex;justify-content:space-between;color:#777d8c;font-size:clamp(10px,.72vw,13px);letter-spacing:.15em; }
+    .white-topline b { color:var(--ink);font-weight:760; }
+    .meaning { position:relative;z-index:3;width:100%;display:grid;grid-template-columns:1fr 1fr;gap:clamp(34px,8vw,150px);align-items:center; }
+    .meaning-card { position:relative;min-height:330px;display:grid;place-items:center;text-align:center; }
+    .meaning-chip { position:relative;z-index:3;min-width:min(32vw,470px);min-height:92px;padding:0 clamp(28px,3vw,56px);border:0;border-radius:999px;display:flex;align-items:center;justify-content:center;gap:18px;color:white;background:#090a0f;box-shadow:0 16px 40px rgba(0,0,0,.16);font-size:clamp(18px,1.7vw,31px);font-weight:420;letter-spacing:-.02em; }
+    .meaning-chip i { width:22px;height:22px;clip-path:polygon(50% 0,61% 39%,100% 50%,61% 61%,50% 100%,39% 61%,0 50%,39% 39%);background:conic-gradient(var(--cyan),var(--blue),var(--pink),var(--violet),var(--cyan));filter:drop-shadow(0 0 8px rgba(80,74,255,.8)); }
+    .meaning-card h3 { margin:22px 0 6px;font-size:clamp(22px,2vw,36px);font-weight:530;letter-spacing:-.035em; }
+    .meaning-card p { margin:0;color:#777c89;font-size:clamp(12px,.9vw,16px);line-height:1.6; }
+    .meaning-path { position:absolute;inset:0;width:100%;height:100%;overflow:visible;fill:none;stroke:#353843;stroke-width:1.15;stroke-linecap:round; }
+    .meaning-dot { position:absolute;width:11px;height:11px;border-radius:50%;background:#282b34;box-shadow:0 0 0 5px rgba(40,43,52,.05); }
+    .meaning-dot.a { left:7%;bottom:11%; }.meaning-dot.b { right:7%;top:10%; }
+    .meaning-center { position:absolute;z-index:4;left:50%;top:50%;width:10px;height:10px;transform:translate(-50%,-50%);border-radius:50%;background:var(--blue);box-shadow:0 0 14px var(--blue); }
+
+    /* Scene 4 · tokens become measurable value */
+    .value-stage { width:min(88vw,1320px);display:grid;place-items:center; }
+    .value-track { position:relative;width:100%;display:grid;grid-template-columns:repeat(5,1fr);align-items:center; }
+    .value-track::before { content:"";position:absolute;left:10%;right:10%;top:50%;height:1px;background:linear-gradient(90deg,transparent,rgba(255,255,255,.34),transparent); }
+    .value-node { position:relative;z-index:2;display:grid;place-items:center;gap:14px;color:#9198aa;font-size:clamp(10px,.76vw,14px);letter-spacing:.11em; }
+    .value-node i { width:12px;height:12px;border-radius:50%;background:#fff;box-shadow:0 0 16px rgba(255,255,255,.7); }
+    .value-node.active i { width:16px;height:16px;background:var(--cyan);box-shadow:0 0 0 7px rgba(24,224,209,.08),0 0 30px rgba(31,116,255,.95),0 0 55px rgba(116,54,255,.72); }
+    .value-arc { position:absolute;z-index:1;left:30%;top:calc(50% - 90px);width:40%;height:110px;border-top:5px solid transparent;border-radius:50%;background:linear-gradient(var(--black),var(--black)) padding-box,var(--aurora) border-box;filter:drop-shadow(0 0 12px rgba(78,79,255,.68));transform-origin:center bottom; }
+    .value-copy { position:absolute;left:50%;top:24%;transform:translateX(-50%);width:min(84vw,1000px);text-align:center; }
+    .value-copy h2 { margin:0;font-size:clamp(34px,4.2vw,74px);font-weight:420;letter-spacing:-.045em; }
+    .value-copy p { margin:13px 0 0;color:#969daf;font-size:clamp(13px,.95vw,17px); }
+
+    /* Scene 5 · resident brand */
+    .scene-final { background:radial-gradient(circle at 50% 52%,#101422,var(--black) 58%); }
+    .final-cluster { position:absolute;left:50%;top:46%;width:430px;height:260px;transform:translate(-50%,-50%);filter:blur(18px) saturate(135%); }
+    .final-blob { position:absolute;left:50%;top:50%;width:150px;height:150px;margin:-75px;border-radius:50%;mix-blend-mode:screen;will-change:transform,opacity; }
+    .final-blob.blue { background:var(--blue); }.final-blob.cyan { background:var(--cyan); }.final-blob.pink { background:var(--pink); }.final-blob.violet { background:var(--violet); }
+    .final-content { position:relative;z-index:5;text-align:center; }
+    .final-mark { margin:0;color:white;font-size:clamp(78px,12vw,220px);font-weight:860;line-height:.8;letter-spacing:-.1em;filter:drop-shadow(0 0 24px rgba(85,91,255,.32)); }
+    .final-mark span { color:transparent;background:var(--aurora);background-clip:text;-webkit-background-clip:text; }
+    .final-content h1 { margin:36px 0 0;font-size:clamp(24px,2.7vw,48px);font-weight:430;letter-spacing:-.035em; }
+    .final-content>p:not(.final-mark) { margin:13px 0 0;color:#a3a9ba;font-size:clamp(13px,1vw,18px);letter-spacing:.03em; }
+    .final-meta { position:absolute;z-index:4;left:clamp(24px,4vw,68px);right:clamp(24px,4vw,68px);bottom:clamp(24px,4vw,58px);display:flex;align-items:center;justify-content:space-between;color:#747b90;font-size:clamp(9px,.68vw,12px);letter-spacing:.15em; }
+    .final-meta b { color:#c8ccd7;font-weight:650; }
+
+    @media (max-width:800px) {
+      .opening { min-height:100dvh; }
+      .status-pill,.control span { display:none; }
+      .control { width:44px;padding:0; }
+      .topline { max-width:170px;line-height:1.5; }
+      .scene-inner { width:90vw; }
+      .copy { top:20%;width:88vw; }
+      .seed-stage { top:64%;transform:translate(-50%,-50%) scale(.8); }
+      .system-stage { width:min(86vw,520px);top:62%; }
+      .meaning { grid-template-columns:1fr;gap:20px; }
+      .meaning-card { min-height:220px; }
+      .meaning-chip { min-width:82vw;min-height:72px; }
+      .white-topline { top:88px; }
+      .white-topline { right:0; }
+      .value-stage { transform:rotate(90deg);width:118vw; }
+      .value-node span { transform:rotate(-90deg); }
+      .value-copy { top:18%; }
+      .final-cluster { transform:translate(-50%,-50%) scale(.72); }
+      .final-meta { align-items:flex-end;gap:18px; }
+      .final-meta span:last-child { text-align:right; }
+    }
+
+    @media (prefers-reduced-motion:reduce) {
+      .scene:not(.scene-final) { display:none!important; }
+      .scene-final { visibility:visible!important;opacity:1!important; }
+      .final-cluster { display:none; }
+    }
+  </style>
+</head>
+<body>
+  <main class="opening" id="opening" aria-label="AI Lab 线下体验首屏">
+    <div class="progress" aria-hidden="true"><i id="progressBar"></i></div>
+    <div class="noise" aria-hidden="true"></div>
+    <div class="topline"><i></i><span><b>AI LAB</b> · CO-CREATION SYSTEM</span></div>
+
+    <nav class="controls" aria-label="首屏动画播放控制">
+      <span class="status-pill" id="statusText">准备播放</span>
+      <button class="control" id="pauseButton" aria-label="暂停动画"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg><span>暂停</span></button>
+      <button class="control" id="replayButton" aria-label="从头重播"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7L4 8.7M4 4v4.7h4.7"/></svg><span>重播</span></button>
+      <button class="control" id="skipButton" aria-label="跳到最终画面"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 5 9 7-9 7V5ZM18 5v14"/></svg><span>跳过</span></button>
+    </nav>
+
+    <section class="scene scene-seed" aria-label="一个真实问题被点亮">
+      <div class="scene-inner">
+        <span class="scene-index">01 · INPUT</span>
+        <header class="copy seed-copy">
+          <p class="copy-kicker">LET'S BEGIN</p>
+          <h1>一切，从一个<em>真实问题</em>开始。</h1>
+          <p>让尚未成形的想法，先被看见。</p>
+        </header>
+        <div class="seed-stage" aria-hidden="true">
+          <svg class="seed-curve" viewBox="0 0 340 280"><path d="M170 264 C170 225 104 214 121 170 C139 125 211 137 194 92 C181 58 170 48 170 22"/></svg>
+          <i class="seed-line"></i><i class="seed-halo"></i><i class="seed-halo second"></i><i class="seed"></i>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene scene-system" aria-label="灵感进入 AI Lab 系统">
+      <div class="scene-inner">
+        <span class="scene-index">02 · SYSTEM</span>
+        <header class="copy system-copy">
+          <p class="copy-kicker">WITH A SYSTEM</p>
+          <h2>让灵感进入一个<em>共创系统</em>。</h2>
+          <p>场景、产品、生态与 AI 技术，在这里被重新连接。</p>
+        </header>
+        <div class="system-stage" aria-hidden="true">
+          <svg class="system-svg" viewBox="0 0 600 600">
+            <defs>
+              <linearGradient id="systemGradient"><stop stop-color="#2054ff"/><stop offset=".36" stop-color="#7536ff"/><stop offset=".65" stop-color="#f42bb8"/><stop offset="1" stop-color="#18e0d1"/></linearGradient>
+              <filter id="glow"><feGaussianBlur stdDeviation="5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+              <filter id="nodeGlow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            </defs>
+            <circle class="system-guide" cx="300" cy="300" r="205"/>
+            <circle class="system-ring" cx="300" cy="300" r="205"/>
+            <path class="system-diamond" d="M300 76 C341 207 393 259 524 300 C393 341 341 393 300 524 C259 393 207 341 76 300 C207 259 259 207 300 76Z"/>
+            <circle class="system-node" cx="300" cy="76" r="8"/><circle class="system-node" cx="524" cy="300" r="8"/><circle class="system-node" cx="300" cy="524" r="8"/><circle class="system-node" cx="76" cy="300" r="8"/>
+          </svg>
+          <div class="system-label"><div><b>AI Lab</b><span>CO-CREATION SYSTEM</span></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene scene-white" aria-label="AI Lab 与 Token Factory 建立结构">
+      <div class="white-bg"></div>
+      <div class="scene-inner">
+        <header class="white-topline"><span>03 · BUILD STRUCTURE</span><b>AI LAB × TOKEN FACTORY</b></header>
+        <div class="meaning">
+          <article class="meaning-card lab-card">
+            <svg class="meaning-path" viewBox="0 0 600 330" preserveAspectRatio="none"><path d="M52 292 C88 259 52 214 110 191 C164 170 138 77 198 52 C278 18 366 24 548 42"/></svg>
+            <i class="meaning-dot a"></i><i class="meaning-dot b"></i>
+            <div><div class="meaning-chip"><i></i><span>AI Lab · 构建产品</span></div><h3>Build structure</h3><p>把用户场景收敛为产品、方案和实践路径。</p></div>
+          </article>
+          <i class="meaning-center" aria-hidden="true"></i>
+          <article class="meaning-card token-card">
+            <svg class="meaning-path" viewBox="0 0 600 330" preserveAspectRatio="none"><path d="M48 44 C236 63 334 15 398 72 C447 116 407 192 480 212 C543 229 513 278 552 294"/></svg>
+            <i class="meaning-dot a"></i><i class="meaning-dot b"></i>
+            <div><div class="meaning-chip"><i></i><span>Token Factory · 度量价值</span></div><h3>Create rhythm</h3><p>让算力、Token、Agent 与业务价值形成节奏。</p></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene scene-value" aria-label="Token 让价值可以度量">
+      <div class="scene-inner">
+        <span class="scene-index">04 · VALUE FLOW</span>
+        <header class="value-copy"><p class="copy-kicker">FOCUS ORGANIZES MOTION</p><h2>让每一次智能生产，都走向<em style="color:transparent;background:var(--aurora);background-clip:text;-webkit-background-clip:text;font-style:normal">可度量的价值</em>。</h2><p>同一个光点，沿着从算力到业务价值的路径持续前进。</p></header>
+        <div class="value-stage" aria-hidden="true">
+          <div class="value-track">
+            <span class="value-arc"></span>
+            <div class="value-node"><i></i><span>WATTS</span></div><div class="value-node"><i></i><span>FLOPS</span></div><div class="value-node active"><i></i><span>TOKENS</span></div><div class="value-node"><i></i><span>AGENTS</span></div><div class="value-node"><i></i><span>VALUES</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="scene scene-final" aria-label="欢迎来到 AI Lab">
+      <div class="final-cluster" aria-hidden="true"><i class="final-blob blue"></i><i class="final-blob cyan"></i><i class="final-blob pink"></i><i class="final-blob violet"></i></div>
+      <div class="final-content"><p class="final-mark"><span>AI</span> LAB</p><h1>欢迎来到 AI Lab</h1><p>我们一起，让灵感变成现实。</p></div>
+      <footer class="final-meta"><span><b>AI LAB</b> · OFFLINE EXPERIENCE</span><span>IDEA → PRODUCT → TOKEN → VALUE</span></footer>
+    </section>
+
+    <p class="sr-only" id="liveState" aria-live="polite">首屏动画准备播放</p>
+  </main>
+
+  <script src="./vendor/gsap.min.js"></script>
+  <script>
+    const embeddedMode = new URLSearchParams(location.search).get('embedded');
+    if (embeddedMode === 'direct') document.body.classList.add('embedded-direct');
+
+    (() => {
+      const root = document.getElementById('opening');
+      const q = gsap.utils.selector(root);
+      const progressBar = document.getElementById('progressBar');
+      const statusText = document.getElementById('statusText');
+      const liveState = document.getElementById('liveState');
+      const pauseButton = document.getElementById('pauseButton');
+      const replayButton = document.getElementById('replayButton');
+      const skipButton = document.getElementById('skipButton');
+      const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const stageNames = [
+        [0,'01 · 需求点亮'],[4.1,'02 · 进入系统'],[9.2,'03 · 构建结构'],[15.2,'04 · 价值流动'],[20.1,'05 · 欢迎来到 AI Lab']
+      ];
+      let paused = false;
+      let timeline;
+
+      const draw = (target) => {
+        const length = target.getTotalLength();
+        gsap.set(target,{strokeDasharray:length,strokeDashoffset:length});
+        return length;
+      };
+
+      function stageAt(time) {
+        let stage = stageNames[0][1];
+        for (const item of stageNames) if (time >= item[0]) stage = item[1];
+        return stage;
+      }
+
+      function setFinalState() {
+        gsap.set(q('.scene'),{autoAlpha:0});
+        gsap.set(q('.scene-final'),{autoAlpha:1});
+        gsap.set(q('.final-content,.final-meta'),{autoAlpha:1,y:0,scale:1});
+        gsap.set(q('.final-blob'),{autoAlpha:.72,scale:1});
+        gsap.set(progressBar,{scaleX:1});
+        statusText.textContent = '常驻画面';
+      }
+
+      function buildTimeline() {
+        const seedPath = q('.seed-curve path')[0];
+        const ring = q('.system-ring')[0];
+        const diamond = q('.system-diamond')[0];
+        const meaningPaths = q('.meaning-path path');
+        [seedPath,ring,diamond,...meaningPaths].forEach(draw);
+
+        gsap.set(q('.scene'),{autoAlpha:0});
+        gsap.set(q('.copy>*'),{autoAlpha:0,y:18});
+        gsap.set(q('.seed'),{scale:0});
+        gsap.set(q('.seed-line'),{scaleY:0,transformOrigin:'50% 100%'});
+        gsap.set(q('.seed-halo'),{scale:.2,autoAlpha:0});
+        gsap.set(q('.system-node'),{scale:0,transformOrigin:'center'});
+        gsap.set(q('.system-label'),{autoAlpha:0,scale:.94});
+        gsap.set(q('.white-bg'),{scaleX:0,transformOrigin:'left center'});
+        gsap.set(q('.white-topline,.meaning-card,.meaning-center'),{autoAlpha:0,y:16});
+        gsap.set(q('.meaning-dot'),{scale:0});
+        gsap.set(q('.value-copy>*'),{autoAlpha:0,y:18});
+        gsap.set(q('.value-node'),{autoAlpha:0,y:16});
+        gsap.set(q('.value-arc'),{autoAlpha:0,scaleX:.15});
+        gsap.set(q('.final-content,.final-meta'),{autoAlpha:0,y:18});
+        gsap.set(q('.final-blob.blue'),{x:-125,y:35,scale:.35,autoAlpha:0});
+        gsap.set(q('.final-blob.cyan'),{x:105,y:42,scale:.38,autoAlpha:0});
+        gsap.set(q('.final-blob.pink'),{x:70,y:-70,scale:.32,autoAlpha:0});
+        gsap.set(q('.final-blob.violet'),{x:-60,y:-72,scale:.42,autoAlpha:0});
+        gsap.set(progressBar,{scaleX:0});
+
+        timeline = gsap.timeline({
+          defaults:{ease:'power3.inOut'},
+          onUpdate(){
+            const p = timeline.progress();
+            gsap.set(progressBar,{scaleX:p});
+            statusText.textContent = `${stageAt(timeline.time())} · ${String(Math.floor(p*100)).padStart(2,'0')}%`;
+          },
+          onComplete(){ statusText.textContent='常驻画面';liveState.textContent='首屏动画播放完成'; }
+        });
+
+        timeline.addLabel('seed',0)
+          .set(q('.scene-seed'),{autoAlpha:1})
+          .to(q('.seed'),{scale:1,duration:.5,ease:'back.out(1.7)'},.15)
+          .to(q('.seed-line'),{scaleY:1,duration:.8,ease:'power2.out'},.15)
+          .to(seedPath,{strokeDashoffset:0,duration:1.35,ease:'power2.inOut'},.3)
+          .to(q('.seed-halo'),{scale:1,autoAlpha:1,duration:.8,stagger:.18,ease:'power2.out'},.4)
+          .to(q('.seed-copy>*'),{autoAlpha:1,y:0,duration:.65,stagger:.1,ease:'power2.out'},.65)
+          .to(q('.seed'),{y:112,duration:1.15,ease:'sine.inOut'},2.25)
+          .to(q('.seed-halo'),{scale:1.18,autoAlpha:.25,duration:.8},2.35)
+          .to(q('.scene-seed'),{autoAlpha:0,duration:.6},3.5)
+
+          .addLabel('system',4.1)
+          .set(q('.scene-system'),{autoAlpha:1})
+          .to(q('.system-copy>*'),{autoAlpha:1,y:0,duration:.6,stagger:.09,ease:'power2.out'},4.2)
+          .to(ring,{strokeDashoffset:0,duration:1.4,ease:'power3.inOut'},4.3)
+          .to(q('.system-node'),{scale:1,duration:.45,stagger:.08,ease:'back.out(1.8)'},4.65)
+          .to(ring,{autoAlpha:.3,rotation:75,transformOrigin:'50% 50%',duration:.75},5.9)
+          .to(diamond,{strokeDashoffset:0,duration:1.35,ease:'power3.inOut'},5.55)
+          .to(q('.system-label'),{autoAlpha:1,scale:1,duration:.6,ease:'power2.out'},6.05)
+          .to(q('.system-stage'),{rotation:45,duration:1.2,ease:'sine.inOut'},7.15)
+          .to(q('.system-stage'),{scale:.12,rotation:135,autoAlpha:0,duration:.85,ease:'power3.in'},8.25)
+          .to(q('.scene-system'),{autoAlpha:0,duration:.35},8.8)
+
+          .addLabel('structure',9.2)
+          .set(q('.scene-white'),{autoAlpha:1})
+          .to(q('.white-bg'),{scaleX:1,duration:.8,ease:'expo.inOut'},9.2)
+          .to(q('.topline,.topline b'),{color:'#1b1e27',duration:.45,ease:'power2.out'},9.48)
+          .to(q('.topline i'),{backgroundColor:'#2054ff',boxShadow:'0 0 0 5px rgba(32,84,255,.1), 0 0 18px rgba(32,84,255,.55)',duration:.45},9.48)
+          .to(q('.white-topline'),{autoAlpha:1,y:0,duration:.5,ease:'power2.out'},9.75)
+          .to(q('.meaning-card'),{autoAlpha:1,y:0,duration:.65,stagger:.18,ease:'power2.out'},10)
+          .to(q('.meaning-center'),{autoAlpha:1,y:0,scale:1.4,duration:.45,ease:'back.out(1.7)'},10.35)
+          .to(meaningPaths,{strokeDashoffset:0,duration:1.45,stagger:.14,ease:'power2.inOut'},10.45)
+          .to(q('.meaning-dot'),{scale:1,duration:.4,stagger:{each:.07,from:'edges'},ease:'back.out(1.8)'},10.85)
+          .to(q('.lab-card .meaning-chip'),{scale:1.045,duration:.45,ease:'power2.out'},11.65)
+          .to(q('.lab-card .meaning-chip'),{scale:1,duration:.35,ease:'power2.inOut'},12.1)
+          .to(q('.token-card .meaning-chip'),{scale:1.045,duration:.45,ease:'power2.out'},12.45)
+          .to(q('.token-card .meaning-chip'),{scale:1,duration:.35,ease:'power2.inOut'},12.9)
+          .to(q('.meaning-center'),{x:'36vw',duration:.65,ease:'power3.inOut'},13.05)
+          .to(q('.meaning-center'),{x:'-36vw',duration:.8,ease:'power3.inOut'},13.7)
+          .to(q('.scene-white'),{autoAlpha:0,duration:.65,ease:'power2.in'},14.55)
+
+          .addLabel('value',15.2)
+          .set(q('.scene-value'),{autoAlpha:1})
+          .to(q('.topline,.topline b'),{color:'#ffffff',duration:.35,ease:'power2.out'},15.2)
+          .to(q('.topline i'),{backgroundColor:'#18e0d1',boxShadow:'0 0 0 5px rgba(24,224,209,.12), 0 0 18px rgba(24,224,209,.75)',duration:.35},15.2)
+          .to(q('.value-copy>*'),{autoAlpha:1,y:0,duration:.6,stagger:.09,ease:'power2.out'},15.35)
+          .to(q('.value-node'),{autoAlpha:1,y:0,duration:.45,stagger:.13,ease:'power2.out'},15.6)
+          .to(q('.value-arc'),{autoAlpha:1,scaleX:1,duration:1.1,ease:'power3.inOut'},16.15)
+          .to(q('.value-node.active'),{scale:1.35,duration:.45,ease:'back.out(1.6)'},16.8)
+          .to(q('.value-node.active'),{x:'40vw',duration:1.25,ease:'power3.inOut'},17.4)
+          .to(q('.value-node.active'),{x:'-40vw',duration:1.45,ease:'power3.inOut'},18.6)
+          .to(q('.scene-value'),{autoAlpha:0,duration:.65},19.45)
+
+          .addLabel('final',20.1)
+          .set(q('.scene-final'),{autoAlpha:1})
+          .to(q('.final-blob'),{autoAlpha:.78,scale:1,duration:.7,stagger:.08,ease:'power2.out'},20.1)
+          .to(q('.final-blob'),{x:0,y:0,duration:1.1,stagger:.07,ease:'expo.inOut'},20.75)
+          .to(q('.final-content'),{autoAlpha:1,y:0,duration:.75,ease:'power2.out'},21.25)
+          .to(q('.final-meta'),{autoAlpha:1,y:0,duration:.55,ease:'power2.out'},21.65)
+          .to(q('.final-blob'),{scale:1.18,autoAlpha:.5,duration:1.1,ease:'sine.inOut'},21.75);
+
+        return timeline;
+      }
+
+      function updatePauseButton() {
+        pauseButton.innerHTML = paused
+          ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z"/></svg><span>继续</span>'
+          : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5v14M15 5v14"/></svg><span>暂停</span>';
+        pauseButton.setAttribute('aria-label',paused?'继续动画':'暂停动画');
+      }
+
+      function togglePause() {
+        if (!timeline) return;
+        paused = !paused;
+        timeline.paused(paused);
+        updatePauseButton();
+        liveState.textContent = paused?'首屏动画已暂停':'首屏动画继续播放';
+      }
+
+      function replay() {
+        if (!timeline) return;
+        paused=false;updatePauseButton();timeline.restart();liveState.textContent='首屏动画已从头重播';
+      }
+
+      function skip() {
+        if (timeline) timeline.progress(1).pause();
+        paused=false;updatePauseButton();setFinalState();liveState.textContent='已跳到欢迎画面';
+      }
+
+      if (reduceMotion || !window.gsap) setFinalState(); else buildTimeline();
+      pauseButton.addEventListener('click',togglePause);
+      replayButton.addEventListener('click',replay);
+      skipButton.addEventListener('click',skip);
+      document.addEventListener('keydown',(event)=>{
+        if(event.code==='Space'){event.preventDefault();togglePause();}
+        if(event.key.toLowerCase()==='r') replay();
+        if(event.key.toLowerCase()==='s') skip();
+      });
+      document.addEventListener('visibilitychange',()=>{ if(document.hidden&&timeline&&!timeline.paused()){paused=true;timeline.pause();updatePauseButton();} });
+      addEventListener('pagehide',()=>timeline?.kill(),{once:true});
+    })();
+  </script>
+</body>
+</html>
