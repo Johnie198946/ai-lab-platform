@@ -272,12 +272,24 @@
           if (!raw) continue;
           let data;
           try { data = JSON.parse(raw); } catch { continue; }
-          options.onEvent?.(data);
+          await options.onEvent?.(data);
           this.emit("stream", data);
-          const delta = data.delta || data.content || data.answer || "";
-          if (["delta", "answer", "done"].includes(data.type) && delta) {
+          if (data.type === "error") {
+            throw new Error(data.message || "架构师服务暂不可用");
+          }
+          if (data.type === "delta") {
+            const delta = data.delta || data.content || "";
             answer += delta;
             options.onDelta?.(answer, data);
+          } else if (data.type === "answer") {
+            answer = data.answer || data.content || answer;
+            options.onDelta?.(answer, data);
+          } else if (data.type === "done") {
+            const finalAnswer = data.answer || data.content || "";
+            if (!answer && finalAnswer) {
+              answer = finalAnswer;
+              options.onDelta?.(answer, data);
+            }
           }
         }
       }

@@ -30,6 +30,9 @@ const state = {
   reviewDecision: null,
   introSkipped: false,
   pendingClarify: null,
+  streamingReply: '',
+  chatError: '',
+  lastQuestion: '',
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
@@ -658,6 +661,20 @@ function clarifyCard() {
   return `<section class="clarify-card" aria-label="架构师需求澄清"><span>架构师正在确认</span><b>${escapeHtml(clarify.question)}</b><div>${choices.map((choice) => `<button data-clarify-choice="${escapeHtml(choice)}">${escapeHtml(choice)}</button>`).join('')}</div></section>`;
 }
 
+function liveChatFeedback() {
+  if (state.pendingClarify) return '';
+  if (state.streamingReply) {
+    return `<div class="bubble ai streaming" aria-live="polite">${escapeHtml(state.streamingReply)}</div>`;
+  }
+  if (state.avatarSpeaking) {
+    return '<div class="bubble ai streaming thinking" aria-live="polite"><i></i><i></i><i></i><span>架构师正在分析你的需求…</span></div>';
+  }
+  if (state.chatError) {
+    return `<div class="chat-error" role="alert"><b>本轮回复失败</b><span>${escapeHtml(state.chatError)}</span><button data-chat-retry>重新发送</button></div>`;
+  }
+  return '';
+}
+
 function clinicView() {
   const session = currentSessionData();
   const demand = currentDemand();
@@ -668,7 +685,7 @@ function clinicView() {
     <div class="screen-content">
       <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">${state.content?.screens?.['screen-03']?.headline || '把一句想法，收敛成一个可行动的问题。'}</h2></div><div><span class="tag orange">${escapeHtml(demand.industry || '待识别行业')}</span> <span class="tag blue">第 ${Math.max(1, Math.ceil(messages.length / 2))} 轮</span></div></div>
       <div class="clinic-grid">
-        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status">${state.avatarSpeaking ? '架构师正在研判' : '专属技能已加载'}</span></div><div class="chat-body">${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}<div class="bubble-note"><i></i>${escapeHtml(state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona')} · 独立会话 ${escapeHtml(state.session?.session_id || '')}</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向架构师描述你的业务问题…"><button data-demand-send aria-label="发送需求">${icon('send')}</button></div></section>
+        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status">${state.avatarSpeaking ? '架构师正在研判' : '专属技能已加载'}</span></div><div class="chat-body">${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}<div class="bubble-note"><i></i>${escapeHtml(state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona')} · 独立会话 ${escapeHtml(state.session?.session_id || '')}</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向架构师描述你的业务问题…" ${state.avatarSpeaking ? 'disabled' : ''}><button data-demand-send aria-label="发送需求" ${state.avatarSpeaking ? 'disabled' : ''}>${icon('send')}</button></div></section>
         <section class="panel form-panel"><div class="panel-head"><strong>需求收敛确认单</strong><span>${demand.confirmed ? '已确认' : '自动保存'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem">${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}"></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}"></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}"></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}"></label><label class="field wide">下一步行动<textarea data-demand-field="next_action">${escapeHtml(demand.next_action)}</textarea></label></div><button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>
       </div>
     </div>
@@ -803,7 +820,7 @@ function experienceMiddle(step) {
     5: ['现在，请亲手试一试', '修改结果会持续写回当前会话。'],
   }[step];
   let preview = '';
-  if (step === 1) preview = `<div class="experience-chat-log">${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向架构师说出你的真实业务问题…"><button data-experience-send aria-label="发送">${icon('send')}</button></div>`;
+  if (step === 1) preview = `<div class="experience-chat-log">${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向架构师说出你的真实业务问题…" ${state.avatarSpeaking ? 'disabled' : ''}><button data-experience-send aria-label="发送" ${state.avatarSpeaking ? 'disabled' : ''}>${icon('send')}</button></div>`;
   else if (step === 2) preview = `<div class="score-card"><strong>${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${escapeHtml(demand.core_problem || '等待收敛')}</b></div></div><div class="action-box"><span>目标指标</span><b>${escapeHtml(demand.target_metric || '待确认')}</b></div>`;
   else if (step === 3) preview = `<div class="score-card"><strong>${(insight.causes || []).length}</strong><div><span>关键根因</span><b>${escapeHtml(insight.judgment || '等待生成')}</b></div></div><div class="action-box"><span>第一步建议</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b></div>`;
   else preview = `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${escapeHtml(prototype.title || '等待生成原型')} · ${Number(prototype.progress || 0)}%</p>`;
@@ -835,24 +852,39 @@ function schemeExportView() {
   return `<div class="screen">${screenHeader('SCHEME EXPORT', state.session?.status === 'submitted' ? '方案已提交' : '等待提交')}<div class="screen-content">${experienceResult()}</div></div>`;
 }
 
-async function sendSessionMessage(inputId) {
+async function sendSessionMessage(inputId, reuseExisting = false) {
   const input = document.getElementById(inputId);
   const question = input?.value.trim();
-  if (!question || state.backendStatus !== 'online') return;
+  if (!question || state.backendStatus !== 'online' || state.avatarSpeaking) return;
   input.value = '';
   state.avatarSpeaking = true;
+  state.streamingReply = '';
+  state.chatError = '';
+  state.lastQuestion = question;
   try {
-    const userSession = await window.showroomApi.appendMessage('user', question);
-    state.session = userSession;
+    if (!reuseExisting) {
+      const userSession = await window.showroomApi.appendMessage('user', question);
+      state.session = userSession;
+    }
     render('refresh');
     const answer = await window.showroomApi.streamChat(question, {
       agentId: 'main_agent',
       skillId: state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona',
-      onEvent: (event) => {
+      onEvent: async (event) => {
         if (event.type === 'clarify') {
+          const lastMessage = currentSessionData().messages?.at(-1);
+          if (event.question && !(lastMessage?.role === 'assistant' && lastMessage.content === event.question)) {
+            state.session = await window.showroomApi.appendMessage('assistant', event.question);
+          }
           state.pendingClarify = event;
+          state.streamingReply = '';
           render('refresh');
         }
+      },
+      onDelta: (text) => {
+        state.streamingReply = text;
+        const streamingBubble = document.querySelector('.bubble.ai.streaming');
+        if (streamingBubble) streamingBubble.textContent = text;
       },
     });
     if (answer) {
@@ -860,8 +892,10 @@ async function sendSessionMessage(inputId) {
       state.session = assistantSession;
     }
     state.pendingClarify = null;
+    state.streamingReply = '';
   } catch (error) {
-    showToast(`对话保存失败：${error.message}`);
+    state.chatError = error.message;
+    showToast(`架构师回复失败：${error.message}`);
   } finally {
     state.avatarSpeaking = false;
     render('refresh');
@@ -915,6 +949,14 @@ function attachScreenActions() {
   document.querySelector('[data-demand-send]')?.addEventListener('click', () => sendSessionMessage('demand-chat-input'));
   document.getElementById('demand-chat-input')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') sendSessionMessage('demand-chat-input');
+  });
+  document.querySelector('[data-chat-retry]')?.addEventListener('click', () => {
+    const inputId = state.view.startsWith('experience-') ? 'experience-chat-input' : 'demand-chat-input';
+    const input = document.getElementById(inputId);
+    if (!input || !state.lastQuestion) return;
+    input.value = state.lastQuestion;
+    state.chatError = '';
+    sendSessionMessage(inputId, true);
   });
   document.querySelectorAll('[data-clarify-choice]').forEach((button) => button.addEventListener('click', async () => {
     const choice = button.dataset.clarifyChoice;
