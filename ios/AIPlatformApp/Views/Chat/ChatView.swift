@@ -42,12 +42,10 @@ public struct ChatView: View {
                     ChatInputBar(
                         inputText: $coordinator.inputText,
                         quotedContext: $coordinator.quotedContext,
-                        quickCommands: coordinator.quickCommands,
                         isGenerating: coordinator.isGenerating,
                         onSend: { coordinator.sendMessage() },
                         onVoiceTap: { showingVoiceInput = true },
-                        onPlusTap: { showingPlusMenu = true },
-                        onCommandSelected: { chip in coordinator.selectCommand(chip) }
+                        onPlusTap: { showingPlusMenu = true }
                     )
                 }
             }

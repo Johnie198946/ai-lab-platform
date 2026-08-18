@@ -33,14 +33,8 @@ public struct ChatTopBarView: View {
     }
 
     public var body: some View {
-        HStack(spacing: AppTheme.Spacing.md) {
-            ZStack(alignment: .bottomTrailing) {
-                QuantumAvatarView(size: 36)
-                Circle()
-                    .fill(isGenerating ? AppTheme.Colors.statusRunning : AppTheme.Colors.quantumCyan)
-                    .frame(width: 10, height: 10)
-                    .overlay(Circle().stroke(AppTheme.Colors.surfaceElevated, lineWidth: 2))
-            }
+        HStack(spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32)
 
             Button(action: onTitleTap) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -54,9 +48,14 @@ public struct ChatTopBarView: View {
                             .foregroundColor(AppTheme.Colors.textTertiary)
                     }
 
-                    Text(isGenerating ? "正在执行任务" : "Quantum 助手 · 已就绪")
-                        .font(AppTheme.Typography.micro)
-                        .foregroundColor(isGenerating ? AppTheme.Colors.statusRunning : AppTheme.Colors.textSecondary)
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(isGenerating ? AppTheme.Colors.statusRunning : AppTheme.Colors.statusCompleted)
+                            .frame(width: 6, height: 6)
+                        Text(isGenerating ? "正在执行" : "已就绪")
+                            .font(AppTheme.Typography.micro)
+                            .foregroundColor(AppTheme.Colors.textTertiary)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -68,10 +67,8 @@ public struct ChatTopBarView: View {
             Button(action: onNewSession) {
                 Image(systemName: "square.and.pencil")
                     .font(.body.weight(.semibold))
-                    .foregroundColor(AppTheme.Colors.onPrimary)
+                    .foregroundColor(AppTheme.Colors.textPrimary)
                     .minimumTouchTarget()
-                    .background(AppTheme.Colors.quantumGradient)
-                    .clipShape(Circle())
             }
             .buttonStyle(SoftButtonStyle())
             .accessibilityLabel("新建会话")
@@ -88,15 +85,13 @@ public struct ChatTopBarView: View {
                     .font(.body.weight(.semibold))
                     .foregroundColor(AppTheme.Colors.textSecondary)
                     .minimumTouchTarget()
-                    .background(AppTheme.Colors.secondaryBackground)
-                    .clipShape(Circle())
             }
             .buttonStyle(SoftButtonStyle())
             .accessibilityLabel("更多会话操作")
         }
         .padding(.horizontal, AppTheme.Metrics.contentGutter)
-        .padding(.vertical, AppTheme.Spacing.sm)
-        .background(.ultraThinMaterial)
+        .padding(.vertical, 10)
+        .background(AppTheme.Colors.cardBackground.opacity(0.96))
         .overlay(alignment: .bottom) {
             Rectangle()
                 .fill(AppTheme.Colors.border.opacity(0.7))

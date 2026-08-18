@@ -52,7 +52,7 @@ public struct MessageBubbleView: View {
             }
 
             Text(message.content)
-                .font(.system(size: 15, weight: .regular))
+                .font(AppTheme.Typography.body)
                 .foregroundColor(AppTheme.Colors.onPrimary)
                 .padding(.horizontal, AppTheme.Spacing.md)
                 .padding(.vertical, AppTheme.Spacing.sm + 2)
@@ -60,7 +60,7 @@ public struct MessageBubbleView: View {
                 .clipShape(
                     RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                 )
-                .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.35), radius: 8, x: 2, y: 4)
+                .shadow(color: Color.black.opacity(0.06), radius: 5, x: 0, y: 2)
                 .contextMenu {
                     contextMenuActions
                 }
@@ -69,8 +69,8 @@ public struct MessageBubbleView: View {
 
     // MARK: - Assistant Bubble
     private var assistantAvatarView: some View {
-        QuantumAvatarView(size: 32)
-            .padding(.top, 2)
+        QuantumAvatarView(size: 28)
+            .padding(.top, 4)
     }
 
     private var assistantBubbleContent: some View {
@@ -95,7 +95,7 @@ public struct MessageBubbleView: View {
                         }
                     } else if !trimmed.isEmpty {
                         Text(message.content)
-                            .font(.system(size: 15))
+                            .font(AppTheme.Typography.body)
                             .foregroundColor(AppTheme.Colors.textPrimary)
                     }
 

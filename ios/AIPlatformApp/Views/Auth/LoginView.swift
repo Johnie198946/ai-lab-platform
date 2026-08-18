@@ -107,14 +107,11 @@ public struct LoginView: View {
     
     private var brandHeaderSection: some View {
         VStack(spacing: AppTheme.Spacing.sm) {
-            // Quantum 官方主 Logo（Any=彩色主标 / Dark=反白主标，自适应亮暗模式）
-            // 仅保留官方集成完整 Logo（球体 + 官方标准字），无任何手写文字 / 副标题
-            Image("quantum_logo_full")
-                .resizable()
-                .renderingMode(.original)
-                .scaledToFit()
-                .frame(maxWidth: 220, maxHeight: 96)
-                .padding(.horizontal, AppTheme.Spacing.lg)
+            QuantumAvatarView(size: 76)
+
+            Text("Quantum")
+                .font(.largeTitle.weight(.bold))
+                .foregroundColor(AppTheme.Colors.textPrimary)
 
             Text("把复杂工作，变成清晰的下一步")
                 .font(AppTheme.Typography.supporting.weight(.medium))
@@ -215,7 +212,7 @@ public struct LoginView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 48)
                 .foregroundColor(AppTheme.Colors.onPrimary)
-                .background(AppTheme.Colors.quantumGradient)
+                .background(AppTheme.Colors.quantumBlue)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
             }
             .buttonStyle(SoftButtonStyle())

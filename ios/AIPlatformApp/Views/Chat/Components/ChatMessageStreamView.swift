@@ -21,7 +21,10 @@ public struct ChatMessageStreamView: View {
             ScrollView {
                 LazyVStack(spacing: AppTheme.Spacing.md) {
                     if coordinator.messages.isEmpty && coordinator.pendingQueue.isEmpty {
-                        ChatWelcomeView()
+                        ChatWelcomeView(
+                            quickCommands: coordinator.quickCommands,
+                            onSelect: { coordinator.selectCommand($0) }
+                        )
                             .frame(minHeight: 420)
                             .transition(.opacity)
                     }
@@ -153,30 +156,21 @@ public struct ChatMessageStreamView: View {
 }
 
 private struct ChatWelcomeView: View {
+    let quickCommands: [String]
+    let onSelect: (String) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: AppTheme.Spacing.xl) {
-            ZStack {
-                Circle()
-                    .fill(AppTheme.Colors.quantumBlue.opacity(0.08))
-                    .frame(width: 104, height: 104)
-                Circle()
-                    .fill(AppTheme.Colors.quantumGradient)
-                    .frame(width: 72, height: 72)
-                    .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.2), radius: 18, y: 8)
-                Image(systemName: "sparkles")
-                    .font(.title.weight(.semibold))
-                    .foregroundColor(.white)
-            }
+        VStack(spacing: AppTheme.Spacing.xxl) {
+            QuantumAvatarView(size: 84)
 
             VStack(spacing: AppTheme.Spacing.sm) {
-                Text("今天想推进什么？")
-                    .font(AppTheme.Typography.screenTitle)
+                Text("从一个目标开始")
+                    .font(.title.weight(.bold))
                     .foregroundColor(AppTheme.Colors.textPrimary)
 
-                Text("描述目标即可。Quantum 会先确认需求，再组织 Agent、知识与工具完成任务。")
+                Text("告诉我你想完成什么。必要时我会先确认需求，再调用合适的 Agent 和知识。")
                     .font(AppTheme.Typography.body)
                     .foregroundColor(AppTheme.Colors.textSecondary)
                     .multilineTextAlignment(.center)
@@ -184,10 +178,49 @@ private struct ChatWelcomeView: View {
                     .frame(maxWidth: 360)
             }
 
-            HStack(spacing: AppTheme.Spacing.sm) {
-                capability("需求澄清", icon: "checklist")
-                capability("智能编排", icon: "point.3.connected.trianglepath.dotted")
-                capability("知识增强", icon: "books.vertical")
+            if !quickCommands.isEmpty {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("你可以试试")
+                        .font(AppTheme.Typography.label)
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .padding(.horizontal, AppTheme.Spacing.md)
+                        .padding(.bottom, AppTheme.Spacing.sm)
+
+                    ForEach(Array(quickCommands.prefix(3).enumerated()), id: \.element) { index, command in
+                        Button(action: { onSelect(command) }) {
+                            HStack(spacing: AppTheme.Spacing.md) {
+                                Image(systemName: suggestionIcon(index))
+                                    .font(.body.weight(.medium))
+                                    .foregroundColor(AppTheme.Colors.quantumBlue)
+                                    .frame(width: 24)
+                                Text(command)
+                                    .font(AppTheme.Typography.supporting)
+                                    .foregroundColor(AppTheme.Colors.textPrimary)
+                                    .lineLimit(2)
+                                    .multilineTextAlignment(.leading)
+                                Spacer(minLength: AppTheme.Spacing.sm)
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(AppTheme.Colors.textTertiary)
+                            }
+                            .padding(.horizontal, AppTheme.Spacing.md)
+                            .frame(minHeight: 52)
+                        }
+                        .buttonStyle(SoftButtonStyle())
+
+                        if index < min(quickCommands.count, 3) - 1 {
+                            Divider()
+                                .padding(.leading, 52)
+                        }
+                    }
+                }
+                .background(AppTheme.Colors.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                        .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                }
+                .frame(maxWidth: 420)
             }
         }
         .padding(.horizontal, AppTheme.Spacing.xl)
@@ -202,22 +235,11 @@ private struct ChatWelcomeView: View {
         .accessibilityLabel("Quantum 助手已就绪。可以进行需求澄清、智能编排和知识增强。")
     }
 
-    private func capability(_ title: String, icon: String) -> some View {
-        VStack(spacing: AppTheme.Spacing.xs) {
-            Image(systemName: icon)
-                .font(.body.weight(.semibold))
-                .foregroundColor(AppTheme.Colors.quantumBlue)
-            Text(title)
-                .font(AppTheme.Typography.micro)
-                .foregroundColor(AppTheme.Colors.textSecondary)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, minHeight: 64)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+    private func suggestionIcon(_ index: Int) -> String {
+        switch index {
+        case 0: return "scope"
+        case 1: return "doc.text.magnifyingglass"
+        default: return "point.3.connected.trianglepath.dotted"
         }
     }
 }

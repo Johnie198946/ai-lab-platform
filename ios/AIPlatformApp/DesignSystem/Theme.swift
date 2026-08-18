@@ -30,14 +30,17 @@ public enum AppTheme {
         public static let brandSecondary = quantumViolet
         public static let brandTertiary = quantumCyan
 
-        // Quantum 主品牌流光渐变：Cyan ➔ Blue ➔ Violet（135° topLeading ➔ bottomTrailing）
+        // 品牌渐变只用于少量关键动作；大面积界面保持中性。
         public static let quantumGradient = LinearGradient(
             colors: [quantumCyan, quantumBlue, quantumViolet],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
-        // 用户气泡三色量子流光渐变（白字），告别死板单色纯蓝
-        public static let userBubbleGradient = quantumGradient
+        public static let userBubbleGradient = LinearGradient(
+            colors: [Color(hex: "5267D9"), Color(hex: "6559D9")],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
 
         // primary / accent 统一为 Quantum Blue（主 CTA / 链接 / TabBar 选中高亮）
         public static let primary = brandPrimary
@@ -115,13 +118,13 @@ public enum AppTheme {
         public static let codeSyntaxForeground = Color(hex: "E6EDF3")
         
         // Layered surfaces — calm in light mode, cinematic rather than pure black in dark mode.
-        public static var background: Color { adaptive("F6F7FB", "0D0F14") }
-        public static var secondaryBackground: Color { adaptive("EEF1F7", "171A22") }
-        public static var tertiaryBackground: Color { adaptive("E4E8F1", "222631") }
-        public static var cardBackground: Color { adaptive("FFFFFF", "151821") }
-        public static var surfaceElevated: Color { adaptive("FFFFFF", "1C202A") }
+        public static var background: Color { adaptive("F8F8FA", "0F1014") }
+        public static var secondaryBackground: Color { adaptive("F1F2F5", "191B21") }
+        public static var tertiaryBackground: Color { adaptive("E7E9EE", "24272F") }
+        public static var cardBackground: Color { adaptive("FFFFFF", "17191F") }
+        public static var surfaceElevated: Color { adaptive("FFFFFF", "1D2027") }
         public static var groupedBackground: Color { background }
-        public static var surfaceTint: Color { adaptive("EEF2FF", "20243A") }
+        public static var surfaceTint: Color { adaptive("F0F1FA", "20222E") }
         public static var focusRing: Color { quantumBlue.opacity(0.28) }
         public static var scrim: Color { Color.black.opacity(0.52) }
 
@@ -137,12 +140,12 @@ public enum AppTheme {
         public static let codeSyntaxType = Color(hex: "6BDFFF")
         
         // Dynamic Label Colors — Quantum 同源文字（亮 #333333 · 暗 #F5F5F7）
-        public static var textPrimary: Color { adaptive("172033", "F4F6FC") }
-        public static var textSecondary: Color { adaptive("526079", "B4BECE") }
-        public static var textTertiary: Color { adaptive("738098", "8F9AAD") }
+        public static var textPrimary: Color { adaptive("17181C", "F5F5F7") }
+        public static var textSecondary: Color { adaptive("565B66", "B7BBC5") }
+        public static var textTertiary: Color { adaptive("7C828E", "8D929E") }
         
         // Border & Divider — Quantum 冷调发丝线
-        public static var border: Color { adaptive("DDE3EE", "303541") }
+        public static var border: Color { adaptive("E2E4E9", "30333A") }
         
         // MARK: - 双模式自适应色辅助
         private static func adaptive(_ light: String, _ dark: String) -> Color {
@@ -269,10 +272,10 @@ private struct CardShadowModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .shadow(
-                color: colorScheme == .dark ? Color.black.opacity(0.18) : Color.black.opacity(0.06),
-                radius: 24,
+                color: colorScheme == .dark ? Color.black.opacity(0.14) : Color.black.opacity(0.035),
+                radius: 12,
                 x: 0,
-                y: 12
+                y: 4
             )
     }
 }
@@ -307,10 +310,10 @@ public struct QuantumCardModifier: ViewModifier {
                     .stroke(AppTheme.Colors.border.opacity(colorScheme == .dark ? 0.9 : 0.7), lineWidth: 0.75)
             }
             .shadow(
-                color: Color.black.opacity(colorScheme == .dark ? 0.18 : 0.045),
-                radius: 12,
+                color: Color.black.opacity(colorScheme == .dark ? 0.12 : 0.025),
+                radius: 8,
                 x: 0,
-                y: 5
+                y: 3
             )
     }
 }
