@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
@@ -81,6 +81,7 @@ WATERMARK_FILE = Path(
     )
 )
 MAX_INPUT = 4000
+ALLOWED_CHAT_SKILLS = {"solution-consultant-persona"}
 DEFAULT_TIMEOUT = 300
 SERVE_TIMEOUT = 300
 # 注：v5 起显式移除「>300s 无更新」stale 判定（STATUS_STALE_SECONDS），
@@ -214,10 +215,31 @@ def _get_user_lock(user_id: str) -> asyncio.Lock:
 class GoalRequest(BaseModel):
     goal: str = Field(..., max_length=MAX_INPUT)
     session_id: str | None = None  # 前端传入的 user_id（用于映射 Hermes 原生 session）
+    skill_id: str | None = Field(None, max_length=80)
     isolation: str = Field("standard", description="向后兼容·子Agent工厂使用")
     # 重新生成语义（2026-08-17 修复）：true 时作废旧 run（interrupt 旧 agent + discard 注册）
     # 再启动全新尝试——对齐 ChatGPT「重新生成」= 上次回答作废重跑，而非被并发防护拒绝
     regenerate: bool = Field(False, description="重新生成：作废旧 run 后全新执行")
+
+
+def _expand_requested_skill(goal: str, skill_id: str | None) -> str:
+    """在Hermes进程内按官方skill command协议加载白名单技能。"""
+    if not skill_id:
+        return goal
+    if skill_id not in ALLOWED_CHAT_SKILLS:
+        raise HTTPException(status_code=400, detail=f"unsupported skill: {skill_id}")
+    from agent.skill_commands import (
+        build_skill_invocation_message,
+        resolve_skill_command_key,
+    )
+
+    command_key = resolve_skill_command_key(skill_id)
+    if not command_key:
+        raise HTTPException(status_code=503, detail=f"skill not installed: {skill_id}")
+    expanded = build_skill_invocation_message(command_key, goal)
+    if not expanded:
+        raise HTTPException(status_code=503, detail=f"skill load failed: {skill_id}")
+    return expanded
 
 
 # ---------- 映射持久化 ----------
@@ -929,6 +951,7 @@ async def chat_stream(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
+    goal = _expand_requested_skill(body.goal, body.skill_id)
     _mark_in_flight(user_id)
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
@@ -962,7 +985,7 @@ async def chat_stream(body: GoalRequest):
         try:
             print(f"[bridge] v7 进程内流式: user={user_id}")
             return StreamingResponse(
-                _sse_from_in_process(user_id, body.goal),
+                _sse_from_in_process(user_id, goal),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -980,7 +1003,7 @@ async def chat_stream(body: GoalRequest):
         # 首次对话：先通过 CLI 新建会话·捕获 session_id
         if not hermes_sid:
             print(f"[bridge] 首次对话·先通过 CLI 新建会话")
-            reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
+            reply, new_sid = await asyncio.to_thread(_run_hermes, goal, None)
             if new_sid:
                 _update_session_mapping(user_id, new_sid)
                 hermes_sid = new_sid
@@ -1003,7 +1026,7 @@ async def chat_stream(body: GoalRequest):
             try:
                 print(f"[bridge] WS PTY 流式: user={user_id} session={hermes_sid}")
                 return StreamingResponse(
-                    _stream_from_ws_pty(body.goal, hermes_sid),
+                    _stream_from_ws_pty(goal, hermes_sid),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
@@ -1030,7 +1053,7 @@ async def chat_stream(body: GoalRequest):
         #     print(f"[bridge] SSE 流式失败·降级到非流式: {sse_err}")
 
         # 最终降级：CLI -z 非流式（SSE 包装·契约统一）·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
-        reply, _ = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
+        reply, _ = await asyncio.to_thread(_run_hermes, goal, hermes_sid)
         print(f"[bridge] 最终降级 CLI·包装 SSE 返回")
         return StreamingResponse(
             _fallback_sse(reply),
@@ -1811,6 +1834,7 @@ async def chat(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
+    goal = _expand_requested_skill(body.goal, body.skill_id)
     _mark_in_flight(user_id)
     try:
         async with _semaphore:
@@ -1824,12 +1848,12 @@ async def chat(body: GoalRequest):
 
                 # 3) CLI 执行（唯一真实执行路径·to_thread 不阻塞事件循环）
                 if not hermes_sid:
-                    reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, None)
+                    reply, new_sid = await asyncio.to_thread(_run_hermes, goal, None)
                     effective_sid = new_sid
                     if new_sid:
                         _update_session_mapping(user_id, new_sid)
                 else:
-                    reply, new_sid = await asyncio.to_thread(_run_hermes, body.goal, hermes_sid)
+                    reply, new_sid = await asyncio.to_thread(_run_hermes, goal, hermes_sid)
                     effective_sid = new_sid or hermes_sid
 
                 # 4) 执行后增量回读 + 真实思维链映射（失败降级·不 500）

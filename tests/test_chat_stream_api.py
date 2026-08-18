@@ -95,7 +95,9 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
     """
     observed_during_stream: list[set] = []
 
-    async def fake_bridge_stream(goal: str, session_id: str, regenerate: bool = False):
+    async def fake_bridge_stream(
+        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None
+    ):
         observed_during_stream.append(set(_streaming_sessions))
         yield "data: {\"type\":\"delta\",\"content\":\"你\"}\n\n"
         yield "data: {\"type\":\"delta\",\"content\":\"好\"}\n\n"
@@ -136,15 +138,12 @@ async def test_stream_expands_requested_skill(
 
     observed: list[str] = []
 
-    def fake_expand(skill_id: str | None, question: str) -> str:
-        assert skill_id == "solution-consultant-persona"
-        return f"ARCHITECT-SKILL::{question}"
-
-    async def fake_bridge_stream(goal: str, session_id: str, regenerate: bool = False):
-        observed.append(goal)
+    async def fake_bridge_stream(
+        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None
+    ):
+        observed.append(f"{skill_id}::{goal}")
         yield 'data: {"type":"done","answer":"ok"}\n\n'
 
-    monkeypatch.setattr(chat_mod, "expand_chat_skill", fake_expand)
     monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
     monkeypatch.setattr(
         chat_mod, "derive_isolated_session_id", lambda agent_id, sid: "main_agent-x"
@@ -162,14 +161,16 @@ async def test_stream_expands_requested_skill(
         )
 
     assert response.status_code == 200
-    assert observed == ["ARCHITECT-SKILL::我们要缩短换模时间"]
+    assert observed == ["solution-consultant-persona::我们要缩短换模时间"]
 
 
 @pytest.mark.asyncio
 async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """bridge 返回非 200 时下发 error 帧而非崩溃。"""
 
-    async def fake_bridge_stream(goal: str, session_id: str, regenerate: bool = False):
+    async def fake_bridge_stream(
+        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None
+    ):
         yield "data: {\"type\":\"error\",\"code\":\"bridge\",\"message\":\"HTTP 500\"}\n\n"
 
     import backend.api.chat as chat_mod

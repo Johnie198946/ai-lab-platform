@@ -11,7 +11,6 @@ import json
 import os
 import re
 import uuid
-from pathlib import Path
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 import httpx
@@ -53,12 +52,7 @@ HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
 
-HERMES_SKILLS_DIR = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
-CHAT_SKILLS = {
-    "solution-consultant-persona": Path(
-        "productivity/solution-consultant-persona/SKILL.md"
-    ),
-}
+CHAT_SKILLS = {"solution-consultant-persona"}
 
 # ---------------------------------------------------------------------------
 # 首屏滑动窗口熔断器与 Citation 提取器（2026-08-16 增强：多层嵌套前缀 + 破折号变体）
@@ -127,38 +121,13 @@ class ChatRequest(BaseModel):
     skill_id: Optional[str] = Field(None, max_length=80)
 
 
-def expand_chat_skill(skill_id: Optional[str], question: str) -> str:
-    """按Hermes官方skill scaffolding协议展开一个白名单技能。"""
+def validate_chat_skill(skill_id: Optional[str]) -> Optional[str]:
+    """只允许前端调用展厅明确绑定的对话技能。"""
     if not skill_id:
-        return question
-    relative_path = CHAT_SKILLS.get(skill_id)
-    if relative_path is None:
+        return None
+    if skill_id not in CHAT_SKILLS:
         raise HTTPException(status_code=400, detail=f"不支持的对话技能: {skill_id}")
-    skill_path = HERMES_SKILLS_DIR / relative_path
-    try:
-        content = skill_path.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise HTTPException(
-            status_code=503, detail=f"对话技能未安装: {skill_id}"
-        ) from exc
-    return "\n".join(
-        [
-            (
-                f'[IMPORTANT: The user has invoked the "{skill_id}" skill, '
-                "indicating they want you to follow its instructions. "
-                "The full skill content is loaded below.]"
-            ),
-            "",
-            content,
-            "",
-            f"[Skill directory: {skill_path.parent}]",
-            "",
-            (
-                "The user has provided the following instruction alongside the "
-                f"skill invocation: {question}"
-            ),
-        ]
-    )
+    return skill_id
 
 
 class ClarifyPayload(BaseModel):
@@ -218,12 +187,14 @@ def extract_clarify_payload(reasoning: List[ReasoningStep]) -> Optional[ClarifyP
 
 
 async def _call_hermes(
-    goal: str, session_id: Optional[str] = None
+    goal: str, session_id: Optional[str] = None, skill_id: Optional[str] = None
 ) -> tuple[str, List[ReasoningStep]]:
     """透传 Hermes bridge，返回 (reply, reasoning)。"""
     payload: Dict[str, Any] = {"goal": goal}
     if session_id:
         payload["session_id"] = session_id
+    if skill_id:
+        payload["skill_id"] = skill_id
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
         r = await client.post(HERMES_BRIDGE_URL, json=payload)
         if r.status_code == 200:
@@ -330,8 +301,8 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             citations=extract_citations(fixed),
         )
 
-    # 普通对话原样透传；显式skill_id按Hermes官方scaffolding协议加载技能。
-    goal = expand_chat_skill(req.skill_id, req.question)
+    skill_id = validate_chat_skill(req.skill_id)
+    goal = req.question
     isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
 
     # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
@@ -342,7 +313,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     # 透传 Hermes bridge（附真实思维链）
     try:
         reply, reasoning = await _call_hermes(
-            goal, session_id=isolated_session_id
+            goal, session_id=isolated_session_id, skill_id=skill_id
         )
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
@@ -440,14 +411,22 @@ def _identity_sse(answer: str) -> Iterator[str]:
 
 
 async def _call_bridge_stream(
-    goal: str, session_id: str, regenerate: bool = False
+    goal: str,
+    session_id: str,
+    regenerate: bool = False,
+    skill_id: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
         async with client.stream(
             "POST",
             HERMES_BRIDGE_STREAM_URL,
-            json={"goal": goal, "session_id": session_id, "regenerate": regenerate},
+            json={
+                "goal": goal,
+                "session_id": session_id,
+                "regenerate": regenerate,
+                "skill_id": skill_id,
+            },
         ) as resp:
             if resp.status_code != 200:
                 yield f"data: {json.dumps({'type': 'error', 'code': 'bridge', 'message': f'HTTP {resp.status_code}'}, ensure_ascii=False)}\n\n"
@@ -494,13 +473,18 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。"
             "表格内的关键差异与结论词请用 **加粗** 标注以突出重点。）"
         )
-    goal = expand_chat_skill(req.skill_id, goal)
+    skill_id = validate_chat_skill(req.skill_id)
 
     _streaming_sessions.add(isolated_session_id)
 
     async def _gen():
         try:
-            async for frame in _call_bridge_stream(goal, isolated_session_id, regenerate=req.regenerate):
+            async for frame in _call_bridge_stream(
+                goal,
+                isolated_session_id,
+                regenerate=req.regenerate,
+                skill_id=skill_id,
+            ):
                 yield frame
         finally:
             _streaming_sessions.discard(isolated_session_id)

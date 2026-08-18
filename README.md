@@ -179,7 +179,7 @@ npm run dev
 - `GET /api/showroom/bootstrap`：前端唯一启动契约，返回 9 屏配置、内容清单、知识统计、全场状态和当前独立会话；
 - `PATCH /api/showroom/sessions/{session_id}`：按租户、工位持久化体验步骤与结构化业务数据；
 - `POST /api/showroom/sessions/{session_id}/messages`：保存用户与 AI 对话；
-- `POST /api/chat/stream`：003需求对话显式携带 `skill_id=solution-consultant-persona`，由后端按Hermes官方协议加载首席解决方案架构师技能；
+- `POST /api/chat/stream`：003需求对话显式携带 `skill_id=solution-consultant-persona`，由后端白名单校验、Hermes Bridge按官方协议加载首席解决方案架构师技能；
 - `POST /api/showroom/sessions/{session_id}/demand/confirm`：确认需求并形成 IPD 唯一输入；
 - `POST /api/showroom/sessions/{session_id}/insight/generate`：基于当前需求检索知识库并生成带来源洞察；
 - `POST /api/showroom/sessions/{session_id}/ipd/{phase}/generate`：按 IPD 阶段生成、保存交付件索引和来源；
