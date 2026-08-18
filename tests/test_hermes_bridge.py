@@ -250,6 +250,12 @@ class TestDrillMeSteering(unittest.TestCase):
 
         self.assertTrue(_is_drill_me_goal("我想做一个个人脸识别系统"))
         self.assertTrue(_is_drill_me_goal("帮我搭建一个数据分析平台"))
+        self.assertTrue(
+            _is_drill_me_goal(
+                "【知识库检索纪律·必须严格遵守】" + "规则" * 200
+                + "\n\n【用户问题】我想做一个 TV 系统"
+            )
+        )
 
     def test_direct_question_does_not_enter_drill_me(self):
         from scripts.hermes_bridge import _is_drill_me_goal
@@ -279,6 +285,13 @@ class TestDrillMeSteering(unittest.TestCase):
 
         result = _steer_drill_me_response("确认开工", round_number=1, enabled=False)
         self.assertEqual(result, "确认开工")
+
+    def test_prompt_requires_table_confirmation_sheet(self):
+        from scripts.hermes_bridge import CLARIFY_GATE_PROMPT
+
+        self.assertIn("## 需求确认单", CLARIFY_GATE_PROMPT)
+        self.assertIn("确认维度 | 已确认需求", CLARIFY_GATE_PROMPT)
+        self.assertIn("确认，进入方案设计", CLARIFY_GATE_PROMPT)
 
 
 if __name__ == "__main__":

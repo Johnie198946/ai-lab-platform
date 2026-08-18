@@ -145,7 +145,14 @@ public final class MarkdownBlockParser {
             guard cells.count == headers.count else { break }
             rows.append(cells); curr += 1
         }
-        return rows.isEmpty ? nil : (TableBlock(title: "数据统计表格", headers: headers, rows: rows), curr)
+        let title: String
+        if headers.first?.contains("确认维度") == true
+            || headers.contains(where: { $0.contains("已确认需求") }) {
+            title = "需求确认单"
+        } else {
+            title = "数据统计表格"
+        }
+        return rows.isEmpty ? nil : (TableBlock(title: title, headers: headers, rows: rows), curr)
     }
     private static func tryChart(_ lang: String?, _ code: String) -> MarkdownBlock? {
         guard let l = lang?.lowercased(), l.contains("chart"), let d = code.data(using: .utf8),

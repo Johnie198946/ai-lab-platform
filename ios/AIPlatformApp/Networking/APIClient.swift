@@ -362,6 +362,8 @@ public final class APIClient: ObservableObject {
     public var baseURL: URL
     private let session: URLSession
     private let chatSession: URLSession
+    /// 交互式 Agent SSE 可能跨越多轮 Clarify，资源总时长必须独立于普通问答超时。
+    private let streamSession: URLSession
     private let decoder: JSONDecoder
 
     public init(baseURL: URL = URL(string: "http://120.24.248.58")!) {
@@ -382,6 +384,15 @@ public final class APIClient: ObservableObject {
         chatConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
         chatConfig.connectionProxyDictionary = [:]
         self.chatSession = URLSession(configuration: chatConfig)
+
+        // Drill-me 是一个持续连接：用户思考时间 + 多轮模型推理可能明显超过 220 秒。
+        // request timeout 只约束连续无数据时长；resource timeout 给完整工作流 1 小时。
+        let streamConfig = URLSessionConfiguration.default
+        streamConfig.timeoutIntervalForRequest = 75
+        streamConfig.timeoutIntervalForResource = 3_600
+        streamConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        streamConfig.connectionProxyDictionary = [:]
+        self.streamSession = URLSession(configuration: streamConfig)
 
         self.decoder = JSONDecoder()
         self.decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -764,7 +775,7 @@ public final class APIClient: ObservableObject {
 
             let consumeTask = Task {
                 do {
-                    let (bytes, response) = try await chatSession.bytes(for: request)
+                    let (bytes, response) = try await streamSession.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else {
                         continuation.finish(throwing: APIError.network("无效响应"))
                         return
@@ -803,11 +814,14 @@ public final class APIClient: ObservableObject {
                 }
             }
 
-            continuation.onTermination = { @Sendable _ in
+            continuation.onTermination = { @Sendable termination in
                 consumeTask.cancel()
-                // 断连/取消 → 通知服务端 interrupt 回收线程与内存
-                Task {
-                    try? await self.cancelStream(sessionId: sessionId)
+                // 仅用户主动取消时 interrupt；网络异常采用 detach + status 回读，避免误杀
+                // 已经生成到最终确认单的 Agent。
+                if case .cancelled = termination {
+                    Task {
+                        try? await self.cancelStream(sessionId: sessionId)
+                    }
                 }
             }
         }

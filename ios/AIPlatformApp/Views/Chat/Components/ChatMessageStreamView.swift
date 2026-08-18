@@ -47,7 +47,17 @@ public struct ChatMessageStreamView: View {
             .onChange(of: coordinator.inflight?.id) { _, _ in
                 scrollToBottom(proxy)
             }
+            // Clarify 卡是在既有续写消息上追加 block，不会改变 messages.count。
+            // 监听尾消息块签名，确保最终“需求确认单 + 确认卡”出现时自动滚入视野。
+            .onChange(of: tailBlockSignature) { _, _ in
+                scrollToBottom(proxy)
+            }
         }
+    }
+
+    private var tailBlockSignature: String {
+        guard let last = coordinator.messages.last else { return "empty" }
+        return "\(last.id):\(last.blocks.count):\(last.clarifyBlock?.isSubmitted == true)"
     }
 
     private func scrollToBottom(_ proxy: ScrollViewProxy) {
@@ -76,7 +86,9 @@ public struct ChatMessageStreamView: View {
             } else {
                 OrphanPendingCardView(onRetry: { coordinator.retryMessage(message.id) })
             }
-        } else if let clarify = message.clarifyBlock, !clarify.isSubmitted {
+        } else if let clarify = message.clarifyBlock,
+                  !clarify.isSubmitted,
+                  !containsRequirementConfirmation(message) {
             ClarifyCard(
                 block: clarify,
                 onSubmit: { selection in
@@ -92,6 +104,19 @@ public struct ChatMessageStreamView: View {
                 onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted },
                 onRegenerate: { msgId in coordinator.retryMessage(msgId) }
             )
+        }
+    }
+
+    /// 普通 Clarify 保持卡片独占的轻量形态；最终确认必须同时呈现需求确认单表格。
+    private func containsRequirementConfirmation(_ message: ChatMessage) -> Bool {
+        if message.content.contains("确认维度") && message.content.contains("已确认需求") {
+            return true
+        }
+        return message.blocks.contains { block in
+            if case .table(let table) = block {
+                return table.title.contains("需求确认")
+            }
+            return false
         }
     }
 

@@ -424,6 +424,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                             for i in steps.indices { steps[i].status = "done" }
                         }
                         var blocks = messages[idx].blocks
+                        if isRequirementConfirmationQuestion(question),
+                           !containsRequirementTable(message: messages[idx]) {
+                            blocks.append(.table(makeRequirementConfirmationTable()))
+                        }
                         if !blocks.contains(where: { if case .clarify = $0 { return true }; return false }) {
                             blocks.append(.clarify(block))
                             messages[idx].blocks = blocks
@@ -509,11 +513,31 @@ public final class TenantSessionCoordinator: ObservableObject {
             finishGeneration()
         } catch {
             guard self.tenantEpoch == taskEpoch else { return }
-            if let idx = messages.firstIndex(where: { $0.id == outputMessageId(for: req) }) {
-                messages[idx].content = ""
-                messages[idx].blocks = []
+            let outputId = outputMessageId(for: req)
+            drainDeltaBuffer(messageId: outputId)
+
+            // SSE 异常不能清空已生成内容，更不能用原始需求另起一个非流式 Agent。
+            // 先回读后台结果；未完成时保留现有上下文并给出明确恢复入口。
+            if let status = try? await APIClient.shared.fetchChatStatus(
+                sessionId: req.sessionId,
+                consume: true
+            ), status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                if let idx = messages.firstIndex(where: { $0.id == outputId }) {
+                    messages[idx].content = answer
+                    messages[idx].pending = false
+                    messages[idx].isStreaming = false
+                    messages[idx].degraded = false
+                }
+            } else if let idx = messages.firstIndex(where: { $0.id == outputId }) {
+                if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    messages[idx].content = "连接暂时中断，已保留当前需求确认进度。请点击重新生成继续。"
+                }
+                messages[idx].pending = false
+                messages[idx].isStreaming = false
+                messages[idx].degraded = false
             }
-            await runInFlight(req, taskEpoch: taskEpoch)
+            commitSession()
+            finishGeneration()
         }
     }
 
@@ -831,6 +855,60 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func outputMessageId(for req: InFlightRequest) -> String {
         streamOutputMessageIds[req.id] ?? req.id
+    }
+
+    private func isRequirementConfirmationQuestion(_ question: String) -> Bool {
+        question.contains("需求确认单")
+            || question.contains("以上需求") && question.contains("准确")
+    }
+
+    private func containsRequirementTable(message: ChatMessage) -> Bool {
+        if message.content.contains("确认维度") && message.content.contains("已确认需求") {
+            return true
+        }
+        return message.blocks.contains { block in
+            if case .table(let table) = block {
+                return table.title.contains("需求确认")
+            }
+            return false
+        }
+    }
+
+    /// 从本次 Drill-me 已提交卡片确定性组装确认单。模型已输出 Markdown 表格时不会调用此兜底。
+    private func makeRequirementConfirmationTable() -> TableBlock {
+        var rows: [[String]] = []
+        var usedDimensions: Set<String> = []
+
+        for message in messages {
+            guard let clarify = message.clarifyBlock,
+                  clarify.isSubmitted,
+                  !clarify.submittedSelection.isEmpty else { continue }
+            let dimension = requirementDimension(for: clarify.question, fallbackIndex: rows.count + 1)
+            guard !usedDimensions.contains(dimension) else { continue }
+            usedDimensions.insert(dimension)
+            rows.append([dimension, clarify.submittedSelection])
+        }
+
+        return TableBlock(
+            title: "需求确认单",
+            headers: ["确认维度", "已确认需求"],
+            rows: rows
+        )
+    }
+
+    private func requirementDimension(for question: String, fallbackIndex: Int) -> String {
+        let rules: [(keywords: [String], label: String)] = [
+            (["交付形态", "产品形态", "哪一种形态"], "产品形态"),
+            (["核心场景", "故事线", "目标用户", "解决什么问题"], "目标用户与场景"),
+            (["MVP", "功能边界", "范围"], "MVP 范围"),
+            (["技术路线", "技术栈"], "技术路线"),
+            (["数据", "集成", "对接"], "数据与集成"),
+            (["验收", "成功标准"], "验收标准"),
+        ]
+        for rule in rules where rule.keywords.contains(where: question.contains) {
+            return rule.label
+        }
+        return "确认项 \(fallbackIndex)"
     }
 
     private func updateReasoningSteps(for idx: Int, update: (inout [ReasoningStep]) -> Void) {
