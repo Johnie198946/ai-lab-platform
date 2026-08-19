@@ -364,6 +364,33 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         self.assertEqual(usage["cache_read_tokens"], 10_000)
         self.assertEqual(usage["budget_tokens"], 75)
 
+    def test_node_prompt_includes_only_direct_dependency_summary(self):
+        from scripts.hermes_bridge import _workflow_node_prompt
+
+        run = {
+            "goal": "生成报告",
+            "deliverable": "Markdown",
+            "allow_network": False,
+            "plan": {
+                "nodes": [
+                    {"id": "source", "name": "证据"},
+                    {"id": "unrelated", "name": "无关分支"},
+                    {"id": "format", "name": "格式化"},
+                ],
+                "edges": [{"source": "source", "target": "format"}],
+            },
+            "nodes": {
+                "source": {"status": "succeeded", "output": "直接证据摘要"},
+                "unrelated": {"status": "succeeded", "output": "不应注入的内容"},
+            },
+        }
+        prompt = _workflow_node_prompt(
+            run,
+            {"id": "format", "node_type": "OUTPUT_FORMAT", "parameters": {}},
+        )
+        self.assertIn("直接证据摘要", prompt)
+        self.assertNotIn("不应注入的内容", prompt)
+
 
 if __name__ == "__main__":
     unittest.main()

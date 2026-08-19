@@ -761,25 +761,28 @@ def _run_workflow_node_in_process(
 def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
     params = node.get("parameters") or {}
     completed = []
-    if not run.get("hermes_session_id"):
-        for candidate in run.get("plan", {}).get("nodes") or []:
-            node_id = str(candidate.get("id") or "")
-            state = (run.get("nodes") or {}).get(node_id) or {}
-            if state.get("status") == "succeeded" and state.get("output"):
-                completed.append(
-                    f"- {candidate.get('name') or node_id}: {str(state['output'])[:1200]}"
-                )
+    current_id = str(node.get("id") or "")
+    dependency_ids = {
+        str(edge.get("source") or "")
+        for edge in run.get("plan", {}).get("edges") or []
+        if str(edge.get("target") or "") == current_id
+    }
+    for candidate in run.get("plan", {}).get("nodes") or []:
+        node_id = str(candidate.get("id") or "")
+        if dependency_ids and node_id not in dependency_ids:
+            continue
+        state = (run.get("nodes") or {}).get(node_id) or {}
+        if state.get("status") == "succeeded" and state.get("output"):
+            completed.append(
+                f"- {candidate.get('name') or node_id}: {str(state['output'])[:1800]}"
+            )
     node_type = str(node.get("node_type") or "")
     tool_rule = (
         "按最小次数使用当前节点授权的检索工具。"
         if node_type == "KNOWLEDGE_RETRIEVAL"
         else "本节点禁止调用工具；只基于当前 Session 已有的上游成果完成转换、分析或格式化。"
     )
-    upstream = (
-        "上游完整成果已保存在当前 Hermes Session，不要要求重复注入。"
-        if run.get("hermes_session_id")
-        else (chr(10).join(completed) if completed else "无")
-    )
+    upstream = chr(10).join(completed) if completed else "无直接依赖或上游暂无成果"
     return (
         "你是 Hermes 工作流编排引擎，正在同一个持久 Session 中推进已获用户批准的 DAG。\n"
         f"工作流目标：{run.get('goal', '')}\n"
