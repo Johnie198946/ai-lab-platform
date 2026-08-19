@@ -1,151 +1,120 @@
-"""tests/test_isolation.py — 子 Agent 纯净沙箱隔离模式测试。
+"""Knowledge Capability / Gateway 强隔离契约测试。
 
-覆盖:
-1. pure 参数映射断言（ISOLATION_ARGS 内容）
-2. standard 无隔离参数（空列表）
-3. kb 参数映射断言
-4. isolation=invalid 返回 422（Pydantic pattern 校验）
-5. Agent 模型 isolation 字段默认值
-6. agent_engine.call_hermes 透传 isolation 参数
-
-注: 本文件在 conftest 注入 SQLite 前打补丁 backend.db, 绕过 pool_size
-与 SQLite NullPool 不兼容的预存问题(与本次 isolation 任务无关)。
+旧 pure/standard/kb 命令行隔离协议已废弃。知识权限的唯一来源是平台签发、
+绑定 subject 与 policy_version 的短期 Capability；Hermes 只能携带该凭证调用
+Knowledge Gateway。
 """
 from __future__ import annotations
 
 import os
-import sys
-from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# 预存问题规避: SQLite 不支持 pool_size, 在 backend.db 模块级执行前替换
-# create_async_engine 调用参数。
-# ---------------------------------------------------------------------------
-_SQLITE_URL = os.environ.get("DATABASE_URL", "")
-if _SQLITE_URL.startswith("sqlite"):
-    # 拦截 create_async_engine, 剥离 pool_size/pool_pre_ping
-    from sqlalchemy.ext import asyncio as _sa_asyncio
-    _orig_create = _sa_asyncio.create_async_engine
-
-    def _patched_create(url, **kw):
-        kw.pop("pool_size", None)
-        kw.pop("pool_pre_ping", None)
-        return _orig_create(url, **kw)
-
-    _sa_asyncio.create_async_engine = _patched_create  # type: ignore
-
-# 让 scripts/hermes_bridge.py 可被 import
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
-import hermes_bridge  # noqa: E402
+os.environ.setdefault("HERMES_STATE_DB", "/tmp/test_state_isolation.db")
+
+from backend.models.agent import Agent  # noqa: E402
+from scripts import hermes_bridge  # noqa: E402
 
 
-# ---------------------------------------------------------------------------
-# 1. pure 模式：参数映射断言
-# ---------------------------------------------------------------------------
-def test_isolation_args_pure_contains_all_flags():
-    """pure 模式必须包含 ignore-user-config / ignore-rules / safe-mode + 收窄工具集。"""
-    args = hermes_bridge.ISOLATION_ARGS["pure"]
-    assert "--ignore-user-config" in args
-    assert "--ignore-rules" in args
-    assert "--safe-mode" in args
-    assert "-t" in args
-    idx = args.index("-t")
-    assert args[idx + 1] == "core,web"
-
-
-# ---------------------------------------------------------------------------
-# 2. standard 模式：无隔离参数
-# ---------------------------------------------------------------------------
-def test_isolation_args_standard_is_empty():
-    """standard 模式必须保持空列表（向后兼容·无隔离）。"""
-    assert hermes_bridge.ISOLATION_ARGS["standard"] == []
-
-
-# ---------------------------------------------------------------------------
-# 3. kb 模式：参数映射断言
-# ---------------------------------------------------------------------------
-def test_isolation_args_kb_contains_memory_toolset():
-    """kb 模式 = 纯净 + 显式 RAG（memory 工具集）。"""
-    args = hermes_bridge.ISOLATION_ARGS["kb"]
-    assert "--ignore-user-config" in args
-    assert "--ignore-rules" in args
-    assert "--safe-mode" not in args  # kb 需保留 memory 工具
-    assert "-t" in args
-    idx = args.index("-t")
-    assert args[idx + 1] == "core,web,memory"
-
-
-# ---------------------------------------------------------------------------
-# 4. isolation=invalid → 422 (Pydantic pattern 校验)
-# ---------------------------------------------------------------------------
-def test_invalid_isolation_raises_validation_error():
-    """非法 isolation 值必须被 Pydantic pattern 校验拦截（FastAPI 会转 422）。"""
+def test_legacy_isolation_field_is_rejected() -> None:
+    """旧客户端不能再用 pure/standard/kb 伪造知识权限。"""
     with pytest.raises(ValidationError) as exc:
-        hermes_bridge.GoalRequest(goal="hello", isolation="invalid-mode")
-    # 错误位置指向 isolation 字段
-    errs = exc.value.errors()
-    assert any(e["loc"] == ("isolation",) for e in errs)
+        hermes_bridge.GoalRequest(goal="hello", isolation="pure")
+    assert any(error["loc"] == ("isolation",) for error in exc.value.errors())
 
 
-@pytest.mark.asyncio
-async def test_valid_isolation_modes_accepted(monkeypatch):
-    """三种合法模式都通过 GoalRequest 校验 + chat 路由返回对应 isolation。"""
-    monkeypatch.setattr(
-        hermes_bridge, "_run_hermes",
-        lambda goal, session, isolation: (f"echo:{isolation}", session or ""),
+def test_legacy_agent_isolation_column_is_not_mapped() -> None:
+    """Agent 运行模型不再承载第二套隔离真值。"""
+    assert "isolation" not in Agent.__table__.columns
+
+
+def test_missing_capability_means_no_knowledge_access() -> None:
+    claims = hermes_bridge._validated_knowledge_claims(
+        None,
+        subject_id="tenant-a:session-1",
+        policy_version=None,
     )
-    for mode in ("pure", "standard", "kb"):
-        req = hermes_bridge.GoalRequest(goal="hi", isolation=mode)
-        assert req.isolation == mode
-        resp = await hermes_bridge.chat(req)
-        assert resp["isolation"] == mode
+    assert claims is None
 
 
-# ---------------------------------------------------------------------------
-# 5. Agent 模型 isolation 字段默认值 = pure
-# ---------------------------------------------------------------------------
-def test_agent_model_isolation_default_is_pure():
-    """Agent DB 模型 isolation 字段默认 'pure'（新建 Agent 默认纯净沙箱）。"""
-    from backend.models.agent import Agent
+def test_capability_is_bound_to_subject_and_policy(monkeypatch) -> None:
+    monkeypatch.setattr(
+        hermes_bridge,
+        "verify_capability",
+        lambda _token: {
+            "tenant_key": "tenant-a",
+            "subject_id": "tenant-a:session-1",
+            "policy_version": "policy-v2:7",
+            "scopes": ["public", "premium"],
+        },
+    )
+    claims = hermes_bridge._validated_knowledge_claims(
+        "signed-capability",
+        subject_id="tenant-a:session-1",
+        policy_version="policy-v2:7",
+    )
+    assert claims["tenant_key"] == "tenant-a"
+    assert claims["scopes"] == ["public", "premium"]
 
-    col = Agent.__table__.columns["isolation"]
-    assert col.default is not None
-    assert col.default.arg == "pure"
+    with pytest.raises(HTTPException) as subject_error:
+        hermes_bridge._validated_knowledge_claims(
+            "signed-capability",
+            subject_id="tenant-b:session-1",
+            policy_version="policy-v2:7",
+        )
+    assert subject_error.value.status_code == 403
+    assert subject_error.value.detail == "knowledge_scope_denied"
+
+    with pytest.raises(HTTPException) as policy_error:
+        hermes_bridge._validated_knowledge_claims(
+            "signed-capability",
+            subject_id="tenant-a:session-1",
+            policy_version="policy-v2:8",
+        )
+    assert policy_error.value.status_code == 403
+    assert policy_error.value.detail == "knowledge_scope_denied"
 
 
-# ---------------------------------------------------------------------------
-# 6. agent_engine.call_hermes 透传 isolation 参数
-# ---------------------------------------------------------------------------
-def test_agent_engine_call_hermes_passes_isolation(monkeypatch):
-    """agent_engine.call_hermes 必须把 isolation 透传到 bridge HTTP 请求体。"""
-    from backend.services import agent_engine
+def test_gateway_receives_capability_and_bounded_scope(monkeypatch) -> None:
+    captured: dict = {}
 
-    captured = {}
-
-    class FakeResp:
+    class Response:
         status_code = 200
-        def json(self): return {"reply": "ok"}
-        @property
-        def text(self): return "ok"
 
-    def fake_post(url, json=None, timeout=None):
-        captured["url"] = url
-        captured["json"] = json
-        return FakeResp()
+        def raise_for_status(self) -> None:
+            return None
 
-    import httpx
-    monkeypatch.setattr(httpx, "post", fake_post)
+        def json(self) -> dict:
+            return {"docs": [{"path": "public/a.md"}]}
 
-    agent_engine.call_hermes("do-task", timeout=30, isolation="pure")
-    assert captured["json"]["isolation"] == "pure"
+    def fake_post(url, *, headers, json, timeout):
+        captured.update(url=url, headers=headers, json=json, timeout=timeout)
+        return Response()
 
-    agent_engine.call_hermes("do-task", timeout=30, isolation="kb")
-    assert captured["json"]["isolation"] == "kb"
+    monkeypatch.setattr(hermes_bridge.httpx, "post", fake_post)
+    docs = hermes_bridge._knowledge_gateway_search(
+        "signed-capability",
+        query="research",
+        category_scope=["public"],
+        limit=3,
+    )
 
-    agent_engine.call_hermes("do-task", timeout=30)  # 默认 standard
-    assert captured["json"]["isolation"] == "standard"
+    assert docs == [{"path": "public/a.md"}]
+    assert captured["headers"] == {"X-Knowledge-Capability": "signed-capability"}
+    assert captured["json"]["category_scope"] == ["public"]
+    assert captured["json"]["limit"] == 3
+
+
+def test_gateway_denial_fails_closed(monkeypatch) -> None:
+    class Response:
+        status_code = 403
+
+    monkeypatch.setattr(hermes_bridge.httpx, "post", lambda *args, **kwargs: Response())
+    with pytest.raises(PermissionError, match="knowledge_scope_denied"):
+        hermes_bridge._knowledge_gateway_search(
+            "expired-capability",
+            query="private data",
+            category_scope=["private-b"],
+        )

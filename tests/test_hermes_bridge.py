@@ -155,7 +155,7 @@ class TestSessionExistsAssertion(unittest.TestCase):
         with patch("scripts.hermes_bridge._run_hermes") as mock_hermes:
             mock_hermes.return_value = ("回复内容", "new_session_id")
             import asyncio
-            body = GoalRequest(goal="你好", session_id="user_1001", isolation="standard")
+            body = GoalRequest(goal="你好", session_id="user_1001")
             result = asyncio.run(chat(body))
 
             # 验证：_run_hermes 被调用时 session_id=None（新建）
@@ -195,7 +195,7 @@ class TestContextCoherence(unittest.TestCase):
         mock_run.side_effect = side_effect_r1
         import asyncio
 
-        body_r1 = GoalRequest(goal="你好我叫李四", session_id="user_1001", isolation="standard")
+        body_r1 = GoalRequest(goal="你好我叫李四", session_id="user_1001")
         result_r1 = asyncio.run(chat(body_r1))
 
         # 验证 R1 使用 --resume
@@ -208,7 +208,7 @@ class TestContextCoherence(unittest.TestCase):
             return MagicMock(returncode=0, stdout="你是李四", stderr="")
 
         mock_run.side_effect = side_effect_r2
-        body_r2 = GoalRequest(goal="我是谁", session_id="user_1001", isolation="standard")
+        body_r2 = GoalRequest(goal="我是谁", session_id="user_1001")
         result_r2 = asyncio.run(chat(body_r2))
 
         # 验证 R2 也使用 --resume 同一 session
@@ -254,12 +254,8 @@ class TestConcurrencyIsolation(unittest.TestCase):
 
         # 并发发起 2 个新 user
         async def run_concurrent():
-            body_a = GoalRequest(
-                goal="user A goal", session_id="user_A", isolation="standard"
-            )
-            body_b = GoalRequest(
-                goal="user B goal", session_id="user_B", isolation="standard"
-            )
+            body_a = GoalRequest(goal="user A goal", session_id="user_A")
+            body_b = GoalRequest(goal="user B goal", session_id="user_B")
             result_a, result_b = await asyncio.gather(
                 chat(body_a), chat(body_b)
             )

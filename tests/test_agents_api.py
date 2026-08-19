@@ -1,17 +1,29 @@
-"""Agent API + 通知中心 + 调度器测试。"""
+"""通知中心 + 调度器测试。
+
+租户 Agent 的现行 CRUD 契约由 test_tenant_agents_api.py 覆盖；这里不再测试已移除的
+旧模板/通用 Agent 接口，避免测试反向要求恢复废弃兼容层。
+"""
 
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-import pytest
-from fastapi.testclient import TestClient
+import httpx
 
 from backend.main import app
 from backend.services.agent_scheduler import compute_next_run
 
-client = TestClient(app)
+
+async def _request(method: str, path: str, **kwargs):
+    """使用当前 httpx ASGITransport，替代已废弃的 Starlette TestClient 适配层。"""
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.request(method, path, **kwargs)
+
+
+def request(method: str, path: str, **kwargs):
+    return asyncio.run(_request(method, path, **kwargs))
 
 # 关闭调度器后台循环(测试环境不跑真实调度)
 try:
@@ -30,7 +42,7 @@ def _token(username="tester"):
         {
             "sub": "1",
             "username": username,
-            "exp": datetime.utcnow() + timedelta(hours=1),
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },
         "test-secret",
         algorithm="HS256",
@@ -54,84 +66,6 @@ def test_compute_next_run():
     # 非法表达式回退 24h
     fallback = compute_next_run("not-a-cron", base)
     assert fallback > base
-
-
-def test_templates_list():
-    r = client.get("/api/agents/templates/meta", headers=AUTH)
-    assert r.status_code == 200
-    data = r.json()
-    assert data["total"] >= 3
-    keys = {t["key"] for t in data["templates"]}
-    assert "policy-research" in keys
-
-
-def test_template_instantiate():
-    r = client.post(
-        "/api/agents/templates/policy-research/instantiate",
-        headers=AUTH,
-        json={
-            "name": "政策研究雷达",
-            "mission": "跟踪中国政府政策并每日汇报",
-        },
-    )
-    assert r.status_code == 201, r.text
-    agent = r.json()
-    assert agent["status"] == "active"
-    assert len(agent["sources"]) == 6
-    assert agent["schedule"] == "0 18 * * *"
-    assert agent["next_run_at"] is not None
-    # 清理
-    client.delete(f"/api/agents/{agent['id']}", headers=AUTH)
-
-
-def test_agent_crud_flow():
-    # 创建
-    r = client.post(
-        "/api/agents",
-        headers=AUTH,
-        json={
-            "name": "测试雷达",
-            "mission": "跟踪测试领域资讯",
-            "sources": [{"name": "示例", "url": "https://example.com/", "kind": "news"}],
-            "schedule": "0 9 * * 1",
-        },
-    )
-    assert r.status_code == 201, r.text
-    agent = r.json()
-    aid = agent["id"]
-    assert agent["status"] == "active"
-    assert agent["schedule"] == "0 9 * * 1"
-
-    # 列表
-    r = client.get("/api/agents", headers=AUTH)
-    assert r.status_code == 200
-    assert any(a["id"] == aid for a in r.json()["agents"])
-
-    # 详情
-    r = client.get(f"/api/agents/{aid}", headers=AUTH)
-    assert r.status_code == 200
-    assert r.json()["id"] == aid
-
-    # 暂停
-    r = client.patch(f"/api/agents/{aid}", headers=AUTH, json={"status": "paused"})
-    assert r.status_code == 200
-    assert r.json()["status"] == "paused"
-
-    # 改频率
-    r = client.patch(f"/api/agents/{aid}", headers=AUTH, json={"schedule": "0 18 * * *"})
-    assert r.status_code == 200
-    assert r.json()["schedule"] == "0 18 * * *"
-
-    # 恢复
-    r = client.patch(f"/api/agents/{aid}", headers=AUTH, json={"status": "active"})
-    assert r.status_code == 200
-    assert r.json()["status"] == "active"
-
-    # 删除
-    r = client.delete(f"/api/agents/{aid}", headers=AUTH)
-    assert r.status_code == 204
-    r = client.get(f"/api/agents/{aid}", headers=AUTH)
-    assert r.status_code == 404
 
 
 def test_notifications_flow():
@@ -162,26 +96,24 @@ def test_notifications_flow():
     nid = asyncio.run(_seed())
 
     # 列表(至少 1 条, unread ≥ 1)
-    r = client.get("/api/notifications", headers=AUTH)
+    r = request("GET", "/api/notifications", headers=AUTH)
     assert r.status_code == 200
     data = r.json()
     assert data["total"] >= 1
     assert data["unread"] >= 1
 
     # 标记已读
-    r = client.post(f"/api/notifications/{nid}/read", headers=AUTH)
+    r = request("POST", f"/api/notifications/{nid}/read", headers=AUTH)
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
     # 全部已读
-    r = client.post("/api/notifications/read-all", headers=AUTH)
+    r = request("POST", "/api/notifications/read-all", headers=AUTH)
     assert r.status_code == 200
-    r = client.get("/api/notifications", headers=AUTH)
+    r = request("GET", "/api/notifications", headers=AUTH)
     assert r.json()["unread"] == 0
 
 
-def test_agents_require_auth():
-    r = client.get("/api/agents")
-    assert r.status_code == 401
-    r = client.get("/api/notifications")
+def test_notifications_require_auth():
+    r = request("GET", "/api/notifications")
     assert r.status_code == 401

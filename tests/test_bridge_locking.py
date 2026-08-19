@@ -140,7 +140,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
              patch.object(bridge, "_session_exists", return_value=False), \
              patch.object(bridge, "_run_hermes", return_value=("ok", "sess_new")), \
              patch.object(bridge, "_readback_delta", return_value=rows):
-            result = self._run_chat(GoalRequest(goal="hi", session_id="u1", isolation="standard"))
+            result = self._run_chat(GoalRequest(goal="hi", session_id="u1"))
 
         self.assertEqual(result["reply"], "ok")
         self.assertEqual(result["hermes_session_id"], "sess_new")
@@ -153,7 +153,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
              patch.object(bridge, "_session_exists", return_value=False), \
              patch.object(bridge, "_run_hermes", return_value=("ok", "sess_new")), \
              patch.object(bridge, "_readback_delta", side_effect=sqlite3.Error("corrupt")):
-            result = self._run_chat(GoalRequest(goal="hi", session_id="u1", isolation="standard"))
+            result = self._run_chat(GoalRequest(goal="hi", session_id="u1"))
 
         # 失败降级：reply 正常返回，reasoning=[]，不抛 500
         self.assertEqual(result["reply"], "ok")
@@ -180,7 +180,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
              patch.object(bridge, "_run_hermes", side_effect=fake_run):
 
             async def run():
-                bodies = [GoalRequest(goal="g", session_id="same_user", isolation="standard") for _ in range(4)]
+                bodies = [GoalRequest(goal="g", session_id="same_user") for _ in range(4)]
                 await asyncio.gather(*[chat(b) for b in bodies])
 
             asyncio.run(run())
@@ -272,7 +272,7 @@ class TestConcurrencyGuard(unittest.TestCase):
              }), \
              patch.object(bridge, "_sse_from_in_process") as mock_sse:
             resp = asyncio.run(bridge.chat_stream(
-                GoalRequest(goal="hi", session_id="u_busy", isolation="standard")
+                GoalRequest(goal="hi", session_id="u_busy")
             ))
             body = self._collect(resp)
         self.assertIn('"phase": "running"', body)
@@ -282,14 +282,14 @@ class TestConcurrencyGuard(unittest.TestCase):
     def test_free_slot_starts_agent(self):
         import scripts.hermes_bridge as bridge
 
-        async def fake_sse(user_id, goal):
+        async def fake_sse(user_id, goal, allow_local_files=False):
             yield f"data: {json.dumps({'type': 'status', 'phase': 'boot'})}\n\n"
 
         with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
              patch.object(bridge, "_stream_run_get", return_value=None), \
              patch.object(bridge, "_sse_from_in_process", side_effect=fake_sse):
             resp = asyncio.run(bridge.chat_stream(
-                GoalRequest(goal="hi", session_id="u_free", isolation="standard")
+                GoalRequest(goal="hi", session_id="u_free")
             ))
             body = self._collect(resp)
         self.assertIn('"phase": "boot"', body)

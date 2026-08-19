@@ -476,10 +476,16 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].isStreaming = false
                     }
 
-                case .error(let code, _):
+                case .error(let code, let message):
                     drainDeltaBuffer(messageId: outputId)
                     if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-                        messages[idx].content = "流式响应异常（\(code)）"
+                        if code == "knowledge_scope_denied" {
+                            messages[idx].content = "套餐或知识权限已变化，请刷新知识权限后重试"
+                            showToast("套餐或知识权限已变化，请刷新知识权限后重试")
+                            NotificationCenter.default.post(name: .knowledgeAccessDidChange, object: nil)
+                        } else {
+                            messages[idx].content = message.isEmpty ? "流式响应异常（\(code)）" : message
+                        }
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                         messages[idx].degraded = true
@@ -670,6 +676,10 @@ public final class TenantSessionCoordinator: ObservableObject {
             inflight = nil
             currentChatTask = nil
             waitingSeconds = 0
+        case APIError.knowledgeScopeChanged:
+            inflight?.phase = .serverError("套餐或知识权限已变化，请刷新知识权限后重试")
+            showToast("套餐或知识权限已变化，请刷新知识权限后重试")
+            NotificationCenter.default.post(name: .knowledgeAccessDidChange, object: nil)
         case APIError.timeout:
             inflight?.phase = .timeout
         case APIError.server(let code, _) where code == 404:

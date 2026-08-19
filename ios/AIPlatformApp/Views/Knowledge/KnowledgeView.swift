@@ -85,6 +85,10 @@ public struct KnowledgeView: View {
             .refreshable {
                 await initialLoad()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .knowledgeAccessDidChange)) { _ in
+                permissionMessage = "套餐或知识权限已变化，正在刷新当前可用知识。"
+                Task { await initialLoad() }
+            }
             .fullScreenCover(item: $selectedCategory) { category in
                 KnowledgeWalletDetail(
                     category: category,
@@ -392,7 +396,12 @@ public struct KnowledgeView: View {
                     subscriptions = Set(subs)
                 }
             } catch {
-                permissionMessage = "套餐或知识权限已变化，请刷新后重试。"
+                if let apiError = error as? APIError, case .knowledgeScopeChanged = apiError {
+                    permissionMessage = apiError.localizedDescription
+                    await initialLoad()
+                } else {
+                    permissionMessage = "套餐或知识权限已变化，请刷新后重试。"
+                }
             }
         }
     }
