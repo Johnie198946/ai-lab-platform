@@ -296,34 +296,38 @@ def _empty_hermes_sessions() -> dict[str, Any]:
     }
 
 
-def _skill_header(path: Path) -> tuple[str, str]:
+def _skill_details(path: Path) -> dict[str, str]:
     try:
         text = path.read_text(encoding="utf-8")
         match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
         metadata = yaml.safe_load(match.group(1)) if match else {}
-        version = str((metadata or {}).get("version") or "").strip()
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        return version, digest
+        return {
+            "name": str((metadata or {}).get("name") or "").strip(),
+            "version": str((metadata or {}).get("version") or "").strip(),
+            "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        }
     except Exception:
-        return "", ""
+        return {"name": "", "version": "", "sha256": ""}
 
 
 def _persona_metadata() -> dict[str, Any]:
     path = Path(os.environ.get("SHOWROOM_PERSONA_SKILL_PATH", str(PERSONA_SKILL_PATH)))
-    version, digest = _skill_header(path)
+    formal = _skill_details(path)
+    version, digest = formal["version"], formal["sha256"]
     skills_root = next((parent for parent in path.parents if parent.name == "skills"), None)
-    candidates = sorted(
-        candidate
-        for candidate in skills_root.rglob("solution-consultant-persona/SKILL.md")
-        if candidate.is_file()
-    ) if skills_root and skills_root.is_dir() else ([path] if path.is_file() else [])
-    candidate_meta = [
-        {"path": str(candidate), "version": _skill_header(candidate)[0], "sha256": _skill_header(candidate)[1]}
-        for candidate in candidates
-    ]
+    all_skill_files = (
+        sorted(skills_root.rglob("SKILL.md"))
+        if skills_root and skills_root.is_dir()
+        else ([path] if path.is_file() else [])
+    )
+    candidate_meta = []
+    for candidate in all_skill_files:
+        details = _skill_details(candidate)
+        if candidate == path or details["name"] == "solution-consultant-persona":
+            candidate_meta.append({"path": str(candidate), **details})
     parts = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
     normalized = parts + (0,) * (3 - len(parts))
-    duplicate_count = max(0, len(candidates) - 1)
+    duplicate_count = max(0, len(candidate_meta) - 1)
     return {
         "name": "solution-consultant-persona",
         "version": version,

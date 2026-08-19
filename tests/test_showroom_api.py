@@ -203,8 +203,14 @@ def test_persona_metadata_blocks_duplicate_skill_resolution(tmp_path, monkeypatc
     backup = skills / ".curator_backups" / "solution-consultant-persona" / "SKILL.md"
     formal.parent.mkdir(parents=True)
     backup.parent.mkdir(parents=True)
-    formal.write_text("---\nversion: 1.7.0\n---\n# V1.7", encoding="utf-8")
-    backup.write_text("---\nversion: 1.3.0\n---\n# old", encoding="utf-8")
+    formal.write_text(
+        "---\nname: solution-consultant-persona\nversion: 1.7.0\n---\n# V1.7",
+        encoding="utf-8",
+    )
+    backup.write_text(
+        "---\nname: solution-consultant-persona\nversion: 1.3.0\n---\n# old",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("SHOWROOM_PERSONA_SKILL_PATH", str(formal))
 
     metadata = _persona_metadata()
