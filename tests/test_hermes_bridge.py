@@ -347,6 +347,25 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
             ["skills"],
         )
 
+    def test_dsl_node_budget_is_converted_to_per_turn_cap(self):
+        from scripts.hermes_bridge import _workflow_turn_token_cap
+
+        self.assertEqual(
+            _workflow_turn_token_cap(
+                {
+                    "node_type": "KNOWLEDGE_RETRIEVAL",
+                    "parameters": {"max_tokens": 3000},
+                }
+            ),
+            500,
+        )
+        self.assertEqual(
+            _workflow_turn_token_cap(
+                {"node_type": "OUTPUT_FORMAT", "parameters": {"max_tokens": 3000}}
+            ),
+            1000,
+        )
+
     def test_cache_reads_are_reported_but_not_charged_one_to_one_to_budget(self):
         from scripts.hermes_bridge import _usage_delta
 

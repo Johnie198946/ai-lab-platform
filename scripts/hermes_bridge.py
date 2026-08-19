@@ -658,6 +658,20 @@ def _workflow_toolsets(node: dict[str, Any]) -> list[str]:
     return ["skills"]
 
 
+def _workflow_turn_token_cap(node: dict[str, Any]) -> int:
+    """将 DSL 的节点总输出预算折算为 Hermes 0.19 的单回合上限。
+
+    AIAgent 的 ``max_tokens`` 会应用到每次模型调用，而检索节点通常包含多次
+    tool/model 回合；直接透传会让单节点总输出成倍突破 DSL 预算。
+    """
+    node_budget = max(
+        256,
+        min(16_384, int((node.get("parameters") or {}).get("max_tokens") or 2048)),
+    )
+    expected_turns = 6 if str(node.get("node_type") or "") == "KNOWLEDGE_RETRIEVAL" else 3
+    return max(384, min(2048, node_budget // expected_turns))
+
+
 def _run_workflow_node_in_process(
     goal: str,
     node: dict[str, Any],
@@ -685,10 +699,7 @@ def _run_workflow_node_in_process(
     timeout_fired = threading.Event()
     timeout_timer = None
     try:
-        max_tokens = max(
-            256,
-            min(16_384, int((node.get("parameters") or {}).get("max_tokens") or 2048)),
-        )
+        max_tokens = _workflow_turn_token_cap(node)
         agent = AIAgent(
             api_key=runtime.get("api_key"),
             base_url=runtime.get("base_url"),
@@ -777,6 +788,10 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
                 f"- {candidate.get('name') or node_id}: {str(state['output'])[:1800]}"
             )
     node_type = str(node.get("node_type") or "")
+    node_budget = max(
+        256, int((node.get("parameters") or {}).get("max_tokens") or 2048)
+    )
+    output_char_limit = max(600, min(2200, node_budget // 2))
     tool_rule = (
         "直接使用当前节点已授权的 web_search/web_extract 或文件检索工具，"
         "按最小次数完成检索；不得把工具切换标签、调用计划或‘我先检查工具’作为最终成果。"
@@ -792,6 +807,7 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         f"指定 Agent：{params.get('agent_id') or 'main_agent'}\n"
         f"节点要求：{params.get('instruction') or params.get('query') or ''}\n"
         f"输出格式：{params.get('output_format') or '结构化 Markdown'}\n"
+        f"篇幅约束：最终可落盘正文不超过 {output_char_limit} 个中文字符，优先保留事实、引用与未解决缺口。\n"
         f"知识范围：{json.dumps(params.get('knowledge_scope') or run.get('knowledge_scope') or [], ensure_ascii=False)}\n"
         f"联网权限：{'允许，但仅在证据缺口明确时使用' if run.get('allow_network') else '禁止'}\n"
         f"工具纪律：{tool_rule}\n"
