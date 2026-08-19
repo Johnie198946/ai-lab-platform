@@ -41,6 +41,7 @@ const state = {
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
+const demandExtractionInFlight = new Set();
 
 function isStaticDisplayView(view = state.view) {
   return STATIC_DISPLAY_VIEWS.has(view);
@@ -383,13 +384,71 @@ function currentDemand() {
   return currentSessionData().demand || {};
 }
 
+function currentDemandDocument() {
+  return currentSessionData().demand_document || {};
+}
+
 function hasDemandConfirmationContent(demand = {}) {
+  const document = currentDemandDocument();
   const fields = ['core_problem', 'target_metric', 'cycle', 'users', 'solution', 'next_action'];
   return Boolean(
-    demand.confirmed
+    document.source_hash
+    || document.status === 'confirmed'
+    || demand.confirmed
     || Number(demand.completeness || 0) > 0
     || fields.some((field) => String(demand[field] || '').trim()),
   );
+}
+
+function demandTable(section) {
+  const table = section?.table || {};
+  const columns = Array.isArray(table.columns) ? table.columns : [];
+  const rows = Array.isArray(table.rows) ? table.rows : [];
+  if (!columns.length || !rows.length) return '';
+  return `<div class="demand-doc-table-wrap"><table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((_, index) => `<td>${escapeHtml(row?.[index] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+
+function demandSectionContent(section) {
+  const table = demandTable(section);
+  const items = Array.isArray(section?.items) ? section.items.filter(Boolean) : [];
+  const body = String(section?.body || '').trim();
+  return `${table}${items.length ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}${body ? `<p>${escapeHtml(body)}</p>` : ''}`;
+}
+
+const demandSectionRegistry = {
+  facts: { label: '已确认事实', tone: 'blue' },
+  goal: { label: '目标指标', tone: 'mint' },
+  non_goals: { label: '非目标', tone: 'violet' },
+  constraints: { label: '约束与边界', tone: 'orange' },
+  acceptance: { label: '验收标准', tone: 'mint' },
+  solution_direction: { label: 'AI 初步方案方向', tone: 'blue' },
+  unknown: { label: '补充内容', tone: 'neutral' },
+};
+
+function demandDocumentView(document = {}) {
+  const sections = Array.isArray(document.sections) ? document.sections : [];
+  if (!sections.length && !document.raw_markdown) return '';
+  return `<details class="demand-document"><summary><span><b>完整需求确认单</b><small>${sections.length} 个章节 · 展开查看事实、边界与验收</small></span><em>展开</em></summary><div class="demand-document-body">${sections.map((section, index) => {
+    const plugin = demandSectionRegistry[section.type] || demandSectionRegistry.unknown;
+    return `<section class="demand-doc-section ${plugin.tone}"><header><span>${String(index + 1).padStart(2, '0')}</span><div><small>${escapeHtml(plugin.label)}</small><h4>${escapeHtml(section.title || plugin.label)}</h4></div></header>${demandSectionContent(section)}</section>`;
+  }).join('')}${document.warnings?.length ? `<div class="demand-doc-warning">${document.warnings.map((warning) => escapeHtml(warning)).join(' · ')}</div>` : ''}</div></details>`;
+}
+
+async function maybeExtractDemand(rawContent, options = {}) {
+  const content = String(rawContent || '').trim();
+  if (!content || !/(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_V1)/.test(content)) return;
+  if (currentDemand().confirmed || demandExtractionInFlight.has(content)) return;
+  demandExtractionInFlight.add(content);
+  try {
+    const result = await window.showroomApi.extractDemand(content);
+    if (result?.recognized && !result.unchanged && !result.locked && !options.silent) {
+      showToast('需求收敛单已自动回填 · 请核对后确认');
+    }
+  } catch (error) {
+    if (!options.silent) showToast(`需求单回填失败：${error.message}`);
+  } finally {
+    demandExtractionInFlight.delete(content);
+  }
 }
 
 function currentInsight() {
@@ -746,14 +805,16 @@ function emptyChatState() {
 
 function clinicView() {
   const demand = currentDemand();
+  const demandDocument = currentDemandDocument();
   const messages = state.chatMessages;
   const architectRole = state.content?.screens?.['screen-03']?.conversation_role || '首席解决方案架构师';
   const busy = ['connecting', 'reconnecting', 'generating', 'waiting'].includes(state.hermesStatus);
   const showDemandSheet = hasDemandConfirmationContent(demand);
   const revealDemandSheet = showDemandSheet && !state.demandSheetVisible;
   state.demandSheetVisible = showDemandSheet;
+  const fieldLock = demand.confirmed ? 'disabled' : '';
   const demandSheet = showDemandSheet ? `
-        <section class="panel form-panel demand-sheet${revealDemandSheet ? ' reveal' : ''}" aria-label="需求收敛确认单"><div class="panel-head"><strong>需求收敛确认单</strong><span>${demand.confirmed ? '已确认' : '自动保存'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem">${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}"></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}"></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}"></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}"></label><label class="field wide">下一步行动<textarea data-demand-field="next_action">${escapeHtml(demand.next_action)}</textarea></label></div><button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>` : '';
+        <section class="panel form-panel demand-sheet${revealDemandSheet ? ' reveal' : ''}" aria-label="需求收敛确认单"><div class="panel-head"><div><strong>需求收敛确认单</strong><small>${escapeHtml(demandDocument.title || 'AI 已完成需求收敛')}</small></div><span class="demand-document-status ${demand.confirmed ? 'confirmed' : 'draft'}">${demand.confirmed ? '已确认' : 'AI 已生成 · 待确认'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem" ${fieldLock}>${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}" ${fieldLock}></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}" ${fieldLock}></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}" ${fieldLock}></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}" ${fieldLock}></label><label class="field wide">下一步行动<textarea data-demand-field="next_action" ${fieldLock}>${escapeHtml(demand.next_action)}</textarea></label></div>${demandDocumentView(demandDocument)}<button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>` : '';
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
@@ -999,6 +1060,15 @@ function attachScreenActions() {
       showToast(`需求确认失败：${error.message}`);
     }
   });
+  document.querySelectorAll('[data-demand-field]:not([disabled])').forEach((field) => field.addEventListener('change', async () => {
+    const name = field.dataset.demandField;
+    if (!name) return;
+    try {
+      await window.showroomApi.saveDemandDraft({ [name]: field.value.trim() }, [name]);
+    } catch (error) {
+      showToast(`需求草稿保存失败：${error.message}`);
+    }
+  }));
   document.querySelector('[data-demand-send]')?.addEventListener('click', () => sendSessionMessage('demand-chat-input'));
   document.querySelector('[data-demand-stop]')?.addEventListener('click', async () => {
     try {
@@ -1521,6 +1591,12 @@ window.showroomApi?.on('hermes-ready', ({ messages, running }) => {
   state.chatError = '';
   state.hermesRetryStopped = false;
   render('refresh');
+  const latestConfirmation = [...state.chatMessages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && /(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_V1)/.test(message.rawContent || message.content));
+  if (latestConfirmation && !hasDemandConfirmationContent(currentDemand())) {
+    maybeExtractDemand(latestConfirmation.rawContent || latestConfirmation.content, { silent: true });
+  }
 });
 window.showroomApi?.on('hermes-event', (event) => {
   const payload = event.payload || {};
@@ -1535,7 +1611,8 @@ window.showroomApi?.on('hermes-event', (event) => {
     if (streamingBubble) streamingBubble.textContent = state.streamingReply;
     return;
   } else if (event.type === 'message.complete') {
-    const answer = String(payload.text || '').trim();
+    const rawAnswer = String(payload.text || '').trim();
+    const answer = window.showroomApi.visibleAssistantMessage(rawAnswer);
     state.streamingReply = '';
     state.pendingClarify = null;
     state.avatarSpeaking = false;
@@ -1544,10 +1621,11 @@ window.showroomApi?.on('hermes-event', (event) => {
       state.hermesStatus = 'error';
     } else {
       if (answer && !(state.chatMessages.at(-1)?.role === 'assistant' && state.chatMessages.at(-1)?.content === answer)) {
-        state.chatMessages.push({ role: 'assistant', content: answer });
+        state.chatMessages.push({ role: 'assistant', content: answer, rawContent: rawAnswer });
       }
       state.chatError = '';
       state.hermesStatus = 'online';
+      maybeExtractDemand(rawAnswer);
     }
   } else if (event.type === 'clarify.request') {
     state.pendingClarify = {
@@ -1572,12 +1650,14 @@ window.showroomApi?.on('hermes-event', (event) => {
 window.showroomApi?.on('session', (session) => {
   const demandChanged = JSON.stringify(state.session?.data?.demand || {})
     !== JSON.stringify(session?.data?.demand || {});
+  const demandDocumentChanged = JSON.stringify(state.session?.data?.demand_document || {})
+    !== JSON.stringify(session?.data?.demand_document || {});
   state.session = session;
   state.experienceStep = Number(session?.step || state.experienceStep);
   Object.entries(session?.data?.reviews || {}).forEach(([gate, record]) => {
     if (record?.decision) state.reviewStates[gate] = record.decision;
   });
-  if (state.view === 'screen-03' && demandChanged) render('refresh');
+  if (state.view === 'screen-03' && (demandChanged || demandDocumentChanged)) render('refresh');
 });
 window.showroomApi?.on('message', (message) => {
   if (message.type === 'STATE' || message.type === 'COMMIT' || message.type === 'REVIEW') {

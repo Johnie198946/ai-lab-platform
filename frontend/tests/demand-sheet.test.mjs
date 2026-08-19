@@ -9,7 +9,7 @@ const helperSource = source.match(
 )?.[0];
 
 assert.ok(helperSource, 'demand confirmation visibility helper must exist');
-const sandbox = {};
+const sandbox = { currentDemandDocument: () => ({}) };
 vm.runInNewContext(`${helperSource}; this.hasDemandConfirmationContent = hasDemandConfirmationContent;`, sandbox);
 const hasContent = sandbox.hasDemandConfirmationContent;
 
@@ -28,4 +28,13 @@ test('the confirmation sheet is conditionally mounted instead of hidden with CSS
   assert.match(source, /const demandSheet = showDemandSheet \?/);
   assert.match(source, /: '';\n  return `<div class="screen">/);
   assert.match(source, /conversation-only/);
+});
+
+test('recognized documents use the controlled renderer registry', () => {
+  assert.match(source, /const demandSectionRegistry = \{/);
+  for (const type of ['facts', 'goal', 'non_goals', 'constraints', 'acceptance', 'solution_direction', 'unknown']) {
+    assert.match(source, new RegExp(`${type}:`));
+  }
+  assert.match(source, /window\.showroomApi\.extractDemand\(content\)/);
+  assert.match(source, /<details class="demand-document">/);
 });

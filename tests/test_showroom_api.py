@@ -9,6 +9,8 @@ from jose import JWTError, jwt
 
 from backend.api.showroom import (
     DemandConfirmation,
+    DemandDraftPatch,
+    DemandExtractionRequest,
     LEGACY_DEMAND,
     LEGACY_INSIGHT,
     LEGACY_MESSAGES,
@@ -22,10 +24,12 @@ from backend.api.showroom import (
     apply_showroom_command,
     content_manifest,
     create_showroom_session,
+    extract_showroom_demand,
     generate_showroom_insight,
     generate_showroom_ipd_artifacts,
     hub,
     submit_showroom_review,
+    update_showroom_demand_draft,
 )
 from backend.api.screens import _load_all as load_screen_configs
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
@@ -143,6 +147,7 @@ def test_screen_003_bootstrap_contract_uses_hermes_demand_clinic() -> None:
     assert screen["skill_command"] == "solution-consultant-persona"
     assert screen["station"] == "demand-clinic"
     assert "禁止迎宾" in screen["station_context"]
+    assert "AI_LAB_DEMAND_V1" in screen["station_context"]
     assert screen["data_bindings"][1]["source"] == "/api/ws"
 
 
@@ -159,6 +164,7 @@ def test_new_showroom_session_has_no_seed_business_data() -> None:
     assert data["messages"] == []
     assert data["demand"]["completeness"] == 0
     assert data["demand"]["core_problem"] == ""
+    assert data["demand_document"] == {}
     assert data["insight"] == {}
     assert data["prototype"] == {}
     assert data["artifacts"] == {}
@@ -256,6 +262,77 @@ def test_session_demand_insight_and_ipd_are_persisted(monkeypatch) -> None:
             "showroom-integration", 0, payload()
         )
         assert "需求合理性·调研支撑" in ipd["data"]["artifacts"]
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_demand_extraction_is_draft_idempotent_and_preserves_manual_fields(
+    monkeypatch,
+) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import backend.api.showroom as showroom_api
+
+    first = """
+## 集团算力治理需求确认单
+### 四维确认单
+| 维度 | 内容 |
+|---|---|
+| 目标 | 3 个月内利用率提升至 60% |
+| 非目标 | 不对外运营 |
+| 约束 | 数据不出园区 |
+| 验收 | 连续四周达到 60% |
+"""
+    revised = first.replace("3 个月内利用率提升至 60%", "6 个月内利用率提升至 70%")
+
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(ShowroomSession.__table__.create)
+            await connection.run_sync(ShowroomRuntime.__table__.create)
+        monkeypatch.setattr(showroom_api, "SessionLocal", maker)
+
+        await create_showroom_session(
+            SessionCreate(session_id="showroom-demand-extract", slot="main"), payload()
+        )
+        extracted = await extract_showroom_demand(
+            "showroom-demand-extract",
+            DemandExtractionRequest(content=first),
+            payload(),
+        )
+        assert extracted["recognized"] is True
+        assert extracted["session"]["data"]["demand"]["confirmed"] is False
+        assert extracted["session"]["data"]["demand_document"]["status"] == "draft"
+
+        duplicate = await extract_showroom_demand(
+            "showroom-demand-extract",
+            DemandExtractionRequest(content=first),
+            payload(),
+        )
+        assert duplicate["unchanged"] is True
+
+        edited = await update_showroom_demand_draft(
+            "showroom-demand-extract",
+            DemandDraftPatch(
+                demand={"core_problem": "人工确认的真实核心问题"},
+                manual_fields=["core_problem"],
+            ),
+            payload(),
+        )
+        assert edited["data"]["demand"]["core_problem"] == "人工确认的真实核心问题"
+
+        updated = await extract_showroom_demand(
+            "showroom-demand-extract",
+            DemandExtractionRequest(content=revised),
+            payload(),
+        )
+        assert (
+            updated["session"]["data"]["demand"]["core_problem"]
+            == "人工确认的真实核心问题"
+        )
+        assert "70%" in updated["session"]["data"]["demand"]["target_metric"]
         await engine.dispose()
 
     asyncio.run(scenario())

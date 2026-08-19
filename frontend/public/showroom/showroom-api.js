@@ -4,6 +4,10 @@
   const AUTH_KEY = "ai-lab-platform.auth";
   const SESSION_KEY = "ai-lab-showroom.session";
   const HERMES_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
+  const DEMAND_ENVELOPE_PATTERNS = [
+    /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
+    /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
+  ];
 
   function readJson(key) {
     try {
@@ -53,11 +57,20 @@
           message.role,
           String(message.content ?? message.text ?? ""),
         ),
+        rawContent: message.role === "assistant"
+          ? String(message.content ?? message.text ?? "")
+          : "",
       }))
       .filter((message) => message.content.trim());
   }
 
   function visibleHermesMessage(role, content) {
+    if (role === "assistant") {
+      return DEMAND_ENVELOPE_PATTERNS.reduce(
+        (visible, pattern) => visible.replace(pattern, ""),
+        content,
+      ).trim();
+    }
     if (role !== "user") return content;
     const invocation = global.HermesShared?.skillInvocationText?.(content);
     if (!invocation) return content;
@@ -508,6 +521,43 @@
         method: "PATCH",
         body: patch,
       });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    visibleAssistantMessage(content) {
+      return visibleHermesMessage("assistant", String(content || ""));
+    }
+
+    async extractDemand(content) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/demand/extract`,
+        {
+          method: "POST",
+          body: {
+            content,
+            hermes_stored_session_id: this.hermesStoredSessionId
+              || this.session?.data?.hermes_stored_session_id
+              || "",
+          },
+        },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async saveDemandDraft(demand, manualFields) {
+      const session = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/demand/draft`,
+        {
+          method: "PATCH",
+          body: { demand, manual_fields: manualFields },
+        },
+      );
       this.session = session;
       this.emit("session", session);
       return session;

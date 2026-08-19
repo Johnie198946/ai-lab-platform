@@ -30,6 +30,10 @@ from backend.api.auth import AUTHEN_JWT_ALGORITHM, AUTHEN_JWT_SECRET, require_au
 from backend.api.screens import _load_all as load_screen_configs
 from backend.db import SessionLocal
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
+from backend.services.demand_document import (
+    calculate_demand_completeness,
+    extract_demand_document,
+)
 from backend.services.feishu import send_feishu_async
 
 router = APIRouter(prefix="/api/showroom", tags=["showroom"])
@@ -82,6 +86,16 @@ class DemandConfirmation(BaseModel):
     demand: dict[str, Any]
 
 
+class DemandExtractionRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=30_000)
+    hermes_stored_session_id: str = Field(default="", max_length=200)
+
+
+class DemandDraftPatch(BaseModel):
+    demand: dict[str, Any] = Field(default_factory=dict)
+    manual_fields: list[str] = Field(default_factory=list, max_length=20)
+
+
 class SessionMessage(BaseModel):
     role: Literal["user", "assistant"]
     content: str = Field(..., min_length=1, max_length=12000)
@@ -125,7 +139,7 @@ class ShowroomHub:
 
 hub = ShowroomHub()
 _runtime_hydrated = False
-SESSION_DATA_VERSION = "hermes-gateway-v1"
+SESSION_DATA_VERSION = "hermes-demand-v2"
 
 LEGACY_MESSAGES = [
     {
@@ -196,6 +210,11 @@ def _empty_demand() -> dict[str, Any]:
         "users": "",
         "solution": "",
         "next_action": "",
+        "facts": [],
+        "non_goals": [],
+        "constraints": [],
+        "acceptance_criteria": [],
+        "solution_directions": [],
     }
 
 
@@ -243,6 +262,7 @@ def _initial_session_data(slot: str) -> dict[str, Any]:
         "role": "",
         "messages": [],
         "demand": _empty_demand(),
+        "demand_document": {},
         "insight": {},
         "prototype": {},
         "artifacts": {},
@@ -501,9 +521,133 @@ async def confirm_showroom_demand(
         demand = _merge((row.data or {}).get("demand", {}), body.demand)
         demand["confirmed"] = True
         demand["confirmed_at"] = datetime.now(timezone.utc).isoformat()
-        data = _merge(row.data or {}, {"demand": demand})
+        document = copy.deepcopy((row.data or {}).get("demand_document") or {})
+        if document:
+            document["status"] = "confirmed"
+            document["confirmed_at"] = demand["confirmed_at"]
+        data = _merge(
+            row.data or {},
+            {"demand": demand, "demand_document": document},
+        )
         row.data = data
         row.step = max(row.step, 2)
+        await database.commit()
+        await database.refresh(row)
+        return _session_payload(row, session_id, row.slot)
+
+
+@router.post("/sessions/{session_id}/demand/extract")
+async def extract_showroom_demand(
+    session_id: str,
+    body: DemandExtractionRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    """Recognize a completed Hermes confirmation sheet and persist a draft."""
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != str(payload.get("tenant_key") or "demo"):
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+
+        data = copy.deepcopy(row.data or {})
+        stored_id = str(data.get("hermes_stored_session_id") or "").strip()
+        requested_stored_id = body.hermes_stored_session_id.strip()
+        if stored_id and requested_stored_id and stored_id != requested_stored_id:
+            raise HTTPException(
+                status_code=409, detail="Hermes 会话与当前体验会话不匹配"
+            )
+
+        extraction = extract_demand_document(body.content)
+        if not extraction["recognized"]:
+            return {
+                "recognized": False,
+                "reason": extraction["reason"],
+                "session": _session_payload(row, session_id, row.slot),
+            }
+
+        current_demand = copy.deepcopy(data.get("demand") or _empty_demand())
+        current_document = copy.deepcopy(data.get("demand_document") or {})
+        if (
+            current_demand.get("confirmed")
+            or current_document.get("status") == "confirmed"
+        ):
+            return {
+                "recognized": True,
+                "locked": True,
+                "session": _session_payload(row, session_id, row.slot),
+            }
+        if current_document.get("source_hash") == extraction["source_hash"]:
+            return {
+                "recognized": True,
+                "unchanged": True,
+                "session": _session_payload(row, session_id, row.slot),
+            }
+
+        manual_fields = {
+            str(field)
+            for field in current_document.get("manual_fields") or []
+            if isinstance(field, str)
+        }
+        demand = _merge(_empty_demand(), extraction["demand"])
+        for field in manual_fields:
+            if field in current_demand:
+                demand[field] = copy.deepcopy(current_demand[field])
+        demand["completeness"] = calculate_demand_completeness(demand)
+        demand["confirmed"] = False
+
+        document = extraction["demand_document"]
+        document["manual_fields"] = sorted(manual_fields)
+        row.data = _merge(
+            data,
+            {"demand": demand, "demand_document": document},
+        )
+        await database.commit()
+        await database.refresh(row)
+        return {
+            "recognized": True,
+            "session": _session_payload(row, session_id, row.slot),
+        }
+
+
+@router.patch("/sessions/{session_id}/demand/draft")
+async def update_showroom_demand_draft(
+    session_id: str,
+    body: DemandDraftPatch,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    """Persist explicit human overrides without confirming the demand."""
+    editable_fields = {
+        "industry",
+        "core_problem",
+        "target_metric",
+        "cycle",
+        "users",
+        "solution",
+        "next_action",
+    }
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != str(payload.get("tenant_key") or "demo"):
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        demand = copy.deepcopy(data.get("demand") or _empty_demand())
+        if demand.get("confirmed"):
+            raise HTTPException(status_code=409, detail="已确认需求不可被自动草稿覆盖")
+
+        changed_fields = {
+            field for field in body.manual_fields if field in editable_fields
+        }
+        for field in changed_fields:
+            if field in body.demand:
+                demand[field] = str(body.demand[field] or "").strip()[:2_000]
+        demand["completeness"] = calculate_demand_completeness(demand)
+
+        document = copy.deepcopy(data.get("demand_document") or {})
+        manual_fields = {str(field) for field in document.get("manual_fields") or []}
+        document["manual_fields"] = sorted(manual_fields | changed_fields)
+        row.data = _merge(
+            data,
+            {"demand": demand, "demand_document": document},
+        )
         await database.commit()
         await database.refresh(row)
         return _session_payload(row, session_id, row.slot)

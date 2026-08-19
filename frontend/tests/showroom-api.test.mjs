@@ -116,3 +116,18 @@ test('suspending a page closes both sockets and clears reconnect timers', () => 
   assert.equal(api.retryTimer, null);
   assert.equal(api.hermesStatus, 'idle');
 });
+
+test('assistant machine envelopes are hidden and extraction persists the returned session', async () => {
+  const { api } = createApi();
+  const content = `可见确认单\n<!-- AI_LAB_DEMAND_V1\n{"title":"测试"}\nAI_LAB_DEMAND_V1 -->`;
+  assert.equal(api.visibleAssistantMessage(content), '可见确认单');
+
+  api.request = async (path, options) => {
+    assert.match(path, /\/demand\/extract$/);
+    assert.equal(options.body.content, content);
+    return { recognized: true, session: { data: { demand: { core_problem: '已回填' } } } };
+  };
+  const result = await api.extractDemand(content);
+  assert.equal(result.recognized, true);
+  assert.equal(api.session.data.demand.core_problem, '已回填');
+});
