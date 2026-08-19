@@ -10,7 +10,7 @@ const getErrorMessage = (error) => error?.message || "登录失败，请检查�
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isAuthenticated, isReady, login, loginDev, loginWithToken } = useAuth();
+  const { authSession, isAuthenticated, isReady, login, loginDev, loginWithToken } = useAuth();
   
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -27,6 +27,14 @@ export function LoginPage() {
     return location.state?.from?.pathname || "/orchestration";
   }, [location.search, location.state]);
 
+  const hasExplicitNext = useMemo(() => Boolean(new URLSearchParams(location.search).get("next") || location.state?.from?.pathname), [location.search, location.state]);
+
+  useEffect(() => {
+    if (isReady && isAuthenticated && !hasExplicitNext && authSession?.user?.username === "showroom_demo") {
+      window.location.replace("/showroom/?view=controller");
+    }
+  }, [authSession, hasExplicitNext, isAuthenticated, isReady]);
+
   if (!isReady) {
     return (
       <div className="route-loading" style={{display:'grid', placeItems:'center', minHeight:'100vh', background:'#f5f6f8'}}>
@@ -36,6 +44,9 @@ export function LoginPage() {
   }
 
   if (isReady && isAuthenticated) {
+    if (!hasExplicitNext && authSession?.user?.username === "showroom_demo") {
+      return <div className="route-loading" style={{display:'grid', placeItems:'center', minHeight:'100vh'}}><h1>正在进入导览主控台…</h1></div>;
+    }
     return <Navigate to={nextPath} replace />;
   }
 
@@ -43,8 +54,12 @@ export function LoginPage() {
     setSubmittingMode(mode);
     setError("");
     try {
-      await action();
-      navigate(nextPath, { replace: true });
+      const session = await action();
+      if (!hasExplicitNext && session?.user?.username === "showroom_demo") {
+        window.location.assign("/showroom/?view=controller");
+      } else {
+        navigate(nextPath, { replace: true });
+      }
     } catch (actionError) {
       setError(getErrorMessage(actionError));
     } finally {

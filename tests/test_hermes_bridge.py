@@ -84,12 +84,13 @@ class TestBridgeCLIParms(unittest.TestCase):
         self.assertNotIn("prompt_cache_options", cleaned["extra_body"])
         self.assertEqual(cleaned["temperature"], 0.2)
 
-    def test_other_provider_cache_parameters_are_preserved(self):
+    def test_unsupported_cache_parameters_are_removed_for_every_provider(self):
         from scripts.hermes_bridge import _cache_request_overrides
 
-        value = {"prompt_cache_retention": "24h"}
+        value = {"prompt_cache_retention": "24h", "temperature": 0.2}
         self.assertEqual(
-            _cache_request_overrides("supported-model", "supported", value), value
+            _cache_request_overrides("new-model", "openai-compatible", value),
+            {"temperature": 0.2},
         )
 
 

@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 import copy
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -35,6 +37,10 @@ from backend.services.demand_document import (
     extract_demand_document,
 )
 from backend.services.feishu import send_feishu_async
+from backend.services.visitor_insight import (
+    extract_visitor_insight,
+    persist_visitor_wiki,
+)
 
 router = APIRouter(prefix="/api/showroom", tags=["showroom"])
 CONTENT_FILE = (
@@ -44,6 +50,10 @@ CONTENT_FILE = (
     / "content.yaml"
 )
 RUNTIME_ID = "venue"
+PERSONA_SKILL_PATH = Path(
+    "/root/.hermes/skills/productivity/solution-consultant-persona/SKILL.md"
+)
+PERSONA_MIN_VERSION = (1, 7, 0)
 
 
 def _load_content() -> dict[str, Any]:
@@ -78,7 +88,7 @@ class SessionCreate(BaseModel):
 
 class SessionPatch(BaseModel):
     step: int | None = Field(default=None, ge=0, le=6)
-    status: Literal["active", "completed", "submitted"] | None = None
+    status: Literal["active", "completed", "submitted", "archived"] | None = None
     data: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -106,6 +116,39 @@ class ArtifactUpdate(BaseModel):
     content: dict[str, Any] = Field(default_factory=dict)
 
 
+class VisitorPerson(BaseModel):
+    name: str = Field(default="", max_length=120)
+    title: str = Field(default="", max_length=120)
+
+
+class VisitorPatch(BaseModel):
+    company_name: str = Field(..., min_length=1, max_length=160)
+    customer_code: str = Field(default="", max_length=24)
+    visitors: list[VisitorPerson] = Field(default_factory=list, max_length=20)
+    visit_type: Literal["first", "return"] = "first"
+    allow_history: bool = False
+    history_session_id: str = Field(default="", max_length=120)
+    purpose: str = Field(default="", max_length=2000)
+    focus_topics: list[str] = Field(default_factory=list, max_length=20)
+
+
+class VisitorInsightRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=60_000)
+    hermes_stored_session_id: str = Field(default="", max_length=200)
+
+
+class FrontstageRequest(BaseModel):
+    message_count: int = Field(default=0, ge=0, le=100_000)
+
+
+class VisitCompleteRequest(BaseModel):
+    source: str = Field(default="controller", max_length=80)
+
+
+class VisitRolloverRequest(BaseModel):
+    epoch: int = Field(default=0, ge=0)
+
+
 class ShowroomHub:
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
@@ -117,7 +160,10 @@ class ShowroomHub:
             "payload": {},
             "reviews": {},
             "updated_at": datetime.now(timezone.utc).isoformat(),
+            "active_main_session_id": "",
+            "active_main_tenant_key": "",
         }
+        self.switch_ready: set[int] = set()
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -139,14 +185,13 @@ class ShowroomHub:
 
 hub = ShowroomHub()
 _runtime_hydrated = False
-SESSION_DATA_VERSION = "hermes-demand-v2"
+SESSION_DATA_VERSION = "showroom-visitor-v17"
 
 LEGACY_MESSAGES = [
     {
         "role": "assistant",
         "content": (
-            "您提到“换模慢”。更影响经营结果的是停机时间、良品率，"
-            "还是订单交付周期？"
+            "您提到“换模慢”。更影响经营结果的是停机时间、良品率，还是订单交付周期？"
         ),
     },
     {
@@ -218,6 +263,68 @@ def _empty_demand() -> dict[str, Any]:
     }
 
 
+def _persona_metadata() -> dict[str, Any]:
+    path = Path(os.environ.get("SHOWROOM_PERSONA_SKILL_PATH", str(PERSONA_SKILL_PATH)))
+    version = ""
+    if path.is_file():
+        try:
+            text = path.read_text(encoding="utf-8")
+            match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+            metadata = yaml.safe_load(match.group(1)) if match else {}
+            version = str((metadata or {}).get("version") or "").strip()
+        except Exception:
+            version = ""
+    parts = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
+    normalized = parts + (0,) * (3 - len(parts))
+    return {
+        "name": "solution-consultant-persona",
+        "version": version,
+        "available": path.is_file(),
+        "compatible": normalized >= PERSONA_MIN_VERSION,
+        "path": str(path),
+        "minimum_version": "1.7.0",
+    }
+
+
+def _empty_visitor() -> dict[str, Any]:
+    return {
+        "visit_id": "",
+        "customer_code": "",
+        "company_name": "",
+        "visitors": [],
+        "visit_type": "first",
+        "allow_history": False,
+        "history_session_id": "",
+        "purpose": "",
+        "focus_topics": [],
+        "status": "preparing",
+    }
+
+
+def _empty_customer_insight() -> dict[str, Any]:
+    return {
+        "schema_version": "1.0",
+        "status": "idle",
+        "summary": {},
+        "sources": [],
+        "warnings": [],
+        "public_wiki_slug": "",
+        "private_record_path": "",
+        "source_hash": "",
+        "updated_at": "",
+    }
+
+
+def _visit_session_id() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"visit-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
+def _customer_code(company_name: str) -> str:
+    digest = int.from_bytes(company_name.encode("utf-8"), "little", signed=False) % 1000
+    return f"C{digest:03d}"
+
+
 def _migrate_legacy_session_data(
     raw: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], bool]:
@@ -243,6 +350,18 @@ def _migrate_legacy_session_data(
     if data.get("schema_version") != SESSION_DATA_VERSION:
         data["schema_version"] = SESSION_DATA_VERSION
         changed = True
+    defaults = _initial_session_data("main")
+    for key in (
+        "visitor",
+        "customer_insight",
+        "host_greeting_initialized",
+        "frontstage_started",
+        "frontstage_message_offset",
+        "persona_skill_version",
+    ):
+        if key not in data:
+            data[key] = copy.deepcopy(defaults[key])
+            changed = True
     return data, changed
 
 
@@ -258,7 +377,7 @@ def _merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _initial_session_data(slot: str) -> dict[str, Any]:
-    return {
+    data = {
         "role": "",
         "messages": [],
         "demand": _empty_demand(),
@@ -269,6 +388,20 @@ def _initial_session_data(slot: str) -> dict[str, Any]:
         "reviews": {},
         "schema_version": SESSION_DATA_VERSION,
     }
+    if slot == "main":
+        data.update(
+            {
+                "visitor": _empty_visitor(),
+                "customer_insight": _empty_customer_insight(),
+                "hermes_stored_session_id": "",
+                "hermes_skill_initialized": False,
+                "host_greeting_initialized": False,
+                "frontstage_started": False,
+                "frontstage_message_offset": 0,
+                "persona_skill_version": _persona_metadata()["version"],
+            }
+        )
+    return data
 
 
 def _session_payload(
@@ -351,6 +484,48 @@ async def _persist_runtime() -> None:
         pass
 
 
+async def _active_main_session(tenant_key: str) -> ShowroomSession:
+    """Return the tenant's single current guided-tour session."""
+    await _ensure_runtime_hydrated()
+    session_id = str(hub.state.get("active_main_session_id") or "")
+    owner = str(hub.state.get("active_main_tenant_key") or "")
+    if session_id and owner == tenant_key:
+        async with SessionLocal() as database:
+            row = await database.get(ShowroomSession, session_id)
+            if (
+                row is not None
+                and row.tenant_key == tenant_key
+                and row.status != "archived"
+            ):
+                return row
+
+    metadata = _persona_metadata()
+    if not metadata["compatible"]:
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                "主演示要求 solution-consultant-persona >= 1.7.0，当前版本："
+                f"{metadata['version'] or '未安装'}"
+            ),
+        )
+    session_id = _visit_session_id()
+    row = await _get_or_create_session(session_id, "main", tenant_key)
+    data = copy.deepcopy(row.data or {})
+    data["visitor"]["visit_id"] = session_id
+    data["persona_skill_version"] = metadata["version"]
+    async with SessionLocal() as database:
+        stored = await database.get(ShowroomSession, session_id)
+        stored.data = data
+        await database.commit()
+        await database.refresh(stored)
+        row = stored
+    hub.state["active_main_session_id"] = session_id
+    hub.state["active_main_tenant_key"] = tenant_key
+    hub.state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _persist_runtime()
+    return row
+
+
 def _validate_websocket_token(token: str) -> dict[str, Any]:
     if not AUTHEN_JWT_SECRET:
         return {"sub": "dev", "username": "dev"}
@@ -375,7 +550,12 @@ async def get_showroom_bootstrap(
     await _ensure_runtime_hydrated()
     tenant_key = str(payload.get("tenant_key") or "demo")
     try:
-        session = await _get_or_create_session(session_id, slot, tenant_key)
+        session = (
+            await _active_main_session(tenant_key)
+            if slot == "main"
+            else await _get_or_create_session(session_id, slot, tenant_key)
+        )
+        session_id = session.session_id
         session_data = _session_payload(session, session_id, slot)
     except HTTPException:
         raise
@@ -422,12 +602,16 @@ async def get_showroom_bootstrap(
     except Exception:
         knowledge = {"total_md_files": 0, "categories": {}, "matrix": {}}
 
+    persona = _persona_metadata()
     return {
         "contract_version": "2026-08-19",
         "screens": screens,
         "content": content_manifest,
         "runtime": hub.snapshot(),
         "session": session_data,
+        "active_main_session_id": hub.state.get("active_main_session_id", ""),
+        "visitor": session_data.get("data", {}).get("visitor", {}),
+        "persona_skill": persona,
         "knowledge": knowledge,
         "centers": centers,
         "capabilities": {
@@ -438,6 +622,8 @@ async def get_showroom_bootstrap(
             "review": "/api/showroom/reviews/{gate}",
             "session_write": True,
             "runtime_persistence": True,
+            "visitor_insight": True,
+            "wiki_write": True,
             "feishu_configured": bool(os.environ.get("FEISHU_WEBHOOK_URL", "").strip()),
         },
     }
@@ -454,6 +640,276 @@ async def create_showroom_session(
         body.role,
     )
     return _session_payload(row, body.session_id, body.slot)
+
+
+@router.post("/visits")
+async def create_showroom_visit(payload=Depends(require_auth)) -> dict[str, Any]:
+    metadata = _persona_metadata()
+    if not metadata["compatible"]:
+        raise HTTPException(status_code=503, detail="拟人 V1.7 技能未安装或版本过低")
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    row = await _active_main_session(tenant_key)
+    return _session_payload(row, row.session_id, "main")
+
+
+@router.patch("/visits/{session_id}/visitor")
+async def update_showroom_visitor(
+    session_id: str, body: VisitorPatch, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key or row.slot != "main":
+            raise HTTPException(status_code=404, detail="主演示会话不存在")
+        company_name = body.company_name.strip()
+        if not company_name or any(char in company_name for char in "<>\x00"):
+            raise HTTPException(status_code=422, detail="公司名称格式无效")
+        if body.allow_history and body.visit_type != "return":
+            raise HTTPException(status_code=422, detail="首次来访不能读取历史 Session")
+        if body.allow_history:
+            historical = await database.get(ShowroomSession, body.history_session_id)
+            if (
+                historical is None
+                or historical.tenant_key != tenant_key
+                or historical.status != "archived"
+            ):
+                raise HTTPException(
+                    status_code=422, detail="请指定同租户已归档的精确历史 Session"
+                )
+        visitor = _merge(_empty_visitor(), body.model_dump())
+        visitor["visit_id"] = (row.data or {}).get("visitor", {}).get(
+            "visit_id"
+        ) or session_id
+        visitor["customer_code"] = body.customer_code.strip() or _customer_code(
+            company_name
+        )
+        visitor["focus_topics"] = [
+            str(item).strip()[:160] for item in body.focus_topics if str(item).strip()
+        ]
+        visitor["status"] = "researching"
+        data = copy.deepcopy(row.data or {})
+        data["visitor"] = visitor
+        data["customer_insight"] = _merge(
+            _empty_customer_insight(), {"status": "running"}
+        )
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+    message = {
+        "type": "VISITOR_UPDATED",
+        "session_id": session_id,
+        "epoch": hub.state.get("epoch", 0),
+        "visitor": visitor,
+    }
+    await hub.broadcast(message)
+    return _session_payload(row, session_id, "main")
+
+
+@router.post("/visits/{session_id}/insight/extract")
+async def extract_showroom_visitor_insight(
+    session_id: str, body: VisitorInsightRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key or row.slot != "main":
+            raise HTTPException(status_code=404, detail="主演示会话不存在")
+        data = copy.deepcopy(row.data or {})
+        stored_id = str(data.get("hermes_stored_session_id") or "")
+        if (
+            stored_id
+            and body.hermes_stored_session_id
+            and stored_id != body.hermes_stored_session_id
+        ):
+            raise HTTPException(status_code=409, detail="Hermes 会话与当前接待不匹配")
+        extraction = extract_visitor_insight(body.content)
+        if not extraction.get("recognized"):
+            return {
+                "recognized": False,
+                "reason": extraction.get("reason"),
+                "session": _session_payload(row, session_id, "main"),
+            }
+        current = data.get("customer_insight") or {}
+        if current.get("source_hash") == extraction["source_hash"]:
+            return {
+                "recognized": True,
+                "unchanged": True,
+                "session": _session_payload(row, session_id, "main"),
+            }
+        insight = _merge(_empty_customer_insight(), extraction)
+        insight.pop("raw_content", None)
+        paths = persist_visitor_wiki(
+            tenant_key=tenant_key, visitor=data.get("visitor") or {}, insight=insight
+        )
+        insight.update(paths)
+        insight["status"] = "completed" if insight.get("sources") else "partial"
+        insight["updated_at"] = datetime.now(timezone.utc).isoformat()
+        data["customer_insight"] = insight
+        data["visitor"] = _merge(data.get("visitor") or {}, {"status": "ready"})
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+    try:
+        from backend.api.knowledge import _matrix
+
+        _matrix.cache_clear()
+    except Exception:
+        pass
+    await hub.broadcast(
+        {
+            "type": "INSIGHT_UPDATED",
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "customer_insight": insight,
+        }
+    )
+    return {"recognized": True, "session": _session_payload(row, session_id, "main")}
+
+
+@router.post("/visits/{session_id}/frontstage")
+async def activate_showroom_frontstage(
+    session_id: str, body: FrontstageRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key or row.slot != "main":
+            raise HTTPException(status_code=404, detail="主演示会话不存在")
+        data = copy.deepcopy(row.data or {})
+        visitor = data.get("visitor") or {}
+        if not visitor.get("company_name"):
+            raise HTTPException(status_code=409, detail="主控台尚未录入来访客户")
+        if visitor.get("visit_type") == "first" and visitor.get("allow_history"):
+            raise HTTPException(status_code=422, detail="首次来访禁止读取历史 Session")
+        data["frontstage_message_offset"] = max(
+            int(data.get("frontstage_message_offset") or 0), body.message_count
+        )
+        data["frontstage_started"] = True
+        data["visitor"] = _merge(visitor, {"status": "in_tour"})
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+    insight = data.get("customer_insight") or {}
+    paths = [
+        path
+        for path in [
+            insight.get("public_wiki_slug"),
+            insight.get("private_record_path"),
+        ]
+        if path
+    ]
+    context = "\n".join(
+        [
+            "当前模式：frontstage（站 3 需求问诊）。",
+            "当前来访客户："
+            f"{visitor.get('customer_code')} · {visitor.get('company_name')}",
+            f"访问目的：{visitor.get('purpose') or '未录入'}",
+            f"关注方向：{'、'.join(visitor.get('focus_topics') or []) or '未录入'}",
+            f"仅允许读取这些背景路径：{', '.join(paths) or '暂无已核验背景'}",
+            "请静默读取允许的背景，自然欢迎客户并进入需求问诊。禁止复述后台洞察，禁止声称提前研究过贵司。",
+        ]
+    )
+    return {
+        "session": _session_payload(row, session_id, "main"),
+        "station_context": context,
+    }
+
+
+@router.post("/visits/{session_id}/complete")
+async def complete_showroom_visit(
+    session_id: str, body: VisitCompleteRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key or row.slot != "main":
+            raise HTTPException(status_code=404, detail="主演示会话不存在")
+        data = copy.deepcopy(row.data or {})
+        data["visitor"] = _merge(
+            data.get("visitor") or {}, {"status": "awaiting_rollover"}
+        )
+        data["visit_completed_by"] = body.source
+        data["visit_completed_at"] = datetime.now(timezone.utc).isoformat()
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+    await hub.broadcast(
+        {
+            "type": "VISIT_COMPLETE",
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "visitor": data.get("visitor"),
+            "wiki": data.get("customer_insight"),
+        }
+    )
+    return _session_payload(row, session_id, "main")
+
+
+@router.post("/visits/{session_id}/rollover")
+async def rollover_showroom_visit(
+    session_id: str, body: VisitRolloverRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    epoch = max(
+        body.epoch,
+        int(hub.state.get("epoch") or 0) + 1,
+        int(datetime.now(timezone.utc).timestamp() * 1000),
+    )
+    hub.switch_ready.clear()
+    await hub.broadcast(
+        {"type": "SESSION_SWITCH_PREPARE", "session_id": session_id, "epoch": epoch}
+    )
+    targets = {
+        id(socket) for socket, client in hub.connections.items() if client == session_id
+    }
+    for _ in range(20):
+        if targets.issubset(hub.switch_ready):
+            break
+        await asyncio.sleep(0.25)
+    async with SessionLocal() as database:
+        old = await database.get(ShowroomSession, session_id)
+        if old is None or old.tenant_key != tenant_key or old.slot != "main":
+            raise HTTPException(status_code=404, detail="主演示会话不存在")
+        old.status = "archived"
+        old_data = copy.deepcopy(old.data or {})
+        old_data["visitor"] = _merge(
+            old_data.get("visitor") or {}, {"status": "archived"}
+        )
+        old.data = old_data
+        new_id = _visit_session_id()
+        new_data = _initial_session_data("main")
+        new_data["visitor"]["visit_id"] = new_id
+        database.add(
+            ShowroomSession(
+                session_id=new_id, tenant_key=tenant_key, slot="main", data=new_data
+            )
+        )
+        await database.commit()
+        new = await database.get(ShowroomSession, new_id)
+    hub.state.update(
+        {
+            "active_main_session_id": new_id,
+            "active_main_tenant_key": tenant_key,
+            "epoch": epoch,
+            "stage": "station-1",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    await _persist_runtime()
+    await hub.broadcast(
+        {
+            "type": "SESSION_SWITCH_COMMIT",
+            "session_id": session_id,
+            "new_session_id": new_id,
+            "epoch": epoch,
+            "state": hub.snapshot(),
+        }
+    )
+    return {
+        "archived_session_id": session_id,
+        "session": _session_payload(new, new_id, "main"),
+        "runtime": hub.snapshot(),
+    }
 
 
 @router.get("/sessions/{session_id}")
@@ -927,11 +1383,12 @@ async def showroom_websocket(
                 await websocket.send_json({"type": "PING"})
                 continue
             is_ready = message.get("type") == "READY"
-            epoch_is_current = int(message.get("epoch", -1)) >= int(
-                hub.state["epoch"]
-            )
+            epoch_is_current = int(message.get("epoch", -1)) >= int(hub.state["epoch"])
             if is_ready and epoch_is_current:
                 hub.ready_sessions.add(client_id)
+            elif message.get("type") == "SESSION_SWITCH_READY":
+                if message.get("session_id") == client_id:
+                    hub.switch_ready.add(id(websocket))
             elif message.get("type") == "PONG":
                 continue
     except (WebSocketDisconnect, RuntimeError):

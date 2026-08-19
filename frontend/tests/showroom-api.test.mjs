@@ -136,6 +136,26 @@ test('assistant machine envelopes are hidden and extraction persists the returne
   assert.equal(api.session.data.demand.core_problem, '已回填');
 });
 
+test('visitor insight envelopes and invisible control messages never reach the frontstage UI', () => {
+  const { api } = createApi();
+  const content = `客户摘要\n<!-- AI_LAB_VISITOR_INSIGHT_V1 {"verified_facts":["事实"]} AI_LAB_VISITOR_INSIGHT_V1 -->`;
+
+  assert.equal(api.visibleAssistantMessage(content), '客户摘要');
+});
+
+test('visitor insight extraction persists the active main session', async () => {
+  const { api } = createApi();
+  api.sessionId = 'visit-current';
+  api.request = async (path, options) => {
+    assert.equal(path, '/api/showroom/visits/visit-current/insight/extract');
+    assert.match(options.body.content, /AI_LAB_VISITOR_INSIGHT_V1/);
+    return { recognized: true, session: { session_id: 'visit-current', data: { customer_insight: { status: 'completed' } } } };
+  };
+
+  await api.extractVisitorInsight('<!-- AI_LAB_VISITOR_INSIGHT_V1 {} AI_LAB_VISITOR_INSIGHT_V1 -->');
+  assert.equal(api.session.data.customer_insight.status, 'completed');
+});
+
 test('expired showroom authentication returns to login with the current screen', async () => {
   const { api, window } = createApi();
   api.request = async () => {

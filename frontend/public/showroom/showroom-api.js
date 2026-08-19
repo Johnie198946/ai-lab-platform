@@ -8,6 +8,11 @@
     /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
   ];
+  const VISITOR_ENVELOPE_PATTERNS = [
+    /<!--\s*AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_VISITOR_INSIGHT_V1\s*-->/gi,
+    /```(?:json\s+)?AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*```/gi,
+  ];
+  const CONTROL_PREFIX = "[AI_LAB_CONTROL]";
 
   function readJson(key) {
     try {
@@ -55,7 +60,7 @@
 
   function isConversationView() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    return view === "screen-03" || /^experience-0?[1-5]$/.test(view);
+    return view === "controller" || view === "screen-03" || /^experience-0?[1-5]$/.test(view);
   }
 
   function normalizeHermesMessages(messages) {
@@ -76,12 +81,17 @@
 
   function visibleHermesMessage(role, content) {
     if (role === "assistant") {
-      return DEMAND_ENVELOPE_PATTERNS.reduce(
+      const withoutDemand = DEMAND_ENVELOPE_PATTERNS.reduce(
         (visible, pattern) => visible.replace(pattern, ""),
         content,
+      );
+      return VISITOR_ENVELOPE_PATTERNS.reduce(
+        (visible, pattern) => visible.replace(pattern, ""),
+        withoutDemand,
       ).trim();
     }
     if (role !== "user") return content;
+    if (content.trim().startsWith(CONTROL_PREFIX)) return "";
     const invocation = global.HermesShared?.skillInvocationText?.(content);
     if (!invocation) return content;
     const marker = "用户原始问题：";
@@ -177,6 +187,10 @@
         this.bootstrap = bootstrap;
         this.state = bootstrap.runtime;
         this.session = bootstrap.session;
+        if (this.slot === "main" && bootstrap.active_main_session_id) {
+          this.sessionId = bootstrap.active_main_session_id;
+          global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+        }
         this.emit("bootstrap", bootstrap);
         this.connect();
         if (isConversationView()) this.resumeHermes();
@@ -329,7 +343,12 @@
           throw new Error("Hermes 未返回可恢复的会话标识");
         }
 
-        const resumedMessages = normalizeHermesMessages(result.messages);
+        const view = new URLSearchParams(global.location.search).get("view") || "controller";
+        const rawMessages = Array.isArray(result.messages) ? result.messages : [];
+        const offset = view === "screen-03"
+          ? Number(this.session?.data?.frontstage_message_offset || 0)
+          : 0;
+        const resumedMessages = normalizeHermesMessages(rawMessages.slice(offset));
         const shouldMarkInitialized = resumedMessages.length > 0 && !this.session?.data?.hermes_skill_initialized;
         if (this.hermesStoredSessionId !== storedId || shouldMarkInitialized) {
           this.session = await this.saveSession({
@@ -346,6 +365,7 @@
           live_session_id: this.hermesLiveSessionId,
           stored_session_id: this.hermesStoredSessionId,
           messages: resumedMessages,
+          raw_message_count: rawMessages.length,
           running: Boolean(result.running),
         });
         return this.hermesLiveSessionId;
@@ -490,6 +510,20 @@
         if (message.type === "PREPARE") {
           socket.send(JSON.stringify({ type: "READY", epoch: message.epoch }));
         }
+        if (message.type === "SESSION_SWITCH_PREPARE" && message.session_id === this.sessionId) {
+          this.interruptHermes().catch(() => {}).finally(() => {
+            this.suspendHermes();
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+              type: "SESSION_SWITCH_READY",
+              session_id: this.sessionId,
+              epoch: message.epoch,
+            }));
+          });
+        }
+        if (message.type === "SESSION_SWITCH_COMMIT" && message.session_id === this.sessionId) {
+          this.sessionId = message.new_session_id;
+          global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+        }
         if (message.state) this.state = message.state;
         this.emit("message", message);
       });
@@ -540,6 +574,64 @@
       this.session = session;
       this.emit("session", session);
       return session;
+    }
+
+    async saveVisitor(visitor) {
+      const session = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/visitor`, {
+        method: "PATCH",
+        body: visitor,
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async extractVisitorInsight(content) {
+      const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/insight/extract`, {
+        method: "POST",
+        body: {
+          content,
+          hermes_stored_session_id: this.hermesStoredSessionId || this.session?.data?.hermes_stored_session_id || "",
+        },
+      });
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async activateFrontstage(messageCount = 0) {
+      const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/frontstage`, {
+        method: "POST",
+        body: { message_count: messageCount },
+      });
+      this.session = result.session;
+      this.emit("session", result.session);
+      return result;
+    }
+
+    async completeVisit(source = "controller") {
+      const session = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/complete`, {
+        method: "POST",
+        body: { source },
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async rolloverVisit() {
+      const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/rollover`, {
+        method: "POST",
+        body: { epoch: Date.now() },
+      });
+      this.sessionId = result.session.session_id;
+      global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+      this.session = result.session;
+      this.state = result.runtime;
+      this.emit("session", result.session);
+      return result;
     }
 
     visibleAssistantMessage(content) {

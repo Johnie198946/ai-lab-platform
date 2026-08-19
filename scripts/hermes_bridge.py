@@ -1573,21 +1573,19 @@ def _cache_request_overrides(
 ) -> dict[str, Any]:
     """按实际路由过滤缓存字段，避免兼容接口收到不支持的 OpenAI 参数。
 
-    DeepSeek 使用自身的隐式前缀缓存统计，不接受 OpenAI Responses 的
-    ``prompt_cache_retention``。Bridge 不主动启用扩展保留；支持该能力的专用
-    路由应由 Hermes provider adapter 自行协商。
+    ``prompt_cache_retention`` 只被少数 OpenAI 模型接受，兼容代理与大量新模型
+    会直接返回 400。Bridge 默认移除这一可选优化参数；若某个 provider 明确支持，
+    应由其专用 adapter 在最终请求层协商，而不是从通用配置透传。
     """
     cleaned = dict(overrides or {})
-    normalized = f"{provider}/{model}".lower()
-    if "deepseek" in normalized:
-        cleaned.pop("prompt_cache_retention", None)
-        cleaned.pop("prompt_cache_options", None)
-        extra = cleaned.get("extra_body")
-        if isinstance(extra, dict):
-            extra = dict(extra)
-            extra.pop("prompt_cache_retention", None)
-            extra.pop("prompt_cache_options", None)
-            cleaned["extra_body"] = extra
+    cleaned.pop("prompt_cache_retention", None)
+    cleaned.pop("prompt_cache_options", None)
+    extra = cleaned.get("extra_body")
+    if isinstance(extra, dict):
+        extra = dict(extra)
+        extra.pop("prompt_cache_retention", None)
+        extra.pop("prompt_cache_options", None)
+        cleaned["extra_body"] = extra
     return cleaned
 
 
