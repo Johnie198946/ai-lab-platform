@@ -18,7 +18,7 @@ from backend.db import SessionLocal
 from backend.models.tenant import TenantEntitlementSnapshot, TenantMapping
 
 AUTHEN_SUBSCRIPTION_URL = os.environ.get(
-    "AUTHEN_SUBSCRIPTION_URL", "http://host.docker.internal:8005"
+    "AUTHEN_SUBSCRIPTION_URL", "http://host.docker.internal:8006"
 ).rstrip("/")
 AUTHEN_SERVICE_TOKEN = os.environ.get("AUTHEN_AI_PLATFORM_SERVICE_TOKEN", "")
 AUTHEN_APP_ID = os.environ.get("AUTHEN_APP_ID", "ai-lab-platform")
