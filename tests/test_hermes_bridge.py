@@ -391,6 +391,46 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         self.assertIn("直接证据摘要", prompt)
         self.assertNotIn("不应注入的内容", prompt)
 
+    def test_retrieval_rejects_unfinished_tool_control_text(self):
+        from scripts.hermes_bridge import _workflow_output_incomplete
+
+        node = {"node_type": "KNOWLEDGE_RETRIEVAL"}
+        self.assertTrue(
+            _workflow_output_incomplete(
+                node,
+                "我先确认当前会话可用的检索工具。\n"
+                "<tool_switch_to_interpreter>使用 bash 工具</tool_switch_to_interpreter>",
+            )
+        )
+        self.assertFalse(
+            _workflow_output_incomplete(
+                node,
+                "# 联网证据\n\n- 拜仁官方公告确认该事项：https://fcbayern.com/example\n"
+                + "证据摘要与可追溯说明。" * 30,
+            )
+        )
+
+    def test_node_repair_usage_is_merged_without_losing_cache_or_cost(self):
+        from scripts.hermes_bridge import _merge_workflow_usage
+
+        merged = _merge_workflow_usage(
+            {"input_tokens": 100, "cache_read_tokens": 500, "api_calls": 1},
+            {
+                "input_tokens": 80,
+                "output_tokens": 20,
+                "cache_read_tokens": 400,
+                "api_calls": 1,
+                "estimated_cost_usd": 0.002,
+                "model": "deepseek-v4-flash",
+                "provider": "deepseek",
+            },
+        )
+        self.assertEqual(merged["input_tokens"], 180)
+        self.assertEqual(merged["cache_read_tokens"], 900)
+        self.assertEqual(merged["api_calls"], 2)
+        self.assertEqual(merged["estimated_cost_usd"], 0.002)
+        self.assertEqual(merged["model"], "deepseek-v4-flash")
+
 
 if __name__ == "__main__":
     unittest.main()

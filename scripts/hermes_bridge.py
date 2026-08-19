@@ -778,7 +778,8 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
             )
     node_type = str(node.get("node_type") or "")
     tool_rule = (
-        "按最小次数使用当前节点授权的检索工具。"
+        "直接使用当前节点已授权的 web_search/web_extract 或文件检索工具，"
+        "按最小次数完成检索；不得把工具切换标签、调用计划或‘我先检查工具’作为最终成果。"
         if node_type == "KNOWLEDGE_RETRIEVAL"
         else "本节点禁止调用工具；只基于当前 Session 已有的上游成果完成转换、分析或格式化。"
     )
@@ -798,6 +799,46 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         "只输出当前节点可落盘的完整成果，不要输出运行状态说明。\n"
         f"上游上下文：\n{upstream}"
     )[:MAX_INPUT]
+
+
+def _workflow_output_incomplete(node: dict[str, Any], reply: str) -> bool:
+    """拒绝 Hermes 尚未真正执行工具时产生的中间控制文本。"""
+    normalized = str(reply or "").strip().lower()
+    if not normalized:
+        return True
+    if "<tool_switch_" in normalized or "<tool_call" in normalized:
+        return True
+    if str(node.get("node_type") or "") != "KNOWLEDGE_RETRIEVAL":
+        return False
+    planning_markers = (
+        "我先确认",
+        "我先检查",
+        "先确认当前",
+        "接下来我会",
+        "使用 bash 工具",
+    )
+    return len(normalized) < 320 and any(marker in normalized for marker in planning_markers)
+
+
+def _merge_workflow_usage(total: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
+    """合并同一节点的受控修复调用，确保平台看到完整真实 usage。"""
+    merged = dict(total)
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "total_tokens",
+        "budget_tokens",
+        "api_calls",
+        "estimated_cost_usd",
+    ):
+        merged[key] = (merged.get(key) or 0) + (delta.get(key) or 0)
+    for key in ("model", "provider"):
+        if delta.get(key):
+            merged[key] = delta[key]
+    return merged
 
 
 def _workflow_run_sync(execution_id: str) -> None:
@@ -835,20 +876,46 @@ def _workflow_run_sync(execution_id: str) -> None:
                     agent_id=(node.get("parameters") or {}).get("agent_id") or "main_agent",
                     message=f"开始：{node.get('name') or node_id}",
                 )
-            reply, new_sid, raw_usage = _run_workflow_node_in_process(
-                _workflow_node_prompt(run, node),
-                node,
-                str(hermes_sid) if hermes_sid else None,
-                execution_id,
-            )
-            if new_sid:
-                hermes_sid = new_sid
-            if not reply or reply.startswith("⚠️"):
-                raise RuntimeError(reply or "Hermes 返回空结果")
+            node_prompt = _workflow_node_prompt(run, node)
+            node_usage: dict[str, Any] = {}
+            reply = ""
+            for completion_attempt in range(2):
+                attempt_prompt = node_prompt
+                if completion_attempt:
+                    attempt_prompt = (
+                        node_prompt
+                        + "\n\n上一次响应停留在工具调用计划，没有形成成果。"
+                        "这次必须立即使用已授权工具完成检索，并直接返回含来源 URL、"
+                        "证据摘要和缺口标记的完整可落盘成果；禁止输出工具切换标签。"
+                    )[:MAX_INPUT]
+                reply, new_sid, raw_usage = _run_workflow_node_in_process(
+                    attempt_prompt,
+                    node,
+                    str(hermes_sid) if hermes_sid else None,
+                    execution_id,
+                )
+                if new_sid:
+                    hermes_sid = new_sid
+                delta = _accumulate_usage(run, raw_usage)
+                node_usage = _merge_workflow_usage(node_usage, delta)
+                if reply.startswith("⚠️"):
+                    raise RuntimeError(reply)
+                if not _workflow_output_incomplete(node, reply):
+                    break
+                if completion_attempt == 0:
+                    with _workflow_runs_lock:
+                        _workflow_event(
+                            run,
+                            "node_repairing",
+                            node_id=node_id,
+                            usage=node_usage,
+                            message="Hermes 返回未完成的工具控制文本，正在受控修复",
+                        )
+            if _workflow_output_incomplete(node, reply):
+                raise RuntimeError("Hermes 未完成当前节点的实际工具执行")
             with _workflow_runs_lock:
                 run["hermes_session_id"] = hermes_sid
-                delta = _accumulate_usage(run, raw_usage)
-                state.update({"status": "succeeded", "output": reply, "usage": delta})
+                state.update({"status": "succeeded", "output": reply, "usage": node_usage})
                 artifact_kind = (
                     "final" if node.get("node_type") == "OUTPUT_FORMAT"
                     else "review" if node.get("node_type") == "FILTER_PASS"
@@ -860,10 +927,10 @@ def _workflow_run_sync(execution_id: str) -> None:
                     "node_succeeded",
                     node_id=node_id,
                     progress=int(((position + 1) / max(1, len(order))) * 100),
-                    usage=delta,
+                    usage=node_usage,
                     route={
-                        "model": delta.get("model"),
-                        "provider": delta.get("provider"),
+                        "model": node_usage.get("model"),
+                        "provider": node_usage.get("provider"),
                         "reason": "Hermes 多模型路由按当前 Profile、任务能力与回退策略选择",
                     },
                     artifact={
