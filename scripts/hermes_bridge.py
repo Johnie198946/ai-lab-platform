@@ -90,6 +90,10 @@ WORKFLOW_NODE_TIMEOUT = max(
     DEFAULT_TIMEOUT,
     int(os.environ.get("HERMES_WORKFLOW_NODE_TIMEOUT", "900")),
 )
+WORKFLOW_NODE_MAX_ITERATIONS = max(
+    2,
+    min(12, int(os.environ.get("HERMES_WORKFLOW_NODE_MAX_ITERATIONS", "6"))),
+)
 # 注：v5 起显式移除「>300s 无更新」stale 判定（STATUS_STALE_SECONDS），
 # timeout 判定统一单一时钟源：run.start_ts 超 STREAM_MAX_DURATION_SECONDS(720s)。
 
@@ -127,6 +131,7 @@ HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", ""
 _workflow_runs: dict[str, dict[str, Any]] = {}
 _workflow_runs_lock = threading.RLock()
 _workflow_threads: dict[str, threading.Thread] = {}
+_workflow_agents: dict[str, Any] = {}
 
 # user_id -> 在途流式运行状态（agent holder / 线程 / 队列 / 停止事件），供 cancel/clarify 端点寻址
 # 状态模型（保活机制 v6）：{agent_holder, queue, attached, start_ts, run_id[, clarify_issued]}
@@ -595,6 +600,18 @@ def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
         "api_calls",
     )
     result = {field: int(usage.get(field) or 0) for field in integer_fields}
+    # Provider 的 total_tokens 会包含每次调用的缓存读取量；它必须完整展示，
+    # 但不应与未缓存 Token 按 1:1 消耗执行预算。预算单独按实际生成、推理、
+    # 未缓存输入和缓存写入计量，缓存读取仍由 estimated_cost_usd 约束成本。
+    result["budget_tokens"] = sum(
+        result[field]
+        for field in (
+            "input_tokens",
+            "output_tokens",
+            "reasoning_tokens",
+            "cache_write_tokens",
+        )
+    )
     result.update(
         {
             "estimated_cost_usd": float(usage.get("estimated_cost_usd") or 0),
@@ -618,6 +635,7 @@ def _accumulate_usage(run: dict[str, Any], usage: dict[str, Any]) -> dict[str, A
         "cache_write_tokens",
         "total_tokens",
         "api_calls",
+        "budget_tokens",
     ):
         total[field] = int(total.get(field) or 0) + int(delta[field])
     total["estimated_cost_usd"] = round(
@@ -627,6 +645,120 @@ def _accumulate_usage(run: dict[str, Any], usage: dict[str, Any]) -> dict[str, A
         if delta.get(field):
             total[field] = delta[field]
     return delta
+
+
+def _workflow_toolsets(node: dict[str, Any]) -> list[str]:
+    """按节点最小授权工具，避免把整套 CLI Schema 重复塞进每次推理。"""
+    node_type = str(node.get("node_type") or "")
+    params = node.get("parameters") or {}
+    if node_type == "KNOWLEDGE_RETRIEVAL":
+        return ["web"] if bool(params.get("allow_network")) else ["file"]
+    if node_type == "LLM_INFERENCE" and str(params.get("agent_id") or "") not in {
+        "",
+        "main_agent",
+    }:
+        return ["skills"]
+    return []
+
+
+def _run_workflow_node_in_process(
+    goal: str,
+    node: dict[str, Any],
+    session_id: str | None = None,
+    execution_id: str | None = None,
+) -> tuple[str, str | None, dict[str, Any]]:
+    """通过 Hermes AIAgent 原生 Session 执行节点。
+
+    Hermes 0.19 的 ``-z`` 路径不会把 ``--resume`` 传给 one-shot runner，
+    因而不能用于持久工作流。Bridge 兼容层直接使用同版本公开 AIAgent，
+    同时施加节点工具、迭代和输出预算；不修改 Hermes 安装包。
+    """
+    from run_agent import AIAgent
+
+    cfg = _get_cached_config()
+    model_cfg = cfg.get("model") or {}
+    cfg_model = (
+        model_cfg
+        if isinstance(model_cfg, str)
+        else model_cfg.get("default") or model_cfg.get("model") or ""
+    )
+    runtime = _get_cached_runtime(cfg)
+    session_db = _create_thread_local_session_db()
+    agent = None
+    timeout_fired = threading.Event()
+    timeout_timer = None
+    try:
+        max_tokens = max(
+            256,
+            min(16_384, int((node.get("parameters") or {}).get("max_tokens") or 2048)),
+        )
+        agent = AIAgent(
+            api_key=runtime.get("api_key"),
+            base_url=runtime.get("base_url"),
+            provider=runtime.get("provider"),
+            api_mode=runtime.get("api_mode"),
+            model=cfg_model,
+            max_iterations=WORKFLOW_NODE_MAX_ITERATIONS,
+            max_tokens=max_tokens,
+            enabled_toolsets=_workflow_toolsets(node),
+            quiet_mode=True,
+            platform="cli",
+            session_id=session_id,
+            session_db=session_db,
+            credential_pool=runtime.get("credential_pool"),
+            fallback_model=_get_cached_fallback(cfg) or None,
+            request_overrides=_cache_request_overrides(
+                cfg_model, str(runtime.get("provider") or "")
+            ),
+            reasoning_config={"effort": "minimal"},
+            ephemeral_system_prompt=(
+                "你是持久工作流节点执行器。严格执行当前节点，不追问、不扩展范围；"
+                "工具调用以完成当前节点所需的最少次数为限；只返回可落盘成果。"
+            ),
+        )
+        if execution_id:
+            with _workflow_runs_lock:
+                _workflow_agents[execution_id] = agent
+
+        def _interrupt_on_timeout() -> None:
+            timeout_fired.set()
+            try:
+                agent.interrupt(message="workflow-node-timeout")
+            except TypeError:
+                agent.interrupt()
+            except Exception:
+                pass
+
+        timeout_timer = threading.Timer(
+            WORKFLOW_NODE_TIMEOUT,
+            _interrupt_on_timeout,
+        )
+        timeout_timer.daemon = True
+        timeout_timer.start()
+        result = agent.run_conversation(goal)
+        if timeout_fired.is_set():
+            raise TimeoutError(
+                f"Hermes 工作流节点超过 {WORKFLOW_NODE_TIMEOUT} 秒"
+            )
+        result = result if isinstance(result, dict) else {}
+        reply = str(result.get("final_response") or "").strip()
+        return reply, getattr(agent, "session_id", None) or session_id, result
+    finally:
+        if timeout_timer is not None:
+            timeout_timer.cancel()
+        if execution_id:
+            with _workflow_runs_lock:
+                if _workflow_agents.get(execution_id) is agent:
+                    _workflow_agents.pop(execution_id, None)
+        if agent is not None:
+            try:
+                agent.close()
+            except Exception:
+                pass
+        try:
+            session_db.close()
+        except Exception:
+            pass
 
 
 def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
@@ -688,10 +820,11 @@ def _workflow_run_sync(execution_id: str) -> None:
                     agent_id=(node.get("parameters") or {}).get("agent_id") or "main_agent",
                     message=f"开始：{node.get('name') or node_id}",
                 )
-            reply, new_sid, raw_usage = _run_hermes_with_usage(
+            reply, new_sid, raw_usage = _run_workflow_node_in_process(
                 _workflow_node_prompt(run, node),
+                node,
                 str(hermes_sid) if hermes_sid else None,
-                WORKFLOW_NODE_TIMEOUT,
+                execution_id,
             )
             if new_sid:
                 hermes_sid = new_sid
@@ -700,8 +833,6 @@ def _workflow_run_sync(execution_id: str) -> None:
             with _workflow_runs_lock:
                 run["hermes_session_id"] = hermes_sid
                 delta = _accumulate_usage(run, raw_usage)
-                if int(run["usage"].get("total_tokens") or 0) > int(run.get("max_tokens") or 0):
-                    raise RuntimeError("Hermes 工作流 Token 预算已耗尽")
                 state.update({"status": "succeeded", "output": reply, "usage": delta})
                 artifact_kind = (
                     "final" if node.get("node_type") == "OUTPUT_FORMAT"
@@ -728,6 +859,11 @@ def _workflow_run_sync(execution_id: str) -> None:
                     },
                     message=f"完成：{node.get('name') or node_id}",
                 )
+                if int(run["usage"].get("budget_tokens") or 0) > int(run.get("max_tokens") or 0):
+                    raise RuntimeError(
+                        "Hermes 工作流 Token 预算已耗尽"
+                        f"（预算口径 {run['usage'].get('budget_tokens', 0)} / {run.get('max_tokens', 0)}）"
+                    )
         with _workflow_runs_lock:
             run["status"] = "awaiting_review"
             _workflow_event(
@@ -2405,6 +2541,14 @@ async def cancel_workflow_run(
         if not run:
             raise HTTPException(status_code=404, detail="workflow run not found")
         run["cancel_requested"] = True
+        active_agent = _workflow_agents.get(execution_id)
+        if active_agent is not None:
+            try:
+                active_agent.interrupt(message="workflow-cancelled")
+            except TypeError:
+                active_agent.interrupt()
+            except Exception:
+                pass
         _workflow_event(run, "cancel_requested", message="已请求 Hermes 取消执行")
         return {"ok": True, "status": run.get("status")}
 

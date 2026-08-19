@@ -318,5 +318,52 @@ class TestDrillMeSteering(unittest.TestCase):
         self.assertIn("确认，进入方案设计", CLARIFY_GATE_PROMPT)
 
 
+class TestWorkflowHermesRuntime(unittest.TestCase):
+    """工作流必须使用最小工具面与独立预算口径。"""
+
+    def test_node_toolsets_are_minimal_and_permission_aware(self):
+        from scripts.hermes_bridge import _workflow_toolsets
+
+        self.assertEqual(
+            _workflow_toolsets(
+                {
+                    "node_type": "KNOWLEDGE_RETRIEVAL",
+                    "parameters": {"allow_network": False},
+                }
+            ),
+            ["file"],
+        )
+        self.assertEqual(
+            _workflow_toolsets(
+                {
+                    "node_type": "KNOWLEDGE_RETRIEVAL",
+                    "parameters": {"allow_network": True},
+                }
+            ),
+            ["web"],
+        )
+        self.assertEqual(
+            _workflow_toolsets({"node_type": "OUTPUT_FORMAT", "parameters": {}}),
+            [],
+        )
+
+    def test_cache_reads_are_reported_but_not_charged_one_to_one_to_budget(self):
+        from scripts.hermes_bridge import _usage_delta
+
+        usage = _usage_delta(
+            {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "reasoning_tokens": 25,
+                "cache_read_tokens": 10_000,
+                "cache_write_tokens": 10,
+                "total_tokens": 10_185,
+            }
+        )
+        self.assertEqual(usage["total_tokens"], 10_185)
+        self.assertEqual(usage["cache_read_tokens"], 10_000)
+        self.assertEqual(usage["budget_tokens"], 185)
+
+
 if __name__ == "__main__":
     unittest.main()
