@@ -17,6 +17,9 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.services.knowledge_catalog import compute_catalog
+from backend.db import SessionLocal
+from backend.models.tenant import TenantMapping
 from backend.models.workflow import (
     WorkflowArtifact,
     WorkflowEvent,
@@ -29,6 +32,7 @@ from backend.services.workflow_artifacts import (
     initialize_run,
     store_artifact,
 )
+from backend.services.knowledge_policy import mint_capability, resolve_policy
 
 HERMES_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -129,6 +133,27 @@ async def _nodes(db: AsyncSession, execution_id: str) -> dict[str, WorkflowNodeR
 
 
 async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> dict[str, Any]:
+    async with SessionLocal() as policy_db:
+        mapping = (
+            await policy_db.execute(
+                select(TenantMapping).where(TenantMapping.tenant_key == execution.tenant_key).limit(1)
+            )
+        ).scalar_one_or_none()
+        policy, _ = await resolve_policy(
+            policy_db,
+            tenant_key=execution.tenant_key,
+            org_id=mapping.org_id if mapping else "",
+            catalog=compute_catalog(),
+            allow_admin_bypass=False,
+        )
+        allowed_scope = policy.restrict(plan.knowledge_scope or [])
+        capability = mint_capability(
+            policy,
+            subject_id=execution.id,
+            entry_point="workflow",
+            requested_scopes=allowed_scope,
+            ttl_seconds=900,
+        )
     payload = {
         "tenant_id": execution.tenant_key,
         "execution_id": execution.id,
@@ -137,7 +162,9 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
         "deliverable": plan.deliverable,
         "plan": plan.dsl,
         "allow_network": plan.allow_network,
-        "knowledge_scope": plan.knowledge_scope or [],
+        "knowledge_scope": sorted(allowed_scope),
+        "knowledge_capability": capability,
+        "knowledge_policy_version": policy.policy_version,
         "max_tokens": plan.max_tokens,
     }
     async with httpx.AsyncClient(timeout=30) as client:

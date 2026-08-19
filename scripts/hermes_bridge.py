@@ -56,6 +56,10 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.append(str(_REPO_ROOT))
 
 from backend.services.reasoning_extractor import extract_steps  # noqa: E402
+from backend.services.knowledge_policy import (  # noqa: E402
+    KnowledgeScopeDenied,
+    verify_capability,
+)
 
 app = FastAPI(title="Hermes Bridge v6.0")
 
@@ -128,6 +132,9 @@ WORKFLOW_RUNS_FILE = Path(
     )
 )
 HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+KNOWLEDGE_GATEWAY_URL = os.environ.get(
+    "KNOWLEDGE_GATEWAY_URL", "http://127.0.0.1:8000/api/internal/knowledge/search"
+)
 _workflow_runs: dict[str, dict[str, Any]] = {}
 _workflow_runs_lock = threading.RLock()
 _workflow_threads: dict[str, threading.Thread] = {}
@@ -245,6 +252,8 @@ class GoalRequest(BaseModel):
     # 重新生成语义（2026-08-17 修复）：true 时作废旧 run（interrupt 旧 agent + discard 注册）
     # 再启动全新尝试——对齐 ChatGPT「重新生成」= 上次回答作废重跑，而非被并发防护拒绝
     regenerate: bool = Field(False, description="重新生成：作废旧 run 后全新执行")
+    knowledge_capability: str | None = None
+    knowledge_policy_version: str | None = None
 
 
 class WorkflowPlanRequest(BaseModel):
@@ -270,6 +279,8 @@ class WorkflowRunRequest(BaseModel):
     allow_network: bool = True
     knowledge_scope: list[str] = Field(default_factory=list)
     max_tokens: int = Field(24000, ge=1000, le=128000)
+    knowledge_capability: str = Field(..., min_length=20)
+    knowledge_policy_version: str = Field(..., min_length=8, max_length=80)
 
 
 class WorkflowRetryRequest(BaseModel):
@@ -548,6 +559,47 @@ def _require_internal(token: str | None) -> None:
         raise HTTPException(status_code=401, detail="invalid bridge token")
 
 
+def _validated_knowledge_claims(
+    token: str | None,
+    *,
+    subject_id: str,
+    policy_version: str | None,
+) -> dict[str, Any] | None:
+    """Validate signed platform authorization; absence means no knowledge access."""
+    if not token:
+        return None
+    try:
+        claims = verify_capability(token)
+    except KnowledgeScopeDenied as exc:
+        raise HTTPException(status_code=403, detail="knowledge_scope_denied") from exc
+    if (
+        str(claims.get("subject_id") or "") != subject_id
+        or str(claims.get("policy_version") or "") != str(policy_version or "")
+    ):
+        raise HTTPException(status_code=403, detail="knowledge_scope_denied")
+    return claims
+
+
+def _knowledge_gateway_search(
+    token: str,
+    *,
+    query: str,
+    category_scope: list[str],
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    response = httpx.post(
+        KNOWLEDGE_GATEWAY_URL,
+        headers={"X-Knowledge-Capability": token},
+        json={"query": query[:200], "category_scope": category_scope, "limit": limit},
+        timeout=20.0,
+    )
+    if response.status_code == 403:
+        raise PermissionError("knowledge_scope_denied")
+    response.raise_for_status()
+    payload = response.json()
+    return payload.get("docs") if isinstance(payload.get("docs"), list) else []
+
+
 def _extract_json_object(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -647,7 +699,10 @@ def _workflow_toolsets(node: dict[str, Any]) -> list[str]:
     node_type = str(node.get("node_type") or "")
     params = node.get("parameters") or {}
     if node_type == "KNOWLEDGE_RETRIEVAL":
-        return ["web"] if bool(params.get("allow_network")) else ["file"]
+        # Tenant knowledge is fetched by Bridge through Knowledge Gateway before
+        # model execution. Hermes may only supplement an explicit evidence gap
+        # with the web tool; local Vault/file tools are never granted.
+        return ["web"] if bool(params.get("allow_network")) else ["skills"]
     if node_type == "LLM_INFERENCE" and str(params.get("agent_id") or "") not in {
         "",
         "main_agent",
@@ -895,7 +950,27 @@ def _workflow_run_sync(execution_id: str) -> None:
             node_prompt = _workflow_node_prompt(run, node)
             node_usage: dict[str, Any] = {}
             reply = ""
-            for completion_attempt in range(2):
+            gateway_completed = False
+            if str(node.get("node_type") or "") == "KNOWLEDGE_RETRIEVAL":
+                params = node.get("parameters") or {}
+                requested_scope = list(params.get("knowledge_scope") or run.get("knowledge_scope") or [])
+                docs = _knowledge_gateway_search(
+                    str(run.get("knowledge_capability") or ""),
+                    query=str(params.get("query") or params.get("instruction") or run.get("goal") or ""),
+                    category_scope=requested_scope,
+                )
+                if docs or not bool(run.get("allow_network")):
+                    gateway_completed = True
+                    if docs:
+                        rows = [
+                            f"- [[{item.get('path', '')}]] **{item.get('title', '')}**："
+                            f"{str(item.get('snippet') or '已授权知识条目')[:500]}"
+                            for item in docs
+                        ]
+                        reply = "## 已授权知识证据\n\n" + "\n".join(rows)
+                    else:
+                        reply = "## 证据缺口\n\n当前授权知识范围内未检索到相关条目，且本节点未获联网权限。"
+            for completion_attempt in range(0 if gateway_completed else 2):
                 attempt_prompt = node_prompt
                 if completion_attempt:
                     attempt_prompt = (
@@ -1549,6 +1624,11 @@ async def chat_stream(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
+    _validated_knowledge_claims(
+        body.knowledge_capability,
+        subject_id=user_id,
+        policy_version=body.knowledge_policy_version,
+    )
     goal = _expand_requested_skill(body.goal, body.skill_id)
     _mark_in_flight(user_id)
 
@@ -1583,7 +1663,7 @@ async def chat_stream(body: GoalRequest):
         try:
             print(f"[bridge] v7 进程内流式: user={user_id}")
             return StreamingResponse(
-                _sse_from_in_process(user_id, goal),
+                _sse_from_in_process(user_id, goal, allow_local_files=False),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -1824,13 +1904,18 @@ def _cache_request_overrides(
     cleaned = dict(overrides or {})
     normalized = f"{provider}/{model}".lower()
     if "deepseek" in normalized:
-        cleaned.pop("prompt_cache_retention", None)
-        cleaned.pop("prompt_cache_options", None)
+        # Hermes' Responses transport may add a provider default *before* it
+        # merges request_overrides.  An absent key cannot undo that default;
+        # an explicit None does, and the adapter then omits the field from the
+        # serialized request.  This keeps the guard at the final provider
+        # boundary for chat, workflow and MoA-compatible AIAgent paths.
+        cleaned["prompt_cache_retention"] = None
+        cleaned["prompt_cache_options"] = None
         extra = cleaned.get("extra_body")
         if isinstance(extra, dict):
             extra = dict(extra)
-            extra.pop("prompt_cache_retention", None)
-            extra.pop("prompt_cache_options", None)
+            extra["prompt_cache_retention"] = None
+            extra["prompt_cache_options"] = None
             cleaned["extra_body"] = extra
     return cleaned
 
@@ -1847,15 +1932,11 @@ def _cache_request_overrides(
 # 实测教训：search_files 的 pattern 中「|」是字面量不是正则 OR，会静默返回 0（vault-knowledge-retrieval
 # 技能已警告但模型仍常踩坑）→ 必须在目标注入层强制约束。
 KB_RETRIEVAL_DISCIPLINE = (
-    "【知识库检索纪律·必须严格遵守】\n"
-    "1. 回答事实/竞品/业务/技术类问题前，必须先检索本地知识库 wiki/ 目录（唯一真理源），"
-    "知识库命中时以知识库内容为准作答；0 命中时才可凭模型常识或联网。\n"
-    "2. 定位条目：用 ls 或 search_files(target='files') 按目录定位，如 wiki/竞品/华为.md、wiki/产品/*.md。\n"
-    "3. search_files 搜索正文时 pattern 必须用【单个关键词】（如 \"华为\"），严禁用 | 连接多词"
-    "（管道符是字面量，会静默返回 0 结果，即使文件存在）。\n"
-    "4. 0 命中时二次核验：先 ls 目标目录 + read_file 直接读候选文件，确认确实无条目后再判定，"
-    "严禁仅凭一次搜索就断言\"知识库无此条目\"。\n"
-    "5. 命中知识库后，输出完整 Markdown（标题/列表/加粗/表格/引用），确保与微信端体验一致。"
+    "【租户知识隔离纪律·必须严格遵守】\n"
+    "1. 平台已通过 Knowledge Gateway 注入当前租户可见的证据摘要，只能使用该摘要。\n"
+    "2. 禁止使用 file、bash、search_files、read_file 或任何本机路径读取知识 Vault。\n"
+    "3. 未提供证据时应明确说明证据缺口；不得猜测其他租户、过期套餐或历史 Session 中的知识。\n"
+    "4. 引用必须保留平台提供的 [[path]]，不得伪造来源。"
 )
 
 CLARIFY_GATE_PROMPT = f"""【AI Lab 全局交互与对话规范】
@@ -2090,6 +2171,7 @@ def _build_in_process_agent(
     user_id: str,
     hermes_sid: str | None,
     stream_q: queue.Queue,
+    allow_local_files: bool = False,
 ) -> object:
     """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
 
@@ -2115,6 +2197,8 @@ def _build_in_process_agent(
 
     runtime = _get_cached_runtime(cfg)  # 常驻单例：0ms 解析
     toolsets_list = _resolve_dynamic_toolsets(goal, cfg)  # 工具按需动态装配（极简 6 工具 vs 全量 18 工具）
+    if not allow_local_files:
+        toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
     _fb = _get_cached_fallback(cfg)  # 常驻单例
     session_db = _get_shared_session_db()  # 常驻单例（预热完成）：消灭 6.6s SessionDB 冷建
     drill_me_enabled = _is_drill_me_goal(goal)
@@ -2242,12 +2326,15 @@ def _run_agent_sync(
     hermes_sid: str | None,
     stream_q: queue.Queue,
     agent_holder: list,
+    allow_local_files: bool = False,
 ) -> None:
     """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
     agent = None
     session_db = None
     try:
-        agent, session_db = _build_in_process_agent(goal, user_id, hermes_sid, stream_q)
+        agent, session_db = _build_in_process_agent(
+            goal, user_id, hermes_sid, stream_q, allow_local_files=allow_local_files
+        )
         # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
         # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
         # 前端 probeAndResume 断点恢复不依赖 SSE 连接。
@@ -2286,7 +2373,7 @@ def _busy_sse(user_id: str):
     yield f"data: {json.dumps({'type': 'done', 'session_id': user_id, 'answer': ''}, ensure_ascii=False)}\n\n"
 
 
-def _sse_from_in_process(user_id: str, goal: str):
+def _sse_from_in_process(user_id: str, goal: str, allow_local_files: bool = False):
     """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。
 
     保活机制 v6：
@@ -2311,7 +2398,7 @@ def _sse_from_in_process(user_id: str, goal: str):
 
     worker = threading.Thread(
         target=_run_agent_sync,
-        args=(goal, user_id, hermes_sid, stream_q, agent_holder),
+        args=(goal, user_id, hermes_sid, stream_q, agent_holder, allow_local_files),
         daemon=True,
         name=f"agent-stream-{user_id[:12]}",
     )
@@ -2458,7 +2545,12 @@ async def chat(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
-    goal = _expand_requested_skill(body.goal, body.skill_id)
+    _validated_knowledge_claims(
+        body.knowledge_capability,
+        subject_id=user_id,
+        policy_version=body.knowledge_policy_version,
+    )
+    goal = KB_RETRIEVAL_DISCIPLINE + "\n\n【用户问题】" + _expand_requested_skill(body.goal, body.skill_id)
     _mark_in_flight(user_id)
     try:
         async with _semaphore:
@@ -2567,6 +2659,14 @@ async def start_workflow_run(
 ):
     """幂等启动或恢复 Hermes 工作流 Run。"""
     _require_internal(x_hermes_internal_token)
+    claims = _validated_knowledge_claims(
+        body.knowledge_capability,
+        subject_id=body.execution_id,
+        policy_version=body.knowledge_policy_version,
+    )
+    allowed = set(str(item) for item in (claims or {}).get("scopes") or [])
+    if not set(body.knowledge_scope).issubset(allowed):
+        raise HTTPException(status_code=403, detail="knowledge_scope_denied")
     _workflow_order(body.plan)
     with _workflow_runs_lock:
         current = _workflow_runs.get(body.execution_id)

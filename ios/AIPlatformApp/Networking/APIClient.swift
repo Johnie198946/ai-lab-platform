@@ -18,6 +18,11 @@ public struct CatalogCategory: Codable, Identifiable, Hashable {
     public let title: String
     public let docCount: Int
     public let open: Bool
+    public var securityLevel: String? = nil
+    public var ownerTenant: String? = nil
+    public var entitlementKey: String? = nil
+    public var accessState: String? = nil
+    public var inWallet: Bool? = nil
 
     public var id: String { category }
 }
@@ -45,6 +50,18 @@ public struct ProfileDTO: Codable {
 public struct SubscriptionsResponse: Codable {
     public let tenantKey: String
     public let categories: [String]
+}
+
+public struct KnowledgeAccessResponse: Codable {
+    public let tenantKey: String
+    public let organizationId: String
+    public let planId: String
+    public let planStatus: String
+    public let policyVersion: String
+    public let wallet: [String]
+    public let yellowEntitlements: [String]
+    public let effectiveCategories: [String]
+    public let entitlementStale: Bool
 }
 
 /// GET /api/knowledge/search 单条结果
@@ -761,13 +778,15 @@ public final class APIClient: ObservableObject {
         return resp.categories
     }
 
+    public func fetchKnowledgeAccess() async throws -> KnowledgeAccessResponse {
+        try await request(KnowledgeAccessResponse.self, path: "me/knowledge-access")
+    }
+
     public func subscribe(category: String) async throws -> [String] {
-        struct Body: Encodable { let category: String }
         let resp: SubscriptionsResponse = try await request(
             SubscriptionsResponse.self,
-            path: "me/subscriptions",
-            method: "POST",
-            body: Body(category: category)
+            path: "me/knowledge-wallet/\(encodedPath(category))",
+            method: "PUT"
         )
         return resp.categories
     }
@@ -775,7 +794,7 @@ public final class APIClient: ObservableObject {
     public func unsubscribe(category: String) async throws -> [String] {
         let resp: SubscriptionsResponse = try await request(
             SubscriptionsResponse.self,
-            path: "me/subscriptions/\(encodedPath(category))",
+            path: "me/knowledge-wallet/\(encodedPath(category))",
             method: "DELETE"
         )
         return resp.categories

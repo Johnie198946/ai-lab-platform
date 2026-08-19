@@ -502,10 +502,10 @@ private struct WorkflowPlanReviewView: View {
         do {
             async let loadedPlan = APIClient.shared.fetchWorkflowPlan(workflowId: workflow.id)
             async let loadedAgents = APIClient.shared.fetchTenantAgents()
-            async let loadedScopes = APIClient.shared.fetchSubscriptions()
+            async let loadedAccess = APIClient.shared.fetchKnowledgeAccess()
             plan = try await loadedPlan
             tenantAgents = (try? await loadedAgents) ?? []
-            availableKnowledgeScopes = (try? await loadedScopes) ?? plan?.knowledgeScope ?? []
+            availableKnowledgeScopes = (try? await loadedAccess)?.effectiveCategories ?? plan?.knowledgeScope ?? []
         } catch { errorMessage = error.localizedDescription }
     }
 

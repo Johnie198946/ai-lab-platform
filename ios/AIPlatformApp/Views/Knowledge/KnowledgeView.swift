@@ -3,8 +3,8 @@
 //  AIPlatformApp
 //
 //  知识库 Tab 两层重构：
-//   上层 = 类目订阅卡（GET /catalog，订阅/退订，已订置顶）
-//   下层 = 已订内容按类目分组浏览（复用 /search + _rel_visible 前缀匹配）
+//   上层 = 知识钱包偏好（不授予权限）
+//   下层 = 当前租户有效知识范围内的内容浏览
 //  双轨：联网真实 API，离线/失败自动切本地 Mock 并标注「演示数据」。
 //
 
@@ -23,6 +23,7 @@ public struct KnowledgeView: View {
     @State private var isSearching: Bool = false
     @State private var loadTask: Task<Void, Never>? = nil
     @State private var selectedCategory: CatalogCategory? = nil
+    @State private var permissionMessage: String? = nil
 
     public init() {}
 
@@ -42,6 +43,10 @@ public struct KnowledgeView: View {
         return groups
             .map { (category: $0.key, docs: $0.value) }
             .sorted { $0.category < $1.category }
+    }
+
+    private var availableCategoryCount: Int {
+        catalog.filter { $0.accessState != "upgrade_required" }.count
     }
 
     public var body: some View {
@@ -67,7 +72,7 @@ public struct KnowledgeView: View {
                 }
             }
             .navigationTitle("知识")
-            .searchable(text: $searchText, prompt: "搜索已订阅知识...")
+            .searchable(text: $searchText, prompt: "搜索当前可用知识...")
             .onSubmit(of: .search) {
                 Task { await runSearch() }
             }
@@ -88,6 +93,14 @@ public struct KnowledgeView: View {
                     onDismiss: { selectedCategory = nil }
                 )
             }
+            .alert("知识权限", isPresented: Binding(
+                get: { permissionMessage != nil },
+                set: { if !$0 { permissionMessage = nil } }
+            )) {
+                Button("知道了", role: .cancel) { permissionMessage = nil }
+            } message: {
+                Text(permissionMessage ?? "套餐或知识权限已变化")
+            }
         }
     }
 
@@ -103,7 +116,7 @@ public struct KnowledgeView: View {
                     .font(AppTheme.Typography.sectionTitle)
                     .foregroundColor(AppTheme.Colors.textPrimary)
 
-                Text("已订阅 \(subscriptions.count) 个类目 · \(catalog.reduce(0) { $0 + $1.docCount }) 篇内容")
+                Text("钱包 \(subscriptions.count) 张 · 当前可用 \(availableCategoryCount) 个类目")
                     .font(AppTheme.Typography.supporting)
                     .foregroundColor(AppTheme.Colors.textSecondary)
 
@@ -167,7 +180,7 @@ public struct KnowledgeView: View {
                     Text("知识钱包")
                         .font(AppTheme.Typography.sectionTitle)
                         .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("上下滑动卡组，选择一个订阅库")
+                    Text("上下滑动卡组；加入钱包只影响默认检索优先级")
                         .font(AppTheme.Typography.supporting)
                         .foregroundColor(AppTheme.Colors.textSecondary)
                 }
@@ -211,7 +224,7 @@ public struct KnowledgeView: View {
 
     private var categorySubscriptionSection: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            sectionHeader(icon: "square.grid.2x2.fill", title: "发现更多知识库")
+            sectionHeader(icon: "square.grid.2x2.fill", title: "知识目录与权限")
 
             if isLoadingCatalog && catalog.isEmpty {
                 ProgressView()
@@ -235,7 +248,7 @@ public struct KnowledgeView: View {
 
     private var subscribedContentSection: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            sectionHeader(icon: "text.book.closed.fill", title: "已订内容（按类目分组）")
+            sectionHeader(icon: "text.book.closed.fill", title: "钱包内容（按类目分组）")
 
             if subscriptions.isEmpty {
                 emptySubscriptionsHint
@@ -260,10 +273,10 @@ public struct KnowledgeView: View {
             Image(systemName: "plus.magnifyingglass")
                 .font(.system(size: 34))
                 .foregroundColor(AppTheme.Icons.tertiary)
-            Text("尚未订阅任何类目")
+            Text("知识钱包还是空的")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(AppTheme.Colors.textSecondary)
-            Text("在上方类目订阅卡中点击「订阅」，即可在此按类目浏览内容。")
+            Text("绿色公共知识默认可用；加入钱包后会优先参与聊天与工作流检索。")
                 .font(.system(size: 12))
                 .foregroundColor(AppTheme.Colors.textTertiary)
                 .multilineTextAlignment(.center)
@@ -339,9 +352,11 @@ public struct KnowledgeView: View {
             } else if catalog.isEmpty {
                 catalog = Self.mockCatalog
             }
-            // 我的订阅（联网，失败回退 Mock）
+            // 我的知识钱包（旧 subscriptions 接口仅作一个版本兼容）
             if let subs = try? await api.fetchSubscriptions() {
                 subscriptions = Set(subs)
+            } else if !catalog.isEmpty {
+                subscriptions = Set(catalog.filter { $0.inWallet == true }.map(\.category))
             } else if subscriptions.isEmpty {
                 subscriptions = Set(Self.mockSubscriptions)
             }
@@ -351,6 +366,10 @@ public struct KnowledgeView: View {
     }
 
     private func toggleSubscription(_ cat: CatalogCategory) {
+        if cat.accessState == "upgrade_required" {
+            permissionMessage = "该黄色受限知识未包含在当前组织套餐中，请由组织管理员升级套餐。"
+            return
+        }
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
@@ -373,12 +392,7 @@ public struct KnowledgeView: View {
                     subscriptions = Set(subs)
                 }
             } catch {
-                // 失败回退本地 Mock（保持演示可用）
-                if subscriptions.contains(cat.category) {
-                    subscriptions.remove(cat.category)
-                } else {
-                    subscriptions.insert(cat.category)
-                }
+                permissionMessage = "套餐或知识权限已变化，请刷新后重试。"
             }
         }
     }
@@ -452,7 +466,7 @@ private struct KnowledgeWalletCard: View {
             HStack {
                 Text("\(category.docCount) 篇文档")
                 Spacer()
-                Label("已同步", systemImage: "checkmark.circle.fill")
+                Label(category.securityLabel, systemImage: category.securityIcon)
             }
             .font(AppTheme.Typography.micro)
             .foregroundColor(.white.opacity(0.86))
@@ -476,7 +490,7 @@ private struct KnowledgeWalletCard: View {
         }
         .shadow(color: palette.last!.opacity(0.23), radius: 22, y: 11)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(category.title)，\(category.docCount) 篇文档，已订阅")
+        .accessibilityLabel("\(category.title)，\(category.docCount) 篇文档，\(category.securityLabel)，已加入知识钱包")
     }
 }
 
@@ -518,12 +532,14 @@ private struct KnowledgeWalletDetail: View {
                         .opacity(appeared ? 1 : 0)
 
                     VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
-                        detailRow("订阅状态", value: isSubscribed ? "正在使用" : "未订阅", icon: "checkmark.seal.fill")
+                        detailRow("安全等级", value: category.securityLabel, icon: category.securityIcon)
+                        detailRow("权限来源", value: category.permissionSource, icon: "key.fill")
+                        detailRow("钱包状态", value: isSubscribed ? "参与默认检索" : "未加入", icon: "checkmark.seal.fill")
                         detailRow("内容规模", value: "\(category.docCount) 篇", icon: "doc.on.doc.fill")
                         detailRow("索引范围", value: category.pathPrefix, icon: "point.3.connected.trianglepath.dotted")
 
                         Button(action: onToggle) {
-                            Label(isSubscribed ? "暂停订阅" : "订阅此知识库", systemImage: isSubscribed ? "pause.fill" : "plus")
+                            Label(category.walletActionLabel(isInWallet: isSubscribed), systemImage: isSubscribed ? "minus" : "plus")
                         }
                         .buttonStyle(QuantumPrimaryButtonStyle())
                     }
@@ -591,15 +607,18 @@ public struct CategorySubscriptionCard: View {
                     .font(.system(size: 11))
                     .foregroundColor(AppTheme.Colors.textTertiary)
                     .lineLimit(1)
+                Label(category.permissionSource, systemImage: category.securityIcon)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(AppTheme.Colors.textSecondary)
             }
 
             Spacer()
 
             Button(action: onToggle) {
                 HStack(spacing: 4) {
-                    Image(systemName: isSubscribed ? "checkmark" : "plus")
+                    Image(systemName: category.accessState == "upgrade_required" ? "lock.fill" : (isSubscribed ? "checkmark" : "plus"))
                         .font(.system(size: 11, weight: .bold))
-                    Text(isSubscribed ? "已订阅" : "订阅")
+                    Text(category.walletActionLabel(isInWallet: isSubscribed))
                         .font(.system(size: 12, weight: .bold))
                 }
                 .foregroundColor(isSubscribed ? AppTheme.Icons.success : AppTheme.Icons.onAccent)
@@ -621,6 +640,38 @@ public struct CategorySubscriptionCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                 .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
         }
+    }
+}
+
+private extension CatalogCategory {
+    var securityLabel: String {
+        switch securityLevel {
+        case "red": return "红色 · 租户私有"
+        case "yellow": return "黄色 · 套餐受限"
+        default: return "绿色 · 公共知识"
+        }
+    }
+
+    var securityIcon: String {
+        switch securityLevel {
+        case "red": return "lock.shield.fill"
+        case "yellow": return "checkmark.shield.fill"
+        default: return "globe.asia.australia.fill"
+        }
+    }
+
+    var permissionSource: String {
+        switch accessState {
+        case "included": return "当前组织套餐已包含"
+        case "upgrade_required": return "当前套餐未包含"
+        case "private": return "所属租户私有资产"
+        default: return "正式租户默认可用"
+        }
+    }
+
+    func walletActionLabel(isInWallet: Bool) -> String {
+        if accessState == "upgrade_required" { return "升级套餐" }
+        return isInWallet ? "已加入" : "加入钱包"
     }
 }
 

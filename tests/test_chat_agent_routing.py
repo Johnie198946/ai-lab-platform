@@ -34,7 +34,7 @@ class TestChatAgentRouting(unittest.TestCase):
     def test_unmatched_agent_injects_role_prefix_goal(self):
         captured = {}
 
-        async def fake_hermes(goal, session_id=None):
+        async def fake_hermes(goal, session_id=None, **kwargs):
             captured["goal"] = goal
             captured["session_id"] = session_id
             return "答案", []
@@ -46,14 +46,14 @@ class TestChatAgentRouting(unittest.TestCase):
             )
         self.assertEqual(resp.answer, "答案")
         self.assertEqual(captured["goal"], "帮我审查这段代码")
-        self.assertTrue(captured["session_id"].startswith("supervision-"))
+        self.assertTrue(captured["session_id"].endswith("-supervision-" + captured["session_id"].rsplit("-", 1)[-1]))
 
     def test_session_isolation_by_agent_prefix(self):
         with patch("backend.api.chat.match_identity_rule", return_value=None), \
              patch("backend.api.chat._call_hermes", return_value=("ok", [])) as mock_hermes:
             asyncio.run(chat(ChatRequest(question="hi", agent_id="coder"), payload={}))
         _, kwargs = mock_hermes.call_args
-        self.assertTrue(kwargs["session_id"].startswith("coder-"))
+        self.assertIn("-coder-", kwargs["session_id"])
 
     def test_identity_rule_hit_takes_priority_no_prefix(self):
         with patch("backend.api.chat.match_identity_rule", return_value="固定回答"), \

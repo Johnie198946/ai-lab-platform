@@ -12,11 +12,13 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.tenant import KnowledgeSubscription
+from backend.services.knowledge_catalog import compute_catalog
+from backend.models.tenant import TenantMapping
 from backend.models.tenant_agent import TenantAgentModel
 from backend.models.tenant_agent_schema import WorkflowDSLPlan
 from backend.models.workflow import WorkflowDefinition, WorkflowPlanVersion
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
+from backend.services.knowledge_policy import resolve_policy
 
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -65,6 +67,20 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_\-]+|[\u4e00-\u9fff]{2,}", text.lower()))
 
 
+async def _effective_knowledge_scopes(db: AsyncSession, tenant: str) -> list[str]:
+    mapping = (
+        await db.execute(select(TenantMapping).where(TenantMapping.tenant_key == tenant).limit(1))
+    ).scalar_one_or_none()
+    policy, _ = await resolve_policy(
+        db,
+        tenant_key=tenant,
+        org_id=mapping.org_id if mapping else "",
+        catalog=compute_catalog(),
+        allow_admin_bypass=False,
+    )
+    return sorted(policy.effective_categories)
+
+
 async def validate_plan_policy(
     db: AsyncSession,
     tenant: str,
@@ -91,17 +107,7 @@ async def validate_plan_policy(
     )
     skill_agents = {agent_id for agent_id, _ in _tenant_skill_agents(tenant)}
     allowed_agents = set(agent_ids()) | db_agents | skill_agents
-    subscriptions = set(
-        (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == tenant
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    subscriptions = set(await _effective_knowledge_scopes(db, tenant))
     requested_scope = set(knowledge_scope)
     if not requested_scope.issubset(subscriptions):
         raise ValueError("计划包含当前租户未订阅的知识范围")
@@ -295,17 +301,7 @@ async def build_plan(
     analysis_agent = await _select_tenant_agent(
         db, workflow.tenant_key, workflow.description
     )
-    scopes = list(
-        (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == workflow.tenant_key
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    scopes = await _effective_knowledge_scopes(db, workflow.tenant_key)
     version = (
         int(
             (

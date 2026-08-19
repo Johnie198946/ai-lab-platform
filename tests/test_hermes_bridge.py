@@ -80,8 +80,9 @@ class TestBridgeCLIParms(unittest.TestCase):
                 "extra_body": {"prompt_cache_options": {"ttl": 3600}},
             },
         )
-        self.assertNotIn("prompt_cache_retention", cleaned)
-        self.assertNotIn("prompt_cache_options", cleaned["extra_body"])
+        self.assertIsNone(cleaned["prompt_cache_retention"])
+        self.assertIsNone(cleaned["prompt_cache_options"])
+        self.assertIsNone(cleaned["extra_body"]["prompt_cache_options"])
         self.assertEqual(cleaned["temperature"], 0.2)
 
     def test_other_provider_cache_parameters_are_preserved(self):
@@ -148,7 +149,9 @@ class TestSessionExistsAssertion(unittest.TestCase):
             result = asyncio.run(chat(body))
 
             # 验证：_run_hermes 被调用时 session_id=None（新建）
-            mock_hermes.assert_called_once_with("你好", None)
+            called_goal, called_session = mock_hermes.call_args.args
+            self.assertTrue(called_goal.endswith("【用户问题】你好"))
+            self.assertIsNone(called_session)
             # 验证：映射已更新为新 session
             self.assertEqual(bridge._user_session_map["user_1001"], "new_session_id")
             # 验证：返回新 session_id
@@ -331,7 +334,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
                     "parameters": {"allow_network": False},
                 }
             ),
-            ["file"],
+            ["skills"],
         )
         self.assertEqual(
             _workflow_toolsets(

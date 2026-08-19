@@ -176,12 +176,12 @@ class TestChatAPIEndpoint(unittest.TestCase):
         # 验证 2：citations 结构化字段正确下沉
         self.assertEqual(body["citations"], ["wiki/DeepSeek", "wiki/算力调度"])
         # 验证 3：session_id 隔离
-        self.assertTrue(body["session_id"].startswith("main_agent-"))
+        self.assertRegex(body["session_id"], r"^t[0-9a-f]{12}-p[0-9a-f]{12}-main_agent-")
 
     def test_chat_does_not_prepend_role_prefix_to_goal(self):
         captured_goal = {}
 
-        async def fake_hermes(goal, session_id=None):
+        async def fake_hermes(goal, session_id=None, **kwargs):
             captured_goal["goal"] = goal
             return "直接回答", []
 
