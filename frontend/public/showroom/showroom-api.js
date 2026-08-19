@@ -21,6 +21,16 @@
     return readJson(AUTH_KEY)?.accessToken || "";
   }
 
+  function loginUrl() {
+    const next = `${global.location.pathname}${global.location.search}${global.location.hash}`;
+    return `/login?next=${encodeURIComponent(next)}`;
+  }
+
+  function requireLogin() {
+    global.localStorage.removeItem(AUTH_KEY);
+    global.location.replace(loginUrl());
+  }
+
   function showroomSessionId() {
     const existing = global.sessionStorage.getItem(SESSION_KEY);
     if (existing) return existing;
@@ -157,6 +167,7 @@
             return;
           }
           this.setStatus("auth-required", "请先登录 AI Lab Platform");
+          requireLogin();
           return;
         }
         await this.request("/health");
@@ -170,7 +181,12 @@
         this.connect();
         if (isConversationView()) this.resumeHermes();
       } catch (error) {
-        this.setStatus(error.status === 401 ? "auth-required" : "offline", error.message);
+        if (error.status === 401) {
+          this.setStatus("auth-required", "登录已过期，正在返回登录页");
+          requireLogin();
+          return;
+        }
+        this.setStatus("offline", error.message);
       }
     }
 

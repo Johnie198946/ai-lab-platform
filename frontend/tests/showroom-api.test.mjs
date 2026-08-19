@@ -10,6 +10,7 @@ function storage(initial = {}) {
   return {
     getItem: (key) => values.get(key) ?? null,
     setItem: (key, value) => values.set(key, String(value)),
+    removeItem: (key) => values.delete(key),
   };
 }
 
@@ -24,10 +25,13 @@ function createApi() {
     }),
     sessionStorage: storage(),
     location: {
+      pathname: '/showroom/',
       search: '?view=screen-03',
+      hash: '',
       hostname: 'showroom.example',
       protocol: 'https:',
       host: 'showroom.example',
+      replace: (url) => { window.replacedLocation = url; },
     },
     document: {
       hidden: false,
@@ -130,4 +134,21 @@ test('assistant machine envelopes are hidden and extraction persists the returne
   const result = await api.extractDemand(content);
   assert.equal(result.recognized, true);
   assert.equal(api.session.data.demand.core_problem, '已回填');
+});
+
+test('expired showroom authentication returns to login with the current screen', async () => {
+  const { api, window } = createApi();
+  api.request = async () => {
+    const error = new Error('expired');
+    error.status = 401;
+    throw error;
+  };
+
+  await api.init({ force: true });
+
+  assert.equal(
+    window.replacedLocation,
+    '/login?next=%2Fshowroom%2F%3Fview%3Dscreen-03',
+  );
+  assert.equal(window.localStorage.getItem('ai-lab-platform.auth'), null);
 });

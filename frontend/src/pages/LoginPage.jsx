@@ -19,10 +19,13 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("account");
 
-  const nextPath = useMemo(
-    () => location.state?.from?.pathname || "/orchestration",
-    [location.state],
-  );
+  const nextPath = useMemo(() => {
+    const requestedPath = new URLSearchParams(location.search).get("next") || "";
+    if (requestedPath.startsWith("/") && !requestedPath.startsWith("//")) {
+      return requestedPath;
+    }
+    return location.state?.from?.pathname || "/orchestration";
+  }, [location.search, location.state]);
 
   if (!isReady) {
     return (
