@@ -39,6 +39,9 @@ const state = {
   hermesRetryStopped: false,
   demandSheetVisible: false,
   visitorInsightBusy: false,
+  controllerHermesTask: '',
+  controllerFailureHandling: false,
+  hostGreetingPending: false,
   visitCompleteNotice: null,
   rawHermesMessageCount: 0,
   frontstageActivating: false,
@@ -380,8 +383,26 @@ function architectStatusLabel() {
     waiting: '等待你的选择',
     reconnecting: '连接恢复中',
     error: '连接异常',
+    'quota-required': '模型额度不足',
     'auth-required': '需要登录',
   }[state.hermesStatus] || '等待连接';
+}
+
+function friendlyHermesError(message = '') {
+  const raw = String(message || '').trim();
+  if (/insufficient balance|余额不足|status[_ ]?code[^\d]*402|error code:\s*402/i.test(raw)) {
+    return 'DeepSeek 模型额度不足，请充值或配置可用的备用模型后重试。';
+  }
+  if (/prompt_cache_(?:retention|options).*not supported/i.test(raw)) {
+    return '当前模型不支持请求中的缓存参数，请联系管理员检查模型兼容配置。';
+  }
+  return raw || '大架构师本轮回复失败';
+}
+
+function hermesFailureStatus(message = '') {
+  return /insufficient balance|余额不足|status[_ ]?code[^\d]*402|error code:\s*402/i.test(String(message || ''))
+    ? 'quota-required'
+    : 'error';
 }
 
 function currentDemand() {
@@ -493,6 +514,7 @@ async function beginVisitorInsight() {
     return;
   }
   state.visitorInsightBusy = true;
+  state.controllerHermesTask = 'visitor-insight';
   render('refresh');
   try {
     state.session = await window.showroomApi.saveVisitor(visitor);
@@ -503,9 +525,73 @@ async function beginVisitorInsight() {
     });
   } catch (error) {
     state.visitorInsightBusy = false;
-    window.showroomApi.saveSession({ data: { customer_insight: { status: 'failed', warnings: [error.message] } } }).catch(() => {});
-    showToast(`启动洞察失败：${error.message}`);
+    state.controllerHermesTask = '';
+    const detail = friendlyHermesError(error.message);
+    window.showroomApi.saveSession({ data: { customer_insight: { status: 'failed', warnings: [detail] } } }).catch(() => {});
+    showToast(`启动洞察失败：${detail}`);
     render('refresh');
+  }
+}
+
+async function startHostGreeting({ force = false } = {}) {
+  if (state.hostGreetingPending || (!force && state.session?.data?.host_greeting_initialized)) return;
+  state.hostGreetingPending = true;
+  state.controllerHermesTask = 'host-prep';
+  state.chatError = '';
+  render('refresh');
+  try {
+    await window.showroomApi.submitHermesPrompt(
+      '[AI_LAB_CONTROL] 现在进入主持人备课态。请主动、自然地询问主持人：今天接待哪位客户，以及本次访问最关注什么。不要假装已经知道客户，不要输出工具日志。',
+      { skillCommand: 'solution-consultant-persona', stationContext: '主演示主控台；主持人后台备课态。' },
+    );
+  } catch (error) {
+    state.hostGreetingPending = false;
+    state.controllerHermesTask = '';
+    const detail = friendlyHermesError(error.message);
+    state.chatError = detail;
+    state.hermesDetail = detail;
+    state.hermesStatus = hermesFailureStatus(error.message);
+    showToast(`V1.7 启动失败：${detail}`);
+    render('refresh');
+  }
+}
+
+async function failControllerHermesTask(message = '') {
+  if (state.view !== 'controller' || state.controllerFailureHandling) return;
+  const insightRunning = state.session?.data?.customer_insight?.status === 'running';
+  const task = state.controllerHermesTask || (insightRunning ? 'visitor-insight' : (state.hostGreetingPending ? 'host-prep' : ''));
+  if (!task) return;
+  state.controllerFailureHandling = true;
+  const detail = friendlyHermesError(message);
+  state.chatError = detail;
+  state.hermesDetail = detail;
+  state.hermesStatus = hermesFailureStatus(message);
+  state.hostGreetingPending = false;
+  state.visitorInsightBusy = false;
+  state.controllerHermesTask = '';
+  try {
+    const patch = task === 'visitor-insight'
+      ? { customer_insight: { status: 'failed', warnings: [detail] } }
+      : { host_greeting_initialized: false };
+    state.session = await window.showroomApi.saveSession({ data: patch });
+  } catch (_) {
+    // The visible error remains actionable even if persistence is temporarily unavailable.
+  } finally {
+    state.controllerFailureHandling = false;
+    render('refresh');
+  }
+}
+
+async function completeControllerHermesTask(rawAnswer = '') {
+  if (state.view !== 'controller') return;
+  const task = state.controllerHermesTask;
+  state.hostGreetingPending = false;
+  state.controllerHermesTask = '';
+  if (task === 'host-prep' && !state.session?.data?.host_greeting_initialized) {
+    state.session = await window.showroomApi.saveSession({ data: { host_greeting_initialized: true } });
+  }
+  if (task === 'visitor-insight' && !/AI_LAB_VISITOR_INSIGHT_V1/.test(rawAnswer)) {
+    await failControllerHermesTask('洞察回复缺少结构化确认数据，请重新发起洞察。');
   }
 }
 
@@ -771,6 +857,7 @@ function controllerView() {
   const persona = state.session?.data?.persona_skill_version || state.capabilities?.persona_skill_version || '—';
   const hostMessages = state.chatMessages.filter((message) => message.role === 'assistant').slice(-3);
   const insightReady = ['completed', 'partial'].includes(insight.status);
+  const hostError = ['error', 'quota-required'].includes(state.hermesStatus);
   const summary = insight.summary || {};
   const focus = (visitor.focus_topics || []).join('、');
   const people = (visitor.visitors || []).map((person) => `${person.name || ''}${person.title ? ` / ${person.title}` : ''}`).join('；');
@@ -795,10 +882,12 @@ function controllerView() {
           <label class="visitor-history"><input type="checkbox" id="visitor-history" ${visitor.allow_history ? 'checked' : ''}> 复访时允许读取指定历史 Session</label>
           <label class="field wide visitor-history-session ${visitor.allow_history ? '' : 'is-hidden'}">历史 Session ID<input id="visitor-history-session" value="${escapeHtml(visitor.history_session_id || '')}" placeholder="必须精确选择已归档 Session"></label>
         </div>
-        <button class="form-cta visitor-insight-cta" data-visitor-insight ${state.visitorInsightBusy || insight.status === 'running' ? 'disabled' : ''}>${state.visitorInsightBusy || insight.status === 'running' ? 'V1.7 正在洞察…' : '一键洞察并保存到 Wiki'}</button>
+        ${insight.status === 'failed' && insight.warnings?.length ? `<div class="controller-error"><b>本次洞察未完成</b><span>${escapeHtml(insight.warnings.at(-1))}</span></div>` : ''}
+        <button class="form-cta visitor-insight-cta" data-visitor-insight ${state.visitorInsightBusy || insight.status === 'running' ? 'disabled' : ''}>${state.visitorInsightBusy || insight.status === 'running' ? 'V1.7 正在洞察…' : insight.status === 'failed' ? '重新发起洞察' : '一键洞察并保存到 Wiki'}</button>
       </section>
       <section class="panel host-prep-panel">
-        <div class="panel-head"><div><strong>V1.7 主持人备课</strong><small>真实 Hermes 会话 · 不展示工具日志</small></div><span class="status">${escapeHtml(state.hermesStatus)}</span></div>
+        <div class="panel-head"><div><strong>V1.7 主持人备课</strong><small>真实 Hermes 会话 · 不展示工具日志</small></div><span class="status ${hostError ? 'error' : ''}">${escapeHtml(architectStatusLabel())}</span></div>
+        ${hostError ? `<div class="controller-error"><b>${state.hermesStatus === 'quota-required' ? '模型服务额度不足' : '本轮备课未完成'}</b><span>${escapeHtml(state.hermesDetail || state.chatError || '请稍后重试')}</span><button data-host-retry>重新备课</button></div>` : ''}
         <div class="host-message-list">${hostMessages.length ? hostMessages.map((message) => `<div class="host-message">${escapeHtml(message.content)}</div>`).join('') : '<div class="host-message empty">连接 V1.7 后，由大架构师主动询问今天接待哪位客户。</div>'}</div>
       </section>
       ${insightReady ? `<section class="panel visitor-insight-result"><div class="panel-head"><div><strong>${escapeHtml(visitor.company_name)} · 洞察摘要</strong><small>${insight.sources?.length || 0} 条来源 · ${escapeHtml(insight.updated_at || '')}</small></div><span class="status">已落盘</span></div><div class="insight-mini-grid"><div><span>客户定位</span>${(summary.customer_positioning || []).slice(0, 3).map((item) => `<b>${escapeHtml(item)}</b>`).join('') || '<b>TBD</b>'}</div><div><span>待验证假设</span>${(summary.hypotheses || []).slice(0, 3).map((item) => `<b>${escapeHtml(item)}</b>`).join('') || '<b>TBD</b>'}</div><div><span>接待建议</span>${(summary.reception_advice || []).slice(0, 3).map((item) => `<b>${escapeHtml(item)}</b>`).join('') || '<b>TBD</b>'}</div></div><details><summary>查看完整报告、来源与 Wiki 路径</summary><div class="insight-detail"><p><b>公开 Wiki：</b>${escapeHtml(insight.public_wiki_slug || '无可靠事实，未写公共页')}</p><p><b>受限记录：</b>${escapeHtml(insight.private_record_path || '待写入')}</p>${(insight.sources || []).map((source) => `<p><a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a> · ${escapeHtml(source.date || '')} · ${escapeHtml(source.confidence || '')}</p>`).join('')}</div></details><button class="form-cta" data-view="screen-03">客户已入场 · 打开需求问诊台</button></section>` : ''}
@@ -1128,6 +1217,17 @@ function attachScreenActions() {
     render();
   });
   document.querySelector('[data-visitor-insight]')?.addEventListener('click', beginVisitorInsight);
+  document.querySelector('[data-host-retry]')?.addEventListener('click', async () => {
+    state.hermesStatus = 'online';
+    state.hermesDetail = '';
+    state.chatError = '';
+    try {
+      state.session = await window.showroomApi.saveSession({ data: { host_greeting_initialized: false } });
+      await startHostGreeting({ force: true });
+    } catch (error) {
+      showToast(`重新备课失败：${friendlyHermesError(error.message)}`);
+    }
+  });
   document.getElementById('visitor-history')?.addEventListener('change', (event) => {
     document.querySelector('.visitor-history-session')?.classList.toggle('is-hidden', !event.currentTarget.checked);
   });
@@ -1711,13 +1811,23 @@ window.showroomApi?.on('hermes-ready', ({ messages, running, raw_message_count: 
   state.chatError = '';
   state.hermesRetryStopped = false;
   render('refresh');
-  if (state.view === 'controller' && !state.session?.data?.host_greeting_initialized) {
-    window.showroomApi.saveSession({ data: { host_greeting_initialized: true } }).then(() =>
-      window.showroomApi.submitHermesPrompt(
-        '[AI_LAB_CONTROL] 现在进入主持人备课态。请主动、自然地询问主持人：今天接待哪位客户，以及本次访问最关注什么。不要假装已经知道客户，不要输出工具日志。',
-        { skillCommand: 'solution-consultant-persona', stationContext: '主演示主控台；主持人后台备课态。' },
-      )
-    ).catch((error) => showToast(`V1.7 启动失败：${error.message}`));
+  const staleInsight = state.view === 'controller' && !running && state.session?.data?.customer_insight?.status === 'running';
+  const staleHostGreeting = state.view === 'controller' && !running
+    && state.session?.data?.host_greeting_initialized
+    && !state.chatMessages.some((message) => message.role === 'assistant' && String(message.content || '').trim());
+  if (staleInsight) {
+    failControllerHermesTask('上次客户洞察未完成，请重新发起。');
+  }
+  if (staleHostGreeting) {
+    state.chatError = '上次主持人备课未完成，请重新备课。';
+    state.hermesDetail = state.chatError;
+    state.hermesStatus = 'error';
+    window.showroomApi.saveSession({ data: { host_greeting_initialized: false } }).then((session) => {
+      state.session = session;
+      render('refresh');
+    }).catch(() => {});
+  } else if (state.view === 'controller' && !running && !state.session?.data?.host_greeting_initialized) {
+    startHostGreeting();
   }
   if (state.view === 'screen-03' && !state.session?.data?.frontstage_started && !state.frontstageActivating) {
     state.frontstageActivating = true;
@@ -1759,14 +1869,18 @@ window.showroomApi?.on('hermes-event', (event) => {
     state.pendingClarify = null;
     state.avatarSpeaking = false;
     if (payload.status === 'error') {
-      state.chatError = answer || '大架构师本轮回复失败';
-      state.hermesStatus = 'error';
+      const rawError = rawAnswer || answer || '大架构师本轮回复失败';
+      state.chatError = friendlyHermesError(rawError);
+      state.hermesDetail = state.chatError;
+      state.hermesStatus = hermesFailureStatus(rawError);
+      failControllerHermesTask(rawError);
     } else {
       if (answer && !(state.chatMessages.at(-1)?.role === 'assistant' && state.chatMessages.at(-1)?.content === answer)) {
         state.chatMessages.push({ role: 'assistant', content: answer, rawContent: rawAnswer });
       }
       state.chatError = '';
       state.hermesStatus = 'online';
+      completeControllerHermesTask(rawAnswer).catch((error) => showToast(`备课状态保存失败：${error.message}`));
       if (state.view === 'controller' && /AI_LAB_VISITOR_INSIGHT_V1/.test(rawAnswer)) {
         maybeExtractVisitorInsight(rawAnswer);
       } else if (state.view === 'screen-03') {
@@ -1785,9 +1899,12 @@ window.showroomApi?.on('hermes-event', (event) => {
   } else if (event.type === 'status.update') {
     state.hermesDetail = String(payload.text || payload.status || '大架构师正在处理');
   } else if (event.type === 'error') {
-    state.chatError = String(payload.message || '大架构师服务异常');
+    const rawError = String(payload.message || '大架构师服务异常');
+    state.chatError = friendlyHermesError(rawError);
+    state.hermesDetail = state.chatError;
     state.avatarSpeaking = false;
-    state.hermesStatus = 'error';
+    state.hermesStatus = hermesFailureStatus(rawError);
+    failControllerHermesTask(rawError);
   } else {
     return;
   }
