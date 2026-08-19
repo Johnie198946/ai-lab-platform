@@ -886,7 +886,7 @@ function controllerView() {
           <label class="field wide visitor-history-session ${visitor.allow_history ? '' : 'is-hidden'}">历史 Session ID<input id="visitor-history-session" value="${escapeHtml(visitor.history_session_id || '')}" placeholder="必须精确选择已归档 Session"></label>
         </div>
         ${insight.status === 'failed' && insight.warnings?.length ? `<div class="controller-error"><b>本次洞察未完成</b><span>${escapeHtml(insight.warnings.at(-1))}</span></div>` : ''}
-        <button class="form-cta visitor-insight-cta" data-visitor-insight ${state.visitorInsightBusy || insight.status === 'running' ? 'disabled' : ''}>${state.visitorInsightBusy || insight.status === 'running' ? 'V1.7 正在洞察…' : insight.status === 'failed' ? '重新发起洞察' : '一键洞察并保存到 Wiki'}</button>
+        <button class="form-cta visitor-insight-cta" data-visitor-insight ${state.visitorInsightBusy || insight.status === 'running' ? 'disabled' : ''}>${state.visitorInsightBusy || insight.status === 'running' ? 'V1.7 正在洞察…' : '再次洞察'}</button>
       </section>
       <section class="panel host-prep-panel">
         <div class="panel-head"><div><strong>V1.7 主持人备课</strong><small>真实 Hermes 会话 · 不展示工具日志</small></div><span class="status ${hostError ? 'error' : ''}">${escapeHtml(architectStatusLabel())}</span></div>
