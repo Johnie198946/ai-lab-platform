@@ -136,6 +136,32 @@ test('assistant machine envelopes are hidden and extraction persists the returne
   assert.equal(api.session.data.demand.core_problem, '已回填');
 });
 
+test('demand interview state envelopes stay invisible', () => {
+  const { api } = createApi();
+  const assistant = `只问一个问题
+<!-- AI_LAB_DEMAND_STATE_V1 {"status":"collecting","dimensions":{}} AI_LAB_DEMAND_STATE_V1 -->`;
+
+  assert.equal(api.visibleAssistantMessage(assistant), '只问一个问题');
+});
+
+test('demand extraction sends the isolated frontstage Hermes session id', async () => {
+  const { api } = createApi();
+  api.session = {
+    data: {
+      hermes_sessions: {
+        backstage_stored_session_id: 'backstage-1',
+        frontstage_stored_session_id: 'frontstage-1',
+      },
+    },
+  };
+  api.request = async (_path, options) => {
+    assert.equal(options.body.hermes_stored_session_id, 'frontstage-1');
+    return { recognized: false, session: api.session };
+  };
+
+  await api.extractDemand('AI_LAB_DEMAND_STATE_V1');
+});
+
 test('visitor insight envelopes and invisible control messages never reach the frontstage UI', () => {
   const { api } = createApi();
   const content = `客户摘要\n<!-- AI_LAB_VISITOR_INSIGHT_V1 {"verified_facts":["事实"]} AI_LAB_VISITOR_INSIGHT_V1 -->`;

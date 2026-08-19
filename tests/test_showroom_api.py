@@ -19,7 +19,9 @@ from backend.api.showroom import (
     ReviewSubmission,
     ShowroomCommand,
     _initial_session_data,
+    _extract_demand_interview_state,
     _migrate_legacy_session_data,
+    _persona_metadata,
     _validate_websocket_token,
     apply_showroom_command,
     content_manifest,
@@ -148,6 +150,8 @@ def test_screen_003_bootstrap_contract_uses_hermes_demand_clinic() -> None:
     assert screen["station"] == "demand-clinic"
     assert "禁止迎宾" in screen["station_context"]
     assert "AI_LAB_DEMAND_V1" in screen["station_context"]
+    assert "最多追问三轮" in screen["station_context"]
+    assert "禁止" in screen["station_context"] and "完整建设方案" in screen["station_context"]
     assert screen["data_bindings"][1]["source"] == "/api/ws"
 
 
@@ -168,6 +172,47 @@ def test_new_showroom_session_has_no_seed_business_data() -> None:
     assert data["insight"] == {}
     assert data["prototype"] == {}
     assert data["artifacts"] == {}
+
+
+def test_new_main_session_separates_backstage_and_frontstage_hermes() -> None:
+    data = _initial_session_data("main")
+
+    assert data["hermes_sessions"]["backstage_stored_session_id"] == ""
+    assert data["hermes_sessions"]["frontstage_stored_session_id"] == ""
+    assert data["demand_interview"]["followup_count"] == 0
+    assert len(data["demand_interview"]["missing"]) == 4
+
+
+def test_demand_state_reaches_forced_draft_after_three_rounds() -> None:
+    state = None
+    for index in range(3):
+        content = f'''<!-- AI_LAB_DEMAND_STATE_V1
+{{"status":"collecting","dimensions":{{"business_scene":"政务服务","user_role":"居民","current_blocker":"{('入口分散' if index > 0 else '')}","target_outcome":""}}}}
+AI_LAB_DEMAND_STATE_V1 -->'''
+        state, recognized = _extract_demand_interview_state(content, state)
+        assert recognized is True
+
+    assert state["followup_count"] == 3
+    assert state["status"] == "draft"
+    assert state["missing"] == ["target_outcome"]
+
+
+def test_persona_metadata_blocks_duplicate_skill_resolution(tmp_path, monkeypatch) -> None:
+    skills = tmp_path / "skills"
+    formal = skills / "productivity" / "solution-consultant-persona" / "SKILL.md"
+    backup = skills / ".curator_backups" / "solution-consultant-persona" / "SKILL.md"
+    formal.parent.mkdir(parents=True)
+    backup.parent.mkdir(parents=True)
+    formal.write_text("---\nversion: 1.7.0\n---\n# V1.7", encoding="utf-8")
+    backup.write_text("---\nversion: 1.3.0\n---\n# old", encoding="utf-8")
+    monkeypatch.setenv("SHOWROOM_PERSONA_SKILL_PATH", str(formal))
+
+    metadata = _persona_metadata()
+
+    assert metadata["disk_version"] == "1.7.0"
+    assert metadata["duplicate_count"] == 1
+    assert metadata["compatible"] is False
+    assert metadata["resolved_version"] == ""
 
 
 def test_exact_legacy_seed_is_removed_without_deleting_real_messages() -> None:

@@ -8,6 +8,9 @@
     /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
   ];
+  const DEMAND_STATE_ENVELOPE_PATTERNS = [
+    /<!--\s*AI_LAB_DEMAND_STATE_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_STATE_V1\s*-->/gi,
+  ];
   const VISITOR_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_VISITOR_INSIGHT_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*```/gi,
@@ -63,6 +66,11 @@
     return view === "controller" || view === "screen-03" || /^experience-0?[1-5]$/.test(view);
   }
 
+  function hermesLane() {
+    const view = new URLSearchParams(global.location.search).get("view") || "controller";
+    return view === "controller" ? "backstage" : "frontstage";
+  }
+
   function normalizeHermesMessages(messages) {
     return (Array.isArray(messages) ? messages : [])
       .filter((message) => ["user", "assistant"].includes(message?.role))
@@ -85,18 +93,28 @@
         (visible, pattern) => visible.replace(pattern, ""),
         content,
       );
-      return VISITOR_ENVELOPE_PATTERNS.reduce(
+      const withoutState = DEMAND_STATE_ENVELOPE_PATTERNS.reduce(
         (visible, pattern) => visible.replace(pattern, ""),
         withoutDemand,
+      );
+      return VISITOR_ENVELOPE_PATTERNS.reduce(
+        (visible, pattern) => visible.replace(pattern, ""),
+        withoutState,
       ).trim();
     }
     if (role !== "user") return content;
+    if (content.includes("[AI_LAB_DEMAND_POLICY_V1]")) {
+      const marker = "用户原始问题：";
+      const markerIndex = content.lastIndexOf(marker);
+      return markerIndex >= 0 ? content.slice(markerIndex + marker.length).trim() : "";
+    }
     if (content.trim().startsWith(CONTROL_PREFIX)) return "";
     const invocation = global.HermesShared?.skillInvocationText?.(content);
     if (!invocation) return content;
     const marker = "用户原始问题：";
     const markerIndex = invocation.lastIndexOf(marker);
-    return markerIndex >= 0 ? invocation.slice(markerIndex + marker.length).trim() : invocation;
+    const original = markerIndex >= 0 ? invocation.slice(markerIndex + marker.length).trim() : invocation;
+    return original.startsWith(CONTROL_PREFIX) ? "" : original;
   }
 
   class ShowroomApi {
@@ -114,6 +132,7 @@
       this.hermes = null;
       this.hermesLiveSessionId = "";
       this.hermesStoredSessionId = "";
+      this.hermesLane = "";
       this.hermesStatus = "idle";
       this.hermesReconnectTimer = null;
       this.hermesReconnectCount = 0;
@@ -275,6 +294,15 @@
       if (this.hermesSuspended || global.document?.hidden || !isConversationView()) {
         throw new Error("大架构师连接已暂停");
       }
+      const requestedLane = hermesLane();
+      if (this.hermes?.connectionState === "open" && this.hermesLane !== requestedLane) {
+        this.hermesIntentionalClose = true;
+        this.hermes.close();
+        this.hermesIntentionalClose = false;
+        this.hermes = null;
+        this.hermesLiveSessionId = "";
+        this.hermesStoredSessionId = "";
+      }
       if (!options.force && this.hermes?.connectionState === "open" && this.hermesLiveSessionId) {
         return this.hermesLiveSessionId;
       }
@@ -326,7 +354,15 @@
           throw new Error("大架构师连接已暂停");
         }
 
-        const storedId = String(this.session?.data?.hermes_stored_session_id || "").trim();
+        const lane = requestedLane;
+        const laneSessions = this.session?.data?.hermes_sessions || {};
+        const storedKey = `${lane}_stored_session_id`;
+        const initializedKey = `${lane}_skill_initialized`;
+        const storedId = String(
+          laneSessions[storedKey]
+          || (lane === "backstage" ? this.session?.data?.hermes_stored_session_id : "")
+          || "",
+        ).trim();
         let result;
         if (storedId) {
           try {
@@ -354,19 +390,24 @@
         if (!this.hermesLiveSessionId || !this.hermesStoredSessionId) {
           throw new Error("Hermes 未返回可恢复的会话标识");
         }
+        this.hermesLane = lane;
 
         const view = new URLSearchParams(global.location.search).get("view") || "controller";
         const rawMessages = Array.isArray(result.messages) ? result.messages : [];
-        const offset = view === "screen-03"
-          ? Number(this.session?.data?.frontstage_message_offset || 0)
-          : 0;
-        const resumedMessages = normalizeHermesMessages(rawMessages.slice(offset));
-        const shouldMarkInitialized = resumedMessages.length > 0 && !this.session?.data?.hermes_skill_initialized;
+        const resumedMessages = normalizeHermesMessages(rawMessages);
+        const laneInitialized = Boolean(laneSessions[initializedKey]);
+        const shouldMarkInitialized = resumedMessages.length > 0 && !laneInitialized;
         if (this.hermesStoredSessionId !== storedId || shouldMarkInitialized) {
           this.session = await this.saveSession({
             data: {
-              hermes_stored_session_id: this.hermesStoredSessionId,
-              hermes_skill_initialized: shouldMarkInitialized,
+              hermes_sessions: {
+                [storedKey]: this.hermesStoredSessionId,
+                [initializedKey]: laneInitialized || shouldMarkInitialized,
+              },
+              ...(lane === "backstage" ? {
+                hermes_stored_session_id: this.hermesStoredSessionId,
+                hermes_skill_initialized: laneInitialized || shouldMarkInitialized,
+              } : {}),
             },
           });
         }
@@ -456,7 +497,12 @@
     async submitHermesPrompt(question, options = {}) {
       const sessionId = await this.ensureHermes();
       let prompt = question;
-      const skillInitialized = Boolean(this.session?.data?.hermes_skill_initialized);
+      const lane = this.hermesLane || hermesLane();
+      const initializedKey = `${lane}_skill_initialized`;
+      const skillInitialized = Boolean(
+        this.session?.data?.hermes_sessions?.[initializedKey]
+        || (lane === "backstage" && this.session?.data?.hermes_skill_initialized),
+      );
       if (!skillInitialized) {
         const context = String(options.stationContext || "").trim();
         const arg = [context, `用户原始问题：${question}`].filter(Boolean).join("\n\n");
@@ -476,7 +522,9 @@
         text: prompt,
       });
       if (!skillInitialized) {
-        this.saveSession({ data: { hermes_skill_initialized: true } }).catch(() => {});
+        const patch = { hermes_sessions: { [initializedKey]: true } };
+        if (lane === "backstage") patch.hermes_skill_initialized = true;
+        this.saveSession({ data: patch }).catch(() => {});
       }
       return response;
     }
@@ -599,11 +647,12 @@
     }
 
     async extractVisitorInsight(content) {
+      const backstageId = this.session?.data?.hermes_sessions?.backstage_stored_session_id;
       const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/insight/extract`, {
         method: "POST",
         body: {
           content,
-          hermes_stored_session_id: this.hermesStoredSessionId || this.session?.data?.hermes_stored_session_id || "",
+          hermes_stored_session_id: backstageId || this.hermesStoredSessionId || this.session?.data?.hermes_stored_session_id || "",
         },
       });
       if (result?.session) {
@@ -651,14 +700,15 @@
     }
 
     async extractDemand(content) {
+      const frontstageId = this.session?.data?.hermes_sessions?.frontstage_stored_session_id;
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/demand/extract`,
         {
           method: "POST",
           body: {
             content,
-            hermes_stored_session_id: this.hermesStoredSessionId
-              || this.session?.data?.hermes_stored_session_id
+            hermes_stored_session_id: frontstageId
+              || this.hermesStoredSessionId
               || "",
           },
         },

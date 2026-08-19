@@ -45,6 +45,7 @@ const state = {
   visitCompleteNotice: null,
   rawHermesMessageCount: 0,
   frontstageActivating: false,
+  demandCorrectionPending: false,
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
@@ -464,7 +465,7 @@ function demandDocumentView(document = {}) {
 
 async function maybeExtractDemand(rawContent, options = {}) {
   const content = String(rawContent || '').trim();
-  if (!content || !/(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_V1)/.test(content)) return;
+  if (!content || !/(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_(?:STATE_)?V1)/.test(content)) return;
   if (currentDemand().confirmed || demandExtractionInFlight.has(content)) return;
   demandExtractionInFlight.add(content);
   try {
@@ -477,6 +478,39 @@ async function maybeExtractDemand(rawContent, options = {}) {
   } finally {
     demandExtractionInFlight.delete(content);
   }
+}
+
+function demandInterview() {
+  return currentSessionData().demand_interview || {
+    followup_count: 0,
+    dimensions: {},
+    missing: ['business_scene', 'user_role', 'current_blocker', 'target_outcome'],
+  };
+}
+
+function demandPolicyPrompt(question) {
+  const interview = demandInterview();
+  const followupCount = Math.min(3, Number(interview.followup_count || 0));
+  const dimensions = interview.dimensions || {};
+  const mustConverge = followupCount >= 2
+    || ['business_scene', 'user_role', 'current_blocker', 'target_outcome'].every((key) => String(dimensions[key] || '').trim());
+  return [
+    '[AI_LAB_DEMAND_POLICY_V1]',
+    '当前是站3需求问诊，不是方案设计阶段。禁止输出完整建设方案、总体架构、实施路线或技术选型。',
+    '任务是收敛四维：业务场景、用户角色、当前阻碍、目标结果。每轮最多只问一个关键问题。',
+    `已完成追问轮次：${followupCount}/3。当前四维：${JSON.stringify(dimensions)}。`,
+    mustConverge
+      ? '本轮必须停止追问，未知项写“TBD”，直接输出可见需求收敛确认单，并附 AI_LAB_DEMAND_V1。'
+      : '若四维已齐，立即输出需求收敛确认单；否则只追问缺失维度中最关键的一项。',
+    '每次回复末尾都必须附：<!-- AI_LAB_DEMAND_STATE_V1 {"status":"collecting|ready|draft","dimensions":{"business_scene":"","user_role":"","current_blocker":"","target_outcome":""}} AI_LAB_DEMAND_STATE_V1 -->',
+    '需求确认后应引导用户进入屏幕04深度洞察，再到屏幕05/06完成001 IPD实践；站3不得代替后续环节出方案。',
+    `用户原始问题：${question}`,
+  ].join('\n');
+}
+
+function isPrematureScheme(content) {
+  if (currentDemand().confirmed || /AI_LAB_DEMAND_V1/.test(content)) return false;
+  return /(?:建设建议方案|总体架构|技术架构|实施路线|分阶段实施|完整方案)/.test(content);
 }
 
 async function maybeExtractVisitorInsight(rawContent, options = {}) {
@@ -1183,7 +1217,8 @@ async function sendSessionMessage(inputId, reuseExisting = false) {
     if (!reuseExisting) state.chatMessages.push({ role: 'user', content: question });
     render('refresh');
     const config = getScreenConfig('screen-03');
-    await window.showroomApi.submitHermesPrompt(question, {
+    const prompt = state.view === 'screen-03' ? demandPolicyPrompt(question) : question;
+    await window.showroomApi.submitHermesPrompt(prompt, {
       skillCommand: config.skill_command,
       stationContext: config.station_context,
     });
@@ -1883,6 +1918,23 @@ window.showroomApi?.on('hermes-event', (event) => {
       state.hermesStatus = hermesFailureStatus(rawError);
       failControllerHermesTask(rawError);
     } else {
+      if (state.view === 'screen-03' && isPrematureScheme(rawAnswer) && !state.demandCorrectionPending) {
+        state.demandCorrectionPending = true;
+        state.hermesStatus = 'generating';
+        state.hermesDetail = '正在将回答纠正为需求收敛单';
+        window.showroomApi.submitHermesPrompt(
+          '[AI_LAB_CONTROL] 上一回答越过了站3边界。不要展示或延续方案；请立即依据已有对话输出需求收敛确认单，未知项写TBD，并附AI_LAB_DEMAND_STATE_V1与AI_LAB_DEMAND_V1。',
+          { skillCommand: 'solution-consultant-persona', stationContext: getScreenConfig('screen-03').station_context },
+        ).catch((error) => {
+          state.demandCorrectionPending = false;
+          state.chatError = error.message;
+          state.hermesStatus = 'error';
+          render('refresh');
+        });
+        render('refresh');
+        return;
+      }
+      state.demandCorrectionPending = false;
       if (answer && !(state.chatMessages.at(-1)?.role === 'assistant' && state.chatMessages.at(-1)?.content === answer)) {
         state.chatMessages.push({ role: 'assistant', content: answer, rawContent: rawAnswer });
       }

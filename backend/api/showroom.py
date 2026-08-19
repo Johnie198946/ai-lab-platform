@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
+import json
 import os
 import re
 import uuid
@@ -263,26 +265,77 @@ def _empty_demand() -> dict[str, Any]:
     }
 
 
+def _empty_demand_interview() -> dict[str, Any]:
+    return {
+        "status": "collecting",
+        "followup_count": 0,
+        "dimensions": {
+            "business_scene": "",
+            "user_role": "",
+            "current_blocker": "",
+            "target_outcome": "",
+        },
+        "missing": [
+            "business_scene",
+            "user_role",
+            "current_blocker",
+            "target_outcome",
+        ],
+        "policy_version": "1.7.0",
+    }
+
+
+def _empty_hermes_sessions() -> dict[str, Any]:
+    return {
+        "backstage_stored_session_id": "",
+        "frontstage_stored_session_id": "",
+        "backstage_skill_initialized": False,
+        "frontstage_skill_initialized": False,
+        "backstage_skill_version": "1.7.0",
+        "frontstage_skill_version": "1.7.0",
+    }
+
+
+def _skill_header(path: Path) -> tuple[str, str]:
+    try:
+        text = path.read_text(encoding="utf-8")
+        match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
+        metadata = yaml.safe_load(match.group(1)) if match else {}
+        version = str((metadata or {}).get("version") or "").strip()
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        return version, digest
+    except Exception:
+        return "", ""
+
+
 def _persona_metadata() -> dict[str, Any]:
     path = Path(os.environ.get("SHOWROOM_PERSONA_SKILL_PATH", str(PERSONA_SKILL_PATH)))
-    version = ""
-    if path.is_file():
-        try:
-            text = path.read_text(encoding="utf-8")
-            match = re.match(r"^---\s*\n(.*?)\n---", text, re.DOTALL)
-            metadata = yaml.safe_load(match.group(1)) if match else {}
-            version = str((metadata or {}).get("version") or "").strip()
-        except Exception:
-            version = ""
+    version, digest = _skill_header(path)
+    skills_root = next((parent for parent in path.parents if parent.name == "skills"), None)
+    candidates = sorted(
+        candidate
+        for candidate in skills_root.rglob("solution-consultant-persona/SKILL.md")
+        if candidate.is_file()
+    ) if skills_root and skills_root.is_dir() else ([path] if path.is_file() else [])
+    candidate_meta = [
+        {"path": str(candidate), "version": _skill_header(candidate)[0], "sha256": _skill_header(candidate)[1]}
+        for candidate in candidates
+    ]
     parts = tuple(int(part) for part in re.findall(r"\d+", version)[:3])
     normalized = parts + (0,) * (3 - len(parts))
+    duplicate_count = max(0, len(candidates) - 1)
     return {
         "name": "solution-consultant-persona",
         "version": version,
+        "disk_version": version,
+        "resolved_version": version if duplicate_count == 0 else "",
+        "sha256": digest,
         "available": path.is_file(),
-        "compatible": normalized >= PERSONA_MIN_VERSION,
+        "compatible": normalized >= PERSONA_MIN_VERSION and duplicate_count == 0,
         "path": str(path),
         "minimum_version": "1.7.0",
+        "duplicate_count": duplicate_count,
+        "candidates": candidate_meta,
     }
 
 
@@ -354,6 +407,8 @@ def _migrate_legacy_session_data(
     for key in (
         "visitor",
         "customer_insight",
+        "hermes_sessions",
+        "demand_interview",
         "host_greeting_initialized",
         "frontstage_started",
         "frontstage_message_offset",
@@ -362,6 +417,18 @@ def _migrate_legacy_session_data(
         if key not in data:
             data[key] = copy.deepcopy(defaults[key])
             changed = True
+    hermes_sessions = _merge(
+        _empty_hermes_sessions(), data.get("hermes_sessions") or {}
+    )
+    legacy_stored_id = str(data.get("hermes_stored_session_id") or "").strip()
+    if legacy_stored_id and not hermes_sessions.get("backstage_stored_session_id"):
+        hermes_sessions["backstage_stored_session_id"] = legacy_stored_id
+        hermes_sessions["backstage_skill_initialized"] = bool(
+            data.get("hermes_skill_initialized")
+        )
+    if hermes_sessions != data.get("hermes_sessions"):
+        data["hermes_sessions"] = hermes_sessions
+        changed = True
     return data, changed
 
 
@@ -374,6 +441,50 @@ def _merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
         else:
             result[key] = copy.deepcopy(value)
     return result
+
+
+DEMAND_STATE_PATTERN = re.compile(
+    r"<!--\s*AI_LAB_DEMAND_STATE_V1\s*(\{[\s\S]*?\})\s*AI_LAB_DEMAND_STATE_V1\s*-->",
+    re.IGNORECASE,
+)
+DEMAND_DIMENSIONS = (
+    "business_scene",
+    "user_role",
+    "current_blocker",
+    "target_outcome",
+)
+
+
+def _extract_demand_interview_state(
+    content: str, current: dict[str, Any] | None = None
+) -> tuple[dict[str, Any], bool]:
+    state = _merge(_empty_demand_interview(), current or {})
+    match = DEMAND_STATE_PATTERN.search(content)
+    if not match:
+        return state, False
+    try:
+        payload = json.loads(match.group(1))
+    except (TypeError, ValueError):
+        return state, False
+    supplied = payload.get("dimensions") if isinstance(payload, dict) else {}
+    dimensions = copy.deepcopy(state["dimensions"])
+    if isinstance(supplied, dict):
+        for key in DEMAND_DIMENSIONS:
+            value = str(supplied.get(key) or "").strip()[:2_000]
+            if value:
+                dimensions[key] = value
+    state["dimensions"] = dimensions
+    state["followup_count"] = min(3, int(state.get("followup_count") or 0) + 1)
+    state["missing"] = [key for key in DEMAND_DIMENSIONS if not dimensions.get(key)]
+    requested_status = str(payload.get("status") or "").strip()
+    if not state["missing"]:
+        state["status"] = "ready"
+    elif state["followup_count"] >= 3:
+        state["status"] = "draft"
+    elif requested_status in {"collecting", "ready", "draft"}:
+        state["status"] = requested_status
+    state["policy_version"] = "1.7.0"
+    return state, True
 
 
 def _initial_session_data(slot: str) -> dict[str, Any]:
@@ -393,6 +504,8 @@ def _initial_session_data(slot: str) -> dict[str, Any]:
             {
                 "visitor": _empty_visitor(),
                 "customer_insight": _empty_customer_insight(),
+                "hermes_sessions": _empty_hermes_sessions(),
+                "demand_interview": _empty_demand_interview(),
                 "hermes_stored_session_id": "",
                 "hermes_skill_initialized": False,
                 "host_greeting_initialized": False,
@@ -501,11 +614,16 @@ async def _active_main_session(tenant_key: str) -> ShowroomSession:
 
     metadata = _persona_metadata()
     if not metadata["compatible"]:
+        duplicate_detail = (
+            f"；检测到 {metadata['duplicate_count']} 份同名副本，已阻止不确定解析"
+            if metadata.get("duplicate_count")
+            else ""
+        )
         raise HTTPException(
             status_code=503,
             detail=(
                 "主演示要求 solution-consultant-persona >= 1.7.0，当前版本："
-                f"{metadata['version'] or '未安装'}"
+                f"{metadata['version'] or '未安装'}{duplicate_detail}"
             ),
         )
     session_id = _visit_session_id()
@@ -715,7 +833,11 @@ async def extract_showroom_visitor_insight(
         if row is None or row.tenant_key != tenant_key or row.slot != "main":
             raise HTTPException(status_code=404, detail="主演示会话不存在")
         data = copy.deepcopy(row.data or {})
-        stored_id = str(data.get("hermes_stored_session_id") or "")
+        stored_id = str(
+            (data.get("hermes_sessions") or {}).get("backstage_stored_session_id")
+            or data.get("hermes_stored_session_id")
+            or ""
+        )
         if (
             stored_id
             and body.hermes_stored_session_id
@@ -807,6 +929,8 @@ async def activate_showroom_frontstage(
             f"关注方向：{'、'.join(visitor.get('focus_topics') or []) or '未录入'}",
             f"仅允许读取这些背景路径：{', '.join(paths) or '暂无已核验背景'}",
             "请静默读取允许的背景，自然欢迎客户并进入需求问诊。禁止复述后台洞察，禁止声称提前研究过贵司。",
+            "严格收敛业务场景、用户角色、当前阻碍、目标结果；最多追问三轮，第三轮必须用TBD补齐并输出需求确认单。",
+            "站3禁止输出完整方案。需求确认后引导进入屏幕04深度洞察，再到屏幕05/06完成001 IPD实践。",
         ]
     )
     return {
@@ -983,7 +1107,14 @@ async def confirm_showroom_demand(
             document["confirmed_at"] = demand["confirmed_at"]
         data = _merge(
             row.data or {},
-            {"demand": demand, "demand_document": document},
+            {
+                "demand": demand,
+                "demand_document": document,
+                "demand_interview": _merge(
+                    (row.data or {}).get("demand_interview") or _empty_demand_interview(),
+                    {"status": "confirmed", "missing": []},
+                ),
+            },
         )
         row.data = data
         row.step = max(row.step, 2)
@@ -1005,17 +1136,33 @@ async def extract_showroom_demand(
             raise HTTPException(status_code=404, detail="体验会话不存在")
 
         data = copy.deepcopy(row.data or {})
-        stored_id = str(data.get("hermes_stored_session_id") or "").strip()
+        stored_id = str(
+            (data.get("hermes_sessions") or {}).get("frontstage_stored_session_id")
+            or data.get("hermes_stored_session_id")
+            or ""
+        ).strip()
         requested_stored_id = body.hermes_stored_session_id.strip()
         if stored_id and requested_stored_id and stored_id != requested_stored_id:
             raise HTTPException(
                 status_code=409, detail="Hermes 会话与当前体验会话不匹配"
             )
 
+        interview, state_recognized = _extract_demand_interview_state(
+            body.content, data.get("demand_interview")
+        )
+        if state_recognized:
+            data["demand_interview"] = interview
+
         extraction = extract_demand_document(body.content)
         if not extraction["recognized"]:
+            if state_recognized:
+                row.data = data
+                await database.commit()
+                await database.refresh(row)
             return {
                 "recognized": False,
+                "state_recognized": state_recognized,
+                "demand_interview": interview,
                 "reason": extraction["reason"],
                 "session": _session_payload(row, session_id, row.slot),
             }
@@ -1052,9 +1199,15 @@ async def extract_showroom_demand(
 
         document = extraction["demand_document"]
         document["manual_fields"] = sorted(manual_fields)
+        interview["status"] = "draft"
+        interview["missing"] = []
         row.data = _merge(
             data,
-            {"demand": demand, "demand_document": document},
+            {
+                "demand": demand,
+                "demand_document": document,
+                "demand_interview": interview,
+            },
         )
         await database.commit()
         await database.refresh(row)
