@@ -36,12 +36,23 @@ const state = {
   chatMessages: [],
   hermesStatus: 'idle',
   hermesDetail: '',
+  hermesRetryStopped: false,
+  demandSheetVisible: false,
+  visitorInsightBusy: false,
+  visitCompleteNotice: null,
+  rawHermesMessageCount: 0,
+  frontstageActivating: false,
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
+const demandExtractionInFlight = new Set();
 
 function isStaticDisplayView(view = state.view) {
   return STATIC_DISPLAY_VIEWS.has(view);
+}
+
+function isConversationView(view = state.view) {
+  return view === 'controller' || view === 'screen-03' || view.startsWith('experience-');
 }
 
 const motionSystem = {
@@ -377,6 +388,127 @@ function currentDemand() {
   return currentSessionData().demand || {};
 }
 
+function currentDemandDocument() {
+  return currentSessionData().demand_document || {};
+}
+
+function hasDemandConfirmationContent(demand = {}) {
+  const document = currentDemandDocument();
+  const fields = ['core_problem', 'target_metric', 'cycle', 'users', 'solution', 'next_action'];
+  return Boolean(
+    document.source_hash
+    || document.status === 'confirmed'
+    || demand.confirmed
+    || Number(demand.completeness || 0) > 0
+    || fields.some((field) => String(demand[field] || '').trim()),
+  );
+}
+
+function demandTable(section) {
+  const table = section?.table || {};
+  const columns = Array.isArray(table.columns) ? table.columns : [];
+  const rows = Array.isArray(table.rows) ? table.rows : [];
+  if (!columns.length || !rows.length) return '';
+  return `<div class="demand-doc-table-wrap"><table><thead><tr>${columns.map((column) => `<th>${escapeHtml(column)}</th>`).join('')}</tr></thead><tbody>${rows.map((row) => `<tr>${columns.map((_, index) => `<td>${escapeHtml(row?.[index] || '')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+}
+
+function demandSectionContent(section) {
+  const table = demandTable(section);
+  const items = Array.isArray(section?.items) ? section.items.filter(Boolean) : [];
+  const body = String(section?.body || '').trim();
+  return `${table}${items.length ? `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>` : ''}${body ? `<p>${escapeHtml(body)}</p>` : ''}`;
+}
+
+const demandSectionRegistry = {
+  facts: { label: '已确认事实', tone: 'blue' },
+  goal: { label: '目标指标', tone: 'mint' },
+  non_goals: { label: '非目标', tone: 'violet' },
+  constraints: { label: '约束与边界', tone: 'orange' },
+  acceptance: { label: '验收标准', tone: 'mint' },
+  solution_direction: { label: 'AI 初步方案方向', tone: 'blue' },
+  unknown: { label: '补充内容', tone: 'neutral' },
+};
+
+function demandDocumentView(document = {}) {
+  const sections = Array.isArray(document.sections) ? document.sections : [];
+  if (!sections.length && !document.raw_markdown) return '';
+  return `<details class="demand-document"><summary><span><b>完整需求确认单</b><small>${sections.length} 个章节 · 展开查看事实、边界与验收</small></span><em>展开</em></summary><div class="demand-document-body">${sections.map((section, index) => {
+    const plugin = demandSectionRegistry[section.type] || demandSectionRegistry.unknown;
+    return `<section class="demand-doc-section ${plugin.tone}"><header><span>${String(index + 1).padStart(2, '0')}</span><div><small>${escapeHtml(plugin.label)}</small><h4>${escapeHtml(section.title || plugin.label)}</h4></div></header>${demandSectionContent(section)}</section>`;
+  }).join('')}${document.warnings?.length ? `<div class="demand-doc-warning">${document.warnings.map((warning) => escapeHtml(warning)).join(' · ')}</div>` : ''}</div></details>`;
+}
+
+async function maybeExtractDemand(rawContent, options = {}) {
+  const content = String(rawContent || '').trim();
+  if (!content || !/(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_V1)/.test(content)) return;
+  if (currentDemand().confirmed || demandExtractionInFlight.has(content)) return;
+  demandExtractionInFlight.add(content);
+  try {
+    const result = await window.showroomApi.extractDemand(content);
+    if (result?.recognized && !result.unchanged && !result.locked && !options.silent) {
+      showToast('需求收敛单已自动回填 · 请核对后确认');
+    }
+  } catch (error) {
+    if (!options.silent) showToast(`需求单回填失败：${error.message}`);
+  } finally {
+    demandExtractionInFlight.delete(content);
+  }
+}
+
+async function maybeExtractVisitorInsight(rawContent, options = {}) {
+  const content = String(rawContent || '').trim();
+  if (!content || !/AI_LAB_VISITOR_INSIGHT_V1/.test(content)) return;
+  try {
+    const result = await window.showroomApi.extractVisitorInsight(content);
+    state.visitorInsightBusy = false;
+    if (result?.recognized && !result.unchanged && !options.silent) showToast('客户洞察已回填并安全写入 Wiki');
+  } catch (error) {
+    state.visitorInsightBusy = false;
+    if (!options.silent) showToast(`客户洞察落盘失败：${error.message}`);
+  }
+}
+
+function visitorFormData() {
+  const people = String(document.getElementById('visitor-people')?.value || '').split(/[；;\n]+/).map((item) => {
+    const [name, title = ''] = item.split(/\s*[/／]\s*/, 2);
+    return { name: name?.trim() || '', title: title.trim() };
+  }).filter((person) => person.name || person.title);
+  return {
+    company_name: document.getElementById('visitor-company')?.value.trim() || '',
+    customer_code: document.getElementById('visitor-code')?.value.trim() || '',
+    visitors: people,
+    visit_type: document.getElementById('visitor-type')?.value || 'first',
+    allow_history: Boolean(document.getElementById('visitor-history')?.checked),
+    history_session_id: document.getElementById('visitor-history-session')?.value.trim() || '',
+    purpose: document.getElementById('visitor-purpose')?.value.trim() || '',
+    focus_topics: String(document.getElementById('visitor-focus')?.value || '').split(/[、,，;；]+/).map((item) => item.trim()).filter(Boolean),
+  };
+}
+
+async function beginVisitorInsight() {
+  const visitor = visitorFormData();
+  if (!visitor.company_name) {
+    showToast('请先填写公司名称');
+    document.getElementById('visitor-company')?.focus();
+    return;
+  }
+  state.visitorInsightBusy = true;
+  render('refresh');
+  try {
+    state.session = await window.showroomApi.saveVisitor(visitor);
+    const contract = `[AI_LAB_CONTROL] 主持人后台备课。请先检索内部 Wiki，再联网核验 ${visitor.company_name} 的公开近期动态。联网时只能使用企业名称与公开业务关键词，不得发送来访人姓名。输出可见摘要后，必须附带：\n<!-- AI_LAB_VISITOR_INSIGHT_V1 {"customer_positioning":[],"business_structure":[],"recent_actions":[],"verified_facts":[],"structural_tensions":[],"hypotheses":[],"reception_advice":[],"sources":[{"id":"S1","title":"","url":"","date":"","confidence":"high|medium|low"}],"warnings":[]} AI_LAB_VISITOR_INSIGHT_V1 -->`;
+    await window.showroomApi.submitHermesPrompt(contract, {
+      skillCommand: 'solution-consultant-persona',
+      stationContext: '当前处于主演示主控台的主持人后台备课态。不要进入前台问诊；不要展示工具日志。',
+    });
+  } catch (error) {
+    state.visitorInsightBusy = false;
+    window.showroomApi.saveSession({ data: { customer_insight: { status: 'failed', warnings: [error.message] } } }).catch(() => {});
+    showToast(`启动洞察失败：${error.message}`);
+    render('refresh');
+  }
+}
+
 function currentInsight() {
   return currentSessionData().insight || {};
 }
@@ -634,14 +766,42 @@ function controllerView() {
     const live = state.centers.find((center) => Number(center.slot) === index + 1);
     return live || { slot: String(index + 1), role: '—', step: 0, status: 'idle' };
   });
+  const visitor = state.session?.data?.visitor || {};
+  const insight = state.session?.data?.customer_insight || {};
+  const persona = state.session?.data?.persona_skill_version || state.capabilities?.persona_skill_version || '—';
+  const hostMessages = state.chatMessages.filter((message) => message.role === 'assistant').slice(-3);
+  const insightReady = ['completed', 'partial'].includes(insight.status);
+  const summary = insight.summary || {};
+  const focus = (visitor.focus_topics || []).join('、');
+  const people = (visitor.visitors || []).map((person) => `${person.name || ''}${person.title ? ` / ${person.title}` : ''}`).join('；');
   return `<div class="screen">
-    ${screenHeader('TOUR CONTROL')}
-    <div class="screen-content control-grid">
+    ${screenHeader('TOUR CONTROL', `V${escapeHtml(persona)} · ${escapeHtml(visitor.status || '待录入')}`)}
+    <div class="screen-content control-grid visitor-control-grid">
       <section class="panel control-hero">
         <p class="kicker">TODAY'S LIVE TOUR · ${stages[state.stage][0]}</p>
-        <h2 class="hero-title">让每一位到访者，<br>都带走一个<em>自己的 AI 方案。</em></h2>
+        <h2 class="hero-title">${visitor.company_name ? `正在为 <em>${escapeHtml(visitor.company_name)}</em><br>准备一场有背景的共创。` : '先认识来访客户，<br>再开始一场<em>有准备的共创。</em>'}</h2>
+        <div class="visitor-session-bar"><span>当前客户 <b>${escapeHtml(visitor.company_name || '待录入')}</b></span><span>客户代码 <b>${escapeHtml(visitor.customer_code || '—')}</b></span><span>Session <b>${escapeHtml(state.session?.session_id || '—')}</b></span><button data-visit-complete ${visitor.company_name ? '' : 'disabled'}>结束本次接待</button></div>
         <div class="route-strip">${stages.map((s, i) => `<div class="route-card ${i === state.stage ? 'active' : ''}"><b>${s[0]} · ${s[1]}</b><span>${i < state.stage ? '已完成' : i === state.stage ? '正在进行' : '等待进入'}</span></div>`).join('')}</div>
       </section>
+      <section class="panel visitor-workbench">
+        <div class="panel-head"><div><strong>来访客户洞察</strong><small>内部 Wiki 优先 · 公开网络仅核验企业信息</small></div><span class="status ${insight.status === 'failed' ? 'error' : ''}">${escapeHtml(insight.status === 'running' ? '洞察中' : insightReady ? '准备完成' : '待录入')}</span></div>
+        <div class="visitor-form-grid">
+          <label class="field wide">公司名称 <em class="required-mark">必填</em><input id="visitor-company" value="${escapeHtml(visitor.company_name || '')}" placeholder="例如：超聚变数字技术有限公司" required></label>
+          <label class="field">客户代码<input id="visitor-code" value="${escapeHtml(visitor.customer_code || '')}" placeholder="自动生成，可编辑"></label>
+          <label class="field">首次 / 复访<select id="visitor-type"><option value="first" ${visitor.visit_type !== 'return' ? 'selected' : ''}>首次来访</option><option value="return" ${visitor.visit_type === 'return' ? 'selected' : ''}>复访</option></select></label>
+          <label class="field wide">来访人 / 职务<input id="visitor-people" value="${escapeHtml(people)}" placeholder="张三 / CTO；李四 / 架构负责人"></label>
+          <label class="field wide">访问目的<textarea id="visitor-purpose" placeholder="这次希望共同解决什么？">${escapeHtml(visitor.purpose || '')}</textarea></label>
+          <label class="field wide">关注方向<input id="visitor-focus" value="${escapeHtml(focus)}" placeholder="算力运营、Agent 编排、IPD"></label>
+          <label class="visitor-history"><input type="checkbox" id="visitor-history" ${visitor.allow_history ? 'checked' : ''}> 复访时允许读取指定历史 Session</label>
+          <label class="field wide visitor-history-session ${visitor.allow_history ? '' : 'is-hidden'}">历史 Session ID<input id="visitor-history-session" value="${escapeHtml(visitor.history_session_id || '')}" placeholder="必须精确选择已归档 Session"></label>
+        </div>
+        <button class="form-cta visitor-insight-cta" data-visitor-insight ${state.visitorInsightBusy || insight.status === 'running' ? 'disabled' : ''}>${state.visitorInsightBusy || insight.status === 'running' ? 'V1.7 正在洞察…' : '一键洞察并保存到 Wiki'}</button>
+      </section>
+      <section class="panel host-prep-panel">
+        <div class="panel-head"><div><strong>V1.7 主持人备课</strong><small>真实 Hermes 会话 · 不展示工具日志</small></div><span class="status">${escapeHtml(state.hermesStatus)}</span></div>
+        <div class="host-message-list">${hostMessages.length ? hostMessages.map((message) => `<div class="host-message">${escapeHtml(message.content)}</div>`).join('') : '<div class="host-message empty">连接 V1.7 后，由大架构师主动询问今天接待哪位客户。</div>'}</div>
+      </section>
+      ${insightReady ? `<section class="panel visitor-insight-result"><div class="panel-head"><div><strong>${escapeHtml(visitor.company_name)} · 洞察摘要</strong><small>${insight.sources?.length || 0} 条来源 · ${escapeHtml(insight.updated_at || '')}</small></div><span class="status">已落盘</span></div><div class="insight-mini-grid"><div><span>客户定位</span>${(summary.customer_positioning || []).slice(0, 3).map((item) => `<b>${escapeHtml(item)}</b>`).join('') || '<b>TBD</b>'}</div><div><span>待验证假设</span>${(summary.hypotheses || []).slice(0, 3).map((item) => `<b>${escapeHtml(item)}</b>`).join('') || '<b>TBD</b>'}</div><div><span>接待建议</span>${(summary.reception_advice || []).slice(0, 3).map((item) => `<b>${escapeHtml(item)}</b>`).join('') || '<b>TBD</b>'}</div></div><details><summary>查看完整报告、来源与 Wiki 路径</summary><div class="insight-detail"><p><b>公开 Wiki：</b>${escapeHtml(insight.public_wiki_slug || '无可靠事实，未写公共页')}</p><p><b>受限记录：</b>${escapeHtml(insight.private_record_path || '待写入')}</p>${(insight.sources || []).map((source) => `<p><a href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a> · ${escapeHtml(source.date || '')} · ${escapeHtml(source.confidence || '')}</p>`).join('')}</div></details><button class="form-cta" data-view="screen-03">客户已入场 · 打开需求问诊台</button></section>` : ''}
       <section class="panel device-panel">
         <div class="panel-head"><strong>主演示屏幕</strong><span class="status">${state.backendStatus === 'online' ? `${screenNames.length} 屏已配置` : '连接中'}</span></div>
         <div class="device-grid">${screenNames.map((name, i) => `<div class="device-card"><div><b>SCREEN 0${i + 1}</b><i></i></div><p>${escapeHtml(name)}</p><small class="metric">配置来自 /api/screens</small></div>`).join('')}</div>
@@ -650,6 +810,7 @@ function controllerView() {
         <div class="panel-head"><strong>五个独立体验中心</strong><span>仅显示授权摘要</span></div>
         <div class="center-list">${centers.map((center, i) => `<div class="center-row"><span class="num">0${i + 1}</span><div><b>${escapeHtml(center.role || '访客')}</b><small>${experienceSteps[center.step] || '进入体验'}</small></div><span class="state">${center.status === 'idle' ? '可进入' : center.status === 'submitted' ? '已提交' : '运行中'}</span></div>`).join('')}</div>
       </section>
+      ${state.visitCompleteNotice ? `<section class="visit-complete-toast"><b>${escapeHtml(visitor.company_name || '当前客户')} 已完成参观</b><span>Wiki ${insight.private_record_path ? '已保存' : '待补齐'}，是否切换下一位？</span><div><button data-visit-continue>继续当前接待</button><button data-visit-rollover>归档并接待下一位</button></div></section>` : ''}
     </div>
   </div>`;
 }
@@ -712,6 +873,9 @@ function liveChatFeedback() {
   if (state.avatarSpeaking) {
     return '<div class="bubble ai streaming thinking" aria-live="polite"><i></i><i></i><i></i><span>架构师正在分析你的需求…</span></div>';
   }
+  if (state.hermesRetryStopped) {
+    return `<div class="chat-error" role="alert"><b>无法连接大架构师</b><span>${escapeHtml(state.hermesDetail || '已停止自动重试，请检查网络后重新连接')}</span><button data-hermes-reconnect>重新连接</button></div>`;
+  }
   if (state.chatError) {
     return `<div class="chat-error" role="alert"><b>本轮回复失败</b><span>${escapeHtml(state.chatError)}</span><button data-chat-retry>重新发送</button></div>`;
   }
@@ -728,16 +892,23 @@ function emptyChatState() {
 
 function clinicView() {
   const demand = currentDemand();
+  const demandDocument = currentDemandDocument();
   const messages = state.chatMessages;
   const architectRole = state.content?.screens?.['screen-03']?.conversation_role || '首席解决方案架构师';
-  const busy = ['generating', 'waiting'].includes(state.hermesStatus);
+  const busy = ['connecting', 'reconnecting', 'generating', 'waiting'].includes(state.hermesStatus);
+  const showDemandSheet = hasDemandConfirmationContent(demand);
+  const revealDemandSheet = showDemandSheet && !state.demandSheetVisible;
+  state.demandSheetVisible = showDemandSheet;
+  const fieldLock = demand.confirmed ? 'disabled' : '';
+  const demandSheet = showDemandSheet ? `
+        <section class="panel form-panel demand-sheet${revealDemandSheet ? ' reveal' : ''}" aria-label="需求收敛确认单"><div class="panel-head"><div><strong>需求收敛确认单</strong><small>${escapeHtml(demandDocument.title || 'AI 已完成需求收敛')}</small></div><span class="demand-document-status ${demand.confirmed ? 'confirmed' : 'draft'}">${demand.confirmed ? '已确认' : 'AI 已生成 · 待确认'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem" ${fieldLock}>${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}" ${fieldLock}></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}" ${fieldLock}></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}" ${fieldLock}></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}" ${fieldLock}></label><label class="field wide">下一步行动<textarea data-demand-field="next_action" ${fieldLock}>${escapeHtml(demand.next_action)}</textarea></label></div>${demandDocumentView(demandDocument)}<button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>` : '';
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
       <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">${state.content?.screens?.['screen-03']?.headline || '把一句想法，收敛成一个可行动的问题。'}</h2></div><div><span class="tag orange">${escapeHtml(demand.industry || '待识别行业')}</span> <span class="tag blue">第 ${Math.max(1, Math.ceil(messages.length / 2))} 轮</span></div></div>
-      <div class="clinic-grid">
+      <div class="clinic-grid${showDemandSheet ? ' has-demand-sheet' : ' conversation-only'}">
         <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status" data-hermes-status="${escapeHtml(state.hermesStatus)}">${escapeHtml(architectStatusLabel())}</span></div><div class="chat-body">${emptyChatState()}${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}<div class="bubble-note"><i></i>${escapeHtml(getScreenConfig('screen-03').skill_command || 'solution-consultant-persona')} · Hermes 独立会话</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向大架构师描述你的真实业务问题…" ${busy ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-demand-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送需求'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div></section>
-        <section class="panel form-panel"><div class="panel-head"><strong>需求收敛确认单</strong><span>${demand.confirmed ? '已确认' : '自动保存'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem">${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}"></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}"></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}"></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}"></label><label class="field wide">下一步行动<textarea data-demand-field="next_action">${escapeHtml(demand.next_action)}</textarea></label></div><button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>
+        ${demandSheet}
       </div>
     </div>
   </div>`;
@@ -871,7 +1042,7 @@ function experienceMiddle(step) {
     5: ['现在，请亲手试一试', '修改结果会持续写回当前会话。'],
   }[step];
   let preview = '';
-  if (step === 1) preview = `<div class="experience-chat-log">${emptyChatState()}${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向大架构师说出你的真实业务问题…" ${['generating', 'waiting'].includes(state.hermesStatus) ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-experience-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div>`;
+  if (step === 1) preview = `<div class="experience-chat-log">${emptyChatState()}${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向大架构师说出你的真实业务问题…" ${['connecting', 'reconnecting', 'generating', 'waiting'].includes(state.hermesStatus) ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-experience-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div>`;
   else if (step === 2) preview = `<div class="score-card"><strong>${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${escapeHtml(demand.core_problem || '等待收敛')}</b></div></div><div class="action-box"><span>目标指标</span><b>${escapeHtml(demand.target_metric || '待确认')}</b></div>`;
   else if (step === 3) preview = `<div class="score-card"><strong>${(insight.causes || []).length}</strong><div><span>关键根因</span><b>${escapeHtml(insight.judgment || '等待生成')}</b></div></div><div class="action-box"><span>第一步建议</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b></div>`;
   else preview = `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${escapeHtml(prototype.title || '等待生成原型')} · ${Number(prototype.progress || 0)}%</p>`;
@@ -900,7 +1071,7 @@ function parallelWorkbenchView() {
 }
 
 function schemeExportView() {
-  return `<div class="screen">${screenHeader('SCHEME EXPORT', state.session?.status === 'submitted' ? '方案已提交' : '等待提交')}<div class="screen-content">${experienceResult()}</div></div>`;
+  return `<div class="screen">${screenHeader('SCHEME EXPORT', state.session?.status === 'submitted' ? '方案已提交' : '等待提交')}<div class="screen-content">${experienceResult()}${state.session?.slot === 'main' ? '<button class="form-cta" data-main-visit-complete style="margin-top:18px">完成本次参观并通知导览主控台</button>' : ''}</div></div>`;
 }
 
 async function sendSessionMessage(inputId, reuseExisting = false) {
@@ -956,6 +1127,37 @@ function attachScreenActions() {
     state.introSkipped = true;
     render();
   });
+  document.querySelector('[data-visitor-insight]')?.addEventListener('click', beginVisitorInsight);
+  document.getElementById('visitor-history')?.addEventListener('change', (event) => {
+    document.querySelector('.visitor-history-session')?.classList.toggle('is-hidden', !event.currentTarget.checked);
+  });
+  document.querySelector('[data-visit-complete]')?.addEventListener('click', async () => {
+    try {
+      state.session = await window.showroomApi.completeVisit('controller');
+      state.visitCompleteNotice = { session_id: state.session.session_id };
+      render('refresh');
+    } catch (error) { showToast(`结束接待失败：${error.message}`); }
+  });
+  document.querySelector('[data-main-visit-complete]')?.addEventListener('click', async () => {
+    try {
+      await window.showroomApi.completeVisit('screen-09');
+      showToast('已通知导览主控台，由主持人确认换场');
+    } catch (error) { showToast(`通知失败：${error.message}`); }
+  });
+  document.querySelector('[data-visit-continue]')?.addEventListener('click', () => {
+    state.visitCompleteNotice = null;
+    render('refresh');
+  });
+  document.querySelector('[data-visit-rollover]')?.addEventListener('click', async () => {
+    try {
+      showToast('正在通知主演示屏幕安全换场…');
+      await window.showroomApi.rolloverVisit();
+      state.chatMessages = [];
+      state.visitCompleteNotice = null;
+      state.visitorInsightBusy = false;
+      location.reload();
+    } catch (error) { showToast(`换场失败：${error.message}`); }
+  });
   document.querySelectorAll('[data-insight-section]').forEach((button) => button.addEventListener('click', () => {
     const target = document.getElementById(button.dataset.insightSection);
     target?.scrollIntoView({ behavior: state.paused ? 'auto' : 'smooth', block: 'start' });
@@ -976,6 +1178,15 @@ function attachScreenActions() {
       showToast(`需求确认失败：${error.message}`);
     }
   });
+  document.querySelectorAll('[data-demand-field]:not([disabled])').forEach((field) => field.addEventListener('change', async () => {
+    const name = field.dataset.demandField;
+    if (!name) return;
+    try {
+      await window.showroomApi.saveDemandDraft({ [name]: field.value.trim() }, [name]);
+    } catch (error) {
+      showToast(`需求草稿保存失败：${error.message}`);
+    }
+  }));
   document.querySelector('[data-demand-send]')?.addEventListener('click', () => sendSessionMessage('demand-chat-input'));
   document.querySelector('[data-demand-stop]')?.addEventListener('click', async () => {
     try {
@@ -998,6 +1209,18 @@ function attachScreenActions() {
     input.value = state.lastQuestion;
     state.chatError = '';
     sendSessionMessage(inputId, true);
+  });
+  document.querySelector('[data-hermes-reconnect]')?.addEventListener('click', async () => {
+    state.hermesRetryStopped = false;
+    state.chatError = '';
+    state.hermesStatus = 'connecting';
+    state.hermesDetail = '正在重新连接大架构师';
+    render('refresh');
+    try {
+      await window.showroomApi.retryHermes();
+    } catch (error) {
+      showToast(`重新连接失败：${error.message}`);
+    }
   });
   document.querySelectorAll('[data-clarify-choice]').forEach((button) => button.addEventListener('click', async () => {
     const choice = button.dataset.clarifyChoice;
@@ -1285,6 +1508,7 @@ function render(intent = 'refresh') {
 }
 
 function setView(view, intent = 'view') {
+  const wasConversationView = isConversationView();
   state.view = view;
   if (!view.startsWith('experience-')) state.experienceStep = 0;
   const params = new URLSearchParams(location.search);
@@ -1294,8 +1518,10 @@ function setView(view, intent = 'view') {
   history.replaceState({}, '', `${location.pathname}?${params}`);
   buildNavigation();
   render(intent);
-  if ((view === 'screen-03' || view.startsWith('experience-')) && state.bootstrapped) {
-    window.showroomApi?.ensureHermes().catch(() => {});
+  if (isConversationView(view) && state.bootstrapped) {
+    window.showroomApi?.resumeHermes();
+  } else if (wasConversationView) {
+    window.showroomApi?.suspendHermes();
   }
   if (!isStaticDisplayView(view) && !state.bootstrapped) {
     window.showroomApi?.init({ force: true });
@@ -1451,7 +1677,7 @@ setDirectMode(new URLSearchParams(location.search).get('direct') === '1');
 render();
 
 window.showroomApi?.on('status', ({ status, detail }) => setBackendStatus(status, detail));
-window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowledge, centers, capabilities }) => {
+window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowledge, centers, capabilities, persona_skill: personaSkill }) => {
   hydrateContent(content);
   state.screenConfigs = screens || [];
   state.session = session;
@@ -1462,6 +1688,7 @@ window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowl
   state.knowledge = knowledge || {};
   state.centers = centers || [];
   state.capabilities = capabilities || {};
+  state.capabilities.persona_skill_version = personaSkill?.version || '';
   state.bootstrapped = true;
   document.body.dataset.screenConfigCount = String(screens.length);
   buildNavigation();
@@ -1469,18 +1696,49 @@ window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowl
   applyBackendSnapshot(runtime, false);
   render('refresh');
 });
-window.showroomApi?.on('hermes-status', ({ status, detail }) => {
+window.showroomApi?.on('hermes-status', ({ status, detail, retryStopped }) => {
   state.hermesStatus = status;
   state.hermesDetail = detail || '';
-  if (['screen-03'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
+  state.hermesRetryStopped = Boolean(retryStopped);
+  if (['controller', 'screen-03'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
 });
-window.showroomApi?.on('hermes-ready', ({ messages, running }) => {
+window.showroomApi?.on('hermes-ready', ({ messages, running, raw_message_count: rawMessageCount }) => {
   state.chatMessages = Array.isArray(messages) ? messages : [];
+  state.rawHermesMessageCount = Number(rawMessageCount || 0);
   state.avatarSpeaking = Boolean(running);
   state.streamingReply = '';
   state.pendingClarify = null;
   state.chatError = '';
+  state.hermesRetryStopped = false;
   render('refresh');
+  if (state.view === 'controller' && !state.session?.data?.host_greeting_initialized) {
+    window.showroomApi.saveSession({ data: { host_greeting_initialized: true } }).then(() =>
+      window.showroomApi.submitHermesPrompt(
+        '[AI_LAB_CONTROL] 现在进入主持人备课态。请主动、自然地询问主持人：今天接待哪位客户，以及本次访问最关注什么。不要假装已经知道客户，不要输出工具日志。',
+        { skillCommand: 'solution-consultant-persona', stationContext: '主演示主控台；主持人后台备课态。' },
+      )
+    ).catch((error) => showToast(`V1.7 启动失败：${error.message}`));
+  }
+  if (state.view === 'screen-03' && !state.session?.data?.frontstage_started && !state.frontstageActivating) {
+    state.frontstageActivating = true;
+    window.showroomApi.activateFrontstage(state.rawHermesMessageCount).then((result) => {
+      state.chatMessages = [];
+      state.session = result.session;
+      return window.showroomApi.submitHermesPrompt(
+        '[AI_LAB_CONTROL] 客户已入场。请根据允许读取的背景静默准备，然后生成一句自然欢迎语并直接进入需求问诊。',
+        { skillCommand: 'solution-consultant-persona', stationContext: result.station_context },
+      );
+    }).catch((error) => {
+      state.chatError = error.message;
+      showToast(`前台接待准备失败：${error.message}`);
+    }).finally(() => { state.frontstageActivating = false; });
+  }
+  const latestConfirmation = [...state.chatMessages]
+    .reverse()
+    .find((message) => message.role === 'assistant' && /(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_V1)/.test(message.rawContent || message.content));
+  if (latestConfirmation && !hasDemandConfirmationContent(currentDemand())) {
+    maybeExtractDemand(latestConfirmation.rawContent || latestConfirmation.content, { silent: true });
+  }
 });
 window.showroomApi?.on('hermes-event', (event) => {
   const payload = event.payload || {};
@@ -1495,7 +1753,8 @@ window.showroomApi?.on('hermes-event', (event) => {
     if (streamingBubble) streamingBubble.textContent = state.streamingReply;
     return;
   } else if (event.type === 'message.complete') {
-    const answer = String(payload.text || '').trim();
+    const rawAnswer = String(payload.text || '').trim();
+    const answer = window.showroomApi.visibleAssistantMessage(rawAnswer);
     state.streamingReply = '';
     state.pendingClarify = null;
     state.avatarSpeaking = false;
@@ -1504,10 +1763,15 @@ window.showroomApi?.on('hermes-event', (event) => {
       state.hermesStatus = 'error';
     } else {
       if (answer && !(state.chatMessages.at(-1)?.role === 'assistant' && state.chatMessages.at(-1)?.content === answer)) {
-        state.chatMessages.push({ role: 'assistant', content: answer });
+        state.chatMessages.push({ role: 'assistant', content: answer, rawContent: rawAnswer });
       }
       state.chatError = '';
       state.hermesStatus = 'online';
+      if (state.view === 'controller' && /AI_LAB_VISITOR_INSIGHT_V1/.test(rawAnswer)) {
+        maybeExtractVisitorInsight(rawAnswer);
+      } else if (state.view === 'screen-03') {
+        maybeExtractDemand(rawAnswer);
+      }
     }
   } else if (event.type === 'clarify.request') {
     state.pendingClarify = {
@@ -1530,15 +1794,38 @@ window.showroomApi?.on('hermes-event', (event) => {
   render('refresh');
 });
 window.showroomApi?.on('session', (session) => {
+  const demandChanged = JSON.stringify(state.session?.data?.demand || {})
+    !== JSON.stringify(session?.data?.demand || {});
+  const demandDocumentChanged = JSON.stringify(state.session?.data?.demand_document || {})
+    !== JSON.stringify(session?.data?.demand_document || {});
+  const visitorChanged = JSON.stringify(state.session?.data?.visitor || {})
+    !== JSON.stringify(session?.data?.visitor || {});
+  const visitorInsightChanged = JSON.stringify(state.session?.data?.customer_insight || {})
+    !== JSON.stringify(session?.data?.customer_insight || {});
   state.session = session;
   state.experienceStep = Number(session?.step || state.experienceStep);
   Object.entries(session?.data?.reviews || {}).forEach(([gate, record]) => {
     if (record?.decision) state.reviewStates[gate] = record.decision;
   });
+  if (state.view === 'screen-03' && (demandChanged || demandDocumentChanged)) render('refresh');
+  if (state.view === 'controller' && (visitorChanged || visitorInsightChanged)) render('refresh');
 });
 window.showroomApi?.on('message', (message) => {
   if (message.type === 'STATE' || message.type === 'COMMIT' || message.type === 'REVIEW') {
     applyBackendSnapshot(message.state);
+  }
+  if (message.type === 'VISIT_COMPLETE' && message.session_id === state.session?.session_id) {
+    state.visitCompleteNotice = message;
+    if (state.view === 'controller') render('refresh');
+  }
+  if (['VISITOR_UPDATED', 'INSIGHT_UPDATED'].includes(message.type) && message.session_id === state.session?.session_id) {
+    window.showroomApi.init({ force: true });
+  }
+  if (message.type === 'SESSION_SWITCH_COMMIT' && message.session_id === state.session?.session_id) {
+    state.chatMessages = [];
+    state.session = null;
+    state.bootstrapped = false;
+    window.showroomApi.init({ force: true });
   }
 });
 window.showroomApi?.init();

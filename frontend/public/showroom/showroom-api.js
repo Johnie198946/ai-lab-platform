@@ -3,6 +3,16 @@
 
   const AUTH_KEY = "ai-lab-platform.auth";
   const SESSION_KEY = "ai-lab-showroom.session";
+  const HERMES_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
+  const DEMAND_ENVELOPE_PATTERNS = [
+    /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
+    /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
+  ];
+  const VISITOR_ENVELOPE_PATTERNS = [
+    /<!--\s*AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_VISITOR_INSIGHT_V1\s*-->/gi,
+    /```(?:json\s+)?AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*```/gi,
+  ];
+  const CONTROL_PREFIX = "[AI_LAB_CONTROL]";
 
   function readJson(key) {
     try {
@@ -14,6 +24,16 @@
 
   function accessToken() {
     return readJson(AUTH_KEY)?.accessToken || "";
+  }
+
+  function loginUrl() {
+    const next = `${global.location.pathname}${global.location.search}${global.location.hash}`;
+    return `/login?next=${encodeURIComponent(next)}`;
+  }
+
+  function requireLogin() {
+    global.localStorage.removeItem(AUTH_KEY);
+    global.location.replace(loginUrl());
   }
 
   function showroomSessionId() {
@@ -40,7 +60,7 @@
 
   function isConversationView() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    return view === "screen-03" || /^experience-0?[1-5]$/.test(view);
+    return view === "controller" || view === "screen-03" || /^experience-0?[1-5]$/.test(view);
   }
 
   function normalizeHermesMessages(messages) {
@@ -52,12 +72,26 @@
           message.role,
           String(message.content ?? message.text ?? ""),
         ),
+        rawContent: message.role === "assistant"
+          ? String(message.content ?? message.text ?? "")
+          : "",
       }))
       .filter((message) => message.content.trim());
   }
 
   function visibleHermesMessage(role, content) {
+    if (role === "assistant") {
+      const withoutDemand = DEMAND_ENVELOPE_PATTERNS.reduce(
+        (visible, pattern) => visible.replace(pattern, ""),
+        content,
+      );
+      return VISITOR_ENVELOPE_PATTERNS.reduce(
+        (visible, pattern) => visible.replace(pattern, ""),
+        withoutDemand,
+      ).trim();
+    }
     if (role !== "user") return content;
+    if (content.trim().startsWith(CONTROL_PREFIX)) return "";
     const invocation = global.HermesShared?.skillInvocationText?.(content);
     if (!invocation) return content;
     const marker = "用户原始问题：";
@@ -83,8 +117,14 @@
       this.hermesStatus = "idle";
       this.hermesReconnectTimer = null;
       this.hermesReconnectCount = 0;
+      this.hermesReconnectExhausted = false;
       this.hermesIntentionalClose = false;
       this.hermesConnectPromise = null;
+      this.hermesServeToken = "";
+      this.hermesAccessToken = accessToken();
+      this.hermesSuspended = Boolean(global.document?.hidden) || !isConversationView();
+      this.showroomIntentionalClose = false;
+      this.lifecycleBound = false;
     }
 
     on(type, listener) {
@@ -125,6 +165,7 @@
 
     async init(options = {}) {
       try {
+        this.bindLifecycle();
         if (!options.force && isStaticDisplayView()) {
           this.setStatus("display", "纯展示页面，不连接业务后端");
           return;
@@ -136,6 +177,7 @@
             return;
           }
           this.setStatus("auth-required", "请先登录 AI Lab Platform");
+          requireLogin();
           return;
         }
         await this.request("/health");
@@ -145,29 +187,65 @@
         this.bootstrap = bootstrap;
         this.state = bootstrap.runtime;
         this.session = bootstrap.session;
+        if (this.slot === "main" && bootstrap.active_main_session_id) {
+          this.sessionId = bootstrap.active_main_session_id;
+          global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+        }
         this.emit("bootstrap", bootstrap);
         this.connect();
-        if (isConversationView()) this.ensureHermes().catch(() => {});
+        if (isConversationView()) this.resumeHermes();
       } catch (error) {
-        this.setStatus(error.status === 401 ? "auth-required" : "offline", error.message);
+        if (error.status === 401) {
+          this.setStatus("auth-required", "登录已过期，正在返回登录页");
+          requireLogin();
+          return;
+        }
+        this.setStatus("offline", error.message);
       }
     }
 
     setHermesStatus(status, detail = "") {
       this.hermesStatus = status;
-      this.emit("hermes-status", { status, detail });
+      this.emit("hermes-status", {
+        status,
+        detail,
+        retryStopped: this.hermesReconnectExhausted,
+      });
     }
 
     scheduleHermesReconnect() {
-      if (this.hermesIntentionalClose || this.hermesReconnectTimer || !accessToken()) return;
-      const attempt = Math.min(this.hermesReconnectCount + 1, 5);
-      this.hermesReconnectCount = attempt;
-      const delay = Math.min(250 * (2 ** (attempt - 1)), 3000);
+      if (
+        this.hermesIntentionalClose
+        || this.hermesSuspended
+        || this.hermesReconnectTimer
+        || this.hermesReconnectExhausted
+        || !accessToken()
+      ) return;
+      if (this.hermesReconnectCount >= HERMES_RECONNECT_DELAYS.length) {
+        this.hermesReconnectExhausted = true;
+        this.setHermesStatus("error", "无法连接大架构师，已停止自动重试");
+        return;
+      }
+      const delay = HERMES_RECONNECT_DELAYS[this.hermesReconnectCount];
+      this.hermesReconnectCount += 1;
       this.setHermesStatus("reconnecting", `连接中断，${Math.ceil(delay / 1000)} 秒内恢复`);
       this.hermesReconnectTimer = global.setTimeout(() => {
         this.hermesReconnectTimer = null;
-        this.ensureHermes({ force: true }).catch(() => {});
+        this.ensureHermes().catch(() => {});
       }, delay);
+    }
+
+    async getHermesServeToken(options = {}) {
+      const currentAccessToken = accessToken();
+      if (currentAccessToken !== this.hermesAccessToken) {
+        this.hermesAccessToken = currentAccessToken;
+        this.hermesServeToken = "";
+      }
+      if (!options.refresh && this.hermesServeToken) return this.hermesServeToken;
+      const { token } = await this.request("/api/v1/hermes/serve-token");
+      if (!token) throw new Error("Hermes 会话令牌缺失");
+      this.hermesServeToken = token;
+      return token;
     }
 
     async ensureHermes(options = {}) {
@@ -181,10 +259,13 @@
         this.setHermesStatus("auth-required", error.message);
         throw error;
       }
+      if (this.hermesConnectPromise) return this.hermesConnectPromise;
+      if (this.hermesSuspended || global.document?.hidden || !isConversationView()) {
+        throw new Error("大架构师连接已暂停");
+      }
       if (!options.force && this.hermes?.connectionState === "open" && this.hermesLiveSessionId) {
         return this.hermesLiveSessionId;
       }
-      if (!options.force && this.hermesConnectPromise) return this.hermesConnectPromise;
 
       this.hermesConnectPromise = (async () => {
         global.clearTimeout(this.hermesReconnectTimer);
@@ -193,13 +274,14 @@
         this.setHermesStatus("connecting", "正在连接大架构师");
 
         if (this.hermes) {
+          const previousGateway = this.hermes;
+          this.hermes = null;
           this.hermesIntentionalClose = true;
-          this.hermes.close();
+          previousGateway.close();
           this.hermesIntentionalClose = false;
         }
 
-        const { token } = await this.request("/api/v1/hermes/serve-token");
-        if (!token) throw new Error("Hermes 会话令牌缺失");
+        const token = await this.getHermesServeToken({ refresh: options.refreshToken });
         const gateway = new global.HermesShared.JsonRpcGatewayClient({
           closedErrorMessage: "大架构师连接已断开",
           connectErrorMessage: "无法连接大架构师",
@@ -213,7 +295,11 @@
         });
         gateway.onState((connectionState) => {
           if (gateway !== this.hermes) return;
-          if (["closed", "error"].includes(connectionState) && !this.hermesIntentionalClose) {
+          if (
+            ["closed", "error"].includes(connectionState)
+            && !this.hermesIntentionalClose
+            && !this.hermesConnectPromise
+          ) {
             this.scheduleHermesReconnect();
           }
         });
@@ -223,6 +309,10 @@
           authParam: ["token", token],
         });
         await gateway.connect(wsUrl);
+        if (this.hermesSuspended || global.document?.hidden || !isConversationView()) {
+          gateway.close();
+          throw new Error("大架构师连接已暂停");
+        }
 
         const storedId = String(this.session?.data?.hermes_stored_session_id || "").trim();
         let result;
@@ -253,7 +343,12 @@
           throw new Error("Hermes 未返回可恢复的会话标识");
         }
 
-        const resumedMessages = normalizeHermesMessages(result.messages);
+        const view = new URLSearchParams(global.location.search).get("view") || "controller";
+        const rawMessages = Array.isArray(result.messages) ? result.messages : [];
+        const offset = view === "screen-03"
+          ? Number(this.session?.data?.frontstage_message_offset || 0)
+          : 0;
+        const resumedMessages = normalizeHermesMessages(rawMessages.slice(offset));
         const shouldMarkInitialized = resumedMessages.length > 0 && !this.session?.data?.hermes_skill_initialized;
         if (this.hermesStoredSessionId !== storedId || shouldMarkInitialized) {
           this.session = await this.saveSession({
@@ -264,11 +359,13 @@
           });
         }
         this.hermesReconnectCount = 0;
+        this.hermesReconnectExhausted = false;
         this.setHermesStatus(result.running ? "generating" : "online", result.running ? "正在恢复生成" : "大架构师已连接");
         this.emit("hermes-ready", {
           live_session_id: this.hermesLiveSessionId,
           stored_session_id: this.hermesStoredSessionId,
           messages: resumedMessages,
+          raw_message_count: rawMessages.length,
           running: Boolean(result.running),
         });
         return this.hermesLiveSessionId;
@@ -277,12 +374,71 @@
       try {
         return await this.hermesConnectPromise;
       } catch (error) {
+        if (error.status === 401) this.hermesServeToken = "";
+        if (this.hermesSuspended) {
+          this.setHermesStatus("idle", "页面不可见，连接已暂停");
+          throw error;
+        }
         this.setHermesStatus(error.status === 401 ? "auth-required" : "error", error.message);
         this.scheduleHermesReconnect();
         throw error;
       } finally {
         this.hermesConnectPromise = null;
       }
+    }
+
+    retryHermes() {
+      if (this.hermesConnectPromise) return this.hermesConnectPromise;
+      global.clearTimeout(this.hermesReconnectTimer);
+      this.hermesReconnectTimer = null;
+      this.hermesReconnectCount = 0;
+      this.hermesReconnectExhausted = false;
+      this.hermesServeToken = "";
+      this.hermesSuspended = Boolean(global.document?.hidden) || !isConversationView();
+      if (this.hermesSuspended) return Promise.reject(new Error("当前页面不可见，暂不建立连接"));
+      return this.ensureHermes({ force: true, refreshToken: true });
+    }
+
+    suspendHermes(options = {}) {
+      this.hermesSuspended = true;
+      global.clearTimeout(this.hermesReconnectTimer);
+      this.hermesReconnectTimer = null;
+      this.hermesIntentionalClose = true;
+      const gateway = this.hermes;
+      this.hermes = null;
+      this.hermesLiveSessionId = "";
+      gateway?.close();
+      this.hermesIntentionalClose = false;
+      if (options.suspendShowroom) {
+        global.clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        this.showroomIntentionalClose = true;
+        const showroomSocket = this.ws;
+        this.ws = null;
+        showroomSocket?.close();
+      }
+      this.setHermesStatus("idle", "页面不可见，连接已暂停");
+    }
+
+    resumeHermes() {
+      if (global.document?.hidden || !isConversationView()) return;
+      this.hermesSuspended = false;
+      this.ensureHermes().catch(() => {});
+    }
+
+    bindLifecycle() {
+      if (this.lifecycleBound) return;
+      this.lifecycleBound = true;
+      global.document?.addEventListener("visibilitychange", () => {
+        if (global.document.hidden) {
+          this.suspendHermes({ suspendShowroom: true });
+          return;
+        }
+        this.showroomIntentionalClose = false;
+        if (!isStaticDisplayView()) this.connect();
+        this.resumeHermes();
+      });
+      global.addEventListener?.("pagehide", () => this.suspendHermes({ suspendShowroom: true }));
     }
 
     async submitHermesPrompt(question, options = {}) {
@@ -330,34 +486,55 @@
 
     connect() {
       const token = accessToken();
-      if (!token) return;
+      if (!token || global.document?.hidden) return;
+      if (this.ws && [WebSocket.CONNECTING, WebSocket.OPEN].includes(this.ws.readyState)) return;
+      this.showroomIntentionalClose = false;
       global.clearTimeout(this.retryTimer);
       const protocol = global.location.protocol === "https:" ? "wss:" : "ws:";
       const url = `${protocol}//${global.location.host}/api/showroom/ws?token=${encodeURIComponent(token)}&session_id=${encodeURIComponent(this.sessionId)}`;
-      this.ws = new WebSocket(url);
-      this.ws.addEventListener("open", () => {
+      const socket = new WebSocket(url);
+      this.ws = socket;
+      socket.addEventListener("open", () => {
+        if (socket !== this.ws) return;
         this.retryCount = 0;
         this.setStatus("online");
       });
-      this.ws.addEventListener("message", (event) => {
+      socket.addEventListener("message", (event) => {
+        if (socket !== this.ws) return;
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === "PING") {
-          this.ws?.send(JSON.stringify({ type: "PONG", at: Date.now() }));
+          socket.send(JSON.stringify({ type: "PONG", at: Date.now() }));
           return;
         }
         if (message.type === "PREPARE") {
-          this.ws?.send(JSON.stringify({ type: "READY", epoch: message.epoch }));
+          socket.send(JSON.stringify({ type: "READY", epoch: message.epoch }));
+        }
+        if (message.type === "SESSION_SWITCH_PREPARE" && message.session_id === this.sessionId) {
+          this.interruptHermes().catch(() => {}).finally(() => {
+            this.suspendHermes();
+            if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
+              type: "SESSION_SWITCH_READY",
+              session_id: this.sessionId,
+              epoch: message.epoch,
+            }));
+          });
+        }
+        if (message.type === "SESSION_SWITCH_COMMIT" && message.session_id === this.sessionId) {
+          this.sessionId = message.new_session_id;
+          global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
         }
         if (message.state) this.state = message.state;
         this.emit("message", message);
       });
-      this.ws.addEventListener("close", () => {
+      socket.addEventListener("close", () => {
+        if (socket !== this.ws || this.showroomIntentionalClose || global.document?.hidden) return;
+        this.ws = null;
         this.setStatus("reconnecting");
         const delay = Math.min(10000, 800 * (2 ** this.retryCount++));
         this.retryTimer = global.setTimeout(() => this.connect(), delay);
       });
-      this.ws.addEventListener("error", () => this.ws?.close());
+      socket.addEventListener("error", () => socket.close());
     }
 
     async commitStage(stage, payload = {}) {
@@ -394,6 +571,101 @@
         method: "PATCH",
         body: patch,
       });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async saveVisitor(visitor) {
+      const session = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/visitor`, {
+        method: "PATCH",
+        body: visitor,
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async extractVisitorInsight(content) {
+      const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/insight/extract`, {
+        method: "POST",
+        body: {
+          content,
+          hermes_stored_session_id: this.hermesStoredSessionId || this.session?.data?.hermes_stored_session_id || "",
+        },
+      });
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async activateFrontstage(messageCount = 0) {
+      const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/frontstage`, {
+        method: "POST",
+        body: { message_count: messageCount },
+      });
+      this.session = result.session;
+      this.emit("session", result.session);
+      return result;
+    }
+
+    async completeVisit(source = "controller") {
+      const session = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/complete`, {
+        method: "POST",
+        body: { source },
+      });
+      this.session = session;
+      this.emit("session", session);
+      return session;
+    }
+
+    async rolloverVisit() {
+      const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/rollover`, {
+        method: "POST",
+        body: { epoch: Date.now() },
+      });
+      this.sessionId = result.session.session_id;
+      global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+      this.session = result.session;
+      this.state = result.runtime;
+      this.emit("session", result.session);
+      return result;
+    }
+
+    visibleAssistantMessage(content) {
+      return visibleHermesMessage("assistant", String(content || ""));
+    }
+
+    async extractDemand(content) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/demand/extract`,
+        {
+          method: "POST",
+          body: {
+            content,
+            hermes_stored_session_id: this.hermesStoredSessionId
+              || this.session?.data?.hermes_stored_session_id
+              || "",
+          },
+        },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async saveDemandDraft(demand, manualFields) {
+      const session = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/demand/draft`,
+        {
+          method: "PATCH",
+          body: { demand, manual_fields: manualFields },
+        },
+      );
       this.session = session;
       this.emit("session", session);
       return session;
@@ -520,5 +792,6 @@
     }
   }
 
+  if (global.__SHOWROOM_TEST__) global.__ShowroomApi = ShowroomApi;
   global.showroomApi = new ShowroomApi();
 })(window);
