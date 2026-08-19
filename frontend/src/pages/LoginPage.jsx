@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { isShowroomAccount, SHOWROOM_CONTROLLER_PATH } from "../auth/entryRoute";
 import { API_ORIGIN_LABEL, AUTH_ORIGIN_LABEL, ENABLE_DEMO_FALLBACK } from "../config/env";
 import EvilEye from "../components/EvilEye";
 import "./Login.css";
@@ -30,10 +31,10 @@ export function LoginPage() {
   const hasExplicitNext = useMemo(() => Boolean(new URLSearchParams(location.search).get("next") || location.state?.from?.pathname), [location.search, location.state]);
 
   useEffect(() => {
-    if (isReady && isAuthenticated && !hasExplicitNext && authSession?.user?.username === "showroom_demo") {
-      window.location.replace("/showroom/?view=controller");
+    if (isReady && isAuthenticated && isShowroomAccount(authSession?.user)) {
+      window.location.replace(SHOWROOM_CONTROLLER_PATH);
     }
-  }, [authSession, hasExplicitNext, isAuthenticated, isReady]);
+  }, [authSession, isAuthenticated, isReady]);
 
   if (!isReady) {
     return (
@@ -44,7 +45,7 @@ export function LoginPage() {
   }
 
   if (isReady && isAuthenticated) {
-    if (!hasExplicitNext && authSession?.user?.username === "showroom_demo") {
+    if (isShowroomAccount(authSession?.user)) {
       return <div className="route-loading" style={{display:'grid', placeItems:'center', minHeight:'100vh'}}><h1>正在进入导览主控台…</h1></div>;
     }
     return <Navigate to={nextPath} replace />;
@@ -55,8 +56,8 @@ export function LoginPage() {
     setError("");
     try {
       const session = await action();
-      if (!hasExplicitNext && session?.user?.username === "showroom_demo") {
-        window.location.assign("/showroom/?view=controller");
+      if (isShowroomAccount(session?.user)) {
+        window.location.assign(SHOWROOM_CONTROLLER_PATH);
       } else {
         navigate(nextPath, { replace: true });
       }
