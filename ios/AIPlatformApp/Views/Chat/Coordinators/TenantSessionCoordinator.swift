@@ -330,6 +330,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         flushScheduled = false
         let stream = APIClient.shared.chatStream(
             question: req.text,
+            requestId: req.id,
             sessionId: req.sessionId,
             quotedContext: req.quote?.text,   // 引用历史消息上下文（若有），对齐后端 quoted_context 注入
             regenerate: req.regenerate,        // 重新生成：服务端作废旧 run 后全新执行
@@ -489,19 +490,15 @@ public final class TenantSessionCoordinator: ObservableObject {
             let outputId = outputMessageId(for: req)
             drainDeltaBuffer(messageId: outputId)
 
-            // 兜底补全：若流式连接提前断开或未收到 delta/done.answer，从 status 端点或 non-stream 接口补全，确保绝不遗留空气泡
+            // 断流只回读同一个 Hermes Run，绝不以原始问题发起第二次完整推理。
             if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 if messages[idx].content.isEmpty && messages[idx].clarifyBlock == nil {
                     if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId, consume: true),
                        let ans = status.answer, !ans.isEmpty {
                         messages[idx].content = ans
-                    } else if let chatResp = try? await APIClient.shared.chat(
-                        question: req.text,
-                        sessionId: req.sessionId,
-                        quotedContext: req.quote?.text,
-                        agentId: appState?.selectedAgentId
-                    ), !chatResp.answer.isEmpty {
-                        messages[idx].content = chatResp.answer
+                    } else {
+                        messages[idx].content = "连接暂时中断，正在后台继续。返回本页后会恢复同一任务。"
+                        messages[idx].degraded = true
                     }
                 }
                 messages[idx].pending = false
@@ -702,6 +699,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         do {
             let resp = try await APIClient.shared.chat(
                 question: updated.text,
+                requestId: updated.id,
                 sessionId: nil,
                 quotedContext: updated.quote?.text,
                 agentId: appState?.selectedAgentId

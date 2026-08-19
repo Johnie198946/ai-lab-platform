@@ -88,13 +88,15 @@ public struct ProfileUpdateRequest: Encodable {
 /// POST /api/chat 请求体（snake_case 序列化对齐后端 ChatRequest）
 public struct ChatRequestDTO: Encodable {
     public let question: String
+    public let requestId: String?
     public let sessionId: String?
     public let quotedContext: String?
     public let agentId: String?
     public let regenerate: Bool
 
-    public init(question: String, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false) {
+    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false) {
         self.question = question
+        self.requestId = requestId
         self.sessionId = sessionId
         self.quotedContext = quotedContext
         self.agentId = agentId
@@ -103,6 +105,7 @@ public struct ChatRequestDTO: Encodable {
 
     enum CodingKeys: String, CodingKey {
         case question
+        case requestId = "request_id"
         case sessionId = "session_id"
         case quotedContext = "quoted_context"
         case agentId = "agent_id"
@@ -266,6 +269,238 @@ public struct TenantAgentCreateDTO: Encodable {
         case subscribedKnowledgePacks = "subscribed_knowledge_packs"
         case customAvatar = "custom_avatar"
         case isActive = "is_active"
+    }
+}
+
+// MARK: - 可执行工作流 V1
+
+public struct WorkflowDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let title: String
+    public let description: String
+    public let desiredOutput: String
+    public let status: String
+    public let activePlanId: String?
+    public let createdAt: String?
+    public let updatedAt: String?
+    public let latestExecution: WorkflowExecutionDTO?
+}
+
+public struct WorkflowCreateResponseDTO: Codable {
+    public let id: String
+    public let title: String
+    public let description: String
+    public let desiredOutput: String
+    public let status: String
+    public let activePlanId: String?
+    public let createdAt: String?
+    public let updatedAt: String?
+    public let plan: WorkflowPlanDTO
+
+    public var workflow: WorkflowDTO {
+        WorkflowDTO(
+            id: id, title: title, description: description,
+            desiredOutput: desiredOutput, status: status,
+            activePlanId: activePlanId, createdAt: createdAt,
+            updatedAt: updatedAt, latestExecution: nil
+        )
+    }
+}
+
+public struct WorkflowPlanDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let workflowId: String
+    public let version: Int
+    public let goal: String
+    public var deliverable: String
+    public var allowNetwork: Bool
+    public var maxTokens: Int
+    public let estimatedTokens: Int
+    public var knowledgeScope: [String]
+    public let validationErrors: [String]
+    public var dsl: WorkflowDSLDTO
+    public let frozenAt: String?
+    public let createdAt: String?
+}
+
+public struct WorkflowDSLDTO: Codable, Hashable {
+    public var planId: String
+    public var name: String
+    public var nodes: [WorkflowPlanNodeDTO]
+    public var edges: [WorkflowPlanEdgeDTO]
+    public var version: String
+
+    enum CodingKeys: String, CodingKey {
+        case planId = "plan_id"
+        case name, nodes, edges, version
+    }
+}
+
+public struct WorkflowPlanNodeDTO: Codable, Identifiable, Hashable {
+    public var id: String
+    public var nodeType: String
+    public var name: String?
+    public var parameters: WorkflowNodeParametersDTO
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case nodeType = "node_type"
+        case name, parameters
+    }
+}
+
+public struct WorkflowNodeParametersDTO: Codable, Hashable {
+    public var agentId: String?
+    public var query: String?
+    public var instruction: String?
+    public var outputFormat: String?
+    public var knowledgeScope: [String]?
+    public var allowNetwork: Bool?
+    public var requiresReview: Bool?
+    public var maxTokens: Int?
+    public var revisionNote: String?
+
+    enum CodingKeys: String, CodingKey {
+        case agentId = "agent_id"
+        case query, instruction
+        case outputFormat = "output_format"
+        case knowledgeScope = "knowledge_scope"
+        case allowNetwork = "allow_network"
+        case requiresReview = "requires_review"
+        case maxTokens = "max_tokens"
+        case revisionNote = "revision_note"
+    }
+}
+
+public struct WorkflowPlanEdgeDTO: Codable, Hashable {
+    public var source: String
+    public var target: String
+    public var condition: String?
+}
+
+public struct WorkflowNodeRunDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let nodeId: String
+    public let nodeType: String
+    public let name: String
+    public let agentId: String
+    public let status: String
+    public let position: Int
+    public let attempt: Int
+    public let maxTokens: Int
+    public let tokenUsed: Int
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let reasoningTokens: Int?
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
+    public let apiCalls: Int?
+    public let estimatedCostUsd: Double?
+    public let modelUsed: String?
+    public let providerUsed: String?
+    public let outputSummary: String
+    public let errorMessage: String?
+}
+
+public struct WorkflowExecutionDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let workflowId: String
+    public let planId: String
+    public let status: String
+    public let progress: Int
+    public let tokenBudget: Int
+    public let tokenUsed: Int
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let reasoningTokens: Int?
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
+    public let apiCalls: Int?
+    public let estimatedCostUsd: Double?
+    public let modelUsed: String?
+    public let providerUsed: String?
+    public let routeReason: String?
+    public let hermesSessionId: String?
+    public let artifactCount: Int
+    public let errorMessage: String?
+    public let startedAt: String?
+    public let finishedAt: String?
+    public let createdAt: String?
+    public let nodes: [WorkflowNodeRunDTO]
+}
+
+public struct WorkflowArtifactDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let kind: String
+    public let title: String
+    public let relativePath: String
+    public let contentHash: String
+    public let sourceUrl: String?
+    public let sourceKind: String?
+    public let selectedForPublish: Bool
+    public let publishedPath: String?
+}
+
+public struct WorkflowArtifactContentDTO: Codable {
+    public let id: String
+    public let title: String
+    public let kind: String
+    public let content: String
+}
+
+public struct WorkflowEventDTO: Codable, Identifiable {
+    public let id: Int
+    public let type: String
+    public let message: String
+    public let payload: WorkflowEventPayloadDTO?
+}
+
+public struct WorkflowEventPayloadDTO: Codable {
+    public let nodeId: String?
+    public let usage: WorkflowUsageDTO?
+    public let route: WorkflowRouteDTO?
+}
+
+public struct WorkflowUsageDTO: Codable {
+    public let inputTokens: Int?
+    public let outputTokens: Int?
+    public let reasoningTokens: Int?
+    public let cacheReadTokens: Int?
+    public let cacheWriteTokens: Int?
+    public let totalTokens: Int?
+    public let apiCalls: Int?
+    public let estimatedCostUsd: Double?
+}
+
+public struct WorkflowRouteDTO: Codable {
+    public let model: String?
+    public let provider: String?
+    public let reason: String?
+}
+
+public struct WorkflowCreateRequestDTO: Encodable {
+    public let title: String
+    public let description: String
+    public let desiredOutput: String
+
+    enum CodingKeys: String, CodingKey {
+        case title, description
+        case desiredOutput = "desired_output"
+    }
+}
+
+public struct WorkflowPlanEditRequestDTO: Encodable {
+    public let dsl: WorkflowDSLDTO
+    public let deliverable: String
+    public let allowNetwork: Bool
+    public let maxTokens: Int
+    public let knowledgeScope: [String]
+
+    enum CodingKeys: String, CodingKey {
+        case dsl, deliverable
+        case allowNetwork = "allow_network"
+        case maxTokens = "max_tokens"
+        case knowledgeScope = "knowledge_scope"
     }
 }
 
@@ -620,12 +855,214 @@ public final class APIClient: ObservableObject {
         _ = try await perform(request, session: session, canRetry: false)
     }
 
+    // MARK: - 可执行工作流 V1
+
+    public func fetchWorkflows() async throws -> [WorkflowDTO] {
+        try await request([WorkflowDTO].self, path: "workflows")
+    }
+
+    public func fetchWorkflow(id: String) async throws -> WorkflowDTO {
+        try await request(WorkflowDTO.self, path: "workflows/\(encodedPath(id))")
+    }
+
+    public func createWorkflow(
+        title: String,
+        description: String,
+        desiredOutput: String
+    ) async throws -> WorkflowCreateResponseDTO {
+        try await request(
+            WorkflowCreateResponseDTO.self,
+            path: "workflows",
+            method: "POST",
+            body: WorkflowCreateRequestDTO(
+                title: title,
+                description: description,
+                desiredOutput: desiredOutput
+            )
+        )
+    }
+
+    public func fetchWorkflowPlan(workflowId: String) async throws -> WorkflowPlanDTO {
+        try await request(
+            WorkflowPlanDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/plan"
+        )
+    }
+
+    public func updateWorkflowPlan(
+        workflowId: String,
+        plan: WorkflowPlanDTO
+    ) async throws -> WorkflowPlanDTO {
+        try await request(
+            WorkflowPlanDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/plan",
+            method: "PATCH",
+            body: WorkflowPlanEditRequestDTO(
+                dsl: plan.dsl,
+                deliverable: plan.deliverable,
+                allowNetwork: plan.allowNetwork,
+                maxTokens: plan.maxTokens,
+                knowledgeScope: plan.knowledgeScope
+            )
+        )
+    }
+
+    public func replanWorkflow(
+        workflowId: String,
+        instruction: String
+    ) async throws -> WorkflowPlanDTO {
+        struct Body: Encodable { let instruction: String }
+        return try await request(
+            WorkflowPlanDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/replan",
+            method: "POST",
+            body: Body(instruction: instruction)
+        )
+    }
+
+    public func approveWorkflowPlan(workflowId: String, requestId: String) async throws -> WorkflowExecutionDTO {
+        struct Body: Encodable {
+            let comment: String
+            let requestId: String
+            enum CodingKeys: String, CodingKey { case comment; case requestId = "request_id" }
+        }
+        return try await request(
+            WorkflowExecutionDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/approve-plan",
+            method: "POST",
+            body: Body(comment: "iOS 计划确认", requestId: requestId)
+        )
+    }
+
+    public func fetchWorkflowExecution(id: String) async throws -> WorkflowExecutionDTO {
+        try await request(
+            WorkflowExecutionDTO.self,
+            path: "workflow-executions/\(encodedPath(id))"
+        )
+    }
+
+    public func workflowEventStream(
+        executionId: String
+    ) -> AsyncThrowingStream<WorkflowEventDTO, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let url = baseURL
+                        .appendingPathComponent("api/v1/workflow-executions")
+                        .appendingPathComponent(executionId)
+                        .appendingPathComponent("events")
+                    var request = URLRequest(url: url)
+                    request.httpMethod = "GET"
+                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    if let token = currentToken(), !token.isEmpty {
+                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    }
+                    let (bytes, response) = try await streamSession.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse,
+                          (200..<300).contains(http.statusCode) else {
+                        throw APIError.network("工作流事件流连接失败")
+                    }
+                    for try await line in bytes.lines where line.hasPrefix("data: ") {
+                        guard let data = String(line.dropFirst(6)).data(using: .utf8) else { continue }
+                        continuation.yield(try decoder.decode(WorkflowEventDTO.self, from: data))
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func fetchWorkflowArtifacts(executionId: String) async throws -> [WorkflowArtifactDTO] {
+        try await request(
+            [WorkflowArtifactDTO].self,
+            path: "workflow-executions/\(encodedPath(executionId))/artifacts"
+        )
+    }
+
+    public func fetchWorkflowArtifactContent(
+        executionId: String,
+        artifactId: String
+    ) async throws -> WorkflowArtifactContentDTO {
+        try await request(
+            WorkflowArtifactContentDTO.self,
+            path: "workflow-executions/\(encodedPath(executionId))/artifacts/\(encodedPath(artifactId))/content"
+        )
+    }
+
+    public func cancelWorkflowExecution(id: String) async throws -> WorkflowExecutionDTO {
+        struct EmptyBody: Encodable {}
+        return try await request(
+            WorkflowExecutionDTO.self,
+            path: "workflow-executions/\(encodedPath(id))/cancel",
+            method: "POST",
+            body: EmptyBody()
+        )
+    }
+
+    public func retryWorkflowExecution(id: String) async throws -> WorkflowExecutionDTO {
+        struct EmptyBody: Encodable {}
+        return try await request(
+            WorkflowExecutionDTO.self,
+            path: "workflow-executions/\(encodedPath(id))/retry",
+            method: "POST",
+            body: EmptyBody()
+        )
+    }
+
+    public func requestWorkflowRevision(
+        executionId: String,
+        nodeId: String,
+        comment: String
+    ) async throws -> WorkflowExecutionDTO {
+        struct Body: Encodable {
+            let nodeId: String
+            let comment: String
+            enum CodingKeys: String, CodingKey {
+                case nodeId = "node_id"
+                case comment
+            }
+        }
+        return try await request(
+            WorkflowExecutionDTO.self,
+            path: "workflow-executions/\(encodedPath(executionId))/request-revision",
+            method: "POST",
+            body: Body(nodeId: nodeId, comment: comment)
+        )
+    }
+
+    public func approveWorkflowOutput(
+        executionId: String,
+        artifactIds: [String]
+    ) async throws {
+        struct Body: Encodable {
+            let artifactIds: [String]
+            let comment: String
+            enum CodingKeys: String, CodingKey {
+                case artifactIds = "artifact_ids"
+                case comment
+            }
+        }
+        struct Response: Decodable { let published: [String] }
+        let _: Response = try await request(
+            Response.self,
+            path: "workflow-executions/\(encodedPath(executionId))/approve-output",
+            method: "POST",
+            body: Body(artifactIds: artifactIds, comment: "iOS 成果复核通过")
+        )
+    }
+
     // MARK: - 对话 / 思维链
 
     /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
     /// Task.cancel 传播中断客户端等待；404 可区分（清 session_id 幂等重发一次），超时单独抛 `.timeout`）。
     public func chat(
         question: String,
+        requestId: String? = nil,
         sessionId: String? = nil,
         quotedContext: String? = nil,
         agentId: String? = nil
@@ -642,6 +1079,7 @@ public final class APIClient: ObservableObject {
         request.httpBody = try JSONEncoder().encode(
             ChatRequestDTO(
                 question: question,
+                requestId: requestId,
                 sessionId: sessionId,
                 quotedContext: quotedContext,
                 agentId: agentId
@@ -748,6 +1186,7 @@ public final class APIClient: ObservableObject {
     /// - Returns: AsyncThrowingStream 事件流；客户端断连/取消时自动 POST /api/chat/stream/cancel 回收服务端
     public func chatStream(
         question: String,
+        requestId: String? = nil,
         sessionId: String? = nil,
         quotedContext: String? = nil,
         regenerate: Bool = false,
@@ -766,6 +1205,7 @@ public final class APIClient: ObservableObject {
             request.httpBody = try? JSONEncoder().encode(
                 ChatRequestDTO(
                     question: question,
+                    requestId: requestId,
                     sessionId: sessionId,
                     quotedContext: quotedContext,
                     agentId: agentId,
@@ -820,7 +1260,7 @@ public final class APIClient: ObservableObject {
                 // 已经生成到最终确认单的 Agent。
                 if case .cancelled = termination {
                     Task {
-                        try? await self.cancelStream(sessionId: sessionId)
+                        try? await self.cancelStream(sessionId: sessionId, agentId: agentId)
                     }
                 }
             }
@@ -828,7 +1268,7 @@ public final class APIClient: ObservableObject {
     }
 
     /// POST /api/chat/stream/cancel：服务端 interrupt + 回收
-    public func cancelStream(sessionId: String?) async throws {
+    public func cancelStream(sessionId: String?, agentId: String? = nil) async throws {
         guard let sessionId, !sessionId.isEmpty else { return }
         let url = baseURL.appendingPathComponent("api/chat/stream/cancel")
         var request = URLRequest(url: url)
@@ -838,7 +1278,12 @@ public final class APIClient: ObservableObject {
         if let token = currentToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        request.httpBody = try? JSONEncoder().encode(["session_id": sessionId])
+        struct Body: Encodable {
+            let sessionId: String
+            let agentId: String?
+            enum CodingKeys: String, CodingKey { case sessionId = "session_id"; case agentId = "agent_id" }
+        }
+        request.httpBody = try? JSONEncoder().encode(Body(sessionId: sessionId, agentId: agentId))
         _ = try? await chatSession.data(for: request)
     }
 

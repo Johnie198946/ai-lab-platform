@@ -1,0 +1,356 @@
+"""Durable Hermes workflow dispatcher and event projector.
+
+The platform never executes DSL nodes.  It owns the outbox lease, approval and
+tenant-safe projection; Hermes Bridge owns DAG progression, agents, tools,
+context compression, model routing and exact usage accounting.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import socket
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
+import httpx
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.models.workflow import (
+    WorkflowArtifact,
+    WorkflowEvent,
+    WorkflowExecution,
+    WorkflowNodeRun,
+    WorkflowPlanVersion,
+)
+from backend.services.workflow_artifacts import (
+    append_event,
+    initialize_run,
+    store_artifact,
+)
+
+HERMES_URL = os.environ.get(
+    "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
+)
+HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+LEASE_SECONDS = 60
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def bridge_base_url() -> str:
+    base = HERMES_URL.rstrip("/")
+    return base[: -len("/v1/chat")] if base.endswith("/v1/chat") else base
+
+
+def bridge_headers() -> dict[str, str]:
+    return (
+        {"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN}
+        if HERMES_BRIDGE_INTERNAL_TOKEN
+        else {}
+    )
+
+
+async def emit(
+    db: AsyncSession,
+    execution: WorkflowExecution,
+    event_type: str,
+    message: str,
+    **payload: Any,
+) -> None:
+    db.add(
+        WorkflowEvent(
+            execution_id=execution.id,
+            event_type=event_type,
+            message=message[:500],
+            payload=payload,
+        )
+    )
+    append_event(
+        execution,
+        {
+            "type": event_type,
+            "message": message,
+            "payload": payload,
+            "created_at": utcnow().isoformat(),
+        },
+    )
+    await db.flush()
+
+
+async def claim_next(
+    db: AsyncSession, owner: str | None = None
+) -> WorkflowExecution | None:
+    owner = owner or f"{socket.gethostname()}:{os.getpid()}"
+    now = utcnow()
+    statement = (
+        select(WorkflowExecution)
+        .where(
+            WorkflowExecution.status.in_(["queued", "running"]),
+            (WorkflowExecution.lease_until.is_(None))
+            | (WorkflowExecution.lease_until < now),
+        )
+        .order_by(WorkflowExecution.created_at)
+        .limit(1)
+        .with_for_update(skip_locked=True)
+    )
+    execution = (await db.execute(statement)).scalar_one_or_none()
+    if execution is None:
+        return None
+    execution.lease_owner = owner
+    execution.lease_until = now + timedelta(seconds=LEASE_SECONDS)
+    await db.commit()
+    await db.refresh(execution)
+    return execution
+
+
+async def _plan(db: AsyncSession, execution: WorkflowExecution) -> WorkflowPlanVersion:
+    return (
+        await db.execute(
+            select(WorkflowPlanVersion).where(WorkflowPlanVersion.id == execution.plan_id)
+        )
+    ).scalar_one()
+
+
+async def _nodes(db: AsyncSession, execution_id: str) -> dict[str, WorkflowNodeRun]:
+    rows = list(
+        (
+            await db.execute(
+                select(WorkflowNodeRun).where(
+                    WorkflowNodeRun.execution_id == execution_id
+                )
+            )
+        ).scalars().all()
+    )
+    return {row.node_id: row for row in rows}
+
+
+async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> dict[str, Any]:
+    payload = {
+        "tenant_id": execution.tenant_key,
+        "execution_id": execution.id,
+        "idempotency_key": execution.idempotency_key,
+        "goal": plan.goal,
+        "deliverable": plan.deliverable,
+        "plan": plan.dsl,
+        "allow_network": plan.allow_network,
+        "knowledge_scope": plan.knowledge_scope or [],
+        "max_tokens": plan.max_tokens,
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            f"{bridge_base_url()}/v1/workflow-runs",
+            headers=bridge_headers(),
+            json=payload,
+        )
+    response.raise_for_status()
+    return response.json()
+
+
+async def read_bridge_run(execution: WorkflowExecution) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(
+            f"{bridge_base_url()}/v1/workflow-runs/{execution.id}",
+            headers=bridge_headers(),
+            params={"after_seq": execution.bridge_event_seq},
+        )
+    response.raise_for_status()
+    return response.json()
+
+
+def _set_usage(target: Any, usage: dict[str, Any]) -> None:
+    target.input_tokens = int(usage.get("input_tokens") or 0)
+    target.output_tokens = int(usage.get("output_tokens") or 0)
+    target.reasoning_tokens = int(usage.get("reasoning_tokens") or 0)
+    target.cache_read_tokens = int(usage.get("cache_read_tokens") or 0)
+    target.cache_write_tokens = int(usage.get("cache_write_tokens") or 0)
+    target.api_calls = int(usage.get("api_calls") or 0)
+    target.estimated_cost_usd = float(usage.get("estimated_cost_usd") or 0)
+    target.model_used = str(usage.get("model") or "")
+    target.provider_used = str(usage.get("provider") or "")
+    target.token_used = int(usage.get("total_tokens") or 0)
+
+
+async def _artifact_exists(db: AsyncSession, execution_id: str, event_id: str) -> bool:
+    rows = list(
+        (
+            await db.execute(
+                select(WorkflowArtifact.metadata_json).where(
+                    WorkflowArtifact.execution_id == execution_id
+                )
+            )
+        ).scalars().all()
+    )
+    return any((item or {}).get("bridge_event_id") == event_id for item in rows)
+
+
+async def project_event(
+    db: AsyncSession,
+    execution: WorkflowExecution,
+    node_rows: dict[str, WorkflowNodeRun],
+    event: dict[str, Any],
+) -> None:
+    event_type = str(event.get("type") or "bridge_event")
+    node_id = str(event.get("node_id") or "")
+    message = str(event.get("message") or event_type)
+    node = node_rows.get(node_id)
+    if event_type == "run_started":
+        execution.status = "running"
+        execution.started_at = execution.started_at or utcnow()
+    elif event_type == "node_started" and node is not None:
+        node.status = "running"
+        node.attempt += 1
+        node.started_at = utcnow()
+        node.error_message = None
+    elif event_type == "node_succeeded" and node is not None:
+        usage = event.get("usage") or {}
+        node.status = "succeeded"
+        node.output_summary = str((event.get("artifact") or {}).get("content") or "")[:2000]
+        node.finished_at = utcnow()
+        _set_usage(node, usage)
+        route = event.get("route") or {}
+        node.model_used = str(route.get("model") or node.model_used)
+        node.provider_used = str(route.get("provider") or node.provider_used)
+        execution.progress = int(event.get("progress") or execution.progress)
+        artifact = event.get("artifact") or {}
+        event_id = str(event.get("event_id") or "")
+        if artifact.get("content") and not await _artifact_exists(db, execution.id, event_id):
+            db.add(
+                store_artifact(
+                    execution,
+                    node_run_id=node.id,
+                    kind=str(artifact.get("kind") or "draft"),
+                    title=str(artifact.get("title") or node.name),
+                    content=str(artifact["content"]),
+                    source_kind=str(artifact.get("source_kind") or "hermes_output"),
+                    metadata={
+                        "bridge_event_id": event_id,
+                        "agent_id": node.agent_id,
+                        "model": node.model_used,
+                        "provider": node.provider_used,
+                    },
+                )
+            )
+        if route.get("reason"):
+            execution.route_reason = str(route["reason"])[:500]
+    elif event_type == "run_completed":
+        execution.status = "awaiting_review"
+        execution.progress = 100
+        execution.finished_at = utcnow()
+        _set_usage(execution, event.get("usage") or {})
+    elif event_type == "run_failed":
+        execution.status = "failed"
+        execution.error_message = str(event.get("error") or message)[:2000]
+        execution.finished_at = utcnow()
+        if node is not None:
+            node.status = "failed"
+            node.error_message = execution.error_message
+            node.finished_at = utcnow()
+    elif event_type == "run_cancelled":
+        execution.status = "cancelled"
+        execution.finished_at = utcnow()
+    await emit(
+        db,
+        execution,
+        event_type,
+        message,
+        bridge_event_id=event.get("event_id"),
+        bridge_seq=event.get("seq"),
+        node_id=node_id or None,
+        usage=event.get("usage") or {},
+        route=event.get("route") or {},
+    )
+    execution.bridge_event_seq = max(
+        execution.bridge_event_seq, int(event.get("seq") or 0)
+    )
+
+
+async def sync_execution(execution_id: str, db: AsyncSession) -> None:
+    execution = (
+        await db.execute(
+            select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
+        )
+    ).scalar_one()
+    plan = await _plan(db, execution)
+    initialize_run(execution, plan.dsl)
+    try:
+        dispatched = await dispatch(execution, plan)
+        execution.hermes_session_id = dispatched.get("hermes_session_id")
+        # 用户已在平台明确触发 retry/revision 后，本地状态会回到 queued。
+        # 若 Bridge 仍保存旧的终态，显式从首个未成功节点恢复，而不是创建第二个 Run。
+        if execution.status == "queued" and dispatched.get("status") in {
+            "failed",
+            "cancelled",
+        }:
+            current_nodes = await _nodes(db, execution.id)
+            restart = next(
+                (
+                    node
+                    for node in sorted(current_nodes.values(), key=lambda item: item.position)
+                    if node.status != "succeeded"
+                ),
+                None,
+            )
+            await retry_remote(execution.id, restart.node_id if restart else None)
+        snapshot = await read_bridge_run(execution)
+        if snapshot.get("hermes_session_id"):
+            execution.hermes_session_id = str(snapshot["hermes_session_id"])
+        node_rows = await _nodes(db, execution.id)
+        for event in snapshot.get("events") or []:
+            await project_event(db, execution, node_rows, event)
+        if not snapshot.get("events") and snapshot.get("status") == "running":
+            execution.status = "running"
+            execution.started_at = execution.started_at or utcnow()
+        execution.lease_owner = None
+        execution.lease_until = None
+        execution.artifact_count = int(
+            (
+                await db.execute(
+                    select(func.count(WorkflowArtifact.id)).where(
+                        WorkflowArtifact.execution_id == execution.id
+                    )
+                )
+            ).scalar_one()
+        )
+        await db.commit()
+    except Exception as exc:
+        # 外部执行器暂不可达不是业务失败；保留队列并释放租约，下轮安全重试同一幂等键。
+        execution.lease_owner = None
+        execution.lease_until = None
+        execution.error_message = f"等待 Hermes 恢复：{str(exc)[:500]}"
+        await db.commit()
+
+
+async def cancel_remote(execution_id: str) -> None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(
+            f"{bridge_base_url()}/v1/workflow-runs/{execution_id}/cancel",
+            headers=bridge_headers(),
+        )
+    response.raise_for_status()
+
+
+async def retry_remote(execution_id: str, from_node_id: str | None = None) -> None:
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.post(
+            f"{bridge_base_url()}/v1/workflow-runs/{execution_id}/retry",
+            headers=bridge_headers(),
+            json={"from_node_id": from_node_id},
+        )
+    response.raise_for_status()
+
+
+async def worker_loop(poll_seconds: float = 2.0) -> None:
+    from backend.db import SessionLocal, init_db
+
+    await init_db()
+    while True:
+        async with SessionLocal() as db:
+            execution = await claim_next(db)
+            if execution is not None:
+                await sync_execution(execution.id, db)
+                continue
+        await asyncio.sleep(poll_seconds)

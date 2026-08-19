@@ -24,10 +24,10 @@ public struct MainTabView: View {
                 }
                 .tag(0)
 
-            // Tab 2: Read-Only DAG Topology Canvas
-            TopologyCanvasView()
+            // Tab 2: 可执行工作流（拓扑从任务页按需打开）
+            WorkflowDashboardView()
                 .tabItem {
-                    Label("拓扑", systemImage: "point.3.connected.trianglepath.dotted")
+                    Label("任务", systemImage: "square.grid.2x2.fill")
                 }
                 .tag(1)
 

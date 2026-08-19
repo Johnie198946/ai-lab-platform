@@ -1,0 +1,338 @@
+"""Compile a workflow description into a safe, editable execution plan."""
+
+from __future__ import annotations
+
+import re
+import os
+import uuid
+from pathlib import Path
+from typing import Any
+
+import httpx
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from backend.models.tenant import KnowledgeSubscription
+from backend.models.tenant_agent import TenantAgentModel
+from backend.models.tenant_agent_schema import WorkflowDSLPlan
+from backend.models.workflow import WorkflowDefinition, WorkflowPlanVersion
+from backend.services.dsl_safety_compiler import DSLSafetyCompiler
+
+HERMES_BRIDGE_URL = os.environ.get(
+    "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
+)
+HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+HERMES_PLANNING_ENABLED = os.environ.get("WORKFLOW_HERMES_PLANNING", "false").lower() == "true"
+
+
+def _tenant_skill_agents(tenant: str) -> list[tuple[str, str]]:
+    """Read tenant skill capability summaries without depending on the HTTP layer."""
+    root = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
+    tenant_dir = root / "tenants" / tenant
+    if not tenant_dir.is_dir():
+        return []
+    result: list[tuple[str, str]] = []
+    for skill_dir in sorted(tenant_dir.iterdir()):
+        skill_file = skill_dir / "SKILL.md"
+        if not skill_file.is_file():
+            continue
+        description = ""
+        try:
+            for line in skill_file.read_text(encoding="utf-8", errors="replace")[:2000].splitlines():
+                if line.strip().startswith("description:"):
+                    description = line.split(":", 1)[1].strip()
+                    break
+        except OSError:
+            pass
+        result.append((f"skill_{skill_dir.name}", f"{skill_dir.name} {description}"))
+    return result
+
+
+def _bridge_base_url() -> str:
+    base = HERMES_BRIDGE_URL.rstrip("/")
+    return base[: -len("/v1/chat")] if base.endswith("/v1/chat") else base
+
+
+def _bridge_headers() -> dict[str, str]:
+    return (
+        {"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN}
+        if HERMES_BRIDGE_INTERNAL_TOKEN
+        else {}
+    )
+
+
+def _tokens(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9_\-]+|[\u4e00-\u9fff]{2,}", text.lower()))
+
+
+async def validate_plan_policy(
+    db: AsyncSession,
+    tenant: str,
+    plan: WorkflowDSLPlan,
+    *,
+    allow_network: bool,
+    max_tokens: int,
+    knowledge_scope: list[str],
+) -> None:
+    """Validate mutable plan fields that the structural DSL compiler cannot know."""
+    from backend.models.agent_registry import agent_ids
+
+    db_agents = set(
+        (
+            await db.execute(
+                select(TenantAgentModel.id).where(
+                    TenantAgentModel.tenant_id == tenant,
+                    TenantAgentModel.is_active.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    skill_agents = {agent_id for agent_id, _ in _tenant_skill_agents(tenant)}
+    allowed_agents = set(agent_ids()) | db_agents | skill_agents
+    subscriptions = set(
+        (
+            await db.execute(
+                select(KnowledgeSubscription.category).where(
+                    KnowledgeSubscription.tenant_key == tenant
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    requested_scope = set(knowledge_scope)
+    if not requested_scope.issubset(subscriptions):
+        raise ValueError("计划包含当前租户未订阅的知识范围")
+    node_budget = 0
+    for node in plan.nodes:
+        agent_id = str(node.parameters.get("agent_id") or "main_agent")
+        if agent_id not in allowed_agents:
+            raise ValueError(f"计划引用了不存在或不可用的 Agent: {agent_id}")
+        node_budget += int(node.parameters.get("max_tokens", 0))
+        if bool(node.parameters.get("allow_network", False)) and not allow_network:
+            raise ValueError("节点请求联网，但计划总开关未授权联网")
+        node_scope = set(node.parameters.get("knowledge_scope") or [])
+        if not node_scope.issubset(requested_scope):
+            raise ValueError(f"节点 {node.id} 超出了计划知识范围")
+    if node_budget > max_tokens:
+        raise ValueError(f"节点预算合计 {node_budget} 超过工作流预算 {max_tokens}")
+
+
+async def _select_tenant_agent(db: AsyncSession, tenant: str, description: str) -> str:
+    rows = (
+        (
+            await db.execute(
+                select(TenantAgentModel).where(
+                    TenantAgentModel.tenant_id == tenant,
+                    TenantAgentModel.is_active.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    candidates: list[tuple[str, str]] = [
+        (row.id, f"{row.custom_name or ''} {row.private_prompt_delta or ''}")
+        for row in rows
+    ]
+    candidates.extend(_tenant_skill_agents(tenant))
+    goal_tokens = _tokens(description)
+    if not goal_tokens or not candidates:
+        return "main_agent"
+    scored = [
+        (len(goal_tokens & _tokens(text)), agent_id) for agent_id, text in candidates
+    ]
+    score, agent_id = max(scored, default=(0, "main_agent"))
+    return agent_id if score > 0 else "main_agent"
+
+
+async def _allowed_agent_ids(db: AsyncSession, tenant: str) -> list[str]:
+    from backend.models.agent_registry import agent_ids
+
+    db_ids = list(
+        (
+            await db.execute(
+                select(TenantAgentModel.id).where(
+                    TenantAgentModel.tenant_id == tenant,
+                    TenantAgentModel.is_active.is_(True),
+                )
+            )
+        ).scalars().all()
+    )
+    skill_ids = [agent_id for agent_id, _ in _tenant_skill_agents(tenant)]
+    return sorted(set(agent_ids()) | set(db_ids) | set(skill_ids))
+
+
+def _safe_template(
+    workflow: WorkflowDefinition,
+    plan_id: str,
+    scopes: list[str],
+    analysis_agent: str,
+    revision_note: str,
+) -> dict[str, Any]:
+    """Hermes 不可达时的可编辑安全模板；生产降级模板不能直接获批执行。"""
+    common: dict[str, Any] = {
+        "knowledge_scope": scopes,
+        "allow_network": True,
+        "revision_note": revision_note,
+    }
+    return {
+        "plan_id": plan_id,
+        "name": workflow.title,
+        "version": "1.0.0",
+        "nodes": [
+            {
+                "id": "retrieve_evidence",
+                "node_type": "KNOWLEDGE_RETRIEVAL",
+                "name": "检索知识与识别证据缺口",
+                "parameters": {**common, "agent_id": "knowledge", "query": workflow.description, "max_tokens": 2000},
+            },
+            {
+                "id": "analyze_goal",
+                "node_type": "LLM_INFERENCE",
+                "name": "分析目标与形成核心洞察",
+                "parameters": {**common, "agent_id": analysis_agent, "instruction": workflow.description, "max_tokens": 6000},
+            },
+            {
+                "id": "synthesize_report",
+                "node_type": "AGGREGATION",
+                "name": "汇总证据并生成报告草稿",
+                "parameters": {**common, "agent_id": "main_agent", "output_format": workflow.desired_output, "max_tokens": 6000},
+            },
+            {
+                "id": "review_output",
+                "node_type": "FILTER_PASS",
+                "name": "复核引用、冲突与完整度",
+                "parameters": {**common, "agent_id": "supervision", "requires_review": True, "max_tokens": 4000},
+            },
+            {
+                "id": "format_delivery",
+                "node_type": "OUTPUT_FORMAT",
+                "name": "生成最终可交付成果",
+                "parameters": {**common, "agent_id": "main_agent", "output_format": workflow.desired_output, "max_tokens": 4000},
+            },
+        ],
+        "edges": [
+            {"source": "retrieve_evidence", "target": "analyze_goal"},
+            {"source": "analyze_goal", "target": "synthesize_report"},
+            {"source": "synthesize_report", "target": "review_output"},
+            {"source": "review_output", "target": "format_delivery"},
+        ],
+    }
+
+
+async def _plan_with_hermes(
+    workflow: WorkflowDefinition,
+    scopes: list[str],
+    allowed_agents: list[str],
+    revision_note: str,
+) -> dict[str, Any]:
+    async with httpx.AsyncClient(timeout=300) as client:
+        response = await client.post(
+            f"{_bridge_base_url()}/v1/workflows/plan",
+            headers=_bridge_headers(),
+            json={
+                "tenant_id": workflow.tenant_key,
+                "workflow_id": workflow.id,
+                "title": workflow.title,
+                "description": workflow.description,
+                "deliverable": workflow.desired_output,
+                "knowledge_scope": scopes,
+                "allowed_agents": allowed_agents,
+                "allow_network": True,
+                "max_tokens": 24000,
+                "revision_note": revision_note,
+            },
+        )
+    response.raise_for_status()
+    payload = response.json()
+    raw = payload.get("plan")
+    if not isinstance(raw, dict):
+        raise ValueError("Hermes 未返回有效计划")
+    return raw
+
+
+async def build_plan(
+    db: AsyncSession,
+    workflow: WorkflowDefinition,
+    *,
+    revision_note: str = "",
+) -> WorkflowPlanVersion:
+    """Create an immediately reviewable plan; execution never starts here."""
+    analysis_agent = await _select_tenant_agent(
+        db, workflow.tenant_key, workflow.description
+    )
+    scopes = list(
+        (
+            await db.execute(
+                select(KnowledgeSubscription.category).where(
+                    KnowledgeSubscription.tenant_key == workflow.tenant_key
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    version = (
+        int(
+            (
+                await db.execute(
+                    select(func.count(WorkflowPlanVersion.id)).where(
+                        WorkflowPlanVersion.workflow_id == workflow.id
+                    )
+                )
+            ).scalar_one()
+        )
+        + 1
+    )
+    plan_id = f"wfp_{uuid.uuid4().hex}"
+    allowed_agents = await _allowed_agent_ids(db, workflow.tenant_key)
+    validation_errors: list[str] = []
+    if HERMES_PLANNING_ENABLED:
+        try:
+            raw = await _plan_with_hermes(
+                workflow, scopes, allowed_agents, revision_note
+            )
+            raw["plan_id"] = plan_id
+            raw.setdefault("name", workflow.title)
+            raw.setdefault("version", "1.0.0")
+        except Exception as exc:
+            raw = _safe_template(
+                workflow, plan_id, scopes, analysis_agent, revision_note
+            )
+            validation_errors = [
+                f"Hermes 规划暂不可用，当前仅为安全模板，请重新生成后确认：{str(exc)[:240]}"
+            ]
+    else:
+        raw = _safe_template(
+            workflow, plan_id, scopes, analysis_agent, revision_note
+        )
+    compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(raw)
+    await validate_plan_policy(
+        db,
+        workflow.tenant_key,
+        compiled,
+        allow_network=True,
+        max_tokens=24000,
+        knowledge_scope=scopes,
+    )
+    plan = WorkflowPlanVersion(
+        id=plan_id,
+        workflow_id=workflow.id,
+        version=version,
+        dsl=compiled.model_dump(mode="json"),
+        goal=workflow.description,
+        deliverable=workflow.desired_output,
+        allow_network=True,
+        max_tokens=24000,
+        estimated_tokens=22000,
+        knowledge_scope=scopes,
+        validation_errors=validation_errors,
+    )
+    db.add(plan)
+    workflow.active_plan_id = plan.id
+    workflow.status = "planning" if validation_errors else "awaiting_approval"
+    await db.flush()
+    return plan

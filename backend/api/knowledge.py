@@ -94,7 +94,7 @@ def _iter_md_files(vault: Path):
     vis = _visibility()
     for p in sorted(vault.rglob("*.md")):
         rel = p.relative_to(vault).as_posix()
-        if rel.startswith((".obsidian", "_archive", "00_Inbox", "模板")):
+        if rel.startswith((".obsidian", "_archive", "00_Inbox", "模板", "workflows/")):
             continue
         if not _rel_visible(rel, vis):
             continue
@@ -180,6 +180,7 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
 
     # 1.5) wikilinks 追读: 命中 wiki 条目的关联条目计入候选（Karpathy 知识网）
     import re
+
     hit_paths = [p for p, e in scored.items() if p.startswith("wiki/")]
     for hp in hit_paths:
         try:
@@ -270,7 +271,7 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
             "path": rel,
             "title": title,
             "score": score,
-            "snippet": text[max(0, idx - 40): idx + _SNIPPET_CHARS].replace("\n", " "),
+            "snippet": text[max(0, idx - 40) : idx + _SNIPPET_CHARS].replace("\n", " "),
         }
 
     ranked = sorted(scored.values(), key=lambda d: (-d["score"], d["path"]))
@@ -416,13 +417,15 @@ def list_wiki() -> Dict[str, Any]:
             continue
         text = p.read_text(encoding="utf-8", errors="ignore")
         fm = _frontmatter(text)
-        entries.append({
-            "slug": p.relative_to(wiki_dir).with_suffix("").as_posix(),
-            "title": fm.get("title", p.stem),
-            "status": fm.get("status", "unknown"),
-            "tags": fm.get("tags", []),
-            "links_out": _wikilinks(text),
-        })
+        entries.append(
+            {
+                "slug": p.relative_to(wiki_dir).with_suffix("").as_posix(),
+                "title": fm.get("title", p.stem),
+                "status": fm.get("status", "unknown"),
+                "tags": fm.get("tags", []),
+                "links_out": _wikilinks(text),
+            }
+        )
     return {"total": len(entries), "entries": entries}
 
 

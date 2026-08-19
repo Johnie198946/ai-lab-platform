@@ -68,6 +68,9 @@ services:
       # 平台租户统一：新注册用户归入该租户（与 bridge TENANT_ID 一致，保证对话技能与 API 数据同租户可见）
       DEFAULT_TENANT_KEY: ${DEFAULT_TENANT_KEY:-}
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      WORKFLOW_EXECUTION_V2: ${WORKFLOW_EXECUTION_V2:-true}
+      WORKFLOW_HERMES_PLANNING: ${WORKFLOW_HERMES_PLANNING:-true}
       # Hermes Dashboard 会话 Token（Tab 1 官方 Web 容器认证通道 · B-2-2；
       # 部署时须与宿主机 hermes-serve 的 HERMES_DASHBOARD_SESSION_TOKEN 同值，否则 401）
       HERMES_SERVE_TOKEN: ${HERMES_SERVE_TOKEN:-}
@@ -86,6 +89,31 @@ services:
       timeout: 5s
       retries: 5
       start_period: 15s
+
+  # 持久工作流执行器：独立消费 PostgreSQL 队列，API/客户端重启不丢任务
+  workflow-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "backend.workers.workflow_worker"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
+      AI_LAB_HOME: /app/data/vault
+      HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      WORKFLOW_EXECUTION_V2: ${WORKFLOW_EXECUTION_V2:-true}
+    volumes:
+      - ./data:/app/data
+      - /root/.hermes/skills:/root/.hermes/skills
+      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro
+      - /root/.hermes/profiles:/root/.hermes/profiles
+      - /opt/ai-lab-platform:/opt/ai-lab-platform
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # 前端服务
   frontend:

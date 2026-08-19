@@ -146,7 +146,8 @@ async def list_tenant_agents(
 def _scan_tenant_skill_agents(tenant_id: str) -> List[TenantAgentOut]:
     """扫描挂载的租户技能目录，将技能登记为租户 Agent（前端拓扑/设置同源展示）。
 
-    每个租户技能目录 = 一个 Agent：SKILL.md frontmatter 提供 name/description/base_agent，
+    每个租户技能目录 = 一个 Agent：SKILL.md frontmatter 提供
+    name/description/base_agent，
     正文即该 Agent 的角色提示词（private_prompt_delta）。
     路径约定：<skills_root>/tenants/<tenant>/<name>/SKILL.md
     """
@@ -194,7 +195,7 @@ def _scan_tenant_skill_agents(tenant_id: str) -> List[TenantAgentOut]:
         return []
 
 
-@router.delete("/tenant-agents/{agent_id}", status_code=204)
+@router.delete("/tenant-agents/{agent_id}", status_code=204, response_model=None)
 async def delete_tenant_agent(
     agent_id: str, payload: Dict[str, Any] = Depends(require_auth)
 ) -> None:

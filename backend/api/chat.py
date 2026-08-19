@@ -111,6 +111,7 @@ def extract_citations(text: str) -> List[str]:
 
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
+    request_id: Optional[str] = Field(None, min_length=8, max_length=100)
     session_id: Optional[str] = Field(None, max_length=100)
     # 引用回复上下文（从中间回复历史消息）：透传 bridge 注入 agent goal，
     # 让 agent 明确用户引用的历史消息（会话记忆关联，不丢弃）
@@ -312,9 +313,14 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
 
     # 透传 Hermes bridge（附真实思维链）
     try:
-        reply, reasoning = await _call_hermes(
-            goal, session_id=isolated_session_id, skill_id=skill_id
-        )
+        if skill_id:
+            reply, reasoning = await _call_hermes(
+                goal, session_id=isolated_session_id, skill_id=skill_id
+            )
+        else:
+            reply, reasoning = await _call_hermes(
+                goal, session_id=isolated_session_id
+            )
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
         clarify = extract_clarify_payload(reasoning)
@@ -379,6 +385,7 @@ async def chat_status(
 
 class StreamRequest(BaseModel):
     question: str = Field(..., min_length=1)
+    request_id: Optional[str] = Field(None, min_length=8, max_length=100)
     session_id: Optional[str] = Field(None, max_length=100)
     agent_id: Optional[str] = Field(None, max_length=50)
     skill_id: Optional[str] = Field(None, max_length=80)
@@ -397,6 +404,7 @@ class ClarifySubmitRequest(BaseModel):
 
 class CancelRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
+    agent_id: Optional[str] = Field(None, max_length=50)
 
 
 # 流式会话标记：session_id -> 进行中（_check_cached_answer 跳过流式态）
@@ -415,6 +423,7 @@ async def _call_bridge_stream(
     session_id: str,
     regenerate: bool = False,
     skill_id: Optional[str] = None,
+    request_id: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
@@ -426,6 +435,7 @@ async def _call_bridge_stream(
                 "session_id": session_id,
                 "regenerate": regenerate,
                 "skill_id": skill_id,
+                "request_id": request_id,
             },
         ) as resp:
             if resp.status_code != 200:
@@ -479,12 +489,10 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
 
     async def _gen():
         try:
-            async for frame in _call_bridge_stream(
-                goal,
-                isolated_session_id,
-                regenerate=req.regenerate,
-                skill_id=skill_id,
-            ):
+            kwargs = {"regenerate": req.regenerate, "skill_id": skill_id}
+            if req.request_id:
+                kwargs["request_id"] = req.request_id
+            async for frame in _call_bridge_stream(goal, isolated_session_id, **kwargs):
                 yield frame
         finally:
             _streaming_sessions.discard(isolated_session_id)
@@ -531,12 +539,13 @@ async def chat_stream_cancel(
     req: CancelRequest, payload=Depends(require_auth)
 ) -> Dict[str, Any]:
     """取消在途流式：透传 bridge interrupt（服务端回收线程与内存）。"""
+    isolated = derive_isolated_session_id(req.agent_id, req.session_id)
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             HERMES_BRIDGE_CANCEL_URL,
-            json={"session_id": req.session_id},
+            json={"session_id": isolated},
         )
-        _streaming_sessions.discard(req.session_id)
+        _streaming_sessions.discard(isolated)
         if r.status_code == 200:
             return r.json()
         raise HTTPException(status_code=502, detail="取消流式失败")

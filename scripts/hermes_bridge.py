@@ -38,10 +38,10 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 import uvicorn
@@ -80,7 +80,7 @@ WATERMARK_FILE = Path(
         "/opt/ai-lab-platform/data/delivered_watermarks.json",
     )
 )
-MAX_INPUT = 4000
+MAX_INPUT = 12000
 ALLOWED_CHAT_SKILLS = {"solution-consultant-persona"}
 DEFAULT_TIMEOUT = 300
 SERVE_TIMEOUT = 300
@@ -108,6 +108,19 @@ DRILL_ME_MAX_ROUNDS = max(
 )
 # 事件队列容量（线程 → async 桥）
 STREAM_QUEUE_CAPACITY = 1024
+
+# 持久工作流运行投影。Hermes 负责计划节点推进、工具与模型调用；平台 Worker
+# 只通过内部 API 投递并同步这些事件，避免 FastAPI 与 Hermes 各维护一套编排器。
+WORKFLOW_RUNS_FILE = Path(
+    os.environ.get(
+        "HERMES_WORKFLOW_RUNS_FILE",
+        "/opt/ai-lab-platform/data/hermes_workflow_runs.json",
+    )
+)
+HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+_workflow_runs: dict[str, dict[str, Any]] = {}
+_workflow_runs_lock = threading.RLock()
+_workflow_threads: dict[str, threading.Thread] = {}
 
 # user_id -> 在途流式运行状态（agent holder / 线程 / 队列 / 停止事件），供 cancel/clarify 端点寻址
 # 状态模型（保活机制 v6）：{agent_holder, queue, attached, start_ts, run_id[, clarify_issued]}
@@ -214,12 +227,42 @@ def _get_user_lock(user_id: str) -> asyncio.Lock:
 
 class GoalRequest(BaseModel):
     goal: str = Field(..., max_length=MAX_INPUT)
+    request_id: str | None = Field(None, min_length=8, max_length=100)
     session_id: str | None = None  # 前端传入的 user_id（用于映射 Hermes 原生 session）
     skill_id: str | None = Field(None, max_length=80)
     isolation: str = Field("standard", description="向后兼容·子Agent工厂使用")
     # 重新生成语义（2026-08-17 修复）：true 时作废旧 run（interrupt 旧 agent + discard 注册）
     # 再启动全新尝试——对齐 ChatGPT「重新生成」= 上次回答作废重跑，而非被并发防护拒绝
     regenerate: bool = Field(False, description="重新生成：作废旧 run 后全新执行")
+
+
+class WorkflowPlanRequest(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=64)
+    workflow_id: str = Field(..., min_length=1, max_length=64)
+    title: str = Field(..., min_length=1, max_length=160)
+    description: str = Field(..., min_length=3, max_length=12000)
+    deliverable: str = Field(..., min_length=1, max_length=300)
+    knowledge_scope: list[str] = Field(default_factory=list)
+    allowed_agents: list[str] = Field(default_factory=list)
+    allow_network: bool = True
+    max_tokens: int = Field(24000, ge=1000, le=128000)
+    revision_note: str = Field("", max_length=2000)
+
+
+class WorkflowRunRequest(BaseModel):
+    tenant_id: str = Field(..., min_length=1, max_length=64)
+    execution_id: str = Field(..., min_length=1, max_length=64)
+    idempotency_key: str = Field(..., min_length=8, max_length=160)
+    goal: str = Field(..., min_length=1, max_length=12000)
+    deliverable: str = Field(..., min_length=1, max_length=300)
+    plan: dict[str, Any]
+    allow_network: bool = True
+    knowledge_scope: list[str] = Field(default_factory=list)
+    max_tokens: int = Field(24000, ge=1000, le=128000)
+
+
+class WorkflowRetryRequest(BaseModel):
+    from_node_id: str | None = Field(None, max_length=80)
 
 
 def _expand_requested_skill(goal: str, skill_id: str | None) -> str:
@@ -320,6 +363,68 @@ def _save_watermarks() -> None:
             print(f"[bridge] 保存水位线失败: {e}")
 
 
+def _load_workflow_runs() -> None:
+    """加载 Hermes 工作流投影；运行中的任务在 Worker 重连时显式恢复。"""
+    global _workflow_runs
+    with _workflow_runs_lock:
+        if not WORKFLOW_RUNS_FILE.exists():
+            _workflow_runs = {}
+            return
+        try:
+            raw = json.loads(WORKFLOW_RUNS_FILE.read_text(encoding="utf-8"))
+            _workflow_runs = raw if isinstance(raw, dict) else {}
+            for run in _workflow_runs.values():
+                if run.get("status") == "running":
+                    run["status"] = "interrupted"
+                    run["error"] = "Hermes Bridge 重启，等待持久派发器恢复"
+        except Exception as exc:
+            print(f"[bridge] 加载工作流投影失败: {exc}")
+            _workflow_runs = {}
+
+
+def _save_workflow_runs() -> None:
+    """原子保存工作流投影，内容不包含密钥。"""
+    with _workflow_runs_lock:
+        try:
+            WORKFLOW_RUNS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = json.dumps(_workflow_runs, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(WORKFLOW_RUNS_FILE.parent),
+                prefix=".hermes_workflow_runs.",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(data)
+                os.replace(tmp_path, WORKFLOW_RUNS_FILE)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as exc:
+            print(f"[bridge] 保存工作流投影失败: {exc}")
+
+
+def _workflow_event(run: dict[str, Any], event_type: str, **payload: Any) -> dict[str, Any]:
+    seq = int(run.get("next_seq", 1))
+    event = {
+        "seq": seq,
+        "event_id": f"{run['execution_id']}:{seq}",
+        "type": event_type,
+        "created_at": time.time(),
+        **payload,
+    }
+    run.setdefault("events", []).append(event)
+    run["next_seq"] = seq + 1
+    # 事件是断点恢复的审计真相源；限制单次运行数量，防异常工具循环撑爆投影文件。
+    if len(run["events"]) > 5000:
+        run["events"] = run["events"][-5000:]
+    _save_workflow_runs()
+    return event
+
+
 def _get_watermark(user_id: str) -> int:
     return _delivered_watermark.get(user_id, 0)
 
@@ -355,7 +460,9 @@ def _session_exists(session_id: str) -> bool:
 
 # ---------- Hermes CLI 调用 ----------
 
-def _run_hermes(goal: str, session_id: str | None = None) -> tuple[str, str | None]:
+def _run_hermes_with_usage(
+    goal: str, session_id: str | None = None
+) -> tuple[str, str | None, dict[str, Any]]:
     """执行 Hermes CLI。
 
     返回 (reply, hermes_session_id)。
@@ -391,17 +498,23 @@ def _run_hermes(goal: str, session_id: str | None = None) -> tuple[str, str | No
     except Exception as e:
         reply = f"⚠️ Hermes 调用异常: {e}"
 
-    # 从 --usage-file 提取 session_id（原子捕获·并发安全）
-    hermes_sid = _extract_session_from_usage(usage_file)
+    # 从 --usage-file 提取真实 usage（原子捕获·并发安全）
+    usage = _extract_usage(usage_file)
+    return reply, usage.get("session_id"), usage
+
+
+def _run_hermes(goal: str, session_id: str | None = None) -> tuple[str, str | None]:
+    """向后兼容的二元返回包装；工作流使用 `_run_hermes_with_usage`。"""
+    reply, hermes_sid, _ = _run_hermes_with_usage(goal, session_id)
     return reply, hermes_sid
 
 
-def _extract_session_from_usage(usage_file: Path) -> str | None:
-    """从 --usage-file JSON 中提取 session_id，读取后删除临时文件。"""
+def _extract_usage(usage_file: Path) -> dict[str, Any]:
+    """读取完整 Hermes usage，并始终删除临时文件。"""
     try:
         if usage_file.exists():
             data = json.loads(usage_file.read_text())
-            return data.get("session_id")
+            return data if isinstance(data, dict) else {}
     except Exception as e:
         print(f"[bridge] 读取 usage-file 失败: {e}")
     finally:
@@ -409,7 +522,247 @@ def _extract_session_from_usage(usage_file: Path) -> str | None:
             usage_file.unlink(missing_ok=True)
         except Exception:
             pass
-    return None
+    return {}
+
+
+def _extract_session_from_usage(usage_file: Path) -> str | None:
+    """保留给既有测试/调用方的兼容入口。"""
+    return _extract_usage(usage_file).get("session_id")
+
+
+def _require_internal(token: str | None) -> None:
+    if HERMES_BRIDGE_INTERNAL_TOKEN and token != HERMES_BRIDGE_INTERNAL_TOKEN:
+        raise HTTPException(status_code=401, detail="invalid bridge token")
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+        raw = re.sub(r"\s*```$", "", raw)
+    start, end = raw.find("{"), raw.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("Hermes 未返回 JSON 计划")
+    value = json.loads(raw[start : end + 1])
+    if not isinstance(value, dict):
+        raise ValueError("Hermes 计划必须是 JSON 对象")
+    return value
+
+
+def _workflow_order(plan: dict[str, Any]) -> list[str]:
+    nodes = plan.get("nodes") or []
+    ids = [str(node.get("id") or "") for node in nodes]
+    if not ids or any(not node_id for node_id in ids) or len(ids) != len(set(ids)):
+        raise ValueError("工作流节点 ID 非法或重复")
+    incoming = {node_id: 0 for node_id in ids}
+    outgoing = {node_id: [] for node_id in ids}
+    for edge in plan.get("edges") or []:
+        source, target = str(edge.get("source") or ""), str(edge.get("target") or "")
+        if source not in incoming or target not in incoming:
+            raise ValueError("工作流依赖引用不存在的节点")
+        outgoing[source].append(target)
+        incoming[target] += 1
+    queue_ids = [node_id for node_id in ids if incoming[node_id] == 0]
+    ordered: list[str] = []
+    while queue_ids:
+        node_id = queue_ids.pop(0)
+        ordered.append(node_id)
+        for target in outgoing[node_id]:
+            incoming[target] -= 1
+            if incoming[target] == 0:
+                queue_ids.append(target)
+    if len(ordered) != len(ids):
+        raise ValueError("工作流 DAG 存在循环依赖")
+    return ordered
+
+
+def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
+    integer_fields = (
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "total_tokens",
+        "api_calls",
+    )
+    result = {field: int(usage.get(field) or 0) for field in integer_fields}
+    result.update(
+        {
+            "estimated_cost_usd": float(usage.get("estimated_cost_usd") or 0),
+            "model": str(usage.get("model") or ""),
+            "provider": str(usage.get("provider") or ""),
+            "cost_status": str(usage.get("cost_status") or "unknown"),
+            "cost_source": str(usage.get("cost_source") or "none"),
+        }
+    )
+    return result
+
+
+def _accumulate_usage(run: dict[str, Any], usage: dict[str, Any]) -> dict[str, Any]:
+    delta = _usage_delta(usage)
+    total = run.setdefault("usage", {})
+    for field in (
+        "input_tokens",
+        "output_tokens",
+        "reasoning_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "total_tokens",
+        "api_calls",
+    ):
+        total[field] = int(total.get(field) or 0) + int(delta[field])
+    total["estimated_cost_usd"] = round(
+        float(total.get("estimated_cost_usd") or 0) + delta["estimated_cost_usd"], 8
+    )
+    for field in ("model", "provider", "cost_status", "cost_source"):
+        if delta.get(field):
+            total[field] = delta[field]
+    return delta
+
+
+def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
+    params = node.get("parameters") or {}
+    completed = []
+    for candidate in run.get("plan", {}).get("nodes") or []:
+        node_id = str(candidate.get("id") or "")
+        state = (run.get("nodes") or {}).get(node_id) or {}
+        if state.get("status") == "succeeded" and state.get("output"):
+            completed.append(f"- {candidate.get('name') or node_id}: {str(state['output'])[:1200]}")
+    return (
+        "你是 Hermes 工作流编排引擎，正在同一个持久 Session 中推进已获用户批准的 DAG。\n"
+        f"工作流目标：{run.get('goal', '')}\n"
+        f"最终交付：{run.get('deliverable', '')}\n"
+        f"当前节点：{node.get('name') or node.get('id')} ({node.get('node_type')})\n"
+        f"指定 Agent：{params.get('agent_id') or 'main_agent'}\n"
+        f"节点要求：{params.get('instruction') or params.get('query') or ''}\n"
+        f"输出格式：{params.get('output_format') or '结构化 Markdown'}\n"
+        f"知识范围：{json.dumps(params.get('knowledge_scope') or run.get('knowledge_scope') or [], ensure_ascii=False)}\n"
+        f"联网权限：{'允许，但仅在证据缺口明确时使用' if run.get('allow_network') else '禁止'}\n"
+        "必须自行调用所需 Agent、技能、知识库和工具；引用真实来源，不得虚构。"
+        "只输出当前节点可落盘的完整成果，不要输出运行状态说明。\n"
+        f"已完成上游摘要：\n{chr(10).join(completed) if completed else '无'}"
+    )[:MAX_INPUT]
+
+
+def _workflow_run_sync(execution_id: str) -> None:
+    """Hermes 层推进整份 DAG；平台只消费事件，不参与节点调度。"""
+    with _workflow_runs_lock:
+        run = _workflow_runs.get(execution_id)
+        if not run:
+            return
+        run["status"] = "running"
+        run["error"] = None
+        _workflow_event(run, "run_started", message="Hermes 工作流开始执行")
+    try:
+        plan = run["plan"]
+        node_map = {str(node["id"]): node for node in plan.get("nodes") or []}
+        order = _workflow_order(plan)
+        hermes_sid = run.get("hermes_session_id")
+        if hermes_sid and not _session_exists(str(hermes_sid)):
+            hermes_sid = None
+        for position, node_id in enumerate(order):
+            with _workflow_runs_lock:
+                if run.get("cancel_requested"):
+                    run["status"] = "cancelled"
+                    _workflow_event(run, "run_cancelled", message="执行已取消")
+                    return
+                state = run.setdefault("nodes", {}).setdefault(node_id, {})
+                if state.get("status") == "succeeded":
+                    continue
+                node = node_map[node_id]
+                state.update({"status": "running", "attempt": int(state.get("attempt") or 0) + 1})
+                _workflow_event(
+                    run,
+                    "node_started",
+                    node_id=node_id,
+                    node_type=node.get("node_type"),
+                    agent_id=(node.get("parameters") or {}).get("agent_id") or "main_agent",
+                    message=f"开始：{node.get('name') or node_id}",
+                )
+            reply, new_sid, raw_usage = _run_hermes_with_usage(
+                _workflow_node_prompt(run, node), str(hermes_sid) if hermes_sid else None
+            )
+            if new_sid:
+                hermes_sid = new_sid
+            if not reply or reply.startswith("⚠️"):
+                raise RuntimeError(reply or "Hermes 返回空结果")
+            with _workflow_runs_lock:
+                run["hermes_session_id"] = hermes_sid
+                delta = _accumulate_usage(run, raw_usage)
+                if int(run["usage"].get("total_tokens") or 0) > int(run.get("max_tokens") or 0):
+                    raise RuntimeError("Hermes 工作流 Token 预算已耗尽")
+                state.update({"status": "succeeded", "output": reply, "usage": delta})
+                artifact_kind = (
+                    "final" if node.get("node_type") == "OUTPUT_FORMAT"
+                    else "review" if node.get("node_type") == "FILTER_PASS"
+                    else "source" if node.get("node_type") == "KNOWLEDGE_RETRIEVAL"
+                    else "draft"
+                )
+                _workflow_event(
+                    run,
+                    "node_succeeded",
+                    node_id=node_id,
+                    progress=int(((position + 1) / max(1, len(order))) * 100),
+                    usage=delta,
+                    route={
+                        "model": delta.get("model"),
+                        "provider": delta.get("provider"),
+                        "reason": "Hermes 多模型路由按当前 Profile、任务能力与回退策略选择",
+                    },
+                    artifact={
+                        "kind": artifact_kind,
+                        "title": str(node.get("name") or node_id),
+                        "content": reply,
+                        "source_kind": "hermes_output",
+                    },
+                    message=f"完成：{node.get('name') or node_id}",
+                )
+        with _workflow_runs_lock:
+            run["status"] = "awaiting_review"
+            _workflow_event(
+                run,
+                "run_completed",
+                progress=100,
+                usage=run.get("usage") or {},
+                message="Hermes 执行完成，等待成果复核",
+            )
+    except Exception as exc:
+        with _workflow_runs_lock:
+            run["status"] = "failed"
+            run["error"] = str(exc)[:2000]
+            running_node = next(
+                (node_id for node_id, state in (run.get("nodes") or {}).items() if state.get("status") == "running"),
+                None,
+            )
+            if running_node:
+                run["nodes"][running_node]["status"] = "failed"
+            _workflow_event(
+                run,
+                "run_failed",
+                node_id=running_node,
+                error=run["error"],
+                message="Hermes 工作流执行失败",
+            )
+    finally:
+        with _workflow_runs_lock:
+            _workflow_threads.pop(execution_id, None)
+            _save_workflow_runs()
+
+
+def _start_workflow_thread(execution_id: str) -> None:
+    with _workflow_runs_lock:
+        existing = _workflow_threads.get(execution_id)
+        if existing and existing.is_alive():
+            return
+        thread = threading.Thread(
+            target=_workflow_run_sync,
+            args=(execution_id,),
+            daemon=True,
+            name=f"workflow-{execution_id[:16]}",
+        )
+        _workflow_threads[execution_id] = thread
+        thread.start()
 
 
 # ---------- 会话管理辅助 ----------
@@ -926,6 +1279,7 @@ async def _stream_from_serve(goal: str, session_id: str | None = None):
 async def _startup():
     _load_mapping()
     _load_watermarks()
+    _load_workflow_runs()
     print(f"[bridge] v5 启动·已加载 {len(_user_session_map)} 条 user→session 映射")
     if not HERMES_SERVE_TOKEN:
         print("[bridge] ⚠️ 警告: HERMES_SERVE_TOKEN 未设置·serve 认证可能失败")
@@ -1210,6 +1564,31 @@ def _supports_reasoning_effort(model: str) -> bool:
         return bool(github_model_reasoning_efforts(model))
     except Exception:
         return False
+
+
+def _cache_request_overrides(
+    model: str,
+    provider: str,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """按实际路由过滤缓存字段，避免兼容接口收到不支持的 OpenAI 参数。
+
+    DeepSeek 使用自身的隐式前缀缓存统计，不接受 OpenAI Responses 的
+    ``prompt_cache_retention``。Bridge 不主动启用扩展保留；支持该能力的专用
+    路由应由 Hermes provider adapter 自行协商。
+    """
+    cleaned = dict(overrides or {})
+    normalized = f"{provider}/{model}".lower()
+    if "deepseek" in normalized:
+        cleaned.pop("prompt_cache_retention", None)
+        cleaned.pop("prompt_cache_options", None)
+        extra = cleaned.get("extra_body")
+        if isinstance(extra, dict):
+            extra = dict(extra)
+            extra.pop("prompt_cache_retention", None)
+            extra.pop("prompt_cache_options", None)
+            cleaned["extra_body"] = extra
+    return cleaned
 
 
 # AI Lab 全局交互与澄清铁律：
@@ -1588,6 +1967,7 @@ def _build_in_process_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        request_overrides=_cache_request_overrides(cfg_model, str(runtime.get("provider") or "")),
         ephemeral_system_prompt=CLARIFY_GATE_PROMPT,
         clarify_callback=_clarify_cb,
         stream_delta_callback=_delta_cb,
@@ -1895,6 +2275,161 @@ async def chat_status(user_id: str, consume: int = 0, offset: int = 0):
     return result
 
 
+@app.post("/v1/workflows/plan")
+async def workflow_plan(
+    body: WorkflowPlanRequest,
+    x_hermes_internal_token: str | None = Header(None),
+):
+    """让 Hermes 将自然语言需求编译为结构化 DAG；平台仍负责安全校验。"""
+    _require_internal(x_hermes_internal_token)
+    prompt = (
+        "你是 Hermes 工作流规划器。将需求编译为通用、可编辑、无环的 WorkflowDSLPlan。\n"
+        "只输出一个 JSON 对象，不要 Markdown 代码围栏或解释。\n"
+        "根字段必须为 plan_id/name/version/nodes/edges。每个节点必须包含 "
+        "id/node_type/name/parameters；node_type 只能是 KNOWLEDGE_RETRIEVAL、"
+        "LLM_INFERENCE、PROMPT_TRANSFORM、FILTER_PASS、AGGREGATION、OUTPUT_FORMAT。\n"
+        "parameters 必须包含 agent_id、max_tokens、knowledge_scope、allow_network，并按需包含 "
+        "query/instruction/output_format/requires_review。最后必须有 FILTER_PASS 与 OUTPUT_FORMAT。\n"
+        f"workflow_id={body.workflow_id}\n标题={body.title}\n目标={body.description}\n"
+        f"交付物={body.deliverable}\n知识范围={json.dumps(body.knowledge_scope, ensure_ascii=False)}\n"
+        f"可用 Agent={json.dumps(body.allowed_agents, ensure_ascii=False)}\n"
+        f"联网权限={body.allow_network}\n总 Token 上限={body.max_tokens}\n"
+        f"修改意见={body.revision_note or '无'}"
+    )
+    reply, _, usage = await asyncio.to_thread(
+        _run_hermes_with_usage,
+        prompt[:MAX_INPUT],
+        None,
+    )
+    try:
+        plan = _extract_json_object(reply)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "plan": plan,
+        "usage": _usage_delta(usage),
+        "route": {
+            "model": usage.get("model"),
+            "provider": usage.get("provider"),
+            "reason": "Hermes 多模型路由根据规划任务与当前 Profile 自动选择",
+        },
+    }
+
+
+@app.post("/v1/workflow-runs")
+async def start_workflow_run(
+    body: WorkflowRunRequest,
+    x_hermes_internal_token: str | None = Header(None),
+):
+    """幂等启动或恢复 Hermes 工作流 Run。"""
+    _require_internal(x_hermes_internal_token)
+    _workflow_order(body.plan)
+    with _workflow_runs_lock:
+        current = _workflow_runs.get(body.execution_id)
+        if current:
+            if current.get("idempotency_key") != body.idempotency_key:
+                raise HTTPException(status_code=409, detail="execution idempotency conflict")
+            if current.get("status") in {"interrupted", "queued", "running"}:
+                current["cancel_requested"] = False
+                _start_workflow_thread(body.execution_id)
+            return {
+                "execution_id": body.execution_id,
+                "status": current.get("status"),
+                "hermes_session_id": current.get("hermes_session_id"),
+            }
+        run = body.model_dump(mode="json")
+        run.update(
+            {
+                "status": "queued",
+                "error": None,
+                "events": [],
+                "next_seq": 1,
+                "nodes": {
+                    str(node["id"]): {"status": "pending", "attempt": 0}
+                    for node in body.plan.get("nodes") or []
+                },
+                "usage": {},
+                "cancel_requested": False,
+                "hermes_session_id": None,
+            }
+        )
+        _workflow_runs[body.execution_id] = run
+        _workflow_event(run, "run_queued", message="Hermes 工作流已入队")
+        _start_workflow_thread(body.execution_id)
+    return {"execution_id": body.execution_id, "status": "queued"}
+
+
+@app.get("/v1/workflow-runs/{execution_id}")
+async def get_workflow_run(
+    execution_id: str,
+    after_seq: int = Query(0, ge=0),
+    x_hermes_internal_token: str | None = Header(None),
+):
+    _require_internal(x_hermes_internal_token)
+    with _workflow_runs_lock:
+        run = _workflow_runs.get(execution_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="workflow run not found")
+        return {
+            "execution_id": execution_id,
+            "status": run.get("status"),
+            "error": run.get("error"),
+            "hermes_session_id": run.get("hermes_session_id"),
+            "usage": run.get("usage") or {},
+            "nodes": run.get("nodes") or {},
+            "events": [
+                event for event in run.get("events") or []
+                if int(event.get("seq") or 0) > after_seq
+            ],
+        }
+
+
+@app.post("/v1/workflow-runs/{execution_id}/cancel")
+async def cancel_workflow_run(
+    execution_id: str,
+    x_hermes_internal_token: str | None = Header(None),
+):
+    _require_internal(x_hermes_internal_token)
+    with _workflow_runs_lock:
+        run = _workflow_runs.get(execution_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="workflow run not found")
+        run["cancel_requested"] = True
+        _workflow_event(run, "cancel_requested", message="已请求 Hermes 取消执行")
+        return {"ok": True, "status": run.get("status")}
+
+
+@app.post("/v1/workflow-runs/{execution_id}/retry")
+async def retry_workflow_run(
+    execution_id: str,
+    body: WorkflowRetryRequest,
+    x_hermes_internal_token: str | None = Header(None),
+):
+    _require_internal(x_hermes_internal_token)
+    with _workflow_runs_lock:
+        run = _workflow_runs.get(execution_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="workflow run not found")
+        order = _workflow_order(run["plan"])
+        target = body.from_node_id
+        if target is None:
+            target = next(
+                (node_id for node_id in order if (run.get("nodes") or {}).get(node_id, {}).get("status") == "failed"),
+                None,
+            )
+        if target not in order:
+            raise HTTPException(status_code=409, detail="no retryable node")
+        start = order.index(target)
+        for node_id in order[start:]:
+            run["nodes"][node_id] = {"status": "pending", "attempt": run["nodes"].get(node_id, {}).get("attempt", 0)}
+        run["status"] = "queued"
+        run["error"] = None
+        run["cancel_requested"] = False
+        _workflow_event(run, "retry_queued", node_id=target, message="失败节点已重新入队")
+        _start_workflow_thread(execution_id)
+        return {"ok": True, "status": "queued", "from_node_id": target}
+
+
 @app.get("/v1/skills")
 async def list_skills(tenant: str = "public"):
     """技能库列表（租户隔离·软隔离）：读 HERMES_HOME/skills。
@@ -1957,6 +2492,8 @@ async def health():
         "service": "hermes-bridge",
         "version": "v6.0",
         "sessions": len(_user_session_map),
+        "workflow_runs": len(_workflow_runs),
+        "workflow_orchestration": True,
         "streaming": True,
         "ws_pty": HERMES_WS_URL,
     }

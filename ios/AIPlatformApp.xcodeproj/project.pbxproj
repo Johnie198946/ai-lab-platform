@@ -14,6 +14,7 @@
 		1B83E300CE2CE743A621F7C5 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 4E35AD99D2D7E9243E8DADC7 /* InfoPlist.strings */; };
 		1CFDE4C45A3F91B300210288 /* TenantSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 649C465782634364AD5E28C2 /* TenantSessionCoordinator.swift */; };
 		1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */; };
+		347B8891FA73F4A13044017F /* WorkflowDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865230675174544683A40C47 /* WorkflowDashboardView.swift */; };
 		353DDBE9B6F14BAA4DD7F20F /* ChatStatusCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F5BB3EF9C10F911B036B99 /* ChatStatusCards.swift */; };
 		364D6C336F779FC90000B64E /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD70BD59CD071FB619837740 /* ChatView.swift */; };
 		3FFEAF19DF3D4DE1A028D6F0 /* PlusMenuSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEA8E5B249F6B3A2259CE92A /* PlusMenuSheet.swift */; };
@@ -72,6 +73,7 @@
 		77831964D4BC5807CFED21D0 /* ProfileEditSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditSheet.swift; sourceTree = "<group>"; };
 		7A0179B18110033BC1CA0851 /* QuantumAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuantumAvatarView.swift; sourceTree = "<group>"; };
 		7CE0824746D5B06C3C2B035E /* AIPlatformApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AIPlatformApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		865230675174544683A40C47 /* WorkflowDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowDashboardView.swift; sourceTree = "<group>"; };
 		8CC0682A56D72BAAB4097CFA /* WeChatLinkValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeChatLinkValidator.swift; sourceTree = "<group>"; };
 		9503A88EC7D490F2425318D0 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		964A9F3CAD461856EAF48590 /* AIPlatformApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIPlatformApp.swift; sourceTree = "<group>"; };
@@ -134,6 +136,7 @@
 				8DB5E2D6FB34E8870609C003 /* Shared */,
 				5A8E130177EC425138211AC1 /* Topology */,
 				1E494BE1071AB4A216C8927B /* Voice */,
+				4B27D90F0CECB894B4022B50 /* Workflows */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -156,6 +159,14 @@
 				154956AEA3EB99E3828A50FC /* PluginRenderContext.swift */,
 			);
 			path = Dispatchers;
+			sourceTree = "<group>";
+		};
+		4B27D90F0CECB894B4022B50 /* Workflows */ = {
+			isa = PBXGroup;
+			children = (
+				865230675174544683A40C47 /* WorkflowDashboardView.swift */,
+			);
+			path = Workflows;
 			sourceTree = "<group>";
 		};
 		5154C68429469FA96ECF21FC = {
@@ -406,6 +417,7 @@
 				6519DC1C7260123F1CD43718 /* UIModels.swift in Sources */,
 				D2BBAD0E6CB91667F92E60EA /* VoiceInputView.swift in Sources */,
 				F3462447EFD8BB4DAFA14A1E /* WeChatLinkValidator.swift in Sources */,
+				347B8891FA73F4A13044017F /* WorkflowDashboardView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

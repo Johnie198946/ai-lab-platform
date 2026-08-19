@@ -25,6 +25,7 @@ from backend.api.skills import router as skills_router
 from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router
+from backend.api.workflows import router as workflows_router
 from backend.db import init_db
 
 
@@ -35,6 +36,9 @@ async def lifespan(app: FastAPI):
     check_dev_visibility_guard()
     try:
         await init_db()
+        from backend.services.workflow_migration import migrate_legacy_workflows
+
+        await migrate_legacy_workflows()
     except Exception:
         # DB 不可用时不阻塞启动(知识库文件驱动功能仍可用)
         pass
@@ -113,6 +117,8 @@ app.include_router(tenant_agents_router, dependencies=[Depends(require_auth)])
 app.include_router(hermes_router, dependencies=[Depends(require_auth)])
 # 展厅运行态：HTTP 端点在路由内鉴权，WebSocket 使用 query token 单独验签。
 app.include_router(showroom_router)
+# 可执行工作流：计划审批、持久执行、素材复核
+app.include_router(workflows_router, dependencies=[Depends(require_auth)])
 
 # ---------- 健康检查 ----------
 @app.get("/health")
