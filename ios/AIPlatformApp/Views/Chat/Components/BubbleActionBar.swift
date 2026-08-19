@@ -42,7 +42,7 @@ public struct BubbleActionBar: View {
                     Text(isCopied ? "已复制" : "复制")
                         .font(.system(size: 11))
                 }
-                .foregroundColor(isCopied ? AppTheme.Colors.quantumCyan : AppTheme.Colors.textTertiary)
+                .foregroundColor(isCopied ? AppTheme.Icons.success : AppTheme.Icons.tertiary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
             }
@@ -57,7 +57,7 @@ public struct BubbleActionBar: View {
                         Text("重新生成")
                             .font(.system(size: 11))
                     }
-                    .foregroundColor(AppTheme.Colors.textTertiary)
+                .foregroundColor(AppTheme.Icons.tertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 3)
                 }
@@ -72,7 +72,7 @@ public struct BubbleActionBar: View {
                     Text(isSpeaking ? "停止" : "朗读")
                         .font(.system(size: 11))
                 }
-                .foregroundColor(isSpeaking ? AppTheme.Colors.quantumViolet : AppTheme.Colors.textTertiary)
+                .foregroundColor(isSpeaking ? AppTheme.Icons.intelligence : AppTheme.Icons.tertiary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
             }
@@ -83,7 +83,7 @@ public struct BubbleActionBar: View {
                 Button(action: { toggleFeedback(.up) }) {
                     Image(systemName: feedbackState == .up ? "hand.thumbsup.fill" : "hand.thumbsup")
                         .font(.system(size: 11))
-                        .foregroundColor(feedbackState == .up ? AppTheme.Colors.primary : AppTheme.Colors.textTertiary)
+                .foregroundColor(feedbackState == .up ? AppTheme.Icons.interactive : AppTheme.Icons.tertiary)
                         .padding(4)
                 }
                 .buttonStyle(SoftButtonStyle())
@@ -91,7 +91,7 @@ public struct BubbleActionBar: View {
                 Button(action: { toggleFeedback(.down) }) {
                     Image(systemName: feedbackState == .down ? "hand.thumbsdown.fill" : "hand.thumbsdown")
                         .font(.system(size: 11))
-                        .foregroundColor(feedbackState == .down ? AppTheme.Colors.securityRed : AppTheme.Colors.textTertiary)
+                .foregroundColor(feedbackState == .down ? AppTheme.Icons.destructive : AppTheme.Icons.tertiary)
                         .padding(4)
                 }
                 .buttonStyle(SoftButtonStyle())

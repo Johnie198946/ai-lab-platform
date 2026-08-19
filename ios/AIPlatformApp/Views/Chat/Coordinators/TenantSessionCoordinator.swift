@@ -749,8 +749,6 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         markClarifySubmitted(messageIndex: idx, selection: selection)
-        let userMessageId = UUID().uuidString
-        messages.append(ChatMessage(id: userMessageId, sessionId: sid, role: .user, content: selection))
         let continuationMessageId = UUID().uuidString
         let continuationStep = ReasoningStep(
             type: .thought,
@@ -786,7 +784,6 @@ public final class TenantSessionCoordinator: ObservableObject {
                     self.rollbackClarifySubmission(
                         messageId: messageId,
                         requestId: requestId,
-                        userMessageId: userMessageId,
                         continuationMessageId: continuationMessageId,
                         toast: "选项未被服务端接受，请重试"
                     )
@@ -801,7 +798,6 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.rollbackClarifySubmission(
                     messageId: messageId,
                     requestId: requestId,
-                    userMessageId: userMessageId,
                     continuationMessageId: continuationMessageId,
                     toast: error.localizedDescription
                 )
@@ -824,7 +820,6 @@ public final class TenantSessionCoordinator: ObservableObject {
     private func rollbackClarifySubmission(
         messageId: String,
         requestId: String,
-        userMessageId: String,
         continuationMessageId: String,
         toast: String
     ) {
@@ -837,7 +832,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             c.submittedSelection = ""
             messages[idx].blocks[blockIdx] = .clarify(c)
         }
-        messages.removeAll { $0.id == userMessageId || $0.id == continuationMessageId }
+        messages.removeAll { $0.id == continuationMessageId }
         streamOutputMessageIds[requestId] = messageId
         thinkingPhase = nil
         thinkingDetail = nil

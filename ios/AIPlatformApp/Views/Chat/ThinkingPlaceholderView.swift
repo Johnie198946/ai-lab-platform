@@ -74,7 +74,7 @@ public struct ThinkingPlaceholderView: View {
                     HStack(spacing: 5) {
                         Image(systemName: stageIcon)
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundColor(AppTheme.Colors.quantumBlue)
+                    .foregroundColor(AppTheme.Icons.intelligence)
                         Text(stageText)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(AppTheme.Colors.textSecondary)
@@ -85,10 +85,10 @@ public struct ThinkingPlaceholderView: View {
                         HStack(spacing: 5) {
                             Image(systemName: "arrow.triangle.2.circlepath")
                                 .font(.system(size: 10, weight: .semibold))
-                                .foregroundColor(AppTheme.Colors.quantumCyan)
+                        .foregroundColor(AppTheme.Icons.live)
                             Text(progress)
                                 .font(.system(size: 11))
-                                .foregroundColor(AppTheme.Colors.textTertiary)
+            .foregroundColor(AppTheme.Icons.tertiary)
                                 .lineLimit(1)
                         }
                     }
@@ -96,14 +96,14 @@ public struct ThinkingPlaceholderView: View {
 
                 Spacer()
 
-                Button(action: onCancel) {
-                    HStack(spacing: 4) {
-                        Image(systemName: "xmark.circle.fill")
-                        Text("取消")
-                    }
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
+            Button(action: onCancel) {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark.circle.fill")
+                    Text("取消")
                 }
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(AppTheme.Icons.tertiary)
+            }
                 .buttonStyle(SoftButtonStyle())
             }
             .padding(.horizontal, AppTheme.Spacing.md)

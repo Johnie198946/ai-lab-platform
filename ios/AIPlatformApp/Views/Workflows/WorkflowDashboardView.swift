@@ -11,27 +11,30 @@ public struct WorkflowDashboardView: View {
 
     public var body: some View {
         NavigationStack {
-            Group {
-                if model.isLoading && model.workflows.isEmpty {
-                    ProgressView("正在读取工作流…")
-                } else if model.workflows.isEmpty {
-                    emptyState
-                } else {
-                    ScrollView {
-                        LazyVStack(spacing: AppTheme.Spacing.lg) {
-                            ForEach(model.workflows) { workflow in
-                                NavigationLink(value: workflow) {
-                                    WorkflowSummaryCard(workflow: workflow)
+            ZStack {
+                QuantumWorkflowBackground()
+
+                Group {
+                    if model.isLoading && model.workflows.isEmpty {
+                        ProgressView("正在读取工作流…")
+                    } else if model.workflows.isEmpty {
+                        emptyState
+                    } else {
+                        ScrollView {
+                            LazyVStack(spacing: AppTheme.Spacing.lg) {
+                                ForEach(model.workflows) { workflow in
+                                    NavigationLink(value: workflow) {
+                                        WorkflowSummaryCard(workflow: workflow)
+                                    }
+                                    .buttonStyle(SoftButtonStyle())
                                 }
-                                .buttonStyle(SoftButtonStyle())
                             }
+                            .padding(AppTheme.Metrics.contentGutter)
                         }
-                        .padding(AppTheme.Metrics.contentGutter)
+                        .refreshable { await model.load() }
                     }
-                    .refreshable { await model.load() }
                 }
             }
-            .background(AppTheme.Colors.background.ignoresSafeArea())
             .navigationTitle("任务")
             .navigationDestination(for: WorkflowDTO.self) { workflow in
                 WorkflowDetailView(workflow: workflow) {
@@ -69,15 +72,57 @@ public struct WorkflowDashboardView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("还没有工作流", systemImage: "square.stack.3d.up")
-        } description: {
-            Text("描述你想获得的结果。Quantum 会先生成可编辑计划，确认后才开始执行。")
-        } actions: {
-            Button("创建第一个工作流") { showingCreate = true }
+        VStack(spacing: AppTheme.Spacing.xl) {
+            Image(systemName: "sparkles.rectangle.stack.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(AppTheme.Colors.quantumGradient)
+                .frame(width: 64, height: 64)
+                .background(AppTheme.Colors.selectionTint, in: RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+
+            VStack(spacing: AppTheme.Spacing.sm) {
+                Text("把想法变成工作流")
+                    .font(AppTheme.Typography.screenTitle)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("描述你想获得的结果。Quantum 会先生成可编辑计划，确认后才开始执行。")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .multilineTextAlignment(.center)
+            }
+
+            Button("创建第一个工作流", systemImage: "plus") { showingCreate = true }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
         }
+        .padding(AppTheme.Spacing.xxl)
+        .frame(maxWidth: 340)
+        .background(.ultraThinMaterial)
+        .background(AppTheme.Colors.cardBackground.opacity(0.82))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.9), lineWidth: 0.75)
+        }
+        .padding(AppTheme.Metrics.contentGutter)
+    }
+}
+
+private struct QuantumWorkflowBackground: View {
+    var body: some View {
+        ZStack {
+            AppTheme.Colors.background
+            Circle()
+                .fill(AppTheme.Colors.quantumBlue.opacity(0.11))
+                .frame(width: 330, height: 330)
+                .blur(radius: 70)
+                .offset(x: 150, y: -280)
+            Circle()
+                .fill(AppTheme.Colors.primary.opacity(0.10))
+                .frame(width: 300, height: 300)
+                .blur(radius: 80)
+                .offset(x: -150, y: 250)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 }
 

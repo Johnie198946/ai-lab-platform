@@ -50,7 +50,7 @@ public struct VoiceInputView: View {
                             Text(hint)
                                 .font(.system(size: 11))
                         }
-                        .foregroundColor(AppTheme.Colors.securityYellow)
+                        .foregroundColor(AppTheme.Icons.warning)
                         .lineLimit(2)
                     }
                 }
@@ -61,7 +61,7 @@ public struct VoiceInputView: View {
                 }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 26))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .foregroundColor(AppTheme.Icons.tertiary)
                 }
             }
             .padding(.horizontal, AppTheme.Spacing.lg)
@@ -165,7 +165,7 @@ public struct VoiceInputView: View {
             Image(systemName: service.state == .recording ? "mic.fill" : "mic")
                 .font(.system(size: 40, weight: .medium))
                 .foregroundColor(
-                    service.state == .recording ? AppTheme.Colors.securityRed : AppTheme.Colors.textSecondary
+                    service.state == .recording ? AppTheme.Icons.destructive : AppTheme.Icons.secondary
                 )
         }
         .frame(height: 140)
@@ -186,7 +186,7 @@ public struct VoiceInputView: View {
         VStack(spacing: AppTheme.Spacing.md) {
             Image(systemName: "mic.slash.circle.fill")
                 .font(.system(size: 56))
-                .foregroundColor(AppTheme.Colors.securityRed)
+                .foregroundColor(AppTheme.Icons.destructive)
 
             Text("需要麦克风与语音识别权限")
                 .font(.system(size: 17, weight: .bold))

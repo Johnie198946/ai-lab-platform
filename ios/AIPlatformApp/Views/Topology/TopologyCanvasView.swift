@@ -37,8 +37,7 @@ public struct TopologyCanvasView: View {
         NavigationStack {
             ZStack {
                 // Canvas Background Grid
-                AppTheme.Colors.groupedBackground
-                    .ignoresSafeArea()
+                QuantumMistBackground()
                 
                 // MARK: - 1. Interactive DAG Canvas Area
                 if graph.nodes.isEmpty && !isLoading && !loadFailed {
@@ -102,14 +101,14 @@ public struct TopologyCanvasView: View {
                     Button(action: toggleEditMode) {
                         Image(systemName: isEditMode ? "checkmark.circle.fill" : "square.and.pencil")
                             .font(.system(size: 14))
-                            .foregroundColor(isEditMode ? AppTheme.Colors.primary : AppTheme.Colors.textSecondary)
+                            .foregroundColor(isEditMode ? AppTheme.Icons.interactive : AppTheme.Icons.secondary)
                     }
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button(action: resetCanvasView) {
                         Image(systemName: "arrow.counterclockwise")
                             .font(.system(size: 14))
-                            .foregroundColor(AppTheme.Colors.textSecondary)
+                            .foregroundColor(AppTheme.Icons.secondary)
                     }
                 }
             }
@@ -183,10 +182,25 @@ public struct TopologyCanvasView: View {
     // MARK: - 3. 空态引导与诚实标注（Supervision 批复）
 
     private var tenantEmptyView: some View {
-        VStack(spacing: AppTheme.Spacing.md) {
-            Image(systemName: "network")
-                .font(.system(size: 44, weight: .light))
-                .foregroundColor(AppTheme.Colors.quantumBlue)
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("ORCHESTRATION · LIVE MAP")
+                        .font(AppTheme.Typography.micro)
+                        .tracking(0.8)
+                        .foregroundColor(AppTheme.Icons.interactive)
+                    Text("构建你的协同编队")
+                        .font(AppTheme.Typography.sectionTitle)
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                }
+                Spacer()
+                Image(systemName: "point.3.connected.trianglepath.dotted")
+                    .font(.system(size: 30, weight: .medium))
+                    .foregroundColor(AppTheme.Icons.intelligence)
+                    .frame(width: 60, height: 60)
+                    .background(AppTheme.Colors.selectionTint)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            }
 
             Text("尚未创建租户专属 Agent")
                 .font(.system(size: 16, weight: .bold))
@@ -195,27 +209,20 @@ public struct TopologyCanvasView: View {
             Text("在对话中提出「创建一个…的agent」，或在个人与设置中一键创建专属智能体编队")
                 .font(.system(size: 13))
                 .foregroundColor(AppTheme.Colors.textSecondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, AppTheme.Spacing.xl)
+                .multilineTextAlignment(.leading)
 
             Button(action: {
                 appState.activeTab = 3 // 切换到「个人与设置」Tab
             }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "plus.circle.fill")
-                        .font(.system(size: 13, weight: .bold))
-                    Text("前往创建智能体")
-                        .font(.system(size: 13, weight: .bold))
-                }
-                .foregroundColor(.white)
-                .padding(.horizontal, AppTheme.Spacing.lg)
-                .padding(.vertical, 10)
-                .background(AppTheme.Colors.quantumBlue)
-                .clipShape(Capsule())
+                Label("前往创建智能体", systemImage: "plus.circle.fill")
             }
+            .buttonStyle(QuantumPrimaryButtonStyle())
             .padding(.top, AppTheme.Spacing.xs)
         }
         .padding(AppTheme.Spacing.xl)
+        .frame(maxWidth: 440)
+        .quantumCard()
+        .padding(.horizontal, AppTheme.Metrics.contentGutter)
     }
 
     private var demonstrationBadge: some View {
@@ -225,7 +232,7 @@ public struct TopologyCanvasView: View {
             Text("架构装配示意 · 演示态")
                 .font(.system(size: 10, weight: .medium))
         }
-        .foregroundColor(AppTheme.Colors.textTertiary)
+        .foregroundColor(AppTheme.Icons.tertiary)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(AppTheme.Colors.cardBackground.opacity(0.8))
@@ -378,7 +385,7 @@ public struct TopologyCanvasView: View {
             Text(isEditMode ? "布局编辑 · 长按拖动节点" : "只读拓扑 · 后端驱动")
                 .font(.system(size: 11, weight: .semibold))
         }
-        .foregroundColor(AppTheme.Colors.textSecondary)
+        .foregroundColor(AppTheme.Icons.secondary)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(AppTheme.Colors.cardBackground)
@@ -545,7 +552,7 @@ public struct AgentNodeDetailSheet: View {
                         }
                         .frame(maxWidth: .infinity)
                         .frame(height: 48)
-                        .foregroundColor(AppTheme.Colors.onPrimary)
+            .foregroundColor(AppTheme.Icons.onAccent)
                         .background(AppTheme.Colors.primary)
                         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
                     }
@@ -564,7 +571,7 @@ public struct AgentNodeDetailSheet: View {
                             }
                             .frame(maxWidth: .infinity)
                             .frame(height: 48)
-                            .foregroundColor(AppTheme.Colors.securityRed)
+            .foregroundColor(AppTheme.Icons.destructive)
                             .background(AppTheme.Colors.securityRed.opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
                         }

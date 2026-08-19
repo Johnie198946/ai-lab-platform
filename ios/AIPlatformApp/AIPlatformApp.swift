@@ -20,6 +20,7 @@ public struct AIPlatformApp: App {
             AppRootCoordinatorView()
                 .environmentObject(appState)
                 .environmentObject(apiClient)
+                .preferredColorScheme(.light)
         }
     }
 }

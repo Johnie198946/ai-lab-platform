@@ -164,7 +164,7 @@ public struct AgentCreatorView: View {
         HStack {
             Image(systemName: "sparkles.rectangle.stack.fill")
                 .font(.system(size: 13))
-                .foregroundColor(AppTheme.Colors.accent)
+                    .foregroundColor(AppTheme.Icons.intelligence)
             Text("创建智能体")
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(AppTheme.Colors.textPrimary)
@@ -220,7 +220,7 @@ public struct AgentCreatorView: View {
                         .frame(width: 44, height: 44)
                     Image(systemName: "cpu.fill")
                         .font(.system(size: 20))
-                        .foregroundColor(AppTheme.Colors.onPrimary)
+                        .foregroundColor(AppTheme.Icons.onAccent)
                 }
                 VStack(alignment: .leading, spacing: 3) {
                     Text(agent.name)

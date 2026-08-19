@@ -45,9 +45,10 @@ public struct MainTabView: View {
                 }
                 .tag(3)
         }
-        .tint(AppTheme.Colors.quantumBlue)
-        .toolbarBackground(.visible, for: .tabBar)
-        .toolbarBackground(AppTheme.Colors.cardBackground.opacity(0.96), for: .tabBar)
+        .toolbar(.hidden, for: .tabBar)
+        .safeAreaInset(edge: .bottom, spacing: 18) {
+            QuantumFloatingTabBar(selection: $appState.activeTab)
+        }
         .safeAreaInset(edge: .top, spacing: 0) {
             if appState.isDevMode {
                 DevModeBanner()
@@ -55,6 +56,75 @@ public struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.isDevMode)
+    }
+}
+
+private struct QuantumFloatingTabBar: View {
+    @Binding var selection: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private let items: [(title: String, symbol: String, selectedSymbol: String)] = [
+        ("对话", "bubble.left.and.bubble.right", "bubble.left.and.bubble.right.fill"),
+        ("任务", "square.grid.2x2", "square.grid.2x2.fill"),
+        ("知识", "books.vertical", "books.vertical.fill"),
+        ("设置", "gearshape", "gearshape.fill")
+    ]
+
+    var body: some View {
+        HStack(spacing: AppTheme.Spacing.xs) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                Button {
+                    guard selection != index else { return }
+                    #if os(iOS)
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    #endif
+                    if reduceMotion {
+                        selection = index
+                    } else {
+                        withAnimation(AppTheme.Motion.spring) { selection = index }
+                    }
+                } label: {
+                    VStack(spacing: 3) {
+                        Image(systemName: selection == index ? item.selectedSymbol : item.symbol)
+                            .font(.system(size: 18, weight: .semibold))
+                            .frame(height: 22)
+                        Text(item.title)
+                            .font(.caption2.weight(selection == index ? .bold : .medium))
+                    }
+                    .foregroundStyle(selection == index ? AppTheme.Colors.primary : AppTheme.Icons.navigationInactive)
+                    .frame(maxWidth: .infinity, minHeight: 52)
+                    .background {
+                        if selection == index {
+                            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                                .fill(AppTheme.Colors.selectionTint)
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                                        .stroke(AppTheme.Colors.border.opacity(0.8), lineWidth: 0.75)
+                                }
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(SoftButtonStyle())
+                .accessibilityLabel(item.title)
+                .accessibilityAddTraits(selection == index ? .isSelected : [])
+            }
+        }
+        .padding(6)
+        .frame(height: AppTheme.Metrics.floatingTabBarHeight)
+        .background(.ultraThinMaterial)
+        .background(AppTheme.Colors.surfaceElevated.opacity(0.92))
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.9), lineWidth: 0.75)
+        }
+        .shadow(color: Color(hex: "6B5A8A").opacity(0.14), radius: 24, y: 10)
+        .padding(.horizontal, AppTheme.Spacing.lg)
+        .padding(.top, AppTheme.Spacing.sm)
+        .padding(.bottom, AppTheme.Spacing.xs)
+        .background(AppTheme.Colors.background.opacity(0.96))
+        .offset(y: 14)
     }
 }
 
@@ -70,7 +140,7 @@ public struct DevModeBanner: View {
             Text("开发模式·免鉴权")
                 .font(AppTheme.Typography.micro)
         }
-        .foregroundColor(AppTheme.Colors.onPrimary)
+        .foregroundColor(AppTheme.Icons.onAccent)
         .frame(maxWidth: .infinity)
         .padding(.vertical, 5)
         .background(AppTheme.Colors.quantumGradient)

@@ -22,7 +22,7 @@ public struct ChartCard: View {
             HStack(spacing: AppTheme.Spacing.xs) {
                 Image(systemName: block.chartType == .line ? "chart.xyaxis.line" : "chart.bar.fill")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.primary)
+                    .foregroundColor(AppTheme.Icons.interactive)
                 Text(block.title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(AppTheme.Colors.textPrimary)

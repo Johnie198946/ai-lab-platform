@@ -98,7 +98,7 @@ public struct SessionRow: View {
             if isActive {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(AppTheme.Colors.primary)
+                                .foregroundColor(AppTheme.Icons.interactive)
             }
         }
         .padding(.vertical, 2)

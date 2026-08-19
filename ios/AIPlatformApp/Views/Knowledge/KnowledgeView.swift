@@ -22,6 +22,7 @@ public struct KnowledgeView: View {
     @State private var isLoadingCatalog: Bool = false
     @State private var isSearching: Bool = false
     @State private var loadTask: Task<Void, Never>? = nil
+    @State private var selectedCategory: CatalogCategory? = nil
 
     public init() {}
 
@@ -46,20 +47,22 @@ public struct KnowledgeView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.Colors.groupedBackground
-                    .ignoresSafeArea()
+                QuantumMistBackground()
 
                 ScrollView {
                     VStack(spacing: AppTheme.Spacing.md) {
+                        knowledgeHero
+
                         if api.isOfflineMode {
                             demoModeBanner
                         }
 
+                        knowledgeWalletSection
                         categorySubscriptionSection
                         subscribedContentSection
                     }
-                    .padding(.horizontal, AppTheme.Spacing.md)
-                    .padding(.top, AppTheme.Spacing.sm)
+                    .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                    .padding(.top, AppTheme.Spacing.md)
                     .padding(.bottom, AppTheme.Spacing.xl)
                 }
             }
@@ -77,7 +80,62 @@ public struct KnowledgeView: View {
             .refreshable {
                 await initialLoad()
             }
+            .fullScreenCover(item: $selectedCategory) { category in
+                KnowledgeWalletDetail(
+                    category: category,
+                    isSubscribed: subscriptions.contains(category.category),
+                    onToggle: { toggleSubscription(category) },
+                    onDismiss: { selectedCategory = nil }
+                )
+            }
         }
+    }
+
+    private var knowledgeHero: some View {
+        HStack(alignment: .center, spacing: AppTheme.Spacing.lg) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                Text("KNOWLEDGE · LIVE CONTEXT")
+                    .font(AppTheme.Typography.micro)
+                    .tracking(0.8)
+                    .foregroundColor(AppTheme.Icons.interactive)
+
+                Text("让知识随任务而来")
+                    .font(AppTheme.Typography.sectionTitle)
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+
+                Text("已订阅 \(subscriptions.count) 个类目 · \(catalog.reduce(0) { $0 + $1.docCount }) 篇内容")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+
+                Label("上下文已就绪", systemImage: "checkmark.circle.fill")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundColor(AppTheme.Colors.statusCompleted)
+            }
+
+            Spacer(minLength: 0)
+
+            Image(systemName: "books.vertical.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundColor(AppTheme.Icons.intelligence)
+                .frame(width: 68, height: 68)
+                .background(AppTheme.Colors.selectionTint)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        }
+        .padding(AppTheme.Spacing.xl)
+        .background(
+            LinearGradient(
+                colors: [AppTheme.Colors.cardBackground, AppTheme.Colors.surfaceTint],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.8), lineWidth: 0.75)
+        }
+        .shadow(color: Color(hex: "3D437E").opacity(0.08), radius: 18, y: 6)
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - 离线标注
@@ -98,9 +156,62 @@ public struct KnowledgeView: View {
 
     // MARK: - 上层：类目订阅卡
 
+    private var subscribedCategories: [CatalogCategory] {
+        orderedCatalog.filter { subscriptions.contains($0.category) }
+    }
+
+    private var knowledgeWalletSection: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("知识钱包")
+                        .font(AppTheme.Typography.sectionTitle)
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                    Text("上下滑动卡组，选择一个订阅库")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                }
+                Spacer()
+                Text("\(subscribedCategories.count) 张")
+                    .font(AppTheme.Typography.label)
+                    .foregroundColor(AppTheme.Colors.primary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 7)
+                    .background(AppTheme.Colors.selectionTint)
+                    .clipShape(Capsule())
+            }
+
+            if subscribedCategories.isEmpty {
+                emptySubscriptionsHint
+            } else {
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(spacing: -116) {
+                        ForEach(Array(subscribedCategories.enumerated()), id: \.element.id) { index, category in
+                            Button {
+                                #if os(iOS)
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                                #endif
+                                selectedCategory = category
+                            } label: {
+                                KnowledgeWalletCard(category: category, index: index)
+                            }
+                            .buttonStyle(SoftButtonStyle())
+                            .zIndex(Double(subscribedCategories.count - index))
+                            .accessibilityHint("双击抽出此知识库卡片")
+                        }
+                    }
+                    .padding(.horizontal, 2)
+                    .padding(.bottom, 116)
+                }
+                .frame(height: min(330, 184 + CGFloat(max(0, subscribedCategories.count - 1)) * 42))
+                .scrollClipDisabled()
+            }
+        }
+    }
+
     private var categorySubscriptionSection: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            sectionHeader(icon: "square.grid.2x2.fill", title: "类目订阅")
+            sectionHeader(icon: "square.grid.2x2.fill", title: "发现更多知识库")
 
             if isLoadingCatalog && catalog.isEmpty {
                 ProgressView()
@@ -148,7 +259,7 @@ public struct KnowledgeView: View {
         VStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "plus.magnifyingglass")
                 .font(.system(size: 34))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+                .foregroundColor(AppTheme.Icons.tertiary)
             Text("尚未订阅任何类目")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(AppTheme.Colors.textSecondary)
@@ -167,7 +278,7 @@ public struct KnowledgeView: View {
                 HStack(spacing: AppTheme.Spacing.sm) {
                     Image(systemName: "folder.fill")
                         .font(.system(size: 13))
-                        .foregroundColor(AppTheme.Colors.accent)
+                        .foregroundColor(AppTheme.Icons.intelligence)
                     Text(cat.title)
                         .font(.system(size: 14, weight: .medium))
                         .foregroundColor(AppTheme.Colors.textPrimary)
@@ -177,8 +288,12 @@ public struct KnowledgeView: View {
                         .foregroundColor(AppTheme.Colors.textTertiary)
                 }
                 .padding(AppTheme.Spacing.md)
-                .background(AppTheme.Colors.cardBackground)
+                .background(AppTheme.Colors.surfaceElevated)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                        .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
+                }
             }
             Text("输入关键词搜索，结果将按已订类目分组展示。")
                 .font(.system(size: 12))
@@ -192,7 +307,7 @@ public struct KnowledgeView: View {
         VStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "doc.text.magnifyingglass")
                 .font(.system(size: 32))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+                .foregroundColor(AppTheme.Icons.tertiary)
             Text("未找到相关已订阅内容")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(AppTheme.Colors.textSecondary)
@@ -205,7 +320,7 @@ public struct KnowledgeView: View {
         HStack(spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 13))
-                .foregroundColor(AppTheme.Colors.accent)
+                .foregroundColor(AppTheme.Icons.intelligence)
             Text(title)
                 .font(.system(size: 15, weight: .bold))
                 .foregroundColor(AppTheme.Colors.textPrimary)
@@ -295,6 +410,164 @@ public struct KnowledgeView: View {
     }
 }
 
+// MARK: - Knowledge Wallet
+
+private struct KnowledgeWalletCard: View {
+    let category: CatalogCategory
+    let index: Int
+
+    private var palette: [Color] {
+        let palettes: [[Color]] = [
+            [Color(hex: "8D69EA"), Color(hex: "6C4FD6")],
+            [Color(hex: "55BEEB"), Color(hex: "467CE2")],
+            [Color(hex: "42D0C4"), Color(hex: "3199C9")],
+            [Color(hex: "D58BD3"), Color(hex: "8C63DE")]
+        ]
+        return palettes[index % palettes.count]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack(alignment: .top) {
+                Image(systemName: "books.vertical.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 44, height: 44)
+                    .background(Color.white.opacity(0.18))
+                    .clipShape(Circle())
+                Spacer()
+                Text("QUANTUM KNOWLEDGE")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .tracking(1.0)
+                    .foregroundColor(.white.opacity(0.76))
+            }
+
+            Spacer(minLength: 0)
+
+            Text(category.title)
+                .font(.system(size: 21, weight: .semibold, design: .rounded))
+                .foregroundColor(.white)
+                .lineLimit(1)
+
+            HStack {
+                Text("\(category.docCount) 篇文档")
+                Spacer()
+                Label("已同步", systemImage: "checkmark.circle.fill")
+            }
+            .font(AppTheme.Typography.micro)
+            .foregroundColor(.white.opacity(0.86))
+        }
+        .padding(AppTheme.Spacing.lg)
+        .frame(maxWidth: .infinity)
+        .frame(height: 184)
+        .background(
+            LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
+        )
+        .overlay(alignment: .topTrailing) {
+            Circle()
+                .fill(Color.white.opacity(0.12))
+                .frame(width: 150, height: 150)
+                .offset(x: 55, y: -70)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 26, style: .continuous)
+                .stroke(Color.white.opacity(0.36), lineWidth: 0.8)
+        }
+        .shadow(color: palette.last!.opacity(0.23), radius: 22, y: 11)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(category.title)，\(category.docCount) 篇文档，已订阅")
+    }
+}
+
+private struct KnowledgeWalletDetail: View {
+    let category: CatalogCategory
+    let isSubscribed: Bool
+    let onToggle: () -> Void
+    let onDismiss: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var appeared = false
+
+    var body: some View {
+        ZStack {
+            QuantumMistBackground()
+
+            ScrollView(showsIndicators: false) {
+                VStack(spacing: AppTheme.Spacing.xxl) {
+                    HStack {
+                        Button(action: onDismiss) {
+                            Image(systemName: "chevron.down")
+                                .font(.body.weight(.semibold))
+                                .foregroundColor(AppTheme.Colors.textPrimary)
+                                .minimumTouchTarget()
+                                .background(AppTheme.Colors.cardBackground)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(SoftButtonStyle())
+                        Spacer()
+                        Text("知识库详情")
+                            .font(AppTheme.Typography.cardTitle)
+                            .foregroundColor(AppTheme.Colors.textPrimary)
+                        Spacer()
+                        Color.clear.frame(width: 44, height: 44)
+                    }
+
+                    KnowledgeWalletCard(category: category, index: category.category.count)
+                        .scaleEffect(appeared ? 1 : (reduceMotion ? 1 : 0.88))
+                        .offset(y: appeared ? 0 : (reduceMotion ? 0 : 72))
+                        .opacity(appeared ? 1 : 0)
+
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+                        detailRow("订阅状态", value: isSubscribed ? "正在使用" : "未订阅", icon: "checkmark.seal.fill")
+                        detailRow("内容规模", value: "\(category.docCount) 篇", icon: "doc.on.doc.fill")
+                        detailRow("索引范围", value: category.pathPrefix, icon: "point.3.connected.trianglepath.dotted")
+
+                        Button(action: onToggle) {
+                            Label(isSubscribed ? "暂停订阅" : "订阅此知识库", systemImage: isSubscribed ? "pause.fill" : "plus")
+                        }
+                        .buttonStyle(QuantumPrimaryButtonStyle())
+                    }
+                    .padding(AppTheme.Spacing.xl)
+                    .background(AppTheme.Colors.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                            .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                    }
+                }
+                .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                .padding(.top, AppTheme.Spacing.lg)
+                .padding(.bottom, AppTheme.Spacing.xxxl)
+            }
+        }
+        .onAppear {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.82)) {
+                appeared = true
+            }
+        }
+    }
+
+    private func detailRow(_ title: String, value: String, icon: String) -> some View {
+        HStack(spacing: AppTheme.Spacing.md) {
+            Image(systemName: icon)
+                .foregroundColor(AppTheme.Icons.interactive)
+                .frame(width: 40, height: 40)
+                .background(AppTheme.Colors.selectionTint)
+                .clipShape(Circle())
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(AppTheme.Typography.micro)
+                    .foregroundColor(AppTheme.Colors.textTertiary)
+                Text(value)
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+                    .lineLimit(2)
+            }
+            Spacer()
+        }
+    }
+}
+
 // MARK: - 类目订阅卡
 
 public struct CategorySubscriptionCard: View {
@@ -306,7 +579,7 @@ public struct CategorySubscriptionCard: View {
         HStack(spacing: AppTheme.Spacing.md) {
             Image(systemName: isSubscribed ? "folder.fill" : "folder")
                 .font(.system(size: 20))
-                .foregroundColor(isSubscribed ? AppTheme.Colors.accent : AppTheme.Colors.textTertiary)
+                .foregroundColor(isSubscribed ? AppTheme.Icons.intelligence : AppTheme.Icons.tertiary)
                 .frame(width: 30)
 
             VStack(alignment: .leading, spacing: 3) {
@@ -329,12 +602,12 @@ public struct CategorySubscriptionCard: View {
                     Text(isSubscribed ? "已订阅" : "订阅")
                         .font(.system(size: 12, weight: .bold))
                 }
-                .foregroundColor(isSubscribed ? AppTheme.Colors.securityGreen : AppTheme.Colors.onPrimary)
+                .foregroundColor(isSubscribed ? AppTheme.Icons.success : AppTheme.Icons.onAccent)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .background(
                     isSubscribed
-                        ? AnyShapeStyle(AppTheme.Colors.securityGreen.opacity(0.15))
+                        ? AnyShapeStyle(AppTheme.Colors.successSurface)
                         : AnyShapeStyle(AppTheme.Colors.primary)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
@@ -344,6 +617,10 @@ public struct CategorySubscriptionCard: View {
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
+        }
     }
 }
 

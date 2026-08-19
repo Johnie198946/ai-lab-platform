@@ -36,7 +36,7 @@ public struct ReasoningCard: View {
                     HStack(spacing: 6) {
                         Image(systemName: isStreaming ? "brain.head.profile" : "sparkles")
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(AppTheme.Colors.quantumViolet)
+                            .foregroundColor(AppTheme.Icons.intelligence)
                             .symbolEffect(.pulse, isActive: isStreaming)
 
                         // 胶囊内的单行流式文本切换
@@ -58,7 +58,7 @@ public struct ReasoningCard: View {
 
                         Image(systemName: "chevron.right")
                             .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
+                            .foregroundColor(AppTheme.Icons.tertiary)
                             .rotationEffect(.degrees(isExpanded ? 90 : 0))
                     }
                     .padding(.horizontal, 10)

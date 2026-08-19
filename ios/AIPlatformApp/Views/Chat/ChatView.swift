@@ -26,8 +26,11 @@ public struct ChatView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.Colors.groupedBackground
-                    .ignoresSafeArea()
+                if coordinator.messages.isEmpty {
+                    QuantumMistBackground()
+                } else {
+                    QuantumMistBackground()
+                }
 
                 VStack(spacing: 0) {
                     ChatTopBarView(
@@ -111,9 +114,9 @@ public struct ChatView: View {
                 .foregroundColor(AppTheme.Colors.onPrimary)
                 .padding(.horizontal, AppTheme.Spacing.md)
                 .padding(.vertical, 8)
-                .background(AppTheme.Colors.quantumBlue)
+                .background(AppTheme.Colors.interactiveBlue)
                 .clipShape(Capsule())
-                .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.24), radius: 12, y: 5)
+                .shadow(color: AppTheme.Colors.auroraBlue.opacity(0.22), radius: 12, y: 5)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .padding(.bottom, 90)
         }

@@ -33,26 +33,26 @@ public struct ChatTopBarView: View {
     }
 
     public var body: some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            QuantumAvatarView(size: 32)
+        HStack(spacing: AppTheme.Spacing.md) {
+            QuantumAvatarView(size: 36)
 
             Button(action: onTitleTap) {
                 VStack(alignment: .leading, spacing: 2) {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 6) {
                         Text(title.isEmpty ? "新会话" : title)
                             .font(AppTheme.Typography.cardTitle)
                             .foregroundColor(AppTheme.Colors.textPrimary)
                             .lineLimit(1)
                         Image(systemName: "chevron.down")
                             .font(.caption2.weight(.bold))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
+                            .foregroundColor(AppTheme.Icons.tertiary)
                     }
 
                     HStack(spacing: 5) {
                         Circle()
                             .fill(isGenerating ? AppTheme.Colors.statusRunning : AppTheme.Colors.statusCompleted)
                             .frame(width: 6, height: 6)
-                        Text(isGenerating ? "正在执行" : "已就绪")
+                        Text(isGenerating ? "LIVE · 正在执行" : "AI LAB · 已就绪")
                             .font(AppTheme.Typography.micro)
                             .foregroundColor(AppTheme.Colors.textTertiary)
                     }
@@ -67,7 +67,7 @@ public struct ChatTopBarView: View {
             Button(action: onNewSession) {
                 Image(systemName: "square.and.pencil")
                     .font(.body.weight(.semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
+                        .foregroundColor(AppTheme.Icons.primary)
                     .minimumTouchTarget()
             }
             .buttonStyle(SoftButtonStyle())
@@ -83,7 +83,7 @@ public struct ChatTopBarView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.body.weight(.semibold))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
+                        .foregroundColor(AppTheme.Icons.secondary)
                     .minimumTouchTarget()
             }
             .buttonStyle(SoftButtonStyle())
@@ -91,10 +91,11 @@ public struct ChatTopBarView: View {
         }
         .padding(.horizontal, AppTheme.Metrics.contentGutter)
         .padding(.vertical, 10)
-        .background(AppTheme.Colors.cardBackground.opacity(0.96))
+        .background(.thinMaterial)
+        .background(AppTheme.Colors.cardBackground.opacity(0.90))
         .overlay(alignment: .bottom) {
             Rectangle()
-                .fill(AppTheme.Colors.border.opacity(0.7))
+                .fill(AppTheme.Colors.border.opacity(0.72))
                 .frame(height: 0.5)
         }
     }

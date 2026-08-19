@@ -31,7 +31,7 @@ public struct TokenSummaryCard: View {
             HStack(spacing: 6) {
                 Image(systemName: "bolt.fill")
                     .font(.system(size: 13))
-                    .foregroundColor(AppTheme.Colors.accent)
+                    .foregroundColor(AppTheme.Icons.intelligence)
                 Text("Token 消耗")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(AppTheme.Colors.textPrimary)

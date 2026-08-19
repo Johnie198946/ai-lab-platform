@@ -21,42 +21,47 @@ public struct SettingsView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.Colors.groupedBackground
-                    .ignoresSafeArea()
+                QuantumMistBackground()
 
                 ScrollView {
                     VStack(spacing: AppTheme.Spacing.lg) {
 
+                        settingsOverviewHeader
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                            .padding(.top, AppTheme.Spacing.lg)
+
+                        weeklyUsageOverview
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+
                         // 1. 用户与租户身份卡（点击编辑）
                         tenantProfileCard
-                            .padding(.horizontal, AppTheme.Spacing.md)
-                            .padding(.top, AppTheme.Spacing.sm)
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 2. Token 极简卡
                         TokenSummaryCard()
-                            .padding(.horizontal, AppTheme.Spacing.md)
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 3. 创建智能体（替换提炼工作台）
                         AgentCreatorView()
-                            .padding(.horizontal, AppTheme.Spacing.md)
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 3.5 我创建的智能体 + 我制作的技能（演示数据·不可交互）
                         VStack(spacing: AppTheme.Spacing.md) {
                             createdAgentsSection()
                             createdSkillsSection()
                         }
-                        .padding(.horizontal, AppTheme.Spacing.md)
+                        .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 4. 平台定时任务区块已移除（后续统一对接 Hermes cronjob 体系，需求6）
 
                         // 5. 平台与账号操作
                         accountActionsSection
-                            .padding(.horizontal, AppTheme.Spacing.md)
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
                             .padding(.bottom, AppTheme.Spacing.xl)
                     }
                 }
             }
-            .navigationTitle("个人与设置")
+            .toolbar(.hidden, for: .navigationBar)
             .sheet(isPresented: $showingProfileEdit) {
                 ProfileEditSheet()
             }
@@ -72,6 +77,96 @@ public struct SettingsView: View {
         }
     }
 
+    private var settingsOverviewHeader: some View {
+        HStack(alignment: .center, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Overview")
+                    .font(.system(size: 32, weight: .semibold, design: .rounded))
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+                Text("账户、用量与工作空间")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+            }
+            Spacer()
+            Button { showingProfileEdit = true } label: {
+                Image(systemName: "person.crop.circle")
+                    .font(.title3.weight(.semibold))
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+                    .minimumTouchTarget()
+                    .background(AppTheme.Colors.cardBackground)
+                    .clipShape(Circle())
+                    .overlay { Circle().stroke(AppTheme.Colors.border, lineWidth: 0.75) }
+            }
+            .buttonStyle(SoftButtonStyle())
+            .accessibilityLabel("编辑个人资料")
+        }
+    }
+
+    private var weeklyUsageOverview: some View {
+        let values: [CGFloat] = [0.28, 0.52, 0.39, 0.76]
+        let labels = ["第 1 周", "第 2 周", "第 3 周", "本周"]
+
+        return VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("用量趋势")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                    Text("76%")
+                        .font(.system(size: 36, weight: .semibold, design: .rounded))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                    Text("本周预算峰值")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                }
+                Spacer()
+                Label("较上月 -12%", systemImage: "arrow.down.right")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundColor(AppTheme.Colors.statusCompleted)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 6)
+                    .background(AppTheme.Colors.successSurface)
+                    .clipShape(Capsule())
+            }
+
+            HStack(alignment: .bottom, spacing: 12) {
+                ForEach(values.indices, id: \.self) { index in
+                    VStack(spacing: 7) {
+                        GeometryReader { proxy in
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .fill(index == values.indices.last ? AnyShapeStyle(AppTheme.Colors.quantumGradient) : AnyShapeStyle(AppTheme.Colors.secondaryBackground))
+                                .frame(height: max(20, proxy.size.height * values[index]))
+                                .frame(maxHeight: .infinity, alignment: .bottom)
+                                .overlay(alignment: .bottom) {
+                                    Text("\(Int(values[index] * 100))%")
+                                        .font(.system(size: 10, weight: .bold))
+                                        .foregroundColor(index == values.indices.last ? .white : AppTheme.Colors.textSecondary)
+                                        .padding(.bottom, 8)
+                                }
+                        }
+                        .frame(height: 112)
+
+                        Text(labels[index])
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundColor(AppTheme.Colors.textTertiary)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.xl)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+        }
+        .shadow(color: Color(hex: "6B5A8A").opacity(0.10), radius: 20, y: 8)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("本周 Token 预算峰值百分之 76，较上月下降 12%")
+    }
+
     // MARK: - 1. 用户与租户身份卡
 
     private var tenantProfileCard: some View {
@@ -81,18 +176,23 @@ public struct SettingsView: View {
             #endif
             showingProfileEdit = true
         }) {
-            HStack(spacing: AppTheme.Spacing.md) {
+            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
                 // Avatar（SF Symbol 头像）
                 ZStack {
                     Circle()
-                        .fill(AppTheme.Colors.primary)
+                        .fill(AppTheme.Colors.selectionTint)
                         .frame(width: 56, height: 56)
                     Image(systemName: appState.currentProfile.avatarUrl ?? "person.crop.circle.fill")
                         .font(.system(size: 28))
-                        .foregroundColor(AppTheme.Colors.onPrimary)
+                        .foregroundColor(AppTheme.Icons.intelligence)
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
+                    Text("PROFILE · TENANT WORKSPACE")
+                        .font(AppTheme.Typography.micro)
+                        .tracking(0.7)
+                        .foregroundColor(AppTheme.Icons.interactive)
+
                     HStack(spacing: 6) {
                         Text(appState.currentProfile.name)
                             .font(.system(size: 17, weight: .bold))
@@ -119,18 +219,29 @@ public struct SettingsView: View {
 
                     Text(appState.currentProfile.role.displayName)
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(AppTheme.Colors.primary)
+                        .foregroundColor(AppTheme.Colors.statusCompleted)
                 }
 
                 Spacer()
 
                 Image(systemName: "pencil")
                     .font(.system(size: 13))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
+                    .foregroundColor(AppTheme.Icons.tertiary)
             }
-            .padding(AppTheme.Spacing.md)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            .padding(AppTheme.Spacing.xl)
+            .background(
+                LinearGradient(
+                    colors: [AppTheme.Colors.cardBackground, AppTheme.Colors.surfaceTint],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.border.opacity(0.75), lineWidth: 0.75)
+            }
+            .shadow(color: Color(hex: "3D437E").opacity(0.08), radius: 18, y: 7)
         }
         .buttonStyle(SoftButtonStyle())
     }
@@ -172,6 +283,10 @@ public struct SettingsView: View {
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
+        }
     }
 
     private struct AgentRowData: Identifiable {
@@ -202,6 +317,10 @@ public struct SettingsView: View {
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
+        }
     }
 
     private func artifactHeader(icon: String, title: String, accent: Color) -> some View {
@@ -219,7 +338,7 @@ public struct SettingsView: View {
     private func emptyArtifactHint(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 12))
-            .foregroundColor(AppTheme.Colors.textTertiary)
+                            .foregroundColor(AppTheme.Icons.tertiary)
             .padding(.vertical, AppTheme.Spacing.sm)
             .frame(maxWidth: .infinity)
     }
@@ -239,7 +358,7 @@ public struct SettingsView: View {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                            .foregroundColor(AppTheme.Icons.tertiary)
                 }
                 .buttonStyle(SoftButtonStyle())
             }
@@ -275,7 +394,7 @@ public struct SettingsView: View {
                     Text("退出登录 / 切换租户")
                         .font(.system(size: 14, weight: .semibold))
                 }
-                .foregroundColor(AppTheme.Colors.securityRed)
+            .foregroundColor(AppTheme.Icons.destructive)
                 .frame(maxWidth: .infinity)
                 .frame(height: 44)
                 .background(AppTheme.Colors.cardBackground)

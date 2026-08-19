@@ -74,7 +74,7 @@ public struct PendingPlaceholderView: View {
             HStack(spacing: AppTheme.Spacing.xs) {
                 Image(systemName: "clock.arrow.circlepath")
                     .font(.system(size: 12))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
+                    .foregroundColor(AppTheme.Icons.tertiary)
                 Text("排队中 · 第 \(position) 位")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(AppTheme.Colors.textSecondary)
@@ -82,7 +82,7 @@ public struct PendingPlaceholderView: View {
                 Button(action: onCancel) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 13))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .foregroundColor(AppTheme.Icons.tertiary)
                 }
                 .buttonStyle(SoftButtonStyle())
             }
@@ -188,7 +188,7 @@ public struct DegradedCardView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "wifi.exclamationmark")
                         .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.securityYellow)
+                    .foregroundColor(AppTheme.Icons.warning)
                     Text("服务暂时不可用")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(AppTheme.Colors.textPrimary)
@@ -218,7 +218,7 @@ public struct DegradedCardView: View {
                 Text("重试")
             }
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(AppTheme.Colors.primary)
+            .foregroundColor(AppTheme.Icons.interactive)
             .padding(.horizontal, AppTheme.Spacing.md)
             .padding(.vertical, 6)
             .background(AppTheme.Colors.primary.opacity(0.08))
@@ -242,7 +242,7 @@ public struct InterruptedCardView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.securityYellow)
+                    .foregroundColor(AppTheme.Icons.warning)
                     Text("响应已中断")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(AppTheme.Colors.textPrimary)
@@ -272,7 +272,7 @@ public struct InterruptedCardView: View {
                 Text("重试")
             }
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(AppTheme.Colors.primary)
+            .foregroundColor(AppTheme.Icons.interactive)
             .padding(.horizontal, AppTheme.Spacing.md)
             .padding(.vertical, 6)
             .background(AppTheme.Colors.primary.opacity(0.08))
@@ -296,7 +296,7 @@ public struct OrphanPendingCardView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "clock.badge.exclamationmark")
                         .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                    .foregroundColor(AppTheme.Icons.tertiary)
                     Text("未完成")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(AppTheme.Colors.textPrimary)
@@ -326,7 +326,7 @@ public struct OrphanPendingCardView: View {
                 Text("继续 / 重试")
             }
             .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(AppTheme.Colors.primary)
+            .foregroundColor(AppTheme.Icons.interactive)
             .padding(.horizontal, AppTheme.Spacing.md)
             .padding(.vertical, 6)
             .background(AppTheme.Colors.primary.opacity(0.08))

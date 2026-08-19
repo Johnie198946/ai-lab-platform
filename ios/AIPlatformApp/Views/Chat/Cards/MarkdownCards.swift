@@ -35,7 +35,7 @@ public struct MarkdownBlockCard: View {
             .padding(.top, level <= 2 ? AppTheme.Spacing.xs : 2)
         case .callout(let label, let text):
             HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "sparkles").font(.system(size: 13, weight: .bold)).foregroundColor(AppTheme.Colors.quantumBlue).padding(.top, 2)
+                Image(systemName: "sparkles").font(.system(size: 13, weight: .bold)).foregroundColor(AppTheme.Icons.intelligence).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(label).font(.system(size: 11, weight: .bold)).foregroundColor(AppTheme.Colors.quantumBlue)
                     MarkdownText(text, font: .system(size: 14, weight: .medium)).fixedSize(horizontal: false, vertical: true)
@@ -93,12 +93,12 @@ public struct SourceCitationsCard: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 5) {
-                Image(systemName: "books.vertical.fill").font(.system(size: 11, weight: .semibold)).foregroundColor(AppTheme.Colors.quantumCyan)
+                Image(systemName: "books.vertical.fill").font(.system(size: 11, weight: .semibold)).foregroundColor(AppTheme.Icons.live)
                 Text("来源条目").font(.system(size: 11, weight: .bold)).foregroundColor(AppTheme.Colors.quantumCyan)
             }
             ForEach(Array(items.enumerated()), id: \.offset) { _, item in
                 HStack(alignment: .top, spacing: 6) {
-                    Image(systemName: "doc.text.magnifyingglass").font(.system(size: 10)).foregroundColor(AppTheme.Colors.textTertiary).padding(.top, 2)
+                    Image(systemName: "doc.text.magnifyingglass").font(.system(size: 10)).foregroundColor(AppTheme.Icons.tertiary).padding(.top, 2)
                     Text(item.trimmingCharacters(in: CharacterSet(charactersIn: "`*- "))).font(.system(size: 12, design: .monospaced)).foregroundColor(AppTheme.Colors.textSecondary).lineLimit(2)
                 }
             }

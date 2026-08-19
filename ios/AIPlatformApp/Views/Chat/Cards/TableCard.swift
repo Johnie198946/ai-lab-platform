@@ -10,6 +10,7 @@ import SwiftUI
 public struct TableCard: View {
     public let block: TableBlock
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     public init(block: TableBlock) {
         self.block = block
@@ -36,7 +37,9 @@ public struct TableCard: View {
     private var requirementConfirmationCard: some View {
         VStack(alignment: .leading, spacing: 0) {
             requirementHeader
-            requirementColumnHeader
+            if !dynamicTypeSize.isAccessibilitySize {
+                requirementColumnHeader
+            }
 
             ForEach(Array(block.rows.enumerated()), id: \.offset) { index, row in
                 requirementRow(row, index: index)
@@ -49,9 +52,9 @@ public struct TableCard: View {
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            .foregroundColor(AppTheme.Colors.textSecondary)
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.sm)
+            .foregroundColor(AppTheme.Icons.secondary)
+            .padding(.horizontal, AppTheme.Spacing.xl)
+            .padding(.vertical, AppTheme.Spacing.md)
             .background(AppTheme.Colors.secondaryBackground.opacity(0.55))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -62,8 +65,8 @@ public struct TableCard: View {
                 .stroke(AppTheme.Colors.quantumBlue.opacity(colorScheme == .dark ? 0.42 : 0.24), lineWidth: 1)
         )
         .shadow(
-            color: AppTheme.Colors.quantumBlue.opacity(colorScheme == .dark ? 0.08 : 0.10),
-            radius: 14,
+            color: Color.black.opacity(colorScheme == .dark ? 0.20 : 0.08),
+            radius: 22,
             x: 0,
             y: 6
         )
@@ -77,14 +80,14 @@ public struct TableCard: View {
                     .frame(width: 36, height: 36)
                 Image(systemName: "checklist.checked")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundColor(AppTheme.Icons.onAccent)
             }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("需求确认单")
                     .font(.headline.weight(.semibold))
                     .foregroundColor(AppTheme.Colors.textPrimary)
-                Text("Drill-me 已完成需求收敛")
+                Text("Drill-me 已完成多轮需求收敛")
                     .font(.caption)
                     .foregroundColor(AppTheme.Colors.textSecondary)
             }
@@ -93,13 +96,13 @@ public struct TableCard: View {
 
             Label("待确认", systemImage: "checkmark.seal")
                 .font(.caption2.weight(.semibold))
-                .foregroundColor(AppTheme.Colors.quantumBlue)
+                .foregroundColor(AppTheme.Icons.interactive)
                 .padding(.horizontal, AppTheme.Spacing.sm)
                 .padding(.vertical, 5)
                 .background(AppTheme.Colors.quantumBlue.opacity(0.09))
                 .clipShape(Capsule())
         }
-        .padding(AppTheme.Spacing.md)
+        .padding(AppTheme.Spacing.xl)
         .background(
             LinearGradient(
                 colors: [
@@ -129,27 +132,22 @@ public struct TableCard: View {
     private func requirementRow(_ row: [String], index: Int) -> some View {
         let dimension = row.first ?? "—"
         let detail = row.dropFirst().joined(separator: " · ")
-        return HStack(alignment: .top, spacing: 0) {
-            HStack(alignment: .top, spacing: 6) {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.caption)
-                    .foregroundColor(AppTheme.Colors.statusCompleted)
-                    .padding(.top, 2)
-                Text(dimension)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                    .fixedSize(horizontal: false, vertical: true)
+        return Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                    requirementKey(dimension)
+                    requirementValue(detail)
+                }
+            } else {
+                HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                    requirementKey(dimension)
+                        .frame(width: 104, alignment: .leading)
+                    requirementValue(detail)
+                }
             }
-            .frame(width: 96, alignment: .leading)
-
-            Text(LocalizedStringKey(detail.isEmpty ? "—" : detail))
-                .font(.subheadline)
-                .foregroundColor(AppTheme.Colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, AppTheme.Spacing.md)
-        .padding(.vertical, AppTheme.Spacing.sm + 2)
+        .padding(.horizontal, AppTheme.Spacing.xl)
+        .padding(.vertical, AppTheme.Spacing.md)
         .background(index.isMultiple(of: 2) ? Color.clear : AppTheme.Colors.secondaryBackground.opacity(0.32))
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -160,13 +158,34 @@ public struct TableCard: View {
         .accessibilityLabel("\(dimension)：\(detail)")
     }
 
+    private func requirementKey(_ dimension: String) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundColor(AppTheme.Icons.success)
+                .padding(.top, 2)
+            Text(dimension)
+                .font(AppTheme.Typography.label)
+                .foregroundColor(AppTheme.Colors.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func requirementValue(_ detail: String) -> some View {
+        Text(LocalizedStringKey(detail.isEmpty ? "—" : detail))
+            .font(AppTheme.Typography.body)
+            .foregroundColor(AppTheme.Colors.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     private var genericTableCard: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             // 标题行
             HStack(spacing: AppTheme.Spacing.xs) {
                 Image(systemName: "tablecells")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.primary)
+                    .foregroundColor(AppTheme.Icons.interactive)
                 Text(block.title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(AppTheme.Colors.textPrimary)

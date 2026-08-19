@@ -27,67 +27,62 @@ public struct LoginView: View {
     public var body: some View {
         NavigationStack {
             ZStack {
-                AppTheme.Colors.groupedBackground
-                    .ignoresSafeArea()
+                QuantumMistBackground()
 
-                LinearGradient(
-                    colors: [
-                        AppTheme.Colors.quantumCyan.opacity(colorScheme == .dark ? 0.10 : 0.12),
-                        AppTheme.Colors.quantumViolet.opacity(colorScheme == .dark ? 0.08 : 0.06),
-                        .clear
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .center
-                )
-                .ignoresSafeArea()
-                
                 GeometryReader { geometry in
                     ScrollView(showsIndicators: false) {
-                        VStack(spacing: 0) {
-                            
-                            // Top spacing: 将整体视觉重心舒适下移
-                            Spacer(minLength: max(16, geometry.size.height * 0.05))
-                            
-                            // MARK: - 1. Top Brand Header
+                        VStack(spacing: AppTheme.Spacing.xl) {
                             brandHeaderSection
-                                .padding(.bottom, AppTheme.Spacing.xl)
-                            
-                            // MARK: - 2. Authentication Container Card
+
+                            PearlLoginArtwork()
+                                .frame(height: min(260, geometry.size.height * 0.30))
+
+                            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                                Text("让想法成为\n可执行的智能工作流")
+                                    .font(.system(size: 36, weight: .semibold, design: .rounded))
+                                    .foregroundColor(AppTheme.Colors.textPrimary)
+                                    .minimumScaleFactor(0.82)
+
+                                Text("连接 Agent、知识与工具，在一个工作空间里完成从需求确认到交付。")
+                                    .font(AppTheme.Typography.body)
+                                    .foregroundColor(AppTheme.Colors.textSecondary)
+                                    .lineSpacing(4)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
                             VStack(spacing: AppTheme.Spacing.xl) {
                                 VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                                    Text("登录 Quantum")
+                                    Text("欢迎回来")
                                         .font(AppTheme.Typography.sectionTitle)
                                         .foregroundColor(AppTheme.Colors.textPrimary)
-                                    Text("继续进入你的智能体工作台")
+                                    Text("使用手机号进入你的 Quantum 工作空间")
                                         .font(AppTheme.Typography.supporting)
                                         .foregroundColor(AppTheme.Colors.textSecondary)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                
-                                // Phone & SMS OTP Input Fields
+
                                 phoneLoginSection
-                                
-                                // Third-Party Channels (WeChat / Alipay / SSO)
                                 thirdPartyChannelsSection
                             }
-                            .padding(AppTheme.Spacing.xl)
+                            .padding(AppTheme.Spacing.xxl)
                             .background(AppTheme.Colors.cardBackground)
                             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
-                            .cardShadow(colorScheme: colorScheme)
-                            .padding(.horizontal, AppTheme.Spacing.lg)
-                            
-                            // Flexible spacer: 将访客模式与签署协议沉降至屏幕底部
-                            Spacer(minLength: max(24, geometry.size.height * 0.06))
-                            
-                            // MARK: - 3. Guest Mode Entry
+                            .overlay {
+                                RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
+                                    .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                            }
+                            .shadow(
+                                color: Color(hex: "6B5A8A").opacity(0.12),
+                                radius: 26,
+                                y: 10
+                            )
+
                             guestModeSection
-                                .padding(.bottom, AppTheme.Spacing.md)
-                            
-                            // MARK: - 4. Terms and Privacy Footer（贴近屏幕底部安全区）
                             footerTermsSection
-                                .padding(.bottom, max(12, geometry.safeAreaInsets.bottom + 10))
                         }
-                        .frame(minHeight: geometry.size.height)
+                        .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                        .padding(.top, max(18, geometry.safeAreaInsets.top + 8))
+                        .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
                     }
                 }
             }
@@ -106,17 +101,19 @@ public struct LoginView: View {
     // MARK: - Subviews
     
     private var brandHeaderSection: some View {
-        VStack(spacing: AppTheme.Spacing.sm) {
-            QuantumAvatarView(size: 76)
-
+        HStack(spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 38)
             Text("Quantum")
-                .font(.largeTitle.weight(.bold))
+                .font(.system(size: 20, weight: .semibold, design: .rounded))
                 .foregroundColor(AppTheme.Colors.textPrimary)
-
-            Text("把复杂工作，变成清晰的下一步")
-                .font(AppTheme.Typography.supporting.weight(.medium))
-                .foregroundColor(AppTheme.Colors.textSecondary)
-                .multilineTextAlignment(.center)
+            Spacer()
+            Label("本地优先", systemImage: "lock.shield")
+                .font(AppTheme.Typography.micro)
+                .foregroundColor(AppTheme.Icons.interactive)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(AppTheme.Colors.surfaceTint)
+                .clipShape(Capsule())
         }
     }
     
@@ -128,7 +125,7 @@ public struct LoginView: View {
                     .foregroundColor(AppTheme.Colors.textSecondary)
                 HStack(spacing: AppTheme.Spacing.sm) {
                     Image(systemName: "iphone")
-                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .foregroundColor(AppTheme.Icons.secondary)
                         .frame(width: 24)
 
                     Text("+86")
@@ -159,7 +156,7 @@ public struct LoginView: View {
                     .foregroundColor(AppTheme.Colors.textSecondary)
                 HStack(spacing: AppTheme.Spacing.sm) {
                     Image(systemName: "lock.shield")
-                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .foregroundColor(AppTheme.Icons.secondary)
                         .frame(width: 24)
 
                     TextField("输入 6 位验证码", text: $smsCode)
@@ -209,13 +206,8 @@ public struct LoginView: View {
                     Text("登录 / 注册")
                         .font(.headline.weight(.semibold))
                 }
-                .frame(maxWidth: .infinity)
-                .frame(height: 48)
-                .foregroundColor(AppTheme.Colors.onPrimary)
-                .background(AppTheme.Colors.quantumBlue)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
             }
-            .buttonStyle(SoftButtonStyle())
+            .buttonStyle(QuantumPrimaryButtonStyle())
             .disabled(isLoading || phoneNumber.isEmpty || smsCode.isEmpty)
             .opacity((phoneNumber.isEmpty || smsCode.isEmpty) ? 0.6 : 1.0)
         }
@@ -272,7 +264,7 @@ public struct LoginView: View {
                             .frame(width: 48, height: 48)
                             .overlay(
                                 Image(systemName: "building.2.fill")
-                                    .foregroundColor(AppTheme.Colors.accent)
+                            .foregroundColor(AppTheme.Icons.intelligence)
                                     .font(.system(size: 20))
                             )
                         Text("企业 SSO")
@@ -302,7 +294,7 @@ public struct LoginView: View {
                 Image(systemName: "arrow.right")
                     .font(.caption.weight(.bold))
             }
-            .foregroundColor(AppTheme.Colors.primary)
+            .foregroundColor(AppTheme.Icons.interactive)
             .padding(.vertical, AppTheme.Spacing.sm)
             .padding(.horizontal, AppTheme.Spacing.lg)
             .background(AppTheme.Colors.primary.opacity(0.08))
@@ -324,7 +316,7 @@ public struct LoginView: View {
             + Text("《隐私保护政策》")
                 .foregroundColor(AppTheme.Colors.primary)
         }
-        .font(.system(size: 11))
+        .font(.caption)
         .multilineTextAlignment(.center)
         .padding(.horizontal, AppTheme.Spacing.xl)
     }
@@ -405,6 +397,63 @@ public struct LoginView: View {
             appState.isGuestMode = false
             appState.currentProfile = MockData.tenantProfile
         }
+    }
+}
+
+private struct PearlLoginArtwork: View {
+    var body: some View {
+        GeometryReader { proxy in
+            let side = min(proxy.size.width, proxy.size.height * 1.42)
+            ZStack {
+                Circle()
+                    .fill(AppTheme.Colors.quantumViolet.opacity(0.10))
+                    .frame(width: side * 0.88, height: side * 0.88)
+                    .blur(radius: 24)
+
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.white, Color(hex: "E7E0FA")],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: side * 0.72, height: side * 0.30)
+                    .rotationEffect(.degrees(-14))
+                    .offset(y: 20)
+                    .shadow(color: Color(hex: "6B5A8A").opacity(0.16), radius: 22, y: 12)
+
+                Capsule()
+                    .fill(
+                        LinearGradient(
+                            colors: [AppTheme.Colors.quantumCyan, AppTheme.Colors.quantumBlue],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .frame(width: side * 0.42, height: side * 0.15)
+                    .rotationEffect(.degrees(29))
+                    .offset(x: side * 0.20, y: -side * 0.13)
+
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [Color.white, AppTheme.Colors.quantumViolet],
+                            center: .topLeading,
+                            startRadius: 3,
+                            endRadius: side * 0.16
+                        )
+                    )
+                    .frame(width: side * 0.25, height: side * 0.25)
+                    .offset(x: -side * 0.18, y: -side * 0.08)
+                    .shadow(color: AppTheme.Colors.quantumViolet.opacity(0.25), radius: 20, y: 10)
+
+                QuantumAvatarView(size: side * 0.23)
+                    .offset(x: side * 0.15, y: side * 0.10)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .accessibilityHidden(true)
     }
 }
 
