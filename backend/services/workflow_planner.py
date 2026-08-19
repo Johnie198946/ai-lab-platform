@@ -266,6 +266,22 @@ async def _plan_with_hermes(
     for edge in normalized["edges"]:
         edge.pop("from", None)
         edge.pop("to", None)
+    normalized_nodes: list[dict[str, Any]] = []
+    allowed_scopes = set(scopes)
+    for candidate in raw.get("nodes") or []:
+        if not isinstance(candidate, dict):
+            continue
+        node = dict(candidate)
+        parameters = dict(node.get("parameters") or {})
+        requested_scopes = parameters.get("knowledge_scope")
+        if isinstance(requested_scopes, list):
+            # 兼容层只收窄到租户已经授权的范围，绝不因模型建议扩大权限。
+            parameters["knowledge_scope"] = [
+                scope for scope in requested_scopes if scope in allowed_scopes
+            ]
+        node["parameters"] = parameters
+        normalized_nodes.append(node)
+    normalized["nodes"] = normalized_nodes
     return normalized
 
 
