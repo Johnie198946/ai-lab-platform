@@ -281,11 +281,6 @@ async def get_plan(workflow_id: str, payload: dict = Depends(require_auth)):
                 )
             )
         ).scalar_one()
-        if plan.validation_errors:
-            raise HTTPException(
-                status_code=409,
-                detail="Hermes 计划尚未成功生成，请先重新规划",
-            )
         return plan_out(plan)
 
 

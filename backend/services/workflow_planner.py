@@ -251,7 +251,22 @@ async def _plan_with_hermes(
     raw = payload.get("plan")
     if not isinstance(raw, dict):
         raise ValueError("Hermes 未返回有效计划")
-    return raw
+    # Hermes 0.19.0 偶尔使用图论常见别名 from/to；在安全编译前只做字段
+    # 兼容归一化，不补造节点、Agent 或权限。
+    normalized = dict(raw)
+    normalized["edges"] = [
+        {
+            **edge,
+            "source": edge.get("source", edge.get("from")),
+            "target": edge.get("target", edge.get("to")),
+        }
+        for edge in (raw.get("edges") or [])
+        if isinstance(edge, dict)
+    ]
+    for edge in normalized["edges"]:
+        edge.pop("from", None)
+        edge.pop("to", None)
+    return normalized
 
 
 async def build_plan(
@@ -290,6 +305,7 @@ async def build_plan(
     plan_id = f"wfp_{uuid.uuid4().hex}"
     allowed_agents = await _allowed_agent_ids(db, workflow.tenant_key)
     validation_errors: list[str] = []
+    raw: dict[str, Any]
     if HERMES_PLANNING_ENABLED:
         try:
             raw = await _plan_with_hermes(
@@ -309,15 +325,32 @@ async def build_plan(
         raw = _safe_template(
             workflow, plan_id, scopes, analysis_agent, revision_note
         )
-    compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(raw)
-    await validate_plan_policy(
-        db,
-        workflow.tenant_key,
-        compiled,
-        allow_network=True,
-        max_tokens=24000,
-        knowledge_scope=scopes,
-    )
+    try:
+        compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(raw)
+        await validate_plan_policy(
+            db,
+            workflow.tenant_key,
+            compiled,
+            allow_network=True,
+            max_tokens=24000,
+            knowledge_scope=scopes,
+        )
+    except Exception as exc:
+        # 无论 Bridge 还是模型输出不兼容，都返回一份可见但不可批准的安全模板。
+        # 用户可以看到原因并点击重新规划，审批接口仍会阻止实际执行。
+        raw = _safe_template(workflow, plan_id, scopes, analysis_agent, revision_note)
+        compiled = DSLSafetyCompiler.compile_and_validate(raw)
+        await validate_plan_policy(
+            db,
+            workflow.tenant_key,
+            compiled,
+            allow_network=True,
+            max_tokens=24000,
+            knowledge_scope=scopes,
+        )
+        validation_errors = [
+            f"Hermes 计划未通过安全编译，当前仅为安全模板，请重新生成：{str(exc)[:240]}"
+        ]
     plan = WorkflowPlanVersion(
         id=plan_id,
         workflow_id=workflow.id,

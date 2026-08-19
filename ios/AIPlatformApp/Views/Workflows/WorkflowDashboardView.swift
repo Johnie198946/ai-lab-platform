@@ -315,6 +315,9 @@ private struct WorkflowPlanReviewView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
                         planHeader(draft)
+                        if !draft.validationErrors.isEmpty {
+                            WorkflowErrorBanner(message: draft.validationErrors.joined(separator: "\n"))
+                        }
                         configuration(plan: planBinding)
                         nodeTimeline(plan: planBinding)
                         replanSection
@@ -331,6 +334,7 @@ private struct WorkflowPlanReviewView: View {
                         Button("确认并执行") { approve() }
                             .buttonStyle(.borderedProminent)
                             .frame(maxWidth: .infinity)
+                            .disabled(!draft.validationErrors.isEmpty)
                     }
                     .controlSize(.large)
                     .padding(AppTheme.Metrics.contentGutter)
