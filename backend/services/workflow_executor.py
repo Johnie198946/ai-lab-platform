@@ -352,5 +352,8 @@ async def worker_loop(poll_seconds: float = 2.0) -> None:
             execution = await claim_next(db)
             if execution is not None:
                 await sync_execution(execution.id, db)
+                # Hermes 节点可能运行数分钟；投影同步按固定频率轮询，避免在
+                # 无新事件时形成数据库/Bridge 紧循环。
+                await asyncio.sleep(poll_seconds)
                 continue
         await asyncio.sleep(poll_seconds)
