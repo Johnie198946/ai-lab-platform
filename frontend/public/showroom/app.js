@@ -2170,11 +2170,22 @@ window.showroomApi?.on('hermes-event', (event) => {
           state.session = result.session;
           state.selectedEmployeeId = result.plan?.squads?.[0]?.employees?.[0]?.employee_id || '';
           return beginInsightExecution(result.job, result.plan);
-        }).catch((error) => {
+        }).catch(async (error) => {
           state.chatError = error.message;
           state.hermesStatus = 'error';
-          window.showroomApi.failInsightJob(job.job_id, error.message).catch(() => {});
           state.insightTask = '';
+          try {
+            const recovered = await window.showroomApi.failInsightJob(job.job_id, error.message);
+            state.session = recovered.session;
+            if (recovered.job?.status === 'completed') {
+              state.chatError = '';
+              state.hermesStatus = 'ready';
+              startInsightAutoAdvance();
+              showToast('全部章节已保存，项目组已完成');
+            }
+          } catch (_) {
+            // Keep the original finalization error visible when recovery also fails.
+          }
           render('refresh');
         });
         state.streamingReply = '';

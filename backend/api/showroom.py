@@ -1612,7 +1612,21 @@ async def complete_showroom_insight_job(
         final_payload = extract_final_insight(body.content) or {}
         if final_payload.get("job_id") != job_id:
             final_payload = {}
-        for section in final_payload.get("sections") or []:
+        final_sections = final_payload.get("sections") or []
+        if isinstance(final_sections, dict):
+            final_sections = [
+                {"section": section_type, "payload": section_payload}
+                for section_type, section_payload in final_sections.items()
+            ]
+        for section in final_sections:
+            # V1.7 may emit a compact list of completed section names in the
+            # final envelope because the full payloads were already delivered
+            # through incremental section events. Those names are valid, but
+            # they are not objects and must not break the completion callback.
+            if isinstance(section, str):
+                continue
+            if not isinstance(section, dict):
+                continue
             section_type = str(section.get("section") or section.get("type") or "")
             if section_type in SECTION_TYPES:
                 insight = apply_section(insight, section_type, section.get("payload") or section)
@@ -1693,6 +1707,39 @@ async def _finish_showroom_insight_job(
         job = copy.deepcopy(data.get("insight_job") or {})
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
+        required = {"summary", "root_causes", "impacts", "evidence", "recommendation"}
+        if status == "failed" and required.issubset(
+            set(job.get("completed_sections") or [])
+        ):
+            # A transport/finalization failure must not overwrite a complete,
+            # incrementally persisted report. Return the completed session so
+            # the browser can recover without running the research twice.
+            job.update(
+                {
+                    "status": "completed",
+                    "active_stage": "completed",
+                    "active_employee_id": "",
+                    "updated_at": now_iso(),
+                    "error": "",
+                }
+            )
+            insight = copy.deepcopy(data.get("insight") or empty_insight())
+            insight["status"] = "completed"
+            plan = copy.deepcopy(data.get("staffing_plan") or {})
+            for squad in plan.get("squads") or []:
+                squad["status"] = "completed"
+                for employee in squad.get("employees") or []:
+                    employee["status"] = "done"
+            data["insight_job"] = job
+            data["insight"] = insight
+            data["staffing_plan"] = plan
+            row.data = data
+            await database.commit()
+            await database.refresh(row)
+            return {
+                "job": job,
+                "session": _session_payload(row, session_id, row.slot),
+            }
         active_employee_id = str(job.get("active_employee_id") or "")
         job.update(
             {

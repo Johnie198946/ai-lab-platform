@@ -27,3 +27,9 @@ test('summary completion drives incremental 004 reveal without fake progress', (
   assert.match(styles, /prefers-reduced-motion:reduce/);
   assert.match(styles, /--employee-index/);
 });
+
+test('a failed final callback cannot overwrite an already completed report', () => {
+  assert.match(app, /const recovered = await window\.showroomApi\.failInsightJob/);
+  assert.match(app, /recovered\.job\?\.status === 'completed'/);
+  assert.match(app, /全部章节已保存，项目组已完成/);
+});

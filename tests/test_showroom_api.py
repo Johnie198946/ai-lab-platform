@@ -39,6 +39,7 @@ from backend.api.showroom import (
     start_showroom_insight_job,
     update_showroom_insight_progress,
     update_showroom_demand_draft,
+    _finish_showroom_insight_job,
 )
 from backend.api.screens import _load_all as load_screen_configs
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
@@ -406,6 +407,43 @@ def test_staffing_job_is_idempotent_and_incrementally_persists_sections(monkeypa
             payload(),
         )
         assert partial["job"]["status"] == "partial"
+
+        for section in ("root_causes", "impacts", "evidence", "recommendation"):
+            await update_showroom_insight_progress(
+                "showroom-staffing",
+                job_id,
+                InsightProgressRequest(
+                    event_id=f"{section}-event",
+                    kind="section",
+                    section=section,
+                    payload={section: ["已完成"]},
+                ),
+                payload(),
+            )
+
+        completed = await complete_showroom_insight_job(
+            "showroom-staffing",
+            job_id,
+            InsightCompleteRequest(
+                content=(
+                    '<!-- AI_LAB_INSIGHT_V1 '
+                    f'{{"job_id":"{job_id}","sections":["summary","root_causes"]}} '
+                    'AI_LAB_INSIGHT_V1 -->'
+                )
+            ),
+            payload(),
+        )
+        assert completed["job"]["status"] == "completed"
+
+        recovered = await _finish_showroom_insight_job(
+            "showroom-staffing",
+            job_id,
+            "final callback failed",
+            "failed",
+            "demo",
+        )
+        assert recovered["job"]["status"] == "completed"
+        assert recovered["job"]["error"] == ""
         await engine.dispose()
 
     asyncio.run(scenario())
