@@ -147,6 +147,25 @@ class SubscribeRequest(BaseModel):
     category: str
 
 
+def _wallet_error(
+    status_code: int,
+    *,
+    code: str,
+    message: str,
+    action: str,
+    retryable: bool,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "action": action,
+            "retryable": retryable,
+        },
+    )
+
+
 class CatalogPolicyUpdate(BaseModel):
     security_level: str
     owner_tenant: str = "public"
@@ -195,14 +214,22 @@ async def update_catalog_policy(
 @router.post("/me/subscriptions")
 async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
     """兼容端点：把当前可读类目加入知识钱包，不授予读取权限。"""
-    if body.category in FORBIDDEN_CATEGORIES:
-        raise HTTPException(
-            status_code=404, detail=f"分类不存在: {body.category}"
+    return await _add_wallet_category(body.category, payload)
+
+
+async def _add_wallet_category(category: str, payload: dict) -> dict:
+    category = category.strip()
+    if category in FORBIDDEN_CATEGORIES:
+        raise _wallet_error(
+            404, code="catalog_item_not_found", message="该知识包已下线或尚未完成治理",
+            action="refresh_catalog", retryable=True,
         )
-    catalog = {c["category"] for c in compute_catalog()}
-    if body.category not in catalog:
-        raise HTTPException(
-            status_code=404, detail=f"分类不存在: {body.category}"
+    catalog_items = compute_catalog()
+    catalog = {c["category"] for c in catalog_items}
+    if category not in catalog:
+        raise _wallet_error(
+            404, code="catalog_item_not_found", message="知识目录已经更新，请刷新后重试",
+            action="refresh_catalog", retryable=True,
         )
     from sqlalchemy import select
 
@@ -215,40 +242,56 @@ async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
             db,
             tenant_key=tenant_key,
             org_id=payload.get("org_id", ""),
-            catalog=compute_catalog(),
+            catalog=catalog_items,
             is_guest=str(payload.get("role") or "") == "guest",
         )
-        if body.category not in policy.effective_categories:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": KnowledgeScopeDenied.code, "message": "套餐或知识权限已变化"},
+        if category not in policy.effective_categories:
+            item = next(item for item in catalog_items if item["category"] == category)
+            is_yellow = str(item.get("security_level") or "") == "yellow"
+            raise _wallet_error(
+                403,
+                code="entitlement_required" if is_yellow else KnowledgeScopeDenied.code,
+                message="当前组织套餐尚未包含该知识" if is_yellow else "套餐或知识权限已变化",
+                action="view_plans" if is_yellow else "refresh_permissions",
+                retryable=False,
             )
         exists = (
             await db.execute(
                 select(KnowledgeSubscription).where(
                     KnowledgeSubscription.tenant_key == tenant_key,
-                    KnowledgeSubscription.category == body.category,
+                    KnowledgeSubscription.category == category,
                 )
             )
         ).scalar_one_or_none()
         if exists is None:
             db.add(
                 KnowledgeSubscription(
-                    tenant_key=tenant_key, category=body.category
+                    tenant_key=tenant_key, category=category
                 )
             )
             await db.commit()
     return {"tenant_key": tenant_key, "categories": await _subs(tenant_key)}
 
 
+@router.put("/me/knowledge-wallet")
+async def add_to_wallet_body(body: SubscribeRequest, payload=Depends(require_auth)):
+    """JSON body avoids double encoding Unicode and multi-segment categories."""
+    return await _add_wallet_category(body.category, payload)
+
+
 @router.put("/me/knowledge-wallet/{category:path}")
 async def add_to_wallet(category: str, payload=Depends(require_auth)):
-    return await subscribe(SubscribeRequest(category=category), payload)
+    return await _add_wallet_category(category, payload)
 
 
-@router.delete("/me/subscriptions/{category}")
+@router.delete("/me/subscriptions/{category:path}")
 async def unsubscribe(category: str, payload=Depends(require_auth)):
     """兼容端点：移出知识钱包，不改变基础读取权限。"""
+    return await _remove_wallet_category(category, payload)
+
+
+async def _remove_wallet_category(category: str, payload: dict) -> dict:
+    category = category.strip()
     from sqlalchemy import delete
 
     from backend.db import SessionLocal
@@ -268,7 +311,12 @@ async def unsubscribe(category: str, payload=Depends(require_auth)):
 
 @router.delete("/me/knowledge-wallet/{category:path}")
 async def remove_from_wallet(category: str, payload=Depends(require_auth)):
-    return await unsubscribe(category, payload)
+    return await _remove_wallet_category(category, payload)
+
+
+@router.delete("/me/knowledge-wallet")
+async def remove_from_wallet_body(body: SubscribeRequest, payload=Depends(require_auth)):
+    return await _remove_wallet_category(body.category, payload)
 
 
 @router.get("/me/knowledge-access")

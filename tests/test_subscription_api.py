@@ -306,6 +306,26 @@ class TestCatalogWhitelistAndPrefixMatch(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
 
+    def test_wallet_body_endpoint_preserves_chinese_multisegment_category(self):
+        category = "knowledge/行业知识/金融"
+        added = self.request(
+            "PUT", "/api/v1/me/knowledge-wallet", json={"category": category}
+        )
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertIn(category, added.json()["categories"])
+        removed = self.request(
+            "DELETE", "/api/v1/me/knowledge-wallet", json={"category": category}
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertNotIn(category, removed.json()["categories"])
+
+    def test_wallet_error_has_recovery_action(self):
+        response = self.request(
+            "PUT", "/api/v1/me/knowledge-wallet", json={"category": "missing/类目"}
+        )
+        self.assertEqual(response.status_code, 404)
+        self.assertEqual(response.json()["detail"]["action"], "refresh_catalog")
+
     def test_prefix_match_visibility(self):
         _rel_visible = self.k._rel_visible
         vis = frozenset({"knowledge/行业知识/金融"})
