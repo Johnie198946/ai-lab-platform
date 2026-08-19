@@ -156,6 +156,52 @@ test('visitor insight extraction persists the active main session', async () => 
   assert.equal(api.session.data.customer_insight.status, 'completed');
 });
 
+test('bootstrap follows the server-owned active main visit session', async () => {
+  const { api, window } = createApi();
+  api.connect = () => {};
+  api.resumeHermes = () => {};
+  api.request = async (path) => {
+    if (path === '/health') return { ok: true };
+    assert.match(path, /\/api\/showroom\/bootstrap/);
+    return {
+      active_main_session_id: 'visit-server-owned',
+      runtime: { epoch: 7 },
+      session: { session_id: 'visit-server-owned', slot: 'main', data: {} },
+    };
+  };
+
+  await api.init({ force: true });
+
+  assert.equal(api.sessionId, 'visit-server-owned');
+  assert.equal(api.session.session_id, 'visit-server-owned');
+  assert.equal(window.sessionStorage.getItem('ai-lab-showroom.session'), 'visit-server-owned');
+});
+
+test('rollover adopts the new main visit session', async () => {
+  const { api, window } = createApi();
+  api.sessionId = 'visit-old';
+  api.slot = 'main';
+  api.request = async (path, options) => {
+    assert.equal(path, '/api/showroom/visits/visit-old/rollover');
+    assert.equal(options.method, 'POST');
+    return {
+      session: {
+        session_id: 'visit-new',
+        slot: 'main',
+        data: { visitor: { status: 'preparing' } },
+      },
+      runtime: { active_main_session_id: 'visit-new', epoch: 8 },
+    };
+  };
+
+  await api.rolloverVisit();
+
+  assert.equal(api.sessionId, 'visit-new');
+  assert.equal(api.slot, 'main');
+  assert.equal(api.state.active_main_session_id, 'visit-new');
+  assert.equal(window.sessionStorage.getItem('ai-lab-showroom.session'), 'visit-new');
+});
+
 test('expired showroom authentication returns to login with the current screen', async () => {
   const { api, window } = createApi();
   api.request = async () => {
