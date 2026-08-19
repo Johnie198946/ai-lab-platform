@@ -8,7 +8,7 @@ COPY apps/shared /app/apps/shared
 RUN npm run build
 
 FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
+COPY --from=build /app/frontend/dist /usr/share/nginx/html
 # Quantum fork 官方 Web 引擎（web-dashboard dist → 9080 server 块；官方仓库零改动）
 COPY web-dashboard/dist /usr/share/nginx/html/web-dashboard
 COPY frontend/nginx/ailab.crt /etc/nginx/ssl/ailab.crt
