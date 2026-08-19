@@ -36,12 +36,17 @@ const state = {
   chatMessages: [],
   hermesStatus: 'idle',
   hermesDetail: '',
+  hermesRetryStopped: false,
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
 
 function isStaticDisplayView(view = state.view) {
   return STATIC_DISPLAY_VIEWS.has(view);
+}
+
+function isConversationView(view = state.view) {
+  return view === 'screen-03' || view.startsWith('experience-');
 }
 
 const motionSystem = {
@@ -712,6 +717,9 @@ function liveChatFeedback() {
   if (state.avatarSpeaking) {
     return '<div class="bubble ai streaming thinking" aria-live="polite"><i></i><i></i><i></i><span>架构师正在分析你的需求…</span></div>';
   }
+  if (state.hermesRetryStopped) {
+    return `<div class="chat-error" role="alert"><b>无法连接大架构师</b><span>${escapeHtml(state.hermesDetail || '已停止自动重试，请检查网络后重新连接')}</span><button data-hermes-reconnect>重新连接</button></div>`;
+  }
   if (state.chatError) {
     return `<div class="chat-error" role="alert"><b>本轮回复失败</b><span>${escapeHtml(state.chatError)}</span><button data-chat-retry>重新发送</button></div>`;
   }
@@ -730,7 +738,7 @@ function clinicView() {
   const demand = currentDemand();
   const messages = state.chatMessages;
   const architectRole = state.content?.screens?.['screen-03']?.conversation_role || '首席解决方案架构师';
-  const busy = ['generating', 'waiting'].includes(state.hermesStatus);
+  const busy = ['connecting', 'reconnecting', 'generating', 'waiting'].includes(state.hermesStatus);
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
@@ -871,7 +879,7 @@ function experienceMiddle(step) {
     5: ['现在，请亲手试一试', '修改结果会持续写回当前会话。'],
   }[step];
   let preview = '';
-  if (step === 1) preview = `<div class="experience-chat-log">${emptyChatState()}${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向大架构师说出你的真实业务问题…" ${['generating', 'waiting'].includes(state.hermesStatus) ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-experience-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div>`;
+  if (step === 1) preview = `<div class="experience-chat-log">${emptyChatState()}${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向大架构师说出你的真实业务问题…" ${['connecting', 'reconnecting', 'generating', 'waiting'].includes(state.hermesStatus) ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-experience-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div>`;
   else if (step === 2) preview = `<div class="score-card"><strong>${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${escapeHtml(demand.core_problem || '等待收敛')}</b></div></div><div class="action-box"><span>目标指标</span><b>${escapeHtml(demand.target_metric || '待确认')}</b></div>`;
   else if (step === 3) preview = `<div class="score-card"><strong>${(insight.causes || []).length}</strong><div><span>关键根因</span><b>${escapeHtml(insight.judgment || '等待生成')}</b></div></div><div class="action-box"><span>第一步建议</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b></div>`;
   else preview = `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${escapeHtml(prototype.title || '等待生成原型')} · ${Number(prototype.progress || 0)}%</p>`;
@@ -998,6 +1006,18 @@ function attachScreenActions() {
     input.value = state.lastQuestion;
     state.chatError = '';
     sendSessionMessage(inputId, true);
+  });
+  document.querySelector('[data-hermes-reconnect]')?.addEventListener('click', async () => {
+    state.hermesRetryStopped = false;
+    state.chatError = '';
+    state.hermesStatus = 'connecting';
+    state.hermesDetail = '正在重新连接大架构师';
+    render('refresh');
+    try {
+      await window.showroomApi.retryHermes();
+    } catch (error) {
+      showToast(`重新连接失败：${error.message}`);
+    }
   });
   document.querySelectorAll('[data-clarify-choice]').forEach((button) => button.addEventListener('click', async () => {
     const choice = button.dataset.clarifyChoice;
@@ -1285,6 +1305,7 @@ function render(intent = 'refresh') {
 }
 
 function setView(view, intent = 'view') {
+  const wasConversationView = isConversationView();
   state.view = view;
   if (!view.startsWith('experience-')) state.experienceStep = 0;
   const params = new URLSearchParams(location.search);
@@ -1294,8 +1315,10 @@ function setView(view, intent = 'view') {
   history.replaceState({}, '', `${location.pathname}?${params}`);
   buildNavigation();
   render(intent);
-  if ((view === 'screen-03' || view.startsWith('experience-')) && state.bootstrapped) {
-    window.showroomApi?.ensureHermes().catch(() => {});
+  if (isConversationView(view) && state.bootstrapped) {
+    window.showroomApi?.resumeHermes();
+  } else if (wasConversationView) {
+    window.showroomApi?.suspendHermes();
   }
   if (!isStaticDisplayView(view) && !state.bootstrapped) {
     window.showroomApi?.init({ force: true });
@@ -1469,9 +1492,10 @@ window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowl
   applyBackendSnapshot(runtime, false);
   render('refresh');
 });
-window.showroomApi?.on('hermes-status', ({ status, detail }) => {
+window.showroomApi?.on('hermes-status', ({ status, detail, retryStopped }) => {
   state.hermesStatus = status;
   state.hermesDetail = detail || '';
+  state.hermesRetryStopped = Boolean(retryStopped);
   if (['screen-03'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
 });
 window.showroomApi?.on('hermes-ready', ({ messages, running }) => {
@@ -1480,6 +1504,7 @@ window.showroomApi?.on('hermes-ready', ({ messages, running }) => {
   state.streamingReply = '';
   state.pendingClarify = null;
   state.chatError = '';
+  state.hermesRetryStopped = false;
   render('refresh');
 });
 window.showroomApi?.on('hermes-event', (event) => {

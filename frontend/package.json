@@ -8,7 +8,8 @@
     "dev": "vite",
     "build": "vite build && npm run build:showroom-gateway",
     "build:showroom-gateway": "esbuild src/showroom-hermes-gateway.ts --bundle --format=iife --global-name=HermesShared --outfile=dist/showroom/hermes-gateway.js",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:showroom": "node --test tests/showroom-api.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",

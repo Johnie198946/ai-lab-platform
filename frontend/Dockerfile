@@ -56,6 +56,7 @@ RUN echo $'server {\n\
         proxy_set_header Upgrade $http_upgrade;\n\
         proxy_set_header Connection "upgrade";\n\
         proxy_set_header Host 127.0.0.1;\n\
+        proxy_set_header Origin http://127.0.0.1;\n\
         proxy_read_timeout 3600s;\n\
         proxy_buffering off;\n\
     }\n\
@@ -186,6 +187,7 @@ server {\n\
         proxy_set_header Upgrade $http_upgrade;\n\
         proxy_set_header Connection "upgrade";\n\
         proxy_set_header Host 127.0.0.1;\n\
+        proxy_set_header Origin http://127.0.0.1;\n\
         proxy_read_timeout 3600s;\n\
         proxy_buffering off;\n\
     }\n\

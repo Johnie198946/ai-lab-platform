@@ -3,6 +3,7 @@
 
   const AUTH_KEY = "ai-lab-platform.auth";
   const SESSION_KEY = "ai-lab-showroom.session";
+  const HERMES_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
 
   function readJson(key) {
     try {
@@ -83,8 +84,14 @@
       this.hermesStatus = "idle";
       this.hermesReconnectTimer = null;
       this.hermesReconnectCount = 0;
+      this.hermesReconnectExhausted = false;
       this.hermesIntentionalClose = false;
       this.hermesConnectPromise = null;
+      this.hermesServeToken = "";
+      this.hermesAccessToken = accessToken();
+      this.hermesSuspended = Boolean(global.document?.hidden) || !isConversationView();
+      this.showroomIntentionalClose = false;
+      this.lifecycleBound = false;
     }
 
     on(type, listener) {
@@ -125,6 +132,7 @@
 
     async init(options = {}) {
       try {
+        this.bindLifecycle();
         if (!options.force && isStaticDisplayView()) {
           this.setStatus("display", "纯展示页面，不连接业务后端");
           return;
@@ -147,7 +155,7 @@
         this.session = bootstrap.session;
         this.emit("bootstrap", bootstrap);
         this.connect();
-        if (isConversationView()) this.ensureHermes().catch(() => {});
+        if (isConversationView()) this.resumeHermes();
       } catch (error) {
         this.setStatus(error.status === 401 ? "auth-required" : "offline", error.message);
       }
@@ -155,19 +163,46 @@
 
     setHermesStatus(status, detail = "") {
       this.hermesStatus = status;
-      this.emit("hermes-status", { status, detail });
+      this.emit("hermes-status", {
+        status,
+        detail,
+        retryStopped: this.hermesReconnectExhausted,
+      });
     }
 
     scheduleHermesReconnect() {
-      if (this.hermesIntentionalClose || this.hermesReconnectTimer || !accessToken()) return;
-      const attempt = Math.min(this.hermesReconnectCount + 1, 5);
-      this.hermesReconnectCount = attempt;
-      const delay = Math.min(250 * (2 ** (attempt - 1)), 3000);
+      if (
+        this.hermesIntentionalClose
+        || this.hermesSuspended
+        || this.hermesReconnectTimer
+        || this.hermesReconnectExhausted
+        || !accessToken()
+      ) return;
+      if (this.hermesReconnectCount >= HERMES_RECONNECT_DELAYS.length) {
+        this.hermesReconnectExhausted = true;
+        this.setHermesStatus("error", "无法连接大架构师，已停止自动重试");
+        return;
+      }
+      const delay = HERMES_RECONNECT_DELAYS[this.hermesReconnectCount];
+      this.hermesReconnectCount += 1;
       this.setHermesStatus("reconnecting", `连接中断，${Math.ceil(delay / 1000)} 秒内恢复`);
       this.hermesReconnectTimer = global.setTimeout(() => {
         this.hermesReconnectTimer = null;
-        this.ensureHermes({ force: true }).catch(() => {});
+        this.ensureHermes().catch(() => {});
       }, delay);
+    }
+
+    async getHermesServeToken(options = {}) {
+      const currentAccessToken = accessToken();
+      if (currentAccessToken !== this.hermesAccessToken) {
+        this.hermesAccessToken = currentAccessToken;
+        this.hermesServeToken = "";
+      }
+      if (!options.refresh && this.hermesServeToken) return this.hermesServeToken;
+      const { token } = await this.request("/api/v1/hermes/serve-token");
+      if (!token) throw new Error("Hermes 会话令牌缺失");
+      this.hermesServeToken = token;
+      return token;
     }
 
     async ensureHermes(options = {}) {
@@ -181,10 +216,13 @@
         this.setHermesStatus("auth-required", error.message);
         throw error;
       }
+      if (this.hermesConnectPromise) return this.hermesConnectPromise;
+      if (this.hermesSuspended || global.document?.hidden || !isConversationView()) {
+        throw new Error("大架构师连接已暂停");
+      }
       if (!options.force && this.hermes?.connectionState === "open" && this.hermesLiveSessionId) {
         return this.hermesLiveSessionId;
       }
-      if (!options.force && this.hermesConnectPromise) return this.hermesConnectPromise;
 
       this.hermesConnectPromise = (async () => {
         global.clearTimeout(this.hermesReconnectTimer);
@@ -193,13 +231,14 @@
         this.setHermesStatus("connecting", "正在连接大架构师");
 
         if (this.hermes) {
+          const previousGateway = this.hermes;
+          this.hermes = null;
           this.hermesIntentionalClose = true;
-          this.hermes.close();
+          previousGateway.close();
           this.hermesIntentionalClose = false;
         }
 
-        const { token } = await this.request("/api/v1/hermes/serve-token");
-        if (!token) throw new Error("Hermes 会话令牌缺失");
+        const token = await this.getHermesServeToken({ refresh: options.refreshToken });
         const gateway = new global.HermesShared.JsonRpcGatewayClient({
           closedErrorMessage: "大架构师连接已断开",
           connectErrorMessage: "无法连接大架构师",
@@ -213,7 +252,11 @@
         });
         gateway.onState((connectionState) => {
           if (gateway !== this.hermes) return;
-          if (["closed", "error"].includes(connectionState) && !this.hermesIntentionalClose) {
+          if (
+            ["closed", "error"].includes(connectionState)
+            && !this.hermesIntentionalClose
+            && !this.hermesConnectPromise
+          ) {
             this.scheduleHermesReconnect();
           }
         });
@@ -223,6 +266,10 @@
           authParam: ["token", token],
         });
         await gateway.connect(wsUrl);
+        if (this.hermesSuspended || global.document?.hidden || !isConversationView()) {
+          gateway.close();
+          throw new Error("大架构师连接已暂停");
+        }
 
         const storedId = String(this.session?.data?.hermes_stored_session_id || "").trim();
         let result;
@@ -264,6 +311,7 @@
           });
         }
         this.hermesReconnectCount = 0;
+        this.hermesReconnectExhausted = false;
         this.setHermesStatus(result.running ? "generating" : "online", result.running ? "正在恢复生成" : "大架构师已连接");
         this.emit("hermes-ready", {
           live_session_id: this.hermesLiveSessionId,
@@ -277,12 +325,71 @@
       try {
         return await this.hermesConnectPromise;
       } catch (error) {
+        if (error.status === 401) this.hermesServeToken = "";
+        if (this.hermesSuspended) {
+          this.setHermesStatus("idle", "页面不可见，连接已暂停");
+          throw error;
+        }
         this.setHermesStatus(error.status === 401 ? "auth-required" : "error", error.message);
         this.scheduleHermesReconnect();
         throw error;
       } finally {
         this.hermesConnectPromise = null;
       }
+    }
+
+    retryHermes() {
+      if (this.hermesConnectPromise) return this.hermesConnectPromise;
+      global.clearTimeout(this.hermesReconnectTimer);
+      this.hermesReconnectTimer = null;
+      this.hermesReconnectCount = 0;
+      this.hermesReconnectExhausted = false;
+      this.hermesServeToken = "";
+      this.hermesSuspended = Boolean(global.document?.hidden) || !isConversationView();
+      if (this.hermesSuspended) return Promise.reject(new Error("当前页面不可见，暂不建立连接"));
+      return this.ensureHermes({ force: true, refreshToken: true });
+    }
+
+    suspendHermes(options = {}) {
+      this.hermesSuspended = true;
+      global.clearTimeout(this.hermesReconnectTimer);
+      this.hermesReconnectTimer = null;
+      this.hermesIntentionalClose = true;
+      const gateway = this.hermes;
+      this.hermes = null;
+      this.hermesLiveSessionId = "";
+      gateway?.close();
+      this.hermesIntentionalClose = false;
+      if (options.suspendShowroom) {
+        global.clearTimeout(this.retryTimer);
+        this.retryTimer = null;
+        this.showroomIntentionalClose = true;
+        const showroomSocket = this.ws;
+        this.ws = null;
+        showroomSocket?.close();
+      }
+      this.setHermesStatus("idle", "页面不可见，连接已暂停");
+    }
+
+    resumeHermes() {
+      if (global.document?.hidden || !isConversationView()) return;
+      this.hermesSuspended = false;
+      this.ensureHermes().catch(() => {});
+    }
+
+    bindLifecycle() {
+      if (this.lifecycleBound) return;
+      this.lifecycleBound = true;
+      global.document?.addEventListener("visibilitychange", () => {
+        if (global.document.hidden) {
+          this.suspendHermes({ suspendShowroom: true });
+          return;
+        }
+        this.showroomIntentionalClose = false;
+        if (!isStaticDisplayView()) this.connect();
+        this.resumeHermes();
+      });
+      global.addEventListener?.("pagehide", () => this.suspendHermes({ suspendShowroom: true }));
     }
 
     async submitHermesPrompt(question, options = {}) {
@@ -330,34 +437,41 @@
 
     connect() {
       const token = accessToken();
-      if (!token) return;
+      if (!token || global.document?.hidden) return;
+      if (this.ws && [WebSocket.CONNECTING, WebSocket.OPEN].includes(this.ws.readyState)) return;
+      this.showroomIntentionalClose = false;
       global.clearTimeout(this.retryTimer);
       const protocol = global.location.protocol === "https:" ? "wss:" : "ws:";
       const url = `${protocol}//${global.location.host}/api/showroom/ws?token=${encodeURIComponent(token)}&session_id=${encodeURIComponent(this.sessionId)}`;
-      this.ws = new WebSocket(url);
-      this.ws.addEventListener("open", () => {
+      const socket = new WebSocket(url);
+      this.ws = socket;
+      socket.addEventListener("open", () => {
+        if (socket !== this.ws) return;
         this.retryCount = 0;
         this.setStatus("online");
       });
-      this.ws.addEventListener("message", (event) => {
+      socket.addEventListener("message", (event) => {
+        if (socket !== this.ws) return;
         let message;
         try { message = JSON.parse(event.data); } catch { return; }
         if (message.type === "PING") {
-          this.ws?.send(JSON.stringify({ type: "PONG", at: Date.now() }));
+          socket.send(JSON.stringify({ type: "PONG", at: Date.now() }));
           return;
         }
         if (message.type === "PREPARE") {
-          this.ws?.send(JSON.stringify({ type: "READY", epoch: message.epoch }));
+          socket.send(JSON.stringify({ type: "READY", epoch: message.epoch }));
         }
         if (message.state) this.state = message.state;
         this.emit("message", message);
       });
-      this.ws.addEventListener("close", () => {
+      socket.addEventListener("close", () => {
+        if (socket !== this.ws || this.showroomIntentionalClose || global.document?.hidden) return;
+        this.ws = null;
         this.setStatus("reconnecting");
         const delay = Math.min(10000, 800 * (2 ** this.retryCount++));
         this.retryTimer = global.setTimeout(() => this.connect(), delay);
       });
-      this.ws.addEventListener("error", () => this.ws?.close());
+      socket.addEventListener("error", () => socket.close());
     }
 
     async commitStage(stage, payload = {}) {
@@ -520,5 +634,6 @@
     }
   }
 
+  if (global.__SHOWROOM_TEST__) global.__ShowroomApi = ShowroomApi;
   global.showroomApi = new ShowroomApi();
 })(window);

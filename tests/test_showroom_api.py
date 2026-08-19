@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -143,6 +144,13 @@ def test_screen_003_bootstrap_contract_uses_hermes_demand_clinic() -> None:
     assert screen["station"] == "demand-clinic"
     assert "禁止迎宾" in screen["station_context"]
     assert screen["data_bindings"][1]["source"] == "/api/ws"
+
+
+def test_frontend_nginx_normalizes_hermes_websocket_origin() -> None:
+    dockerfile = Path("frontend/Dockerfile").read_text(encoding="utf-8")
+
+    assert dockerfile.count("location = /api/ws") == 2
+    assert dockerfile.count("proxy_set_header Origin http://127.0.0.1;") == 2
 
 
 def test_new_showroom_session_has_no_seed_business_data() -> None:
