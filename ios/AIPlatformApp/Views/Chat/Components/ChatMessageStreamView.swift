@@ -162,27 +162,38 @@ private struct ChatWelcomeView: View {
     @State private var appeared = false
 
     var body: some View {
-        VStack(spacing: AppTheme.Spacing.xxl) {
-            QuantumAvatarView(size: 84)
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
+            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                QuantumAvatarView(size: 52)
 
-            VStack(spacing: AppTheme.Spacing.sm) {
-                Text("从一个目标开始")
-                    .font(.title.weight(.bold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("AI LAB · GENERATED WORKSPACE")
+                        .font(AppTheme.Typography.micro)
+                        .tracking(0.8)
+                        .foregroundColor(AppTheme.Icons.interactive)
 
-                Text("告诉我你想完成什么。必要时我会先确认需求，再调用合适的 Agent 和知识。")
-                    .font(AppTheme.Typography.body)
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                    .multilineTextAlignment(.center)
-                    .lineSpacing(3)
-                    .frame(maxWidth: 360)
+                    Text("今天想推进什么？")
+                        .font(.system(.title, design: .rounded, weight: .bold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+
+                    Text("先确认目标，再组织 Agent、知识与工具完成交付。")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                        .lineSpacing(3)
+                }
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                statusChip("实时编排", icon: "waveform.path", color: AppTheme.Colors.statusCompleted)
+                statusChip("本地隐私", icon: "lock.shield", color: AppTheme.Colors.interactiveBlue)
             }
 
             if !quickCommands.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("你可以试试")
+                    Text("推荐工作流")
                         .font(AppTheme.Typography.label)
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
                         .padding(.horizontal, AppTheme.Spacing.md)
                         .padding(.bottom, AppTheme.Spacing.sm)
 
@@ -191,7 +202,7 @@ private struct ChatWelcomeView: View {
                             HStack(spacing: AppTheme.Spacing.md) {
                                 Image(systemName: suggestionIcon(index))
                                     .font(.body.weight(.medium))
-                                    .foregroundColor(AppTheme.Colors.quantumBlue)
+                            .foregroundColor(AppTheme.Icons.interactive)
                                     .frame(width: 24)
                                 Text(command)
                                     .font(AppTheme.Typography.supporting)
@@ -201,7 +212,7 @@ private struct ChatWelcomeView: View {
                                 Spacer(minLength: AppTheme.Spacing.sm)
                                 Image(systemName: "arrow.up.right")
                                     .font(.caption.weight(.semibold))
-                                    .foregroundColor(AppTheme.Colors.textTertiary)
+                            .foregroundColor(AppTheme.Icons.tertiary)
                             }
                             .padding(.horizontal, AppTheme.Spacing.md)
                             .frame(minHeight: 52)
@@ -214,16 +225,18 @@ private struct ChatWelcomeView: View {
                         }
                     }
                 }
-                .background(AppTheme.Colors.cardBackground)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                        .stroke(AppTheme.Colors.border, lineWidth: 0.75)
-                }
+                .quantumCard()
                 .frame(maxWidth: 420)
             }
         }
-        .padding(.horizontal, AppTheme.Spacing.xl)
+        .padding(AppTheme.Spacing.xl)
+        .background(AppTheme.Colors.cardBackground.opacity(0.54))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.72), lineWidth: 0.75)
+        }
+        .padding(.horizontal, AppTheme.Metrics.contentGutter)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : (reduceMotion ? 0 : 10))
         .onAppear {
@@ -233,6 +246,16 @@ private struct ChatWelcomeView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Quantum 助手已就绪。可以进行需求澄清、智能编排和知识增强。")
+    }
+
+    private func statusChip(_ title: String, icon: String, color: Color) -> some View {
+        Label(title, systemImage: icon)
+            .font(AppTheme.Typography.micro)
+            .foregroundColor(color)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(color.opacity(0.10))
+            .clipShape(Capsule())
     }
 
     private func suggestionIcon(_ index: Int) -> String {

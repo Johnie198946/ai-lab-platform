@@ -56,7 +56,7 @@ public struct ImageCard: View {
         VStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "photo")
                 .font(.system(size: 32))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+                    .foregroundColor(AppTheme.Icons.tertiary)
             Text(block.assetName)
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(AppTheme.Colors.textSecondary)

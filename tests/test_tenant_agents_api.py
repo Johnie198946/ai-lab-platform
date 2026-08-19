@@ -101,7 +101,7 @@ class TestTenantAgentsAPI(unittest.TestCase):
                 "base_agent_id": "coder",
                 "custom_name": "Alpha 私有 Coder",
                 "private_prompt_delta": "严格遵循 PEP8",
-                "subscribed_knowledge_packs": ["pack_manufacturing_01"],
+                "subscribed_knowledge_packs": [],
                 "is_active": True,
             },
         )
@@ -111,7 +111,7 @@ class TestTenantAgentsAPI(unittest.TestCase):
         self.assertEqual(agent["tenant_id"], "tenant_A")
         self.assertEqual(agent["base_agent_id"], "coder")
         self.assertEqual(agent["custom_name"], "Alpha 私有 Coder")
-        self.assertEqual(agent["subscribed_knowledge_packs"], ["pack_manufacturing_01"])
+        self.assertEqual(agent["subscribed_knowledge_packs"], [])
         self.assertIsNotNone(agent["created_at"])
 
         # 列表

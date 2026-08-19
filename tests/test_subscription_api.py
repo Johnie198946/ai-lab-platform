@@ -127,14 +127,13 @@ class TestSubscriptionIsolation(unittest.TestCase):
         self.assertIn("产品设计", cats)
         self.assertNotIn("00_Inbox", cats)  # 系统目录不进目录
 
-    def test_stats_filtered_by_subscription(self):
-        # 只订阅了 wiki → stats 只统计 wiki
+    def test_green_stats_are_available_without_wallet_grant(self):
         r = self.request("GET", "/api/knowledge/stats")
         self.assertEqual(r.status_code, 200)
         cats = r.json()["categories"]
         self.assertEqual(cats.get("wiki"), 2)
-        self.assertNotIn("raw", cats)
-        self.assertNotIn("产品设计", cats)
+        self.assertEqual(cats.get("raw"), 1)
+        self.assertEqual(cats.get("产品设计"), 1)
 
     def test_wiki_list_filtered(self):
         r = self.request("GET", "/api/knowledge/wiki")
@@ -144,13 +143,11 @@ class TestSubscriptionIsolation(unittest.TestCase):
         r2 = self.request("GET", "/api/knowledge/wiki/模型观察")
         self.assertEqual(r2.status_code, 200)
 
-    def test_unsubscribed_wiki_detail_404(self):
-        # 切换到未订阅 wiki 的租户
+    def test_wallet_change_does_not_revoke_green_knowledge(self):
         global FAKE_CATEGORIES
         FAKE_CATEGORIES = {"raw"}
         r = self.request("GET", "/api/knowledge/wiki/模型观察")
-        self.assertEqual(r.status_code, 404)
-        # 已订阅的 raw 可见
+        self.assertEqual(r.status_code, 200)
         r2 = self.request("GET", "/api/knowledge/stats")
         self.assertIn("raw", r2.json()["categories"])
 
@@ -158,7 +155,7 @@ class TestSubscriptionIsolation(unittest.TestCase):
         r = self.request("GET", "/api/knowledge/search", params={"q": "DeepSeek"})
         self.assertEqual(r.status_code, 200)
         paths = [d["path"] for d in r.json()["docs"]]
-        self.assertTrue(all(p.startswith("wiki/") for p in paths))
+        self.assertTrue(any(p.startswith("raw/") for p in paths))
 
     def test_super_admin_sees_all(self):
         global FAKE_SUPER
@@ -173,7 +170,7 @@ class TestSubscriptionIsolation(unittest.TestCase):
         r = self.request("GET", "/api/knowledge/matrix")
         cats = r.json()["categories"]
         self.assertIn("wiki", cats)
-        self.assertNotIn("raw", cats)
+        self.assertIn("raw", cats)
 
 
 class TestCatalogWhitelistAndPrefixMatch(unittest.TestCase):

@@ -13,6 +13,8 @@ from pydantic import BaseModel
 
 from backend.api.auth import require_auth
 from backend.api import knowledge
+from backend.services.knowledge_policy import KnowledgeScopeDenied, resolve_policy
+from backend.services.knowledge_catalog import compute_catalog as _compute_catalog
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
 
@@ -77,60 +79,48 @@ CATEGORY_TITLES = {
 }
 
 
-def _doc_count(dir_path) -> int:
-    """统计目录下 markdown 文档数。"""
-    return sum(1 for _ in dir_path.rglob("*.md"))
-
-
 def compute_catalog() -> list[dict]:
-    """从 vault 白名单实时计算可订阅分类目录（含行业知识二级展开）。
-
-    硬锁：
-    - 仅 9 个公共目录 + knowledge/行业知识/<domain> 二级展开进入目录；
-    - knowledge/ 根、tenants/、sandbox/、scripts/、访客画像 等物理不可订阅。
-    """
-    vault = knowledge._vault()
-    if not vault.exists():
-        return []
-    catalog: list[dict] = []
-
-    # 1) 9 个公共顶层目录（白名单）
-    for name in PUBLIC_CATEGORIES:
-        child = vault / name
-        if not child.is_dir():
-            continue
-        catalog.append(
-            {
-                "category": name,
-                "path_prefix": f"{name}/",
-                "title": CATEGORY_TITLES.get(name, name),
-                "doc_count": _doc_count(child),
-                "open": True,
-            }
-        )
-
-    # 2) knowledge/行业知识/<domain> 二级展开
-    industry_root = vault / "knowledge" / "行业知识"
-    if industry_root.is_dir():
-        for domain in sorted(p for p in industry_root.iterdir() if p.is_dir()):
-            category_id = f"{INDUSTRY_KNOWLEDGE_PREFIX}/{domain.name}"
-            catalog.append(
-                {
-                    "category": category_id,
-                    "path_prefix": f"{category_id}/",
-                    "title": domain.name,
-                    "doc_count": _doc_count(domain),
-                    "open": True,
-                }
-            )
-
-    return catalog
+    """HTTP-layer catalog view; keeps API test/runtime vault overrides intact."""
+    return _compute_catalog(knowledge._vault())
 
 
 @router.get("/catalog")
 async def get_catalog(payload=Depends(require_auth)):
     """可订阅分类目录（登录即可见）。"""
-    return {"catalog": compute_catalog()}
+    from backend.db import SessionLocal
+
+    catalog = compute_catalog()
+    async with SessionLocal() as db:
+        policy, metadata = await resolve_policy(
+            db,
+            tenant_key=payload["tenant_key"],
+            org_id=payload.get("org_id", ""),
+            catalog=catalog,
+            is_super_admin=bool(payload.get("is_super_admin")),
+            is_guest=str(payload.get("role") or "") == "guest",
+            allow_admin_bypass=bool(payload.get("is_super_admin")),
+        )
+    enriched = []
+    for item in catalog:
+        category = item["category"]
+        meta = metadata[category]
+        if meta.security_level == "red" and meta.owner_tenant != policy.tenant_key:
+            continue
+        if meta.security_level == "yellow":
+            state = "included" if category in policy.effective_categories else "upgrade_required"
+        elif meta.security_level == "red":
+            state = "private"
+        else:
+            state = "available"
+        enriched.append({
+            **item,
+            "security_level": meta.security_level,
+            "owner_tenant": meta.owner_tenant if meta.security_level == "red" else None,
+            "entitlement_key": meta.entitlement_key,
+            "access_state": state,
+            "in_wallet": category in policy.wallet,
+        })
+    return {"catalog": enriched, "policy_version": policy.policy_version}
 
 
 @router.get("/me/subscriptions")
@@ -157,9 +147,54 @@ class SubscribeRequest(BaseModel):
     category: str
 
 
+class CatalogPolicyUpdate(BaseModel):
+    security_level: str
+    owner_tenant: str = "public"
+    entitlement_key: str = ""
+    is_active: bool = True
+
+
+@router.put("/admin/catalog/{category:path}")
+async def update_catalog_policy(
+    category: str, body: CatalogPolicyUpdate, payload=Depends(require_auth)
+):
+    """Manage catalog classification without turning wallet state into a grant."""
+    if not payload.get("is_super_admin"):
+        raise HTTPException(status_code=403, detail="admin scope required")
+    level = body.security_level.lower()
+    if level not in {"green", "yellow", "red"}:
+        raise HTTPException(status_code=422, detail="invalid security level")
+    if level == "yellow" and (
+        not body.entitlement_key or any(x in body.entitlement_key for x in ("*", "/", "\\", ".."))
+    ):
+        raise HTTPException(status_code=422, detail="yellow knowledge requires an exact entitlement key")
+    if level == "red" and not body.owner_tenant.strip():
+        raise HTTPException(status_code=422, detail="red knowledge requires owner_tenant")
+    item = next((item for item in compute_catalog() if item["category"] == category), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="category not found")
+    from backend.db import SessionLocal
+    from backend.models.tenant import KnowledgeCatalog
+
+    async with SessionLocal() as db:
+        row = await db.get(KnowledgeCatalog, category)
+        if row is None:
+            row = KnowledgeCatalog(
+                category=category, path_prefix=item["path_prefix"], title=item["title"],
+                doc_count=item["doc_count"], open=item["open"],
+            )
+            db.add(row)
+        row.security_level = level
+        row.owner_tenant = body.owner_tenant if level == "red" else "public"
+        row.entitlement_key = body.entitlement_key if level == "yellow" else ""
+        row.is_active = body.is_active
+        await db.commit()
+    return {"category": category, "security_level": level, "updated": True}
+
+
 @router.post("/me/subscriptions")
 async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
-    """订阅一个分类（分类必须在 catalog 白名单中，物理不可订目录返回 404）。"""
+    """兼容端点：把当前可读类目加入知识钱包，不授予读取权限。"""
     if body.category in FORBIDDEN_CATEGORIES:
         raise HTTPException(
             status_code=404, detail=f"分类不存在: {body.category}"
@@ -176,6 +211,18 @@ async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
 
     tenant_key = payload["tenant_key"]
     async with SessionLocal() as db:
+        policy, _ = await resolve_policy(
+            db,
+            tenant_key=tenant_key,
+            org_id=payload.get("org_id", ""),
+            catalog=compute_catalog(),
+            is_guest=str(payload.get("role") or "") == "guest",
+        )
+        if body.category not in policy.effective_categories:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": KnowledgeScopeDenied.code, "message": "套餐或知识权限已变化"},
+            )
         exists = (
             await db.execute(
                 select(KnowledgeSubscription).where(
@@ -194,9 +241,14 @@ async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
     return {"tenant_key": tenant_key, "categories": await _subs(tenant_key)}
 
 
+@router.put("/me/knowledge-wallet/{category:path}")
+async def add_to_wallet(category: str, payload=Depends(require_auth)):
+    return await subscribe(SubscribeRequest(category=category), payload)
+
+
 @router.delete("/me/subscriptions/{category}")
 async def unsubscribe(category: str, payload=Depends(require_auth)):
-    """退订（该分类知识立即不可见）。"""
+    """兼容端点：移出知识钱包，不改变基础读取权限。"""
     from sqlalchemy import delete
 
     from backend.db import SessionLocal
@@ -212,6 +264,39 @@ async def unsubscribe(category: str, payload=Depends(require_auth)):
         )
         await db.commit()
     return {"tenant_key": tenant_key, "categories": await _subs(tenant_key)}
+
+
+@router.delete("/me/knowledge-wallet/{category:path}")
+async def remove_from_wallet(category: str, payload=Depends(require_auth)):
+    return await unsubscribe(category, payload)
+
+
+@router.get("/me/knowledge-access")
+async def my_knowledge_access(payload=Depends(require_auth)):
+    from backend.db import SessionLocal
+
+    catalog = compute_catalog()
+    async with SessionLocal() as db:
+        policy, _ = await resolve_policy(
+            db,
+            tenant_key=payload["tenant_key"],
+            org_id=payload.get("org_id", ""),
+            catalog=catalog,
+            is_super_admin=bool(payload.get("is_super_admin")),
+            is_guest=str(payload.get("role") or "") == "guest",
+            allow_admin_bypass=bool(payload.get("is_super_admin")),
+        )
+    return {
+        "tenant_key": policy.tenant_key,
+        "organization_id": policy.org_id,
+        "plan_id": policy.plan_id,
+        "plan_status": policy.plan_status,
+        "policy_version": policy.policy_version,
+        "wallet": sorted(policy.wallet),
+        "yellow_entitlements": sorted(policy.entitled_yellow),
+        "effective_categories": sorted(policy.effective_categories),
+        "entitlement_stale": policy.entitlement_stale,
+    }
 
 
 async def _subs(tenant_key: str) -> list[str]:

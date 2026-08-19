@@ -12,11 +12,13 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.tenant import KnowledgeSubscription
+from backend.services.knowledge_catalog import compute_catalog
+from backend.models.tenant import TenantMapping
 from backend.models.tenant_agent import TenantAgentModel
 from backend.models.tenant_agent_schema import WorkflowDSLPlan
 from backend.models.workflow import WorkflowDefinition, WorkflowPlanVersion
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
+from backend.services.knowledge_policy import resolve_policy
 
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -65,6 +67,20 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_\-]+|[\u4e00-\u9fff]{2,}", text.lower()))
 
 
+async def _effective_knowledge_scopes(db: AsyncSession, tenant: str) -> list[str]:
+    mapping = (
+        await db.execute(select(TenantMapping).where(TenantMapping.tenant_key == tenant).limit(1))
+    ).scalar_one_or_none()
+    policy, _ = await resolve_policy(
+        db,
+        tenant_key=tenant,
+        org_id=mapping.org_id if mapping else "",
+        catalog=compute_catalog(),
+        allow_admin_bypass=False,
+    )
+    return sorted(policy.effective_categories)
+
+
 async def validate_plan_policy(
     db: AsyncSession,
     tenant: str,
@@ -91,17 +107,7 @@ async def validate_plan_policy(
     )
     skill_agents = {agent_id for agent_id, _ in _tenant_skill_agents(tenant)}
     allowed_agents = set(agent_ids()) | db_agents | skill_agents
-    subscriptions = set(
-        (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == tenant
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    subscriptions = set(await _effective_knowledge_scopes(db, tenant))
     requested_scope = set(knowledge_scope)
     if not requested_scope.issubset(subscriptions):
         raise ValueError("计划包含当前租户未订阅的知识范围")
@@ -251,7 +257,38 @@ async def _plan_with_hermes(
     raw = payload.get("plan")
     if not isinstance(raw, dict):
         raise ValueError("Hermes 未返回有效计划")
-    return raw
+    # Hermes 0.19.0 偶尔使用图论常见别名 from/to；在安全编译前只做字段
+    # 兼容归一化，不补造节点、Agent 或权限。
+    normalized = dict(raw)
+    normalized["edges"] = [
+        {
+            **edge,
+            "source": edge.get("source", edge.get("from")),
+            "target": edge.get("target", edge.get("to")),
+        }
+        for edge in (raw.get("edges") or [])
+        if isinstance(edge, dict)
+    ]
+    for edge in normalized["edges"]:
+        edge.pop("from", None)
+        edge.pop("to", None)
+    normalized_nodes: list[dict[str, Any]] = []
+    allowed_scopes = set(scopes)
+    for candidate in raw.get("nodes") or []:
+        if not isinstance(candidate, dict):
+            continue
+        node = dict(candidate)
+        parameters = dict(node.get("parameters") or {})
+        requested_scopes = parameters.get("knowledge_scope")
+        if isinstance(requested_scopes, list):
+            # 兼容层只收窄到租户已经授权的范围，绝不因模型建议扩大权限。
+            parameters["knowledge_scope"] = [
+                scope for scope in requested_scopes if scope in allowed_scopes
+            ]
+        node["parameters"] = parameters
+        normalized_nodes.append(node)
+    normalized["nodes"] = normalized_nodes
+    return normalized
 
 
 async def build_plan(
@@ -264,17 +301,7 @@ async def build_plan(
     analysis_agent = await _select_tenant_agent(
         db, workflow.tenant_key, workflow.description
     )
-    scopes = list(
-        (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == workflow.tenant_key
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    scopes = await _effective_knowledge_scopes(db, workflow.tenant_key)
     version = (
         int(
             (
@@ -290,6 +317,7 @@ async def build_plan(
     plan_id = f"wfp_{uuid.uuid4().hex}"
     allowed_agents = await _allowed_agent_ids(db, workflow.tenant_key)
     validation_errors: list[str] = []
+    raw: dict[str, Any]
     if HERMES_PLANNING_ENABLED:
         try:
             raw = await _plan_with_hermes(
@@ -309,15 +337,32 @@ async def build_plan(
         raw = _safe_template(
             workflow, plan_id, scopes, analysis_agent, revision_note
         )
-    compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(raw)
-    await validate_plan_policy(
-        db,
-        workflow.tenant_key,
-        compiled,
-        allow_network=True,
-        max_tokens=24000,
-        knowledge_scope=scopes,
-    )
+    try:
+        compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(raw)
+        await validate_plan_policy(
+            db,
+            workflow.tenant_key,
+            compiled,
+            allow_network=True,
+            max_tokens=24000,
+            knowledge_scope=scopes,
+        )
+    except Exception as exc:
+        # 无论 Bridge 还是模型输出不兼容，都返回一份可见但不可批准的安全模板。
+        # 用户可以看到原因并点击重新规划，审批接口仍会阻止实际执行。
+        raw = _safe_template(workflow, plan_id, scopes, analysis_agent, revision_note)
+        compiled = DSLSafetyCompiler.compile_and_validate(raw)
+        await validate_plan_policy(
+            db,
+            workflow.tenant_key,
+            compiled,
+            allow_network=True,
+            max_tokens=24000,
+            knowledge_scope=scopes,
+        )
+        validation_errors = [
+            f"Hermes 计划未通过安全编译，当前仅为安全模板，请重新生成：{str(exc)[:240]}"
+        ]
     plan = WorkflowPlanVersion(
         id=plan_id,
         workflow_id=workflow.id,

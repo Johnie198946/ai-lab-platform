@@ -96,7 +96,8 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
     observed_during_stream: list[set] = []
 
     async def fake_bridge_stream(
-        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None
+        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None,
+        **kwargs,
     ):
         observed_during_stream.append(set(_streaming_sessions))
         yield "data: {\"type\":\"delta\",\"content\":\"你\"}\n\n"
@@ -122,7 +123,8 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
             # 流结束后标记清除
             assert "main_agent-x" not in _streaming_sessions
     # 流进行中（第一帧迭代时）标记已登记
-    assert observed_during_stream and "main_agent-x" in observed_during_stream[0]
+    assert observed_during_stream
+    assert any(value.endswith("-main_agent-x") for value in observed_during_stream[0])
     # 事件流透传完整（delta 分帧 + done 帧）
     assert '"content":"你"' in body
     assert '"content":"好"' in body
@@ -139,7 +141,8 @@ async def test_stream_expands_requested_skill(
     observed: list[str] = []
 
     async def fake_bridge_stream(
-        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None
+        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None,
+        **kwargs,
     ):
         observed.append(f"{skill_id}::{goal}")
         yield 'data: {"type":"done","answer":"ok"}\n\n'
@@ -169,7 +172,8 @@ async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITran
     """bridge 返回非 200 时下发 error 帧而非崩溃。"""
 
     async def fake_bridge_stream(
-        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None
+        goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None,
+        **kwargs,
     ):
         yield "data: {\"type\":\"error\",\"code\":\"bridge\",\"message\":\"HTTP 500\"}\n\n"
 
@@ -218,7 +222,9 @@ async def test_stream_cancel_endpoint(app: FastAPI, transport: httpx.ASGITranspo
         )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
-    assert bridge_calls and bridge_calls[0][1] == {"session_id": "main_agent-x"}
+    assert bridge_calls
+    assert bridge_calls[0][1]["session_id"].endswith("-main_agent-x")
+    assert bridge_calls[0][1]["session_id"].startswith("t")
 
 
 @pytest.mark.asyncio
@@ -249,8 +255,7 @@ async def test_clarify_submit_endpoint(app: FastAPI, transport: httpx.ASGITransp
         )
     assert r.status_code == 200
     assert r.json() == {"ok": True}
-    assert bridge_calls and bridge_calls[0][1] == {
-        "session_id": "main_agent-x",
-        "response": "B2C 单商户",
-        "clarify_id": None,
-    }
+    assert bridge_calls
+    assert bridge_calls[0][1]["session_id"].endswith("-main_agent-x")
+    assert bridge_calls[0][1]["response"] == "B2C 单商户"
+    assert bridge_calls[0][1]["clarify_id"] is None

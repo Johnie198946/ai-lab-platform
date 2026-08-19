@@ -15,6 +15,8 @@ current_tenant: ContextVar[str] = ContextVar("tenant_id", default="")
 current_visibility: ContextVar[Optional[FrozenSet[str]]] = ContextVar(
     "visibility", default=None
 )
+current_policy_version: ContextVar[str] = ContextVar("knowledge_policy_version", default="")
+current_org: ContextVar[str] = ContextVar("organization_id", default="")
 
 
 def tenant_filter(column: str = "tenant_id") -> str:

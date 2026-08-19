@@ -90,6 +90,26 @@ def _wikilinks(text: str) -> List[str]:
     return [link.strip() for link in links if link.strip()]
 
 
+def _visible_wikilinks(text: str, vault: Path) -> List[str]:
+    """Return only links whose target is inside the current authorization scope."""
+    vis = _visibility()
+    visible: List[str] = []
+    for link in _wikilinks(text):
+        relative = f"wiki/{link}.md"
+        if _rel_visible(relative, vis) and (vault / relative).exists():
+            visible.append(link)
+    return visible
+
+
+def _filtered_entity_index(m: Dict[str, Any]) -> Dict[str, List[str]]:
+    vis = _visibility()
+    return {
+        str(entity): [str(path) for path in paths if _rel_visible(str(path), vis)]
+        for entity, paths in (m.get("entity_index") or {}).items()
+        if any(_rel_visible(str(path), vis) for path in paths)
+    }
+
+
 def _iter_md_files(vault: Path):
     vis = _visibility()
     for p in sorted(vault.rglob("*.md")):
@@ -190,10 +210,13 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         for link in re.findall(r"\[\[([^\]]+)\]\]", htext):
             target = link.split("|")[0].strip()
             # 目标可能是 "竞品/DeepSeek" 或 "DeepSeek" → 定位到 wiki/ 下
-            tpath = (vault / "wiki" / f"{target}.md").as_posix()
-            if not (vault / tpath).exists():
+            candidate = (vault / "wiki" / f"{target}.md").resolve()
+            wiki_base = (vault / "wiki").resolve()
+            if not candidate.is_relative_to(wiki_base) or not candidate.exists():
                 continue
-            rel = tpath
+            rel = candidate.relative_to(vault.resolve()).as_posix()
+            if not _rel_visible(rel, vis):
+                continue
             if rel in scored:
                 scored[rel]["score"] += 3  # wikilinks 关联加分
             else:
@@ -344,8 +367,8 @@ def get_contract() -> Dict[str, Any]:
             "runtime_audit_dashboard",
             "policy-driven compile orchestration",
         ],
-        "categories_count": m.get("stats", {}).get("categories_count", 0),
-        "entity_count": m.get("stats", {}).get("total_entities_indexed", 0),
+        "categories_count": len(get_matrix().get("categories") or {}),
+        "entity_count": len(_filtered_entity_index(m)),
     }
 
 
@@ -360,11 +383,16 @@ def get_stats() -> Dict[str, Any]:
         "vault": str(vault),
         "total_md_files": len(md_files),
         "categories": {},
-        "matrix": m.get("stats", {}),
+        "matrix": {
+            "total_documents": len(md_files),
+            "categories_count": 0,
+            "total_entities_indexed": len(_filtered_entity_index(m)),
+        },
     }
     for _, rel in md_files:
         cat = rel.split("/")[0]
         stats["categories"][cat] = stats["categories"].get(cat, 0) + 1
+    stats["matrix"]["categories_count"] = len(stats["categories"])
     return stats
 
 
@@ -381,8 +409,9 @@ def search(
     # 实体命中（矩阵 entity_index）
     entities: List[str] = []
     m = _matrix()
-    if m.get("entity_index"):
-        for ent in m["entity_index"]:
+    filtered_entities = _filtered_entity_index(m)
+    if filtered_entities:
+        for ent in filtered_entities:
             if q.lower() in ent.lower():
                 entities.append(ent)
 
@@ -394,7 +423,7 @@ def entities(
     q: Optional[str] = Query(None, max_length=100),
 ) -> Dict[str, Any]:
     m = _matrix()
-    idx = m.get("entity_index", {})
+    idx = _filtered_entity_index(m)
     if not idx:
         raise HTTPException(status_code=404, detail="entity_index not found")
     if q:
@@ -423,7 +452,7 @@ def list_wiki() -> Dict[str, Any]:
                 "title": fm.get("title", p.stem),
                 "status": fm.get("status", "unknown"),
                 "tags": fm.get("tags", []),
-                "links_out": _wikilinks(text),
+                "links_out": _visible_wikilinks(text, vault),
             }
         )
     return {"total": len(entries), "entries": entries}
@@ -455,6 +484,6 @@ def get_wiki(slug: str) -> Dict[str, Any]:
         "status": fm.get("status", "unknown"),
         "tags": fm.get("tags", []),
         "frontmatter": fm,
-        "wikilinks": _wikilinks(text),
+        "wikilinks": _visible_wikilinks(text, vault),
         "content": body,
     }

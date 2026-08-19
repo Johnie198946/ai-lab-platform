@@ -80,8 +80,9 @@ class TestBridgeCLIParms(unittest.TestCase):
                 "extra_body": {"prompt_cache_options": {"ttl": 3600}},
             },
         )
-        self.assertNotIn("prompt_cache_retention", cleaned)
-        self.assertNotIn("prompt_cache_options", cleaned["extra_body"])
+        self.assertIsNone(cleaned["prompt_cache_retention"])
+        self.assertIsNone(cleaned["prompt_cache_options"])
+        self.assertIsNone(cleaned["extra_body"]["prompt_cache_options"])
         self.assertEqual(cleaned["temperature"], 0.2)
 
     def test_unsupported_cache_parameters_are_removed_for_every_provider(self):
@@ -149,7 +150,9 @@ class TestSessionExistsAssertion(unittest.TestCase):
             result = asyncio.run(chat(body))
 
             # 验证：_run_hermes 被调用时 session_id=None（新建）
-            mock_hermes.assert_called_once_with("你好", None)
+            called_goal, called_session = mock_hermes.call_args.args
+            self.assertTrue(called_goal.endswith("【用户问题】你好"))
+            self.assertIsNone(called_session)
             # 验证：映射已更新为新 session
             self.assertEqual(bridge._user_session_map["user_1001"], "new_session_id")
             # 验证：返回新 session_id
@@ -317,6 +320,139 @@ class TestDrillMeSteering(unittest.TestCase):
         self.assertIn("## 需求确认单", CLARIFY_GATE_PROMPT)
         self.assertIn("确认维度 | 已确认需求", CLARIFY_GATE_PROMPT)
         self.assertIn("确认，进入方案设计", CLARIFY_GATE_PROMPT)
+
+
+class TestWorkflowHermesRuntime(unittest.TestCase):
+    """工作流必须使用最小工具面与独立预算口径。"""
+
+    def test_node_toolsets_are_minimal_and_permission_aware(self):
+        from scripts.hermes_bridge import _workflow_toolsets
+
+        self.assertEqual(
+            _workflow_toolsets(
+                {
+                    "node_type": "KNOWLEDGE_RETRIEVAL",
+                    "parameters": {"allow_network": False},
+                }
+            ),
+            ["skills"],
+        )
+        self.assertEqual(
+            _workflow_toolsets(
+                {
+                    "node_type": "KNOWLEDGE_RETRIEVAL",
+                    "parameters": {"allow_network": True},
+                }
+            ),
+            ["web"],
+        )
+        self.assertEqual(
+            _workflow_toolsets({"node_type": "OUTPUT_FORMAT", "parameters": {}}),
+            ["skills"],
+        )
+
+    def test_dsl_node_budget_is_converted_to_per_turn_cap(self):
+        from scripts.hermes_bridge import _workflow_turn_token_cap
+
+        self.assertEqual(
+            _workflow_turn_token_cap(
+                {
+                    "node_type": "KNOWLEDGE_RETRIEVAL",
+                    "parameters": {"max_tokens": 3000},
+                }
+            ),
+            500,
+        )
+        self.assertEqual(
+            _workflow_turn_token_cap(
+                {"node_type": "OUTPUT_FORMAT", "parameters": {"max_tokens": 3000}}
+            ),
+            1000,
+        )
+
+    def test_cache_reads_are_reported_but_not_charged_one_to_one_to_budget(self):
+        from scripts.hermes_bridge import _usage_delta
+
+        usage = _usage_delta(
+            {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "reasoning_tokens": 25,
+                "cache_read_tokens": 10_000,
+                "cache_write_tokens": 10,
+                "total_tokens": 10_185,
+            }
+        )
+        self.assertEqual(usage["total_tokens"], 10_185)
+        self.assertEqual(usage["cache_read_tokens"], 10_000)
+        self.assertEqual(usage["budget_tokens"], 75)
+
+    def test_node_prompt_includes_only_direct_dependency_summary(self):
+        from scripts.hermes_bridge import _workflow_node_prompt
+
+        run = {
+            "goal": "生成报告",
+            "deliverable": "Markdown",
+            "allow_network": False,
+            "plan": {
+                "nodes": [
+                    {"id": "source", "name": "证据"},
+                    {"id": "unrelated", "name": "无关分支"},
+                    {"id": "format", "name": "格式化"},
+                ],
+                "edges": [{"source": "source", "target": "format"}],
+            },
+            "nodes": {
+                "source": {"status": "succeeded", "output": "直接证据摘要"},
+                "unrelated": {"status": "succeeded", "output": "不应注入的内容"},
+            },
+        }
+        prompt = _workflow_node_prompt(
+            run,
+            {"id": "format", "node_type": "OUTPUT_FORMAT", "parameters": {}},
+        )
+        self.assertIn("直接证据摘要", prompt)
+        self.assertNotIn("不应注入的内容", prompt)
+
+    def test_retrieval_rejects_unfinished_tool_control_text(self):
+        from scripts.hermes_bridge import _workflow_output_incomplete
+
+        node = {"node_type": "KNOWLEDGE_RETRIEVAL"}
+        self.assertTrue(
+            _workflow_output_incomplete(
+                node,
+                "我先确认当前会话可用的检索工具。\n"
+                "<tool_switch_to_interpreter>使用 bash 工具</tool_switch_to_interpreter>",
+            )
+        )
+        self.assertFalse(
+            _workflow_output_incomplete(
+                node,
+                "# 联网证据\n\n- 拜仁官方公告确认该事项：https://fcbayern.com/example\n"
+                + "证据摘要与可追溯说明。" * 30,
+            )
+        )
+
+    def test_node_repair_usage_is_merged_without_losing_cache_or_cost(self):
+        from scripts.hermes_bridge import _merge_workflow_usage
+
+        merged = _merge_workflow_usage(
+            {"input_tokens": 100, "cache_read_tokens": 500, "api_calls": 1},
+            {
+                "input_tokens": 80,
+                "output_tokens": 20,
+                "cache_read_tokens": 400,
+                "api_calls": 1,
+                "estimated_cost_usd": 0.002,
+                "model": "deepseek-v4-flash",
+                "provider": "deepseek",
+            },
+        )
+        self.assertEqual(merged["input_tokens"], 180)
+        self.assertEqual(merged["cache_read_tokens"], 900)
+        self.assertEqual(merged["api_calls"], 2)
+        self.assertEqual(merged["estimated_cost_usd"], 0.002)
+        self.assertEqual(merged["model"], "deepseek-v4-flash")
 
 
 if __name__ == "__main__":

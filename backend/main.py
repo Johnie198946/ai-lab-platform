@@ -26,6 +26,7 @@ from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router
 from backend.api.workflows import router as workflows_router
+from backend.api.knowledge_policy import router as knowledge_policy_router
 from backend.db import init_db
 
 
@@ -46,10 +47,16 @@ async def lifespan(app: FastAPI):
     from backend.services.agent_scheduler import start_scheduler
 
     start_scheduler()
+    from backend.services.entitlement_sync import start_entitlement_sync
+
+    start_entitlement_sync()
     yield
     from backend.services.agent_scheduler import stop_scheduler
 
     stop_scheduler()
+    from backend.services.entitlement_sync import stop_entitlement_sync
+
+    await stop_entitlement_sync()
 
 
 app = FastAPI(
@@ -61,7 +68,7 @@ app = FastAPI(
 - **知识库**: 原始材料 + 编译知识层 + knowledge_matrix 机读接口
 - **编译链**: Ingest → Diff → Synth → Distill
 - **Agent / Harness**: 调度 + 状态 + 日志 + policy + ledger
-- **多租户（订阅制）**: 每个用户默认空知识库，订阅知识分类后可见；超管可见全部
+- **多租户知识策略**: 绿色公共知识默认可见；黄色知识由 Authen 组织套餐授权；红色知识仅所属租户可见
   （租户由 Bearer JWT 派生，不信任客户端 X-Tenant-ID 头）
 
 ### 认证
@@ -119,6 +126,8 @@ app.include_router(hermes_router, dependencies=[Depends(require_auth)])
 app.include_router(showroom_router)
 # 可执行工作流：计划审批、持久执行、素材复核
 app.include_router(workflows_router, dependencies=[Depends(require_auth)])
+# Authen HMAC webhook + signed-capability Knowledge Gateway use their own auth.
+app.include_router(knowledge_policy_router)
 
 # ---------- 健康检查 ----------
 @app.get("/health")

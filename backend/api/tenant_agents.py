@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from backend.api.auth import require_auth
-from backend.api.tenant import current_tenant
+from backend.api.tenant import current_tenant, current_visibility
 from backend.db import SessionLocal
 from backend.models.agent_registry import agent_ids
 from backend.models.tenant_agent import TenantAgentModel
@@ -59,6 +59,7 @@ class TenantAgentOut(BaseModel):
     custom_name: Optional[str] = None
     private_prompt_delta: str = ""
     subscribed_knowledge_packs: List[str] = []
+    locked_knowledge_packs: List[str] = []
     custom_avatar: Optional[str] = None
     is_active: bool = True
     created_at: Optional[str] = None
@@ -66,13 +67,18 @@ class TenantAgentOut(BaseModel):
 
 def _to_out(m: TenantAgentModel) -> TenantAgentOut:
     """ORM 行 → 响应体。"""
+    preferred = set(str(x) for x in (m.subscribed_knowledge_packs or []))
+    visible = current_visibility.get()
+    effective = preferred if visible is None else preferred & set(visible)
+    locked = set() if visible is None else preferred - set(visible)
     return TenantAgentOut(
         id=m.id,
         tenant_id=m.tenant_id,
         base_agent_id=m.base_agent_id,
         custom_name=m.custom_name,
         private_prompt_delta=m.private_prompt_delta or "",
-        subscribed_knowledge_packs=m.subscribed_knowledge_packs or [],
+        subscribed_knowledge_packs=sorted(effective),
+        locked_knowledge_packs=sorted(locked),
         custom_avatar=m.custom_avatar,
         is_active=bool(m.is_active),
         created_at=m.created_at.isoformat() if m.created_at else None,
@@ -90,6 +96,13 @@ async def create_tenant_agent(
 ) -> TenantAgentOut:
     """创建租户私有 Agent 切片（base_agent_id 已由 Pydantic 校验为基线 4 个）。"""
     tenant_id = _tenant_id()
+    visible = current_visibility.get()
+    requested = set(body.subscribed_knowledge_packs)
+    if visible is not None and not requested.issubset(set(visible)):
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "knowledge_scope_denied", "message": "套餐或知识权限已变化"},
+        )
     agent = TenantAgentModel(
         id=uuid.uuid4().hex,
         tenant_id=tenant_id,

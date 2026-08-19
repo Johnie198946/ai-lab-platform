@@ -46,7 +46,7 @@ public struct ProfileEditSheet: View {
                                 Image(systemName: symbol)
                                     .font(.system(size: 26))
                                     .foregroundColor(
-                                        selected ? AppTheme.Colors.onPrimary : AppTheme.Colors.textSecondary
+                    selected ? AppTheme.Icons.onAccent : AppTheme.Icons.secondary
                                     )
                                     .frame(width: 56, height: 56)
                                     .background(

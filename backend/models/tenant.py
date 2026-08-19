@@ -41,7 +41,11 @@ class TenantMapping(Base):
 
 
 class KnowledgeSubscription(Base):
-    """知识订阅关系（核心: 租户 ↔ 分类）。"""
+    """租户知识钱包偏好。
+
+    V2 起该表不再授予读取权限；绿色知识默认可用，黄色知识由 Authen
+    entitlement snapshot 决定。保留原表名以兼容旧客户端和无损迁移。
+    """
 
     __tablename__ = "knowledge_subscriptions"
 
@@ -62,6 +66,43 @@ class KnowledgeCatalog(Base):
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     doc_count: Mapped[int] = mapped_column(Integer, default=0)
     open: Mapped[bool] = mapped_column(Boolean, default=True)
+    security_level: Mapped[str] = mapped_column(String(16), default="green")
+    owner_tenant: Mapped[str] = mapped_column(String(64), default="public")
+    entitlement_key: Mapped[str] = mapped_column(String(128), default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class TenantEntitlementSnapshot(Base):
+    """Authen 组织套餐权益在平台侧的短期只读投影。"""
+
+    __tablename__ = "tenant_entitlement_snapshots"
+
+    tenant_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    org_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    application_id: Mapped[str] = mapped_column(String(64), default="ai-lab-platform")
+    plan_id: Mapped[str] = mapped_column(String(64), default="")
+    status: Mapped[str] = mapped_column(String(20), default="inactive")
+    knowledge_entitlements: Mapped[list | None] = mapped_column(JSON, default=list)
+    entitlement_version: Mapped[int] = mapped_column(BigInteger, default=0)
+    last_event_id: Mapped[str] = mapped_column(String(255), default="")
+    effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class KnowledgeAccessAudit(Base):
+    """知识授权决策审计；不得保存知识正文。"""
+
+    __tablename__ = "knowledge_access_audits"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    entry_point: Mapped[str] = mapped_column(String(32), nullable=False)
+    category: Mapped[str] = mapped_column(String(128), default="")
+    resource_id: Mapped[str] = mapped_column(String(255), default="")
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(80), nullable=False)
+    reason: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class TenantSession(Base):

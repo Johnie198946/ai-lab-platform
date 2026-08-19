@@ -123,7 +123,7 @@ public struct MessageBubbleView: View {
                 HStack(spacing: AppTheme.Spacing.sm) {
                     Image(systemName: "exclamationmark.circle.fill")
                         .font(.system(size: 14))
-                        .foregroundColor(AppTheme.Colors.securityYellow)
+                    .foregroundColor(AppTheme.Icons.warning)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("未能生成有效回答")
                             .font(.system(size: 13, weight: .medium))
@@ -139,7 +139,7 @@ public struct MessageBubbleView: View {
                             Text("重新生成")
                         }
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(AppTheme.Colors.primary)
+            .foregroundColor(AppTheme.Icons.interactive)
                         .padding(.horizontal, AppTheme.Spacing.sm + 2)
                         .padding(.vertical, 6)
                         .background(AppTheme.Colors.primary.opacity(0.08))
@@ -188,7 +188,7 @@ public struct MessageBubbleView: View {
             Text("演示样例")
                 .font(.system(size: 10, weight: .bold))
         }
-        .foregroundColor(AppTheme.Colors.primary)
+            .foregroundColor(AppTheme.Icons.intelligence)
         .padding(.horizontal, AppTheme.Spacing.sm)
         .padding(.vertical, 3)
         .background(AppTheme.Colors.primary.opacity(0.08))
@@ -305,7 +305,7 @@ public struct CodeBlockCard: View {
                         Text(isCopied ? "已复制" : "复制")
                             .font(.system(size: 11, weight: .medium))
                     }
-                    .foregroundColor(isCopied ? AppTheme.Colors.securityGreen : Color.white.opacity(0.8))
+            .foregroundColor(isCopied ? AppTheme.Icons.success : Color.white.opacity(0.8))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 4)
                     .background(Color.white.opacity(0.12))
@@ -370,7 +370,7 @@ public struct FormulaCard: View {
         HStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "function")
                 .font(.system(size: 14, weight: .bold))
-                .foregroundColor(AppTheme.Colors.accent)
+                    .foregroundColor(AppTheme.Icons.intelligence)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 Text(formula)

@@ -48,6 +48,7 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_workflow_v2_columns)
+        await conn.run_sync(_migrate_knowledge_policy_v2_columns)
 
 
 def _migrate_workflow_v2_columns(connection) -> None:
@@ -111,6 +112,34 @@ def _migrate_workflow_v2_columns(connection) -> None:
         if name not in existing_nodes:
             connection.exec_driver_sql(
                 f'ALTER TABLE workflow_node_runs ADD COLUMN "{name}" {definition}'
+            )
+
+
+def _migrate_knowledge_policy_v2_columns(connection) -> None:
+    """Additive migration for the catalog-to-policy V2 transition."""
+    schema = inspect(connection)
+    if "knowledge_catalog" not in set(schema.get_table_names()):
+        return
+    existing = {item["name"] for item in schema.get_columns("knowledge_catalog")}
+    columns = {
+        "security_level": "VARCHAR(16) NOT NULL DEFAULT 'green'",
+        "owner_tenant": "VARCHAR(64) NOT NULL DEFAULT 'public'",
+        "entitlement_key": "VARCHAR(128) NOT NULL DEFAULT ''",
+        "is_active": "BOOLEAN NOT NULL DEFAULT TRUE",
+    }
+    for name, definition in columns.items():
+        if name not in existing:
+            connection.exec_driver_sql(
+                f'ALTER TABLE knowledge_catalog ADD COLUMN "{name}" {definition}'
+            )
+    if "tenant_entitlement_snapshots" in set(schema.get_table_names()):
+        snapshot_columns = {
+            item["name"] for item in schema.get_columns("tenant_entitlement_snapshots")
+        }
+        if "last_event_id" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tenant_entitlement_snapshots "
+                "ADD COLUMN last_event_id VARCHAR(255) NOT NULL DEFAULT ''"
             )
 
 

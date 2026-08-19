@@ -41,20 +41,20 @@ public struct ChatInputBar: View {
             inputRow
         }
         .padding(.top, AppTheme.Spacing.sm)
-        .background(AppTheme.Colors.background)
+        .background(AppTheme.Colors.background.opacity(0.96))
         .animation(AppTheme.Motion.standard, value: inputText.isEmpty)
     }
 
     private func quotedFollowUpBanner(quote: QuotedContext) -> some View {
         HStack(spacing: AppTheme.Spacing.sm) {
             Image(systemName: "quote.bubble.fill")
-                .foregroundColor(AppTheme.Colors.primary)
+                    .foregroundColor(AppTheme.Icons.interactive)
                 .font(.body)
 
             VStack(alignment: .leading, spacing: 2) {
                 Text("引用追问中")
                     .font(AppTheme.Typography.micro)
-                    .foregroundColor(AppTheme.Colors.primary)
+                    .foregroundColor(AppTheme.Icons.interactive)
                 Text(quote.text)
                     .font(.caption)
                     .foregroundColor(AppTheme.Colors.textSecondary)
@@ -69,7 +69,7 @@ public struct ChatInputBar: View {
                 }
             }) {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundColor(AppTheme.Colors.textTertiary)
+                    .foregroundColor(AppTheme.Icons.tertiary)
                     .font(.body)
             }
             .minimumTouchTarget()
@@ -87,13 +87,13 @@ public struct ChatInputBar: View {
             Button(action: onPlusTap) {
                 Image(systemName: "plus")
                     .font(.body.weight(.medium))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .foregroundColor(AppTheme.Icons.secondary)
                     .minimumTouchTarget()
             }
             .buttonStyle(SoftButtonStyle())
             .accessibilityLabel("添加附件或引用知识")
 
-            TextField(isGenerating ? "任务执行中，可继续输入" : "给 Quantum 发送消息", text: $inputText, axis: .vertical)
+            TextField(isGenerating ? "任务执行中，可继续输入" : "描述目标，或继续当前任务…", text: $inputText, axis: .vertical)
                 .lineLimit(1...5)
                 .font(AppTheme.Typography.body)
                 .padding(.vertical, 11)
@@ -102,7 +102,7 @@ public struct ChatInputBar: View {
                 Button(action: { inputText = "" }) {
                     Image(systemName: "xmark.circle.fill")
                         .font(.body)
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .foregroundColor(AppTheme.Icons.tertiary)
                         .minimumTouchTarget()
                 }
                 .accessibilityLabel("清空输入")
@@ -112,7 +112,7 @@ public struct ChatInputBar: View {
                 Button(action: onVoiceTap) {
                     Image(systemName: "waveform")
                         .font(.body.weight(.semibold))
-                        .foregroundColor(AppTheme.Colors.quantumBlue)
+                    .foregroundColor(AppTheme.Icons.interactive)
                         .minimumTouchTarget()
                 }
                 .buttonStyle(SoftButtonStyle())
@@ -121,9 +121,9 @@ public struct ChatInputBar: View {
                 Button(action: onSend) {
                     Image(systemName: "arrow.up")
                         .font(.body.weight(.bold))
-                        .foregroundColor(AppTheme.Colors.onPrimary)
+                    .foregroundColor(AppTheme.Icons.onAccent)
                         .minimumTouchTarget()
-                        .background(AppTheme.Colors.quantumBlue)
+                        .background(AppTheme.Colors.actionGradient)
                         .clipShape(Circle())
                 }
                 .buttonStyle(SoftButtonStyle())
@@ -133,12 +133,12 @@ public struct ChatInputBar: View {
         .padding(.horizontal, AppTheme.Metrics.contentGutter)
         .padding(.vertical, 6)
         .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
+            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
                 .stroke(AppTheme.Colors.border, lineWidth: 0.75)
         }
-        .shadow(color: Color.black.opacity(0.04), radius: 10, y: 4)
+        .shadow(color: Color(hex: "6B5A8A").opacity(0.15), radius: 20, y: 8)
         .padding(.horizontal, AppTheme.Spacing.md)
         .padding(.bottom, AppTheme.Spacing.sm)
     }

@@ -218,7 +218,7 @@ public struct PlusMenuSheet: View {
 
                         Image(systemName: "quote.bubble")
                             .font(.system(size: 14))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
+                            .foregroundColor(AppTheme.Icons.tertiary)
                     }
                     .padding(AppTheme.Spacing.sm)
                     .background(AppTheme.Colors.secondaryBackground)
@@ -258,7 +258,7 @@ public struct PlusMenuSheet: View {
 
             Image(systemName: "chevron.right")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(AppTheme.Colors.textTertiary)
+                .foregroundColor(AppTheme.Icons.tertiary)
         }
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)

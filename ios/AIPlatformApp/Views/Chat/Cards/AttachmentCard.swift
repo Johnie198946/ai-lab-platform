@@ -30,7 +30,7 @@ public struct AttachmentCard: View {
                 // 文档类型图标
                 Image(systemName: block.fileType.iconName)
                     .font(.system(size: 22))
-                    .foregroundColor(AppTheme.Colors.primary)
+                    .foregroundColor(AppTheme.Icons.interactive)
                     .frame(width: 40, height: 40)
                     .background(AppTheme.Colors.primary.opacity(0.08))
                     .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
@@ -43,7 +43,7 @@ public struct AttachmentCard: View {
                         .lineLimit(1)
                     Text(block.fileSize)
                         .font(.system(size: 11))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .foregroundColor(AppTheme.Icons.tertiary)
                 }
 
                 Spacer()
@@ -56,7 +56,7 @@ public struct AttachmentCard: View {
                 } else {
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: 16))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .foregroundColor(AppTheme.Icons.tertiary)
                 }
             }
             .padding(AppTheme.Spacing.md)

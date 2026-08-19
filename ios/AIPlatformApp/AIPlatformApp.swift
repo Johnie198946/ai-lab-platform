@@ -20,6 +20,7 @@ public struct AIPlatformApp: App {
             AppRootCoordinatorView()
                 .environmentObject(appState)
                 .environmentObject(apiClient)
+                .preferredColorScheme(.light)
         }
     }
 }
@@ -42,10 +43,13 @@ public struct AppRootCoordinatorView: View {
         .animation(.easeInOut(duration: 0.3), value: appState.isLoggedIn)
         .onChange(of: apiClient.needsReauth) { _, needs in
             if needs {
-                // 401 重登：清 token + 回到登录页
                 apiClient.needsReauth = false
-                apiClient.clearToken()
-                appState.logout()
+                if !appState.isGuestMode {
+                    // 真实登录态的 401 才代表凭证失效。游客访问受保护能力时应由
+                    // 当前页面展示受限/演示状态，不能把游客模式误踢回登录页。
+                    apiClient.clearToken()
+                    appState.logout()
+                }
             }
         }
     }

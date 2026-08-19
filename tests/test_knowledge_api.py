@@ -168,7 +168,8 @@ class TestKnowledgeAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["title"], "模型观察")
-        self.assertIn("测试文档", body["wikilinks"])
+        # 不存在于可见 wiki 范围的目标不能通过 wikilink 侧向泄漏。
+        self.assertNotIn("测试文档", body["wikilinks"])
 
     def test_wiki_404(self):
         r = self.request("GET", "/api/knowledge/wiki/不存在")
