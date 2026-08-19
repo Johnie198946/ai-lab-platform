@@ -80,10 +80,20 @@ class TestBridgeCLIParms(unittest.TestCase):
                 "extra_body": {"prompt_cache_options": {"ttl": 3600}},
             },
         )
-        self.assertIsNone(cleaned["prompt_cache_retention"])
-        self.assertIsNone(cleaned["prompt_cache_options"])
-        self.assertIsNone(cleaned["extra_body"]["prompt_cache_options"])
+        self.assertNotIn("prompt_cache_retention", cleaned)
+        self.assertNotIn("prompt_cache_options", cleaned)
+        self.assertNotIn("extra_body", cleaned)
         self.assertEqual(cleaned["temperature"], 0.2)
+
+    def test_deepseek_empty_cache_extra_body_is_removed(self):
+        from scripts.hermes_bridge import _cache_request_overrides
+
+        cleaned = _cache_request_overrides(
+            "deepseek-v4-flash",
+            "deepseek",
+            {"extra_body": {"prompt_cache_retention": None}},
+        )
+        self.assertNotIn("extra_body", cleaned)
 
     def test_other_provider_cache_parameters_are_preserved(self):
         from scripts.hermes_bridge import _cache_request_overrides

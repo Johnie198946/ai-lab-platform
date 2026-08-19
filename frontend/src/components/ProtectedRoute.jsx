@@ -1,9 +1,18 @@
+import { useEffect } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { isShowroomAccount, SHOWROOM_CONTROLLER_PATH } from "../auth/entryRoute";
 
 export function ProtectedRoute() {
-  const { isAuthenticated, isReady } = useAuth();
+  const { authSession, isAuthenticated, isReady } = useAuth();
   const location = useLocation();
+  const shouldEnterShowroom = isReady && isAuthenticated && isShowroomAccount(authSession?.user);
+
+  useEffect(() => {
+    if (shouldEnterShowroom) {
+      window.location.replace(SHOWROOM_CONTROLLER_PATH);
+    }
+  }, [shouldEnterShowroom]);
 
   if (!isReady) {
     return (
@@ -22,6 +31,16 @@ export function ProtectedRoute() {
 
   if (!isAuthenticated) {
     return <Navigate to="/login" replace state={{ from: location }} />;
+  }
+
+  if (shouldEnterShowroom) {
+    return (
+      <div className="route-loading">
+        <div className="route-loading__panel">
+          <h1>正在进入导览主控台…</h1>
+        </div>
+      </div>
+    );
   }
 
   return <Outlet />;

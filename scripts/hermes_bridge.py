@@ -1904,19 +1904,20 @@ def _cache_request_overrides(
     cleaned = dict(overrides or {})
     normalized = f"{provider}/{model}".lower()
     if "deepseek" in normalized:
-        # Hermes' Responses transport may add a provider default *before* it
-        # merges request_overrides.  An absent key cannot undo that default;
-        # an explicit None does, and the adapter then omits the field from the
-        # serialized request.  This keeps the guard at the final provider
-        # boundary for chat, workflow and MoA-compatible AIAgent paths.
-        cleaned["prompt_cache_retention"] = None
-        cleaned["prompt_cache_options"] = None
+        # DeepSeek rejects these keys even when their JSON value is null.  The
+        # OpenAI-compatible client serializes an explicit ``None`` as a present
+        # field, so the only safe representation is complete absence.
+        cleaned.pop("prompt_cache_retention", None)
+        cleaned.pop("prompt_cache_options", None)
         extra = cleaned.get("extra_body")
         if isinstance(extra, dict):
             extra = dict(extra)
-            extra["prompt_cache_retention"] = None
-            extra["prompt_cache_options"] = None
-            cleaned["extra_body"] = extra
+            extra.pop("prompt_cache_retention", None)
+            extra.pop("prompt_cache_options", None)
+            if extra:
+                cleaned["extra_body"] = extra
+            else:
+                cleaned.pop("extra_body", None)
     return cleaned
 
 
