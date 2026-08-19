@@ -11,6 +11,7 @@ import SwiftUI
 
 public struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
 
     public init() {}
 
@@ -47,7 +48,34 @@ public struct MainTabView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .safeAreaInset(edge: .bottom, spacing: 18) {
-            QuantumFloatingTabBar(selection: $appState.activeTab)
+            VStack(spacing: AppTheme.Spacing.xs) {
+                if let activity = workflowActivities.primaryActivity {
+                    WorkflowActivityMiniBar(
+                        activity: activity,
+                        count: workflowActivities.visibleActivities.count,
+                        onOpen: {
+                            appState.pendingWorkflowId = activity.workflow.id
+                            appState.activeTab = 1
+                        },
+                        onDismiss: {
+                            workflowActivities.dismiss(activity.workflow.id)
+                        }
+                    )
+                    .padding(.horizontal, AppTheme.Spacing.lg)
+                } else if let activity = workflowActivities.primaryExecutionActivity {
+                    WorkflowExecutionMiniBar(
+                        activity: activity,
+                        count: workflowActivities.visibleExecutionActivities.count,
+                        onOpen: {
+                            appState.pendingWorkflowId = activity.workflow.id
+                            appState.activeTab = 1
+                        },
+                        onDismiss: { workflowActivities.dismiss(activity.workflow.id) }
+                    )
+                    .padding(.horizontal, AppTheme.Spacing.lg)
+                }
+                QuantumFloatingTabBar(selection: $appState.activeTab)
+            }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if appState.isDevMode {
@@ -56,6 +84,137 @@ public struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.isDevMode)
+    }
+}
+
+private struct WorkflowExecutionMiniBar: View {
+    let activity: WorkflowActivityCoordinator.ExecutionActivity
+    let count: Int
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var running: Bool { ["queued", "running"].contains(activity.execution.status) }
+    private var statusText: String {
+        switch activity.execution.status {
+        case "queued": return "云端排队中"
+        case "running": return "云端执行中 · \(activity.execution.progress)% · \(activity.execution.tokenUsed) tokens"
+        case "awaiting_review": return "执行完成，待复核"
+        case "failed": return "执行失败，点击查看或重试"
+        default: return activity.execution.status
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Button(action: onOpen) {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Image(systemName: running ? "gearshape.2.fill" : "checkmark.doc")
+                        .foregroundStyle(AppTheme.Colors.quantumBlue)
+                        .symbolEffect(.pulse, isActive: running && !reduceMotion)
+                        .frame(width: 36, height: 36)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(count > 1 ? "\(activity.workflow.title) · 另有 \(count - 1) 项" : activity.workflow.title)
+                            .font(AppTheme.Typography.supporting.weight(.semibold)).lineLimit(1)
+                        Text(statusText).font(AppTheme.Typography.micro).foregroundStyle(AppTheme.Colors.textSecondary).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    if running { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "chevron.right").font(.caption.weight(.semibold)) }
+                }
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(SoftButtonStyle())
+            .accessibilityLabel("\(activity.workflow.title)，\(statusText)")
+            if !running {
+                Button(action: onDismiss) { Image(systemName: "xmark").frame(width: 44, height: 44) }
+                    .buttonStyle(SoftButtonStyle())
+                    .accessibilityLabel("关闭任务状态")
+            }
+        }
+        .padding(.horizontal, AppTheme.Spacing.sm)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+    }
+}
+
+private struct WorkflowActivityMiniBar: View {
+    let activity: WorkflowActivityCoordinator.Activity
+    let count: Int
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isRunning: Bool {
+        ["planning", "building_agent"].contains(activity.model.phase)
+    }
+
+    private var statusText: String {
+        if activity.model.phase == "awaiting_approval" { return "方案可审阅" }
+        if activity.model.phase == "needs_attention" { return "规划需要处理" }
+        if let message = activity.model.events.last?.message { return message }
+        return activity.model.optimisticPlanningMessage ?? "云端正在准备规划"
+    }
+
+    var body: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Button(action: onOpen) {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    ZStack {
+                        Circle()
+                            .fill(AppTheme.Colors.selectionTint)
+                            .frame(width: 36, height: 36)
+                        Image(systemName: isRunning ? "sparkles" : "doc.text.magnifyingglass")
+                            .foregroundStyle(AppTheme.Colors.quantumBlue)
+                            .symbolEffect(.pulse, isActive: isRunning && !reduceMotion)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(count > 1 ? "\(activity.workflow.title) · 另有 \(count - 1) 项" : activity.workflow.title)
+                            .font(AppTheme.Typography.supporting.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .lineLimit(1)
+                        Text(statusText)
+                            .font(AppTheme.Typography.micro)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    if isRunning {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                    }
+                }
+                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, minHeight: 48)
+            }
+            .buttonStyle(SoftButtonStyle())
+            .accessibilityLabel("\(activity.workflow.title)，\(statusText)")
+            .accessibilityHint("返回任务查看规划进度")
+
+            if !isRunning {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(SoftButtonStyle())
+                .accessibilityLabel("关闭任务状态")
+            }
+        }
+        .padding(.horizontal, AppTheme.Spacing.sm)
+        .background(.ultraThinMaterial)
+        .background(AppTheme.Colors.surfaceElevated.opacity(0.94))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.9), lineWidth: 0.75)
+        }
+        .shadow(color: Color.black.opacity(0.08), radius: 14, y: 6)
+        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
     }
 }
 

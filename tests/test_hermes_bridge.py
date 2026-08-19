@@ -9,6 +9,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -489,6 +490,61 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         self.assertEqual(merged["api_calls"], 2)
         self.assertEqual(merged["estimated_cost_usd"], 0.002)
         self.assertEqual(merged["model"], "deepseek-v4-flash")
+
+
+class TestDurableWorkflowPlanningBridge(unittest.TestCase):
+    def setUp(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._planning_runs = {}
+        bridge._planning_threads = {}
+
+    def request(self, key: str = "workflow-plan:wf_1:v1"):
+        from scripts.hermes_bridge import WorkflowPlanningStartRequest
+
+        return WorkflowPlanningStartRequest(
+            planning_job_id="wfpj_12345678",
+            idempotency_key=key,
+            tenant_id="tenant-a",
+            workflow_id="wf_1",
+            title="任务",
+            description="生成可审阅方案",
+            deliverable="Markdown",
+        )
+
+    def test_start_is_idempotent_and_status_resumes_after_cursor(self):
+        import scripts.hermes_bridge as bridge
+
+        async def run():
+            with patch.object(bridge, "_start_planning_thread"), patch.object(
+                bridge, "_save_planning_runs"
+            ):
+                first = await bridge.start_workflow_plan(self.request(), None)
+                second = await bridge.start_workflow_plan(self.request(), None)
+                run = bridge._planning_runs[first["run_id"]]
+                bridge._planning_event(run, "skill_load", "加载技能: research")
+                bridge._planning_event(run, "tool_call", "调用工具: search_files")
+                status = await bridge.workflow_plan_status(first["run_id"], 1, None)
+                return first, second, status
+
+        first, second, status = asyncio.run(run())
+        self.assertEqual(first["run_id"], second["run_id"])
+        self.assertEqual([event["id"] for event in status["events"]], [2])
+
+    def test_idempotency_conflict_is_rejected(self):
+        import scripts.hermes_bridge as bridge
+        from fastapi import HTTPException
+
+        async def run():
+            with patch.object(bridge, "_start_planning_thread"), patch.object(
+                bridge, "_save_planning_runs"
+            ):
+                await bridge.start_workflow_plan(self.request(), None)
+                await bridge.start_workflow_plan(self.request("different-key"), None)
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(run())
+        self.assertEqual(raised.exception.status_code, 409)
 
 
 if __name__ == "__main__":

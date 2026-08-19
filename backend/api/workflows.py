@@ -31,13 +31,19 @@ from backend.models.workflow import (
     WorkflowClarificationSession,
     WorkflowLifecycleEvent,
     WorkflowNodeRun,
+    WorkflowPlanningJob,
     WorkflowPlanVersion,
     WorkflowSessionMessage,
 )
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.workflow_artifacts import run_root, vault_root
 from backend.services.workflow_executor import cancel_remote, retry_remote
-from backend.services.workflow_planner import build_plan, validate_plan_policy
+from backend.services.workflow_planner import validate_plan_policy
+from backend.services.workflow_planning import (
+    backfill_orphaned_planning_jobs,
+    enqueue_planning_job,
+    event_payload as planning_event_payload,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
 
@@ -68,7 +74,7 @@ class PlanEdit(BaseModel):
     dsl: dict[str, Any]
     deliverable: str = Field(..., min_length=1, max_length=300)
     allow_network: bool = True
-    max_tokens: int = Field(24000, ge=1000, le=128000)
+    max_tokens: int = Field(999999, ge=1000, le=999999)
     knowledge_scope: list[str] = []
 
 
@@ -92,6 +98,15 @@ class RevisionRequest(BaseModel):
 
 
 def plan_out(plan: WorkflowPlanVersion) -> dict[str, Any]:
+    # Historical rows and rolling deployments may contain a partial DSL.  Keep
+    # the wire contract complete so one missing nested field cannot make the
+    # entire plan-review screen undecodable on iOS.
+    dsl = dict(plan.dsl or {})
+    dsl["plan_id"] = str(dsl.get("plan_id") or plan.id)
+    dsl["name"] = str(dsl.get("name") or plan.goal or "执行计划")
+    dsl["version"] = str(dsl.get("version") or "1.0.0")
+    dsl["nodes"] = dsl.get("nodes") if isinstance(dsl.get("nodes"), list) else []
+    dsl["edges"] = dsl.get("edges") if isinstance(dsl.get("edges"), list) else []
     return {
         "id": plan.id,
         "workflow_id": plan.workflow_id,
@@ -103,7 +118,7 @@ def plan_out(plan: WorkflowPlanVersion) -> dict[str, Any]:
         "estimated_tokens": plan.estimated_tokens,
         "knowledge_scope": plan.knowledge_scope or [],
         "validation_errors": plan.validation_errors or [],
-        "dsl": plan.dsl,
+        "dsl": dsl,
         "frozen_at": plan.frozen_at.isoformat() if plan.frozen_at else None,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
     }
@@ -377,156 +392,10 @@ def requirement_confirmation_payload(
     }
 
 
-_planning_tasks: dict[str, asyncio.Task] = {}
-
-
-async def _run_planning(workflow_id: str, revision_note: str | None = None) -> None:
-    """Compile a confirmed requirement in the background and persist real milestones."""
-    try:
-        async with SessionLocal() as db:
-            workflow = await db.get(WorkflowDefinition, workflow_id)
-            if workflow is None or not workflow.clarification_session_id:
-                return
-            session = await db.get(
-                WorkflowClarificationSession, workflow.clarification_session_id
-            )
-            persisted_revision = str(
-                (workflow.requirements_snapshot or {}).get("revision_instruction") or ""
-            ).strip()
-            revision_note = (revision_note or persisted_revision).strip() or None
-            if session is None or (workflow.active_plan_id and not revision_note):
-                return
-            workflow.status = "planning"
-            session.phase = "planning"
-            await append_lifecycle_event(
-                db, workflow, session, "planning_started", "正在根据确认需求生成方案"
-            )
-            await append_lifecycle_event(
-                db,
-                workflow,
-                session,
-                "planner_context_loaded",
-                "已加载确认需求、知识权限与可用 Agent 清单",
-                {
-                    "tool": "Workflow planner context",
-                    "detail": "确认需求快照、租户知识策略、可见 Agent 注册表",
-                },
-            )
-            await db.commit()
-
-        async with SessionLocal() as db:
-            workflow = await db.get(WorkflowDefinition, workflow_id)
-            if workflow is None or not workflow.clarification_session_id:
-                return
-            session = await db.get(
-                WorkflowClarificationSession, workflow.clarification_session_id
-            )
-            await append_lifecycle_event(
-                db,
-                workflow,
-                session,
-                "capabilities_selecting",
-                "正在选择最小 Agent 能力组合",
-                {"tool": "Agent registry", "detail": "Main 固定，其他能力按计划节点启用"},
-            )
-            await db.commit()
-            plan = await build_plan(db, workflow, revision_note=revision_note)
-            await append_lifecycle_event(
-                db,
-                workflow,
-                session,
-                "plan_compiled",
-                "工作流 DAG 已编译",
-                {"tool": "DSLSafetyCompiler", "detail": f"计划版本 {plan.version}"},
-            )
-            if plan.validation_errors:
-                session.phase = "needs_attention"
-                workflow.status = "planning"
-                await append_lifecycle_event(
-                    db,
-                    workflow,
-                    session,
-                    "planning_failed",
-                    "方案需要重新生成或调整",
-                    {"errors": plan.validation_errors},
-                )
-            else:
-                snapshot = dict(workflow.requirements_snapshot or {})
-                snapshot.pop("revision_instruction", None)
-                workflow.requirements_snapshot = snapshot
-                session.phase = "awaiting_approval"
-                workflow.status = "awaiting_approval"
-                await append_lifecycle_event(
-                    db,
-                    workflow,
-                    session,
-                    "policy_validated",
-                    "方案已通过权限与安全校验",
-                    {"tool": "Plan policy validator", "detail": "知识范围、联网开关与 Token 预算已校验"},
-                )
-                await append_lifecycle_event(
-                    db,
-                    workflow,
-                    session,
-                    "plan_ready",
-                    "方案已生成，等待你的确认",
-                    {"plan_id": plan.id},
-                )
-            await db.commit()
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        async with SessionLocal() as db:
-            workflow = await db.get(WorkflowDefinition, workflow_id)
-            if workflow and workflow.clarification_session_id:
-                session = await db.get(
-                    WorkflowClarificationSession, workflow.clarification_session_id
-                )
-                if session:
-                    session.phase = "needs_attention"
-                    workflow.status = "planning"
-                    await append_lifecycle_event(
-                        db,
-                        workflow,
-                        session,
-                        "planning_failed",
-                        "方案生成暂时失败，可安全重试",
-                        {"error": str(exc)[:300]},
-                    )
-                    await db.commit()
-    finally:
-        _planning_tasks.pop(workflow_id, None)
-
-
-def schedule_planning(workflow_id: str, revision_note: str | None = None) -> None:
-    current = _planning_tasks.get(workflow_id)
-    if current and not current.done():
-        return
-    _planning_tasks[workflow_id] = asyncio.create_task(
-        _run_planning(workflow_id, revision_note=revision_note)
-    )
-
-
 async def resume_pending_planning() -> None:
-    """Resume confirmed planning jobs after an API process restart."""
+    """Backfill a durable job for pre-queue deployments; workers own execution."""
     async with SessionLocal() as db:
-        workflow_ids = list(
-            (
-                await db.execute(
-                    select(WorkflowDefinition.id)
-                    .join(
-                        WorkflowClarificationSession,
-                        WorkflowClarificationSession.workflow_id == WorkflowDefinition.id,
-                    )
-                    .where(
-                        WorkflowDefinition.status == "planning",
-                        WorkflowClarificationSession.phase == "planning",
-                    )
-                )
-            ).scalars().all()
-        )
-    for workflow_id in workflow_ids:
-        schedule_planning(workflow_id)
+        await backfill_orphaned_planning_jobs(db)
 
 
 async def owned_execution(
@@ -666,7 +535,6 @@ async def respond_to_clarification(
     body: ClarificationResponse,
     payload: dict = Depends(require_auth),
 ):
-    should_plan = False
     async with SessionLocal() as db:
         workflow = await owned_workflow(db, workflow_id, payload)
         session = await owned_clarification(db, workflow, payload)
@@ -728,9 +596,30 @@ async def respond_to_clarification(
                     session,
                     "requirements_confirmed",
                     "需求确认单已锁定",
-                    {"spec": spec},
+                    planning_event_payload(
+                        f"requirements-{workflow.id}",
+                        "requirements",
+                        "done",
+                        detail="结构化需求快照已冻结",
+                        spec=spec,
+                    ),
                 )
-                should_plan = True
+                job = await enqueue_planning_job(db, workflow)
+                await append_lifecycle_event(
+                    db,
+                    workflow,
+                    session,
+                    "planning_queued",
+                    "规划请求已提交到云端",
+                    planning_event_payload(
+                        f"queued-{job.id}",
+                        "planner",
+                        "queued",
+                        tool="planning_queue",
+                        detail="离开此页面不会中断",
+                        planning_job_id=job.id,
+                    ),
+                )
             else:
                 session.phase = "clarifying"
                 session.round_number = 3
@@ -802,8 +691,6 @@ async def respond_to_clarification(
         await db.commit()
         await db.refresh(session)
         result = clarification_out(session)
-    if should_plan:
-        schedule_planning(workflow_id)
     return result
 
 
@@ -857,6 +744,50 @@ async def workflow_lifecycle_events(
             await asyncio.sleep(1)
 
     return StreamingResponse(stream(), media_type="text/event-stream")
+
+
+@router.get("/workflow-activities/active")
+async def active_workflow_activities(payload: dict = Depends(require_auth)):
+    """Bootstrap resumable planning/building activities for an app foreground."""
+    async with SessionLocal() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(WorkflowDefinition, WorkflowClarificationSession)
+                    .join(
+                        WorkflowClarificationSession,
+                        WorkflowClarificationSession.workflow_id == WorkflowDefinition.id,
+                    )
+                    .where(
+                        WorkflowDefinition.tenant_key == tenant(),
+                        WorkflowDefinition.created_by == current_user(payload),
+                        WorkflowDefinition.archived_at.is_(None),
+                        WorkflowClarificationSession.phase.in_(
+                            ["planning", "building_agent", "awaiting_approval", "needs_attention"]
+                        ),
+                    )
+                    .order_by(WorkflowDefinition.updated_at.desc())
+                )
+            ).all()
+        )
+        result = []
+        for workflow, session in rows:
+            latest = (
+                await db.execute(
+                    select(WorkflowLifecycleEvent)
+                    .where(WorkflowLifecycleEvent.workflow_id == workflow.id)
+                    .order_by(WorkflowLifecycleEvent.seq.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            result.append(
+                {
+                    "workflow": workflow_out(workflow),
+                    "session": clarification_out(session),
+                    "latest_event": lifecycle_event_out(latest) if latest else None,
+                }
+            )
+        return result
 
 
 @router.get("/workflows")
@@ -1028,10 +959,12 @@ async def replan(
             "已收到修改意见，准备重新生成方案",
             {"instruction": instruction},
         )
+        await enqueue_planning_job(
+            db, workflow, revision_note=instruction or "按现有确认需求重新生成", force_new=True
+        )
         await db.commit()
         await db.refresh(session)
         result = clarification_out(session)
-    schedule_planning(workflow_id, revision_note=instruction or None)
     return result
 
 
@@ -1052,12 +985,25 @@ async def retry_planning(workflow_id: str, payload: dict = Depends(require_auth)
         workflow.status = "planning"
         session.phase = "planning"
         await append_lifecycle_event(
-            db, workflow, session, "planning_retry_scheduled", "已安排同一规划任务重试"
+            db,
+            workflow,
+            session,
+            "planning_retry_scheduled",
+            "已安排同一规划任务重试",
+            planning_event_payload(
+                f"retry-{workflow.id}-{session.last_event_seq + 1}",
+                "planner",
+                "queued",
+                tool="planning_queue",
+                detail="将从已确认需求重新生成，不重复提交执行任务",
+            ),
+        )
+        await enqueue_planning_job(
+            db, workflow, revision_note=instruction, force_new=True
         )
         await db.commit()
         await db.refresh(session)
         result = clarification_out(session)
-    schedule_planning(workflow_id, revision_note=instruction)
     return result
 
 
@@ -1355,6 +1301,39 @@ async def start_workflow(
         return execution_out(execution, nodes)
 
 
+@router.get("/workflow-executions/active")
+async def active_workflow_executions(payload: dict = Depends(require_auth)):
+    """Return resumable executions owned by the current user.
+
+    This is the authority used after foregrounding or a cold app launch; an SSE
+    connection is never treated as the task's lifetime.
+    """
+    async with SessionLocal() as db:
+        rows = list((await db.execute(
+            select(WorkflowExecution, WorkflowDefinition)
+            .join(WorkflowDefinition, WorkflowDefinition.id == WorkflowExecution.workflow_id)
+            .where(
+                WorkflowExecution.tenant_key == tenant(),
+                WorkflowDefinition.created_by == current_user(payload),
+                WorkflowDefinition.archived_at.is_(None),
+                WorkflowExecution.status.in_(["queued", "running", "awaiting_review", "failed"]),
+            )
+            .order_by(WorkflowExecution.created_at.desc())
+        )).all())
+        result = []
+        for execution, workflow in rows:
+            nodes = list((await db.execute(
+                select(WorkflowNodeRun)
+                .where(WorkflowNodeRun.execution_id == execution.id)
+                .order_by(WorkflowNodeRun.position)
+            )).scalars().all())
+            result.append({
+                "workflow": workflow_out(workflow),
+                "execution": execution_out(execution, nodes),
+            })
+        return result
+
+
 @router.get("/workflow-executions/{execution_id}")
 async def get_execution(execution_id: str, payload: dict = Depends(require_auth)):
     async with SessionLocal() as db:
@@ -1374,13 +1353,18 @@ async def get_execution(execution_id: str, payload: dict = Depends(require_auth)
 
 
 @router.get("/workflow-executions/{execution_id}/events")
-async def stream_events(execution_id: str, payload: dict = Depends(require_auth)):
+async def stream_events(
+    execution_id: str,
+    after: int = Query(0, ge=0),
+    last_event_id: str | None = Header(None, alias="Last-Event-ID"),
+    payload: dict = Depends(require_auth),
+):
     requested_tenant = tenant()
     async with SessionLocal() as db:
         await owned_execution(db, execution_id, payload)
 
     async def generate():
-        cursor = 0
+        cursor = max(after, int(last_event_id or 0) if str(last_event_id or "").isdigit() else 0)
         while True:
             async with SessionLocal() as db:
                 execution = (
@@ -1416,6 +1400,7 @@ async def stream_events(execution_id: str, payload: dict = Depends(require_auth)
                             "type": event.event_type,
                             "message": event.message,
                             "payload": event.payload,
+                            "created_at": event.created_at.isoformat() if event.created_at else None,
                         },
                         ensure_ascii=False,
                     )

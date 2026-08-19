@@ -213,6 +213,24 @@ def _set_usage(target: Any, usage: dict[str, Any]) -> None:
     target.token_used = int(usage.get("total_tokens") or 0)
 
 
+def _rollup_usage(execution: WorkflowExecution, nodes: dict[str, WorkflowNodeRun]) -> None:
+    """Publish the last exact per-call totals while the overall run is active."""
+    fields = (
+        "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens",
+        "cache_write_tokens", "api_calls", "token_used",
+    )
+    for field in fields:
+        setattr(execution, field, sum(int(getattr(node, field, 0) or 0) for node in nodes.values()))
+    execution.estimated_cost_usd = sum(
+        float(node.estimated_cost_usd or 0) for node in nodes.values()
+    )
+    completed = [node for node in nodes.values() if node.status == "succeeded"]
+    if completed:
+        latest = max(completed, key=lambda item: item.position)
+        execution.model_used = latest.model_used
+        execution.provider_used = latest.provider_used
+
+
 async def _artifact_exists(db: AsyncSession, execution_id: str, event_id: str) -> bool:
     rows = list(
         (
@@ -275,6 +293,7 @@ async def project_event(
             )
         if route.get("reason"):
             execution.route_reason = str(route["reason"])[:500]
+        _rollup_usage(execution, node_rows)
     elif event_type == "run_completed":
         execution.status = "awaiting_review"
         execution.progress = 100
@@ -301,6 +320,15 @@ async def project_event(
         node_id=node_id or None,
         usage=event.get("usage") or {},
         route=event.get("route") or {},
+        category=event.get("category") or event_type,
+        status=event.get("status") or (
+            "running" if event_type in {"run_started", "node_started", "tool_start", "agent_spawn"}
+            else "failed" if event_type in {"run_failed", "evaluation_failed"}
+            else "done"
+        ),
+        tool=event.get("tool"),
+        detail=event.get("detail") or "",
+        source=event.get("source") or "hermes_bridge",
     )
     execution.bridge_event_seq = max(
         execution.bridge_event_seq, int(event.get("seq") or 0)

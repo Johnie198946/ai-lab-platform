@@ -238,7 +238,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         thinkingDetail = nil
         generationStartDate = Date()
         let sid = sessionManager.activeSessionID()
-        let req = InFlightRequest(id: UUID().uuidString, sessionId: sid, text: text, quote: quote, regenerate: regenerate)
+        let req = InFlightRequest(
+            id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
+            regenerate: regenerate, agentId: appState?.selectedAgentId
+        )
         inflight = req
         streamOutputMessageIds[req.id] = req.id
 
@@ -334,7 +337,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             sessionId: req.sessionId,
             quotedContext: req.quote?.text,   // 引用历史消息上下文（若有），对齐后端 quoted_context 注入
             regenerate: req.regenerate,        // 重新生成：服务端作废旧 run 后全新执行
-            agentId: appState?.selectedAgentId
+            agentId: req.agentId
         )
         do {
             for try await event in stream {
@@ -493,7 +496,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             // 断流只回读同一个 Hermes Run，绝不以原始问题发起第二次完整推理。
             if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 if messages[idx].content.isEmpty && messages[idx].clarifyBlock == nil {
-                    if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId, consume: true),
+                    if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId, consume: true, agentId: req.agentId),
                        let ans = status.answer, !ans.isEmpty {
                         messages[idx].content = ans
                     } else {
@@ -517,7 +520,8 @@ public final class TenantSessionCoordinator: ObservableObject {
             // 先回读后台结果；未完成时保留现有上下文并给出明确恢复入口。
             if let status = try? await APIClient.shared.fetchChatStatus(
                 sessionId: req.sessionId,
-                consume: true
+                consume: true,
+                agentId: req.agentId
             ), status.status == "completed", let answer = status.answer, !answer.isEmpty {
                 if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                     messages[idx].content = answer
@@ -548,7 +552,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 question: req.text,
                 sessionId: req.sessionId,
                 quotedContext: req.quote?.text,
-                agentId: appState?.selectedAgentId
+                agentId: req.agentId
             )
             guard self.tenantEpoch == taskEpoch else { return }
             await handleSuccess(req: req, response: resp, taskEpoch: taskEpoch)
@@ -702,7 +706,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 requestId: updated.id,
                 sessionId: nil,
                 quotedContext: updated.quote?.text,
-                agentId: appState?.selectedAgentId
+                agentId: updated.agentId
             )
             guard self.tenantEpoch == taskEpoch else { return }
             await handleSuccess(req: updated, response: resp, taskEpoch: taskEpoch)
@@ -976,7 +980,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                       self.inflight?.id == req.id,
                       self.inflight?.phase == .thinking else { return }
                 do {
-                    let status = try await APIClient.shared.fetchChatStatus(sessionId: sid)
+                    let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, agentId: req.agentId)
                     if status.status == "running" {
                         self.liveProgress = status.latestStep
                     }
@@ -1022,7 +1026,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         // 先探测服务器：断点重续优先（避免重复烧 token + 完整上下文回显）
         let probeTask = Task { @MainActor in
             if !sid.isEmpty {
-                if let status = try? await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true),
+                if let status = try? await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true, agentId: appState?.selectedAgentId),
                    status.status == "completed",
                    let answer = status.answer, !answer.isEmpty {
                     // 断点续接命中：直接用服务器已完成的答案回填（保留全部上下文）
@@ -1069,7 +1073,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         let sid = req.sessionId
         if !sid.isEmpty, !demoMode {
             do {
-                let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true)
+                let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true, agentId: req.agentId)
                 if status.status == "completed",
                    let answer = status.answer, !answer.isEmpty {
                     await applyCompletedStatus(req: req, status: status)

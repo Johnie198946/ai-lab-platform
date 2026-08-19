@@ -1,17 +1,21 @@
 import SwiftUI
+import Combine
 
 // MARK: - 工作流主页
 
 public struct WorkflowDashboardView: View {
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
     @StateObject private var model = WorkflowDashboardModel()
     @State private var showingCreate = false
     @State private var showingTopology = false
     @State private var clarificationWorkflow: WorkflowDTO?
+    @State private var navigationPath: [WorkflowDTO] = []
 
     public init() {}
 
     public var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navigationPath) {
             ZStack {
                 QuantumWorkflowBackground()
 
@@ -78,6 +82,21 @@ public struct WorkflowDashboardView: View {
                 NavigationStack { TopologyCanvasView() }
             }
             .task { await model.load() }
+            .onChange(of: appState.pendingWorkflowId) { _, workflowId in
+                guard let workflowId else { return }
+                Task {
+                    let workflow: WorkflowDTO?
+                    if let tracked = workflowActivities.workflows[workflowId] {
+                        workflow = tracked
+                    } else {
+                        workflow = try? await APIClient.shared.fetchWorkflow(id: workflowId)
+                    }
+                    if let workflow {
+                        navigationPath = [workflow]
+                    }
+                    appState.pendingWorkflowId = nil
+                }
+            }
         }
     }
 
@@ -406,16 +425,34 @@ private struct WorkflowDetailView: View {
 // MARK: - 任务内需求澄清
 
 @MainActor
-private final class WorkflowClarificationModel: ObservableObject {
+public final class WorkflowClarificationModel: ObservableObject {
     let workflowId: String
     @Published var snapshot: WorkflowClarificationSnapshotDTO?
     @Published var events: [WorkflowLifecycleEventDTO] = []
     @Published var isLoading = false
     @Published var isSubmitting = false
     @Published var errorMessage: String?
+    @Published var connectionState: String = "idle"
+    @Published var optimisticPlanningMessage: String?
     private var streamActive = false
+    private var streamTask: Task<Void, Never>?
 
     init(workflowId: String) { self.workflowId = workflowId }
+
+    func startTracking() {
+        guard streamTask == nil else { return }
+        streamTask = Task { [weak self] in
+            await self?.start()
+            self?.streamTask = nil
+        }
+    }
+
+    func stopTracking() {
+        streamTask?.cancel()
+        streamTask = nil
+        streamActive = false
+        connectionState = "paused"
+    }
 
     var phase: String { snapshot?.session.phase ?? "clarifying" }
     var lastEventId: Int { events.map(\.id).max() ?? 0 }
@@ -423,6 +460,7 @@ private final class WorkflowClarificationModel: ObservableObject {
     func start() async {
         guard !streamActive else { return }
         streamActive = true
+        connectionState = "connecting"
         defer { streamActive = false }
         await refresh()
         guard !Task.isCancelled,
@@ -430,20 +468,24 @@ private final class WorkflowClarificationModel: ObservableObject {
         var retries = 0
         while !Task.isCancelled {
             do {
+                connectionState = "connected"
                 for try await event in APIClient.shared.workflowLifecycleEventStream(
                     workflowId: workflowId, after: lastEventId
                 ) {
                     retries = 0
                     if !events.contains(where: { $0.id == event.id }) { events.append(event) }
+                    optimisticPlanningMessage = nil
                     if ["plan_ready", "agent_built", "planning_failed"].contains(event.type) {
                         await refresh()
                     }
                 }
+                connectionState = "idle"
                 return
             } catch is CancellationError {
                 return
             } catch {
                 retries += 1
+                connectionState = "reconnecting"
                 errorMessage = "进度连接已中断，正在恢复同一任务…"
                 let delay = UInt64(min(retries, 8)) * 1_000_000_000
                 try? await Task.sleep(nanoseconds: delay)
@@ -460,6 +502,9 @@ private final class WorkflowClarificationModel: ObservableObject {
             snapshot = loaded
             events = loaded.events
             errorMessage = nil
+            if ["awaiting_approval", "agent_ready"].contains(loaded.session.phase) {
+                connectionState = "idle"
+            }
         } catch {
             errorMessage = "无法恢复任务会话：\(error.localizedDescription)"
         }
@@ -468,6 +513,9 @@ private final class WorkflowClarificationModel: ObservableObject {
     func respond(_ response: String) async {
         guard !response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isSubmitting = true
+        if response.hasPrefix("确认") || response.contains("进入方案") {
+            optimisticPlanningMessage = "规划请求已提交到云端，离开此页不会中断"
+        }
         defer { isSubmitting = false }
         do {
             _ = try await APIClient.shared.respondToWorkflowClarification(
@@ -475,9 +523,10 @@ private final class WorkflowClarificationModel: ObservableObject {
             )
             await refresh()
             if phase == "planning" {
-                Task { await self.start() }
+                startTracking()
             }
         } catch {
+            optimisticPlanningMessage = nil
             errorMessage = "提交失败，需求进度已保留：\(error.localizedDescription)"
         }
     }
@@ -488,7 +537,7 @@ private final class WorkflowClarificationModel: ObservableObject {
         do {
             _ = try await APIClient.shared.retryWorkflowPlanning(workflowId: workflowId)
             await refresh()
-            await start()
+            startTracking()
         } catch {
             errorMessage = "规划重试失败，已有内容不会丢失：\(error.localizedDescription)"
         }
@@ -507,13 +556,13 @@ private final class WorkflowClarificationModel: ObservableObject {
 
     var reasoningSteps: [ReasoningStep] {
         events.filter {
-            ["planning_retry_scheduled", "planning_started", "planner_context_loaded", "capabilities_selecting", "plan_compiled", "policy_validated", "plan_ready", "planning_failed", "agent_built"].contains($0.type)
+            ["planning_queued", "planning_retry_scheduled", "planning_started", "planning_worker_claimed", "planner_context_loaded", "capabilities_selecting", "planner_step", "plan_compiling", "plan_compiled", "policy_validated", "plan_ready", "planning_failed", "agent_built"].contains($0.type)
         }.map { event in
             let type: ReasoningStepType
-            switch event.type {
-            case "planner_context_loaded": type = .skillLoad
-            case "capabilities_selecting", "agent_built": type = .agentSpawn
-            case "plan_compiled", "policy_validated": type = .toolCall
+            switch event.payload.category ?? event.type {
+            case "skill_load", "planner_context_loaded": type = .skillLoad
+            case "agent_spawn", "capabilities_selecting", "agent_built": type = .agentSpawn
+            case "tool_call", "plan_compiling", "plan_compiled", "policy_validated": type = .toolCall
             default: type = .thought
             }
             let running = event.id == lastEventId && ["planning", "building_agent"].contains(phase)
@@ -521,21 +570,162 @@ private final class WorkflowClarificationModel: ObservableObject {
                 id: "workflow-event-\(event.id)", type: type,
                 title: event.message,
                 detail: event.payload.detail ?? event.payload.tool ?? "",
-                status: event.type == "planning_failed" ? "failed" : (running ? "running" : "done")
+                status: event.payload.status ?? (event.type == "planning_failed" ? "failed" : (running ? "running" : "done"))
             )
         }
+    }
+}
+
+@MainActor
+public final class WorkflowActivityCoordinator: ObservableObject {
+    public static let shared = WorkflowActivityCoordinator()
+
+    @Published public private(set) var workflows: [String: WorkflowDTO] = [:]
+    @Published public private(set) var dismissedWorkflowIds: Set<String> = []
+    @Published public private(set) var executions: [String: WorkflowExecutionDTO] = [:]
+
+    private var models: [String: WorkflowClarificationModel] = [:]
+    private var subscriptions: [String: AnyCancellable] = [:]
+    private var publishScheduled = false
+    private var executionWorkflows: [String: WorkflowDTO] = [:]
+    private var executionTasks: [String: Task<Void, Never>] = [:]
+
+    public struct Activity {
+        public let workflow: WorkflowDTO
+        public let model: WorkflowClarificationModel
+    }
+
+    public var visibleActivities: [Activity] {
+        workflows.values.compactMap { workflow in
+            guard !dismissedWorkflowIds.contains(workflow.id),
+                  let model = models[workflow.id],
+                  ["planning", "building_agent", "awaiting_approval", "needs_attention"].contains(model.phase)
+            else { return nil }
+            return Activity(workflow: workflow, model: model)
+        }
+        .sorted { ($0.workflow.updatedAt ?? "") > ($1.workflow.updatedAt ?? "") }
+    }
+
+    public var primaryActivity: Activity? { visibleActivities.first }
+
+    public struct ExecutionActivity {
+        public let workflow: WorkflowDTO
+        public let execution: WorkflowExecutionDTO
+    }
+
+    public var visibleExecutionActivities: [ExecutionActivity] {
+        executions.values.compactMap { execution in
+            guard !dismissedWorkflowIds.contains(execution.workflowId),
+                  let workflow = executionWorkflows[execution.workflowId],
+                  ["queued", "running", "awaiting_review", "failed"].contains(execution.status)
+            else { return nil }
+            return ExecutionActivity(workflow: workflow, execution: execution)
+        }
+        .sorted { ($0.execution.createdAt ?? "") > ($1.execution.createdAt ?? "") }
+    }
+
+    public var primaryExecutionActivity: ExecutionActivity? { visibleExecutionActivities.first }
+
+    public func model(for workflow: WorkflowDTO) -> WorkflowClarificationModel {
+        if let existing = models[workflow.id] { return existing }
+        let model = WorkflowClarificationModel(workflowId: workflow.id)
+        models[workflow.id] = model
+        subscriptions[workflow.id] = model.objectWillChange.sink { [weak self, weak model] _ in
+            DispatchQueue.main.async { [weak self, weak model] in
+                guard let self, let model else { return }
+                UserDefaults.standard.set(model.lastEventId, forKey: "workflow.cursor.\(workflow.id)")
+                self.schedulePublish()
+            }
+        }
+        return model
+    }
+
+    public func track(_ workflow: WorkflowDTO) {
+        if workflows[workflow.id] != workflow { workflows[workflow.id] = workflow }
+        if dismissedWorkflowIds.contains(workflow.id) { dismissedWorkflowIds.remove(workflow.id) }
+        model(for: workflow).startTracking()
+    }
+
+    public func trackExecution(_ execution: WorkflowExecutionDTO, workflow: WorkflowDTO) {
+        executionWorkflows[workflow.id] = workflow
+        if executions[execution.id] != execution { executions[execution.id] = execution }
+        if dismissedWorkflowIds.contains(workflow.id) { dismissedWorkflowIds.remove(workflow.id) }
+        guard !["awaiting_review", "completed", "failed", "cancelled"].contains(execution.status),
+              executionTasks[execution.id] == nil else { return }
+        executionTasks[execution.id] = Task { [weak self] in
+            guard let self else { return }
+            defer { self.executionTasks[execution.id] = nil }
+            while !Task.isCancelled {
+                do {
+                    let snapshot = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
+                    if self.executions[snapshot.id] != snapshot { self.executions[snapshot.id] = snapshot }
+                    if ["awaiting_review", "completed", "failed", "cancelled"].contains(snapshot.status) { return }
+                } catch {
+                    // The cloud run is authoritative; foreground/bootstrap will retry.
+                }
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
+    }
+
+    private func schedulePublish() {
+        guard !publishScheduled else { return }
+        publishScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.publishScheduled = false
+            self.objectWillChange.send()
+        }
+    }
+
+    public func bootstrap() async {
+        do {
+            let activities = try await APIClient.shared.fetchActiveWorkflowActivities()
+            for activity in activities {
+                track(activity.workflow)
+            }
+        } catch {
+            // Existing models retain their last durable snapshot while offline.
+            schedulePublish()
+        }
+        do {
+            let active = try await APIClient.shared.fetchActiveWorkflowExecutions()
+            for item in active { trackExecution(item.execution, workflow: item.workflow) }
+        } catch {
+            schedulePublish()
+        }
+    }
+
+    public func pauseForBackground() {
+        for model in models.values { model.stopTracking() }
+        for task in executionTasks.values { task.cancel() }
+        executionTasks.removeAll()
+    }
+
+    public func resumeFromForeground() async {
+        await bootstrap()
+        for activity in visibleActivities { activity.model.startTracking() }
+        for activity in visibleExecutionActivities {
+            trackExecution(activity.execution, workflow: activity.workflow)
+        }
+    }
+
+    public func dismiss(_ workflowId: String) {
+        dismissedWorkflowIds.insert(workflowId)
     }
 }
 
 private struct WorkflowClarificationView: View {
     let workflow: WorkflowDTO
     let onFinished: () async -> Void
-    @StateObject private var model: WorkflowClarificationModel
+    @ObservedObject private var model: WorkflowClarificationModel
 
     init(workflow: WorkflowDTO, onFinished: @escaping () async -> Void) {
         self.workflow = workflow
         self.onFinished = onFinished
-        _model = StateObject(wrappedValue: WorkflowClarificationModel(workflowId: workflow.id))
+        _model = ObservedObject(
+            wrappedValue: WorkflowActivityCoordinator.shared.model(for: workflow)
+        )
     }
 
     var body: some View {
@@ -553,10 +743,15 @@ private struct WorkflowClarificationView: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                        if !model.reasoningSteps.isEmpty {
+                        if !model.reasoningSteps.isEmpty || model.optimisticPlanningMessage != nil {
+                            if let optimistic = model.optimisticPlanningMessage,
+                               model.reasoningSteps.isEmpty {
+                                WorkflowPlanningPendingCard(message: optimistic)
+                            }
                             ReasoningCard(
                                 steps: model.reasoningSteps,
-                                isStreaming: ["planning", "building_agent"].contains(model.phase)
+                                isStreaming: ["planning", "building_agent"].contains(model.phase),
+                                initiallyExpanded: ["planning", "building_agent"].contains(model.phase)
                             )
                         }
                         ForEach(model.snapshot?.messages ?? []) { message in
@@ -566,7 +761,10 @@ private struct WorkflowClarificationView: View {
                             WorkflowErrorBanner(message: error)
                             if model.phase != "needs_attention" {
                                 Button("重新连接", systemImage: "arrow.clockwise") {
-                                    Task { await model.refresh() }
+                                    Task {
+                                        await model.refresh()
+                                        model.startTracking()
+                                    }
                                 }
                                 .buttonStyle(.bordered)
                                 .frame(minHeight: 44)
@@ -614,7 +812,7 @@ private struct WorkflowClarificationView: View {
                 .background(.ultraThinMaterial)
             }
         }
-        .task { await model.start() }
+        .task { WorkflowActivityCoordinator.shared.track(workflow) }
     }
 
     @ViewBuilder
@@ -624,17 +822,26 @@ private struct WorkflowClarificationView: View {
            isLast,
            ["clarify", "requirement_confirmation"].contains(message.messageType),
            let question = message.payload.question {
-            ClarifyCard(
-                block: ClarifyBlock(
-                    question: question,
-                    choices: message.payload.choices ?? [],
-                    multiSelect: message.payload.multiSelect ?? false,
-                    submitLabel: message.payload.submitLabel ?? "确认并继续",
-                    source: "workflow"
-                ),
-                onSubmit: { selection in Task { await model.respond(selection) } }
+            let block = ClarifyBlock(
+                question: question,
+                choices: message.payload.choices ?? [],
+                multiSelect: message.payload.multiSelect ?? false,
+                submitLabel: message.payload.submitLabel ?? "确认并继续",
+                source: "workflow"
             )
-            .disabled(model.isSubmitting)
+            if message.messageType == "requirement_confirmation" {
+                RequirementConfirmationCard(
+                    block: block,
+                    onSubmit: { selection in Task { await model.respond(selection) } }
+                )
+                .disabled(model.isSubmitting)
+            } else {
+                ClarifyCard(
+                    block: block,
+                    onSubmit: { selection in Task { await model.respond(selection) } }
+                )
+                .disabled(model.isSubmitting)
+            }
         } else {
             HStack {
                 if message.role == "user" { Spacer(minLength: 44) }
@@ -651,6 +858,45 @@ private struct WorkflowClarificationView: View {
                 if message.role != "user" { Spacer(minLength: 44) }
             }
         }
+    }
+}
+
+private struct WorkflowPlanningPendingCard: View {
+    let message: String
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.Colors.selectionTint)
+                    .frame(width: 40, height: 40)
+                Image(systemName: "sparkles")
+                    .foregroundStyle(AppTheme.Colors.quantumBlue)
+                    .symbolEffect(.pulse, isActive: !reduceMotion)
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("已开始生成方案")
+                    .font(AppTheme.Typography.body.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text(message)
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                Label("云端持续执行，切换页面不会中断", systemImage: "cloud.fill")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
+            Spacer(minLength: 0)
+            ProgressView().controlSize(.small)
+        }
+        .padding(AppTheme.Spacing.md)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.8), lineWidth: 0.75)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -779,7 +1025,8 @@ private struct WorkflowPlanReviewView: View {
     @State private var availableKnowledgeScopes: [String] = []
     @State private var isSaving = false
     @State private var errorMessage: String?
-    @State private var replanInstruction = ""
+    @State private var replanErrorMessage: String?
+    @State private var isGoalExpanded = false
     @State private var approvalRequestId = UUID().uuidString
     @State private var replanEvents: [WorkflowLifecycleEventDTO] = []
 
@@ -798,7 +1045,11 @@ private struct WorkflowPlanReviewView: View {
                         if !replanReasoningSteps.isEmpty {
                             ReasoningCard(steps: replanReasoningSteps, isStreaming: isSaving)
                         }
-                        replanSection
+                        WorkflowReplanComposer(
+                            isSaving: isSaving,
+                            errorMessage: replanErrorMessage,
+                            onSubmit: replan
+                        )
                         if let errorMessage { WorkflowErrorBanner(message: errorMessage) }
                     }
                     .padding(AppTheme.Metrics.contentGutter)
@@ -846,23 +1097,117 @@ private struct WorkflowPlanReviewView: View {
     }
 
     private func planHeader(_ plan: WorkflowPlanDTO) -> some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            Label("计划 v\(plan.version) · 等待确认", systemImage: "checklist.checked")
-                .font(AppTheme.Typography.label)
-                .foregroundStyle(AppTheme.Colors.quantumBlue)
-            Text(plan.goal)
-                .font(AppTheme.Typography.screenTitle)
-            HStack {
-                Label("预计 \(plan.estimatedTokens) tokens", systemImage: "gauge.with.dots.needle.50percent")
-                Label(plan.allowNetwork ? "允许证据缺口联网" : "仅知识库", systemImage: plan.allowNetwork ? "network" : "internaldrive")
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Label("计划 v\(plan.version)", systemImage: "checklist.checked")
+                    .font(AppTheme.Typography.label)
+                    .foregroundStyle(AppTheme.Colors.quantumBlue)
+                Spacer()
+                Text("等待确认")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.statusWarning)
+                    .padding(.horizontal, AppTheme.Spacing.md)
+                    .padding(.vertical, AppTheme.Spacing.sm)
+                    .background(AppTheme.Colors.warningSurface)
+                    .clipShape(Capsule())
             }
-            .font(AppTheme.Typography.micro)
-            .foregroundStyle(AppTheme.Colors.textSecondary)
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                Text("方案目标")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                Text(goalSummary(plan.goal))
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineSpacing(3)
+                    .lineLimit(isGoalExpanded ? nil : 4)
+                if goalSummary(plan.goal).count > 80 {
+                    Button(isGoalExpanded ? "收起目标" : "展开完整目标", systemImage: isGoalExpanded ? "chevron.up" : "chevron.down") {
+                        withAnimation(AppTheme.Motion.quick) { isGoalExpanded.toggle() }
+                    }
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                    .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                }
+            }
+
+            if !confirmedRequirementRows(plan.goal).isEmpty {
+                Divider()
+                VStack(spacing: AppTheme.Spacing.md) {
+                    ForEach(Array(confirmedRequirementRows(plan.goal).enumerated()), id: \.offset) { index, item in
+                        HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                            Image(systemName: requirementIcon(index))
+                                .foregroundStyle(AppTheme.Colors.quantumViolet)
+                                .frame(width: 24, height: 24)
+                            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                                Text(item.0)
+                                    .font(AppTheme.Typography.micro)
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                                Text(item.1)
+                                    .font(AppTheme.Typography.supporting.weight(.medium))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                }
+            }
+
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: AppTheme.Spacing.sm) { planMetrics(plan) }
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) { planMetrics(plan) }
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(AppTheme.Spacing.xl)
-        .background(AppTheme.Colors.surfaceTint)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl))
+        .padding(AppTheme.Spacing.lg)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.lg)
+                .stroke(AppTheme.Colors.border, lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func planMetrics(_ plan: WorkflowPlanDTO) -> some View {
+        planMetric("\(plan.dsl.nodes.count) 个步骤", icon: "point.3.connected.trianglepath.dotted")
+        planMetric("\(plan.estimatedTokens.formatted()) Token", icon: "gauge.with.dots.needle.50percent")
+        planMetric(plan.allowNetwork ? "可联网补证" : "仅知识库", icon: plan.allowNetwork ? "network" : "internaldrive")
+    }
+
+    private func planMetric(_ title: String, icon: String) -> some View {
+        Label(title, systemImage: icon)
+            .font(AppTheme.Typography.micro)
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+            .background(AppTheme.Colors.surfaceTint)
+            .clipShape(Capsule())
+    }
+
+    private func goalSummary(_ goal: String) -> String {
+        goal.components(separatedBy: "\n\n已确认需求：").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? goal
+    }
+
+    private func confirmedRequirementRows(_ goal: String) -> [(String, String)] {
+        var result: [(String, String)] = []
+        var seen = Set<String>()
+        for line in goal.components(separatedBy: .newlines) {
+            let cleaned = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: "- ", with: "")
+            guard let separator = cleaned.firstIndex(of: "：") else { continue }
+            let title = String(cleaned[..<separator])
+            let value = String(cleaned[cleaned.index(after: separator)...])
+            guard ["目标用户与场景", "MVP 范围", "约束与验收"].contains(title),
+                  !value.isEmpty, seen.insert(title).inserted else { continue }
+            result.append((title, value))
+        }
+        return result
+    }
+
+    private func requirementIcon(_ index: Int) -> String {
+        ["person.crop.circle", "scope", "checkmark.seal"][min(index, 2)]
     }
 
     private func configuration(plan: Binding<WorkflowPlanDTO>) -> some View {
@@ -882,7 +1227,12 @@ private struct WorkflowPlanReviewView: View {
                     }
                 )
             )
-            Stepper("Token 上限：\(plan.wrappedValue.maxTokens)", value: plan.maxTokens, in: 4000...128000, step: 2000)
+            Stepper(
+                "Token 上限：\(plan.wrappedValue.maxTokens.formatted())",
+                value: plan.maxTokens,
+                in: 4_000...999_999,
+                step: 5_000
+            )
             if !availableKnowledgeScopes.isEmpty {
                 Text("知识范围").font(AppTheme.Typography.label)
                 ForEach(availableKnowledgeScopes, id: \.self) { scope in
@@ -933,16 +1283,6 @@ private struct WorkflowPlanReviewView: View {
         }
     }
 
-    private var replanSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            Text("让 Quantum 重新规划").font(AppTheme.Typography.sectionTitle)
-            TextField("例如：增加竞品对比和近三个月新闻", text: $replanInstruction, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-            Button("按意见重新生成", systemImage: "arrow.triangle.2.circlepath") { replan() }
-                .disabled(replanInstruction.trimmingCharacters(in: .whitespaces).isEmpty)
-        }
-    }
-
     private func load() async {
         do {
             async let loadedPlan = APIClient.shared.fetchWorkflowPlan(workflowId: workflow.id)
@@ -984,29 +1324,33 @@ private struct WorkflowPlanReviewView: View {
         }
     }
 
-    private func replan() {
+    private func replan(instruction: String) {
         isSaving = true
         errorMessage = nil
+        replanErrorMessage = nil
         Task {
             do {
-                _ = try await APIClient.shared.replanWorkflow(
-                    workflowId: workflow.id, instruction: replanInstruction
+                let startedSession = try await APIClient.shared.replanWorkflow(
+                    workflowId: workflow.id, instruction: instruction
                 )
-                replanInstruction = ""
+                replanEvents.removeAll()
+                var cursor = startedSession.lastEventSeq
                 var finished = false
                 var reconnectAttempt = 0
                 while !finished && !Task.isCancelled {
                     do {
-                        let cursor = replanEvents.map(\.id).max() ?? 0
                         for try await event in APIClient.shared.workflowLifecycleEventStream(
                             workflowId: workflow.id, after: cursor
                         ) {
                             reconnectAttempt = 0
+                            cursor = max(cursor, event.id)
                             if !replanEvents.contains(where: { $0.id == event.id }) {
                                 replanEvents.append(event)
                             }
                             if event.type == "planning_failed" {
-                                errorMessage = "方案生成失败，需求与过程记录已保留，请返回任务页重试或继续澄清。"
+                                let detail = event.payload.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+                                replanErrorMessage = (detail?.isEmpty == false ? detail : nil)
+                                    ?? "方案生成失败，需求与过程记录已保留，可以修改意见后重试。"
                                 finished = true
                                 break
                             }
@@ -1020,12 +1364,12 @@ private struct WorkflowPlanReviewView: View {
                         return
                     } catch {
                         reconnectAttempt += 1
-                        errorMessage = "进度连接中断，正在恢复同一规划任务…"
+                        replanErrorMessage = "进度连接中断，正在恢复同一规划任务…"
                         let delay = UInt64(min(reconnectAttempt, 8)) * 1_000_000_000
                         try? await Task.sleep(nanoseconds: delay)
                     }
                 }
-            } catch { errorMessage = error.localizedDescription }
+            } catch { replanErrorMessage = error.localizedDescription }
             isSaving = false
         }
     }
@@ -1088,6 +1432,55 @@ private struct WorkflowPlanReviewView: View {
             WorkflowPlanEdgeDTO(source: $0.id, target: $1.id, condition: nil)
         }
         return copy
+    }
+}
+
+/// Keeps marked-text/IME updates local so typing does not invalidate the full
+/// plan header and every node editor on each keystroke.
+private struct WorkflowReplanComposer: View {
+    let isSaving: Bool
+    let errorMessage: String?
+    let onSubmit: (String) -> Void
+
+    @State private var instruction = ""
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Text("让 Quantum 重新规划")
+                .font(AppTheme.Typography.sectionTitle)
+            TextField(
+                "例如：增加竞品对比和近三个月新闻",
+                text: $instruction,
+                axis: .vertical
+            )
+            .textFieldStyle(.roundedBorder)
+            .lineLimit(1...4)
+            .focused($isFocused)
+            .submitLabel(.send)
+            .onSubmit(submit)
+
+            Button("按意见重新生成", systemImage: "arrow.triangle.2.circlepath", action: submit)
+                .disabled(isSaving || normalizedInstruction.isEmpty)
+                .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+
+            if let errorMessage {
+                WorkflowErrorBanner(message: errorMessage)
+                    .accessibilityLabel("重新规划失败：\(errorMessage)")
+            }
+        }
+    }
+
+    private var normalizedInstruction: String {
+        instruction.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func submit() {
+        let value = normalizedInstruction
+        guard !isSaving, !value.isEmpty else { return }
+        isFocused = false
+        instruction = ""
+        onSubmit(value)
     }
 }
 
@@ -1171,6 +1564,8 @@ private struct WorkflowExecutionView: View {
     @State private var selectedArtifact: WorkflowArtifactDTO?
     @State private var errorMessage: String?
     @State private var isWorking = false
+    @State private var executionEvents: [WorkflowEventDTO] = []
+    @State private var lastExecutionEventId = 0
 
     init(workflow: WorkflowDTO, initialExecution: WorkflowExecutionDTO) {
         self.workflow = workflow
@@ -1181,6 +1576,11 @@ private struct WorkflowExecutionView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
                 executionHeader
+                ReasoningCard(
+                    steps: executionReasoningSteps,
+                    isStreaming: ["queued", "running"].contains(execution.status),
+                    initiallyExpanded: ["queued", "running"].contains(execution.status)
+                )
                 nodeProgress
                 if execution.status == "awaiting_review" || execution.status == "completed" {
                     artifactReview
@@ -1191,7 +1591,10 @@ private struct WorkflowExecutionView: View {
             .padding(.bottom, 88)
         }
         .safeAreaInset(edge: .bottom) { actionBar }
-        .task { await monitor() }
+        .task {
+            WorkflowActivityCoordinator.shared.trackExecution(execution, workflow: workflow)
+            await monitor()
+        }
         .sheet(item: $selectedArtifact) { artifact in
             WorkflowArtifactPreview(executionId: execution.id, artifact: artifact)
         }
@@ -1213,6 +1616,11 @@ private struct WorkflowExecutionView: View {
             }
             .font(AppTheme.Typography.micro)
             .foregroundStyle(AppTheme.Colors.textSecondary)
+            if ["queued", "running"].contains(execution.status) {
+                Label("本次模型调用计量中；下次调用完成后刷新精确用量", systemImage: "clock.arrow.circlepath")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            }
             if let model = execution.modelUsed, !model.isEmpty {
                 Label(
                     "\(model) · \(execution.providerUsed ?? "自动路由")",
@@ -1231,6 +1639,26 @@ private struct WorkflowExecutionView: View {
         .padding(AppTheme.Spacing.xl)
         .background(AppTheme.Colors.surfaceTint)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl))
+    }
+
+    private var executionReasoningSteps: [ReasoningStep] {
+        executionEvents.map { event in
+            let category = event.payload?.category ?? event.type
+            let type: ReasoningStepType
+            switch category {
+            case "tool_start", "tool_complete", "tool_call": type = .toolCall
+            case "skill_load": type = .skillLoad
+            case "agent_spawn": type = .agentSpawn
+            default: type = .thought
+            }
+            return ReasoningStep(
+                id: String(event.id),
+                type: type,
+                title: event.message,
+                detail: [event.payload?.tool, event.payload?.detail].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "),
+                status: event.payload?.status ?? (category.hasSuffix("started") || category == "tool_start" ? "running" : "done")
+            )
+        }
     }
 
     private var usageBreakdown: some View {
@@ -1356,7 +1784,14 @@ private struct WorkflowExecutionView: View {
         do {
             execution = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
             if !["awaiting_review", "completed", "failed", "cancelled"].contains(execution.status) {
-                for try await _ in APIClient.shared.workflowEventStream(executionId: execution.id) {
+                for try await event in APIClient.shared.workflowEventStream(
+                    executionId: execution.id,
+                    after: lastExecutionEventId
+                ) {
+                    if event.id > lastExecutionEventId {
+                        executionEvents.append(event)
+                        lastExecutionEventId = event.id
+                    }
                     execution = try await APIClient.shared.fetchWorkflowExecution(id: execution.id)
                 }
             }

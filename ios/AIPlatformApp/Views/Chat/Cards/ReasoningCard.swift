@@ -17,10 +17,16 @@ public struct ReasoningCard: View {
     @State private var isExpanded: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(steps: [ReasoningStep], durationSeconds: Int? = nil, isStreaming: Bool = false) {
+    public init(
+        steps: [ReasoningStep],
+        durationSeconds: Int? = nil,
+        isStreaming: Bool = false,
+        initiallyExpanded: Bool = false
+    ) {
         self.steps = steps
         self.durationSeconds = durationSeconds
         self.isStreaming = isStreaming
+        _isExpanded = State(initialValue: initiallyExpanded)
     }
 
     public var body: some View {
@@ -99,6 +105,14 @@ public struct ReasoningCard: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(AppTheme.Colors.border.opacity(0.5), lineWidth: 0.5)
             )
+            .onChange(of: isStreaming) { wasStreaming, streaming in
+                guard wasStreaming && !streaming else { return }
+                if reduceMotion {
+                    isExpanded = false
+                } else {
+                    withAnimation(.easeOut(duration: 0.2)) { isExpanded = false }
+                }
+            }
         }
     }
 

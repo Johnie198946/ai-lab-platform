@@ -28,6 +28,7 @@ public struct InFlightRequest: Identifiable, Sendable {
     public let text: String
     public let quote: QuotedContext?
     public let regenerate: Bool
+    public let agentId: String?
     public var didRetry404: Bool = false
     public var phase: InFlightPhase = .thinking
 
@@ -37,6 +38,7 @@ public struct InFlightRequest: Identifiable, Sendable {
         text: String,
         quote: QuotedContext? = nil,
         regenerate: Bool = false,
+        agentId: String? = nil,
         didRetry404: Bool = false,
         phase: InFlightPhase = .thinking
     ) {
@@ -45,6 +47,7 @@ public struct InFlightRequest: Identifiable, Sendable {
         self.text = text
         self.quote = quote
         self.regenerate = regenerate
+        self.agentId = agentId
         self.didRetry404 = didRetry404
         self.phase = phase
     }

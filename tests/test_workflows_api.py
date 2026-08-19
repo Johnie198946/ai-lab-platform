@@ -35,6 +35,7 @@ class TestWorkflowsAPI(unittest.TestCase):
             WorkflowEvent,
             WorkflowExecution,
             WorkflowNodeRun,
+            WorkflowPlanningJob,
             WorkflowPlanVersion,
             WorkflowClarificationSession,
             WorkflowLifecycleEvent,
@@ -71,6 +72,7 @@ class TestWorkflowsAPI(unittest.TestCase):
                     WorkflowNodeRun,
                     WorkflowApproval,
                     WorkflowExecution,
+                    WorkflowPlanningJob,
                     WorkflowPlanVersion,
                     WorkflowLifecycleEvent,
                     WorkflowSessionMessage,
@@ -116,7 +118,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         return response.json()["workflow"]
 
     def create_ready(self):
-        import backend.api.workflows as workflows_api
+        from backend.services.workflow_planning import process_next_once
 
         workflow = self.create()
         path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
@@ -132,9 +134,7 @@ class TestWorkflowsAPI(unittest.TestCase):
                 confirmed = await client.post(
                     path, json={"response": "确认，进入方案设计"}
                 )
-                task = workflows_api._planning_tasks.get(workflow["id"])
-                if task is not None:
-                    await task
+                await process_next_once()
                 return confirmed
 
         confirmed = asyncio.run(confirm_and_wait())
@@ -143,6 +143,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         workflow["plan"] = self.request(
             "GET", f"/api/v1/workflows/{workflow['id']}/plan"
         ).json()
+        self.assertEqual(workflow["plan"]["max_tokens"], 999999)
         return workflow
 
     def test_create_is_immediate_draft_and_does_not_plan_or_execute(self):
@@ -173,14 +174,167 @@ class TestWorkflowsAPI(unittest.TestCase):
             len("awaiting_requirement_confirmation"),
         )
 
+    def test_plan_output_repairs_legacy_partial_dsl(self):
+        from backend.api.workflows import plan_out
+        from backend.models.workflow import WorkflowPlanVersion
+
+        plan = WorkflowPlanVersion(
+            id="wfp_legacy",
+            workflow_id="wf_legacy",
+            version=1,
+            dsl={"nodes": [], "edges": []},
+            goal="生成英语评估方案",
+            deliverable="Markdown",
+            allow_network=True,
+            max_tokens=24000,
+            estimated_tokens=12000,
+            knowledge_scope=[],
+            validation_errors=[],
+        )
+
+        output = plan_out(plan)
+        self.assertEqual(output["dsl"]["plan_id"], "wfp_legacy")
+        self.assertEqual(output["dsl"]["name"], "生成英语评估方案")
+        self.assertEqual(output["dsl"]["version"], "1.0.0")
+
+    def test_hermes_node_budgets_are_fitted_to_workflow_limit(self):
+        from backend.services.workflow_planner import fit_node_budgets
+
+        raw = {
+            "nodes": [
+                {"id": "a", "parameters": {"max_tokens": 10000}},
+                {"id": "b", "parameters": {"max_tokens": 9000}},
+                {"id": "c", "parameters": {"max_tokens": 7000}},
+            ]
+        }
+        fitted = fit_node_budgets(raw, 24000)
+        budgets = [node["parameters"]["max_tokens"] for node in fitted["nodes"]]
+        self.assertEqual(sum(budgets), 24000)
+        self.assertTrue(all(value > 0 and value % 100 == 0 for value in budgets))
+
+    def test_hermes_node_budgets_are_clamped_to_dsl_node_limit(self):
+        from backend.services.workflow_planner import fit_node_budgets
+
+        raw = {
+            "nodes": [
+                {"id": "a", "parameters": {"max_tokens": 165100}},
+                {"id": "b", "parameters": {"max_tokens": 165100}},
+                {"id": "c", "parameters": {"max_tokens": 165100}},
+                {"id": "d", "parameters": {"max_tokens": 165100}},
+            ]
+        }
+        fitted = fit_node_budgets(raw, 999999)
+        budgets = [node["parameters"]["max_tokens"] for node in fitted["nodes"]]
+        self.assertEqual(budgets, [128000, 128000, 128000, 128000])
+        self.assertLessEqual(sum(budgets), 999999)
+
     def test_create_does_not_wait_for_blocked_planner(self):
-        import backend.api.workflows as workflows_api
+        import backend.services.workflow_planner as workflow_planner
 
         blocked_planner = AsyncMock()
-        with patch.object(workflows_api, "build_plan", blocked_planner):
+        with patch.object(workflow_planner, "build_plan", blocked_planner):
             body = self.create()
         self.assertEqual(body["status"], "clarifying")
         blocked_planner.assert_not_awaited()
+
+    def test_confirmation_enqueues_one_durable_planning_job_and_active_scope(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowPlanningJob
+
+        workflow = self.create()
+        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
+        for answer in ("学生个人使用", "先完成核心闭环", "交付物可直接使用"):
+            self.assertEqual(
+                self.request("POST", path, json={"response": answer}).status_code, 200
+            )
+        confirmed = self.request(
+            "POST", path, json={"response": "确认，进入方案设计"}
+        )
+        self.assertEqual(confirmed.status_code, 200, confirmed.text)
+        duplicate = self.request(
+            "POST", path, json={"response": "确认，进入方案设计"}
+        )
+        self.assertEqual(duplicate.status_code, 409)
+
+        async def jobs():
+            async with SessionLocal() as db:
+                return list((await db.execute(select(WorkflowPlanningJob))).scalars().all())
+
+        queued = asyncio.run(jobs())
+        self.assertEqual(len(queued), 1)
+        self.assertEqual(queued[0].status, "queued")
+        own = self.request("GET", "/api/v1/workflow-activities/active").json()
+        same_tenant_other_user = self.request(
+            "GET", "/api/v1/workflow-activities/active", sub="gamma"
+        ).json()
+        self.assertEqual([item["workflow"]["id"] for item in own], [workflow["id"]])
+        self.assertEqual(same_tenant_other_user, [])
+
+    def test_expired_planning_lease_is_reclaimed_without_duplicate_plan(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowPlanningJob, WorkflowPlanVersion
+        from backend.services.workflow_planning import process_next_once
+
+        workflow = self.create()
+        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
+        for answer in ("个人", "核心闭环", "可直接使用"):
+            self.request("POST", path, json={"response": answer})
+        self.request("POST", path, json={"response": "确认，进入方案设计"})
+
+        async def expire_and_process():
+            async with SessionLocal() as db:
+                job = (await db.execute(select(WorkflowPlanningJob))).scalar_one()
+                job.status = "running"
+                job.lease_owner = "dead-worker"
+                job.lease_until = datetime.now(timezone.utc) - timedelta(seconds=1)
+                await db.commit()
+            self.assertTrue(await process_next_once(owner="replacement-worker"))
+            async with SessionLocal() as db:
+                return int(
+                    (
+                        await db.execute(
+                            select(func.count(WorkflowPlanVersion.id)).where(
+                                WorkflowPlanVersion.workflow_id == workflow["id"]
+                            )
+                        )
+                    ).scalar_one()
+                )
+
+        self.assertEqual(asyncio.run(expire_and_process()), 1)
+
+    def test_worker_backfills_planning_workflow_missing_durable_job(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowPlanningJob
+        from backend.services.workflow_planning import backfill_orphaned_planning_jobs
+
+        workflow = self.create()
+        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
+        for answer in ("个人", "核心闭环", "可直接使用"):
+            self.request("POST", path, json={"response": answer})
+        self.request("POST", path, json={"response": "确认，进入方案设计"})
+
+        async def remove_and_repair():
+            async with SessionLocal() as db:
+                await db.execute(
+                    delete(WorkflowPlanningJob).where(
+                        WorkflowPlanningJob.workflow_id == workflow["id"]
+                    )
+                )
+                await db.commit()
+                first = await backfill_orphaned_planning_jobs(db)
+                second = await backfill_orphaned_planning_jobs(db)
+                count = int(
+                    (
+                        await db.execute(
+                            select(func.count(WorkflowPlanningJob.id)).where(
+                                WorkflowPlanningJob.workflow_id == workflow["id"]
+                            )
+                        )
+                    ).scalar_one()
+                )
+                return first, second, count
+
+        self.assertEqual(asyncio.run(remove_and_repair()), (1, 0, 1))
 
     def test_explicit_requirement_goes_directly_to_confirmation_card(self):
         description = (
@@ -322,7 +476,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertTrue(all(event_id > 3 for event_id in event_ids))
 
     def test_replan_returns_session_before_background_plan_finishes(self):
-        import backend.api.workflows as workflows_api
+        from backend.services.workflow_planning import process_next_once
 
         body = self.create_ready()
 
@@ -338,9 +492,7 @@ class TestWorkflowsAPI(unittest.TestCase):
                 )
                 self.assertEqual(response.status_code, 200, response.text)
                 self.assertEqual(response.json()["phase"], "planning")
-                task = workflows_api._planning_tasks.get(body["id"])
-                self.assertIsNotNone(task)
-                await task
+                self.assertTrue(await process_next_once())
 
         asyncio.run(request_and_wait())
         plan = self.request("GET", f"/api/v1/workflows/{body['id']}/plan").json()

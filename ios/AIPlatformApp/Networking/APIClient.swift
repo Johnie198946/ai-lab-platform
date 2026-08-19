@@ -414,6 +414,53 @@ public struct TenantAgentDTO: Codable, Identifiable, Hashable {
     public let customAvatar: String?
     public let isActive: Bool
     public let createdAt: String?
+    public let ownerUserId: String?
+    public let originWorkflowId: String?
+    public let visibility: String?
+    public let allowedTools: [String]?
+    public let capabilityAgentIds: [String]?
+    public let allowNetwork: Bool?
+}
+
+public struct AgentEvaluationRunDTO: Codable, Identifiable {
+    public let id: String
+    public let agentId: String
+    public let status: String
+    public let suite: [AgentEvaluationCaseDTO]
+    public let results: [AgentEvaluationResultDTO]
+    public let score: Double
+    public let usage: WorkflowUsageDTO?
+    public let errorMessage: String?
+    public let events: [AgentEvaluationEventDTO]
+}
+
+public struct AgentEvaluationCaseDTO: Codable, Identifiable {
+    public let id: String
+    public let name: String
+    public let prompt: String
+}
+
+public struct AgentEvaluationResultDTO: Codable, Identifiable {
+    public let id: String
+    public let name: String
+    public let status: String
+    public let score: Double
+    public let detail: String
+}
+
+public struct AgentEvaluationEventDTO: Codable, Identifiable {
+    public let id: Int
+    public let seq: Int
+    public let type: String
+    public let message: String
+    public let payload: AgentEvaluationEventPayloadDTO?
+}
+
+public struct AgentEvaluationEventPayloadDTO: Codable {
+    public let category: String?
+    public let status: String?
+    public let tool: String?
+    public let detail: String?
 }
 
 /// GET /api/v1/skills 响应（租户真实技能库）
@@ -507,6 +554,11 @@ public struct WorkflowClarificationPayloadDTO: Codable, Hashable {
     public let planId: String?
     public let tool: String?
     public let detail: String?
+    public let stepId: String?
+    public let category: String?
+    public let status: String?
+    public let source: String?
+    public let planningJobId: String?
 }
 
 public struct WorkflowSessionMessageDTO: Codable, Identifiable, Hashable {
@@ -534,6 +586,17 @@ public struct WorkflowClarificationSnapshotDTO: Codable {
     public let session: WorkflowClarificationSessionDTO
     public let messages: [WorkflowSessionMessageDTO]
     public let events: [WorkflowLifecycleEventDTO]
+}
+
+public struct WorkflowActiveActivityDTO: Codable {
+    public let workflow: WorkflowDTO
+    public let session: WorkflowClarificationSessionDTO
+    public let latestEvent: WorkflowLifecycleEventDTO?
+}
+
+public struct WorkflowActiveExecutionDTO: Codable {
+    public let workflow: WorkflowDTO
+    public let execution: WorkflowExecutionDTO
 }
 
 public struct WorkflowAgentDelegationDTO: Codable, Hashable {
@@ -592,6 +655,21 @@ public struct WorkflowDSLDTO: Codable, Hashable {
         case planId = "plan_id"
         case name, nodes, edges, version
     }
+
+    private enum DecodingKeys: String, CodingKey {
+        case planId, name, nodes, edges, version
+    }
+
+    public init(from decoder: Decoder) throws {
+        // APIClient already applies convertFromSnakeCase, so decoding must use
+        // the transformed key. CodingKeys remains snake_case for PATCH encoding.
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
+        planId = try container.decodeIfPresent(String.self, forKey: .planId) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "执行计划"
+        nodes = try container.decodeIfPresent([WorkflowPlanNodeDTO].self, forKey: .nodes) ?? []
+        edges = try container.decodeIfPresent([WorkflowPlanEdgeDTO].self, forKey: .edges) ?? []
+        version = try container.decodeIfPresent(String.self, forKey: .version) ?? "1.0.0"
+    }
 }
 
 public struct WorkflowPlanNodeDTO: Codable, Identifiable, Hashable {
@@ -604,6 +682,30 @@ public struct WorkflowPlanNodeDTO: Codable, Identifiable, Hashable {
         case id
         case nodeType = "node_type"
         case name, parameters
+    }
+
+    private enum DecodingKeys: String, CodingKey {
+        case id, nodeType, name, parameters
+    }
+
+    public init(
+        id: String,
+        nodeType: String,
+        name: String?,
+        parameters: WorkflowNodeParametersDTO
+    ) {
+        self.id = id
+        self.nodeType = nodeType
+        self.name = name
+        self.parameters = parameters
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        nodeType = try container.decode(String.self, forKey: .nodeType)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        parameters = try container.decode(WorkflowNodeParametersDTO.self, forKey: .parameters)
     }
 }
 
@@ -627,6 +729,46 @@ public struct WorkflowNodeParametersDTO: Codable, Hashable {
         case requiresReview = "requires_review"
         case maxTokens = "max_tokens"
         case revisionNote = "revision_note"
+    }
+
+    private enum DecodingKeys: String, CodingKey {
+        case agentId, query, instruction, outputFormat, knowledgeScope
+        case allowNetwork, requiresReview, maxTokens, revisionNote
+    }
+
+    public init(
+        agentId: String? = nil,
+        query: String? = nil,
+        instruction: String? = nil,
+        outputFormat: String? = nil,
+        knowledgeScope: [String]? = nil,
+        allowNetwork: Bool? = nil,
+        requiresReview: Bool? = nil,
+        maxTokens: Int? = nil,
+        revisionNote: String? = nil
+    ) {
+        self.agentId = agentId
+        self.query = query
+        self.instruction = instruction
+        self.outputFormat = outputFormat
+        self.knowledgeScope = knowledgeScope
+        self.allowNetwork = allowNetwork
+        self.requiresReview = requiresReview
+        self.maxTokens = maxTokens
+        self.revisionNote = revisionNote
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
+        agentId = try container.decodeIfPresent(String.self, forKey: .agentId)
+        query = try container.decodeIfPresent(String.self, forKey: .query)
+        instruction = try container.decodeIfPresent(String.self, forKey: .instruction)
+        outputFormat = try container.decodeIfPresent(String.self, forKey: .outputFormat)
+        knowledgeScope = try container.decodeIfPresent([String].self, forKey: .knowledgeScope)
+        allowNetwork = try container.decodeIfPresent(Bool.self, forKey: .allowNetwork)
+        requiresReview = try container.decodeIfPresent(Bool.self, forKey: .requiresReview)
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
+        revisionNote = try container.decodeIfPresent(String.self, forKey: .revisionNote)
     }
 }
 
@@ -711,12 +853,20 @@ public struct WorkflowEventDTO: Codable, Identifiable {
     public let type: String
     public let message: String
     public let payload: WorkflowEventPayloadDTO?
+    public let createdAt: String?
 }
 
 public struct WorkflowEventPayloadDTO: Codable {
     public let nodeId: String?
     public let usage: WorkflowUsageDTO?
     public let route: WorkflowRouteDTO?
+    public let category: String?
+    public let status: String?
+    public let tool: String?
+    public let detail: String?
+    public let source: String?
+    public let bridgeEventId: String?
+    public let bridgeSeq: Int?
 }
 
 public struct WorkflowUsageDTO: Codable {
@@ -1203,6 +1353,24 @@ public final class APIClient: ObservableObject {
         _ = try await perform(request, session: session, canRetry: false)
     }
 
+    public func startAgentEvaluation(agentId: String, requestId: String) async throws -> AgentEvaluationRunDTO {
+        struct Body: Encodable {
+            let requestId: String
+            enum CodingKeys: String, CodingKey { case requestId = "request_id" }
+        }
+        let resolvedId = agentId.hasPrefix("db_") ? String(agentId.dropFirst(3)) : agentId
+        return try await request(
+            AgentEvaluationRunDTO.self,
+            path: "tenant-agents/\(encodedPath(resolvedId))/evaluations",
+            method: "POST",
+            body: Body(requestId: requestId)
+        )
+    }
+
+    public func fetchAgentEvaluation(id: String) async throws -> AgentEvaluationRunDTO {
+        try await request(AgentEvaluationRunDTO.self, path: "agent-evaluations/\(encodedPath(id))")
+    }
+
     // MARK: - 可执行工作流 V1
 
     public func fetchWorkflows() async throws -> [WorkflowDTO] {
@@ -1236,6 +1404,20 @@ public final class APIClient: ObservableObject {
         try await request(
             WorkflowClarificationSnapshotDTO.self,
             path: "workflows/\(encodedPath(workflowId))/clarification"
+        )
+    }
+
+    public func fetchActiveWorkflowActivities() async throws -> [WorkflowActiveActivityDTO] {
+        try await request(
+            [WorkflowActiveActivityDTO].self,
+            path: "workflow-activities/active"
+        )
+    }
+
+    public func fetchActiveWorkflowExecutions() async throws -> [WorkflowActiveExecutionDTO] {
+        try await request(
+            [WorkflowActiveExecutionDTO].self,
+            path: "workflow-executions/active"
         )
     }
 
@@ -1293,17 +1475,19 @@ public final class APIClient: ObservableObject {
     }
 
     public func fetchWorkflowPlan(workflowId: String) async throws -> WorkflowPlanDTO {
-        try await request(
+        var plan = try await request(
             WorkflowPlanDTO.self,
             path: "workflows/\(encodedPath(workflowId))/plan"
         )
+        if plan.dsl.planId.isEmpty { plan.dsl.planId = plan.id }
+        return plan
     }
 
     public func updateWorkflowPlan(
         workflowId: String,
         plan: WorkflowPlanDTO
     ) async throws -> WorkflowPlanDTO {
-        try await request(
+        var updated = try await request(
             WorkflowPlanDTO.self,
             path: "workflows/\(encodedPath(workflowId))/plan",
             method: "PATCH",
@@ -1315,6 +1499,8 @@ public final class APIClient: ObservableObject {
                 knowledgeScope: plan.knowledgeScope
             )
         )
+        if updated.dsl.planId.isEmpty { updated.dsl.planId = updated.id }
+        return updated
     }
 
     public func replanWorkflow(
@@ -1382,18 +1568,22 @@ public final class APIClient: ObservableObject {
     }
 
     public func workflowEventStream(
-        executionId: String
+        executionId: String,
+        after: Int = 0
     ) -> AsyncThrowingStream<WorkflowEventDTO, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let url = baseURL
+                    var components = URLComponents(url: baseURL
                         .appendingPathComponent("api/v1/workflow-executions")
                         .appendingPathComponent(executionId)
-                        .appendingPathComponent("events")
+                        .appendingPathComponent("events"), resolvingAgainstBaseURL: false)
+                    components?.queryItems = [URLQueryItem(name: "after", value: String(after))]
+                    guard let url = components?.url else { throw APIError.invalidURL }
                     var request = URLRequest(url: url)
                     request.httpMethod = "GET"
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    if after > 0 { request.setValue(String(after), forHTTPHeaderField: "Last-Event-ID") }
                     if let token = currentToken(), !token.isEmpty {
                         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                     }
@@ -1762,13 +1952,20 @@ public final class APIClient: ObservableObject {
 
     /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。
     /// consume=true 时后端顺带将 completed 结果标记为已消费（断点续接后不会误命中旧答案）。
-    public func fetchChatStatus(sessionId: String, consume: Bool = false) async throws -> ChatStatusDTO {
+    public func fetchChatStatus(
+        sessionId: String,
+        consume: Bool = false,
+        agentId: String? = nil
+    ) async throws -> ChatStatusDTO {
         var url = baseURL
             .appendingPathComponent("api/chat/status")
             .appendingPathComponent(sessionId)
-        if consume {
+        if consume || agentId != nil {
             var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            comps?.queryItems = [URLQueryItem(name: "consume", value: "1")]
+            var items: [URLQueryItem] = []
+            if consume { items.append(URLQueryItem(name: "consume", value: "1")) }
+            if let agentId { items.append(URLQueryItem(name: "agent_id", value: agentId)) }
+            comps?.queryItems = items
             if let u = comps?.url { url = u }
         }
         var request = URLRequest(url: url)

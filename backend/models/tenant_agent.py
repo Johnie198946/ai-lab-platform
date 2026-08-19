@@ -19,6 +19,9 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    ForeignKey,
+    Float,
+    Integer,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -72,3 +75,54 @@ class AgentInvocationRelation(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class AgentEvaluationRun(Base):
+    """Durable, tenant-scoped formal evaluation of an agent snapshot."""
+
+    __tablename__ = "agent_evaluation_runs"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "idempotency_key", name="uq_agent_evaluation_tenant_idempotency"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    # Baseline and skill-backed agents are not necessarily tenant_agents rows.
+    agent_id: Mapped[str] = mapped_column(String(80), nullable=False, index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    suite_snapshot: Mapped[list] = mapped_column(JSON, default=list)
+    agent_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    results: Mapped[list] = mapped_column(JSON, default=list)
+    score: Mapped[float] = mapped_column(Float, default=0)
+    usage: Mapped[dict] = mapped_column(JSON, default=dict)
+    bridge_run_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    bridge_event_cursor: Mapped[int] = mapped_column(Integer, default=0)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    lease_owner: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class AgentEvaluationEvent(Base):
+    __tablename__ = "agent_evaluation_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "seq", name="uq_agent_evaluation_event_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_evaluation_runs.id", ondelete="CASCADE"), index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -124,6 +124,63 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # 持久方案规划器：独立租约队列，API/客户端/Worker 重启后继续同一规划任务
+  planning-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "backend.workers.workflow_planning_worker"]
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
+      AI_LAB_HOME: /app/data/vault
+      HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      WORKFLOW_HERMES_PLANNING: ${WORKFLOW_HERMES_PLANNING:-true}
+      TENANT_KNOWLEDGE_POLICY_V2: ${TENANT_KNOWLEDGE_POLICY_V2:-true}
+      KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
+      AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
+      AUTHEN_SUBSCRIPTION_URL: ${AUTHEN_SUBSCRIPTION_URL:-http://host.docker.internal:8006}
+    volumes:
+      - ./data:/app/data
+      - /root/.hermes/skills:/root/.hermes/skills
+      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro
+      - /root/.hermes/profiles:/root/.hermes/profiles
+      - /opt/ai-lab-platform:/opt/ai-lab-platform
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # 持久 Agent 正式评估队列：独立租约，客户端或服务重启后可恢复
+  agent-evaluation-worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "-m", "backend.workers.agent_evaluation_worker"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
+      AI_LAB_HOME: /app/data/vault
+      HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      TENANT_KNOWLEDGE_POLICY_V2: ${TENANT_KNOWLEDGE_POLICY_V2:-true}
+      KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
+      AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
+      AUTHEN_SUBSCRIPTION_URL: ${AUTHEN_SUBSCRIPTION_URL:-http://host.docker.internal:8006}
+    volumes:
+      - ./data:/app/data
+      - /root/.hermes/skills:/root/.hermes/skills
+      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro
+      - /root/.hermes/profiles:/root/.hermes/profiles
+      - /opt/ai-lab-platform:/opt/ai-lab-platform
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
   # 前端服务
   frontend:
     build:

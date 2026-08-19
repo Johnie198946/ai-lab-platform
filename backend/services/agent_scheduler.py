@@ -191,16 +191,6 @@ async def _scan_due() -> None:
         await _run_agent_once(aid)
 
 
-async def _scan_loop() -> None:
-    """后台循环: 每 60s 扫描一次。"""
-    while True:
-        try:
-            await _scan_due()
-        except Exception:
-            logger.exception("调度扫描异常")
-        await asyncio.sleep(_scan_interval)
-
-
 def start_scheduler() -> None:
     """FastAPI lifespan 调用: 启动后台扫描循环。"""
     global _scheduler
@@ -208,7 +198,7 @@ def start_scheduler() -> None:
         return
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
-        _scan_loop,
+        _scan_due,
         "interval",
         seconds=_scan_interval,
         id="agent-scan",

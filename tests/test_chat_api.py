@@ -194,6 +194,36 @@ class TestChatAPIEndpoint(unittest.TestCase):
         # 验证向 Hermes 传递的 goal 废除了硬编码角色前缀拼接，原样传递
         self.assertEqual(captured_goal["goal"], "请审查代码")
 
+    def test_custom_agent_configuration_is_resolved_and_forwarded(self):
+        created = self.request(
+            "POST", "/api/v1/tenant-agents",
+            json={
+                "base_agent_id": "knowledge",
+                "custom_name": "洞察助手",
+                "private_prompt_delta": "回答必须给出证据缺口",
+                "allowed_tools": ["web_search", "web_extract"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        agent_id = created.json()["id"]
+        captured = {}
+
+        async def fake_hermes(goal, session_id=None, **kwargs):
+            captured.update(kwargs.get("agent_config") or {})
+            return "已完成", []
+
+        with patch("backend.api.chat.match_identity_rule", return_value=None), \
+             patch("backend.api.chat._check_cached_answer", return_value=None), \
+             patch("backend.api.chat._call_hermes", side_effect=fake_hermes):
+            response = self.request(
+                "POST", "/api/chat",
+                json={"question": "请评估", "agent_id": f"db_{agent_id}"},
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(captured["id"], agent_id)
+        self.assertIn("回答必须给出证据缺口", captured["prompt"])
+        self.assertEqual(captured["allowed_tools"], ["web_search", "web_extract"])
+
     def test_chat_identity_rule_hit_with_citations(self):
         fixed_answer = "我是 AI Lab 智能助手，相关规范参见 [[wiki/体验中心定位]]。"
         with patch("backend.api.chat.match_identity_rule", return_value=fixed_answer), \

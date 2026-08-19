@@ -93,4 +93,97 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(event.message, "工作流 DAG 已编译")
         XCTAssertNil(event.payload.question)
     }
+
+    func testLegacyPlanWithoutNestedPlanIdStillDecodes() throws {
+        let data = Data(
+            """
+            {
+              "id": "wfp_legacy", "workflow_id": "wf_1", "version": 1,
+              "goal": "英语评估", "deliverable": "Markdown",
+              "allow_network": true, "max_tokens": 24000,
+              "estimated_tokens": 12000, "knowledge_scope": [],
+              "validation_errors": [],
+              "dsl": {"name": "英语评估", "nodes": [], "edges": [], "version": "1.0.0"},
+              "frozen_at": null, "created_at": null
+            }
+            """.utf8
+        )
+
+        let plan = try decoder().decode(WorkflowPlanDTO.self, from: data)
+        XCTAssertEqual(plan.id, "wfp_legacy")
+        XCTAssertEqual(plan.dsl.planId, "")
+    }
+
+    func testNestedPlanIdDecodesWithGlobalSnakeCaseStrategy() throws {
+        let data = Data(
+            """
+            {
+              "plan_id":"wfp_nested","name":"评估","version":"1.0.0","edges":[],
+              "nodes":[{
+                "id":"node_01","node_type":"FILTER_PASS","name":"安全检查",
+                "parameters":{
+                  "agent_id":"supervision","instruction":"检查方案",
+                  "output_format":"Markdown","knowledge_scope":["wiki"],
+                  "allow_network":true,"requires_review":true,
+                  "max_tokens":1500,"revision_note":"复核"
+                }
+              }]
+            }
+            """.utf8
+        )
+
+        let dsl = try decoder().decode(WorkflowDSLDTO.self, from: data)
+        XCTAssertEqual(dsl.planId, "wfp_nested")
+        XCTAssertEqual(dsl.nodes.first?.nodeType, "FILTER_PASS")
+        XCTAssertEqual(dsl.nodes.first?.parameters.agentId, "supervision")
+        XCTAssertEqual(dsl.nodes.first?.parameters.outputFormat, "Markdown")
+        XCTAssertEqual(dsl.nodes.first?.parameters.knowledgeScope, ["wiki"])
+        XCTAssertEqual(dsl.nodes.first?.parameters.allowNetwork, true)
+        XCTAssertEqual(dsl.nodes.first?.parameters.requiresReview, true)
+        XCTAssertEqual(dsl.nodes.first?.parameters.maxTokens, 1500)
+        XCTAssertEqual(dsl.nodes.first?.parameters.revisionNote, "复核")
+
+        let encoded = try JSONEncoder().encode(dsl)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        let nodes = try XCTUnwrap(object["nodes"] as? [[String: Any]])
+        let first = try XCTUnwrap(nodes.first)
+        XCTAssertEqual(first["node_type"] as? String, "FILTER_PASS")
+        let parameters = try XCTUnwrap(first["parameters"] as? [String: Any])
+        XCTAssertEqual(parameters["agent_id"] as? String, "supervision")
+    }
+
+    func testActivePlanningActivityDecodesStructuredPluginStep() throws {
+        let data = Data(
+            """
+            [{
+              "workflow": {
+                "id": "wf_1", "title": "英语提升", "description": "目标",
+                "desired_output": "Markdown", "status": "planning",
+                "active_plan_id": null, "clarification_session_id": "wfs_1",
+                "primary_agent_id": null, "created_at": null, "updated_at": null,
+                "latest_execution": null
+              },
+              "session": {
+                "id": "wfs_1", "workflow_id": "wf_1", "phase": "planning",
+                "round_number": 3, "last_event_seq": 8
+              },
+              "latest_event": {
+                "id": 8, "workflow_id": "wf_1", "session_id": "wfs_1",
+                "type": "planner_step", "message": "加载技能: research",
+                "payload": {
+                  "step_id": "bridge-8", "category": "skill_load",
+                  "status": "done", "tool": "research",
+                  "detail": "已加载技能", "source": "hermes_reasoning_plugin"
+                },
+                "created_at": "2026-08-19T10:00:01Z"
+              }
+            }]
+            """.utf8
+        )
+
+        let activities = try decoder().decode([WorkflowActiveActivityDTO].self, from: data)
+        XCTAssertEqual(activities.first?.session.phase, "planning")
+        XCTAssertEqual(activities.first?.latestEvent?.payload.category, "skill_load")
+        XCTAssertEqual(activities.first?.latestEvent?.payload.source, "hermes_reasoning_plugin")
+    }
 }

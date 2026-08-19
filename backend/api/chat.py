@@ -29,6 +29,7 @@ from backend.models.agent_registry import (
 )
 from backend.services.reasoning_extractor import ReasoningStep
 from backend.services.knowledge_policy import KnowledgePolicy, mint_capability, resolve_policy
+from backend.services.agent_capabilities import BASELINE_AGENT_IDS, resolve_agent
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -195,6 +196,7 @@ def extract_clarify_payload(reasoning: List[ReasoningStep]) -> Optional[ClarifyP
 async def _call_hermes(
     goal: str, session_id: Optional[str] = None, skill_id: Optional[str] = None,
     knowledge_capability: Optional[str] = None, policy_version: Optional[str] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, List[ReasoningStep]]:
     """透传 Hermes bridge，返回 (reply, reasoning)。"""
     payload: Dict[str, Any] = {"goal": goal}
@@ -205,6 +207,8 @@ async def _call_hermes(
     if knowledge_capability:
         payload["knowledge_capability"] = knowledge_capability
         payload["knowledge_policy_version"] = policy_version
+    if agent_config:
+        payload["agent_config"] = agent_config
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
         r = await client.post(HERMES_BRIDGE_URL, json=payload)
         if r.status_code == 200:
@@ -287,12 +291,17 @@ def derive_isolated_session_id(
     - 无 session_id 时生成随机 base；
     - 已带任意 Agent 前缀时先剥离，再套当前 Agent 前缀（支持切换 Agent 不叠加）。
     """
-    prefix = session_prefix_for(agent_id) + "-"
+    selected = (agent_id or "").strip()
+    if selected and selected.removeprefix("db_") not in BASELINE_AGENT_IDS:
+        prefix = "agent" + hashlib.sha256(selected.encode()).hexdigest()[:10] + "-"
+    else:
+        prefix = session_prefix_for(selected.removeprefix("db_") or None) + "-"
     base = (session_id or "").strip() or uuid.uuid4().hex
     for p in _KNOWN_SESSION_PREFIXES:
         if base.startswith(p):
             base = base[len(p) :]
             break
+    base = re.sub(r"^agent[0-9a-f]{10}-", "", base, count=1)
     return prefix + base
 
 
@@ -359,6 +368,13 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     skill_id = validate_chat_skill(req.skill_id)
     goal = req.question
     policy = await _resolve_chat_policy(payload)
+    async with SessionLocal() as db:
+        agent = await resolve_agent(
+            db,
+            agent_id=req.agent_id,
+            tenant_id=str(payload.get("tenant_key") or "public"),
+            owner_user_id=str(payload.get("user_id") or payload.get("sub") or ""),
+        )
     isolated_session_id = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
         str(payload.get("tenant_key") or "public"), policy.policy_version
@@ -379,11 +395,13 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             reply, reasoning = await _call_hermes(
                 goal, session_id=isolated_session_id, skill_id=skill_id,
                 knowledge_capability=capability, policy_version=policy_version,
+                agent_config=agent.bridge_config(),
             )
         else:
             reply, reasoning = await _call_hermes(
                 goal, session_id=isolated_session_id,
                 knowledge_capability=capability, policy_version=policy_version,
+                agent_config=agent.bridge_config(),
             )
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
@@ -427,6 +445,7 @@ async def chat_status(
     session_id: str,
     consume: bool = False,
     offset: int = 0,
+    agent_id: str | None = None,
     payload=Depends(require_auth),
 ) -> Dict[str, Any]:
     """长任务状态回读：透传 Bridge GET /v1/chat/status/{user_id}。
@@ -438,7 +457,7 @@ async def chat_status(
     # main_agent-<UUID>——不 derive 则查不到 run 误报 not_found（微信模式必现）
     policy = await _resolve_chat_policy(payload)
     isolated = _tenant_namespaced_session(
-        derive_isolated_session_id(None, session_id),
+        derive_isolated_session_id(agent_id, session_id),
         str(payload.get("tenant_key") or "public"), policy.policy_version
     )
     data = await _call_hermes_status(isolated, consume=consume, offset=offset)
@@ -494,6 +513,7 @@ async def _call_bridge_stream(
     request_id: Optional[str] = None,
     knowledge_capability: Optional[str] = None,
     policy_version: Optional[str] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
@@ -508,6 +528,7 @@ async def _call_bridge_stream(
                 "request_id": request_id,
                 "knowledge_capability": knowledge_capability,
                 "knowledge_policy_version": policy_version,
+                "agent_config": agent_config or {},
             },
         ) as resp:
             if resp.status_code != 200:
@@ -540,6 +561,13 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
         )
 
     policy = await _resolve_chat_policy(payload)
+    async with SessionLocal() as db:
+        agent = await resolve_agent(
+            db,
+            agent_id=req.agent_id,
+            tenant_id=str(payload.get("tenant_key") or "public"),
+            owner_user_id=str(payload.get("user_id") or payload.get("sub") or ""),
+        )
     isolated_session_id = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
         str(payload.get("tenant_key") or "public"), policy.policy_version
@@ -574,6 +602,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 "skill_id": skill_id,
                 "knowledge_capability": capability,
                 "policy_version": policy_version,
+                "agent_config": agent.bridge_config(),
             }
             if req.request_id:
                 kwargs["request_id"] = req.request_id

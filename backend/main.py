@@ -2,6 +2,8 @@
 FastAPI 主入口 — OpenAPI 文档配置
 """
 
+import logging
+
 from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
@@ -30,23 +32,33 @@ from backend.api.knowledge_policy import router as knowledge_policy_router
 from backend.api.subscriptions import router as subscriptions_router
 from backend.db import init_db
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """启动: 启动守卫 + 初始化数据库表(幂等) + 启动 Agent 调度器。"""
     # 启动守卫：JWT secret 为空 → 开发态全可见，隔离承诺不生效
     check_dev_visibility_guard()
+    db_ready = True
     try:
         await init_db()
-        from backend.services.workflow_migration import migrate_legacy_workflows
-
-        await migrate_legacy_workflows()
-        from backend.api.workflows import resume_pending_planning
-
-        await resume_pending_planning()
     except Exception:
-        # DB 不可用时不阻塞启动(知识库文件驱动功能仍可用)
-        pass
+        db_ready = False
+        logger.exception("Database initialization failed; file-backed features remain available")
+    if db_ready:
+        try:
+            from backend.services.workflow_migration import migrate_legacy_workflows
+
+            await migrate_legacy_workflows()
+        except Exception:
+            logger.exception("Legacy workflow migration failed; continuing startup")
+        try:
+            from backend.api.workflows import resume_pending_planning
+
+            await resume_pending_planning()
+        except Exception:
+            logger.exception("Durable planning-job recovery failed; worker will retry")
     # 启动平台 Agent 调度器(容器重启自动恢复)
     from backend.services.agent_scheduler import start_scheduler
 

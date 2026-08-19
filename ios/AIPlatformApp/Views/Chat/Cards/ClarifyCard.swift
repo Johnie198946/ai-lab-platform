@@ -205,3 +205,289 @@ public struct ClarifyCard: View {
         onSubmit?(selection)
     }
 }
+
+// MARK: - Workflow Requirement Confirmation
+
+/// Final requirement checkpoint used by workflow clarification.
+/// It turns the server's summary text into a scan-friendly decision document while
+/// preserving the exact choice labels expected by the workflow state machine.
+public struct RequirementConfirmationCard: View {
+    public let block: ClarifyBlock
+    public var onSubmit: ((String) -> Void)? = nil
+
+    @State private var selectedID: String?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    public init(block: ClarifyBlock, onSubmit: ((String) -> Void)? = nil) {
+        self.block = block
+        self.onSubmit = onSubmit
+    }
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
+            confirmationHeader
+            requirementSummary
+            decisionSection
+        }
+        .padding(AppTheme.Spacing.xl)
+        .quantumCard()
+        .accessibilityElement(children: .contain)
+    }
+
+    private var confirmationHeader: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack(spacing: AppTheme.Spacing.md) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(AppTheme.Icons.onAccent)
+                    .frame(width: 44, height: 44)
+                    .background(AppTheme.Colors.actionGradient, in: Circle())
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Text("需求收敛确认单")
+                        .font(AppTheme.Typography.cardTitle)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text("确认后将据此生成可审阅方案")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Label("已完成澄清", systemImage: "checkmark.circle.fill")
+                Text("·")
+                Text("\(summaryItems.count) 项边界已收敛")
+            }
+            .font(AppTheme.Typography.micro)
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .frame(minHeight: 32)
+            .background(AppTheme.Colors.statusCompleted.opacity(0.10), in: Capsule())
+        }
+    }
+
+    @ViewBuilder
+    private var requirementSummary: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            Text("任务边界")
+                .font(AppTheme.Typography.label)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .textCase(.uppercase)
+
+            if let goal = summaryItems.first(where: { $0.kind == .goal }) {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                    Label(goal.title, systemImage: goal.icon)
+                        .font(AppTheme.Typography.label)
+                        .foregroundStyle(AppTheme.Icons.intelligence)
+                    Text(goal.value)
+                        .font(AppTheme.Typography.body)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(AppTheme.Spacing.lg)
+                .background(AppTheme.Colors.surfaceTint)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            }
+
+            VStack(spacing: 0) {
+                ForEach(Array(summaryItems.filter { $0.kind != .goal }.enumerated()), id: \.element.id) { index, item in
+                    summaryRow(item)
+                    if index < summaryItems.filter({ $0.kind != .goal }).count - 1 {
+                        Divider().padding(.leading, 52)
+                    }
+                }
+            }
+            .padding(.horizontal, AppTheme.Spacing.lg)
+            .background(AppTheme.Colors.secondaryBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        }
+    }
+
+    private func summaryRow(_ item: RequirementSummaryItem) -> some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+            Image(systemName: item.icon)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(AppTheme.Icons.interactive)
+                .frame(width: 36, height: 36)
+                .background(AppTheme.Colors.quantumBlue.opacity(0.10), in: Circle())
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                Text(item.title)
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                Text(item.value)
+                    .font(AppTheme.Typography.supporting.weight(.medium))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.vertical, AppTheme.Spacing.md)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var decisionSection: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                Text("下一步")
+                    .font(AppTheme.Typography.label)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("请确认内容是否准确，你的选择会立即保存")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            VStack(spacing: AppTheme.Spacing.sm) {
+                ForEach(block.choices) { option in
+                    decisionButton(option)
+                }
+            }
+
+            Button(action: submitSelection) {
+                Label(primaryActionTitle, systemImage: primaryActionIcon)
+            }
+            .disabled(selectedID == nil)
+            .buttonStyle(QuantumPrimaryButtonStyle())
+            .accessibilityHint("提交当前选择并进入下一阶段")
+        }
+    }
+
+    private func decisionButton(_ option: ClarifyOption) -> some View {
+        let selected = selectedID == option.id
+        let affirmative = option.label.hasPrefix("确认") || option.label.contains("进入方案")
+        return Button {
+            #if os(iOS)
+            UISelectionFeedbackGenerator().selectionChanged()
+            #endif
+            withAnimation(reduceMotion ? nil : AppTheme.Motion.quick) {
+                selectedID = option.id
+            }
+        } label: {
+            HStack(spacing: AppTheme.Spacing.md) {
+                Image(systemName: affirmative ? "checkmark.circle" : "pencil.circle")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(selected ? AppTheme.Icons.onAccent : AppTheme.Icons.secondary)
+                    .frame(width: 40, height: 40)
+                    .background(
+                        selected ? AppTheme.Colors.actionGradient : LinearGradient(
+                            colors: [AppTheme.Colors.secondaryBackground, AppTheme.Colors.secondaryBackground],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        ),
+                        in: Circle()
+                    )
+
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Text(affirmative ? "内容准确" : "需要调整")
+                        .font(AppTheme.Typography.cardTitle)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text(affirmative ? "锁定需求，进入方案设计" : "继续补充或修改任务边界")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 0)
+
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(selected ? AppTheme.Icons.interactive : AppTheme.Icons.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, AppTheme.Spacing.sm)
+            .background(selected ? AppTheme.Colors.quantumViolet.opacity(0.10) : AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                    .stroke(selected ? AppTheme.Colors.interactiveViolet : AppTheme.Colors.border, lineWidth: selected ? 1.5 : 0.75)
+            }
+        }
+        .buttonStyle(SoftButtonStyle())
+        .accessibilityLabel("\(selected ? "已选择" : "未选择")，\(affirmative ? "内容准确" : "需要调整")")
+        .accessibilityHint(affirmative ? "锁定需求并进入方案设计" : "返回需求澄清继续修改")
+    }
+
+    private var selectedOption: ClarifyOption? {
+        guard let selectedID else { return nil }
+        return block.choices.first { $0.id == selectedID }
+    }
+
+    private var primaryActionTitle: String {
+        guard let option = selectedOption else { return "请选择下一步" }
+        return option.label.hasPrefix("确认") || option.label.contains("进入方案")
+            ? "确认并生成方案"
+            : "返回继续澄清"
+    }
+
+    private var primaryActionIcon: String {
+        guard let option = selectedOption else { return "arrow.right" }
+        return option.label.hasPrefix("确认") || option.label.contains("进入方案")
+            ? "wand.and.stars"
+            : "arrow.uturn.backward"
+    }
+
+    private func submitSelection() {
+        guard let option = selectedOption else { return }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+        onSubmit?(option.label)
+    }
+
+    private var summaryItems: [RequirementSummaryItem] {
+        let parsed = RequirementSummaryItem.parse(block.question)
+        if !parsed.isEmpty { return parsed }
+        return [
+            RequirementSummaryItem(
+                kind: .goal,
+                title: "需求说明",
+                value: block.question,
+                icon: "scope"
+            )
+        ]
+    }
+}
+
+private struct RequirementSummaryItem: Identifiable {
+    enum Kind { case goal, deliverable, audience, scope, acceptance, other }
+
+    let id = UUID()
+    let kind: Kind
+    let title: String
+    let value: String
+    let icon: String
+
+    static func parse(_ question: String) -> [RequirementSummaryItem] {
+        let definitions: [(prefix: String, kind: Kind, title: String, icon: String)] = [
+            ("目标：", .goal, "任务目标", "scope"),
+            ("交付物：", .deliverable, "交付成果", "doc.richtext"),
+            ("目标用户与场景：", .audience, "使用对象", "person.crop.circle"),
+            ("MVP 范围：", .scope, "首期范围", "square.dashed.inset.filled"),
+            ("约束与验收：", .acceptance, "验收标准", "checkmark.shield")
+        ]
+        return question
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .compactMap { line in
+                guard !line.isEmpty, !line.hasPrefix("请确认需求单") else { return nil }
+                guard let definition = definitions.first(where: { line.hasPrefix($0.prefix) }) else {
+                    return RequirementSummaryItem(kind: .other, title: "补充说明", value: line, icon: "text.alignleft")
+                }
+                let value = String(line.dropFirst(definition.prefix.count)).trimmingCharacters(in: .whitespaces)
+                guard !value.isEmpty else { return nil }
+                return RequirementSummaryItem(
+                    kind: definition.kind,
+                    title: definition.title,
+                    value: value,
+                    icon: definition.icon
+                )
+            }
+    }
+}
