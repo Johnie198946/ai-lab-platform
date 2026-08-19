@@ -136,6 +136,25 @@ test('assistant machine envelopes are hidden and extraction persists the returne
   assert.equal(api.session.data.demand.core_problem, '已回填');
 });
 
+test('V1.7 fenced YAML demand envelopes stay hidden from the customer', () => {
+  const { api } = createApi();
+  const content = `## 需求收敛确认单｜C036
+
+这里是客户可见的收敛内容。
+
+\`\`\`yaml
+AI_LAB_DEMAND_V1:
+  customer_code: C036
+  business_scene: 基于既有混合底座建设 AI 基础设施
+  status: draft
+\`\`\``;
+
+  assert.equal(
+    api.visibleAssistantMessage(content),
+    '## 需求收敛确认单｜C036\n\n这里是客户可见的收敛内容。',
+  );
+});
+
 test('demand interview state envelopes stay invisible', () => {
   const { api } = createApi();
   const assistant = `只问一个问题

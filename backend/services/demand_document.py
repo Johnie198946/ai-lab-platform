@@ -8,6 +8,8 @@ import re
 from datetime import datetime, timezone
 from typing import Any
 
+import yaml
+
 
 SCHEMA_VERSION = "1.0"
 MAX_SOURCE_LENGTH = 30_000
@@ -18,6 +20,10 @@ _HTML_ENVELOPE_RE = re.compile(
 )
 _FENCED_ENVELOPE_RE = re.compile(
     r"```(?:json\s+)?AI_LAB_DEMAND_V1\s*(\{.*?\})\s*```",
+    re.DOTALL | re.IGNORECASE,
+)
+_FENCED_YAML_ENVELOPE_RE = re.compile(
+    r"```ya?ml\s*\n(\s*AI_LAB_DEMAND_V1\s*:\s*\n.*?)(?:\n\s*)```",
     re.DOTALL | re.IGNORECASE,
 )
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*$")
@@ -33,9 +39,9 @@ _SECTION_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 _ROW_ALIASES: dict[str, tuple[str, ...]] = {
-    "core_problem": ("核心问题", "业务问题", "核心痛点", "现状问题", "问题"),
-    "target_metric": ("目标", "目标指标", "预期结果", "业务目标"),
-    "users": ("用户", "关键用户", "目标用户", "首期用户", "角色", "使用者"),
+    "core_problem": ("核心问题", "业务问题", "核心痛点", "现状问题", "当前阻碍", "问题"),
+    "target_metric": ("目标", "目标指标", "目标结果", "预期结果", "业务目标"),
+    "users": ("用户", "关键用户", "目标用户", "首期用户", "使用角色", "角色", "使用者"),
     "cycle": ("周期", "首期周期", "时间", "期限", "里程碑"),
     "solution": ("建议形态", "方案", "解决方案", "产品形态", "组件"),
     "next_action": ("下一步", "行动", "待办", "首要动作"),
@@ -49,6 +55,7 @@ def visible_demand_markdown(content: str) -> str:
     """Remove the machine envelope while preserving the visible assistant reply."""
     visible = _HTML_ENVELOPE_RE.sub("", content or "")
     visible = _FENCED_ENVELOPE_RE.sub("", visible)
+    visible = _FENCED_YAML_ENVELOPE_RE.sub("", visible)
     return visible.strip()
 
 
@@ -70,6 +77,10 @@ def _section_type(title: str) -> str:
 
 def _dimension_type(label: str) -> str:
     compact = _clean_inline(label).replace(" ", "")
+    if any(alias in compact for alias in ("业务场景", "已有能力", "使用角色")):
+        return "facts"
+    if "当前阻碍" in compact or "待确认边界" in compact:
+        return "constraints"
     if any(alias in compact for alias in _ROW_ALIASES["non_goals"]):
         return "non_goals"
     if any(alias in compact for alias in _ROW_ALIASES["constraints"]):
@@ -159,11 +170,20 @@ def _parse_sections(markdown: str) -> tuple[str, list[dict[str, Any]]]:
         }
         if table:
             section["table"] = table
-        if "四维确认单" in section_title and table:
+        if table and (
+            "四维确认单" in section_title
+            or any(
+                _dimension_type(row[0]) != "unknown"
+                for row in table.get("rows") or []
+                if row
+            )
+        ):
             for row in table.get("rows") or []:
                 if len(row) < 2:
                     continue
                 dimension_type = _dimension_type(row[0])
+                if dimension_type == "unknown":
+                    continue
                 sections.append(
                     {
                         "id": f"section-{len(sections) + 1}",
@@ -351,13 +371,79 @@ def _normalize_machine_payload(
     }
 
 
+def _normalize_flat_yaml_payload(
+    payload: dict[str, Any], visible: str
+) -> dict[str, Any] | None:
+    dimensions = {
+        "business_scene": _clean_inline(payload.get("business_scene")),
+        "user_role": _clean_inline(payload.get("user_role")),
+        "current_blocker": _clean_inline(payload.get("current_blocker")),
+        "target_outcome": _clean_inline(payload.get("target_outcome")),
+        "demo_slice": _clean_inline(payload.get("demo_slice")),
+    }
+    if sum(bool(value) for value in dimensions.values()) < 2:
+        return None
+    section_specs = (
+        ("facts", "业务场景", dimensions["business_scene"]),
+        ("facts", "使用角色", dimensions["user_role"]),
+        ("constraints", "当前阻碍与边界", dimensions["current_blocker"]),
+        ("goal", "目标结果", dimensions["target_outcome"]),
+        ("solution_direction", "001 演示候选切片", dimensions["demo_slice"]),
+    )
+    sections = [
+        {
+            "id": f"section-{index + 1}",
+            "type": section_type,
+            "title": title,
+            "items": [],
+            "body": body,
+        }
+        for index, (section_type, title, body) in enumerate(section_specs)
+        if body
+    ]
+    title = _clean_inline(
+        payload.get("title")
+        or f"需求收敛确认单 · {payload.get('customer_code') or ''}".rstrip(" ·"),
+        160,
+    )
+    summary = _summary_from_sections(title, sections)
+    summary.update(
+        {
+            "core_problem": dimensions["current_blocker"]
+            or dimensions["business_scene"],
+            "target_metric": dimensions["target_outcome"],
+            "users": dimensions["user_role"],
+            "solution": dimensions["demo_slice"],
+            "next_action": "确认需求后进入屏幕04深度洞察，再到屏幕05/06完成001 IPD实践",
+            "facts": [
+                value
+                for value in (dimensions["business_scene"], dimensions["user_role"])
+                if value
+            ],
+            "constraints": [dimensions["current_blocker"]]
+            if dimensions["current_blocker"]
+            else [],
+            "solution_directions": [dimensions["demo_slice"]]
+            if dimensions["demo_slice"]
+            else [],
+        }
+    )
+    summary["completeness"] = calculate_demand_completeness(summary)
+    summary["confirmed"] = False
+    return {
+        "title": title,
+        "sections": sections,
+        "summary": summary,
+        "visible": visible,
+    }
+
+
 def extract_demand_document(content: str) -> dict[str, Any]:
     source = (content or "")[:MAX_SOURCE_LENGTH]
     visible = visible_demand_markdown(source)
     source_hash = hashlib.sha256(source.encode("utf-8")).hexdigest()
-    machine_match = _HTML_ENVELOPE_RE.search(source) or _FENCED_ENVELOPE_RE.search(
-        source
-    )
+    machine_match = _HTML_ENVELOPE_RE.search(source) or _FENCED_ENVELOPE_RE.search(source)
+    yaml_match = _FENCED_YAML_ENVELOPE_RE.search(source)
     normalized: dict[str, Any] | None = None
     warnings: list[str] = []
 
@@ -368,6 +454,19 @@ def extract_demand_document(content: str) -> dict[str, Any]:
                 normalized = _normalize_machine_payload(payload, visible)
         except (json.JSONDecodeError, TypeError):
             warnings.append("结构化数据块无效，已使用 Markdown 兼容解析")
+
+    if normalized is None and yaml_match:
+        try:
+            loaded = yaml.safe_load(yaml_match.group(1))
+            payload = (
+                loaded.get("AI_LAB_DEMAND_V1")
+                if isinstance(loaded, dict)
+                else None
+            )
+            if isinstance(payload, dict):
+                normalized = _normalize_flat_yaml_payload(payload, visible)
+        except (yaml.YAMLError, TypeError):
+            warnings.append("YAML 数据块无效，已使用 Markdown 兼容解析")
 
     if normalized is None:
         title, sections = _parse_sections(visible)

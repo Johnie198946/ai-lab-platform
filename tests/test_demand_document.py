@@ -125,3 +125,40 @@ def test_unknown_sections_are_preserved_for_generic_renderer() -> None:
         for section in result["demand_document"]["sections"]
     )
     assert "必须保留原始审计记录" in result["demand_document"]["raw_markdown"]
+
+
+def test_flat_yaml_envelope_from_v17_is_backfilled_and_hidden() -> None:
+    content = """
+## 需求收敛确认单｜C036
+
+### A. 客户真实诉求
+
+| 维度 | 当前确认 |
+|---|---|
+| 业务场景 | 基于既有混合底座建设 AI 基础设施，优先支撑 HR 管理 |
+| 使用角色 | 信息化建设处处长负责统筹，具体业务角色 TBD |
+| 当前阻碍 | 权限管理与合规是首要阻碍 |
+| 目标结果 | 在满足权限与合规要求下稳定提供 HR 管理 AI 能力 |
+
+```yaml
+AI_LAB_DEMAND_V1:
+  customer_code: C036
+  business_scene: 基于既有混合底座建设AI基础设施，支撑HR管理场景
+  user_role: 信息化建设处处长负责统筹，具体业务使用角色TBD
+  current_blocker: 权限管理与合规最重要，其他阻碍TBD
+  target_outcome: 在满足权限与合规要求的前提下稳定提供HR管理AI能力
+  demo_slice: 权限约束下的HR信息查询或分析
+  status: draft
+```
+"""
+
+    result = extract_demand_document(content)
+
+    assert result["recognized"] is True
+    assert result["demand"]["users"].startswith("信息化建设处")
+    assert "权限管理" in result["demand"]["core_problem"]
+    assert "HR管理AI能力" in result["demand"]["target_metric"]
+    assert result["demand"]["solution"] == "权限约束下的HR信息查询或分析"
+    assert result["demand"]["completeness"] > 0
+    assert "AI_LAB_DEMAND_V1" not in result["demand_document"]["raw_markdown"]
+    assert "```yaml" not in visible_demand_markdown(content)

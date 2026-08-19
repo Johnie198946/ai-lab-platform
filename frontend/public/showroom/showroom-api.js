@@ -7,6 +7,7 @@
   const DEMAND_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
+    /```ya?ml\s*[\r\n]+\s*AI_LAB_DEMAND_V1\s*:[\s\S]*?```/gi,
   ];
   const DEMAND_STATE_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_DEMAND_STATE_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_STATE_V1\s*-->/gi,

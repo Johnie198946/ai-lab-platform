@@ -38,6 +38,7 @@ const state = {
   hermesDetail: '',
   hermesRetryStopped: false,
   demandSheetVisible: false,
+  demandSheetPendingFocus: false,
   visitorInsightBusy: false,
   controllerHermesTask: '',
   controllerFailureHandling: false,
@@ -468,12 +469,15 @@ async function maybeExtractDemand(rawContent, options = {}) {
   if (!content || !/(?:需求(?:收敛)?确认单|四维确认单|AI_LAB_DEMAND_(?:STATE_)?V1)/.test(content)) return;
   if (currentDemand().confirmed || demandExtractionInFlight.has(content)) return;
   demandExtractionInFlight.add(content);
+  state.demandSheetPendingFocus = true;
   try {
     const result = await window.showroomApi.extractDemand(content);
+    if (!result?.recognized) state.demandSheetPendingFocus = false;
     if (result?.recognized && !result.unchanged && !result.locked && !options.silent) {
       showToast('需求收敛单已自动回填 · 请核对后确认');
     }
   } catch (error) {
+    state.demandSheetPendingFocus = false;
     if (!options.silent) showToast(`需求单回填失败：${error.message}`);
   } finally {
     demandExtractionInFlight.delete(content);
@@ -1027,7 +1031,7 @@ function clinicView() {
   state.demandSheetVisible = showDemandSheet;
   const fieldLock = demand.confirmed ? 'disabled' : '';
   const demandSheet = showDemandSheet ? `
-        <section class="panel form-panel demand-sheet${revealDemandSheet ? ' reveal' : ''}" aria-label="需求收敛确认单"><div class="panel-head"><div><strong>需求收敛确认单</strong><small>${escapeHtml(demandDocument.title || 'AI 已完成需求收敛')}</small></div><span class="demand-document-status ${demand.confirmed ? 'confirmed' : 'draft'}">${demand.confirmed ? '已确认' : 'AI 已生成 · 待确认'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem" ${fieldLock}>${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}" ${fieldLock}></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}" ${fieldLock}></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}" ${fieldLock}></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}" ${fieldLock}></label><label class="field wide">下一步行动<textarea data-demand-field="next_action" ${fieldLock}>${escapeHtml(demand.next_action)}</textarea></label></div>${demandDocumentView(demandDocument)}<button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>` : '';
+        <section class="panel form-panel demand-sheet${revealDemandSheet ? ' reveal' : ''}" aria-label="需求收敛确认单" tabindex="-1"><div class="panel-head"><div><strong>需求收敛确认单</strong><small>${escapeHtml(demandDocument.title || 'AI 已完成需求收敛')}</small></div><span class="demand-document-status ${demand.confirmed ? 'confirmed' : 'draft'}">${demand.confirmed ? '已确认' : 'AI 已生成 · 待确认'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem" ${fieldLock}>${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}" ${fieldLock}></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}" ${fieldLock}></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}" ${fieldLock}></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}" ${fieldLock}></label><label class="field wide">下一步行动<textarea data-demand-field="next_action" ${fieldLock}>${escapeHtml(demand.next_action)}</textarea></label></div>${demandDocumentView(demandDocument)}<button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>` : '';
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
@@ -1632,6 +1636,19 @@ function render(intent = 'refresh') {
     canvas.classList.remove('switching');
     attachScreenActions();
     runScreenMotion(intent);
+    if (state.demandSheetPendingFocus && state.view === 'screen-03') {
+      requestAnimationFrame(() => {
+        const demandSheet = canvas.querySelector('.demand-sheet');
+        if (!demandSheet) return;
+        state.demandSheetPendingFocus = false;
+        demandSheet.scrollIntoView({
+          behavior: motionEnabled() ? 'smooth' : 'auto',
+          block: 'nearest',
+          inline: 'nearest',
+        });
+        demandSheet.focus({ preventScroll: true });
+      });
+    }
   };
 
   if (!canvas.firstElementChild || !motionEnabled()) {
