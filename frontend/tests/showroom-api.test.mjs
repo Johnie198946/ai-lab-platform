@@ -221,6 +221,40 @@ test('insight job API methods persist every returned session', async () => {
   assert.equal(api.session.data.insight_job.job_id, 'job-1');
 });
 
+test('insight revisions and confirmation use concurrency metadata', async () => {
+  const { api } = createApi();
+  api.sessionId = 'visit-1';
+  api.state = { epoch: 12 };
+  api.session = {
+    data: {
+      insight_job: { job_id: 'job-1', source_hash: 'hash-1' },
+      insight_review: { version: 'V0.2', demand_hash: 'hash-1' },
+    },
+  };
+  const calls = [];
+  api.request = async (path, options) => {
+    calls.push([path, options.body]);
+    return { session: api.session, revision: { revision_id: 'revision-1' } };
+  };
+
+  await api.extractInsightRevision('machine block');
+  await api.applyInsightRevision('revision-1');
+  await api.confirmInsight();
+
+  assert.deepEqual(calls.map(([path]) => path), [
+    '/api/showroom/sessions/visit-1/insight/revisions/extract',
+    '/api/showroom/sessions/visit-1/insight/revisions/revision-1/apply',
+    '/api/showroom/sessions/visit-1/insight/confirm',
+  ]);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0][1])), {
+    epoch: 12,
+    job_id: 'job-1',
+    demand_hash: 'hash-1',
+    base_version: 'V0.2',
+    content: 'machine block',
+  });
+});
+
 test('visitor insight extraction persists the active main session', async () => {
   const { api } = createApi();
   api.sessionId = 'visit-current';

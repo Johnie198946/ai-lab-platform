@@ -1,7 +1,7 @@
 screen_id: "screen-04"
-title: "需求深度洞察报告"
-role: "insight-report"
-layout: "markdown-report"
+title: "IPD需求洞察共创台"
+role: "insight-co-creation"
+layout: "report-assistant-review"
 theme: "aurora-light"
 data_bindings:
   - source: "/api/showroom/sessions/{session_id}"
@@ -16,4 +16,16 @@ data_bindings:
   - source: "/api/showroom/sessions/{session_id}/insight/jobs"
     component: "incremental-sections"
     refresh: "websocket-events"
+  - source: "/api/showroom/sessions/{session_id}/insight/revisions/extract"
+    component: "controlled-revision-preview"
+    refresh: "on-demand"
+  - source: "/api/showroom/sessions/{session_id}/insight/confirm"
+    component: "human-confirmation-gate"
+    refresh: "on-demand"
+skills:
+  market_and_technology: "ipd-01-market-insight"
+  requirement_review: "ipd-02-requirement-analysis"
+  conversation_orchestration: "solution-consultant-persona"
+forbidden_until_screen_05:
+  - "ipd-03-product-planning"
 auto_fullscreen: true

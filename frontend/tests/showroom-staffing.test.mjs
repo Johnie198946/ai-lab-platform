@@ -23,9 +23,21 @@ test('customer UI presents controlled AI employees and technical badges', () => 
 test('summary completion drives incremental 004 reveal without fake progress', () => {
   assert.match(app, /event\.section === 'summary'\) startInsightAutoAdvance/);
   assert.match(app, /setView\('screen-04'\)/);
-  assert.match(app, /insight-skeleton/);
+  assert.match(app, /insight-empty/);
   assert.match(styles, /prefers-reduced-motion:reduce/);
   assert.match(styles, /--employee-index/);
+});
+
+test('004 is a conversational IPD review workbench with controlled revisions', () => {
+  for (const label of ['洞察共创助手', '修订草案 · 尚未应用', '确认洞察结论，进入001 IPD实践', '需求理解有误，退回003修订']) {
+    assert.match(app, new RegExp(label));
+  }
+  assert.match(app, /submitHermesSkill\(insightExecutionPrompt\(job, plan\), 'ipd-01-market-insight'/);
+  assert.match(app, /submitHermesSkill\(requirementAnalysisPrompt\(job\), 'ipd-02-requirement-analysis'/);
+  assert.match(app, /extractInsightRevision/);
+  assert.match(app, /applyInsightRevision/);
+  assert.match(styles, /insight-cocreation-shell/);
+  assert.match(styles, /revision-preview/);
 });
 
 test('a failed final callback cannot overwrite an already completed report', () => {

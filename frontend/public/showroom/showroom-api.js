@@ -21,6 +21,7 @@
     /<!--\s*AI_LAB_INSIGHT_STAGE_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_STAGE_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_SECTION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_SECTION_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_V1\s*-->/gi,
+    /<!--\s*AI_LAB_INSIGHT_REVISION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_REVISION_V1\s*-->/gi,
   ];
   const CONTROL_PREFIX = "[AI_LAB_CONTROL]";
 
@@ -76,6 +77,7 @@
 
   function hermesLane() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
+    if (["screen-03-team", "screen-04"].includes(view)) return "insight";
     return view === "controller" ? "backstage" : "frontstage";
   }
 
@@ -427,6 +429,7 @@
         this.hermesReconnectExhausted = false;
         this.setHermesStatus(result.running ? "generating" : "online", result.running ? "正在恢复生成" : "大架构师已连接");
         this.emit("hermes-ready", {
+          lane,
           live_session_id: this.hermesLiveSessionId,
           stored_session_id: this.hermesStoredSessionId,
           messages: resumedMessages,
@@ -515,7 +518,8 @@
         this.session?.data?.hermes_sessions?.[initializedKey]
         || (lane === "backstage" && this.session?.data?.hermes_skill_initialized),
       );
-      if (!skillInitialized) {
+      const forceDispatch = Boolean(options.forceDispatch);
+      if (!skillInitialized || forceDispatch) {
         const context = String(options.stationContext || "").trim();
         const arg = [context, `用户原始问题：${question}`].filter(Boolean).join("\n\n");
         const dispatched = await this.hermes.request("command.dispatch", {
@@ -533,12 +537,20 @@
         session_id: sessionId,
         text: prompt,
       });
-      if (!skillInitialized) {
+      if (!skillInitialized && !forceDispatch) {
         const patch = { hermes_sessions: { [initializedKey]: true } };
         if (lane === "backstage") patch.hermes_skill_initialized = true;
         this.saveSession({ data: patch }).catch(() => {});
       }
       return response;
+    }
+
+    async submitHermesSkill(question, skillCommand, options = {}) {
+      return this.submitHermesPrompt(question, {
+        ...options,
+        skillCommand,
+        forceDispatch: true,
+      });
     }
 
     async respondHermesClarify(requestId, answer) {
@@ -814,6 +826,61 @@
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/complete`,
         { method: "POST", body: { content } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    insightMutationBody(review = this.session?.data?.insight_review || {}) {
+      const job = this.session?.data?.insight_job || {};
+      return {
+        epoch: Number(this.state?.epoch || 0),
+        job_id: String(job.job_id || ""),
+        demand_hash: String(review.demand_hash || job.source_hash || ""),
+        base_version: String(review.version || "V0.1"),
+      };
+    }
+
+    async extractInsightRevision(content) {
+      const body = this.insightMutationBody();
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/revisions/extract`,
+        { method: "POST", body: { ...body, content } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async applyInsightRevision(revisionId) {
+      return this.insightMutation(`/insight/revisions/${encodeURIComponent(revisionId)}/apply`);
+    }
+
+    async discardInsightRevision(revisionId) {
+      return this.insightMutation(`/insight/revisions/${encodeURIComponent(revisionId)}/discard`);
+    }
+
+    async confirmInsight() {
+      return this.insightMutation("/insight/confirm");
+    }
+
+    async reopenInsight() {
+      return this.insightMutation("/insight/reopen");
+    }
+
+    async reopenDemand() {
+      return this.insightMutation("/demand/reopen");
+    }
+
+    async insightMutation(suffix) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}${suffix}`,
+        { method: "POST", body: this.insightMutationBody() },
       );
       if (result?.session) {
         this.session = result.session;

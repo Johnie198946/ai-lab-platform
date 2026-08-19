@@ -54,6 +54,17 @@ from backend.services.showroom_insight import (
     role_catalog_payload,
     visible_insight_message,
 )
+from backend.services.showroom_insight_review import (
+    apply_revision,
+    calculate_insight_coverage,
+    confirmed_version,
+    create_revision,
+    empty_insight_review,
+    extract_revision_protocol,
+    next_draft_version,
+    normalize_review,
+    reopen_version,
+)
 from backend.services.visitor_insight import (
     extract_visitor_insight,
     persist_visitor_wiki,
@@ -143,6 +154,20 @@ class InsightCompleteRequest(BaseModel):
 
 class InsightFailureRequest(BaseModel):
     message: str = Field(default="", max_length=4000)
+
+
+class InsightRevisionExtractionRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=120_000)
+    job_id: str = Field(..., min_length=4, max_length=120)
+    demand_hash: str = Field(..., min_length=16, max_length=128)
+    base_version: str = Field(..., min_length=3, max_length=40)
+
+
+class InsightMutationRequest(BaseModel):
+    epoch: int = Field(default=0, ge=0)
+    job_id: str = Field(default="", max_length=120)
+    demand_hash: str = Field(default="", max_length=128)
+    base_version: str = Field(default="", max_length=40)
 
 
 class SessionMessage(BaseModel):
@@ -326,10 +351,13 @@ def _empty_hermes_sessions() -> dict[str, Any]:
     return {
         "backstage_stored_session_id": "",
         "frontstage_stored_session_id": "",
+        "insight_stored_session_id": "",
         "backstage_skill_initialized": False,
         "frontstage_skill_initialized": False,
+        "insight_skill_initialized": False,
         "backstage_skill_version": "1.7.0",
         "frontstage_skill_version": "1.7.0",
+        "insight_skill_version": "1.0",
     }
 
 
@@ -456,6 +484,7 @@ def _migrate_legacy_session_data(
         "persona_skill_version",
         "staffing_plan",
         "insight_job",
+        "insight_review",
     ):
         if key not in data:
             data[key] = copy.deepcopy(defaults[key])
@@ -539,6 +568,7 @@ def _initial_session_data(slot: str) -> dict[str, Any]:
         "insight": {},
         "staffing_plan": {},
         "insight_job": {},
+        "insight_review": empty_insight_review(),
         "prototype": {},
         "artifacts": {},
         "reviews": {},
@@ -1633,7 +1663,7 @@ async def complete_showroom_insight_job(
                 if section_type not in job.get("completed_sections", []):
                     job.setdefault("completed_sections", []).append(section_type)
 
-        required = {"summary", "root_causes", "impacts", "evidence", "recommendation"}
+        required = {"concept", "summary", "root_causes", "impacts", "evidence", "recommendation"}
         complete = required.issubset(set(job.get("completed_sections") or []))
         status = "completed" if complete else "partial"
         insight["status"] = status
@@ -1674,6 +1704,11 @@ async def complete_showroom_insight_job(
         data["insight_job"] = job
         data["staffing_plan"] = plan
         data["artifacts"] = artifacts
+        review = normalize_review(
+            data.get("insight_review"), demand=data.get("demand") or {}, job=job
+        )
+        review["coverage"] = calculate_insight_coverage(insight)
+        data["insight_review"] = review
         row.data = data
         row.step = max(row.step, 3)
         await database.commit()
@@ -1692,6 +1727,357 @@ async def complete_showroom_insight_job(
     return {"job": job, "insight": insight, "session": session_payload}
 
 
+def _validate_insight_mutation(
+    body: InsightMutationRequest,
+    *,
+    data: dict[str, Any],
+    job: dict[str, Any],
+    review: dict[str, Any],
+) -> None:
+    current_hash = demand_fingerprint(data.get("demand") or {})
+    if body.job_id and body.job_id != str(job.get("job_id") or ""):
+        raise HTTPException(status_code=409, detail="洞察任务已切换")
+    if body.demand_hash and body.demand_hash != current_hash:
+        raise HTTPException(status_code=409, detail="需求已变化，请刷新页面")
+    if body.base_version and body.base_version != review.get("version"):
+        raise HTTPException(status_code=409, detail="报告版本已更新，请刷新后重试")
+    if body.epoch and body.epoch != int(hub.state.get("epoch", 0)):
+        raise HTTPException(status_code=409, detail="展厅场次已切换")
+
+
+async def _broadcast_insight_event(event_type: str, session_id: str, data: dict[str, Any]) -> None:
+    job = data.get("insight_job") or {}
+    review = data.get("insight_review") or {}
+    await hub.broadcast(
+        {
+            "type": event_type,
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "job_id": job.get("job_id", ""),
+            "demand_hash": review.get("demand_hash", ""),
+            "base_version": review.get("version", ""),
+            "insight_review": review,
+        }
+    )
+
+
+@router.post("/sessions/{session_id}/insight/revisions/extract")
+async def extract_showroom_insight_revision(
+    session_id: str,
+    body: InsightRevisionExtractionRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        demand = data.get("demand") or {}
+        job = data.get("insight_job") or {}
+        insight = data.get("insight") or empty_insight()
+        review = normalize_review(data.get("insight_review"), demand=demand, job=job)
+        _validate_insight_mutation(
+            InsightMutationRequest(
+                job_id=body.job_id,
+                demand_hash=body.demand_hash,
+                base_version=body.base_version,
+            ),
+            data=data,
+            job=job,
+            review=review,
+        )
+        if review.get("status") == "confirmed":
+            raise HTTPException(status_code=409, detail="已确认版本已锁定，请先发起新版本")
+        protocol = extract_revision_protocol(body.content)
+        if not protocol:
+            raise HTTPException(status_code=422, detail="未识别到结构化修订建议")
+        try:
+            revision = create_revision(
+                protocol, review=review, insight=insight, job=job, demand=demand
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        revisions = list(review.get("revisions") or [])
+        revisions.append(revision)
+        review.update(
+            {
+                "status": "revision_pending",
+                "pending_revision_id": revision["revision_id"],
+                "revisions": revisions[-50:],
+                "coverage": calculate_insight_coverage(insight),
+            }
+        )
+        data["insight_review"] = review
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_REVISION_READY", session_id, data)
+    return {"revision": revision, "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/revisions/{revision_id}/apply")
+async def apply_showroom_insight_revision(
+    session_id: str,
+    revision_id: str,
+    body: InsightMutationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        revision = next(
+            (item for item in review.get("revisions") or [] if item.get("revision_id") == revision_id),
+            None,
+        )
+        if not revision or revision.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="修订草案已失效")
+        if review.get("pending_revision_id") != revision_id:
+            raise HTTPException(status_code=409, detail="当前已有另一份待处理修订")
+        insight = apply_revision(data.get("insight") or {}, revision)
+        revision["status"] = "applied"
+        revision["applied_at"] = now_iso()
+        review.update(
+            {
+                "status": "draft",
+                "version": next_draft_version(str(review.get("version") or "V0.1")),
+                "pending_revision_id": "",
+                "coverage": calculate_insight_coverage(insight),
+            }
+        )
+        data["insight"] = insight
+        data["insight_review"] = review
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_REVISION_APPLIED", session_id, data)
+    return {"revision": revision, "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/revisions/{revision_id}/discard")
+async def discard_showroom_insight_revision(
+    session_id: str,
+    revision_id: str,
+    body: InsightMutationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        revision = next(
+            (item for item in review.get("revisions") or [] if item.get("revision_id") == revision_id),
+            None,
+        )
+        if not revision or revision.get("status") != "pending":
+            raise HTTPException(status_code=409, detail="修订草案已失效")
+        revision["status"] = "discarded"
+        revision["discarded_at"] = now_iso()
+        review["pending_revision_id"] = ""
+        review["status"] = "draft"
+        data["insight_review"] = review
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_REVISION_DISCARDED", session_id, data)
+    return {"revision": revision, "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/confirm")
+async def confirm_showroom_insight(
+    session_id: str,
+    body: InsightMutationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        demand = data.get("demand") or {}
+        job = data.get("insight_job") or {}
+        insight = data.get("insight") or {}
+        review = normalize_review(data.get("insight_review"), demand=demand, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        coverage = calculate_insight_coverage(insight)
+        if review.get("pending_revision_id"):
+            raise HTTPException(status_code=409, detail="请先应用或放弃待处理修订")
+        if not coverage.get("confirmable"):
+            missing = [name for name, done in coverage.get("dimensions", {}).items() if not done]
+            raise HTTPException(status_code=422, detail=f"洞察尚未满足确认条件：{'、'.join(missing) or '证据或TBD动作不完整'}")
+        version = confirmed_version(str(review.get("version") or "V0.1"))
+        confirmed_at = now_iso()
+        confirmed_by = str(payload.get("username") or payload.get("sub") or "showroom-user")[:120]
+        snapshot = {
+            "version": version,
+            "confirmed_by": confirmed_by,
+            "confirmed_at": confirmed_at,
+            "demand_hash": demand_fingerprint(demand),
+            "insight": copy.deepcopy(insight),
+        }
+        review.update(
+            {
+                "status": "confirmed",
+                "version": version,
+                "coverage": coverage,
+                "confirmed_by": confirmed_by,
+                "confirmed_at": confirmed_at,
+                "snapshots": (list(review.get("snapshots") or []) + [snapshot])[-20:],
+            }
+        )
+        artifacts = copy.deepcopy(data.get("artifacts") or {})
+        concept = insight.get("concept") or {}
+        artifacts["需求合理性·调研支撑"] = {
+            "title": "需求合理性·调研支撑",
+            "owner": "IPD-01",
+            "kind": "document",
+            "version": version,
+            "frozen": True,
+            "content": {
+                "market": concept.get("market") or {},
+                "competition": concept.get("competition") or [],
+                "technology": concept.get("technology") or {},
+                "strategic_fit": concept.get("strategic_fit") or {},
+                "sources": insight.get("sources") or [],
+            },
+            "updated_at": confirmed_at,
+        }
+        artifacts["需求评审结论"] = {
+            "title": "需求评审结论",
+            "owner": "IPD-02",
+            "kind": "document",
+            "version": version,
+            "frozen": True,
+            "content": {
+                "verdict": concept.get("verdict") or {},
+                "assessment": concept.get("assessment") or {},
+                "special_checks": concept.get("special_checks") or {},
+                "capability_mapping": concept.get("capability_mapping") or [],
+            },
+            "updated_at": confirmed_at,
+        }
+        artifacts["初始产品包"] = {
+            "title": "初始产品包",
+            "owner": "IPD-02",
+            "kind": "document",
+            "version": version,
+            "frozen": True,
+            "content": {
+                "package": concept.get("initial_product_package") or {},
+                "demo_slice": concept.get("demo_slice") or {},
+            },
+            "updated_at": confirmed_at,
+        }
+        data["insight_review"] = review
+        data["artifacts"] = artifacts
+        row.data = data
+        row.step = max(row.step, 4)
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_CONFIRMED", session_id, data)
+    return {"session": session_payload, "artifacts": artifacts, "insight_review": review}
+
+
+@router.post("/sessions/{session_id}/insight/reopen")
+async def reopen_showroom_insight(
+    session_id: str,
+    body: InsightMutationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        if review.get("status") != "confirmed":
+            raise HTTPException(status_code=409, detail="当前报告尚未确认")
+        review.update(
+            {
+                "status": "draft",
+                "version": reopen_version(str(review.get("version") or "V1.0")),
+                "confirmed_by": "",
+                "confirmed_at": "",
+                "pending_revision_id": "",
+            }
+        )
+        data["insight_review"] = review
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_VERSION_OPENED", session_id, data)
+    return {"session": session_payload, "insight_review": review}
+
+
+@router.post("/sessions/{session_id}/demand/reopen")
+async def reopen_showroom_demand(
+    session_id: str,
+    body: InsightMutationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        history = list(data.get("insight_history") or [])
+        history.append(
+            {
+                "superseded_at": now_iso(),
+                "insight": copy.deepcopy(data.get("insight") or {}),
+                "insight_job": copy.deepcopy(job),
+                "insight_review": {**copy.deepcopy(review), "status": "superseded"},
+            }
+        )
+        demand = copy.deepcopy(data.get("demand") or {})
+        demand["confirmed"] = False
+        document = copy.deepcopy(data.get("demand_document") or {})
+        if document:
+            document["status"] = "draft"
+        data.update(
+            {
+                "demand": demand,
+                "demand_document": document,
+                "insight_history": history[-20:],
+                "insight": {},
+                "insight_job": {},
+                "staffing_plan": {},
+                "insight_review": empty_insight_review(),
+            }
+        )
+        row.data = data
+        row.step = min(row.step, 2)
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("DEMAND_REOPENED", session_id, data)
+    return {"session": session_payload}
+
+
 async def _finish_showroom_insight_job(
     session_id: str,
     job_id: str,
@@ -1707,7 +2093,7 @@ async def _finish_showroom_insight_job(
         job = copy.deepcopy(data.get("insight_job") or {})
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
-        required = {"summary", "root_causes", "impacts", "evidence", "recommendation"}
+        required = {"concept", "summary", "root_causes", "impacts", "evidence", "recommendation"}
         if status == "failed" and required.issubset(
             set(job.get("completed_sections") or [])
         ):

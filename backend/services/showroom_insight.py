@@ -28,6 +28,7 @@ JOB_STAGES = {
 }
 EMPLOYEE_STATES = {"waiting", "working", "reviewing", "done", "blocked", "failed"}
 SECTION_TYPES = {
+    "concept",
     "summary",
     "root_causes",
     "impacts",
@@ -84,7 +85,7 @@ ROLE_REGISTRY: dict[str, dict[str, Any]] = {
         "job_title": "产品管理专家",
         "base_agent": "Main",
         "task": "收敛目标差距、产品边界、001实践切片与下一步行动。",
-        "skill_ids": ["ipd-02-requirement-analysis", "ipd-03-product-planning"],
+        "skill_ids": ["ipd-02-requirement-analysis"],
         "tool_ids": ["document-composer"],
         "inputs": ["需求确认单", "根因与影响分析"],
         "deliverables": ["行动建议", "001 IPD 输入"],
@@ -278,6 +279,7 @@ def empty_insight() -> dict[str, Any]:
         "evidence": [],
         "sources": [],
         "ipd_handoff": {},
+        "concept": {},
         "raw_markdown": "",
         "warnings": [],
         "generated_at": "",
@@ -286,7 +288,9 @@ def empty_insight() -> dict[str, Any]:
 
 def apply_section(insight: dict[str, Any], section: str, payload: dict[str, Any]) -> dict[str, Any]:
     result = {**empty_insight(), **copy.deepcopy(insight or {})}
-    if section == "summary":
+    if section == "concept":
+        result["concept"] = _sanitize_concept(payload)
+    elif section == "summary":
         for key in ("title", "judgment", "gap"):
             if key in payload:
                 result[key] = str(payload.get(key) or "")[:4000]
@@ -337,6 +341,49 @@ def apply_section(insight: dict[str, Any], section: str, payload: dict[str, Any]
     elif section == "ipd_handoff":
         result["ipd_handoff"] = copy.deepcopy(payload) if isinstance(payload, dict) else {}
     return result
+
+
+def _sanitize_concept(payload: dict[str, Any]) -> dict[str, Any]:
+    """Keep the IPD concept report flexible without accepting executable content."""
+
+    allowed = {
+        "demand_trace",
+        "customer_user",
+        "market",
+        "competition",
+        "technology",
+        "strategic_fit",
+        "capability_mapping",
+        "assessment",
+        "special_checks",
+        "knowledge_status",
+        "verdict",
+        "initial_product_package",
+        "demo_slice",
+    }
+
+    def clean(value: Any, depth: int = 0) -> Any:
+        if depth > 8:
+            return None
+        if isinstance(value, str):
+            return value.strip()[:8_000]
+        if isinstance(value, list):
+            return [clean(item, depth + 1) for item in value[:80]]
+        if isinstance(value, dict):
+            return {
+                str(key)[:120]: clean(item, depth + 1)
+                for key, item in list(value.items())[:80]
+                if not str(key).startswith("__")
+            }
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return str(value)[:2_000]
+
+    return {
+        key: clean(payload.get(key))
+        for key in allowed
+        if key in payload
+    }
 
 
 def _json_matches(pattern: re.Pattern[str], content: str) -> list[dict[str, Any]]:

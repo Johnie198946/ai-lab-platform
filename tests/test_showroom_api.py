@@ -12,7 +12,9 @@ from backend.api.showroom import (
     DemandDraftPatch,
     DemandExtractionRequest,
     InsightCompleteRequest,
+    InsightMutationRequest,
     InsightProgressRequest,
+    InsightRevisionExtractionRequest,
     InsightStaffingPlanRequest,
     LEGACY_DEMAND,
     LEGACY_INSIGHT,
@@ -27,10 +29,13 @@ from backend.api.showroom import (
     _persona_metadata,
     _validate_websocket_token,
     apply_showroom_command,
+    apply_showroom_insight_revision,
     content_manifest,
     create_showroom_session,
     complete_showroom_insight_job,
+    confirm_showroom_insight,
     extract_showroom_demand,
+    extract_showroom_insight_revision,
     generate_showroom_insight,
     generate_showroom_ipd_artifacts,
     hub,
@@ -408,7 +413,7 @@ def test_staffing_job_is_idempotent_and_incrementally_persists_sections(monkeypa
         )
         assert partial["job"]["status"] == "partial"
 
-        for section in ("root_causes", "impacts", "evidence", "recommendation"):
+        for section in ("concept", "root_causes", "impacts", "evidence", "recommendation"):
             await update_showroom_insight_progress(
                 "showroom-staffing",
                 job_id,
@@ -515,6 +520,91 @@ def test_demand_extraction_is_draft_idempotent_and_preserves_manual_fields(
             == "人工确认的真实核心问题"
         )
         assert "70%" in updated["session"]["data"]["demand"]["target_metric"]
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_insight_revision_preview_apply_and_human_confirmation(monkeypatch) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import backend.api.showroom as showroom_api
+
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(ShowroomSession.__table__.create)
+            await connection.run_sync(ShowroomRuntime.__table__.create)
+        monkeypatch.setattr(showroom_api, "SessionLocal", maker)
+        await create_showroom_session(SessionCreate(session_id="review-flow", slot="main"), payload())
+        await showroom_api.confirm_showroom_demand(
+            "review-flow",
+            DemandConfirmation(demand={"core_problem": "HR权限治理", "target_metric": "可审计"}),
+            payload(),
+        )
+        started = await start_showroom_insight_job("review-flow", payload())
+        job = started["job"]
+        await save_showroom_staffing_plan(
+            "review-flow", job["job_id"], InsightStaffingPlanRequest(plan={}), payload()
+        )
+        concept = {
+            "demand_trace": {"summary": "权限治理"},
+            "customer_user": {"user": "HR专员", "value": "可审计"},
+            "market": {"summary": "合规需求明确"},
+            "competition": [{"name": "现有IAM"}],
+            "technology": {"feasibility": "可行", "effort": "M"},
+            "strategic_fit": {"boundary": "platform", "verdict": "fit"},
+            "capability_mapping": [{"capability": "鉴权", "match": "support"}],
+            "assessment": {"benefit": "high", "risk": "medium", "priority": "P1"},
+            "special_checks": {key: {"status": "pass"} for key in ("cyber", "reliability", "energy", "function_performance")},
+            "knowledge_status": {"facts": ["权限是首要阻碍"], "tbds": []},
+            "verdict": {"decision": "conditional", "rationale": "先做001"},
+            "initial_product_package": {"scope": "鉴权闭环", "components": ["策略引擎"]},
+            "demo_slice": {"user": "HR专员", "action": "合规查询", "input": "授权范围", "output": "审计结果", "acceptance": ["越权被阻断"], "dependencies": ["权限规则"]},
+        }
+        sections = {
+            "concept": concept,
+            "summary": {"title": "HR权限洞察", "judgment": "条件接纳"},
+            "root_causes": {"causes": [{"title": "权限边界", "detail": "规则不清"}]},
+            "impacts": {"impacts": [{"label": "合规", "score": 90}]},
+            "evidence": {"evidence": [["E1", "事实", "高", "已核验"]], "sources": [{"url": "https://example.com", "title": "来源", "date": "2026-08-19", "confidence": "high"}]},
+            "recommendation": {"recommendation": "进入001"},
+        }
+        for index, (section, section_payload) in enumerate(sections.items()):
+            await update_showroom_insight_progress(
+                "review-flow", job["job_id"],
+                    InsightProgressRequest(event_id=f"review-{index}", kind="section", section=section, payload=section_payload),
+                payload(),
+            )
+        completed = await complete_showroom_insight_job(
+            "review-flow", job["job_id"], InsightCompleteRequest(content=""), payload()
+        )
+        assert completed["session"]["data"]["insight_review"]["version"] == "V0.1"
+        revision_content = (
+            '<!-- AI_LAB_INSIGHT_REVISION_V1 '
+            f'{{"job_id":"{job["job_id"]}","demand_hash":"{job["source_hash"]}","base_version":"V0.1","changes":[{{"field":"judgment","after":"有条件接纳","reason":"措辞更准确"}}]}} '
+            'AI_LAB_INSIGHT_REVISION_V1 -->'
+        )
+        extracted = await extract_showroom_insight_revision(
+            "review-flow",
+            InsightRevisionExtractionRequest(content=revision_content, job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.1"),
+            payload(),
+        )
+        applied = await apply_showroom_insight_revision(
+            "review-flow", extracted["revision"]["revision_id"],
+            InsightMutationRequest(job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.1"),
+            payload(),
+        )
+        assert applied["session"]["data"]["insight"]["judgment"] == "有条件接纳"
+        frozen = await confirm_showroom_insight(
+            "review-flow",
+            InsightMutationRequest(job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.2"),
+            payload(),
+        )
+        assert frozen["insight_review"]["version"] == "V1.0"
+        assert frozen["insight_review"]["status"] == "confirmed"
+        assert {"需求合理性·调研支撑", "需求评审结论", "初始产品包"} <= set(frozen["artifacts"])
         await engine.dispose()
 
     asyncio.run(scenario())

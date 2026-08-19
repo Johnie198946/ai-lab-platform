@@ -78,3 +78,22 @@ def test_incremental_sections_keep_only_safe_sources() -> None:
     assert insight["evidence"][0][0] == "E-01"
     assert len(insight["sources"]) == 2
     assert all("javascript:" not in str(source) for source in insight["sources"])
+
+
+def test_concept_section_preserves_registered_ipd_fields_only() -> None:
+    insight = apply_section(
+        {},
+        "concept",
+        {
+            "market": {"summary": "政策驱动"},
+            "verdict": {"decision": "conditional"},
+            "demo_slice": {"user": "HR专员", "action": "合规查询"},
+            "__proto__": {"polluted": True},
+            "unknown": "discard me",
+        },
+    )
+
+    assert insight["concept"]["market"]["summary"] == "政策驱动"
+    assert insight["concept"]["verdict"]["decision"] == "conditional"
+    assert "unknown" not in insight["concept"]
+    assert "__proto__" not in insight["concept"]
