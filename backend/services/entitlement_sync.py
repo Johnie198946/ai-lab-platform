@@ -73,6 +73,8 @@ async def reconcile_once() -> int:
                     snapshot.knowledge_entitlements = sorted(
                         set(str(x) for x in item.get("knowledge_entitlements") or [])
                     )
+                    snapshot.active_pack_grants = item.get("active_pack_grants") or []
+                    snapshot.pack_allowance = int(item.get("pack_allowance") or 0)
                     snapshot.entitlement_version = incoming_version
                     snapshot.effective_until = _parse_datetime(item.get("effective_until"))
                     snapshot.synced_at = datetime.now(timezone.utc)

@@ -22,17 +22,22 @@ AUTHEN_SUBSCRIPTION_URL = os.environ.get(
 ).rstrip("/")
 AUTHEN_SERVICE_TOKEN = os.environ.get("AUTHEN_AI_PLATFORM_SERVICE_TOKEN", "")
 AUTHEN_APP_ID = os.environ.get("AUTHEN_APP_ID", "ai-lab-platform")
+KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED = os.environ.get(
+    "KNOWLEDGE_PACK_SUBSCRIPTION_V1", "true"
+).lower() == "true"
 
 
 class SubscriptionRequestCreate(BaseModel):
     request_id: str = Field(..., min_length=8, max_length=160)
     plan_id: str = Field(..., min_length=1, max_length=64)
     requested_entitlements: list[str] = Field(default_factory=list)
+    requested_pack_ids: list[str] = Field(default_factory=list, max_length=20)
     reason: str = Field(default="", max_length=1000)
 
 
 class SubscriptionReview(BaseModel):
     review_note: str = Field(default="", max_length=1000)
+    approved_pack_ids: list[str] | None = Field(default=None, max_length=20)
 
 
 def _error(
@@ -103,6 +108,31 @@ async def _authen_request(
                 action="view_request",
                 retryable=False,
             )
+        detail_text = detail if isinstance(detail, str) else ""
+        if "allowance exceeded" in detail_text:
+            raise _error(
+                422,
+                code="knowledge_pack_allowance_exceeded",
+                message="所选知识包超过当前套餐额度",
+                action="edit_selection",
+                retryable=False,
+            )
+        if "not published" in detail_text or "governance" in detail_text:
+            raise _error(
+                409,
+                code="knowledge_pack_governance_pending",
+                message="该知识包仍在治理建设中，暂不能申请",
+                action="dismiss",
+                retryable=False,
+            )
+        if "custom plan" in detail_text:
+            raise _error(
+                422,
+                code="contact_admin_required",
+                message="企业知识专属版需要由管理员按合同配置",
+                action="contact_admin",
+                retryable=False,
+            )
         message = detail if isinstance(detail, str) else "套餐服务拒绝了该操作"
         raise _error(
             response.status_code,
@@ -126,9 +156,19 @@ async def subscription_center(payload=Depends(require_auth)):
         params={"app_id": AUTHEN_APP_ID},
     )
     requests = center.get("requests") or []
+    plan_items = plans.get("plans") or []
+    if not KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED:
+        plan_items = [
+            {**item, "pack_allowance": 0, "selectable_pack_ids": []}
+            for item in plan_items
+        ]
+        center["knowledge_packs"] = []
+        center["active_pack_grants"] = []
+        center["pack_allowance"] = 0
     return {
         **center,
-        "plans": plans.get("plans") or [],
+        "plans": plan_items,
+        "knowledge_pack_subscription_enabled": KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED,
         "is_super_admin": bool(payload.get("is_super_admin")),
         "pending_count": sum(item.get("status") == "pending" for item in requests),
     }
@@ -139,6 +179,14 @@ async def create_subscription_request(
     body: SubscriptionRequestCreate, payload=Depends(require_auth)
 ):
     org_id = _org(payload)
+    if body.requested_pack_ids and not KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED:
+        raise _error(
+            503,
+            code="knowledge_pack_subscription_disabled",
+            message="知识包申请正在灰度开放中",
+            action="retry_later",
+            retryable=True,
+        )
     return await _authen_request(
         "POST",
         f"/api/v1/internal/organizations/{org_id}/subscription-requests",
@@ -191,6 +239,7 @@ async def _review(
         json={
             "reviewed_by": str(payload.get("user_id") or payload.get("sub") or ""),
             "review_note": body.review_note,
+            "approved_pack_ids": body.approved_pack_ids,
         },
     )
 

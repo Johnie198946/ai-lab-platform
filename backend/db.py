@@ -198,6 +198,16 @@ def _migrate_knowledge_policy_v2_columns(connection) -> None:
                 "ALTER TABLE tenant_entitlement_snapshots "
                 "ADD COLUMN last_event_id VARCHAR(255) NOT NULL DEFAULT ''"
             )
+        if "active_pack_grants" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tenant_entitlement_snapshots "
+                "ADD COLUMN active_pack_grants JSON NOT NULL DEFAULT '[]'"
+            )
+        if "pack_allowance" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tenant_entitlement_snapshots "
+                "ADD COLUMN pack_allowance INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 async def get_session():

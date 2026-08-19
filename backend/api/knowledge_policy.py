@@ -52,6 +52,8 @@ class EntitlementChange(BaseModel):
     plan_id: str = Field(default="", max_length=64)
     status: str = Field(..., pattern="^(active|cancelled|expired|inactive)$")
     knowledge_entitlements: list[str] = Field(default_factory=list)
+    active_pack_grants: list[dict[str, Any]] = Field(default_factory=list)
+    pack_allowance: int = Field(default=0, ge=-1)
     effective_until: datetime | None = None
 
 
@@ -105,6 +107,8 @@ async def receive_entitlement_change(
             snapshot.plan_id = event.plan_id
             snapshot.status = event.status
             snapshot.knowledge_entitlements = sorted(set(event.knowledge_entitlements))
+            snapshot.active_pack_grants = event.active_pack_grants
+            snapshot.pack_allowance = event.pack_allowance
             snapshot.entitlement_version = event.entitlement_version
             snapshot.last_event_id = event.event_id
             snapshot.effective_until = event.effective_until

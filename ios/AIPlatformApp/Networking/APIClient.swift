@@ -22,6 +22,7 @@ public struct CatalogCategory: Codable, Identifiable, Hashable {
     public var ownerTenant: String? = nil
     public var entitlementKey: String? = nil
     public var accessState: String? = nil
+    public var subscriptionState: String? = nil
     public var inWallet: Bool? = nil
     public var knowledgeLevel: String? = nil
     public var classificationStatus: String? = nil
@@ -66,6 +67,8 @@ public struct KnowledgeAccessResponse: Codable {
     public let policyVersion: String
     public let wallet: [String]
     public let yellowEntitlements: [String]
+    public var activePackGrants: [KnowledgePackGrantDTO]? = nil
+    public var packAllowance: Int? = nil
     public let effectiveCategories: [String]
     public let entitlementStale: Bool
 }
@@ -107,6 +110,33 @@ public struct SubscriptionPlanDTO: Codable, Identifiable, Hashable {
     public let tokenQuota: Int64
     public let quotaPeriodDays: Int
     public var features: SubscriptionPlanFeaturesDTO? = nil
+    public var packAllowance: Int? = nil
+    public var customOnly: Bool? = nil
+    public var selectablePackIds: [String]? = nil
+}
+
+public struct KnowledgePackDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let entitlementKey: String
+    public let name: String
+    public let description: String
+    public let status: String
+    public let isSelectable: Bool
+    public let sortOrder: Int
+    public let minimumDocumentCount: Int
+    public let approvedDocumentCount: Int
+    public let freshnessPercent: Int
+    public let riskLabel: String
+}
+
+public struct KnowledgePackGrantDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let knowledgePackId: String
+    public let entitlementKey: String
+    public let name: String
+    public let status: String
+    public let effectiveFrom: String
+    public let effectiveUntil: String
 }
 
 public struct OrganizationSubscriptionDTO: Codable, Hashable {
@@ -118,6 +148,8 @@ public struct OrganizationSubscriptionDTO: Codable, Hashable {
     public let effectiveUntil: String?
     public let entitlementVersion: Int
     public let knowledgeEntitlements: [String]
+    public var packAllowance: Int? = nil
+    public var activePackGrants: [KnowledgePackGrantDTO]? = nil
 }
 
 public struct SubscriptionRequestDTO: Codable, Identifiable, Hashable {
@@ -129,6 +161,8 @@ public struct SubscriptionRequestDTO: Codable, Identifiable, Hashable {
     public let targetPlanName: String
     public let requestedBy: String
     public let requestedEntitlements: [String]
+    public var requestedPackIds: [String]? = nil
+    public var approvedPackIds: [String]? = nil
     public let reason: String
     public let status: String
     public let reviewedBy: String
@@ -147,6 +181,10 @@ public struct SubscriptionCenterResponse: Codable {
     public let plans: [SubscriptionPlanDTO]
     public let isSuperAdmin: Bool
     public let pendingCount: Int
+    public var knowledgePacks: [KnowledgePackDTO]? = nil
+    public var activePackGrants: [KnowledgePackGrantDTO]? = nil
+    public var packAllowance: Int? = nil
+    public var knowledgePackSubscriptionEnabled: Bool? = nil
 }
 
 public struct SubscriptionRequestsResponse: Codable {
@@ -162,6 +200,7 @@ private struct SubscriptionRequestCreateDTO: Encodable {
     let requestId: String
     let planId: String
     let requestedEntitlements: [String]
+    let requestedPackIds: [String]
     let reason: String
 
     enum CodingKeys: String, CodingKey {
@@ -169,14 +208,17 @@ private struct SubscriptionRequestCreateDTO: Encodable {
         case requestId = "request_id"
         case planId = "plan_id"
         case requestedEntitlements = "requested_entitlements"
+        case requestedPackIds = "requested_pack_ids"
     }
 }
 
 private struct SubscriptionReviewDTO: Encodable {
     let reviewNote: String
+    let approvedPackIds: [String]?
 
     enum CodingKeys: String, CodingKey {
         case reviewNote = "review_note"
+        case approvedPackIds = "approved_pack_ids"
     }
 }
 
@@ -1042,6 +1084,7 @@ public final class APIClient: ObservableObject {
     public func createSubscriptionRequest(
         planId: String,
         entitlementKeys: [String],
+        packIds: [String] = [],
         reason: String,
         requestId: String = UUID().uuidString
     ) async throws -> SubscriptionRequestDTO {
@@ -1053,6 +1096,7 @@ public final class APIClient: ObservableObject {
                 requestId: requestId,
                 planId: planId,
                 requestedEntitlements: entitlementKeys,
+                requestedPackIds: packIds,
                 reason: reason
             )
         )
@@ -1075,13 +1119,13 @@ public final class APIClient: ObservableObject {
     }
 
     public func reviewSubscriptionRequest(
-        id: String, approve: Bool, note: String = ""
+        id: String, approve: Bool, note: String = "", approvedPackIds: [String]? = nil
     ) async throws -> SubscriptionRequestDTO {
         try await request(
             SubscriptionRequestDTO.self,
             path: "admin/subscription-requests/\(encodedPath(id))/\(approve ? "approve" : "reject")",
             method: "POST",
-            body: SubscriptionReviewDTO(reviewNote: note)
+            body: SubscriptionReviewDTO(reviewNote: note, approvedPackIds: approvedPackIds)
         )
     }
 

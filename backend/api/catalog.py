@@ -87,16 +87,20 @@ async def get_catalog(payload=Depends(require_auth)):
             continue
         if meta.security_level == "yellow":
             state = "included" if category in policy.effective_categories else "upgrade_required"
+            subscription_state = "pack_included" if category in policy.effective_categories else "pack_available"
         elif meta.security_level == "red":
             state = "private"
+            subscription_state = "private"
         else:
             state = "available"
+            subscription_state = "public_available"
         enriched.append({
             **item,
             "security_level": meta.security_level,
             "owner_tenant": meta.owner_tenant if meta.security_level == "red" else None,
             "entitlement_key": meta.entitlement_key,
             "access_state": state,
+            "subscription_state": subscription_state,
             "in_wallet": category in policy.wallet,
         })
     response = {"catalog": enriched, "policy_version": policy.policy_version}
@@ -314,6 +318,7 @@ async def remove_from_wallet(category: str, payload=Depends(require_auth)):
 @router.get("/me/knowledge-access")
 async def my_knowledge_access(payload=Depends(require_auth)):
     from backend.db import SessionLocal
+    from backend.models.tenant import TenantEntitlementSnapshot
 
     catalog = compute_catalog()
     async with SessionLocal() as db:
@@ -326,6 +331,7 @@ async def my_knowledge_access(payload=Depends(require_auth)):
             is_guest=str(payload.get("role") or "") == "guest",
             allow_admin_bypass=bool(payload.get("is_super_admin")),
         )
+        snapshot = await db.get(TenantEntitlementSnapshot, payload["tenant_key"])
     return {
         "tenant_key": policy.tenant_key,
         "organization_id": policy.org_id,
@@ -334,6 +340,8 @@ async def my_knowledge_access(payload=Depends(require_auth)):
         "policy_version": policy.policy_version,
         "wallet": sorted(policy.wallet),
         "yellow_entitlements": sorted(policy.entitled_yellow),
+        "active_pack_grants": (snapshot.active_pack_grants or []) if snapshot else [],
+        "pack_allowance": int(snapshot.pack_allowance or 0) if snapshot else 0,
         "effective_categories": sorted(policy.effective_categories),
         "entitlement_stale": policy.entitlement_stale,
     }

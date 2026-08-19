@@ -475,6 +475,9 @@ public struct SubscriptionCenterView: View {
     @State private var errorMessage: String?
     @State private var successMessage: String?
     @State private var requestIDsByPlan: [String: String] = [:]
+    @State private var selectedPlanID: String?
+    @State private var selectedPackIDs: Set<String> = []
+    @State private var expandedPackID: String?
 
     public init(highlightedEntitlementKey: String? = nil) {
         self.highlightedEntitlementKey = highlightedEntitlementKey
@@ -496,6 +499,8 @@ public struct SubscriptionCenterView: View {
                         currentPlanCard(center)
                         requestSection(center.requests)
                         plansSection(center)
+                        knowledgePacksSection(center)
+                        applicationSummary(center)
                         if center.isSuperAdmin {
                             adminSection
                         }
@@ -557,7 +562,6 @@ public struct SubscriptionCenterView: View {
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(AppTheme.Spacing.xl)
         .subscriptionSurface()
     }
 
@@ -580,9 +584,17 @@ public struct SubscriptionCenterView: View {
                 Text(subscription.effectiveUntil.map { "有效期至 \($0.dateOnly)" } ?? "长期有效")
                     .font(AppTheme.Typography.supporting)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
-                Text("权益版本 \(subscription.entitlementVersion) · 已包含 \(subscription.knowledgeEntitlements.count) 个受限知识类目")
+                let grants = subscription.activePackGrants ?? center.activePackGrants ?? []
+                let allowance = subscription.packAllowance ?? center.packAllowance ?? 0
+                Text("权益版本 \(subscription.entitlementVersion) · 知识包 \(grants.count)/\(allowance < 0 ? "定制" : String(allowance))")
                     .font(AppTheme.Typography.micro)
                     .foregroundStyle(AppTheme.Colors.textTertiary)
+                if !grants.isEmpty {
+                    Text(grants.map(\.name).joined(separator: "、"))
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             } else {
                 Text("尚未开通组织套餐")
                     .font(AppTheme.Typography.cardTitle)
@@ -644,9 +656,9 @@ public struct SubscriptionCenterView: View {
 
     private func plansSection(_ center: SubscriptionCenterResponse) -> some View {
         let sortedPlans = center.plans.sorted { lhs, rhs in
-            let leftHighlighted = lhs.features?.knowledgeEntitlements.contains(highlightedEntitlementKey ?? "") == true
-            let rightHighlighted = rhs.features?.knowledgeEntitlements.contains(highlightedEntitlementKey ?? "") == true
-            return leftHighlighted == rightHighlighted ? lhs.price < rhs.price : leftHighlighted
+            let left = planRank(lhs)
+            let right = planRank(rhs)
+            return left == right ? lhs.name < rhs.name : left < right
         }
 
         return VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
@@ -673,10 +685,11 @@ public struct SubscriptionCenterView: View {
     }
 
     private func planCard(_ plan: SubscriptionPlanDTO, center: SubscriptionCenterResponse) -> some View {
-        let entitlements = plan.features?.knowledgeEntitlements ?? []
-        let isHighlighted = highlightedEntitlementKey.map(entitlements.contains) == true
         let isCurrent = center.subscription?.planId == plan.id && center.subscription?.status == "active"
         let pending = center.requests.first { $0.targetPlanId == plan.id && $0.status == "pending" }
+        let isSelected = selectedPlanID == plan.id
+        let allowance = plan.packAllowance ?? 0
+        let isCustom = plan.customOnly == true
 
         return VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             HStack(alignment: .top) {
@@ -685,8 +698,8 @@ public struct SubscriptionCenterView: View {
                         Text(plan.name)
                             .font(AppTheme.Typography.cardTitle)
                             .foregroundStyle(AppTheme.Colors.textPrimary)
-                        if isHighlighted {
-                            Text("包含目标知识")
+                        if isSelected {
+                            Text("已选择")
                                 .font(AppTheme.Typography.micro)
                                 .foregroundStyle(AppTheme.Colors.onPrimary)
                                 .padding(.horizontal, 7)
@@ -702,7 +715,7 @@ public struct SubscriptionCenterView: View {
                     }
                 }
                 Spacer(minLength: AppTheme.Spacing.md)
-                Text(plan.price == 0 ? "免费" : plan.price.formatted(.currency(code: "CNY")))
+                Text("申请制")
                     .font(AppTheme.Typography.cardTitle)
                     .foregroundStyle(AppTheme.Colors.textPrimary)
             }
@@ -715,48 +728,187 @@ public struct SubscriptionCenterView: View {
             .font(AppTheme.Typography.micro)
             .foregroundStyle(AppTheme.Colors.textSecondary)
 
-            if !entitlements.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("包含的受限知识")
-                        .font(AppTheme.Typography.micro)
-                        .foregroundStyle(AppTheme.Colors.textTertiary)
-                    ForEach(entitlements.prefix(4), id: \.self) { entitlement in
-                        Label(entitlement, systemImage: "lock.open.fill")
-                            .font(AppTheme.Typography.micro)
-                            .foregroundStyle(entitlement == highlightedEntitlementKey ? AppTheme.Colors.primary : AppTheme.Colors.textSecondary)
-                            .lineLimit(2)
-                    }
-                    if entitlements.count > 4 {
-                        Text("另有 \(entitlements.count - 4) 个类目")
-                            .font(AppTheme.Typography.micro)
-                            .foregroundStyle(AppTheme.Colors.textTertiary)
-                    }
-                }
-            }
+            Label(
+                isCustom ? "知识包与配额按合同配置" : "最多选择 \(allowance) 个黄色知识包",
+                systemImage: isCustom ? "person.crop.circle.badge.questionmark" : "square.stack.3d.up.fill"
+            )
+            .font(AppTheme.Typography.micro)
+            .foregroundStyle(AppTheme.Colors.textSecondary)
 
             Button {
-                apply(for: plan, highlightedKey: isHighlighted ? highlightedEntitlementKey : nil)
+                select(plan, center: center)
             } label: {
                 busyLabel(
                     id: plan.id,
-                    title: isCurrent ? "当前套餐" : (pending == nil ? "提交组织申请" : "等待管理员审批"),
-                    systemImage: isCurrent ? "checkmark" : (pending == nil ? "paperplane.fill" : "clock.fill")
+                    title: isCurrent ? "当前套餐" : (isCustom ? "联系管理员" : (pending == nil ? (isSelected ? "已选择" : "选择套餐") : "等待管理员审批")),
+                    systemImage: isCurrent || isSelected ? "checkmark" : (isCustom ? "person.badge.key.fill" : (pending == nil ? "checkmark.circle" : "clock.fill"))
                 )
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(AppTheme.Colors.primary)
             .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-            .disabled(isCurrent || pending != nil || busyID != nil)
+            .disabled(isCurrent || isCustom || pending != nil || busyID != nil)
         }
         .padding(AppTheme.Spacing.xl)
         .background(AppTheme.Colors.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                .stroke(isHighlighted ? AppTheme.Colors.primary : AppTheme.Colors.border, lineWidth: isHighlighted ? 2 : 0.75)
+                .stroke(isSelected ? AppTheme.Colors.primary : AppTheme.Colors.border, lineWidth: isSelected ? 2 : 0.75)
         }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func knowledgePacksSection(_ center: SubscriptionCenterResponse) -> some View {
+        let packs = (center.knowledgePacks ?? []).sorted { $0.sortOrder < $1.sortOrder }
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("知识包钱包")
+                    .font(AppTheme.Typography.sectionTitle)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text("黄色知识按包审批；绿色公共知识不占名额，红色私有知识不会出现在这里。")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            if packs.isEmpty {
+                ContentUnavailableView("暂无已登记知识包", systemImage: "square.stack.3d.up.slash", description: Text("完成首批 K5 治理后会在这里开放。"))
+                    .frame(minHeight: 160)
+            } else {
+                VStack(spacing: -12) {
+                    ForEach(packs) { pack in
+                        knowledgePackCard(pack, center: center)
+                            .zIndex(expandedPackID == pack.id ? 20 : Double(10 - pack.sortOrder))
+                    }
+                }
+                .padding(.bottom, 12)
+            }
+        }
+    }
+
+    private func knowledgePackCard(_ pack: KnowledgePackDTO, center: SubscriptionCenterResponse) -> some View {
+        let selected = selectedPackIDs.contains(pack.id)
+        let expanded = expandedPackID == pack.id
+        let active = (center.activePackGrants ?? []).contains { $0.knowledgePackId == pack.id && $0.status == "active" }
+        let pending = center.requests.contains { ($0.requestedPackIds ?? []).contains(pack.id) && $0.status == "pending" }
+        let availableForPlan = selectedPlan.flatMap { $0.selectablePackIds }?.contains(pack.id) == true
+        let governanceReady = pack.status == "published" && pack.isSelectable && pack.approvedDocumentCount >= pack.minimumDocumentCount
+        let enabled = availableForPlan && governanceReady && !active && !pending
+
+        return Button {
+            if expanded, enabled { toggle(pack, center: center) }
+            withAnimation(AppTheme.Motion.quick) { expandedPackID = expanded ? nil : pack.id }
+        } label: {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                HStack(alignment: .top) {
+                    Image(systemName: active ? "checkmark.seal.fill" : (governanceReady ? "books.vertical.fill" : "hammer.fill"))
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(active ? AppTheme.Colors.statusCompleted : AppTheme.Colors.primary)
+                        .frame(width: 32, height: 32)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(pack.name)
+                            .font(AppTheme.Typography.cardTitle)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        Text(pack.entitlementKey)
+                            .font(AppTheme.Typography.micro.monospaced())
+                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Text(active ? "已开通" : (pending ? "审批中" : (governanceReady ? (selected ? "已加入" : "可申请") : "建设中")))
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                        .foregroundStyle(active ? AppTheme.Colors.statusCompleted : (pending ? AppTheme.Colors.statusWarning : (governanceReady ? AppTheme.Colors.primary : AppTheme.Colors.textTertiary)))
+                }
+
+                if expanded {
+                    Text(pack.description)
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: AppTheme.Spacing.md) {
+                        Label("\(pack.approvedDocumentCount)/\(pack.minimumDocumentCount) 篇 K5", systemImage: "doc.text.fill")
+                        Label("新鲜度 \(pack.freshnessPercent)%", systemImage: "clock.arrow.circlepath")
+                    }
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    Text(enabled ? (selected ? "再次点按可移出本次申请" : "点按加入本次申请") : (governanceReady ? "请先选择允许此知识包的套餐" : "完成来源、权限与新鲜度复核后开放"))
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                        .foregroundStyle(enabled ? AppTheme.Colors.primary : AppTheme.Colors.textTertiary)
+                }
+            }
+            .padding(AppTheme.Spacing.lg)
+            .frame(maxWidth: .infinity, minHeight: expanded ? 164 : 92, alignment: .leading)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(selected ? AppTheme.Colors.primary : AppTheme.Colors.border, lineWidth: selected ? 2 : 0.75)
+            }
+            .shadow(color: Color.black.opacity(expanded ? 0.14 : 0.07), radius: expanded ? 16 : 8, y: expanded ? 8 : 4)
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+        .accessibilityLabel("\(pack.name)，\(active ? "已开通" : (governanceReady ? "可申请" : "建设中"))")
+        .accessibilityHint(expanded ? "点按选择或收起知识包" : "点按抽出知识包并查看详情")
+    }
+
+    @ViewBuilder
+    private func applicationSummary(_ center: SubscriptionCenterResponse) -> some View {
+        if let plan = selectedPlan,
+           center.subscription?.planId != plan.id,
+           !center.requests.contains(where: { $0.targetPlanId == plan.id && $0.status == "pending" }),
+           plan.customOnly != true {
+            let allowance = plan.packAllowance ?? 0
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                Text("确认申请")
+                    .font(AppTheme.Typography.cardTitle)
+                Text("\(plan.name) · 已选 \(selectedPackIDs.count)/\(allowance) 个知识包")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                Button { apply(for: plan) } label: {
+                    busyLabel(id: "submit-\(plan.id)", title: "提交组织申请", systemImage: "paperplane.fill")
+                        .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(AppTheme.Colors.primary)
+                .disabled(selectedPackIDs.count > allowance || busyID != nil)
+            }
+            .padding(AppTheme.Spacing.xl)
+            .subscriptionSurface()
+        }
+    }
+
+    private var selectedPlan: SubscriptionPlanDTO? {
+        center?.plans.first { $0.id == selectedPlanID }
+    }
+
+    private func planRank(_ plan: SubscriptionPlanDTO) -> Int {
+        if plan.name.contains("基础") { return 0 }
+        if plan.name.contains("专业") { return 1 }
+        if plan.name.contains("治理") { return 2 }
+        if plan.name.contains("专属") { return 3 }
+        return 10
+    }
+
+    private func select(_ plan: SubscriptionPlanDTO, center: SubscriptionCenterResponse) {
+        withAnimation(AppTheme.Motion.quick) {
+            selectedPlanID = plan.id
+            selectedPackIDs = selectedPackIDs.intersection(Set(plan.selectablePackIds ?? []))
+        }
+    }
+
+    private func toggle(_ pack: KnowledgePackDTO, center: SubscriptionCenterResponse) {
+        guard let plan = selectedPlan else { return }
+        let allowance = plan.packAllowance ?? 0
+        if selectedPackIDs.contains(pack.id) {
+            selectedPackIDs.remove(pack.id)
+        } else if selectedPackIDs.count < allowance {
+            selectedPackIDs.insert(pack.id)
+        } else {
+            errorMessage = "当前套餐最多选择 \(allowance) 个知识包，请先移除一个。"
+        }
     }
 
     private var adminSection: some View {
@@ -847,6 +999,13 @@ public struct SubscriptionCenterView: View {
         do {
             let response = try await api.fetchSubscriptionCenter()
             center = response
+            if let highlightedEntitlementKey,
+               let pack = (response.knowledgePacks ?? []).first(where: { $0.entitlementKey == highlightedEntitlementKey }) {
+                expandedPackID = pack.id
+                if let plan = response.plans.first(where: { ($0.selectablePackIds ?? []).contains(pack.id) && $0.customOnly != true }) {
+                    selectedPlanID = plan.id
+                }
+            }
             if response.isSuperAdmin {
                 adminRequests = try await api.fetchAdminSubscriptionRequests()
             } else {
@@ -858,18 +1017,19 @@ public struct SubscriptionCenterView: View {
         isLoading = false
     }
 
-    private func apply(for plan: SubscriptionPlanDTO, highlightedKey: String?) {
+    private func apply(for plan: SubscriptionPlanDTO) {
         guard busyID == nil else { return }
         Task {
-            busyID = plan.id
+            busyID = "submit-\(plan.id)"
             defer { busyID = nil }
             do {
                 let requestID = requestIDsByPlan[plan.id] ?? UUID().uuidString
                 requestIDsByPlan[plan.id] = requestID
                 _ = try await api.createSubscriptionRequest(
                     planId: plan.id,
-                    entitlementKeys: highlightedKey.map { [$0] } ?? [],
-                    reason: highlightedKey.map { "申请使用知识类目：\($0)" } ?? "从 iOS 知识订阅中心提交",
+                    entitlementKeys: [],
+                    packIds: Array(selectedPackIDs).sorted(),
+                    reason: selectedPackIDs.isEmpty ? "从 iOS 知识订阅中心提交" : "申请平台套餐并开通 \(selectedPackIDs.count) 个知识包",
                     requestId: requestID
                 )
                 requestIDsByPlan.removeValue(forKey: plan.id)
@@ -906,7 +1066,8 @@ public struct SubscriptionCenterView: View {
                 _ = try await api.reviewSubscriptionRequest(
                     id: request.id,
                     approve: approve,
-                    note: approve ? "iOS 订阅中心批准" : "iOS 订阅中心拒绝"
+                    note: approve ? "iOS 订阅中心批准" : "iOS 订阅中心拒绝",
+                    approvedPackIds: approve ? request.requestedPackIds : nil
                 )
                 showSuccess(approve ? "审批已通过，权益正在同步" : "申请已拒绝")
                 await load()

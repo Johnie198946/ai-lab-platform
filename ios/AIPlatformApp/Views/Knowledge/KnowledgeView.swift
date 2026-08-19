@@ -59,7 +59,7 @@ public struct KnowledgeView: View {
     }
 
     private var availableCategoryCount: Int {
-        catalog.filter { $0.accessState != "upgrade_required" }.count
+        catalog.filter { !$0.requiresKnowledgePack }.count
     }
 
     public var body: some View {
@@ -444,7 +444,7 @@ public struct KnowledgeView: View {
     }
 
     private func toggleSubscription(_ cat: CatalogCategory) {
-        if cat.accessState == "upgrade_required" {
+        if cat.requiresKnowledgePack {
             highlightedEntitlementKey = cat.entitlementKey
             selectedCategory = nil
             DispatchQueue.main.async { showingSubscriptionCenter = true }
@@ -745,7 +745,7 @@ public struct CategorySubscriptionCard: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Image(systemName: category.accessState == "upgrade_required" ? "lock.fill" : (isSubscribed ? "checkmark" : "plus"))
+                        Image(systemName: category.requiresKnowledgePack ? "lock.fill" : (isSubscribed ? "checkmark" : "plus"))
                             .font(.system(size: 11, weight: .bold))
                     }
                     Text(category.walletActionLabel(isInWallet: isSubscribed))
@@ -793,7 +793,12 @@ private extension CatalogCategory {
     }
 
     var permissionSource: String {
-        switch accessState {
+        switch subscriptionState ?? accessState {
+        case "pack_included": return "当前组织知识包已开通"
+        case "pack_available": return "可随平台套餐申请"
+        case "approval_pending": return "组织申请正在审批"
+        case "governance_pending": return "知识治理建设中"
+        case "public_available": return "正式租户默认可用"
         case "included": return "当前组织套餐已包含"
         case "upgrade_required": return "当前套餐未包含"
         case "private": return "所属租户私有资产"
@@ -814,8 +819,12 @@ private extension CatalogCategory {
     }
 
     func walletActionLabel(isInWallet: Bool) -> String {
-        if accessState == "upgrade_required" { return "升级套餐" }
+        if requiresKnowledgePack { return "查看套餐" }
         return isInWallet ? "已加入" : "加入钱包"
+    }
+
+    var requiresKnowledgePack: Bool {
+        subscriptionState == "pack_available" || accessState == "upgrade_required"
     }
 }
 

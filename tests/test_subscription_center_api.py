@@ -47,13 +47,16 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         async def authen_request(method, path, **kwargs):
             self.calls.append((method, path, kwargs))
             if path.endswith("/plans"):
-                return {"plans": [{"id": "plan-pro", "name": "Pro"}]}
+                return {"plans": [{"id": "plan-pro", "name": "Pro", "pack_allowance": 2}]}
             if path.endswith("/subscription-center"):
                 return {
                     "organization_id": "11111111-1111-1111-1111-111111111111",
                     "application_id": "ai-lab-platform",
                     "subscription": None,
                     "requests": [],
+                    "knowledge_packs": [{"id": "pack-1", "status": "draft"}],
+                    "active_pack_grants": [],
+                    "pack_allowance": 0,
                 }
             if path.endswith("/subscription-requests") and method == "POST":
                 return {"id": "request-1", **(kwargs.get("json") or {})}
@@ -93,6 +96,7 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
                 "request_id": "ios-request-0001",
                 "plan_id": "plan-pro",
                 "requested_entitlements": ["audit-pro"],
+                "requested_pack_ids": ["pack-1", "pack-2"],
                 "reason": "需要审计知识",
                 "organization_id": "attacker-org",
                 "requested_by": "attacker",
@@ -102,7 +106,15 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         post_call = next(call for call in self.calls if call[0] == "POST")
         self.assertIn("11111111-1111-1111-1111-111111111111", post_call[1])
         self.assertEqual(post_call[2]["json"]["requested_by"], "member-1")
+        self.assertEqual(post_call[2]["json"]["requested_pack_ids"], ["pack-1", "pack-2"])
         self.assertNotIn("organization_id", post_call[2]["json"])
+
+    def test_center_forwards_knowledge_pack_governance_state(self):
+        response = self.request("GET", "/api/v1/subscription-center")
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["knowledge_packs"][0]["status"], "draft")
+        self.assertEqual(body["pack_allowance"], 0)
 
     def test_member_cannot_read_admin_approval_queue(self):
         response = self.request("GET", "/api/v1/admin/subscription-requests")

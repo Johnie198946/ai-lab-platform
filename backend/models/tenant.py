@@ -83,6 +83,8 @@ class TenantEntitlementSnapshot(Base):
     plan_id: Mapped[str] = mapped_column(String(64), default="")
     status: Mapped[str] = mapped_column(String(20), default="inactive")
     knowledge_entitlements: Mapped[list | None] = mapped_column(JSON, default=list)
+    active_pack_grants: Mapped[list | None] = mapped_column(JSON, default=list)
+    pack_allowance: Mapped[int] = mapped_column(Integer, default=0)
     entitlement_version: Mapped[int] = mapped_column(BigInteger, default=0)
     last_event_id: Mapped[str] = mapped_column(String(255), default="")
     effective_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
