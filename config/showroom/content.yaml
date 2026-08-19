@@ -65,12 +65,8 @@ screens:
     headline: "把一句想法，收敛成一个可行动的问题。"
     conversation_skill: solution-consultant-persona
     conversation_role: 超聚变首席解决方案架构师
-  screen-04:
-    report_title: "不是“换模慢”，而是经验没有成为组织能力。"
-  screen-07:
-    title: "换模辅助工作台 V1"
-    task_id: "#0248"
-    steps: [安全确认, 拆卸旧模具, 清洁定位面, 安装新模具, 首件试制, 完成复盘]
+  screen-04: {}
+  screen-07: {}
 base_agents:
   Main: {label: Main, verb: 主持与起草, desc: 理解目标、调用知识与技能，组织专业角色完成初稿。}
   Supervision: {label: Supervision, verb: 质询与把关, desc: 独立审查证据、提出修改意见，并控制评审门。}
@@ -148,14 +144,14 @@ ipd_phases:
       - {id: IPD-12, name: 生命周期, role: 产品经营官, base: Main, job: 监控全生命周期表现并管理演进、停产、停售和停服。, status: locked}
 artifacts:
   需求确认单: {summary: 把现场对话收敛为问题、目标、用户、范围与约束，作为 IPD 唯一需求入口。}
-  客户痛点: {summary: 记录停机损失、经验依赖和新员工上手困难，并保留客户原话与现场证据。}
-  产品战略边界: {summary: 明确首期只覆盖一条典型产线，不替代 MES，不触碰设备安全控制。}
+  客户痛点: {summary: 记录客户原话、业务影响、关键用户和现场证据，形成可追溯的问题定义。}
+  产品战略边界: {summary: 明确首期覆盖范围、非目标、依赖条件与不可触碰的业务红线。}
   需求合理性·调研支撑: {summary: 从客户、市场、竞品与产业四个维度证明问题真实且值得投入。, owner: IPD-01}
   需求评审结论: {summary: 形成建议产品、条件接纳或拒绝的正式判断，并列出前置条件。, owner: IPD-02}
-  初始产品包: {summary: 将换模辅助工作台定义为软件、服务、数据采集和现场验证的组合交付。, owner: IPD-02}
+  初始产品包: {summary: 根据已确认需求定义软件、服务、数据与验证活动的组合交付。, owner: IPD-02}
   产品组合规划书: {summary: 说明与现有智能制造能力的组合关系、投资顺序和版本节奏。, owner: IPD-03}
   产品包定义: {summary: 定义功能、服务、实施边界、成功标准与商业承诺。, owner: IPD-03}
-  架构方案: {summary: 把需求映射为数据采集、步骤引导、异常提示、复盘和知识沉淀五层架构。, owner: IPD-04, kind: architecture}
+  架构方案: {summary: 把已确认需求映射为组件、数据流、接口、异常策略和知识沉淀架构。, owner: IPD-04, kind: architecture}
   资源与财务计划: {summary: 列出人力、算力、现场资源、预算与收益假设。, owner: IPD-03, kind: metrics}
   开发方案: {summary: 把产品包拆成模块、里程碑、依赖、风险和工程任务。, owner: IPD-05, kind: architecture}
   56 项可测验收: {summary: 用可观察、可测量、可复现的条目约束交付。, owner: IPD-05, kind: checklist}
@@ -173,48 +169,6 @@ artifacts:
   版本路线图: {summary: 根据运营证据规划增强版本、兼容策略和资源投入。, owner: IPD-12, kind: roadmap}
   退出计划: {summary: 定义停产、停售、停服的通知、迁移、备件和客户保障。, owner: IPD-12, kind: checklist}
   知识回流: {summary: 将现场数据、复盘结论和反馈沉淀回需求与产品知识库。, owner: IPD-12}
-default_session:
-  role: 业务负责人
-  messages:
-    - {role: assistant, content: "您提到“换模慢”。更影响经营结果的是停机时间、良品率，还是订单交付周期？"}
-    - {role: user, content: "主要是停机。现在换一次模具要 45 分钟，老师傅经验也很难复制。"}
-    - {role: assistant, content: "如果三个月内完成第一阶段，您希望达到什么结果？"}
-    - {role: user, content: "先降到 20 分钟以内，让新员工也能按标准完成。"}
-  demand:
-    confirmed: false
-    completeness: 86
-    industry: 制造业
-    core_problem: 换模依赖老师傅经验，停机时间长且标准难以复制
-    target_metric: 45 分钟 → 20 分钟内
-    cycle: 12 周
-    users: 班组长 / 新员工
-    solution: 换模辅助工作台
-    next_action: 采集一条典型产线的 20 次换模过程，建立动作基线
-  insight:
-    title: "不是“换模慢”，而是经验没有成为组织能力。"
-    judgment: 经验隐性化是首要根因
-    gap: 25 min
-    recommendation: 先验证 1 条产线
-    causes:
-      - {title: 经验隐性化, detail: 关键动作仅掌握在老师傅手中}
-      - {title: 过程不可见, detail: 没有步骤耗时与异常数据}
-      - {title: 反馈未闭环, detail: 换模结束后缺少结构化复盘}
-    impacts:
-      - {label: 产线停机损失, score: 92}
-      - {label: 人员培养周期, score: 76}
-      - {label: 交付稳定性, score: 62}
-      - {label: 质量追溯成本, score: 54}
-    evidence:
-      - [现场访谈, 关键动作依赖老师傅口授, 高, 已验证]
-      - [换模记录, 平均耗时 45 分钟, 中高, 已采集]
-      - [步骤级数据, 尚无统一埋点与异常分类, "—", 待补齐]
-      - [新员工测试, 独立完成率尚未量化, 低, 待验证]
-  prototype:
-    title: 换模辅助工作台 V1
-    goal: 通过步骤引导和实时计时，将换模过程标准化
-    target_time: "20:00"
-    elapsed: "06:42"
-    progress: 33
 experience:
   labels: [进入体验, 需求问诊, 确认需求, 深度洞察, 生成原型, 体验修改, 方案带走]
   roles:

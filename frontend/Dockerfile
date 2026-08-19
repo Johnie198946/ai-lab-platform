@@ -1,8 +1,9 @@
 FROM node:20-alpine AS build
-WORKDIR /app
+WORKDIR /app/frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ .
+COPY apps/shared /app/apps/shared
 # Build
 RUN npm run build
 
@@ -29,6 +30,17 @@ RUN echo $'server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         client_max_body_size 50M;\n\
     }\n\
+    location = /api/chat/stream {\n\
+        proxy_pass http://api:8000/api/chat/stream;\n\
+        proxy_read_timeout 600s;\n\
+        proxy_send_timeout 600s;\n\
+        proxy_buffering off;\n\
+        proxy_cache off;\n\
+        proxy_request_buffering off;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    }\n\
     location = /api/showroom/ws {\n\
         proxy_pass http://api:8000/api/showroom/ws;\n\
         proxy_http_version 1.1;\n\
@@ -45,6 +57,7 @@ RUN echo $'server {\n\
         proxy_set_header Connection "upgrade";\n\
         proxy_set_header Host 127.0.0.1;\n\
         proxy_read_timeout 3600s;\n\
+        proxy_buffering off;\n\
     }\n\
     location = /api/pty {\n\
         proxy_pass http://host.docker.internal:9121;\n\
@@ -61,6 +74,12 @@ RUN echo $'server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
     location /authen/ {\n\
+        proxy_pass http://host.docker.internal:8001/;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    }\n\
+    location /authen-api/ {\n\
         proxy_pass http://host.docker.internal:8001/;\n\
         proxy_set_header Host $host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
@@ -141,6 +160,17 @@ server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
         client_max_body_size 50M;\n\
     }\n\
+    location = /api/chat/stream {\n\
+        proxy_pass http://api:8000/api/chat/stream;\n\
+        proxy_read_timeout 600s;\n\
+        proxy_send_timeout 600s;\n\
+        proxy_buffering off;\n\
+        proxy_cache off;\n\
+        proxy_request_buffering off;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    }\n\
     location = /api/showroom/ws {\n\
         proxy_pass http://api:8000/api/showroom/ws;\n\
         proxy_http_version 1.1;\n\
@@ -157,6 +187,7 @@ server {\n\
         proxy_set_header Connection "upgrade";\n\
         proxy_set_header Host 127.0.0.1;\n\
         proxy_read_timeout 3600s;\n\
+        proxy_buffering off;\n\
     }\n\
     location = /api/pty {\n\
         proxy_pass http://host.docker.internal:9121;\n\
@@ -173,6 +204,12 @@ server {\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
     location /authen/ {\n\
+        proxy_pass http://host.docker.internal:8001/;\n\
+        proxy_set_header Host $host;\n\
+        proxy_set_header X-Real-IP $remote_addr;\n\
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
+    }\n\
+    location /authen-api/ {\n\
         proxy_pass http://host.docker.internal:8001/;\n\
         proxy_set_header Host $host;\n\
         proxy_set_header X-Real-IP $remote_addr;\n\

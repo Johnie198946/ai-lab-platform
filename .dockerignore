@@ -13,5 +13,8 @@ docs/
 web-dashboard/node_modules/
 data/
 backups/
-apps/
+apps/*
+!apps/shared/
+!apps/shared/**
+apps/shared/node_modules/
 *.tgz

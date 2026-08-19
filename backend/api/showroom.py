@@ -125,6 +125,106 @@ class ShowroomHub:
 
 hub = ShowroomHub()
 _runtime_hydrated = False
+SESSION_DATA_VERSION = "hermes-gateway-v1"
+
+LEGACY_MESSAGES = [
+    {
+        "role": "assistant",
+        "content": (
+            "您提到“换模慢”。更影响经营结果的是停机时间、良品率，"
+            "还是订单交付周期？"
+        ),
+    },
+    {
+        "role": "user",
+        "content": "主要是停机。现在换一次模具要 45 分钟，老师傅经验也很难复制。",
+    },
+    {"role": "assistant", "content": "如果三个月内完成第一阶段，您希望达到什么结果？"},
+    {"role": "user", "content": "先降到 20 分钟以内，让新员工也能按标准完成。"},
+]
+LEGACY_DEMAND = {
+    "confirmed": False,
+    "completeness": 86,
+    "industry": "制造业",
+    "core_problem": "换模依赖老师傅经验，停机时间长且标准难以复制",
+    "target_metric": "45 分钟 → 20 分钟内",
+    "cycle": "12 周",
+    "users": "班组长 / 新员工",
+    "solution": "换模辅助工作台",
+    "next_action": "采集一条典型产线的 20 次换模过程，建立动作基线",
+}
+LEGACY_PROTOTYPE = {
+    "title": "换模辅助工作台 V1",
+    "goal": "通过步骤引导和实时计时，将换模过程标准化",
+    "target_time": "20:00",
+    "elapsed": "06:42",
+    "progress": 33,
+}
+LEGACY_INSIGHT = {
+    "title": "不是“换模慢”，而是经验没有成为组织能力。",
+    "judgment": "经验隐性化是首要根因",
+    "gap": "25 min",
+    "recommendation": "先验证 1 条产线",
+    "causes": [
+        {"title": "经验隐性化", "detail": "关键动作仅掌握在老师傅手中"},
+        {"title": "过程不可见", "detail": "没有步骤耗时与异常数据"},
+        {"title": "反馈未闭环", "detail": "换模结束后缺少结构化复盘"},
+    ],
+    "impacts": [
+        {"label": "产线停机损失", "score": 92},
+        {"label": "人员培养周期", "score": 76},
+        {"label": "交付稳定性", "score": 62},
+        {"label": "质量追溯成本", "score": 54},
+    ],
+    "evidence": [
+        ["现场访谈", "关键动作依赖老师傅口授", "高", "已验证"],
+        ["换模记录", "平均耗时 45 分钟", "中高", "已采集"],
+        ["步骤级数据", "尚无统一埋点与异常分类", "—", "待补齐"],
+        ["新员工测试", "独立完成率尚未量化", "低", "待验证"],
+    ],
+}
+
+
+def _empty_demand() -> dict[str, Any]:
+    return {
+        "confirmed": False,
+        "completeness": 0,
+        "industry": "",
+        "core_problem": "",
+        "target_metric": "",
+        "cycle": "",
+        "users": "",
+        "solution": "",
+        "next_action": "",
+    }
+
+
+def _migrate_legacy_session_data(
+    raw: dict[str, Any] | None,
+) -> tuple[dict[str, Any], bool]:
+    """Remove only the exact legacy showroom seed while preserving real edits."""
+    data = copy.deepcopy(raw or {})
+    changed = False
+    messages = list(data.get("messages") or [])
+    legacy_count = len(LEGACY_MESSAGES)
+    if len(messages) >= legacy_count and messages[:legacy_count] == LEGACY_MESSAGES:
+        data["messages"] = messages[len(LEGACY_MESSAGES) :]
+        changed = True
+    if data.get("demand") == LEGACY_DEMAND:
+        data["demand"] = _empty_demand()
+        changed = True
+    if data.get("insight") == LEGACY_INSIGHT:
+        data["insight"] = {}
+        changed = True
+    if data.get("prototype") == LEGACY_PROTOTYPE:
+        data["prototype"] = {}
+        changed = True
+    if changed and data.get("role") == "业务负责人":
+        data["role"] = ""
+    if data.get("schema_version") != SESSION_DATA_VERSION:
+        data["schema_version"] = SESSION_DATA_VERSION
+        changed = True
+    return data, changed
 
 
 def _merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
@@ -139,31 +239,15 @@ def _merge(base: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
 
 
 def _initial_session_data(slot: str) -> dict[str, Any]:
-    if slot == "main":
-        return copy.deepcopy(content_manifest.get("default_session", {}))
     return {
         "role": "",
-        "messages": [
-            {
-                "role": "assistant",
-                "content": "请说出一个你真正想解决的业务问题，我会先帮你把需求收敛清楚。",
-            }
-        ],
-        "demand": {
-            "confirmed": False,
-            "completeness": 0,
-            "industry": "",
-            "core_problem": "",
-            "target_metric": "",
-            "cycle": "",
-            "users": "",
-            "solution": "",
-            "next_action": "",
-        },
+        "messages": [],
+        "demand": _empty_demand(),
         "insight": {},
         "prototype": {},
         "artifacts": {},
         "reviews": {},
+        "schema_version": SESSION_DATA_VERSION,
     }
 
 
@@ -209,6 +293,12 @@ async def _get_or_create_session(
             await database.refresh(row)
         elif row.tenant_key != tenant_key:
             raise HTTPException(status_code=404, detail="体验会话不存在")
+        else:
+            migrated, changed = _migrate_legacy_session_data(row.data)
+            if changed:
+                row.data = migrated
+                await database.commit()
+                await database.refresh(row)
         return row
 
 
@@ -322,6 +412,8 @@ async def get_showroom_bootstrap(
         "centers": centers,
         "capabilities": {
             "chat_stream": "/api/chat/stream",
+            "hermes_gateway": "/api/ws",
+            "hermes_serve_token": "/api/v1/hermes/serve-token",
             "knowledge_search": "/api/knowledge/search",
             "review": "/api/showroom/reviews/{gate}",
             "session_write": True,
@@ -448,10 +540,21 @@ async def generate_showroom_insight(
         except Exception:
             documents = []
 
+        core_problem = str(demand.get("core_problem") or "").strip()
         insight = _merge(
-            copy.deepcopy(
-                content_manifest.get("default_session", {}).get("insight", {})
-            ),
+            {
+                "title": (
+                    f"围绕“{core_problem}”的需求洞察" if core_problem else "需求洞察"
+                ),
+                "judgment": (
+                    "等待知识证据补齐" if not documents else "已形成首轮知识证据"
+                ),
+                "gap": str(demand.get("target_metric") or ""),
+                "recommendation": str(demand.get("next_action") or ""),
+                "causes": [],
+                "impacts": [],
+                "evidence": [],
+            },
             data.get("insight", {}),
         )
         if documents:

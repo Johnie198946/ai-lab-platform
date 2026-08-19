@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "vite build && npm run build:showroom-gateway",
+    "build:showroom-gateway": "esbuild src/showroom-hermes-gateway.ts --bundle --format=iife --global-name=HermesShared --outfile=dist/showroom/hermes-gateway.js",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -31,6 +32,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",
     "autoprefixer": "^10.5.4",
+    "esbuild": "^0.28.1",
     "postcss": "^8.5.26",
     "tailwindcss": "^3.4.19",
     "vite": "^7.1.2"

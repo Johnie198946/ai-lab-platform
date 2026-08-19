@@ -33,6 +33,9 @@ const state = {
   streamingReply: '',
   chatError: '',
   lastQuestion: '',
+  chatMessages: [],
+  hermesStatus: 'idle',
+  hermesDetail: '',
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
@@ -350,7 +353,24 @@ const reviewStatus = {
 };
 
 function currentSessionData() {
-  return state.session?.data || state.content?.default_session || {};
+  return state.session?.data || {};
+}
+
+function getScreenConfig(screenId) {
+  return state.screenConfigs.find((screen) => screen.screen_id === screenId) || {};
+}
+
+function architectStatusLabel() {
+  return {
+    idle: '等待连接',
+    connecting: '正在连接大架构师',
+    online: '大架构师在线',
+    generating: '正在研判',
+    waiting: '等待你的选择',
+    reconnecting: '连接恢复中',
+    error: '连接异常',
+    'auth-required': '需要登录',
+  }[state.hermesStatus] || '等待连接';
 }
 
 function currentDemand() {
@@ -420,14 +440,14 @@ function feishuReviewOverlay() {
 
 const artifactDescriptions = {
   '需求确认单': '把现场对话收敛为问题、目标、用户、范围与约束，作为整个 IPD 流程的唯一需求入口。',
-  '客户痛点': '记录停机损失、经验依赖和新员工上手困难，并保留客户原话与现场证据。',
-  '产品战略边界': '明确首期只覆盖一条典型产线，不替代 MES，不触碰设备安全控制。',
+  '客户痛点': '记录客户原话、业务影响、关键用户和现场证据，形成可追溯的问题定义。',
+  '产品战略边界': '明确首期覆盖范围、非目标、依赖条件与不可触碰的业务红线。',
   '需求合理性·调研支撑': '从客户、市场、竞品与产业四个维度证明问题真实且值得投入。',
   '需求评审结论': '形成建议产品、条件接纳或拒绝的正式判断，并列出进入下一阶段的前置条件。',
-  '初始产品包': '将换模辅助工作台定义为软件、服务、数据采集和现场验证的组合交付。',
+  '初始产品包': '根据已确认需求定义软件、服务、数据与验证活动的组合交付。',
   '产品组合规划书': '说明该产品与现有智能制造能力的组合关系、投资顺序和版本节奏。',
   '产品包定义': '定义用户可感知的功能、服务、实施边界、成功标准与商业承诺。',
-  '架构方案': '把需求映射为数据采集、步骤引导、异常提示、复盘和知识沉淀五层架构。',
+  '架构方案': '把已确认需求映射为组件、数据流、接口、异常策略和知识沉淀架构。',
   '资源与财务计划': '列出人力、算力、现场资源、预算与收益假设，供 PDCP 做正式承诺。',
   '开发方案': '把产品包拆成可执行的模块、里程碑、依赖、风险和工程任务。',
   '56 项可测验收': '用可观察、可测量、可复现的条目约束交付，避免“看起来完成”。',
@@ -474,6 +494,13 @@ function getArtifactDetail(title) {
   const { index, phase } = findArtifactPhase(title);
   const manifest = state.content?.artifacts?.[title] || {};
   const saved = currentSessionData().artifacts?.[title] || {};
+  const demand = currentDemand();
+  const demandBacked = ['需求确认单', '客户痛点', '产品战略边界'].includes(title) && demand.confirmed;
+  const content = saved.content || (demandBacked ? {
+    demand: demand.core_problem,
+    target: demand.target_metric,
+    sources: currentInsight().sources || [],
+  } : manifest.content || {});
   const ownerId = manifest.owner || artifactOwners[title];
   const owner = phase.agents.find((agent) => agent.id === ownerId) || phase.agents[0];
   return {
@@ -481,39 +508,54 @@ function getArtifactDetail(title) {
     phase,
     phaseIndex: index,
     kind: manifest.kind || artifactKind(title),
-    summary: saved.content?.summary || manifest.summary || artifactDescriptions[title] || `这是${phase.name}阶段形成的结构化交付件。`,
-    content: saved.content || manifest.content || {},
+    summary: saved.content?.summary || (demandBacked ? demand.core_problem : '') || manifest.summary || artifactDescriptions[title] || `这是${phase.name}阶段形成的结构化交付件。`,
+    content,
+    generated: demandBacked || Boolean(saved.updated_at && saved.content && Object.keys(saved.content).length),
     owner,
   };
 }
 
 function artifactVisual(detail) {
-  if (detail.kind === 'architecture') return `<div class="architecture-demo"><div><span>01</span><b>现场采集</b><small>动作 · 耗时 · 异常</small></div><i>→</i><div><span>02</span><b>智能引导</b><small>步骤 · 计时 · 提示</small></div><i>→</i><div><span>03</span><b>知识沉淀</b><small>复盘 · 版本 · 追溯</small></div></div><div class="artifact-spec-grid"><div><span>关键接口</span><b>事件流 / 任务 API / 知识索引</b></div><div><span>异常策略</span><b>断网可用 · 超时降级 · 人工接管</b></div><div><span>验收锚点</span><b>需求绑定规格与测试用例</b></div></div>`;
-  if (detail.kind === 'roadmap') return `<div class="artifact-roadmap"><div class="done"><span>W1–2</span><b>建立基线</b><small>采集 20 次换模过程</small></div><div class="active"><span>W3–6</span><b>原型验证</b><small>一条产线闭环</small></div><div><span>W7–10</span><b>BETA 试用</b><small>两类关键用户</small></div><div><span>W11–12</span><b>决策评审</b><small>价值与规模化判断</small></div></div>`;
-  if (detail.kind === 'checklist') return `<div class="artifact-checks"><div><i>✓</i><span><b>换模总时长 ≤ 20 分钟</b><small>连续 10 次测试，P90 达标</small></span><em>通过</em></div><div><i>✓</i><span><b>新员工可独立完成</b><small>不依赖老师傅口头提示</small></span><em>通过</em></div><div><i>!</i><span><b>异常恢复时间</b><small>需补充断网场景证据</small></span><em class="warn">待补证</em></div><div><i>✓</i><span><b>数据来源可追溯</b><small>需求—规格—用例已绑定</small></span><em>通过</em></div></div>`;
-  if (detail.kind === 'metrics') return `<div class="artifact-metrics"><div><span>目标换模时间</span><b>≤ 20 min</b><small>当前 45 min</small></div><div><span>首期周期</span><b>12 weeks</b><small>单产线验证</small></div><div><span>资源满足度</span><b>92%</b><small>目标 ≥ 90%</small></div></div><div class="artifact-bars"><span style="--w:86%">需求完整度 <b>86%</b></span><span style="--w:72%">数据准备度 <b>72%</b></span><span style="--w:91%">方案可验证性 <b>91%</b></span></div>`;
-  if (detail.kind === 'feedback') return `<div class="artifact-feedback"><blockquote>“步骤提示很清楚，但戴手套时需要更大的确认按钮。”<span>新员工 · BETA-07</span></blockquote><blockquote>“最有价值的是异常记录，复盘时终于能说清楚哪里慢。”<span>班组长 · BETA-03</span></blockquote></div><div class="feedback-tags"><span>按钮触达 P1</span><span>异常复盘 P0</span><span>语音记录 P2</span></div>`;
-  return `<div class="artifact-document-figure" role="img" aria-label="需求从现场问题收敛到决策建议的关系图"><div><small>现场问题</small><b>45 min</b><span>换模停机时间</span></div><i>→</i><div><small>业务目标</small><b>≤ 20 min</b><span>12 周单线验证</span></div><i>→</i><div><small>决策建议</small><b>条件接纳</b><span>补齐数据后过门</span></div></div>`;
+  const demand = currentDemand();
+  const problem = detail.content.demand || demand.core_problem || '待确认';
+  const target = detail.content.target || demand.target_metric || '待确认';
+  const cycle = demand.cycle || '待确认';
+  const users = demand.users || '待确认';
+  const sourceCount = Array.isArray(detail.content.sources) ? detail.content.sources.length : 0;
+  if (detail.kind === 'architecture') return `<div class="architecture-demo"><div><span>01</span><b>需求输入</b><small>${escapeHtml(problem)}</small></div><i>→</i><div><span>02</span><b>方案编排</b><small>组件 · 数据流 · 接口</small></div><i>→</i><div><span>03</span><b>证据闭环</b><small>规格 · 测试 · 追溯</small></div></div><div class="artifact-spec-grid"><div><span>目标锚点</span><b>${escapeHtml(target)}</b></div><div><span>关键用户</span><b>${escapeHtml(users)}</b></div><div><span>证据来源</span><b>${sourceCount} 条知识证据</b></div></div>`;
+  if (detail.kind === 'roadmap') return `<div class="artifact-roadmap"><div><span>阶段 1</span><b>范围确认</b><small>${escapeHtml(problem)}</small></div><div><span>阶段 2</span><b>原型验证</b><small>${escapeHtml(target)}</small></div><div><span>阶段 3</span><b>用户验证</b><small>${escapeHtml(users)}</small></div><div><span>决策门</span><b>人工评审</b><small>${escapeHtml(cycle)}</small></div></div>`;
+  if (detail.kind === 'checklist') return `<div class="artifact-checks"><div><i>1</i><span><b>问题定义</b><small>${escapeHtml(problem)}</small></span><em>待评审</em></div><div><i>2</i><span><b>目标指标</b><small>${escapeHtml(target)}</small></span><em>待评审</em></div><div><i>3</i><span><b>用户与范围</b><small>${escapeHtml(users)} · ${escapeHtml(cycle)}</small></span><em class="warn">待补证</em></div><div><i>4</i><span><b>数据来源可追溯</b><small>${sourceCount} 条证据已绑定</small></span><em>待评审</em></div></div>`;
+  if (detail.kind === 'metrics') return `<div class="artifact-metrics"><div><span>目标指标</span><b>${escapeHtml(target)}</b><small>来自需求确认单</small></div><div><span>首期周期</span><b>${escapeHtml(cycle)}</b><small>待人工确认</small></div><div><span>知识证据</span><b>${sourceCount}</b><small>已绑定来源</small></div></div><div class="artifact-bars"><span style="--w:${Math.max(4, Number(demand.completeness || 0))}%">需求完整度 <b>${Number(demand.completeness || 0)}%</b></span></div>`;
+  if (detail.kind === 'feedback') return `<div class="artifact-feedback"><blockquote>尚未采集真实 BETA 用户反馈。<span>等待用户验证阶段回填</span></blockquote></div>`;
+  return `<div class="artifact-document-figure" role="img" aria-label="需求从现场问题收敛到决策建议的关系图"><div><small>现场问题</small><b>已确认</b><span>${escapeHtml(problem)}</span></div><i>→</i><div><small>业务目标</small><b>${escapeHtml(target)}</b><span>${escapeHtml(cycle)}</span></div><i>→</i><div><small>下一关口</small><b>${escapeHtml(detail.phase.reviews[0])}</b><span>等待人工评审</span></div></div>`;
 }
 
 function artifactTableRows(detail) {
-  if (detail.kind === 'architecture') return [['REQ-01', '动作与耗时采集', '事件流 / 本地缓存', '可追溯'], ['REQ-02', '换模步骤引导', '任务 API / 权限控制', '可验证'], ['REQ-03', '异常复盘', '知识索引 / 版本记录', '待评审']];
-  if (detail.kind === 'roadmap') return [['M1', '过程数据基线', '20 次真实换模记录', 'W2'], ['M2', '单产线原型', '核心流程可操作', 'W6'], ['M3', 'BETA 结论', '两类用户完成验证', 'W10']];
-  if (detail.kind === 'metrics') return [['业务价值', '停机时间', '45 min', '≤ 20 min'], ['交付能力', '资源满足度', '72%', '≥ 90%'], ['质量门禁', '验证覆盖率', '68%', '≥ 95%']];
-  return [['E-01', '现场访谈与需求确认单', '已引用', '高'], ['E-02', '20 次换模过程样本', '采集中', '中'], ['E-03', '知识库方法与历史项目', '已引用', '高']];
+  const demand = currentDemand();
+  const sources = Array.isArray(detail.content.sources) ? detail.content.sources : [];
+  const rows = [
+    ['REQ-01', '核心问题', detail.content.demand || demand.core_problem || '待确认', demand.confirmed ? '已确认' : '待确认'],
+    ['REQ-02', '目标指标', detail.content.target || demand.target_metric || '待确认', '待评审'],
+    ['REQ-03', '关键用户 / 周期', `${demand.users || '待确认'} / ${demand.cycle || '待确认'}`, '待评审'],
+  ];
+  sources.slice(0, 3).forEach((source, index) => rows.push([`E-${String(index + 1).padStart(2, '0')}`, source.title || source.path || '知识证据', source.path || '已绑定', `相关度 ${source.score ?? '—'}`]));
+  return rows;
 }
 
 function artifactDemo(detail, giant = false) {
   const cls = giant ? ' artifact-demo-giant' : '';
+  if (!detail.generated) return `<div class="artifact-empty-state"><span>尚未生成</span><b>${escapeHtml(detail.title)}还没有真实业务内容</b><p>请先完成需求确认，再由当前 IPD 阶段生成交付件。系统不会用演示模板冒充用户结果。</p></div>`;
   const rows = artifactTableRows(detail);
+  const recommendation = currentDemand().next_action || '补齐缺失证据后再提交人工评审';
+  const sourceLabels = ['需求确认单', ...(detail.content.sources || []).slice(0, 2).map((source) => source.title || source.path).filter(Boolean)];
   return `<article class="artifact-demo markdown-report${cls}">
     <div class="report-format-bar"><span>MARKDOWN REPORT</span><b>图文混排 · 自动生成目录 · 可导出 Word / PDF</b></div>
-    <section class="report-copy"><span class="report-anchor">01 · 摘要</span><h3>${detail.title}</h3><p>${detail.summary}</p><blockquote>核心判断：先用单产线、可测量的闭环验证价值，再决定是否扩大投资范围。</blockquote></section>
-    <figure class="report-figure"><div class="report-figure-head"><span>FIGURE 01</span><b>${detail.kind === 'feedback' ? '用户反馈与优先级' : detail.kind === 'roadmap' ? '阶段路线与关键里程碑' : detail.kind === 'metrics' ? '核心指标与目标差距' : '方案关键结构与证据关系'}</b></div>${artifactVisual(detail)}<figcaption>图 1 · 数据来自需求确认单、现场调研与 AI Lab 知识库；最终结论需由人工评审确认。</figcaption></figure>
+    <section class="report-copy"><span class="report-anchor">01 · 摘要</span><h3>${escapeHtml(detail.title)}</h3><p>${escapeHtml(detail.summary)}</p><blockquote>下一步建议：${escapeHtml(recommendation)}</blockquote></section>
+    <figure class="report-figure"><div class="report-figure-head"><span>FIGURE 01</span><b>${detail.kind === 'feedback' ? '用户反馈与优先级' : detail.kind === 'roadmap' ? '阶段路线与关键里程碑' : detail.kind === 'metrics' ? '核心指标与目标差距' : '方案关键结构与证据关系'}</b></div>${artifactVisual(detail)}<figcaption>图 1 · 内容来自当前会话已绑定的需求与证据；最终结论需由人工评审确认。</figcaption></figure>
     <section class="report-copy"><span class="report-anchor">02 · 证据明细</span><h3>结论如何被数据支撑</h3><p>以下表格保留来源、状态和可信度，方便评审人从摘要直接追溯到证据，而不必阅读整段生成过程。</p></section>
-    <div class="report-table-wrap"><table class="report-table"><thead><tr><th>编号</th><th>证据 / 指标</th><th>当前结果</th><th>状态 / 目标</th></tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell, i) => `<${i === 0 ? 'th' : 'td'}>${cell}</${i === 0 ? 'th' : 'td'}>`).join('')}</tr>`).join('')}</tbody></table></div>
+    <div class="report-table-wrap"><table class="report-table"><thead><tr><th>编号</th><th>证据 / 指标</th><th>当前结果</th><th>状态 / 目标</th></tr></thead><tbody>${rows.map((row) => `<tr>${row.map((cell, i) => `<${i === 0 ? 'th' : 'td'}>${escapeHtml(cell)}</${i === 0 ? 'th' : 'td'}>`).join('')}</tr>`).join('')}</tbody></table></div>
     <aside class="report-callout"><span>AI 建议</span><b>补齐缺失证据后，提交 ${detail.phase.reviews[0]} 人工评审</b><p>AI 负责生产和修订材料，人负责判断是否通过、退回修改或拒绝。</p></aside>
-    <footer class="report-sources"><b>参考来源</b><span>[1] 需求确认单 V0.1　[2] 现场访谈记录　[3] 超聚变 IPD 产品开发流程</span></footer>
+    <footer class="report-sources"><b>参考来源</b><span>${sourceLabels.map((source, index) => `[${index + 1}] ${escapeHtml(source)}`).join('　')}</span></footer>
   </article>`;
 }
 
@@ -537,6 +579,7 @@ const icons = {
   display: '<rect x="3" y="4" width="18" height="13" rx="2"/><path d="M8 21h8M12 17v4"/>',
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   send: '<path d="m4 4 17 8-17 8 3-8zM7 12h14"/>',
+  stop: '<rect x="7" y="7" width="10" height="10" rx="1"/>',
 };
 
 function icon(name) {
@@ -672,20 +715,28 @@ function liveChatFeedback() {
   if (state.chatError) {
     return `<div class="chat-error" role="alert"><b>本轮回复失败</b><span>${escapeHtml(state.chatError)}</span><button data-chat-retry>重新发送</button></div>`;
   }
+  if (['connecting', 'reconnecting'].includes(state.hermesStatus)) {
+    return `<div class="bubble ai streaming thinking" aria-live="polite"><i></i><i></i><i></i><span>${escapeHtml(state.hermesDetail || architectStatusLabel())}</span></div>`;
+  }
   return '';
 }
 
+function emptyChatState() {
+  if (state.chatMessages.length || state.streamingReply || state.pendingClarify) return '';
+  return `<div class="chat-empty"><span>AI 需求问诊</span><b>把真实问题交给大架构师</b><p>从业务目标、用户场景、数据约束到验收标准，一轮一轮收敛成需求确认单。</p></div>`;
+}
+
 function clinicView() {
-  const session = currentSessionData();
   const demand = currentDemand();
-  const messages = session.messages || [];
+  const messages = state.chatMessages;
   const architectRole = state.content?.screens?.['screen-03']?.conversation_role || '首席解决方案架构师';
+  const busy = ['generating', 'waiting'].includes(state.hermesStatus);
   return `<div class="screen">
     ${screenHeader('DEMAND CLINIC', '正在问诊')}
     <div class="screen-content">
       <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">${state.content?.screens?.['screen-03']?.headline || '把一句想法，收敛成一个可行动的问题。'}</h2></div><div><span class="tag orange">${escapeHtml(demand.industry || '待识别行业')}</span> <span class="tag blue">第 ${Math.max(1, Math.ceil(messages.length / 2))} 轮</span></div></div>
       <div class="clinic-grid">
-        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status">${state.avatarSpeaking ? '架构师正在研判' : '专属技能已加载'}</span></div><div class="chat-body">${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}<div class="bubble-note"><i></i>${escapeHtml(state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona')} · 独立会话 ${escapeHtml(state.session?.session_id || '')}</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向架构师描述你的业务问题…" ${state.avatarSpeaking ? 'disabled' : ''}><button data-demand-send aria-label="发送需求" ${state.avatarSpeaking ? 'disabled' : ''}>${icon('send')}</button></div></section>
+        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status" data-hermes-status="${escapeHtml(state.hermesStatus)}">${escapeHtml(architectStatusLabel())}</span></div><div class="chat-body">${emptyChatState()}${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}<div class="bubble-note"><i></i>${escapeHtml(getScreenConfig('screen-03').skill_command || 'solution-consultant-persona')} · Hermes 独立会话</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向大架构师描述你的真实业务问题…" ${busy ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-demand-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送需求'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div></section>
         <section class="panel form-panel"><div class="panel-head"><strong>需求收敛确认单</strong><span>${demand.confirmed ? '已确认' : '自动保存'}</span></div><div class="form-body"><div class="score-card"><strong class="metric">${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${Number(demand.completeness || 0) >= 80 ? '具备进入概念验证的条件' : '仍需补充关键约束'}</b></div></div><div class="field-grid"><label class="field wide">核心问题<textarea data-demand-field="core_problem">${escapeHtml(demand.core_problem)}</textarea></label><label class="field">目标指标<input data-demand-field="target_metric" value="${escapeHtml(demand.target_metric)}"></label><label class="field">首期周期<input data-demand-field="cycle" value="${escapeHtml(demand.cycle)}"></label><label class="field">关键用户<input data-demand-field="users" value="${escapeHtml(demand.users)}"></label><label class="field">建议形态<input data-demand-field="solution" value="${escapeHtml(demand.solution)}"></label><label class="field wide">下一步行动<textarea data-demand-field="next_action">${escapeHtml(demand.next_action)}</textarea></label></div><button class="form-cta" data-action="confirm-demand">${demand.confirmed ? '需求已确认 · 查看深度洞察' : '确认需求，进入深度洞察'}</button></div></section>
       </div>
     </div>
@@ -763,7 +814,7 @@ function giantWorkbenchView() {
   if (state.giantMode === 'orchestration') return giantOrchestrationView();
   const demand = currentDemand();
   const prototype = currentPrototype();
-  const messages = currentSessionData().messages || [];
+  const messages = state.chatMessages;
   return `<div class="giant-workbench">
     <section class="giant-col"><span class="giant-label">01 · 用户对话 / CONVERSATION</span><div class="giant-chat">${messages.slice(-3).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}</div><div class="summary-card"><h3>${demand.confirmed ? '对话已确认' : '需求收敛中'}</h3><dl><div><dt>目标用户</dt><dd>${escapeHtml(demand.users || '待确认')}</dd></div><div><dt>核心指标</dt><dd>${escapeHtml(demand.target_metric || '待确认')}</dd></div><div><dt>首期范围</dt><dd>${escapeHtml(demand.cycle || '待确认')}</dd></div></dl></div></section>
     <section class="giant-col"><span class="giant-label">02 · 共创工作台 / LIVE WORKBENCH</span><h2 class="giant-title">${escapeHtml(prototype.title || demand.solution || '等待生成原型')}</h2><p class="giant-sub">数据来自 ${escapeHtml(state.session?.session_id || '当前会话')}</p><div class="giant-form"><div class="giant-field wide"><span>任务目标</span><b>${escapeHtml(prototype.goal || demand.core_problem || '等待确认')}</b></div><div class="giant-field"><span>当前进度</span><b>${Number(prototype.progress || 0)}%</b></div><div class="giant-field"><span>本次计时</span><b class="metric">${escapeHtml(prototype.elapsed || '00:00')}</b></div></div><div class="prototype-window"><header><i></i><i></i><i></i></header><div class="proto-body"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div></section>
@@ -811,7 +862,7 @@ function experienceMiddle(step) {
   const demand = currentDemand();
   const insight = currentInsight();
   const prototype = currentPrototype();
-  const messages = session.messages || [];
+  const messages = state.chatMessages;
   const copy = {
     1: ['先聊聊你的真实问题', '每条消息都会进入本工位独立会话。'],
     2: ['确认我们理解得对不对', '只有确认后的结构化需求才会进入 IPD。'],
@@ -820,7 +871,7 @@ function experienceMiddle(step) {
     5: ['现在，请亲手试一试', '修改结果会持续写回当前会话。'],
   }[step];
   let preview = '';
-  if (step === 1) preview = `<div class="experience-chat-log">${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向架构师说出你的真实业务问题…" ${state.avatarSpeaking ? 'disabled' : ''}><button data-experience-send aria-label="发送" ${state.avatarSpeaking ? 'disabled' : ''}>${icon('send')}</button></div>`;
+  if (step === 1) preview = `<div class="experience-chat-log">${emptyChatState()}${messages.slice(-6).map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}</div><div class="chat-composer" style="margin:18px 0 0"><input id="experience-chat-input" placeholder="向大架构师说出你的真实业务问题…" ${['generating', 'waiting'].includes(state.hermesStatus) ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-experience-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div>`;
   else if (step === 2) preview = `<div class="score-card"><strong>${Number(demand.completeness || 0)}%</strong><div><span>需求完整度</span><b>${escapeHtml(demand.core_problem || '等待收敛')}</b></div></div><div class="action-box"><span>目标指标</span><b>${escapeHtml(demand.target_metric || '待确认')}</b></div>`;
   else if (step === 3) preview = `<div class="score-card"><strong>${(insight.causes || []).length}</strong><div><span>关键根因</span><b>${escapeHtml(insight.judgment || '等待生成')}</b></div></div><div class="action-box"><span>第一步建议</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b></div>`;
   else preview = `<div class="prototype-window" style="height:300px"><header><i></i><i></i><i></i></header><div class="proto-body" style="height:268px"><div class="proto-menu"><i></i><i></i><i></i><i></i></div><div class="proto-main"><div></div><div></div><div></div></div></div></div><p class="lead">${escapeHtml(prototype.title || '等待生成原型')} · ${Number(prototype.progress || 0)}%</p>`;
@@ -855,49 +906,28 @@ function schemeExportView() {
 async function sendSessionMessage(inputId, reuseExisting = false) {
   const input = document.getElementById(inputId);
   const question = input?.value.trim();
-  if (!question || state.backendStatus !== 'online' || state.avatarSpeaking) return;
+  if (!question) return;
+  if (['generating', 'waiting'].includes(state.hermesStatus)) {
+    showToast(state.hermesStatus === 'waiting' ? '请先回答当前澄清问题' : '大架构师正在回复，可先停止本轮');
+    return;
+  }
   input.value = '';
   state.avatarSpeaking = true;
   state.streamingReply = '';
   state.chatError = '';
   state.lastQuestion = question;
   try {
-    if (!reuseExisting) {
-      const userSession = await window.showroomApi.appendMessage('user', question);
-      state.session = userSession;
-    }
+    if (!reuseExisting) state.chatMessages.push({ role: 'user', content: question });
     render('refresh');
-    const answer = await window.showroomApi.streamChat(question, {
-      agentId: 'main_agent',
-      skillId: state.content?.screens?.['screen-03']?.conversation_skill || 'solution-consultant-persona',
-      onEvent: async (event) => {
-        if (event.type === 'clarify') {
-          const lastMessage = currentSessionData().messages?.at(-1);
-          if (event.question && !(lastMessage?.role === 'assistant' && lastMessage.content === event.question)) {
-            state.session = await window.showroomApi.appendMessage('assistant', event.question);
-          }
-          state.pendingClarify = event;
-          state.streamingReply = '';
-          render('refresh');
-        }
-      },
-      onDelta: (text) => {
-        state.streamingReply = text;
-        const streamingBubble = document.querySelector('.bubble.ai.streaming');
-        if (streamingBubble) streamingBubble.textContent = text;
-      },
+    const config = getScreenConfig('screen-03');
+    await window.showroomApi.submitHermesPrompt(question, {
+      skillCommand: config.skill_command,
+      stationContext: config.station_context,
     });
-    if (answer) {
-      const assistantSession = await window.showroomApi.appendMessage('assistant', answer);
-      state.session = assistantSession;
-    }
-    state.pendingClarify = null;
-    state.streamingReply = '';
   } catch (error) {
     state.chatError = error.message;
-    showToast(`架构师回复失败：${error.message}`);
-  } finally {
     state.avatarSpeaking = false;
+    showToast(`架构师回复失败：${error.message}`);
     render('refresh');
   }
 }
@@ -947,6 +977,17 @@ function attachScreenActions() {
     }
   });
   document.querySelector('[data-demand-send]')?.addEventListener('click', () => sendSessionMessage('demand-chat-input'));
+  document.querySelector('[data-demand-stop]')?.addEventListener('click', async () => {
+    try {
+      await window.showroomApi.interruptHermes();
+      state.avatarSpeaking = false;
+      state.streamingReply = '';
+      state.pendingClarify = null;
+      render('refresh');
+    } catch (error) {
+      showToast(`停止失败：${error.message}`);
+    }
+  });
   document.getElementById('demand-chat-input')?.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') sendSessionMessage('demand-chat-input');
   });
@@ -960,15 +1001,21 @@ function attachScreenActions() {
   });
   document.querySelectorAll('[data-clarify-choice]').forEach((button) => button.addEventListener('click', async () => {
     const choice = button.dataset.clarifyChoice;
-    const clarifyId = state.pendingClarify?.clarify_id;
-    if (!choice || !clarifyId) return;
+    const requestId = state.pendingClarify?.request_id;
+    if (!choice || !requestId) return;
     document.querySelectorAll('[data-clarify-choice]').forEach((item) => { item.disabled = true; });
     try {
-      state.session = await window.showroomApi.appendMessage('user', choice);
-      await window.showroomApi.submitClarify(choice, clarifyId, 'main_agent');
+      const question = state.pendingClarify?.question;
+      if (question && state.chatMessages.at(-1)?.content !== question) {
+        state.chatMessages.push({ role: 'assistant', content: question });
+      }
+      state.chatMessages.push({ role: 'user', content: choice });
       state.pendingClarify = null;
       render('refresh');
+      await window.showroomApi.respondHermesClarify(requestId, choice);
     } catch (error) {
+      state.chatError = error.message;
+      state.avatarSpeaking = false;
       showToast(`提交澄清失败：${error.message}`);
       render('refresh');
     }
@@ -1247,6 +1294,9 @@ function setView(view, intent = 'view') {
   history.replaceState({}, '', `${location.pathname}?${params}`);
   buildNavigation();
   render(intent);
+  if ((view === 'screen-03' || view.startsWith('experience-')) && state.bootstrapped) {
+    window.showroomApi?.ensureHermes().catch(() => {});
+  }
   if (!isStaticDisplayView(view) && !state.bootstrapped) {
     window.showroomApi?.init({ force: true });
   }
@@ -1313,7 +1363,6 @@ async function commitTourStage(nextStage) {
       showToast(`正在同步${stages[nextStage][0]}到全场屏幕…`);
       const snapshot = await window.showroomApi.commitStage(`station-${nextStage + 1}`, {
         view: state.view,
-        demand: '产线快速换模调优',
       });
       applyBackendSnapshot(snapshot);
     } else {
@@ -1418,6 +1467,66 @@ window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowl
   buildNavigation();
   buildTourSteps();
   applyBackendSnapshot(runtime, false);
+  render('refresh');
+});
+window.showroomApi?.on('hermes-status', ({ status, detail }) => {
+  state.hermesStatus = status;
+  state.hermesDetail = detail || '';
+  if (['screen-03'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
+});
+window.showroomApi?.on('hermes-ready', ({ messages, running }) => {
+  state.chatMessages = Array.isArray(messages) ? messages : [];
+  state.avatarSpeaking = Boolean(running);
+  state.streamingReply = '';
+  state.pendingClarify = null;
+  state.chatError = '';
+  render('refresh');
+});
+window.showroomApi?.on('hermes-event', (event) => {
+  const payload = event.payload || {};
+  if (event.type === 'message.start') {
+    state.avatarSpeaking = true;
+    state.hermesStatus = 'generating';
+  } else if (event.type === 'message.delta') {
+    state.avatarSpeaking = true;
+    state.hermesStatus = 'generating';
+    state.streamingReply += String(payload.text || '');
+    const streamingBubble = document.querySelector('.bubble.ai.streaming');
+    if (streamingBubble) streamingBubble.textContent = state.streamingReply;
+    return;
+  } else if (event.type === 'message.complete') {
+    const answer = String(payload.text || '').trim();
+    state.streamingReply = '';
+    state.pendingClarify = null;
+    state.avatarSpeaking = false;
+    if (payload.status === 'error') {
+      state.chatError = answer || '大架构师本轮回复失败';
+      state.hermesStatus = 'error';
+    } else {
+      if (answer && !(state.chatMessages.at(-1)?.role === 'assistant' && state.chatMessages.at(-1)?.content === answer)) {
+        state.chatMessages.push({ role: 'assistant', content: answer });
+      }
+      state.chatError = '';
+      state.hermesStatus = 'online';
+    }
+  } else if (event.type === 'clarify.request') {
+    state.pendingClarify = {
+      request_id: payload.request_id,
+      question: payload.question,
+      choices: payload.choices || [],
+    };
+    state.streamingReply = '';
+    state.avatarSpeaking = true;
+    state.hermesStatus = 'waiting';
+  } else if (event.type === 'status.update') {
+    state.hermesDetail = String(payload.text || payload.status || '大架构师正在处理');
+  } else if (event.type === 'error') {
+    state.chatError = String(payload.message || '大架构师服务异常');
+    state.avatarSpeaking = false;
+    state.hermesStatus = 'error';
+  } else {
+    return;
+  }
   render('refresh');
 });
 window.showroomApi?.on('session', (session) => {

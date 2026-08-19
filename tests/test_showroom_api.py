@@ -8,9 +8,15 @@ from jose import JWTError, jwt
 
 from backend.api.showroom import (
     DemandConfirmation,
+    LEGACY_DEMAND,
+    LEGACY_INSIGHT,
+    LEGACY_MESSAGES,
+    LEGACY_PROTOTYPE,
     SessionCreate,
     ReviewSubmission,
     ShowroomCommand,
+    _initial_session_data,
+    _migrate_legacy_session_data,
     _validate_websocket_token,
     apply_showroom_command,
     content_manifest,
@@ -20,6 +26,7 @@ from backend.api.showroom import (
     hub,
     submit_showroom_review,
 )
+from backend.api.screens import _load_all as load_screen_configs
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
 
 
@@ -124,6 +131,69 @@ def test_content_contract_covers_all_screens_and_ipd() -> None:
     assert {f"screen-{index:02d}" for index in range(1, 10)} <= screen_ids
     assert len(content_manifest["ipd_phases"]) == 6
     assert all(phase["outputs"] for phase in content_manifest["ipd_phases"])
+    assert "default_session" not in content_manifest
+    assert "换模" not in str(content_manifest.get("artifacts", {}))
+
+
+def test_screen_003_bootstrap_contract_uses_hermes_demand_clinic() -> None:
+    screen = load_screen_configs()["screen-03"]
+
+    assert screen["transport"] == "hermes-gateway"
+    assert screen["skill_command"] == "solution-consultant-persona"
+    assert screen["station"] == "demand-clinic"
+    assert "禁止迎宾" in screen["station_context"]
+    assert screen["data_bindings"][1]["source"] == "/api/ws"
+
+
+def test_new_showroom_session_has_no_seed_business_data() -> None:
+    data = _initial_session_data("3")
+
+    assert data["messages"] == []
+    assert data["demand"]["completeness"] == 0
+    assert data["demand"]["core_problem"] == ""
+    assert data["insight"] == {}
+    assert data["prototype"] == {}
+    assert data["artifacts"] == {}
+
+
+def test_exact_legacy_seed_is_removed_without_deleting_real_messages() -> None:
+    real_message = {
+        "role": "user",
+        "content": "这是用户后来补充的真实问题",
+        "created_at": "2026-08-19T10:00:00+08:00",
+    }
+    migrated, changed = _migrate_legacy_session_data(
+        {
+            "role": "业务负责人",
+            "messages": [*LEGACY_MESSAGES, real_message],
+            "demand": LEGACY_DEMAND,
+            "insight": LEGACY_INSIGHT,
+            "prototype": LEGACY_PROTOTYPE,
+        }
+    )
+
+    assert changed is True
+    assert migrated["messages"] == [real_message]
+    assert migrated["demand"]["completeness"] == 0
+    assert migrated["insight"] == {}
+    assert migrated["prototype"] == {}
+
+
+def test_modified_legacy_business_data_is_preserved() -> None:
+    modified_demand = {**LEGACY_DEMAND, "core_problem": "用户已经修改的真实问题"}
+    migrated, _ = _migrate_legacy_session_data(
+        {
+            "messages": [{**LEGACY_MESSAGES[0], "created_at": "2026-08-19T10:00:00Z"}],
+            "demand": modified_demand,
+            "insight": {**LEGACY_INSIGHT, "title": "用户确认后的洞察"},
+            "prototype": {**LEGACY_PROTOTYPE, "title": "用户修改后的原型"},
+        }
+    )
+
+    assert migrated["messages"][0]["created_at"]
+    assert migrated["demand"] == modified_demand
+    assert migrated["insight"]["title"] == "用户确认后的洞察"
+    assert migrated["prototype"]["title"] == "用户修改后的原型"
 
 
 def test_session_demand_insight_and_ipd_are_persisted(monkeypatch) -> None:
