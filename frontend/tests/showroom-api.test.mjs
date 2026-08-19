@@ -237,7 +237,13 @@ test('insight revisions and confirmation use concurrency metadata', async () => 
     return { session: api.session, revision: { revision_id: 'revision-1' } };
   };
 
-  await api.extractInsightRevision('machine block');
+  await api.extractInsightRevision('machine block', {
+    userInstruction: '把这段回填到市场分析',
+    targetSection: 'concept-market',
+    selectedText: '待修订文本',
+    expectedRevision: true,
+    requestId: 'request-1',
+  });
   await api.applyInsightRevision('revision-1');
   await api.confirmInsight();
 
@@ -252,6 +258,11 @@ test('insight revisions and confirmation use concurrency metadata', async () => 
     demand_hash: 'hash-1',
     base_version: 'V0.2',
     content: 'machine block',
+    user_instruction: '把这段回填到市场分析',
+    target_section: 'concept-market',
+    selected_text: '待修订文本',
+    expected_revision: true,
+    request_id: 'request-1',
   });
 });
 

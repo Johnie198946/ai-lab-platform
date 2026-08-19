@@ -581,22 +581,77 @@ def test_insight_revision_preview_apply_and_human_confirmation(monkeypatch) -> N
             "review-flow", job["job_id"], InsightCompleteRequest(content=""), payload()
         )
         assert completed["session"]["data"]["insight_review"]["version"] == "V0.1"
+        explanation = await extract_showroom_insight_revision(
+            "review-flow",
+            InsightRevisionExtractionRequest(
+                content="这是一段普通解释",
+                job_id=job["job_id"],
+                demand_hash=job["source_hash"],
+                base_version="V0.1",
+                user_instruction="这个判断的依据是什么？",
+                request_id="request-explain",
+            ),
+            payload(),
+        )
+        assert explanation["result_type"] == "explanation"
+        repair = await extract_showroom_insight_revision(
+            "review-flow",
+            InsightRevisionExtractionRequest(
+                content="我会把结论回填到报告",
+                job_id=job["job_id"],
+                demand_hash=job["source_hash"],
+                base_version="V0.1",
+                user_instruction="把这个回填进去",
+                target_section="insight-summary",
+                expected_revision=True,
+                request_id="request-repair",
+            ),
+            payload(),
+        )
+        assert repair["result_type"] == "repair_required"
         revision_content = (
             '<!-- AI_LAB_INSIGHT_REVISION_V1 '
-            f'{{"job_id":"{job["job_id"]}","demand_hash":"{job["source_hash"]}","base_version":"V0.1","changes":[{{"field":"judgment","after":"有条件接纳","reason":"措辞更准确"}}]}} '
+            f'{{"request_id":"request-backfill","job_id":"{job["job_id"]}","demand_hash":"{job["source_hash"]}","base_version":"V0.1","target_section":"insight-summary","changes":[{{"field":"judgment","after":"有条件接纳","reason":"措辞更准确"}}]}} '
             'AI_LAB_INSIGHT_REVISION_V1 -->'
         )
         extracted = await extract_showroom_insight_revision(
             "review-flow",
-            InsightRevisionExtractionRequest(content=revision_content, job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.1"),
+            InsightRevisionExtractionRequest(
+                content=revision_content,
+                job_id=job["job_id"],
+                demand_hash=job["source_hash"],
+                base_version="V0.1",
+                user_instruction="把结论回填到报告",
+                target_section="insight-summary",
+                expected_revision=True,
+                request_id="request-backfill",
+            ),
             payload(),
         )
+        assert extracted["result_type"] == "revision_ready"
+        assert extracted["revision"]["target_section"] == "insight-summary"
         applied = await apply_showroom_insight_revision(
             "review-flow", extracted["revision"]["revision_id"],
             InsightMutationRequest(job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.1"),
             payload(),
         )
         assert applied["session"]["data"]["insight"]["judgment"] == "有条件接纳"
+        assert applied["version"] == "V0.2"
+        assert applied["changed_fields"] == ["judgment"]
+        assert "insight-summary" in applied["affected_sections"]
+        duplicate_apply = await apply_showroom_insight_revision(
+            "review-flow",
+            extracted["revision"]["revision_id"],
+            InsightMutationRequest(
+                job_id=job["job_id"],
+                demand_hash=job["source_hash"],
+                base_version="V0.1",
+            ),
+            payload(),
+        )
+        assert duplicate_apply["unchanged"] is True
+        assert duplicate_apply["version"] == "V0.2"
+        assert duplicate_apply["changed_fields"] == ["judgment"]
         frozen = await confirm_showroom_insight(
             "review-flow",
             InsightMutationRequest(job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.2"),

@@ -844,11 +844,22 @@
       };
     }
 
-    async extractInsightRevision(content) {
+    async extractInsightRevision(content, context = {}) {
       const body = this.insightMutationBody();
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/revisions/extract`,
-        { method: "POST", body: { ...body, content } },
+        {
+          method: "POST",
+          body: {
+            ...body,
+            content,
+            user_instruction: String(context.userInstruction || ""),
+            target_section: String(context.targetSection || ""),
+            selected_text: String(context.selectedText || "").slice(0, 4000),
+            expected_revision: Boolean(context.expectedRevision),
+            request_id: String(context.requestId || ""),
+          },
+        },
       );
       if (result?.session) {
         this.session = result.session;

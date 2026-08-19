@@ -61,6 +61,7 @@ from backend.services.showroom_insight_review import (
     create_revision,
     empty_insight_review,
     extract_revision_protocol,
+    looks_like_revision_intent,
     next_draft_version,
     normalize_review,
     reopen_version,
@@ -161,6 +162,12 @@ class InsightRevisionExtractionRequest(BaseModel):
     job_id: str = Field(..., min_length=4, max_length=120)
     demand_hash: str = Field(..., min_length=16, max_length=128)
     base_version: str = Field(..., min_length=3, max_length=40)
+    epoch: int = Field(default=0, ge=0)
+    user_instruction: str = Field(default="", max_length=12_000)
+    target_section: str = Field(default="", max_length=120)
+    selected_text: str = Field(default="", max_length=4_000)
+    expected_revision: bool = False
+    request_id: str = Field(default="", max_length=160)
 
 
 class InsightMutationRequest(BaseModel):
@@ -1745,7 +1752,12 @@ def _validate_insight_mutation(
         raise HTTPException(status_code=409, detail="展厅场次已切换")
 
 
-async def _broadcast_insight_event(event_type: str, session_id: str, data: dict[str, Any]) -> None:
+async def _broadcast_insight_event(
+    event_type: str,
+    session_id: str,
+    data: dict[str, Any],
+    **details: Any,
+) -> None:
     job = data.get("insight_job") or {}
     review = data.get("insight_review") or {}
     await hub.broadcast(
@@ -1757,6 +1769,7 @@ async def _broadcast_insight_event(event_type: str, session_id: str, data: dict[
             "demand_hash": review.get("demand_hash", ""),
             "base_version": review.get("version", ""),
             "insight_review": review,
+            **details,
         }
     )
 
@@ -1779,6 +1792,7 @@ async def extract_showroom_insight_revision(
         review = normalize_review(data.get("insight_review"), demand=demand, job=job)
         _validate_insight_mutation(
             InsightMutationRequest(
+                epoch=body.epoch,
                 job_id=body.job_id,
                 demand_hash=body.demand_hash,
                 base_version=body.base_version,
@@ -1789,12 +1803,51 @@ async def extract_showroom_insight_revision(
         )
         if review.get("status") == "confirmed":
             raise HTTPException(status_code=409, detail="已确认版本已锁定，请先发起新版本")
+        expected_revision = body.expected_revision or looks_like_revision_intent(
+            body.user_instruction
+        )
+        if body.request_id:
+            existing_revision = next(
+                (
+                    item
+                    for item in review.get("revisions") or []
+                    if item.get("request_id") == body.request_id
+                ),
+                None,
+            )
+            if existing_revision:
+                pending = existing_revision.get("status") == "pending"
+                return {
+                    "result_type": "revision_ready" if pending else "explanation",
+                    "revision": existing_revision if pending else None,
+                    "session": _session_payload(row, session_id, row.slot),
+                    "message": (
+                        "已恢复同一轮回填草案"
+                        if pending
+                        else "同一轮回填已处理，不重复写入"
+                    ),
+                }
         protocol = extract_revision_protocol(body.content)
         if not protocol:
-            raise HTTPException(status_code=422, detail="未识别到结构化修订建议")
+            return {
+                "result_type": "repair_required" if expected_revision else "explanation",
+                "revision": None,
+                "session": _session_payload(row, session_id, row.slot),
+                "message": (
+                    "AI已给出说明，但尚未形成可回填草案"
+                    if expected_revision
+                    else "本轮为解释，不修改报告"
+                ),
+            }
         try:
             revision = create_revision(
-                protocol, review=review, insight=insight, job=job, demand=demand
+                protocol,
+                review=review,
+                insight=insight,
+                job=job,
+                demand=demand,
+                target_section=body.target_section,
+                request_id=body.request_id,
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -1814,7 +1867,12 @@ async def extract_showroom_insight_revision(
         await database.refresh(row)
         session_payload = _session_payload(row, session_id, row.slot)
     await _broadcast_insight_event("INSIGHT_REVISION_READY", session_id, data)
-    return {"revision": revision, "session": session_payload}
+    return {
+        "result_type": "revision_ready",
+        "revision": revision,
+        "session": session_payload,
+        "message": "回填草案已生成，请确认差异",
+    }
 
 
 @router.post("/sessions/{session_id}/insight/revisions/{revision_id}/apply")
@@ -1832,11 +1890,31 @@ async def apply_showroom_insight_revision(
         data = copy.deepcopy(row.data or {})
         job = data.get("insight_job") or {}
         review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
-        _validate_insight_mutation(body, data=data, job=job, review=review)
         revision = next(
             (item for item in review.get("revisions") or [] if item.get("revision_id") == revision_id),
             None,
         )
+        if revision and revision.get("status") == "applied":
+            changed_fields = [
+                str(change.get("field") or "")
+                for change in revision.get("changes") or []
+            ]
+            affected_sections = list(revision.get("affected_sections") or [])
+            if (
+                revision.get("target_section")
+                and revision["target_section"] not in affected_sections
+            ):
+                affected_sections.insert(0, revision["target_section"])
+            return {
+                "unchanged": True,
+                "revision": revision,
+                "session": _session_payload(row, session_id, row.slot),
+                "changed_fields": changed_fields,
+                "affected_sections": affected_sections,
+                "version": review.get("version", ""),
+                "coverage": review.get("coverage", {}),
+            }
+        _validate_insight_mutation(body, data=data, job=job, review=review)
         if not revision or revision.get("status") != "pending":
             raise HTTPException(status_code=409, detail="修订草案已失效")
         if review.get("pending_revision_id") != revision_id:
@@ -1858,8 +1936,28 @@ async def apply_showroom_insight_revision(
         await database.commit()
         await database.refresh(row)
         session_payload = _session_payload(row, session_id, row.slot)
-    await _broadcast_insight_event("INSIGHT_REVISION_APPLIED", session_id, data)
-    return {"revision": revision, "session": session_payload}
+    changed_fields = [str(change.get("field") or "") for change in revision.get("changes") or []]
+    affected_sections = list(revision.get("affected_sections") or [])
+    if revision.get("target_section") and revision["target_section"] not in affected_sections:
+        affected_sections.insert(0, revision["target_section"])
+    await _broadcast_insight_event(
+        "INSIGHT_REVISION_APPLIED",
+        session_id,
+        data,
+        revision_id=revision_id,
+        changed_fields=changed_fields,
+        affected_sections=affected_sections,
+        version=review.get("version", ""),
+        coverage=review.get("coverage", {}),
+    )
+    return {
+        "revision": revision,
+        "session": session_payload,
+        "changed_fields": changed_fields,
+        "affected_sections": affected_sections,
+        "version": review.get("version", ""),
+        "coverage": review.get("coverage", {}),
+    }
 
 
 @router.post("/sessions/{session_id}/insight/revisions/{revision_id}/discard")

@@ -58,6 +58,10 @@ const state = {
   insightSelectedSection: 'summary',
   insightSelectedText: '',
   insightPendingRevision: null,
+  insightActiveRequest: null,
+  insightRevisionError: null,
+  insightRevisionApplying: false,
+  insightHighlightedSections: [],
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
@@ -65,6 +69,18 @@ const demandExtractionInFlight = new Set();
 const insightEventIds = new Set();
 let insightProgressQueue = Promise.resolve();
 let insightAutoTimer = null;
+
+const INSIGHT_REVISION_INTENT = /修改|修正|调整|改为|改成|补齐|补充到|删除|新增|更新|回填|填入|写入|同步|替换|应用到(?:本章|报告)/;
+const INSIGHT_FIELD_SECTIONS = {
+  judgment: 'insight-summary', gap: 'insight-summary', recommendation: 'insight-summary',
+  'concept.customer_user': 'concept-customer', 'concept.market': 'concept-market',
+  'concept.competition': 'concept-competition', 'concept.technology': 'concept-technology',
+  'concept.strategic_fit': 'concept-strategy', 'concept.capability_mapping': 'concept-capability',
+  'concept.assessment': 'concept-assessment', 'concept.special_checks': 'concept-checks',
+  'concept.knowledge_status': 'concept-knowledge', evidence: 'concept-knowledge', sources: 'concept-knowledge',
+  'concept.verdict': 'concept-verdict', 'concept.initial_product_package': 'concept-package',
+  'concept.demo_slice': 'concept-package', ipd_handoff: 'concept-package',
+};
 
 function isStaticDisplayView(view = state.view) {
   return STATIC_DISPLAY_VIEWS.has(view);
@@ -750,29 +766,44 @@ async function beginRequirementAnalysis(job = currentInsightJob()) {
   });
 }
 
-function insightRevisionBlock(content) {
-  const match = String(content || '').match(/<!--\s*AI_LAB_INSIGHT_REVISION_V1\s*(\{[\s\S]*?\})\s*AI_LAB_INSIGHT_REVISION_V1\s*-->/i);
-  if (!match) return null;
-  try { return JSON.parse(match[1]); } catch { return null; }
-}
-
 function insightAssistantSkill(section, question) {
   if (/市场|竞争|产业|政策|技术|证据|来源|相反/.test(question) || ['concept-market', 'concept-competition', 'concept-technology'].includes(section)) return 'ipd-01-market-insight';
   if (/修改|修正|接纳|评审|产品|能力|专项|风险|收益|优先级|001|缺什么/.test(question) || ['concept-strategy', 'concept-capability', 'concept-assessment', 'concept-checks', 'concept-verdict', 'concept-package'].includes(section)) return 'ipd-02-requirement-analysis';
   return 'solution-consultant-persona';
 }
 
-function insightAssistantPrompt(question) {
+function insightAssistantPrompt(question, request = {}) {
   const insight = currentInsight();
   const review = currentInsightReview();
   const job = currentInsightJob();
-  const section = state.insightSelectedSection || 'summary';
-  const selected = state.insightSelectedText;
-  const wantsRevision = /修改|修正|调整|改为|补齐|删除|新增|更新/.test(question);
-  return `[AI_LAB_CONTROL] 当前处于004 IPD需求洞察共创台。只解释或修订洞察报告，不修改客户已确认需求，不输出完整建设方案。\n报告版本：${review.version || 'V0.1'}\n任务ID：${job.job_id || ''}\n需求指纹：${review.demand_hash || job.source_hash || ''}\n当前章节：${section}\n选中内容：${selected || '无'}\n用户问题：${question}\n报告快照：${JSON.stringify(insight).slice(0, 50000)}\n${wantsRevision ? `这是修改请求。先用自然语言说明理解，再输出且只输出一个隐藏机器块：<!-- AI_LAB_INSIGHT_REVISION_V1 {"schema_version":"1.0","job_id":"${job.job_id || ''}","demand_hash":"${review.demand_hash || job.source_hash || ''}","base_version":"${review.version || 'V0.1'}","target_section":"${section}","intent":"...","changes":[{"field":"已登记字段","after":"新值","reason":"..."}],"affected_sections":[],"warnings":[]} AI_LAB_INSIGHT_REVISION_V1 -->。字段只能是judgment/gap/recommendation/causes/impacts/evidence/sources/ipd_handoff或concept.customer_user/market/competition/technology/strategic_fit/capability_mapping/assessment/special_checks/knowledge_status/verdict/initial_product_package/demo_slice。客户事实有误时不要生成修订块，要明确建议退回003。` : '这是解释或追问，不要输出修订机器块。回答必须区分事实、推断、假设和TBD；引用外部事实时给出来源、日期与置信度。'}`;
+  const section = request.targetSection || state.insightSelectedSection || 'summary';
+  const selected = request.selectedText ?? state.insightSelectedText;
+  const expectedRevision = Boolean(request.expectedRevision);
+  return `[AI_LAB_CONTROL] 当前处于004 IPD需求洞察共创台。只解释或修订洞察报告，不修改客户已确认需求，不输出完整建设方案。\n报告版本：${review.version || 'V0.1'}\n任务ID：${job.job_id || ''}\n需求指纹：${review.demand_hash || job.source_hash || ''}\n请求ID：${request.requestId || ''}\n当前章节：${section}\n选中内容：${selected || '无'}\n用户问题：${question}\n报告快照：${JSON.stringify(insight).slice(0, 50000)}\n请先判断用户是在解释/追问，还是要求把内容回填、写入、同步、替换或修改到报告。普通解释只输出可见回答，不输出机器块。涉及任何报告变更时，先用自然语言说明理解，再附带且只附带一个隐藏机器块：<!-- AI_LAB_INSIGHT_REVISION_V1 {"schema_version":"1.0","request_id":"${request.requestId || ''}","job_id":"${job.job_id || ''}","demand_hash":"${review.demand_hash || job.source_hash || ''}","base_version":"${review.version || 'V0.1'}","target_section":"${section}","intent":"...","changes":[{"field":"已登记字段","after":"新值","reason":"..."}],"affected_sections":["${section}"],"warnings":[]} AI_LAB_INSIGHT_REVISION_V1 -->。${expectedRevision ? '本轮已由用户明确指定为回填请求，必须生成机器块。' : ''}字段只能是judgment/gap/recommendation/causes/impacts/evidence/sources/ipd_handoff或concept.customer_user/market/competition/technology/strategic_fit/capability_mapping/assessment/special_checks/knowledge_status/verdict/initial_product_package/demo_slice。客户事实有误时不要生成修订块，要明确建议退回003。回答必须区分事实、推断、假设和TBD；引用外部事实时给出来源、日期与置信度。`;
 }
 
-async function sendInsightAssistant(question) {
+function insightRevisionRepairPrompt(request) {
+  const insight = currentInsight();
+  const review = currentInsightReview();
+  const job = currentInsightJob();
+  return `[AI_LAB_CONTROL] 修复上一轮004回填协议。不要重复解释，不要输出任何可见文字，只输出一个完整JSON机器块。\n用户原始要求：${request.userInstruction}\n目标章节：${request.targetSection}\n选中内容：${request.selectedText || '无'}\n请求ID：${request.requestId}\n报告版本：${review.version || request.baseVersion}\n任务ID：${job.job_id || request.jobId}\n需求指纹：${review.demand_hash || job.source_hash || request.demandHash}\n当前报告：${JSON.stringify(insight).slice(0, 50000)}\n输出：<!-- AI_LAB_INSIGHT_REVISION_V1 {"schema_version":"1.0","request_id":"${request.requestId}","job_id":"${job.job_id || request.jobId}","demand_hash":"${review.demand_hash || job.source_hash || request.demandHash}","base_version":"${review.version || request.baseVersion}","target_section":"${request.targetSection}","intent":"...","changes":[{"field":"已登记字段","after":"新值","reason":"..."}],"affected_sections":["${request.targetSection}"],"warnings":[]} AI_LAB_INSIGHT_REVISION_V1 -->`;
+}
+
+async function repairInsightRevision(request, { manual = false } = {}) {
+  const nextRequest = { ...request, repairAttempt: manual ? 1 : Number(request.repairAttempt || 0) + 1 };
+  state.insightActiveRequest = nextRequest;
+  state.insightRevisionError = null;
+  state.insightAssistantBusy = true;
+  state.insightAssistantStatus = manual ? '正在重新生成回填草案' : '正在修复回填数据格式';
+  state.streamingReply = '';
+  render('refresh');
+  const skill = insightAssistantSkill(nextRequest.targetSection, nextRequest.userInstruction);
+  await window.showroomApi.submitHermesSkill(insightRevisionRepairPrompt(nextRequest), skill, {
+    stationContext: '004洞察共创台协议修复：只补充结构化修订块，不重复可见回答。',
+  });
+}
+
+async function sendInsightAssistant(question, options = {}) {
   const value = String(question || '').trim();
   if (!value || state.insightAssistantBusy) return;
   const review = currentInsightReview();
@@ -780,22 +811,112 @@ async function sendInsightAssistant(question) {
     showToast('该版本已确认锁定，请先发起新版本');
     return;
   }
+  const expectedRevision = Boolean(options.forceRevision) || INSIGHT_REVISION_INTENT.test(value);
+  const job = currentInsightJob();
+  const request = {
+    requestId: `insight-request-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    userInstruction: value,
+    targetSection: state.insightSelectedSection || 'summary',
+    selectedText: state.insightSelectedText || '',
+    expectedRevision,
+    repairAttempt: 0,
+    baseVersion: review.version || 'V0.1',
+    jobId: job.job_id || '',
+    demandHash: review.demand_hash || job.source_hash || '',
+  };
+  state.insightActiveRequest = request;
+  state.insightRevisionError = null;
   state.insightAssistantMessages.push({ role: 'user', content: value });
   state.insightAssistantBusy = true;
-  state.insightAssistantStatus = /证据|来源|核验|相反/.test(value) ? '正在核验证据' : /修改|修正|调整|补齐/.test(value) ? '正在形成修订建议' : '正在读取报告';
+  state.insightAssistantStatus = /证据|来源|核验|相反/.test(value) ? '正在核验证据' : expectedRevision ? '正在形成回填草案' : '正在读取报告';
   state.streamingReply = '';
   render('refresh');
   const skill = insightAssistantSkill(state.insightSelectedSection, value);
   try {
-    await window.showroomApi.submitHermesSkill(insightAssistantPrompt(value), skill, {
+    await window.showroomApi.submitHermesSkill(insightAssistantPrompt(value, request), skill, {
       stationContext: '004洞察共创台：IPD-01负责市场事实，IPD-02负责需求评审，V1.7只负责编排解释。所有修改先生成差异预览。',
     });
   } catch (error) {
     state.insightAssistantBusy = false;
     state.insightAssistantStatus = '';
+    state.insightActiveRequest = null;
     showToast(`洞察助手暂不可用：${error.message}`);
     render('refresh');
   }
+}
+
+async function completeInsightAssistantRequest(rawAnswer, visibleAnswer) {
+  const request = state.insightActiveRequest;
+  if (!request) {
+    state.insightAssistantBusy = false;
+    state.insightAssistantStatus = '';
+    if (visibleAnswer) state.insightAssistantMessages.push({ role: 'assistant', content: visibleAnswer });
+    render('refresh');
+    return;
+  }
+  if (visibleAnswer && !request.repairAttempt) {
+    state.insightAssistantMessages.push({ role: 'assistant', content: visibleAnswer });
+  }
+  state.streamingReply = '';
+  state.insightAssistantStatus = request.expectedRevision ? '正在校验回填草案' : '正在确认本轮处理结果';
+  render('refresh');
+  try {
+    const result = await window.showroomApi.extractInsightRevision(rawAnswer, request);
+    if (result.result_type === 'revision_ready' && result.revision) {
+      state.session = result.session;
+      state.insightPendingRevision = result.revision;
+      state.insightRevisionError = null;
+      state.insightActiveRequest = null;
+      state.insightAssistantBusy = false;
+      state.insightAssistantStatus = '';
+      state.hermesStatus = 'online';
+      showToast('回填草案已生成，请确认差异后应用');
+      render('refresh');
+      return;
+    }
+    if (result.result_type === 'repair_required') {
+      if (Number(request.repairAttempt || 0) < 1) {
+        await repairInsightRevision(request);
+        return;
+      }
+      state.insightRevisionError = {
+        message: result.message || 'AI已给出说明，但尚未形成可回填草案',
+        request,
+      };
+    }
+    state.insightAssistantBusy = false;
+    state.insightAssistantStatus = '';
+    state.insightActiveRequest = result.result_type === 'repair_required' ? request : null;
+    state.hermesStatus = 'online';
+    render('refresh');
+  } catch (error) {
+    state.insightAssistantBusy = false;
+    state.insightAssistantStatus = '';
+    state.insightRevisionError = { message: error.message, request };
+    state.insightActiveRequest = request;
+    showToast(`回填草案校验失败：${error.message}`);
+    render('refresh');
+  }
+}
+
+function focusAppliedInsightSections(revision, result) {
+  const sections = new Set(result?.affected_sections || []);
+  if (revision?.target_section) sections.add(revision.target_section);
+  (result?.changed_fields || revision?.changes?.map((change) => change.field) || [])
+    .map((field) => INSIGHT_FIELD_SECTIONS[field])
+    .filter(Boolean)
+    .forEach((section) => sections.add(section));
+  const validSections = [...sections].filter((section) => document.getElementById(section));
+  state.insightHighlightedSections = validSections;
+  render('refresh');
+  window.requestAnimationFrame(() => {
+    const target = document.getElementById(validSections[0]);
+    target?.scrollIntoView({ behavior: motionSystem.reduceMotion ? 'auto' : 'smooth', block: 'center' });
+    window.setTimeout(() => {
+      validSections.forEach((section) => document.getElementById(section)?.classList.remove('insight-just-filled'));
+      state.insightHighlightedSections = [];
+    }, 2400);
+  });
 }
 
 async function beginInsightFlow(demand) {
@@ -1284,7 +1405,8 @@ function insightValue(value, empty = '待补充') {
 }
 
 function insightConceptSection(id, number, eyebrow, title, value) {
-  return `<section id="${id}" class="insight-report-section concept-section" data-report-section="${id}"><div class="report-section-title"><span>${number} · ${eyebrow}</span><h2>${escapeHtml(title)}</h2><button data-insight-ask-section="${id}">与AI讨论本章</button></div><div class="concept-card">${insightValue(value)}</div></section>`;
+  const highlighted = state.insightHighlightedSections.includes(id);
+  return `<section id="${id}" class="insight-report-section concept-section ${highlighted ? 'insight-just-filled' : ''}" data-report-section="${id}"><div class="report-section-title"><span>${number} · ${eyebrow}</span><h2>${escapeHtml(title)}</h2>${highlighted ? '<em class="insight-filled-badge">已回填</em>' : ''}<button data-insight-ask-section="${id}">与AI讨论本章</button></div><div class="concept-card">${insightValue(value)}</div></section>`;
 }
 
 function currentInsightReview() {
@@ -1295,9 +1417,10 @@ function insightAssistantView(review) {
   const messages = state.insightAssistantMessages.slice(-8);
   const revision = state.insightPendingRevision || (review.revisions || []).find((item) => item.revision_id === review.pending_revision_id);
   return `<aside class="insight-assistant" aria-label="洞察共创助手"><header><div><span>INSIGHT COPILOT</span><h3>洞察共创助手</h3></div><b class="${state.insightAssistantBusy ? 'working' : ''}">${state.insightAssistantBusy ? '工作中' : '可对话'}</b></header>
-    ${state.insightSelectedText ? `<div class="assistant-context"><span>已选中报告内容</span><p>${escapeHtml(state.insightSelectedText.slice(0, 500))}</p><button data-insight-clear-selection>取消选中</button></div>` : ''}
+    ${state.insightSelectedText ? `<div class="assistant-context"><span>已选中报告内容</span><p>${escapeHtml(state.insightSelectedText.slice(0, 500))}</p><div><button data-insight-context-action="explain">解释</button><button data-insight-context-action="ask">追问</button><button data-insight-context-action="revise">修改本段</button><button data-insight-context-action="verify">核验证据</button><button data-insight-clear-selection>取消</button></div></div>` : ''}
     <div class="insight-assistant-log" aria-live="polite">${messages.length ? messages.map((message) => `<div class="assistant-message ${message.role}"><span>${message.role === 'user' ? '你' : 'AI'}</span><p>${escapeHtml(message.content)}</p></div>`).join('') : '<div class="assistant-welcome"><b>可以直接追问，也可以要求修改。</b><p>修改不会直接覆盖报告，AI会先给出差异预览。</p></div>'}${state.pendingClarify && state.insightAssistantBusy ? `<div class="assistant-clarify"><b>${escapeHtml(state.pendingClarify.question || '请补充选择')}</b>${(state.pendingClarify.choices || []).map((choice) => `<button data-insight-clarify="${escapeHtml(choice)}">${escapeHtml(choice)}</button>`).join('')}</div>` : ''}${state.insightAssistantBusy ? `<div class="assistant-working"><i></i><span>${escapeHtml(state.insightAssistantStatus || '正在读取报告')}</span><p>${escapeHtml(state.streamingReply)}</p></div>` : ''}</div>
-    ${revision ? `<section class="revision-preview"><header><span>REVISION PREVIEW</span><h4>修订草案 · 尚未应用</h4></header>${(revision.changes || []).map((change) => `<div><b>${escapeHtml(change.field)}</b><del>${escapeHtml(typeof change.before === 'object' ? JSON.stringify(change.before) : String(change.before ?? ''))}</del><ins>${escapeHtml(typeof change.after === 'object' ? JSON.stringify(change.after) : String(change.after ?? ''))}</ins></div>`).join('')}<footer><button data-revision-discard>放弃修改</button><button data-revision-continue>继续追问</button><button data-revision-apply>应用修改</button></footer></section>` : ''}
+    ${state.insightRevisionError ? `<section class="revision-error" role="alert"><b>${escapeHtml(state.insightRevisionError.message)}</b><p>报告尚未改变。你可以重新生成结构化回填草案。</p><button data-revision-repair>重新生成回填草案</button></section>` : ''}
+    ${revision ? `<section class="revision-preview" aria-label="待回填内容"><header><span>BACKFILL PREVIEW</span><h4>待回填内容 · 尚未应用</h4><p>目标章节：${escapeHtml(revision.target_section || '当前章节')}</p></header>${(revision.changes || []).map((change) => `<div><b>${escapeHtml(change.field)}</b><del><small>原内容</small>${escapeHtml(typeof change.before === 'object' ? JSON.stringify(change.before) : String(change.before ?? ''))}</del><ins><small>新内容</small>${escapeHtml(typeof change.after === 'object' ? JSON.stringify(change.after) : String(change.after ?? ''))}</ins></div>`).join('')}${(revision.affected_sections || []).length ? `<p class="revision-impact">影响章节：${escapeHtml(revision.affected_sections.join('、'))}</p>` : ''}${(revision.warnings || []).length ? `<div class="revision-warnings" role="alert">${revision.warnings.map((warning) => `<span>${escapeHtml(warning)}</span>`).join('')}</div>` : ''}<footer><button data-revision-discard ${state.insightRevisionApplying ? 'disabled' : ''}>放弃</button><button data-revision-continue ${state.insightRevisionApplying ? 'disabled' : ''}>继续追问</button><button data-revision-apply ${state.insightRevisionApplying ? 'disabled' : ''}>${state.insightRevisionApplying ? '正在校验并回填…' : '应用回填到报告'}</button></footer></section>` : ''}
     <div class="assistant-quick"><button data-insight-quick="这个判断依据是什么？">判断依据</button><button data-insight-quick="还有哪些相反证据？">相反证据</button><button data-insight-quick="进入001实践前还缺什么？">还缺什么</button><button data-insight-quick="请补齐IPD概念阶段洞察并给出结构化修订草案。">补齐IPD洞察</button></div>
     <div class="insight-composer"><textarea id="insight-assistant-input" placeholder="追问报告，或说‘把本章的结论改为…’" ${state.insightAssistantBusy ? 'disabled' : ''}></textarea><button ${state.insightAssistantBusy ? 'data-insight-assistant-stop' : 'data-insight-assistant-send'} aria-label="${state.insightAssistantBusy ? '停止生成' : '发送'}">${icon(state.insightAssistantBusy ? 'stop' : 'send')}</button></div></aside>`;
 }
@@ -1324,7 +1447,7 @@ function insightView() {
       <aside class="insight-toc"><span>IPD CONCEPT OUTLINE</span><h3>需求洞察共创台</h3><p>${escapeHtml(review.version || 'V0.1')} · ${Number(coverage.percent || 0)}%覆盖</p><nav>${chapters.map(([id, number, label], index) => `<button class="${index === 0 ? 'active' : ''}" data-insight-section="${id}"><i>${number}</i>${label}</button>`).join('')}</nav><div><span>人机职责</span><b>AI调研与修订，人确认结论</b></div></aside>
       <article class="insight-report-page" id="insight-report-document" aria-label="IPD概念阶段需求洞察报告">
         ${live ? `<div class="insight-live-banner" aria-live="polite"><i></i><div><b>${escapeHtml(insightStageLabels[job.active_stage] || 'AI项目组正在继续工作')}</b><span>章节完成后会实时回填；你现在也可以边看边追问。</span></div><button data-view="screen-03-team">查看项目组</button></div>` : ''}
-        <header id="insight-summary" class="insight-cover" data-report-section="insight-summary"><div><span>IPD CONCEPT INSIGHT · ${escapeHtml(review.version || 'V0.1')}</span><h1>${escapeHtml(insight.title || demand.core_problem || '需求洞察报告')}</h1><p>${escapeHtml(insight.judgment || '正在把已确认需求转化为产品原型前的IPD洞察与评审输入。')}</p></div><div class="coverage-ring" style="--coverage:${Number(coverage.percent || 0)}"><b>${Number(coverage.percent || 0)}%</b><span>IPD覆盖度</span></div></header>
+        <header id="insight-summary" class="insight-cover ${state.insightHighlightedSections.includes('insight-summary') ? 'insight-just-filled' : ''}" data-report-section="insight-summary"><div><span>IPD CONCEPT INSIGHT · ${escapeHtml(review.version || 'V0.1')}</span><h1>${escapeHtml(insight.title || demand.core_problem || '需求洞察报告')}</h1><p>${escapeHtml(insight.judgment || '正在把已确认需求转化为产品原型前的IPD洞察与评审输入。')}</p></div><div class="coverage-ring" style="--coverage:${Number(coverage.percent || 0)}"><b>${Number(coverage.percent || 0)}%</b><span>IPD覆盖度</span></div></header>
         <section class="insight-summary-grid"><div><span>核心判断</span><b>${escapeHtml(insight.judgment || '待形成')}</b></div><div><span>目标差距</span><b>${escapeHtml(insight.gap || 'TBD')}</b></div><div><span>采纳建议</span><b>${escapeHtml(concept.verdict?.decision || insight.recommendation || '待评审')}</b></div></section>
         ${insightConceptSection('concept-customer', '02', 'CUSTOMER & VALUE', '客户、用户、场景与业务价值', concept.customer_user)}
         ${insightConceptSection('concept-market', '03', 'MARKET & POLICY', '产业趋势、市场空间与政策动态', concept.market)}
@@ -1336,7 +1459,7 @@ function insightView() {
         ${insightConceptSection('concept-checks', '09', 'SPECIAL CHECKS', '网络安全、可靠可用、节能减排、功能性能', concept.special_checks)}
         ${insightConceptSection('concept-knowledge', '10', 'KNOWLEDGE STATUS', '事实、推断、假设、TBD与明白人访谈', concept.knowledge_status)}
         ${insightConceptSection('concept-verdict', '11', 'REVIEW VERDICT', '需求评审结论', concept.verdict)}
-        <section id="concept-package" class="insight-report-section concept-section" data-report-section="concept-package"><div class="report-section-title"><span>12 · PRODUCT PACKAGE</span><h2>初始产品包与001最小实践切片</h2><button data-insight-ask-section="concept-package">与AI讨论本章</button></div><div class="concept-split"><div><h3>初始产品包</h3>${insightValue(concept.initial_product_package)}</div><div><h3>001实践切片</h3>${insightValue(concept.demo_slice)}</div></div></section>
+        <section id="concept-package" class="insight-report-section concept-section ${state.insightHighlightedSections.includes('concept-package') ? 'insight-just-filled' : ''}" data-report-section="concept-package"><div class="report-section-title"><span>12 · PRODUCT PACKAGE</span><h2>初始产品包与001最小实践切片</h2>${state.insightHighlightedSections.includes('concept-package') ? '<em class="insight-filled-badge">已回填</em>' : ''}<button data-insight-ask-section="concept-package">与AI讨论本章</button></div><div class="concept-split"><div><h3>初始产品包</h3>${insightValue(concept.initial_product_package)}</div><div><h3>001实践切片</h3>${insightValue(concept.demo_slice)}</div></div></section>
         <footer class="insight-report-footer"><b>证据来源</b><span>${(insight.sources || []).length ? (insight.sources || []).slice(0, 12).map((source, index) => `[${index + 1}] ${escapeHtml(source.title || source.path || source.url)}`).join('　') : '暂无可核验来源，不能确认'}</span></footer>
       </article>
       ${insightAssistantView(review)}
@@ -1608,6 +1731,18 @@ function attachScreenActions() {
     state.insightSelectedText = '';
     render('refresh');
   });
+  document.querySelectorAll('[data-insight-context-action]').forEach((button) => button.addEventListener('click', () => {
+    const selected = state.insightSelectedText;
+    const prompts = {
+      explain: '请解释这段内容的业务含义、判断依据和边界。',
+      ask: '请围绕这段内容继续追问，指出还需要客户澄清的问题。',
+      revise: '请根据当前上下文修改这段内容，并回填到本章报告。',
+      verify: '请核验这段内容的证据，区分事实、推断、假设和TBD，并指出相反证据。',
+    };
+    const action = button.dataset.insightContextAction;
+    const prompt = `${prompts[action] || prompts.ask}\n\n已选内容：${selected}`;
+    sendInsightAssistant(prompt, { forceRevision: action === 'revise' });
+  }));
   document.querySelectorAll('[data-insight-quick]').forEach((button) => button.addEventListener('click', () => sendInsightAssistant(button.dataset.insightQuick)));
   document.querySelector('[data-insight-assistant-send]')?.addEventListener('click', () => sendInsightAssistant(document.getElementById('insight-assistant-input')?.value));
   document.getElementById('insight-assistant-input')?.addEventListener('keydown', (event) => {
@@ -1636,15 +1771,24 @@ function attachScreenActions() {
     catch (error) { showToast(`提交澄清失败：${error.message}`); }
   }));
   document.querySelector('[data-revision-apply]')?.addEventListener('click', async () => {
-    const revisionId = state.insightPendingRevision?.revision_id || currentInsightReview().pending_revision_id;
+    const revision = state.insightPendingRevision || (currentInsightReview().revisions || []).find((item) => item.revision_id === currentInsightReview().pending_revision_id);
+    const revisionId = revision?.revision_id;
     if (!revisionId) return;
+    state.insightRevisionApplying = true;
+    render('refresh');
     try {
       const result = await window.showroomApi.applyInsightRevision(revisionId);
       state.session = result.session;
       state.insightPendingRevision = null;
-      showToast('修订已应用，并生成新的草稿版本');
+      state.insightRevisionError = null;
+      state.insightRevisionApplying = false;
+      focusAppliedInsightSections(revision, result);
+      showToast(`已回填到报告，当前版本 ${result.version || currentInsightReview().version}`);
+    } catch (error) {
+      state.insightRevisionApplying = false;
+      showToast(`应用回填失败：${error.message}`);
       render('refresh');
-    } catch (error) { showToast(`应用修订失败：${error.message}`); }
+    }
   });
   document.querySelector('[data-revision-discard]')?.addEventListener('click', async () => {
     const revisionId = state.insightPendingRevision?.revision_id || currentInsightReview().pending_revision_id;
@@ -1653,11 +1797,23 @@ function attachScreenActions() {
       const result = await window.showroomApi.discardInsightRevision(revisionId);
       state.session = result.session;
       state.insightPendingRevision = null;
+      state.insightRevisionError = null;
       showToast('已放弃本次修订，报告未改变');
       render('refresh');
     } catch (error) { showToast(`放弃修订失败：${error.message}`); }
   });
   document.querySelector('[data-revision-continue]')?.addEventListener('click', () => document.getElementById('insight-assistant-input')?.focus());
+  document.querySelector('[data-revision-repair]')?.addEventListener('click', () => {
+    const request = state.insightRevisionError?.request || state.insightActiveRequest;
+    if (!request || state.insightAssistantBusy) return;
+    repairInsightRevision(request, { manual: true }).catch((error) => {
+      state.insightAssistantBusy = false;
+      state.insightAssistantStatus = '';
+      state.insightRevisionError = { message: error.message, request };
+      showToast(`重新生成回填草案失败：${error.message}`);
+      render('refresh');
+    });
+  });
   document.querySelector('[data-insight-confirm]')?.addEventListener('click', async () => {
     try {
       const result = await window.showroomApi.confirmInsight();
@@ -2371,32 +2527,26 @@ window.showroomApi?.on('hermes-event', (event) => {
     const rawAnswer = String(payload.text || '').trim();
     const answer = window.showroomApi.visibleAssistantMessage(rawAnswer);
     if (state.insightAssistantBusy) {
-      state.insightAssistantBusy = false;
-      state.insightAssistantStatus = '';
-      state.streamingReply = '';
       state.avatarSpeaking = false;
       if (payload.status === 'error') {
+        state.insightAssistantBusy = false;
+        state.insightAssistantStatus = '';
+        state.insightActiveRequest = null;
+        state.streamingReply = '';
         state.insightAssistantMessages.push({ role: 'assistant', content: friendlyHermesError(rawAnswer || '洞察助手本轮失败') });
         state.hermesStatus = 'error';
         render('refresh');
         return;
       }
-      if (answer) state.insightAssistantMessages.push({ role: 'assistant', content: answer });
-      const revisionProtocol = insightRevisionBlock(rawAnswer);
-      if (revisionProtocol) {
-        window.showroomApi.extractInsightRevision(rawAnswer).then((result) => {
-          state.session = result.session;
-          state.insightPendingRevision = result.revision;
-          showToast('修订草案已生成，请先查看差异');
-          render('refresh');
-        }).catch((error) => {
-          showToast(`修订草案校验失败：${error.message}`);
-          render('refresh');
-        });
-      } else {
-        state.hermesStatus = 'online';
+      completeInsightAssistantRequest(rawAnswer, answer).catch((error) => {
+        state.insightAssistantBusy = false;
+        state.insightAssistantStatus = '';
+        state.insightRevisionError = {
+          message: error.message || 'AI已给出说明，但尚未形成可回填草案',
+          request: state.insightActiveRequest,
+        };
         render('refresh');
-      }
+      });
       return;
     }
     state.streamingReply = '';

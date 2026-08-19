@@ -2,11 +2,14 @@ import pytest
 
 from backend.services.showroom_insight import demand_fingerprint
 from backend.services.showroom_insight_review import (
+    allowed_fields_for_section,
     apply_revision,
     calculate_insight_coverage,
     create_revision,
     empty_insight_review,
     extract_revision_protocol,
+    looks_like_revision_intent,
+    validate_revision_value,
 )
 
 
@@ -96,3 +99,53 @@ def test_revision_rejects_demand_fact_mutation() -> None:
 def test_revision_machine_block_extracts_without_visible_guessing() -> None:
     content = '<!-- AI_LAB_INSIGHT_REVISION_V1 {"base_version":"V0.1","changes":[]} AI_LAB_INSIGHT_REVISION_V1 -->'
     assert extract_revision_protocol(content)["base_version"] == "V0.1"
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    ["把这个回填进去", "写入本章", "同步到报告", "替换为新结论", "应用到本章"],
+)
+def test_revision_intent_recognizes_natural_backfill_language(instruction: str) -> None:
+    assert looks_like_revision_intent(instruction) is True
+
+
+def test_explanation_is_not_mistaken_for_revision() -> None:
+    assert looks_like_revision_intent("这个判断的依据是什么？") is False
+
+
+def test_revision_is_scoped_to_the_selected_report_section() -> None:
+    review = empty_insight_review()
+    review["demand_hash"] = demand_fingerprint(demand())
+    protocol = {
+        "base_version": "V0.1",
+        "demand_hash": review["demand_hash"],
+        "job_id": "job-1",
+        "changes": [{"field": "concept.verdict", "after": {"decision": "accept"}}],
+    }
+    assert allowed_fields_for_section("concept-market") == {"concept.market", "sources"}
+    with pytest.raises(ValueError, match="不属于当前报告章节"):
+        create_revision(
+            protocol,
+            review=review,
+            insight=complete_insight(),
+            job={"job_id": "job-1"},
+            demand=demand(),
+            target_section="concept-market",
+        )
+
+    with pytest.raises(ValueError, match="未知的报告章节"):
+        create_revision(
+            protocol,
+            review=review,
+            insight=complete_insight(),
+            job={"job_id": "job-1"},
+            demand=demand(),
+            target_section="concept-unknown",
+        )
+
+
+def test_revision_rejects_html_and_invalid_source_schema() -> None:
+    with pytest.raises(ValueError, match="HTML"):
+        validate_revision_value("judgment", "<script>alert(1)</script>")
+    with pytest.raises(ValueError, match="日期和置信度"):
+        validate_revision_value("sources", [{"url": "https://example.com"}])

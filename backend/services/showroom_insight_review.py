@@ -44,6 +44,52 @@ EDITABLE_FIELDS = {
     "concept.demo_slice",
 }
 
+REVISION_INTENT_RE = re.compile(
+    r"修改|修正|调整|改为|改成|补齐|补充到|删除|新增|更新|回填|填入|写入|同步|替换|应用到(?:本章|报告)",
+    re.IGNORECASE,
+)
+
+SECTION_FIELD_MAP: dict[str, set[str]] = {
+    "summary": {"judgment", "gap", "recommendation"},
+    "insight-summary": {"judgment", "gap", "recommendation"},
+    "concept-customer": {"concept.customer_user"},
+    "concept-market": {"concept.market", "sources"},
+    "concept-competition": {"concept.competition", "sources"},
+    "concept-technology": {"concept.technology", "sources"},
+    "concept-strategy": {"concept.strategic_fit"},
+    "concept-capability": {"concept.capability_mapping"},
+    "concept-assessment": {"concept.assessment"},
+    "concept-checks": {"concept.special_checks"},
+    "concept-knowledge": {"concept.knowledge_status", "evidence", "sources"},
+    "concept-verdict": {"concept.verdict", "recommendation"},
+    "concept-package": {"concept.initial_product_package", "concept.demo_slice", "ipd_handoff"},
+}
+
+FIELD_TYPES: dict[str, type | tuple[type, ...]] = {
+    "judgment": str,
+    "gap": str,
+    "recommendation": str,
+    "causes": list,
+    "impacts": list,
+    "evidence": list,
+    "sources": list,
+    "ipd_handoff": dict,
+    "concept.customer_user": dict,
+    "concept.market": dict,
+    "concept.competition": list,
+    "concept.technology": dict,
+    "concept.strategic_fit": dict,
+    "concept.capability_mapping": list,
+    "concept.assessment": dict,
+    "concept.special_checks": dict,
+    "concept.knowledge_status": dict,
+    "concept.verdict": dict,
+    "concept.initial_product_package": dict,
+    "concept.demo_slice": dict,
+}
+
+_HTML_RE = re.compile(r"<\s*/?\s*[a-zA-Z][^>]*>")
+
 
 def empty_insight_review() -> dict[str, Any]:
     return {
@@ -148,6 +194,67 @@ def _clean_json(value: Any, depth: int = 0) -> Any:
     return str(value)[:2_000]
 
 
+def looks_like_revision_intent(value: str) -> bool:
+    return bool(REVISION_INTENT_RE.search(value or ""))
+
+
+def allowed_fields_for_section(section: str) -> set[str]:
+    return set(SECTION_FIELD_MAP.get(str(section or "").strip(), set()))
+
+
+def _contains_html(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(_HTML_RE.search(value))
+    if isinstance(value, list):
+        return any(_contains_html(item) for item in value)
+    if isinstance(value, dict):
+        return any(_contains_html(item) for item in value.values())
+    return False
+
+
+def _validate_sources(value: Any) -> None:
+    if not isinstance(value, list):
+        raise ValueError("来源必须是列表")
+    for source in value:
+        if not isinstance(source, dict):
+            raise ValueError("来源条目格式无效")
+        url = str(source.get("url") or "")
+        if url and not url.startswith(("https://", "http://")):
+            raise ValueError("外部来源必须使用HTTP或HTTPS地址")
+        if url and (not source.get("date") or source.get("confidence") not in {"high", "medium", "low"}):
+            raise ValueError("外部来源必须包含日期和置信度")
+
+
+def validate_revision_value(field: str, value: Any) -> Any:
+    cleaned = _clean_json(value)
+    expected = FIELD_TYPES.get(field)
+    if expected and not isinstance(cleaned, expected):
+        raise ValueError(f"字段 {field} 的数据结构无效")
+    if _contains_html(cleaned):
+        raise ValueError("修订内容不得包含HTML")
+    if field == "sources":
+        _validate_sources(cleaned)
+    elif field == "concept.verdict":
+        decision = str((cleaned or {}).get("decision") or "")
+        if decision and decision not in DECISIONS:
+            raise ValueError("需求评审结论无效")
+    elif field == "concept.special_checks":
+        allowed = {"cyber", "reliability", "energy", "function_performance"}
+        if set((cleaned or {}).keys()) - allowed:
+            raise ValueError("专项检查包含未登记类型")
+        for check in (cleaned or {}).values():
+            if not isinstance(check, dict) or (check.get("status") and check.get("status") not in CHECK_STATES):
+                raise ValueError("专项检查状态无效")
+    elif field == "concept.initial_product_package":
+        if cleaned and not (cleaned.get("scope") and isinstance(cleaned.get("components"), list)):
+            raise ValueError("初始产品包必须包含scope和components")
+    elif field == "concept.demo_slice":
+        required = {"user", "action", "input", "output", "acceptance", "dependencies"}
+        if cleaned and not required.issubset(cleaned):
+            raise ValueError("001实践切片字段不完整")
+    return cleaned
+
+
 def extract_revision_protocol(content: str) -> dict[str, Any] | None:
     matches = list(REVISION_RE.finditer(content or ""))
     if not matches:
@@ -160,7 +267,8 @@ def extract_revision_protocol(content: str) -> dict[str, Any] | None:
 
 
 def create_revision(
-    protocol: dict[str, Any], *, review: dict[str, Any], insight: dict[str, Any], job: dict[str, Any], demand: dict[str, Any]
+    protocol: dict[str, Any], *, review: dict[str, Any], insight: dict[str, Any], job: dict[str, Any], demand: dict[str, Any],
+    target_section: str = "", request_id: str = ""
 ) -> dict[str, Any]:
     base_version = str(protocol.get("base_version") or "")
     if base_version != review.get("version"):
@@ -169,6 +277,10 @@ def create_revision(
         raise ValueError("需求指纹不一致，禁止应用旧需求修订")
     if str(protocol.get("job_id") or "") != str(job.get("job_id") or ""):
         raise ValueError("洞察任务已切换")
+    normalized_section = str(target_section or protocol.get("target_section") or "").strip()[:120]
+    section_fields = allowed_fields_for_section(normalized_section)
+    if normalized_section and not section_fields:
+        raise ValueError("未知的报告章节，禁止生成跨章节修订")
     changes = []
     for change in (protocol.get("changes") or [])[:30]:
         if not isinstance(change, dict):
@@ -176,8 +288,10 @@ def create_revision(
         field = str(change.get("field") or "").strip()
         if field.startswith("demand.") or field not in EDITABLE_FIELDS:
             raise ValueError("修订涉及客户已确认事实，请退回003修改需求")
+        if section_fields and field not in section_fields:
+            raise ValueError("修订字段不属于当前报告章节")
         before = _get_path(insight, field)
-        after = _clean_json(change.get("after"))
+        after = validate_revision_value(field, change.get("after"))
         changes.append({
             "field": field,
             "before": _clean_json(before),
@@ -193,10 +307,15 @@ def create_revision(
         "base_version": base_version,
         "demand_hash": demand_fingerprint(demand),
         "job_id": str(job.get("job_id") or ""),
-        "target_section": str(protocol.get("target_section") or "")[:120],
+        "target_section": normalized_section,
+        "request_id": str(request_id or protocol.get("request_id") or "")[:160],
         "intent": str(protocol.get("intent") or "")[:2_000],
         "changes": changes,
-        "affected_sections": [str(item)[:120] for item in (protocol.get("affected_sections") or [])[:20]],
+        "affected_sections": [
+            str(item)[:120]
+            for item in (protocol.get("affected_sections") or [])[:20]
+            if str(item) in SECTION_FIELD_MAP
+        ],
         "warnings": [str(item)[:1_000] for item in (protocol.get("warnings") or [])[:20]],
         "created_at": now_iso(),
     }
