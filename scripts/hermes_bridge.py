@@ -600,17 +600,12 @@ def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
         "api_calls",
     )
     result = {field: int(usage.get(field) or 0) for field in integer_fields}
-    # Provider 的 total_tokens 会包含每次调用的缓存读取量；它必须完整展示，
-    # 但不应与未缓存 Token 按 1:1 消耗执行预算。预算单独按实际生成、推理、
-    # 未缓存输入和缓存写入计量，缓存读取仍由 estimated_cost_usd 约束成本。
+    # Provider 的 total_tokens 会包含每次调用的输入与缓存读取量；它们必须完整
+    # 展示，但计划/节点的 max_tokens 契约是生成上限。执行预算因此按输出与推理
+    # 计量；输入、缓存和费用仍独立记录，不能伪装成 0。
     result["budget_tokens"] = sum(
         result[field]
-        for field in (
-            "input_tokens",
-            "output_tokens",
-            "reasoning_tokens",
-            "cache_write_tokens",
-        )
+        for field in ("output_tokens", "reasoning_tokens")
     )
     result.update(
         {
@@ -658,7 +653,9 @@ def _workflow_toolsets(node: dict[str, Any]) -> list[str]:
         "main_agent",
     }:
         return ["skills"]
-    return []
+    # AIAgent 对空列表存在跨版本 fallback 差异；给纯推理节点一个无执行副作用的
+    # 最小 skill 元数据面，同时在节点 Prompt 中明确禁止工具调用。
+    return ["skills"]
 
 
 def _run_workflow_node_in_process(
@@ -764,11 +761,25 @@ def _run_workflow_node_in_process(
 def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
     params = node.get("parameters") or {}
     completed = []
-    for candidate in run.get("plan", {}).get("nodes") or []:
-        node_id = str(candidate.get("id") or "")
-        state = (run.get("nodes") or {}).get(node_id) or {}
-        if state.get("status") == "succeeded" and state.get("output"):
-            completed.append(f"- {candidate.get('name') or node_id}: {str(state['output'])[:1200]}")
+    if not run.get("hermes_session_id"):
+        for candidate in run.get("plan", {}).get("nodes") or []:
+            node_id = str(candidate.get("id") or "")
+            state = (run.get("nodes") or {}).get(node_id) or {}
+            if state.get("status") == "succeeded" and state.get("output"):
+                completed.append(
+                    f"- {candidate.get('name') or node_id}: {str(state['output'])[:1200]}"
+                )
+    node_type = str(node.get("node_type") or "")
+    tool_rule = (
+        "按最小次数使用当前节点授权的检索工具。"
+        if node_type == "KNOWLEDGE_RETRIEVAL"
+        else "本节点禁止调用工具；只基于当前 Session 已有的上游成果完成转换、分析或格式化。"
+    )
+    upstream = (
+        "上游完整成果已保存在当前 Hermes Session，不要要求重复注入。"
+        if run.get("hermes_session_id")
+        else (chr(10).join(completed) if completed else "无")
+    )
     return (
         "你是 Hermes 工作流编排引擎，正在同一个持久 Session 中推进已获用户批准的 DAG。\n"
         f"工作流目标：{run.get('goal', '')}\n"
@@ -779,9 +790,10 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         f"输出格式：{params.get('output_format') or '结构化 Markdown'}\n"
         f"知识范围：{json.dumps(params.get('knowledge_scope') or run.get('knowledge_scope') or [], ensure_ascii=False)}\n"
         f"联网权限：{'允许，但仅在证据缺口明确时使用' if run.get('allow_network') else '禁止'}\n"
-        "必须自行调用所需 Agent、技能、知识库和工具；引用真实来源，不得虚构。"
+        f"工具纪律：{tool_rule}\n"
+        "严格遵守当前节点的 Agent、知识范围与工具授权；引用真实来源，不得虚构。"
         "只输出当前节点可落盘的完整成果，不要输出运行状态说明。\n"
-        f"已完成上游摘要：\n{chr(10).join(completed) if completed else '无'}"
+        f"上游上下文：\n{upstream}"
     )[:MAX_INPUT]
 
 

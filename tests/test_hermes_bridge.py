@@ -344,7 +344,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         )
         self.assertEqual(
             _workflow_toolsets({"node_type": "OUTPUT_FORMAT", "parameters": {}}),
-            [],
+            ["skills"],
         )
 
     def test_cache_reads_are_reported_but_not_charged_one_to_one_to_budget(self):
@@ -362,7 +362,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         )
         self.assertEqual(usage["total_tokens"], 10_185)
         self.assertEqual(usage["cache_read_tokens"], 10_000)
-        self.assertEqual(usage["budget_tokens"], 185)
+        self.assertEqual(usage["budget_tokens"], 75)
 
 
 if __name__ == "__main__":
