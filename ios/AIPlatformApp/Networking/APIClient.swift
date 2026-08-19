@@ -526,6 +526,7 @@ public struct WorkflowPlanEditRequestDTO: Encodable {
 public enum APIError: Error, LocalizedError {
     case invalidURL
     case unauthorized
+    case knowledgeScopeChanged
     case server(Int, String)
     case network(String)
     case decoding(String)
@@ -535,6 +536,8 @@ public enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL: return "无效的请求地址"
         case .unauthorized: return "登录态失效，请重新登录"
+        case .knowledgeScopeChanged:
+            return "套餐或知识权限已变化，请刷新知识权限后重试"
         case .server(let code, let msg):
             // 502/503：服务端部署窗口/过载，明确提示而非笼统"不可用"
             if code == 502 || code == 503 || code == 504 {
@@ -545,6 +548,16 @@ public enum APIError: Error, LocalizedError {
         case .decoding(let msg): return "数据解析失败: \(msg)"
         case .timeout: return "响应超时，请重试"
         }
+    }
+
+    /// 将后端结构化 403 统一映射为权限变化，避免把知识撤权误报为普通服务器错误。
+    public static func fromHTTP(statusCode: Int, body: Data, fallback: String = "") -> APIError {
+        let raw = String(data: body, encoding: .utf8) ?? fallback
+        if statusCode == 403,
+           raw.contains("knowledge_scope_denied") || raw.contains("套餐或知识权限已变化") {
+            return .knowledgeScopeChanged
+        }
+        return .server(statusCode, raw)
     }
 }
 
@@ -711,10 +724,7 @@ public final class APIClient: ObservableObject {
                     throw APIError.unauthorized
                 }
                 guard (200..<300).contains(http.statusCode) else {
-                    throw APIError.server(
-                        http.statusCode,
-                        String(data: data, encoding: .utf8) ?? ""
-                    )
+                    throw APIError.fromHTTP(statusCode: http.statusCode, body: data)
                 }
                 isOfflineMode = false
                 return data
@@ -1117,7 +1127,7 @@ public final class APIClient: ObservableObject {
                 throw APIError.unauthorized
             }
             guard (200..<300).contains(http.statusCode) else {
-                throw APIError.server(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+                throw APIError.fromHTTP(statusCode: http.statusCode, body: data)
             }
             isOfflineMode = false
             do {
@@ -1240,7 +1250,9 @@ public final class APIClient: ObservableObject {
                         return
                     }
                     guard (200..<300).contains(http.statusCode) else {
-                        continuation.finish(throwing: APIError.server(http.statusCode, "流式端点错误"))
+                        continuation.finish(throwing: http.statusCode == 403
+                            ? APIError.knowledgeScopeChanged
+                            : APIError.server(http.statusCode, "流式端点错误"))
                         return
                     }
                     var buffer = ""

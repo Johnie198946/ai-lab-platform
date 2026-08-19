@@ -38,8 +38,6 @@ class Agent(Base):
     actions: Mapped[list | None] = mapped_column(JSON, nullable=True)
     # 汇报通道: "inapp" | "feishu" | "inapp,feishu"
     channel: Mapped[str] = mapped_column(String(64), default="inapp")
-    # 隔离模式: pure(纯净沙箱·默认) / standard(标准) / kb(知识库模式)
-    isolation: Mapped[str] = mapped_column(String(16), default="pure")
     # 状态: draft(待确认) / active / paused / disabled
     status: Mapped[str] = mapped_column(String(16), default="draft")
     # 生成的完整执行 prompt(给云端 Hermes)

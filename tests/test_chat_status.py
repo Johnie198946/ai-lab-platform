@@ -667,7 +667,7 @@ class TestInFlightUsers(unittest.TestCase):
                  patch.object(bridge, "_session_exists", return_value=False), \
                  patch.object(bridge, "_run_hermes", side_effect=fake_run):
                 result = asyncio.run(
-                    chat(GoalRequest(goal="hi", session_id="u_inflight", isolation="standard"))
+                    chat(GoalRequest(goal="hi", session_id="u_inflight"))
                 )
 
         self.assertEqual(result["reply"], "ok")

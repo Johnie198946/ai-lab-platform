@@ -86,8 +86,11 @@ async def test_capability_is_signed_scoped_and_bound_to_policy(policy_rows):
     assert claims["tenant_key"] == "tenant-a"
     assert claims["subject_id"] == "run-1"
     assert claims["scopes"] == ["premium"]
+    # 修改签名段的有效字节，验证 capability 不是可伪造的普通 tenant_id。
+    parts = token.split(".")
+    parts[-1] = ("A" if parts[-1][0] != "A" else "B") + parts[-1][1:]
     with pytest.raises(KnowledgeScopeDenied):
-        verify_capability(token[:-1] + ("A" if token[-1] != "A" else "B"))
+        verify_capability(".".join(parts))
 
 
 @pytest.mark.asyncio
