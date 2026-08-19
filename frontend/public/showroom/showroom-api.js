@@ -158,6 +158,12 @@
         const message = await response.json().then((data) => data.detail).catch(() => response.statusText);
         const error = new Error(message || `HTTP ${response.status}`);
         error.status = response.status;
+        // A showroom tab can stay open longer than the Authen JWT lifetime.
+        // Redirect immediately so the operator can establish a fresh session
+        // instead of seeing a misleading Hermes retry failure.
+        if (response.status === 401) {
+          requireLogin();
+        }
         throw error;
       }
       return response.status === 204 ? null : response.json();
