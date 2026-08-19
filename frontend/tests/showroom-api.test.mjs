@@ -188,6 +188,39 @@ test('visitor insight envelopes and invisible control messages never reach the f
   assert.equal(api.visibleAssistantMessage(content), '客户摘要');
 });
 
+test('staffing and incremental insight envelopes never reach the customer UI', () => {
+  const { api } = createApi();
+  const content = `<!-- AI_LAB_STAFFING_PLAN_V1 {"plan_id":"job-1"} AI_LAB_STAFFING_PLAN_V1 -->
+<!-- AI_LAB_INSIGHT_STAGE_V1 {"event_id":"e1"} AI_LAB_INSIGHT_STAGE_V1 -->
+<!-- AI_LAB_INSIGHT_SECTION_V1 {"event_id":"e2","payload":{"title":"报告"}} AI_LAB_INSIGHT_SECTION_V1 -->
+<!-- AI_LAB_INSIGHT_V1 {"job_id":"job-1"} AI_LAB_INSIGHT_V1 -->`;
+
+  assert.equal(api.visibleAssistantMessage(content), '');
+});
+
+test('insight job API methods persist every returned session', async () => {
+  const { api } = createApi();
+  api.sessionId = 'visit-1';
+  const calls = [];
+  api.request = async (path, options) => {
+    calls.push([path, options]);
+    return { session: { session_id: 'visit-1', data: { insight_job: { job_id: 'job-1' } } } };
+  };
+
+  await api.startInsightJob();
+  await api.saveStaffingPlan('job-1', { squads: [] });
+  await api.updateInsightProgress('job-1', { event_id: 'e1', kind: 'stage', stage: 'analysis' });
+  await api.completeInsightJob('job-1', 'machine blocks');
+
+  assert.deepEqual(calls.map(([path]) => path), [
+    '/api/showroom/sessions/visit-1/insight/jobs',
+    '/api/showroom/sessions/visit-1/insight/jobs/job-1/plan',
+    '/api/showroom/sessions/visit-1/insight/jobs/job-1/progress',
+    '/api/showroom/sessions/visit-1/insight/jobs/job-1/complete',
+  ]);
+  assert.equal(api.session.data.insight_job.job_id, 'job-1');
+});
+
 test('visitor insight extraction persists the active main session', async () => {
   const { api } = createApi();
   api.sessionId = 'visit-current';

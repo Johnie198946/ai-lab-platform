@@ -11,6 +11,9 @@ from backend.api.showroom import (
     DemandConfirmation,
     DemandDraftPatch,
     DemandExtractionRequest,
+    InsightCompleteRequest,
+    InsightProgressRequest,
+    InsightStaffingPlanRequest,
     LEGACY_DEMAND,
     LEGACY_INSIGHT,
     LEGACY_MESSAGES,
@@ -26,11 +29,15 @@ from backend.api.showroom import (
     apply_showroom_command,
     content_manifest,
     create_showroom_session,
+    complete_showroom_insight_job,
     extract_showroom_demand,
     generate_showroom_insight,
     generate_showroom_ipd_artifacts,
     hub,
     submit_showroom_review,
+    save_showroom_staffing_plan,
+    start_showroom_insight_job,
+    update_showroom_insight_progress,
     update_showroom_demand_draft,
 )
 from backend.api.screens import _load_all as load_screen_configs
@@ -153,6 +160,14 @@ def test_screen_003_bootstrap_contract_uses_hermes_demand_clinic() -> None:
     assert "最多追问三轮" in screen["station_context"]
     assert "禁止" in screen["station_context"] and "完整建设方案" in screen["station_context"]
     assert screen["data_bindings"][1]["source"] == "/api/ws"
+
+
+def test_screen_0035_and_004_use_hermes_incremental_insight_contract() -> None:
+    screens = load_screen_configs()
+    insight = screens["screen-04"]
+
+    assert any(binding["source"].endswith("/insight/jobs") for binding in insight["data_bindings"])
+    assert all(binding["source"] != "/api/chat/stream" for binding in insight["data_bindings"])
 
 
 def test_frontend_nginx_normalizes_hermes_websocket_origin() -> None:
@@ -313,6 +328,84 @@ def test_session_demand_insight_and_ipd_are_persisted(monkeypatch) -> None:
             "showroom-integration", 0, payload()
         )
         assert "需求合理性·调研支撑" in ipd["data"]["artifacts"]
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
+def test_staffing_job_is_idempotent_and_incrementally_persists_sections(monkeypatch) -> None:
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    import backend.api.showroom as showroom_api
+
+    async def scenario() -> None:
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+        async with engine.begin() as connection:
+            await connection.run_sync(ShowroomSession.__table__.create)
+            await connection.run_sync(ShowroomRuntime.__table__.create)
+        monkeypatch.setattr(showroom_api, "SessionLocal", maker)
+
+        await create_showroom_session(
+            SessionCreate(session_id="showroom-staffing", slot="main"), payload()
+        )
+        await showroom_api.confirm_showroom_demand(
+            "showroom-staffing",
+            DemandConfirmation(
+                demand={
+                    "core_problem": "权限管理阻碍HR场景落地",
+                    "target_metric": "形成可审计的001实践输入",
+                }
+            ),
+            payload(),
+        )
+        started = await start_showroom_insight_job("showroom-staffing", payload())
+        resumed = await start_showroom_insight_job("showroom-staffing", payload())
+        assert resumed["resumed"] is True
+        assert resumed["job"]["job_id"] == started["job"]["job_id"]
+
+        job_id = started["job"]["job_id"]
+        planned = await save_showroom_staffing_plan(
+            "showroom-staffing",
+            job_id,
+            InsightStaffingPlanRequest(
+                plan={
+                    "mission": "完成权限合规洞察",
+                    "squads": [
+                        {
+                            "stage": "IPD0",
+                            "employees": [
+                                {"employee_id": "researcher", "task": "查找权限治理证据"}
+                            ],
+                        }
+                    ],
+                }
+            ),
+            payload(),
+        )
+        assert len(planned["plan"]["squads"][0]["employees"]) == 4
+
+        progress = await update_showroom_insight_progress(
+            "showroom-staffing",
+            job_id,
+            InsightProgressRequest(
+                event_id="summary-event-1",
+                kind="section",
+                section="summary",
+                payload={"title": "HR权限治理洞察", "judgment": "适合进入001实践"},
+            ),
+            payload(),
+        )
+        assert "summary" in progress["job"]["completed_sections"]
+        assert progress["session"]["data"]["insight"]["title"] == "HR权限治理洞察"
+
+        partial = await complete_showroom_insight_job(
+            "showroom-staffing",
+            job_id,
+            InsightCompleteRequest(content=""),
+            payload(),
+        )
+        assert partial["job"]["status"] == "partial"
         await engine.dispose()
 
     asyncio.run(scenario())

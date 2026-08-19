@@ -47,17 +47,25 @@ const state = {
   rawHermesMessageCount: 0,
   frontstageActivating: false,
   demandCorrectionPending: false,
+  insightCatalog: null,
+  insightTask: '',
+  selectedEmployeeId: '',
+  insightAutoSeconds: 0,
+  insightAutoPaused: false,
 };
 
 const STATIC_DISPLAY_VIEWS = new Set(['screen-00', 'screen-01', 'screen-02']);
 const demandExtractionInFlight = new Set();
+const insightEventIds = new Set();
+let insightProgressQueue = Promise.resolve();
+let insightAutoTimer = null;
 
 function isStaticDisplayView(view = state.view) {
   return STATIC_DISPLAY_VIEWS.has(view);
 }
 
 function isConversationView(view = state.view) {
-  return view === 'controller' || view === 'screen-03' || view.startsWith('experience-');
+  return ['controller', 'screen-03', 'screen-03-team', 'screen-04'].includes(view) || view.startsWith('experience-');
 }
 
 const motionSystem = {
@@ -269,6 +277,7 @@ const viewMeta = {
   'screen-01': ['迎宾与合影', 'SCREEN 01 / ENTRANCE', '5280 × 1080'],
   'screen-02': ['TokenOps 算力运营', 'SCREEN 02 / DASHBOARD', '3840 × 1080'],
   'screen-03': ['001 需求即时问诊台', 'SCREEN 03 / INTERACTIVE', '1920 × 1080'],
+  'screen-03-team': ['AI 项目组集结', 'SCREEN 003.5 / STAFFING', '1920 × 1080'],
   'screen-04': ['需求深度洞察报告', 'SCREEN 04 / INSIGHT', '1920 × 1080'],
   'screen-05': ['IPD 微缩流水线', 'SCREEN 05 / PIPELINE', '1920 × 1080'],
   'screen-06': ['IPD 001 实战主屏', 'SCREEN 06 / WORKBENCH', '7290 × 1080'],
@@ -640,6 +649,112 @@ function currentInsight() {
   return currentSessionData().insight || {};
 }
 
+function currentInsightJob() {
+  return currentSessionData().insight_job || {};
+}
+
+function currentStaffingPlan() {
+  return currentSessionData().staffing_plan || {};
+}
+
+function insightPlanningPrompt(job, catalog) {
+  const demand = currentDemand();
+  return `[AI_LAB_CONTROL] 站3需求已由人确认。现在只规划本次深度洞察的AI项目组，不开始检索、不输出解释文字。\n任务ID：${job.job_id}\n需求指纹：${job.source_hash}\n核心问题：${demand.core_problem || ''}\n目标：${demand.target_metric || ''}\n可用角色ID：${Object.keys(catalog?.roles || {}).join('、')}\n请为四个受控角色分别给出贴合本需求的task。不得创建角色、Skill或工具。只返回一个完整机器块：\n<!-- AI_LAB_STAFFING_PLAN_V1 {"schema_version":"1.0","plan_id":"${job.job_id}","demand_hash":"${job.source_hash}","mission":"...","active_stage":"IPD0","squads":[{"stage":"IPD0","objective":"...","status":"planned","employees":[{"employee_id":"researcher","task":"...","status":"waiting"},{"employee_id":"industry-analyst","task":"...","status":"waiting"},{"employee_id":"product-manager","task":"...","status":"waiting"},{"employee_id":"evidence-reviewer","task":"...","status":"waiting"}]}],"workflow_edges":[["researcher","industry-analyst"],["industry-analyst","product-manager"],["researcher","evidence-reviewer"],["product-manager","evidence-reviewer"]]} AI_LAB_STAFFING_PLAN_V1 -->`;
+}
+
+function insightExecutionPrompt(job, plan) {
+  const demand = currentDemand();
+  const completed = (job.completed_sections || []).join('、') || '无';
+  return `[AI_LAB_CONTROL] 按已校验的AI项目组计划执行IPD0深度洞察。不得输出面向客户的过程文字、工具日志、查询词或内部推理；每个真实状态和章节完成后立即输出对应机器块。\n任务ID：${job.job_id}\n需求指纹：${job.source_hash}\n任务：${plan.mission || demand.core_problem || ''}\n已完成章节：${completed}\n执行规则：优先检索内部Wiki；可支撑当前问题的可靠来源少于3条或关键结论仍为TBD时，再调用联网检索或研究Agent。外部事实必须包含来源、日期和置信度。联网失败时输出部分结果与证据缺口，禁止编造。\n依次输出：\n1. <!-- AI_LAB_INSIGHT_STAGE_V1 {"event_id":"唯一ID","job_id":"${job.job_id}","kind":"stage","stage":"internal_research","employee_id":"researcher","message":"正在检索内部知识"} AI_LAB_INSIGHT_STAGE_V1 -->\n2. 每次员工状态变化输出同名块，kind为employee，employee_id为受控角色ID，employee_status只能是waiting/working/reviewing/done/blocked/failed。\n3. 每个章节一完成立刻输出：<!-- AI_LAB_INSIGHT_SECTION_V1 {"event_id":"唯一ID","job_id":"${job.job_id}","kind":"section","section":"summary|root_causes|impacts|evidence|recommendation|ipd_handoff","payload":{}} AI_LAB_INSIGHT_SECTION_V1 -->\nsummary payload含title、judgment、gap；root_causes含causes数组(title/detail/type)；impacts含impacts数组(label/score/basis)；evidence payload含evidence二维数组（证据、观察结果、可信度、状态）以及sources数组（title/url或path/date/confidence）；recommendation含recommendation与warnings；ipd_handoff payload直接包含001实践所需结构。\n4. 最后输出：<!-- AI_LAB_INSIGHT_V1 {"job_id":"${job.job_id}","sections":[]} AI_LAB_INSIGHT_V1 -->`;
+}
+
+function extractInsightEnvelopes(content) {
+  const patterns = [
+    ['plan', /<!--\s*AI_LAB_STAFFING_PLAN_V1\s*(\{[\s\S]*?\})\s*AI_LAB_STAFFING_PLAN_V1\s*-->/gi],
+    ['progress', /<!--\s*AI_LAB_INSIGHT_(?:STAGE|SECTION)_V1\s*(\{[\s\S]*?\})\s*AI_LAB_INSIGHT_(?:STAGE|SECTION)_V1\s*-->/gi],
+  ];
+  const found = [];
+  patterns.forEach(([type, pattern]) => {
+    let match;
+    while ((match = pattern.exec(content))) {
+      try { found.push({ type, payload: JSON.parse(match[1]) }); } catch { /* wait for a valid complete block */ }
+    }
+  });
+  return found;
+}
+
+function queueInsightProgress(event) {
+  const job = currentInsightJob();
+  if (!event?.event_id || insightEventIds.has(event.event_id) || event.job_id !== job.job_id) return;
+  insightEventIds.add(event.event_id);
+  insightProgressQueue = insightProgressQueue.then(async () => {
+    const result = await window.showroomApi.updateInsightProgress(job.job_id, event);
+    state.session = result.session;
+    if (event.kind === 'section' && event.section === 'summary') startInsightAutoAdvance();
+  }).catch((error) => {
+    state.chatError = error.message;
+    showToast(`洞察进度保存失败：${error.message}`);
+  });
+}
+
+function processInsightStream(content) {
+  extractInsightEnvelopes(content).filter((item) => item.type === 'progress').forEach((item) => queueInsightProgress(item.payload));
+}
+
+function clearInsightAutoAdvance() {
+  if (insightAutoTimer) window.clearInterval(insightAutoTimer);
+  insightAutoTimer = null;
+}
+
+function startInsightAutoAdvance() {
+  if (state.view !== 'screen-03-team' || state.insightAutoSeconds > 0) return;
+  state.insightAutoSeconds = 3;
+  clearInsightAutoAdvance();
+  insightAutoTimer = window.setInterval(() => {
+    if (state.insightAutoPaused || document.hidden) return;
+    state.insightAutoSeconds -= 1;
+    if (state.insightAutoSeconds <= 0) {
+      clearInsightAutoAdvance();
+      setView('screen-04');
+      return;
+    }
+    render('refresh');
+  }, 1000);
+  render('refresh');
+}
+
+async function beginInsightExecution(job = currentInsightJob(), plan = currentStaffingPlan()) {
+  state.insightTask = 'executing';
+  state.hermesDetail = 'AI项目组正在开始真实工作';
+  await window.showroomApi.submitHermesPrompt(insightExecutionPrompt(job, plan), {
+    skillCommand: 'solution-consultant-persona',
+    stationContext: '当前处于003.5与004，只执行IPD0深度洞察、证据核验和001实践交接；不得输出正式建设方案。',
+  });
+}
+
+async function beginInsightFlow(demand) {
+  state.session = await window.showroomApi.confirmDemand(demand);
+  const result = await window.showroomApi.startInsightJob();
+  state.session = result.session;
+  state.insightCatalog = result.catalog;
+  setView('screen-03-team');
+  const job = result.job || {};
+  if (job.status === 'completed') {
+    startInsightAutoAdvance();
+    return;
+  }
+  if (result.plan && Object.keys(result.plan).length) {
+    if (!['generating', 'waiting'].includes(state.hermesStatus)) await beginInsightExecution(job, result.plan);
+    return;
+  }
+  state.insightTask = 'planning';
+  state.hermesDetail = 'V1.7正在规划项目分工';
+  await window.showroomApi.submitHermesPrompt(insightPlanningPrompt(job, result.catalog), {
+    skillCommand: 'solution-consultant-persona',
+    stationContext: '当前处于003.5团队规划，只能使用受控角色库。',
+  });
+}
+
 function currentPrototype() {
   return currentSessionData().prototype || {};
 }
@@ -650,6 +765,7 @@ function hydrateContent(content = {}) {
   if (content.views) {
     Object.keys(viewMeta).forEach((key) => delete viewMeta[key]);
     Object.assign(viewMeta, content.views);
+    viewMeta['screen-03-team'] ||= ['AI 项目组集结', 'SCREEN 003.5 / STAFFING', '1920 × 1080'];
   }
   if (Array.isArray(content.stages)) stages.splice(0, stages.length, ...content.stages);
   if (Array.isArray(content.ipd_phases)) ipdPhases.splice(0, ipdPhases.length, ...content.ipd_phases);
@@ -1044,23 +1160,72 @@ function clinicView() {
   </div>`;
 }
 
+const staffingStageFallback = [
+  ['IPD0', '洞察与需求合理性'], ['IPD1', '产品规划与架构'], ['IPD2', '开发与实现设计'],
+  ['IPD3', '验证与合规'], ['IPD4', '发布与上市'], ['IPD5', '生命周期经营'],
+];
+
+const insightStageLabels = {
+  planning: '正在规划项目分工', internal_research: '正在检索内部知识', external_research: '内部证据不足，正在补充公开资料',
+  analysis: '正在形成根因与影响判断', writing: '正在撰写结构化报告', ipd_handoff: '正在整理001实践输入',
+  completed: '深度洞察已完成', partial: '已形成部分报告', failed: '项目组执行失败', interrupted: '任务已暂停',
+};
+const employeeStatusLabels = { waiting: '等待上游', working: '正在工作', reviewing: '正在核验', done: '已完成', blocked: '证据不足', failed: '执行失败' };
+
+function staffingView() {
+  const job = currentInsightJob();
+  const plan = currentStaffingPlan();
+  const demand = currentDemand();
+  const stagesList = state.insightCatalog?.stages || staffingStageFallback.map(([id, name]) => ({ id, name }));
+  const employees = plan.squads?.[0]?.employees || [];
+  const selected = employees.find((item) => item.employee_id === state.selectedEmployeeId) || employees[0];
+  const completed = job.completed_sections || [];
+  const stageText = insightStageLabels[job.active_stage] || insightStageLabels[job.status] || '正在读取需求确认单';
+  const outputs = [
+    ['summary', '执行摘要'], ['root_causes', '根因图谱'], ['impacts', '影响分析'],
+    ['evidence', '证据明细'], ['recommendation', '行动建议'], ['ipd_handoff', '001 IPD交接输入'],
+  ];
+  const failed = ['failed', 'interrupted'].includes(job.status);
+  const summaryReady = completed.includes('summary');
+  return `<div class="screen staffing-screen">
+    ${screenHeader('AI PROJECT TEAM', `003.5 · ${escapeHtml(stageText)}`)}
+    <div class="screen-content staffing-content">
+      <section class="staffing-mission"><div><p class="kicker">DEMAND CONFIRMED · IPD0 STARTED</p><h2>需求已经确认，正在为本次任务组建<em>AI项目组</em></h2><p>${escapeHtml(plan.mission || demand.core_problem || '正在读取需求确认单')}</p></div><div><span>本次目标</span><b>${escapeHtml(demand.target_metric || '形成可评审的深度洞察')}</b><small>预计交付 6 个结构化章节</small></div></section>
+      <div class="staffing-grid">
+        <aside class="staffing-stages" aria-label="IPD阶段">${stagesList.map((stage, index) => `<div class="${index === 0 ? 'active' : 'locked'}"><span>${escapeHtml(stage.id || `IPD${index}`)}</span><b>${escapeHtml(stage.name)}</b><small>${index === 0 ? '本次已集结' : '由后续人工评审解锁'}</small></div>`).join('')}</aside>
+        <main class="staffing-team"><header><div><span>IPD0 · AI员工编组</span><h3>${escapeHtml(plan.squads?.[0]?.objective || 'V1.7正在规划每位AI员工的具体任务')}</h3></div><b>${employees.length || '—'} 名 AI员工</b></header>
+          ${employees.length ? `<div class="employee-grid">${employees.map((employee, index) => `<button class="employee-card ${employee.status || 'waiting'} ${employee.employee_id === selected?.employee_id ? 'selected' : ''}" style="--employee-index:${index}" data-employee-id="${escapeHtml(employee.employee_id)}" aria-pressed="${employee.employee_id === selected?.employee_id}"><span class="employee-avatar">${escapeHtml(employee.display_name?.slice(0, 1) || 'AI')}</span><div><small>AI员工 · ${escapeHtml(employee.job_title)}</small><h4>${escapeHtml(employee.display_name)}</h4><p>${escapeHtml(employee.task)}</p><em>${escapeHtml(employeeStatusLabels[employee.status] || '等待上游')}</em></div><strong>${escapeHtml((employee.deliverables || []).join(' · '))}</strong></button>`).join('')}</div>` : '<div class="staffing-planning"><i></i><b>V1.7正在规划项目分工</b><span>规划完成后，这里只会出现已校验的AI员工与真实能力。</span></div>'}
+          ${selected ? `<details class="employee-badge" open><summary>查看 ${escapeHtml(selected.display_name)} 的能力工牌</summary><div><dl><dt>基础 Agent</dt><dd>${escapeHtml(selected.base_agent)}</dd><dt>已加载 Skill</dt><dd>${escapeHtml((selected.skill_ids || []).join('、') || '本次未加载')}</dd><dt>可调用工具</dt><dd>${escapeHtml((selected.tool_ids || []).join('、') || '本次未加载')}</dd></dl><dl><dt>允许读取</dt><dd>${escapeHtml((selected.inputs || []).join('、'))}</dd><dt>正在形成</dt><dd>${escapeHtml((selected.deliverables || []).join('、'))}</dd><dt>权限边界</dt><dd>${escapeHtml((selected.permissions || []).join('；'))}</dd></dl></div></details>` : ''}
+        </main>
+        <aside class="staffing-workboard" aria-live="polite"><header><span>LIVE WORKBOARD</span><h3>项目组正在做什么</h3></header><div class="work-state ${failed ? 'failed' : ''}"><i></i><b>${escapeHtml(stageText)}</b><span>${job.active_employee_id ? `当前AI员工：${escapeHtml(employees.find((item) => item.employee_id === job.active_employee_id)?.display_name || job.active_employee_id)}` : '状态来自Hermes真实任务事件'}</span></div><div class="section-progress">${outputs.map(([key, label]) => `<div class="${completed.includes(key) ? 'done' : key === job.active_stage ? 'active' : ''}"><i>${completed.includes(key) ? '✓' : '·'}</i><span>${label}</span><b>${completed.includes(key) ? '已回填' : '等待生成'}</b></div>`).join('')}</div>${failed ? `<div class="staffing-error"><b>${escapeHtml(job.error || '本轮任务未完成')}</b><button data-insight-retry>重新执行</button></div>` : `<button class="soft-button staffing-stop" data-insight-stop ${['completed', 'partial'].includes(job.status) ? 'disabled' : ''}>停止本轮任务</button>`}${summaryReady ? `<div class="summary-ready"><b>执行摘要已完成</b><span>${state.insightAutoPaused ? '自动进入已暂停' : `${state.insightAutoSeconds || 3} 秒后进入深度洞察报告`}</span><button data-insight-open>立即查看报告</button></div>` : ''}</aside>
+      </div>
+      <footer class="staffing-flow"><div><span>01</span><b>输入材料</b><small>已确认需求 + 授权背景</small></div><i></i><div><span>02</span><b>AI员工协作</b><small>真实检索、分析与核验</small></div><i></i><div><span>03</span><b>章节产出</b><small>完成即回填004</small></div><i></i><div><span>04</span><b>人工评审</b><small>AI工作，人做决策</small></div></footer>
+    </div>
+  </div>`;
+}
+
 function insightView() {
   const insight = currentInsight();
+  const job = currentInsightJob();
   const demand = currentDemand();
   const causes = insight.causes || [];
   const impacts = insight.impacts || [];
   const evidence = insight.evidence || [];
+  const completed = new Set(job.completed_sections || []);
+  const live = ['planning', 'running', 'partial', 'interrupted'].includes(job.status);
+  const skeleton = (label) => `<div class="insight-skeleton" aria-label="${escapeHtml(label)}正在生成"><i></i><i></i><i></i><span>${escapeHtml(label)}正在生成…</span></div>`;
   return `<div class="screen">
-    ${screenHeader('DEEP INSIGHT', '洞察已生成')}
+    ${screenHeader('DEEP INSIGHT', live ? 'AI项目组持续回填中' : '洞察已生成')}
     <div class="insight-report-shell">
       <aside class="insight-toc"><span>REPORT OUTLINE</span><h3>深度洞察报告</h3><p>Markdown · V0.1</p><nav><button class="active" data-insight-section="insight-summary"><i>01</i>执行摘要</button><button data-insight-section="insight-root"><i>02</i>根因图谱</button><button data-insight-section="insight-impact"><i>03</i>影响分析</button><button data-insight-section="insight-evidence"><i>04</i>证据明细</button><button data-insight-section="insight-action"><i>05</i>行动建议</button></nav><div><span>阅读进度</span><b>5 个章节 · 8 分钟</b></div></aside>
       <article class="insight-report-page" aria-label="需求深度洞察完整报告">
+        ${live ? `<div class="insight-live-banner" aria-live="polite"><i></i><div><b>${escapeHtml(insightStageLabels[job.active_stage] || 'AI项目组正在继续工作')}</b><span>完成的章节会立即替换下方骨架，不需要等待整份报告。</span></div><button data-view="screen-03-team">查看AI项目组</button><button data-insight-stop>停止</button></div>` : ''}
         <header id="insight-summary" class="insight-cover"><div><span>DEEP INSIGHT · ${new Date().toLocaleDateString('zh-CN')}</span><h1>${escapeHtml(insight.title || '等待需求确认后生成洞察')}</h1><p>AI 将已确认需求转化为问题结构、影响判断与行动建议；结论保留知识证据入口，供人工确认。</p></div><div class="insight-cover-visual" role="img" aria-label="当前业务基线"><span>${escapeHtml(String(demand.target_metric || '').match(/\d+/)?.[0] || '—')}</span><b>MIN</b><i></i><i></i><i></i><small>当前业务基线</small></div></header>
-        <section class="insight-summary-grid"><div><span>核心判断</span><b>${escapeHtml(insight.judgment || '等待分析')}</b><p>${escapeHtml(causes[0]?.detail || '')}</p></div><div><span>目标差距</span><b>${escapeHtml(insight.gap || '待计算')}</b><p>${escapeHtml(demand.target_metric || '')}</p></div><div><span>建议动作</span><b>${escapeHtml(insight.recommendation || demand.next_action || '待生成')}</b><p>${escapeHtml(demand.next_action || '')}</p></div></section>
-        <section id="insight-root" class="insight-report-section"><div class="report-section-title"><span>02 · ROOT CAUSE</span><h2>问题根因图谱</h2><p>从可见症状追溯到流程、知识和反馈机制。</p></div><figure class="insight-root-figure"><div class="root-core"><small>表层症状</small><strong>${escapeHtml(demand.core_problem || '等待需求确认')}</strong></div><div class="root-branch"><span></span><i></i><i></i><i></i></div><div class="root-causes">${causes.map((cause) => `<div class="cause"><b>${escapeHtml(cause.title)}</b><span>${escapeHtml(cause.detail)}</span></div>`).join('')}</div><figcaption>图 1 · 根因关系来自当前独立会话和知识检索结果。</figcaption></figure></section>
-        <section id="insight-impact" class="insight-report-section"><div class="report-section-title"><span>03 · BUSINESS IMPACT</span><h2>价值影响排序</h2></div><figure class="insight-impact-chart">${impacts.map((item) => `<div><span>${escapeHtml(item.label)}</span><i style="--w:${Number(item.score || 0)}%"></i><b>${Number(item.score || 0)}</b></div>`).join('')}<figcaption>图 2 · 影响指数（0–100），来自当前报告数据。</figcaption></figure></section>
-        <section id="insight-evidence" class="insight-report-section"><div class="report-section-title"><span>04 · EVIDENCE</span><h2>证据与缺口明细</h2></div><div class="report-table-wrap"><table class="report-table"><thead><tr><th>证据</th><th>观察结果</th><th>可信度</th><th>状态</th></tr></thead><tbody>${evidence.map((row) => `<tr><th>${escapeHtml(row[0])}</th><td>${escapeHtml(row[1])}</td><td>${escapeHtml(row[2])}</td><td>${escapeHtml(row[3])}</td></tr>`).join('')}</tbody></table></div></section>
-        <section id="insight-action" class="insight-report-section insight-action-section"><div class="report-section-title"><span>05 · RECOMMENDATION</span><h2>IPD 第一步行动</h2></div><div class="insight-action-card"><span>${escapeHtml(insight.recommendation || '建议从小范围验证开始')}</span><h3>${escapeHtml(demand.next_action || '等待需求确认')}</h3><p>完成后提交 TR1 人工评审，AI 负责准备材料，人负责确认。</p><div><b>负责人：需求分析 Agent</b><b>人工确认：${escapeHtml(humanReviewers.TR1?.role || '需求管理专家')}</b><b>输出：需求合理性调研支撑</b></div></div></section>
+        ${completed.has('summary') || insight.judgment ? `<section class="insight-summary-grid section-reveal"><div><span>核心判断</span><b>${escapeHtml(insight.judgment || '等待分析')}</b><p>${escapeHtml(causes[0]?.detail || '')}</p></div><div><span>目标差距</span><b>${escapeHtml(insight.gap || '待计算')}</b><p>${escapeHtml(demand.target_metric || '')}</p></div><div><span>建议动作</span><b>${escapeHtml(insight.recommendation || demand.next_action || '正在形成')}</b><p>${escapeHtml(demand.next_action || '')}</p></div></section>` : skeleton('执行摘要')}
+        <section id="insight-root" class="insight-report-section"><div class="report-section-title"><span>02 · ROOT CAUSE</span><h2>问题根因图谱</h2><p>从可见症状追溯到流程、知识和反馈机制。</p></div>${causes.length ? `<figure class="insight-root-figure section-reveal"><div class="root-core"><small>表层症状</small><strong>${escapeHtml(demand.core_problem || '等待需求确认')}</strong></div><div class="root-branch"><span></span><i></i><i></i><i></i></div><div class="root-causes">${causes.map((cause) => `<div class="cause"><b>${escapeHtml(cause.title)}</b><span>${escapeHtml(cause.detail)}</span></div>`).join('')}</div><figcaption>图 1 · 根因关系来自当前独立会话和知识检索结果。</figcaption></figure>` : skeleton('根因图谱')}</section>
+        <section id="insight-impact" class="insight-report-section"><div class="report-section-title"><span>03 · BUSINESS IMPACT</span><h2>价值影响排序</h2></div>${impacts.length ? `<figure class="insight-impact-chart section-reveal">${impacts.map((item) => `<div><span>${escapeHtml(item.label)}</span><i style="--w:${Number(item.score || 0)}%"></i><b>${Number(item.score || 0)}</b></div>`).join('')}<figcaption>图 2 · 影响指数（0–100），来自当前报告数据。</figcaption></figure>` : skeleton('影响分析')}</section>
+        <section id="insight-evidence" class="insight-report-section"><div class="report-section-title"><span>04 · EVIDENCE</span><h2>证据与缺口明细</h2></div>${evidence.length ? `<div class="report-table-wrap section-reveal"><table class="report-table"><thead><tr><th>证据</th><th>观察结果</th><th>可信度</th><th>状态</th></tr></thead><tbody>${evidence.map((row) => `<tr><th>${escapeHtml(row[0])}</th><td>${escapeHtml(row[1])}</td><td>${escapeHtml(row[2])}</td><td>${escapeHtml(row[3])}</td></tr>`).join('')}</tbody></table></div>` : skeleton('证据明细')}</section>
+        <section id="insight-action" class="insight-report-section insight-action-section"><div class="report-section-title"><span>05 · RECOMMENDATION</span><h2>IPD 第一步行动</h2></div>${insight.recommendation ? `<div class="insight-action-card section-reveal"><span>${escapeHtml(insight.recommendation)}</span><h3>${escapeHtml(demand.next_action || '进入001实践切片')}</h3><p>完成后提交 TR1 人工评审，AI 负责准备材料，人负责确认。</p><div><b>负责人：产品管理专家</b><b>人工确认：${escapeHtml(humanReviewers.TR1?.role || '需求管理专家')}</b><b>输出：需求合理性调研支撑</b></div></div>` : skeleton('行动建议与001交接')}</section>
         <footer class="insight-report-footer"><b>参考来源</b><span>${(insight.sources || []).length ? (insight.sources || []).slice(0, 6).map((source, index) => `[${index + 1}] ${escapeHtml(source.title || source.path)}`).join('　') : '[1] 当前需求确认单　[2] 后端内容基线（等待知识命中）'}</span></footer>
       </article>
     </div>
@@ -1240,6 +1405,7 @@ const builders = {
   'screen-01': welcomeView,
   'screen-02': dashboardView,
   'screen-03': clinicView,
+  'screen-03-team': staffingView,
   'screen-04': insightView,
   'screen-05': pipelineView,
   'screen-06': giantWorkbenchView,
@@ -1316,14 +1482,45 @@ function attachScreenActions() {
       demand[field.dataset.demandField] = field.value.trim();
     });
     try {
-      state.session = await window.showroomApi.confirmDemand(demand);
-      showToast('需求已写入后端 · 正在检索知识并生成洞察');
-      state.session = await window.showroomApi.generateInsight();
-      state.session = await window.showroomApi.generateIpdArtifacts(0);
-      setView('screen-04');
+      showToast('需求已确认 · 正在集结AI项目组');
+      await beginInsightFlow(demand);
     } catch (error) {
       showToast(`需求确认失败：${error.message}`);
     }
+  });
+  document.querySelectorAll('[data-employee-id]').forEach((button) => button.addEventListener('click', () => {
+    state.selectedEmployeeId = button.dataset.employeeId;
+    state.insightAutoPaused = true;
+    render('agent');
+  }));
+  document.querySelector('.employee-badge')?.addEventListener('toggle', (event) => {
+    if (event.currentTarget.open) state.insightAutoPaused = true;
+  });
+  document.querySelector('[data-insight-open]')?.addEventListener('click', () => {
+    clearInsightAutoAdvance();
+    setView('screen-04');
+  });
+  document.querySelectorAll('[data-insight-stop]').forEach((button) => button.addEventListener('click', async () => {
+    const job = currentInsightJob();
+    if (!job.job_id) return;
+    try {
+      const result = await window.showroomApi.interruptInsightJob(job.job_id);
+      state.session = result.session;
+      state.insightTask = '';
+      render('refresh');
+    } catch (error) { showToast(`停止失败：${error.message}`); }
+  }));
+  document.querySelector('[data-insight-retry]')?.addEventListener('click', async () => {
+    try {
+      const result = await window.showroomApi.startInsightJob();
+      state.session = result.session;
+      state.insightCatalog = result.catalog;
+      if (result.plan && Object.keys(result.plan).length) await beginInsightExecution(result.job, result.plan);
+      else {
+        state.insightTask = 'planning';
+        await window.showroomApi.submitHermesPrompt(insightPlanningPrompt(result.job, result.catalog), { skillCommand: 'solution-consultant-persona' });
+      }
+    } catch (error) { showToast(`重新执行失败：${error.message}`); }
   });
   document.querySelectorAll('[data-demand-field]:not([disabled])').forEach((field) => field.addEventListener('change', async () => {
     const name = field.dataset.demandField;
@@ -1669,6 +1866,7 @@ function render(intent = 'refresh') {
 
 function setView(view, intent = 'view') {
   const wasConversationView = isConversationView();
+  if (view !== 'screen-03-team') clearInsightAutoAdvance();
   state.view = view;
   if (!view.startsWith('experience-')) state.experienceStep = 0;
   const params = new URLSearchParams(location.search);
@@ -1860,7 +2058,7 @@ window.showroomApi?.on('hermes-status', ({ status, detail, retryStopped }) => {
   state.hermesStatus = status;
   state.hermesDetail = detail || '';
   state.hermesRetryStopped = Boolean(retryStopped);
-  if (['controller', 'screen-03'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
+  if (['controller', 'screen-03', 'screen-03-team', 'screen-04'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
 });
 window.showroomApi?.on('hermes-ready', ({ messages, running, raw_message_count: rawMessageCount }) => {
   state.chatMessages = Array.isArray(messages) ? messages : [];
@@ -1909,6 +2107,20 @@ window.showroomApi?.on('hermes-ready', ({ messages, running, raw_message_count: 
   if (latestConfirmation && !hasDemandConfirmationContent(currentDemand())) {
     maybeExtractDemand(latestConfirmation.rawContent || latestConfirmation.content, { silent: true });
   }
+  const job = currentInsightJob();
+  if (!running && ['screen-03-team', 'screen-04'].includes(state.view) && job.job_id && ['planning', 'running', 'interrupted'].includes(job.status)) {
+    if (currentStaffingPlan().squads?.length) beginInsightExecution(job, currentStaffingPlan()).catch((error) => showToast(`恢复洞察失败：${error.message}`));
+    else if (!state.insightTask) {
+      state.insightTask = 'planning';
+      window.showroomApi.startInsightJob().then((result) => {
+        state.insightCatalog = result.catalog;
+        return window.showroomApi.submitHermesPrompt(insightPlanningPrompt(result.job, result.catalog), { skillCommand: 'solution-consultant-persona' });
+      }).catch((error) => {
+        state.insightTask = '';
+        showToast(`恢复团队规划失败：${error.message}`);
+      });
+    }
+  }
 });
 window.showroomApi?.on('hermes-event', (event) => {
   const payload = event.payload || {};
@@ -1919,6 +2131,9 @@ window.showroomApi?.on('hermes-event', (event) => {
     state.avatarSpeaking = true;
     state.hermesStatus = 'generating';
     state.streamingReply += String(payload.text || '');
+    if (state.insightTask === 'executing' || ['screen-03-team', 'screen-04'].includes(state.view)) {
+      processInsightStream(state.streamingReply);
+    }
     const streamingBubble = document.querySelector('.bubble.ai.streaming');
     if (streamingBubble) streamingBubble.textContent = state.streamingReply;
     return;
@@ -1934,7 +2149,58 @@ window.showroomApi?.on('hermes-event', (event) => {
       state.hermesDetail = state.chatError;
       state.hermesStatus = hermesFailureStatus(rawError);
       failControllerHermesTask(rawError);
+      const job = currentInsightJob();
+      if (job.job_id && state.insightTask) {
+        window.showroomApi.failInsightJob(job.job_id, state.chatError).catch(() => {});
+        state.insightTask = '';
+      }
     } else {
+      if (state.insightTask === 'planning') {
+        const planEnvelope = extractInsightEnvelopes(rawAnswer).find((item) => item.type === 'plan');
+        const job = currentInsightJob();
+        if (!planEnvelope || !job.job_id) {
+          state.chatError = 'V1.7未返回有效项目组规划';
+          state.hermesStatus = 'error';
+          if (job.job_id) window.showroomApi.failInsightJob(job.job_id, state.chatError).catch(() => {});
+          state.insightTask = '';
+          render('refresh');
+          return;
+        }
+        window.showroomApi.saveStaffingPlan(job.job_id, planEnvelope.payload).then((result) => {
+          state.session = result.session;
+          state.selectedEmployeeId = result.plan?.squads?.[0]?.employees?.[0]?.employee_id || '';
+          return beginInsightExecution(result.job, result.plan);
+        }).catch((error) => {
+          state.chatError = error.message;
+          state.hermesStatus = 'error';
+          window.showroomApi.failInsightJob(job.job_id, error.message).catch(() => {});
+          state.insightTask = '';
+          render('refresh');
+        });
+        state.streamingReply = '';
+        state.avatarSpeaking = false;
+        render('refresh');
+        return;
+      }
+      if (state.insightTask === 'executing') {
+        const job = currentInsightJob();
+        processInsightStream(rawAnswer);
+        insightProgressQueue.then(() => window.showroomApi.completeInsightJob(job.job_id, rawAnswer)).then((result) => {
+          state.session = result.session;
+          state.insightTask = '';
+          if ((result.job?.completed_sections || []).includes('summary')) startInsightAutoAdvance();
+          render('refresh');
+        }).catch((error) => {
+          state.chatError = error.message;
+          state.hermesStatus = 'error';
+          window.showroomApi.failInsightJob(job.job_id, error.message).catch(() => {});
+          state.insightTask = '';
+          render('refresh');
+        });
+        state.streamingReply = '';
+        state.avatarSpeaking = false;
+        return;
+      }
       if (state.view === 'screen-03' && isPrematureScheme(rawAnswer) && !state.demandCorrectionPending) {
         state.demandCorrectionPending = true;
         state.hermesStatus = 'generating';
@@ -1996,6 +2262,10 @@ window.showroomApi?.on('session', (session) => {
     !== JSON.stringify(session?.data?.visitor || {});
   const visitorInsightChanged = JSON.stringify(state.session?.data?.customer_insight || {})
     !== JSON.stringify(session?.data?.customer_insight || {});
+  const insightJobChanged = JSON.stringify(state.session?.data?.insight_job || {})
+    !== JSON.stringify(session?.data?.insight_job || {});
+  const insightChanged = JSON.stringify(state.session?.data?.insight || {})
+    !== JSON.stringify(session?.data?.insight || {});
   state.session = session;
   state.experienceStep = Number(session?.step || state.experienceStep);
   Object.entries(session?.data?.reviews || {}).forEach(([gate, record]) => {
@@ -2003,6 +2273,7 @@ window.showroomApi?.on('session', (session) => {
   });
   if (state.view === 'screen-03' && (demandChanged || demandDocumentChanged)) render('refresh');
   if (state.view === 'controller' && (visitorChanged || visitorInsightChanged)) render('refresh');
+  if (['screen-03-team', 'screen-04'].includes(state.view) && (insightJobChanged || insightChanged)) render('refresh');
 });
 window.showroomApi?.on('message', (message) => {
   if (message.type === 'STATE' || message.type === 'COMMIT' || message.type === 'REVIEW') {
@@ -2012,7 +2283,7 @@ window.showroomApi?.on('message', (message) => {
     state.visitCompleteNotice = message;
     if (state.view === 'controller') render('refresh');
   }
-  if (['VISITOR_UPDATED', 'INSIGHT_UPDATED'].includes(message.type) && message.session_id === state.session?.session_id) {
+  if (['VISITOR_UPDATED', 'INSIGHT_UPDATED', 'STAFFING_PLAN_READY', 'AI_EMPLOYEE_STATUS', 'INSIGHT_STAGE_UPDATED', 'INSIGHT_SECTION_COMPLETED', 'INSIGHT_JOB_COMPLETED', 'INSIGHT_JOB_FAILED'].includes(message.type) && message.session_id === state.session?.session_id) {
     window.showroomApi.init({ force: true });
   }
   if (message.type === 'SESSION_SWITCH_COMMIT' && message.session_id === state.session?.session_id) {

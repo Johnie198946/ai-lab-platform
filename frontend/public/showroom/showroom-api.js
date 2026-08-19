@@ -16,6 +16,12 @@
     /<!--\s*AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_VISITOR_INSIGHT_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_VISITOR_INSIGHT_V1\s*\{[\s\S]*?\}\s*```/gi,
   ];
+  const INSIGHT_ENVELOPE_PATTERNS = [
+    /<!--\s*AI_LAB_STAFFING_PLAN_V1\s*\{[\s\S]*?\}\s*AI_LAB_STAFFING_PLAN_V1\s*-->/gi,
+    /<!--\s*AI_LAB_INSIGHT_STAGE_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_STAGE_V1\s*-->/gi,
+    /<!--\s*AI_LAB_INSIGHT_SECTION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_SECTION_V1\s*-->/gi,
+    /<!--\s*AI_LAB_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_V1\s*-->/gi,
+  ];
   const CONTROL_PREFIX = "[AI_LAB_CONTROL]";
 
   function readJson(key) {
@@ -64,7 +70,8 @@
 
   function isConversationView() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    return view === "controller" || view === "screen-03" || /^experience-0?[1-5]$/.test(view);
+    return ["controller", "screen-03", "screen-03-team", "screen-04"].includes(view)
+      || /^experience-0?[1-5]$/.test(view);
   }
 
   function hermesLane() {
@@ -98,9 +105,13 @@
         (visible, pattern) => visible.replace(pattern, ""),
         withoutDemand,
       );
-      return VISITOR_ENVELOPE_PATTERNS.reduce(
+      const withoutVisitor = VISITOR_ENVELOPE_PATTERNS.reduce(
         (visible, pattern) => visible.replace(pattern, ""),
         withoutState,
+      );
+      return INSIGHT_ENVELOPE_PATTERNS.reduce(
+        (visible, pattern) => visible.replace(pattern, ""),
+        withoutVisitor,
       ).trim();
     }
     if (role !== "user") return content;
@@ -761,6 +772,79 @@
       this.session = session;
       this.emit("session", session);
       return session;
+    }
+
+    async startInsightJob() {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs`,
+        { method: "POST" },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async saveStaffingPlan(jobId, plan) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/plan`,
+        { method: "PUT", body: { plan } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async updateInsightProgress(jobId, progress) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/progress`,
+        { method: "POST", body: progress },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async completeInsightJob(jobId, content) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/complete`,
+        { method: "POST", body: { content } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async failInsightJob(jobId, message) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/fail`,
+        { method: "POST", body: { message } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async interruptInsightJob(jobId, message = "用户已停止生成") {
+      await this.interruptHermes().catch(() => null);
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/interrupt`,
+        { method: "POST", body: { message } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
     }
 
     async generateIpdArtifacts(phaseIndex = 0) {

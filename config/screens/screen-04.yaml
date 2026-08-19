@@ -10,7 +10,10 @@ data_bindings:
   - source: "/api/knowledge/search"
     component: "evidence-search"
     refresh: "on-demand"
-  - source: "/api/chat/stream"
+  - source: "/api/ws"
     component: "insight-generation"
-    refresh: "sse"
+    refresh: "hermes-json-rpc"
+  - source: "/api/showroom/sessions/{session_id}/insight/jobs"
+    component: "incremental-sections"
+    refresh: "websocket-events"
 auto_fullscreen: true

@@ -39,6 +39,21 @@ from backend.services.demand_document import (
     extract_demand_document,
 )
 from backend.services.feishu import send_feishu_async
+from backend.services.showroom_insight import (
+    EMPLOYEE_STATES,
+    JOB_STAGES,
+    SECTION_TYPES,
+    apply_section,
+    demand_fingerprint,
+    empty_insight,
+    empty_insight_job,
+    extract_final_insight,
+    extract_progress_events,
+    normalize_staffing_plan,
+    now_iso,
+    role_catalog_payload,
+    visible_insight_message,
+)
 from backend.services.visitor_insight import (
     extract_visitor_insight,
     persist_visitor_wiki,
@@ -106,6 +121,28 @@ class DemandExtractionRequest(BaseModel):
 class DemandDraftPatch(BaseModel):
     demand: dict[str, Any] = Field(default_factory=dict)
     manual_fields: list[str] = Field(default_factory=list, max_length=20)
+
+
+class InsightStaffingPlanRequest(BaseModel):
+    plan: dict[str, Any] = Field(default_factory=dict)
+
+
+class InsightProgressRequest(BaseModel):
+    event_id: str = Field(..., min_length=4, max_length=160)
+    kind: Literal["stage", "employee", "section"]
+    stage: str = Field(default="", max_length=80)
+    employee_id: str = Field(default="", max_length=80)
+    employee_status: str = Field(default="", max_length=40)
+    section: str = Field(default="", max_length=80)
+    payload: dict[str, Any] = Field(default_factory=dict)
+
+
+class InsightCompleteRequest(BaseModel):
+    content: str = Field(default="", max_length=120_000)
+
+
+class InsightFailureRequest(BaseModel):
+    message: str = Field(default="", max_length=4000)
 
 
 class SessionMessage(BaseModel):
@@ -417,6 +454,8 @@ def _migrate_legacy_session_data(
         "frontstage_started",
         "frontstage_message_offset",
         "persona_skill_version",
+        "staffing_plan",
+        "insight_job",
     ):
         if key not in data:
             data[key] = copy.deepcopy(defaults[key])
@@ -498,6 +537,8 @@ def _initial_session_data(slot: str) -> dict[str, Any]:
         "demand": _empty_demand(),
         "demand_document": {},
         "insight": {},
+        "staffing_plan": {},
+        "insight_job": {},
         "prototype": {},
         "artifacts": {},
         "reviews": {},
@@ -1340,6 +1381,383 @@ async def generate_showroom_insight(
         await database.commit()
         await database.refresh(row)
         return _session_payload(row, session_id, row.slot)
+
+
+@router.post("/sessions/{session_id}/insight/jobs")
+async def start_showroom_insight_job(
+    session_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    """Create or resume the idempotent V1.7 staffing-and-insight job."""
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        demand = data.get("demand") or {}
+        if not demand.get("confirmed"):
+            raise HTTPException(status_code=409, detail="请先确认需求")
+        source_hash = demand_fingerprint(demand)
+        current_job = copy.deepcopy(data.get("insight_job") or {})
+        resumable = (
+            current_job.get("source_hash") == source_hash
+            and current_job.get("status")
+            in {"planning", "running", "partial", "completed", "interrupted"}
+        )
+        if resumable:
+            return {
+                "resumed": True,
+                "job": current_job,
+                "plan": data.get("staffing_plan") or {},
+                "catalog": role_catalog_payload(),
+                "session": _session_payload(row, session_id, row.slot),
+            }
+
+        job_id = f"insight-{uuid.uuid4().hex[:16]}"
+        job = empty_insight_job(job_id, source_hash)
+        data["insight_job"] = job
+        data["staffing_plan"] = {}
+        data["insight"] = empty_insight()
+        row.data = data
+        row.step = max(row.step, 3)
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await hub.broadcast(
+        {
+            "type": "INSIGHT_STAGE_UPDATED",
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "demand_hash": job["source_hash"],
+            "job": job,
+        }
+    )
+    return {
+        "resumed": False,
+        "job": job,
+        "plan": {},
+        "catalog": role_catalog_payload(),
+        "session": session_payload,
+    }
+
+
+@router.put("/sessions/{session_id}/insight/jobs/{job_id}/plan")
+async def save_showroom_staffing_plan(
+    session_id: str,
+    job_id: str,
+    body: InsightStaffingPlanRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("job_id") != job_id:
+            raise HTTPException(status_code=409, detail="洞察任务已切换")
+        demand = data.get("demand") or {}
+        source_hash = demand_fingerprint(demand)
+        if source_hash != job.get("source_hash"):
+            raise HTTPException(status_code=409, detail="需求已变更，请重新规划团队")
+        plan = normalize_staffing_plan(
+            body.plan, job_id=job_id, source_hash=source_hash, demand=demand
+        )
+        plan["squads"][0]["employees"][0]["status"] = "working"
+        job.update(
+            {
+                "status": "running",
+                "active_stage": "internal_research",
+                "active_employee_id": "researcher",
+                "updated_at": now_iso(),
+                "error": "",
+            }
+        )
+
+        data["staffing_plan"] = plan
+        data["insight_job"] = job
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await hub.broadcast(
+        {
+            "type": "STAFFING_PLAN_READY",
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "job_id": job_id,
+            "demand_hash": job["source_hash"],
+            "plan": plan,
+        }
+    )
+    return {"plan": plan, "job": job, "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/jobs/{job_id}/progress")
+async def update_showroom_insight_progress(
+    session_id: str,
+    job_id: str,
+    body: InsightProgressRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    broadcast_type = "INSIGHT_STAGE_UPDATED"
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("job_id") != job_id:
+            raise HTTPException(status_code=409, detail="洞察任务已切换")
+        if job.get("source_hash") != demand_fingerprint(data.get("demand") or {}):
+            raise HTTPException(status_code=409, detail="需求指纹不匹配")
+        processed = list(job.get("processed_events") or [])
+        if body.event_id in processed:
+            return {
+                "unchanged": True,
+                "job": job,
+                "session": _session_payload(row, session_id, row.slot),
+            }
+
+        plan = copy.deepcopy(data.get("staffing_plan") or {})
+        insight = copy.deepcopy(data.get("insight") or empty_insight())
+        if body.kind == "stage":
+            if body.stage not in JOB_STAGES:
+                raise HTTPException(status_code=422, detail="洞察阶段无效")
+            job["active_stage"] = body.stage
+            if body.employee_id:
+                job["active_employee_id"] = body.employee_id
+        elif body.kind == "employee":
+            if body.employee_status not in EMPLOYEE_STATES:
+                raise HTTPException(status_code=422, detail="AI员工状态无效")
+            found = False
+            for squad in plan.get("squads") or []:
+                for employee in squad.get("employees") or []:
+                    if employee.get("employee_id") == body.employee_id:
+                        employee["status"] = body.employee_status
+                        found = True
+            if not found:
+                raise HTTPException(status_code=422, detail="AI员工不在本次项目组")
+            job["active_employee_id"] = body.employee_id
+            broadcast_type = "AI_EMPLOYEE_STATUS"
+        else:
+            if body.section not in SECTION_TYPES:
+                raise HTTPException(status_code=422, detail="洞察章节无效")
+            insight = apply_section(insight, body.section, body.payload)
+            completed = list(job.get("completed_sections") or [])
+            if body.section not in completed:
+                completed.append(body.section)
+            job["completed_sections"] = completed
+            job["active_stage"] = (
+                "ipd_handoff" if body.section == "ipd_handoff" else "writing"
+            )
+            broadcast_type = "INSIGHT_SECTION_COMPLETED"
+
+        processed.append(body.event_id)
+        job["processed_events"] = processed[-200:]
+        job["status"] = "running"
+        job["updated_at"] = now_iso()
+        data["staffing_plan"] = plan
+        data["insight_job"] = job
+        data["insight"] = insight
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await hub.broadcast(
+        {
+            "type": broadcast_type,
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "job_id": job_id,
+            "demand_hash": job["source_hash"],
+            "job": job,
+            "section": body.section,
+            "employee_id": body.employee_id,
+        }
+    )
+    return {"job": job, "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/jobs/{job_id}/complete")
+async def complete_showroom_insight_job(
+    session_id: str,
+    job_id: str,
+    body: InsightCompleteRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("job_id") != job_id:
+            raise HTTPException(status_code=409, detail="洞察任务已切换")
+        insight = copy.deepcopy(data.get("insight") or empty_insight())
+        for event in extract_progress_events(body.content):
+            if (
+                event.get("job_id") == job_id
+                and event.get("kind") == "section"
+                and event.get("section") in SECTION_TYPES
+            ):
+                insight = apply_section(
+                    insight, str(event["section"]), event.get("payload") or {}
+                )
+                if event["section"] not in job.get("completed_sections", []):
+                    job.setdefault("completed_sections", []).append(event["section"])
+        final_payload = extract_final_insight(body.content) or {}
+        if final_payload.get("job_id") != job_id:
+            final_payload = {}
+        for section in final_payload.get("sections") or []:
+            section_type = str(section.get("section") or section.get("type") or "")
+            if section_type in SECTION_TYPES:
+                insight = apply_section(insight, section_type, section.get("payload") or section)
+                if section_type not in job.get("completed_sections", []):
+                    job.setdefault("completed_sections", []).append(section_type)
+
+        required = {"summary", "root_causes", "impacts", "evidence", "recommendation"}
+        complete = required.issubset(set(job.get("completed_sections") or []))
+        status = "completed" if complete else "partial"
+        insight["status"] = status
+        insight["raw_markdown"] = visible_insight_message(body.content)[:60_000]
+        insight["generated_at"] = now_iso()
+        job.update(
+            {
+                "status": status,
+                "active_stage": status,
+                "active_employee_id": "",
+                "updated_at": now_iso(),
+                "error": "" if complete else "部分章节尚未完成",
+            }
+        )
+
+        plan = copy.deepcopy(data.get("staffing_plan") or {})
+        for squad in plan.get("squads") or []:
+            squad["status"] = status
+            for employee in squad.get("employees") or []:
+                if employee.get("status") not in {"blocked", "failed"}:
+                    employee["status"] = "done"
+
+        artifacts = copy.deepcopy(data.get("artifacts") or {})
+        artifacts["需求合理性·调研支撑"] = {
+            "title": "需求合理性·调研支撑",
+            "owner": "IPD-01",
+            "kind": "document",
+            "content": {
+                "summary": insight.get("judgment") or "深度洞察已形成",
+                "demand": (data.get("demand") or {}).get("core_problem", ""),
+                "target": (data.get("demand") or {}).get("target_metric", ""),
+                "sources": insight.get("sources") or [],
+                "ipd_handoff": insight.get("ipd_handoff") or {},
+            },
+            "updated_at": now_iso(),
+        }
+        data["insight"] = insight
+        data["insight_job"] = job
+        data["staffing_plan"] = plan
+        data["artifacts"] = artifacts
+        row.data = data
+        row.step = max(row.step, 3)
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await hub.broadcast(
+        {
+            "type": "INSIGHT_JOB_COMPLETED",
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "job_id": job_id,
+            "demand_hash": job["source_hash"],
+            "job": job,
+        }
+    )
+    return {"job": job, "insight": insight, "session": session_payload}
+
+
+async def _finish_showroom_insight_job(
+    session_id: str,
+    job_id: str,
+    message: str,
+    status: Literal["failed", "interrupted"],
+    tenant_key: str,
+) -> dict[str, Any]:
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("job_id") != job_id:
+            raise HTTPException(status_code=409, detail="洞察任务已切换")
+        active_employee_id = str(job.get("active_employee_id") or "")
+        job.update(
+            {
+                "status": status,
+                "active_stage": status,
+                "active_employee_id": "",
+                "updated_at": now_iso(),
+                "error": message[:4000],
+            }
+        )
+        plan = copy.deepcopy(data.get("staffing_plan") or {})
+        for squad in plan.get("squads") or []:
+            squad["status"] = status
+            for employee in squad.get("employees") or []:
+                if employee.get("employee_id") == active_employee_id:
+                    employee["status"] = "failed" if status == "failed" else "waiting"
+        data["insight_job"] = job
+        data["staffing_plan"] = plan
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await hub.broadcast(
+        {
+            "type": "INSIGHT_JOB_FAILED" if status == "failed" else "INSIGHT_STAGE_UPDATED",
+            "session_id": session_id,
+            "epoch": hub.state.get("epoch", 0),
+            "job_id": job_id,
+            "demand_hash": job["source_hash"],
+            "job": job,
+        }
+    )
+    return {"job": job, "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/jobs/{job_id}/fail")
+async def fail_showroom_insight_job(
+    session_id: str,
+    job_id: str,
+    body: InsightFailureRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    return await _finish_showroom_insight_job(
+        session_id,
+        job_id,
+        body.message or "V1.7 洞察任务未完成",
+        "failed",
+        str(payload.get("tenant_key") or "demo"),
+    )
+
+
+@router.post("/sessions/{session_id}/insight/jobs/{job_id}/interrupt")
+async def interrupt_showroom_insight_job(
+    session_id: str,
+    job_id: str,
+    body: InsightFailureRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    return await _finish_showroom_insight_job(
+        session_id,
+        job_id,
+        body.message or "用户已停止生成",
+        "interrupted",
+        str(payload.get("tenant_key") or "demo"),
+    )
 
 
 @router.post("/sessions/{session_id}/ipd/{phase_index}/generate")
