@@ -66,7 +66,7 @@ class KnowledgeCatalog(Base):
     title: Mapped[str] = mapped_column(String(128), nullable=False)
     doc_count: Mapped[int] = mapped_column(Integer, default=0)
     open: Mapped[bool] = mapped_column(Boolean, default=True)
-    security_level: Mapped[str] = mapped_column(String(16), default="green")
+    security_level: Mapped[str] = mapped_column(String(16), default="pending")
     owner_tenant: Mapped[str] = mapped_column(String(64), default="public")
     entitlement_key: Mapped[str] = mapped_column(String(128), default="")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

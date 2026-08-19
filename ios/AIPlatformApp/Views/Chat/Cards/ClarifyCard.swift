@@ -61,10 +61,17 @@ public struct ClarifyCard: View {
                 .foregroundColor(AppTheme.Colors.textPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(block.multiSelect ? "可选择多项，确认后继续下一个问题" : "选择最符合的一项，确认后继续下一个问题")
+            Text(helperText)
                 .font(AppTheme.Typography.supporting)
                 .foregroundColor(AppTheme.Colors.textSecondary)
         }
+    }
+
+    private var helperText: String {
+        if block.source == "workflow" {
+            return block.multiSelect ? "可选择多项，提交后保存到任务需求" : "选择一项并明确确认，任务进度会自动保存"
+        }
+        return block.multiSelect ? "可选择多项，确认后继续下一个问题" : "选择最符合的一项，确认后继续下一个问题"
     }
 
     // MARK: - Submitted Badge
@@ -167,13 +174,14 @@ public struct ClarifyCard: View {
                 RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                     .stroke(AppTheme.Colors.border.opacity(0.5), lineWidth: 0.5)
             )
+            .accessibilityLabel("需求补充内容")
     }
 
     // MARK: - Multi-select Submit Button
     private var submitButtonView: some View {
         let hasSelection = !selectedIDs.isEmpty || !customText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return Button(action: submitMultiSelect) {
-            Label("确认并继续", systemImage: "arrow.right")
+            Label(block.submitLabel, systemImage: "arrow.right")
         }
         .disabled(!hasSelection)
         .buttonStyle(QuantumPrimaryButtonStyle())

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.services.knowledge_catalog import compute_catalog
@@ -89,6 +89,7 @@ async def validate_plan_policy(
     allow_network: bool,
     max_tokens: int,
     knowledge_scope: list[str],
+    owner_user_id: str = "",
 ) -> None:
     """Validate mutable plan fields that the structural DSL compiler cannot know."""
     from backend.models.agent_registry import agent_ids
@@ -99,6 +100,10 @@ async def validate_plan_policy(
                 select(TenantAgentModel.id).where(
                     TenantAgentModel.tenant_id == tenant,
                     TenantAgentModel.is_active.is_(True),
+                    or_(
+                        TenantAgentModel.visibility != "private",
+                        TenantAgentModel.owner_user_id == owner_user_id,
+                    ),
                 )
             )
         )
@@ -126,13 +131,19 @@ async def validate_plan_policy(
         raise ValueError(f"节点预算合计 {node_budget} 超过工作流预算 {max_tokens}")
 
 
-async def _select_tenant_agent(db: AsyncSession, tenant: str, description: str) -> str:
+async def _select_tenant_agent(
+    db: AsyncSession, tenant: str, description: str, owner_user_id: str
+) -> str:
     rows = (
         (
             await db.execute(
                 select(TenantAgentModel).where(
                     TenantAgentModel.tenant_id == tenant,
                     TenantAgentModel.is_active.is_(True),
+                    or_(
+                        TenantAgentModel.visibility != "private",
+                        TenantAgentModel.owner_user_id == owner_user_id,
+                    ),
                 )
             )
         )
@@ -154,7 +165,9 @@ async def _select_tenant_agent(db: AsyncSession, tenant: str, description: str) 
     return agent_id if score > 0 else "main_agent"
 
 
-async def _allowed_agent_ids(db: AsyncSession, tenant: str) -> list[str]:
+async def _allowed_agent_ids(
+    db: AsyncSession, tenant: str, owner_user_id: str
+) -> list[str]:
     from backend.models.agent_registry import agent_ids
 
     db_ids = list(
@@ -163,6 +176,10 @@ async def _allowed_agent_ids(db: AsyncSession, tenant: str) -> list[str]:
                 select(TenantAgentModel.id).where(
                     TenantAgentModel.tenant_id == tenant,
                     TenantAgentModel.is_active.is_(True),
+                    or_(
+                        TenantAgentModel.visibility != "private",
+                        TenantAgentModel.owner_user_id == owner_user_id,
+                    ),
                 )
             )
         ).scalars().all()
@@ -299,7 +316,7 @@ async def build_plan(
 ) -> WorkflowPlanVersion:
     """Create an immediately reviewable plan; execution never starts here."""
     analysis_agent = await _select_tenant_agent(
-        db, workflow.tenant_key, workflow.description
+        db, workflow.tenant_key, workflow.description, workflow.created_by
     )
     scopes = await _effective_knowledge_scopes(db, workflow.tenant_key)
     version = (
@@ -315,7 +332,9 @@ async def build_plan(
         + 1
     )
     plan_id = f"wfp_{uuid.uuid4().hex}"
-    allowed_agents = await _allowed_agent_ids(db, workflow.tenant_key)
+    allowed_agents = await _allowed_agent_ids(
+        db, workflow.tenant_key, workflow.created_by
+    )
     validation_errors: list[str] = []
     raw: dict[str, Any]
     if HERMES_PLANNING_ENABLED:
@@ -346,6 +365,7 @@ async def build_plan(
             allow_network=True,
             max_tokens=24000,
             knowledge_scope=scopes,
+            owner_user_id=workflow.created_by,
         )
     except Exception as exc:
         # 无论 Bridge 还是模型输出不兼容，都返回一份可见但不可批准的安全模板。
@@ -359,6 +379,7 @@ async def build_plan(
             allow_network=True,
             max_tokens=24000,
             knowledge_scope=scopes,
+            owner_user_id=workflow.created_by,
         )
         validation_errors = [
             f"Hermes 计划未通过安全编译，当前仅为安全模板，请重新生成：{str(exc)[:240]}"

@@ -215,12 +215,12 @@ async def require_auth(
         # Only green public categories remain available when the DB/Authen
         # projection cannot be read; configured yellow categories are excluded.
         from backend.api.catalog import compute_catalog
-        from backend.services.knowledge_policy import YELLOW_CATEGORIES
-
         visible = frozenset(
             item["category"]
             for item in compute_catalog()
-            if item["category"] not in YELLOW_CATEGORIES
+            if item.get("security_level") == "green"
+            and item.get("classification_status") == "approved"
+            and item.get("knowledge_level") == "K5"
         )
         policy_version = "degraded-green-only"
 

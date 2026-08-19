@@ -18,6 +18,7 @@ from sqlalchemy import (
     DateTime,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import Mapped, mapped_column
@@ -35,12 +36,39 @@ class TenantAgentModel(Base):
     base_agent_id: Mapped[str] = mapped_column(String(32), nullable=False)
     custom_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     private_prompt_delta: Mapped[str] = mapped_column(Text, default="")
+    owner_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    origin_workflow_id: Mapped[str | None] = mapped_column(String(48), nullable=True, unique=True)
+    visibility: Mapped[str] = mapped_column(String(16), default="tenant")
+    composition_manifest: Mapped[dict] = mapped_column(JSON, default=dict)
     # 挂载的已订阅知识包 ID 列表（JSON）
     subscribed_knowledge_packs: Mapped[list | None] = mapped_column(
         JSON, nullable=True, default=list
     )
     custom_avatar: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class AgentInvocationRelation(Base):
+    """Explicit, auditable calls between user-owned task agents."""
+
+    __tablename__ = "agent_invocation_relations"
+    __table_args__ = (
+        UniqueConstraint(
+            "source_agent_id", "target_agent_id", "workflow_id",
+            name="uq_agent_invocation_relation",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    source_agent_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    target_agent_id: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    workflow_id: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    description: Mapped[str] = mapped_column(String(300), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

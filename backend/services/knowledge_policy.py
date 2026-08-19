@@ -54,10 +54,10 @@ class KnowledgeScopeDenied(ValueError):
 @dataclass(frozen=True)
 class CatalogPolicy:
     category: str
-    security_level: str = "green"
+    security_level: str = "pending"
     owner_tenant: str = "public"
     entitlement_key: str = ""
-    is_active: bool = True
+    is_active: bool = False
 
 
 @dataclass(frozen=True)
@@ -100,15 +100,30 @@ async def _catalog_policy(
     for item in catalog:
         category = str(item["category"])
         row = persisted.get(category)
-        security = str(getattr(row, "security_level", "green") or "green").lower()
-        if category in YELLOW_CATEGORIES:
+        governed_security = str(item.get("security_level") or "pending").lower()
+        security = governed_security
+        if item.get("knowledge_level") != "K5" and row is not None:
+            security = str(getattr(row, "security_level", "pending") or "pending").lower()
+        if item.get("knowledge_level") != "K5" and category in YELLOW_CATEGORIES:
             security = "yellow"
         result[category] = CatalogPolicy(
             category=category,
-            security_level=security if security in {"red", "yellow", "green"} else "red",
-            owner_tenant=str(getattr(row, "owner_tenant", "public") or "public"),
-            entitlement_key=str(getattr(row, "entitlement_key", "") or category),
-            is_active=bool(getattr(row, "is_active", True)),
+            security_level=security if security in {"red", "yellow", "green"} else "pending",
+            owner_tenant=str(
+                item.get("owner_tenant")
+                or (getattr(row, "owner_tenant", "") if row is not None else "")
+                or "public"
+            ),
+            entitlement_key=str(
+                item.get("entitlement_key")
+                or (getattr(row, "entitlement_key", "") if row is not None else "")
+                or category
+            ),
+            is_active=(
+                security in {"red", "yellow", "green"}
+                and bool(item.get("open", True))
+                and bool(getattr(row, "is_active", True) if row is not None else True)
+            ),
         )
     return result
 

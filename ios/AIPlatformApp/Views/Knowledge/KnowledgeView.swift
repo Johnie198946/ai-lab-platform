@@ -10,6 +10,13 @@
 
 import SwiftUI
 
+private enum KnowledgeRecoveryAction: Equatable {
+    case dismiss
+    case retry
+    case refreshCatalog
+    case viewPlans
+}
+
 public struct KnowledgeView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var api: APIClient
@@ -24,6 +31,12 @@ public struct KnowledgeView: View {
     @State private var loadTask: Task<Void, Never>? = nil
     @State private var selectedCategory: CatalogCategory? = nil
     @State private var permissionMessage: String? = nil
+    @State private var recoveryAction: KnowledgeRecoveryAction = .dismiss
+    @State private var showingSubscriptionCenter: Bool = false
+    @State private var highlightedEntitlementKey: String? = nil
+    @State private var walletBusyCategory: String? = nil
+    @State private var successMessage: String? = nil
+    @State private var pendingReviewCount: Int = 0
 
     public init() {}
 
@@ -62,6 +75,10 @@ public struct KnowledgeView: View {
                             demoModeBanner
                         }
 
+                        if appState.currentProfile.role == .masterAdmin && pendingReviewCount > 0 {
+                            governanceReviewBanner
+                        }
+
                         knowledgeWalletSection
                         categorySubscriptionSection
                         subscribedContentSection
@@ -93,13 +110,45 @@ public struct KnowledgeView: View {
                     onDismiss: { selectedCategory = nil }
                 )
             }
+            .sheet(isPresented: $showingSubscriptionCenter) {
+                NavigationStack {
+                    SubscriptionCenterView(highlightedEntitlementKey: highlightedEntitlementKey)
+                }
+            }
             .alert("知识权限", isPresented: Binding(
                 get: { permissionMessage != nil },
                 set: { if !$0 { permissionMessage = nil } }
             )) {
-                Button("知道了", role: .cancel) { permissionMessage = nil }
+                if recoveryAction == .viewPlans {
+                    Button("查看套餐") {
+                        permissionMessage = nil
+                        showingSubscriptionCenter = true
+                    }
+                }
+                if recoveryAction == .retry || recoveryAction == .refreshCatalog {
+                    Button(recoveryAction == .refreshCatalog ? "刷新目录" : "重试") {
+                        permissionMessage = nil
+                        Task { await initialLoad() }
+                    }
+                }
+                Button("关闭", role: .cancel) { permissionMessage = nil }
             } message: {
                 Text(permissionMessage ?? "套餐或知识权限已变化")
+            }
+            .overlay(alignment: .top) {
+                if let successMessage {
+                    Label(successMessage, systemImage: "checkmark.circle.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                        .padding(.horizontal, AppTheme.Spacing.md)
+                        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                        .background(AppTheme.Colors.successSurface)
+                        .clipShape(Capsule())
+                        .overlay { Capsule().stroke(AppTheme.Colors.border, lineWidth: 0.75) }
+                        .padding(.top, AppTheme.Spacing.sm)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .accessibilityAddTraits(.isStaticText)
+                }
             }
         }
     }
@@ -165,6 +214,25 @@ public struct KnowledgeView: View {
         .padding(AppTheme.Spacing.sm)
         .background(AppTheme.Colors.securityYellow)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+    }
+
+    private var governanceReviewBanner: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "checklist.unchecked")
+                .font(.system(size: 13, weight: .semibold))
+            VStack(alignment: .leading, spacing: 2) {
+                Text("知识治理待复核")
+                    .font(.system(size: 12, weight: .bold))
+                Text("还有 \(pendingReviewCount) 篇知识未完成权限与准入确认，不会进入检索。")
+                    .font(.system(size: 11))
+            }
+            Spacer()
+        }
+        .foregroundColor(AppTheme.Colors.textPrimary)
+        .padding(AppTheme.Spacing.md)
+        .background(AppTheme.Colors.warningSurface)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .accessibilityElement(children: .combine)
     }
 
     // MARK: - 上层：类目订阅卡
@@ -236,6 +304,7 @@ public struct KnowledgeView: View {
                         CategorySubscriptionCard(
                             category: cat,
                             isSubscribed: subscriptions.contains(cat.category),
+                            isLoading: walletBusyCategory == cat.category,
                             onToggle: { toggleSubscription(cat) }
                         )
                     }
@@ -346,15 +415,24 @@ public struct KnowledgeView: View {
     private func initialLoad() async {
         loadTask = Task {
             isLoadingCatalog = true
-            // 类目（联网，失败回退 Mock）
-            if let cats = try? await api.fetchCatalog(), !cats.isEmpty {
-                catalog = cats
-            } else if catalog.isEmpty {
-                catalog = Self.mockCatalog
+            do {
+                let response = try await api.fetchCatalog()
+                catalog = response.catalog
+                pendingReviewCount = response.pendingReviewCount ?? 0
+            } catch {
+                if api.isOfflineMode && catalog.isEmpty {
+                    catalog = Self.mockCatalog
+                } else {
+                    catalog = []
+                    pendingReviewCount = 0
+                    permissionMessage = "知识目录不可用或权限已经变化，请刷新后重试。"
+                    recoveryAction = .refreshCatalog
+                }
             }
             // 我的知识钱包（旧 subscriptions 接口仅作一个版本兼容）
             if let subs = try? await api.fetchSubscriptions() {
-                subscriptions = Set(subs)
+                let validCategories = Set(catalog.map(\.category))
+                subscriptions = Set(subs).intersection(validCategories)
             } else if !catalog.isEmpty {
                 subscriptions = Set(catalog.filter { $0.inWallet == true }.map(\.category))
             } else if subscriptions.isEmpty {
@@ -367,9 +445,12 @@ public struct KnowledgeView: View {
 
     private func toggleSubscription(_ cat: CatalogCategory) {
         if cat.accessState == "upgrade_required" {
-            permissionMessage = "该黄色受限知识未包含在当前组织套餐中，请由组织管理员升级套餐。"
+            highlightedEntitlementKey = cat.entitlementKey
+            selectedCategory = nil
+            DispatchQueue.main.async { showingSubscriptionCenter = true }
             return
         }
+        guard walletBusyCategory == nil else { return }
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
@@ -383,17 +464,53 @@ public struct KnowledgeView: View {
             return
         }
         loadTask = Task {
+            walletBusyCategory = cat.category
+            defer { walletBusyCategory = nil }
             do {
+                let removing = subscriptions.contains(cat.category)
                 if subscriptions.contains(cat.category) {
                     let subs = try await api.unsubscribe(category: cat.category)
-                    subscriptions = Set(subs)
+                    let validCategories = Set(catalog.map(\.category))
+                    subscriptions = Set(subs).intersection(validCategories)
                 } else {
                     let subs = try await api.subscribe(category: cat.category)
-                    subscriptions = Set(subs)
+                    let validCategories = Set(catalog.map(\.category))
+                    subscriptions = Set(subs).intersection(validCategories)
                 }
+                showSuccess(removing ? "已移出知识钱包" : "已加入知识钱包")
             } catch {
-                permissionMessage = "套餐或知识权限已变化，请刷新后重试。"
+                handleKnowledgeError(error, category: cat)
             }
+        }
+    }
+
+    private func showSuccess(_ message: String) {
+        withAnimation(.easeOut(duration: 0.2)) { successMessage = message }
+        Task {
+            try? await Task.sleep(nanoseconds: 2_400_000_000)
+            await MainActor.run {
+                withAnimation(.easeIn(duration: 0.16)) { successMessage = nil }
+            }
+        }
+    }
+
+    private func handleKnowledgeError(_ error: Error, category: CatalogCategory? = nil) {
+        if let apiError = error as? APIError, let detail = apiError.actionable {
+            permissionMessage = detail.message
+            switch detail.action {
+            case "view_plans":
+                highlightedEntitlementKey = category?.entitlementKey
+                recoveryAction = .viewPlans
+            case "refresh_catalog", "refresh_permissions":
+                recoveryAction = .refreshCatalog
+            case "retry":
+                recoveryAction = .retry
+            default:
+                recoveryAction = .dismiss
+            }
+        } else {
+            permissionMessage = error.localizedDescription
+            recoveryAction = api.isOfflineMode ? .retry : .refreshCatalog
         }
     }
 
@@ -413,12 +530,17 @@ public struct KnowledgeView: View {
             }
             return
         }
-        if let docs = try? await api.search(query: q) {
-            searchDocs = docs
-        } else {
-            searchDocs = Self.mockDocs.filter {
-                $0.title.localizedCaseInsensitiveContains(q)
-                    || $0.snippet.localizedCaseInsensitiveContains(q)
+        do {
+            searchDocs = try await api.search(query: q)
+        } catch {
+            if api.isOfflineMode {
+                searchDocs = Self.mockDocs.filter {
+                    $0.title.localizedCaseInsensitiveContains(q)
+                        || $0.snippet.localizedCaseInsensitiveContains(q)
+                }
+            } else {
+                searchDocs = []
+                handleKnowledgeError(error)
             }
         }
     }
@@ -536,7 +658,9 @@ private struct KnowledgeWalletDetail: View {
                         detailRow("权限来源", value: category.permissionSource, icon: "key.fill")
                         detailRow("钱包状态", value: isSubscribed ? "参与默认检索" : "未加入", icon: "checkmark.seal.fill")
                         detailRow("内容规模", value: "\(category.docCount) 篇", icon: "doc.on.doc.fill")
-                        detailRow("索引范围", value: category.pathPrefix, icon: "point.3.connected.trianglepath.dotted")
+                        detailRow("知识成熟度", value: category.maturityLabel, icon: "chart.line.uptrend.xyaxis")
+                        detailRow("新鲜度", value: category.freshnessLabel, icon: "clock.badge.checkmark.fill")
+                        detailRow("来源证据", value: "\(category.sourceCount ?? 0) 条", icon: "link.badge.plus")
 
                         Button(action: onToggle) {
                             Label(category.walletActionLabel(isInWallet: isSubscribed), systemImage: isSubscribed ? "minus" : "plus")
@@ -589,6 +713,7 @@ private struct KnowledgeWalletDetail: View {
 public struct CategorySubscriptionCard: View {
     public let category: CatalogCategory
     public let isSubscribed: Bool
+    public let isLoading: Bool
     public var onToggle: () -> Void
 
     public var body: some View {
@@ -603,7 +728,7 @@ public struct CategorySubscriptionCard: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(AppTheme.Colors.textPrimary)
                     .lineLimit(1)
-                Text("\(category.docCount) 篇 · \(category.category)")
+                Text("\(category.docCount) 篇 · \(category.maturityLabel) · \(category.freshnessLabel)")
                     .font(.system(size: 11))
                     .foregroundColor(AppTheme.Colors.textTertiary)
                     .lineLimit(1)
@@ -616,14 +741,19 @@ public struct CategorySubscriptionCard: View {
 
             Button(action: onToggle) {
                 HStack(spacing: 4) {
-                    Image(systemName: category.accessState == "upgrade_required" ? "lock.fill" : (isSubscribed ? "checkmark" : "plus"))
-                        .font(.system(size: 11, weight: .bold))
+                    if isLoading {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: category.accessState == "upgrade_required" ? "lock.fill" : (isSubscribed ? "checkmark" : "plus"))
+                            .font(.system(size: 11, weight: .bold))
+                    }
                     Text(category.walletActionLabel(isInWallet: isSubscribed))
                         .font(.system(size: 12, weight: .bold))
                 }
                 .foregroundColor(isSubscribed ? AppTheme.Icons.success : AppTheme.Icons.onAccent)
                 .padding(.horizontal, 12)
-                .padding(.vertical, 6)
+                .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                 .background(
                     isSubscribed
                         ? AnyShapeStyle(AppTheme.Colors.successSurface)
@@ -632,6 +762,8 @@ public struct CategorySubscriptionCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
             }
             .buttonStyle(SoftButtonStyle())
+            .disabled(isLoading)
+            .accessibilityLabel(isLoading ? "正在更新知识钱包" : category.walletActionLabel(isInWallet: isSubscribed))
         }
         .padding(AppTheme.Spacing.md)
         .background(AppTheme.Colors.cardBackground)
@@ -667,6 +799,18 @@ private extension CatalogCategory {
         case "private": return "所属租户私有资产"
         default: return "正式租户默认可用"
         }
+    }
+
+    var maturityLabel: String {
+        switch knowledgeLevel {
+        case "K5": return "K5 · 正式知识"
+        case "K4": return "K4 · 已蒸馏"
+        default: return "未完成治理"
+        }
+    }
+
+    var freshnessLabel: String {
+        freshness == "stale" ? "需要复核" : "当前有效"
     }
 
     func walletActionLabel(isInWallet: Bool) -> String {
@@ -723,27 +867,16 @@ public struct SearchGroupCard: View {
 
 extension KnowledgeView {
     static let mockCatalog: [CatalogCategory] = [
-        CatalogCategory(category: "wiki", pathPrefix: "wiki/", title: "编译知识条目", docCount: 128, open: true),
-        CatalogCategory(category: "raw", pathPrefix: "raw/", title: "原始资料", docCount: 342, open: true),
-        CatalogCategory(category: "研究系统", pathPrefix: "研究系统/", title: "研究报告与来源卡片", docCount: 56, open: true),
-        CatalogCategory(category: "竞品情报", pathPrefix: "竞品情报/", title: "竞品分析", docCount: 87, open: true),
-        CatalogCategory(category: "AI情报雷达", pathPrefix: "AI情报雷达/", title: "情报日报", docCount: 214, open: true),
-        CatalogCategory(category: "产品设计", pathPrefix: "产品设计/", title: "产品文档", docCount: 43, open: true),
-        CatalogCategory(category: "客户画像", pathPrefix: "客户画像/", title: "客户资料", docCount: 31, open: true),
-        CatalogCategory(category: "任务记录", pathPrefix: "任务记录/", title: "项目任务记录", docCount: 76, open: true),
-        CatalogCategory(category: "决策记录", pathPrefix: "决策记录/", title: "决策记录", docCount: 58, open: true),
-        CatalogCategory(category: "knowledge/行业知识/金融", pathPrefix: "knowledge/行业知识/金融/", title: "金融", docCount: 23, open: true),
-        CatalogCategory(category: "knowledge/行业知识/制造", pathPrefix: "knowledge/行业知识/制造/", title: "制造", docCount: 41, open: true),
+        CatalogCategory(category: "knowledge/methodology/public", pathPrefix: "wiki/", title: "公共方法论", docCount: 18, open: true, securityLevel: "green", accessState: "available", inWallet: true, knowledgeLevel: "K5", classificationStatus: "approved", freshness: "current", sourceCount: 46),
+        CatalogCategory(category: "knowledge/competitor-topic/entitlement/premium-intelligence", pathPrefix: "wiki/", title: "专业竞品情报", docCount: 12, open: true, securityLevel: "yellow", entitlementKey: "premium-intelligence", accessState: "upgrade_required", inWallet: false, knowledgeLevel: "K5", classificationStatus: "approved", freshness: "current", sourceCount: 38),
+        CatalogCategory(category: "knowledge/customer/private/demo", pathPrefix: "wiki/", title: "租户私有客户知识", docCount: 6, open: true, securityLevel: "red", ownerTenant: "demo", accessState: "private", inWallet: true, knowledgeLevel: "K5", classificationStatus: "approved", freshness: "stale", sourceCount: 17),
     ]
 
-    static let mockSubscriptions: [String] = ["wiki", "竞品情报"]
+    static let mockSubscriptions: [String] = ["knowledge/methodology/public", "knowledge/customer/private/demo"]
 
     static let mockDocs: [SearchDoc] = [
-        SearchDoc(path: "wiki/模型观察.md", title: "模型观察", score: 12, snippet: "DeepSeek 新模型发布，推理成本显著下降。"),
-        SearchDoc(path: "wiki/华为.md", title: "华为", score: 10, snippet: "芯片物理极限与昇腾 AI 集群。"),
-        SearchDoc(path: "竞品情报/DeepSeek.md", title: "DeepSeek", score: 9, snippet: "竞品动态：开源模型与定价策略。"),
-        SearchDoc(path: "knowledge/行业知识/金融/动态.md", title: "金融动态", score: 8, snippet: "分布式对账与防重放协议实践。"),
-        SearchDoc(path: "knowledge/行业知识/制造/SMT.md", title: "SMT 设备健康指标", score: 7, snippet: "贴片机真空吸嘴负压告警阈值。"),
+        SearchDoc(path: "wiki/方法论/模型观察.md", title: "模型观察", score: 12, snippet: "演示数据：正式 K5 知识摘要。", knowledgePack: "knowledge/methodology/public", knowledgeLevel: "K5", classificationStatus: "approved", securityLevel: "green", freshness: "current", sourceCount: 2),
+        SearchDoc(path: "wiki/客户/示例客户.md", title: "示例客户", score: 10, snippet: "演示数据：租户私有知识。", knowledgePack: "knowledge/customer/private/demo", knowledgeLevel: "K5", classificationStatus: "approved", securityLevel: "red", freshness: "current", sourceCount: 3),
     ]
 }
 

@@ -1,4 +1,4 @@
-"""知识分类目录 + 订阅管理（订阅制逻辑多租户）。
+"""逻辑知识包目录 + 知识钱包（订阅制逻辑多租户）。
 
 - GET    /api/v1/catalog                      可订阅分类目录（登录即可）
 - GET    /api/v1/me/subscriptions             我的订阅
@@ -14,7 +14,10 @@ from pydantic import BaseModel
 from backend.api.auth import require_auth
 from backend.api import knowledge
 from backend.services.knowledge_policy import KnowledgeScopeDenied, resolve_policy
-from backend.services.knowledge_catalog import compute_catalog as _compute_catalog
+from backend.services.knowledge_catalog import (
+    compute_catalog as _compute_catalog,
+    pending_review_count,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
 
@@ -29,30 +32,19 @@ SYSTEM_DIRS = {
     "_archive",
 }
 
-# ---------------------------------------------------------------------------
-# Catalog 白名单（v6 硬锁）：只有显式白名单目录可被订阅，禁止反射扫描泄露。
-# ---------------------------------------------------------------------------
-
-# 9 个公共可订阅顶层目录（物理白名单，顺序即目录展示顺序）
-PUBLIC_CATEGORIES: tuple[str, ...] = (
-    "wiki",
-    "raw",
-    "研究系统",
-    "竞品情报",
-    "AI情报雷达",
-    "产品设计",
-    "客户画像",
-    "任务记录",
-    "决策记录",
-)
-
-# 行业知识二级展开前缀：knowledge/行业知识/<domain>
-INDUSTRY_KNOWLEDGE_PREFIX = "knowledge/行业知识"
-
-# 物理不可订阅目录（防御性硬编码：即使目录真实存在也绝不进入 /catalog）
+# 物理目录永远不可作为逻辑知识包订阅。
 FORBIDDEN_CATEGORIES = frozenset(
     {
-        "knowledge",   # knowledge/ 根不可订阅，仅其下行业知识二级展开
+        "knowledge",
+        "wiki",
+        "raw",
+        "研究系统",
+        "竞品情报",
+        "AI情报雷达",
+        "产品设计",
+        "客户画像",
+        "任务记录",
+        "决策记录",
         "tenants",
         "sandbox",
         "scripts",
@@ -65,19 +57,6 @@ FORBIDDEN_CATEGORIES = frozenset(
         ".DS_Store",
     }
 )
-
-CATEGORY_TITLES = {
-    "研究系统": "研究报告与来源卡片",
-    "wiki": "编译知识条目",
-    "产品设计": "产品文档",
-    "raw": "原始资料",
-    "AI情报雷达": "情报日报",
-    "竞品情报": "竞品分析",
-    "客户画像": "客户资料",
-    "任务记录": "项目任务记录",
-    "决策记录": "决策记录",
-}
-
 
 def compute_catalog() -> list[dict]:
     """HTTP-layer catalog view; keeps API test/runtime vault overrides intact."""
@@ -120,7 +99,10 @@ async def get_catalog(payload=Depends(require_auth)):
             "access_state": state,
             "in_wallet": category in policy.wallet,
         })
-    return {"catalog": enriched, "policy_version": policy.policy_version}
+    response = {"catalog": enriched, "policy_version": policy.policy_version}
+    if payload.get("is_super_admin"):
+        response["pending_review_count"] = pending_review_count(knowledge._vault())
+    return response
 
 
 @router.get("/me/subscriptions")
@@ -140,11 +122,35 @@ async def my_subscriptions(payload=Depends(require_auth)):
                 )
             )
         ).scalars().all()
-    return {"tenant_key": tenant_key, "categories": sorted(rows)}
+    valid_categories = {item["category"] for item in compute_catalog()}
+    return {
+        "tenant_key": tenant_key,
+        "categories": sorted(set(rows).intersection(valid_categories)),
+    }
 
 
 class SubscribeRequest(BaseModel):
     category: str
+
+
+def _wallet_error(
+    status_code: int,
+    *,
+    code: str,
+    message: str,
+    action: str,
+    retryable: bool,
+) -> HTTPException:
+    """Stable, actionable error envelope shared by old and new clients."""
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "code": code,
+            "message": message,
+            "action": action,
+            "retryable": retryable,
+        },
+    )
 
 
 class CatalogPolicyUpdate(BaseModel):
@@ -158,9 +164,12 @@ class CatalogPolicyUpdate(BaseModel):
 async def update_catalog_policy(
     category: str, body: CatalogPolicyUpdate, payload=Depends(require_auth)
 ):
-    """Manage catalog classification without turning wallet state into a grant."""
+    """Only enable/disable a compiled pack; classification lives in Obsidian."""
     if not payload.get("is_super_admin"):
         raise HTTPException(status_code=403, detail="admin scope required")
+    item = next((item for item in compute_catalog() if item["category"] == category), None)
+    if item is None:
+        raise HTTPException(status_code=404, detail="compiled knowledge pack not found")
     level = body.security_level.lower()
     if level not in {"green", "yellow", "red"}:
         raise HTTPException(status_code=422, detail="invalid security level")
@@ -170,9 +179,11 @@ async def update_catalog_policy(
         raise HTTPException(status_code=422, detail="yellow knowledge requires an exact entitlement key")
     if level == "red" and not body.owner_tenant.strip():
         raise HTTPException(status_code=422, detail="red knowledge requires owner_tenant")
-    item = next((item for item in compute_catalog() if item["category"] == category), None)
-    if item is None:
-        raise HTTPException(status_code=404, detail="category not found")
+    if level != item.get("security_level"):
+        raise HTTPException(
+            status_code=409,
+            detail="security classification must be edited in Obsidian and recompiled",
+        )
     from backend.db import SessionLocal
     from backend.models.tenant import KnowledgeCatalog
 
@@ -184,9 +195,9 @@ async def update_catalog_policy(
                 doc_count=item["doc_count"], open=item["open"],
             )
             db.add(row)
-        row.security_level = level
-        row.owner_tenant = body.owner_tenant if level == "red" else "public"
-        row.entitlement_key = body.entitlement_key if level == "yellow" else ""
+        row.security_level = str(item["security_level"])
+        row.owner_tenant = str(item.get("owner_tenant") or "public")
+        row.entitlement_key = str(item.get("entitlement_key") or "")
         row.is_active = body.is_active
         await db.commit()
     return {"category": category, "security_level": level, "updated": True}
@@ -195,14 +206,22 @@ async def update_catalog_policy(
 @router.post("/me/subscriptions")
 async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
     """兼容端点：把当前可读类目加入知识钱包，不授予读取权限。"""
-    if body.category in FORBIDDEN_CATEGORIES:
-        raise HTTPException(
-            status_code=404, detail=f"分类不存在: {body.category}"
+    return await _add_wallet_category(body.category, payload)
+
+
+async def _add_wallet_category(category: str, payload: dict) -> dict:
+    category = category.strip()
+    if category in FORBIDDEN_CATEGORIES:
+        raise _wallet_error(
+            404, code="catalog_item_not_found", message="该知识包已下线或尚未完成治理",
+            action="refresh_catalog", retryable=True,
         )
-    catalog = {c["category"] for c in compute_catalog()}
-    if body.category not in catalog:
-        raise HTTPException(
-            status_code=404, detail=f"分类不存在: {body.category}"
+    catalog_items = compute_catalog()
+    catalog = {c["category"] for c in catalog_items}
+    if category not in catalog:
+        raise _wallet_error(
+            404, code="catalog_item_not_found", message="知识目录已经更新，请刷新后重试",
+            action="refresh_catalog", retryable=True,
         )
     from sqlalchemy import select
 
@@ -215,40 +234,56 @@ async def subscribe(body: SubscribeRequest, payload=Depends(require_auth)):
             db,
             tenant_key=tenant_key,
             org_id=payload.get("org_id", ""),
-            catalog=compute_catalog(),
+            catalog=catalog_items,
             is_guest=str(payload.get("role") or "") == "guest",
         )
-        if body.category not in policy.effective_categories:
-            raise HTTPException(
-                status_code=403,
-                detail={"code": KnowledgeScopeDenied.code, "message": "套餐或知识权限已变化"},
+        if category not in policy.effective_categories:
+            item = next(item for item in catalog_items if item["category"] == category)
+            is_yellow = str(item.get("security_level") or "") == "yellow"
+            raise _wallet_error(
+                403,
+                code="entitlement_required" if is_yellow else KnowledgeScopeDenied.code,
+                message="当前组织套餐尚未包含该知识" if is_yellow else "套餐或知识权限已变化",
+                action="view_plans" if is_yellow else "refresh_permissions",
+                retryable=False,
             )
         exists = (
             await db.execute(
                 select(KnowledgeSubscription).where(
                     KnowledgeSubscription.tenant_key == tenant_key,
-                    KnowledgeSubscription.category == body.category,
+                    KnowledgeSubscription.category == category,
                 )
             )
         ).scalar_one_or_none()
         if exists is None:
             db.add(
                 KnowledgeSubscription(
-                    tenant_key=tenant_key, category=body.category
+                    tenant_key=tenant_key, category=category
                 )
             )
             await db.commit()
     return {"tenant_key": tenant_key, "categories": await _subs(tenant_key)}
 
 
+@router.put("/me/knowledge-wallet")
+async def add_to_wallet_body(body: SubscribeRequest, payload=Depends(require_auth)):
+    """Preferred endpoint: category stays in JSON, so Unicode/slashes cannot be double encoded."""
+    return await _add_wallet_category(body.category, payload)
+
+
 @router.put("/me/knowledge-wallet/{category:path}")
 async def add_to_wallet(category: str, payload=Depends(require_auth)):
-    return await subscribe(SubscribeRequest(category=category), payload)
+    return await _add_wallet_category(category, payload)
 
 
-@router.delete("/me/subscriptions/{category}")
+@router.delete("/me/subscriptions/{category:path}")
 async def unsubscribe(category: str, payload=Depends(require_auth)):
     """兼容端点：移出知识钱包，不改变基础读取权限。"""
+    return await _remove_wallet_category(category, payload)
+
+
+async def _remove_wallet_category(category: str, payload: dict) -> dict:
+    category = category.strip()
     from sqlalchemy import delete
 
     from backend.db import SessionLocal
@@ -266,9 +301,14 @@ async def unsubscribe(category: str, payload=Depends(require_auth)):
     return {"tenant_key": tenant_key, "categories": await _subs(tenant_key)}
 
 
+@router.delete("/me/knowledge-wallet")
+async def remove_from_wallet_body(body: SubscribeRequest, payload=Depends(require_auth)):
+    return await _remove_wallet_category(body.category, payload)
+
+
 @router.delete("/me/knowledge-wallet/{category:path}")
 async def remove_from_wallet(category: str, payload=Depends(require_auth)):
-    return await unsubscribe(category, payload)
+    return await _remove_wallet_category(category, payload)
 
 
 @router.get("/me/knowledge-access")
@@ -313,4 +353,5 @@ async def _subs(tenant_key: str) -> list[str]:
                 )
             )
         ).scalars().all()
-    return sorted(rows)
+    valid_categories = {item["category"] for item in compute_catalog()}
+    return sorted(set(rows).intersection(valid_categories))

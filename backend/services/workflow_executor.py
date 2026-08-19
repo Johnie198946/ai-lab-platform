@@ -20,10 +20,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.services.knowledge_catalog import compute_catalog
 from backend.db import SessionLocal
 from backend.models.tenant import TenantMapping
+from backend.models.tenant_agent import TenantAgentModel
 from backend.models.workflow import (
     WorkflowArtifact,
     WorkflowEvent,
     WorkflowExecution,
+    WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowPlanVersion,
 )
@@ -154,6 +156,11 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
             requested_scopes=allowed_scope,
             ttl_seconds=900,
         )
+        workflow = await policy_db.get(WorkflowDefinition, execution.workflow_id)
+        task_agent = (
+            await policy_db.get(TenantAgentModel, workflow.primary_agent_id)
+            if workflow and workflow.primary_agent_id else None
+        )
     payload = {
         "tenant_id": execution.tenant_key,
         "execution_id": execution.id,
@@ -166,6 +173,11 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
         "knowledge_capability": capability,
         "knowledge_policy_version": policy.policy_version,
         "max_tokens": plan.max_tokens,
+        "agent_config": {
+            "id": task_agent.id,
+            "prompt": task_agent.private_prompt_delta,
+            "composition": task_agent.composition_manifest or {},
+        } if task_agent else {},
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(

@@ -281,6 +281,7 @@ class WorkflowRunRequest(BaseModel):
     max_tokens: int = Field(24000, ge=1000, le=128000)
     knowledge_capability: str = Field(..., min_length=20)
     knowledge_policy_version: str = Field(..., min_length=8, max_length=80)
+    agent_config: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowRetryRequest(BaseModel):
@@ -854,12 +855,30 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         else "本节点禁止调用工具；只基于当前 Session 已有的上游成果完成转换、分析或格式化。"
     )
     upstream = chr(10).join(completed) if completed else "无直接依赖或上游暂无成果"
+    agent_config = run.get("agent_config") or {}
+    composition = agent_config.get("composition") or {}
+    allowed_agents = set(composition.get("capability_agent_ids") or []) | set(
+        composition.get("invoked_agent_ids") or []
+    )
+    requested_agent = str(params.get("agent_id") or "main_agent")
+    if allowed_agents and requested_agent not in allowed_agents:
+        raise RuntimeError(f"Agent {requested_agent} 不在已批准的任务能力组合中")
+    task_directive = str(agent_config.get("prompt") or "")[:3000]
+    delegation = composition.get("delegation") or {}
+    task_boundaries = (
+        f"允许能力={sorted(allowed_agents) if allowed_agents else ['平台基线']}；"
+        f"知识范围={composition.get('knowledge_scope') or []}；"
+        f"子 Agent 并发上限={delegation.get('max_concurrent_children', 0)}；"
+        f"委派深度上限={delegation.get('max_spawn_depth', 0)}"
+    )
     return (
         "你是 Hermes 工作流编排引擎，正在同一个持久 Session 中推进已获用户批准的 DAG。\n"
+        f"任务专用 Agent 指令：{task_directive or '使用平台基线约束'}\n"
+        f"批准的运行边界：{task_boundaries}\n"
         f"工作流目标：{run.get('goal', '')}\n"
         f"最终交付：{run.get('deliverable', '')}\n"
         f"当前节点：{node.get('name') or node.get('id')} ({node.get('node_type')})\n"
-        f"指定 Agent：{params.get('agent_id') or 'main_agent'}\n"
+        f"指定 Agent：{requested_agent}\n"
         f"节点要求：{params.get('instruction') or params.get('query') or ''}\n"
         f"输出格式：{params.get('output_format') or '结构化 Markdown'}\n"
         f"篇幅约束：最终可落盘正文不超过 {output_char_limit} 个中文字符，优先保留事实、引用与未解决缺口。\n"

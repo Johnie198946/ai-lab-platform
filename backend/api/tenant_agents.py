@@ -58,6 +58,10 @@ class TenantAgentOut(BaseModel):
     base_agent_id: str
     custom_name: Optional[str] = None
     private_prompt_delta: str = ""
+    owner_user_id: Optional[str] = None
+    origin_workflow_id: Optional[str] = None
+    visibility: str = "tenant"
+    composition_manifest: Dict[str, Any] = Field(default_factory=dict)
     subscribed_knowledge_packs: List[str] = []
     locked_knowledge_packs: List[str] = []
     custom_avatar: Optional[str] = None
@@ -77,6 +81,10 @@ def _to_out(m: TenantAgentModel) -> TenantAgentOut:
         base_agent_id=m.base_agent_id,
         custom_name=m.custom_name,
         private_prompt_delta=m.private_prompt_delta or "",
+        owner_user_id=m.owner_user_id,
+        origin_workflow_id=m.origin_workflow_id,
+        visibility=m.visibility or "tenant",
+        composition_manifest=m.composition_manifest or {},
         subscribed_knowledge_packs=sorted(effective),
         locked_knowledge_packs=sorted(locked),
         custom_avatar=m.custom_avatar,
@@ -143,7 +151,10 @@ async def list_tenant_agents(
                 .order_by(TenantAgentModel.created_at)
             )
         ).scalars().all()
+    owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
     for m in rows:
+        if m.visibility == "private" and m.owner_user_id != owner_user_id:
+            continue
         combined.append(_to_out(m))
         seen.add(m.id)
 
@@ -220,7 +231,12 @@ async def delete_tenant_agent(
                 select(TenantAgentModel).where(TenantAgentModel.id == agent_id)
             )
         ).scalar_one_or_none()
-        if row is None or row.tenant_id != tenant_id:
+        owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
+        if (
+            row is None
+            or row.tenant_id != tenant_id
+            or (row.visibility == "private" and row.owner_user_id != owner_user_id)
+        ):
             raise HTTPException(status_code=404, detail="切片不存在")
         await db.delete(row)
         await db.commit()

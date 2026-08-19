@@ -33,6 +33,11 @@ class WorkflowDefinition(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="planning", index=True)
     active_plan_id: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    clarification_session_id: Mapped[str | None] = mapped_column(
+        String(48), nullable=True, unique=True
+    )
+    requirements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    primary_agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -48,6 +53,71 @@ class WorkflowDefinition(Base):
     )
     executions: Mapped[list["WorkflowExecution"]] = relationship(
         back_populates="workflow", cascade="all, delete-orphan"
+    )
+
+
+class WorkflowClarificationSession(Base):
+    """Server-owned, resumable requirement clarification conversation."""
+
+    __tablename__ = "workflow_clarification_sessions"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    phase: Mapped[str] = mapped_column(String(48), default="clarifying", index=True)
+    round_number: Mapped[int] = mapped_column(Integer, default=0)
+    confirmed_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_event_seq: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WorkflowSessionMessage(Base):
+    __tablename__ = "workflow_session_messages"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_workflow_session_message_seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_clarification_sessions.id", ondelete="CASCADE"), index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(32), default="text")
+    content: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WorkflowLifecycleEvent(Base):
+    """Pre-execution lifecycle events; deliberately separate from WorkflowEvent."""
+
+    __tablename__ = "workflow_lifecycle_events"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "seq", name="uq_workflow_lifecycle_event_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

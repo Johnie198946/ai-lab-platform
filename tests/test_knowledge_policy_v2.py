@@ -86,8 +86,10 @@ async def test_capability_is_signed_scoped_and_bound_to_policy(policy_rows):
     assert claims["tenant_key"] == "tenant-a"
     assert claims["subject_id"] == "run-1"
     assert claims["scopes"] == ["premium"]
+    payload, signature = token.split(".", 1)
+    tampered = ("A" if payload[0] != "A" else "B") + payload[1:] + "." + signature
     with pytest.raises(KnowledgeScopeDenied):
-        verify_capability(token[:-1] + ("A" if token[-1] != "A" else "B"))
+        verify_capability(tampered)
 
 
 @pytest.mark.asyncio

@@ -423,6 +423,33 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         self.assertIn("直接证据摘要", prompt)
         self.assertNotIn("不应注入的内容", prompt)
 
+    def test_task_agent_rejects_unapproved_baseline_agent(self):
+        from scripts.hermes_bridge import _workflow_node_prompt
+
+        run = {
+            "goal": "生成报告",
+            "deliverable": "Markdown",
+            "plan": {"nodes": [], "edges": []},
+            "nodes": {},
+            "agent_config": {
+                "prompt": "按批准方案执行",
+                "composition": {
+                    "capability_agent_ids": ["main_agent", "knowledge"],
+                    "invoked_agent_ids": [],
+                    "delegation": {"max_concurrent_children": 3, "max_spawn_depth": 1},
+                },
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "不在已批准"):
+            _workflow_node_prompt(
+                run,
+                {
+                    "id": "code",
+                    "node_type": "PROMPT_TRANSFORM",
+                    "parameters": {"agent_id": "coder"},
+                },
+            )
+
     def test_retrieval_rejects_unfinished_tool_control_text(self):
         from scripts.hermes_bridge import _workflow_output_incomplete
 

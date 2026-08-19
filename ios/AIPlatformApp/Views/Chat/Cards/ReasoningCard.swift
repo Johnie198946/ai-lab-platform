@@ -15,6 +15,7 @@ public struct ReasoningCard: View {
     public var isStreaming: Bool = false
 
     @State private var isExpanded: Bool = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(steps: [ReasoningStep], durationSeconds: Int? = nil, isStreaming: Bool = false) {
         self.steps = steps
@@ -29,23 +30,27 @@ public struct ReasoningCard: View {
             VStack(alignment: .leading, spacing: 0) {
                 // ChatGPT 风格单行极简胶囊
                 Button(action: {
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                    if reduceMotion {
                         isExpanded.toggle()
+                    } else {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                            isExpanded.toggle()
+                        }
                     }
                 }) {
                     HStack(spacing: 6) {
                         Image(systemName: isStreaming ? "brain.head.profile" : "sparkles")
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.caption.weight(.medium))
                             .foregroundColor(AppTheme.Icons.intelligence)
-                            .symbolEffect(.pulse, isActive: isStreaming)
+                            .symbolEffect(.pulse, isActive: isStreaming && !reduceMotion)
 
                         // 胶囊内的单行流式文本切换
                         Text(capsuleText)
-                            .font(.system(size: 12, weight: .medium))
+                            .font(.caption.weight(.medium))
                             .foregroundColor(AppTheme.Colors.textSecondary)
                             .lineLimit(1)
                             .id(capsuleText)
-                            .transition(.opacity.combined(with: .move(edge: .bottom)))
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
 
                         Spacer(minLength: 0)
 
@@ -63,6 +68,7 @@ public struct ReasoningCard: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
+                    .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(SoftButtonStyle())
@@ -84,7 +90,7 @@ public struct ReasoningCard: View {
                     }
                     .padding(.horizontal, 10)
                     .padding(.bottom, 6)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                 }
             }
             .background(AppTheme.Colors.cardBackground.opacity(0.55))
@@ -134,7 +140,7 @@ public struct ReasoningStepRow: View {
                     .fill(dotColor.opacity(0.12))
                     .frame(width: 16, height: 16)
                 Text("\(index)")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.caption2.weight(.bold))
                     .foregroundColor(dotColor)
             }
             .padding(.top, 2)
@@ -142,7 +148,7 @@ public struct ReasoningStepRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(step.title)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.caption.weight(.medium))
                         .foregroundColor(AppTheme.Colors.textPrimary)
 
                     if step.status == "running" {
@@ -154,9 +160,9 @@ public struct ReasoningStepRow: View {
 
                 if !step.detail.isEmpty && step.type != .thought {
                     Text(step.detail)
-                        .font(.system(size: 10))
+                        .font(.caption2)
                         .foregroundColor(AppTheme.Colors.textTertiary)
-                        .lineLimit(1)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(.bottom, isLast ? 0 : 6)

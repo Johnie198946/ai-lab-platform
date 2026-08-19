@@ -27,6 +27,7 @@ from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router
 from backend.api.workflows import router as workflows_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
+from backend.api.subscriptions import router as subscriptions_router
 from backend.db import init_db
 
 
@@ -40,6 +41,9 @@ async def lifespan(app: FastAPI):
         from backend.services.workflow_migration import migrate_legacy_workflows
 
         await migrate_legacy_workflows()
+        from backend.api.workflows import resume_pending_planning
+
+        await resume_pending_planning()
     except Exception:
         # DB 不可用时不阻塞启动(知识库文件驱动功能仍可用)
         pass
@@ -106,6 +110,7 @@ app.include_router(orchestration_router, dependencies=[Depends(require_auth)])
 app.include_router(register_router)
 # 目录 / 订阅管理 / 当前用户
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
+app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
 app.include_router(me_router, dependencies=[Depends(require_auth)])
 # Agent 协议签署
 app.include_router(protocols_router, dependencies=[Depends(require_auth)])
