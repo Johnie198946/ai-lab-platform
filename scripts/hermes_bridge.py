@@ -84,6 +84,12 @@ MAX_INPUT = 12000
 ALLOWED_CHAT_SKILLS = {"solution-consultant-persona"}
 DEFAULT_TIMEOUT = 300
 SERVE_TIMEOUT = 300
+# 工作流节点通常需要检索、工具调用与多 Agent 协作，不能复用聊天请求的
+# 300 秒上限。保持独立且可配置，避免放大全局聊天超时窗口。
+WORKFLOW_NODE_TIMEOUT = max(
+    DEFAULT_TIMEOUT,
+    int(os.environ.get("HERMES_WORKFLOW_NODE_TIMEOUT", "900")),
+)
 # 注：v5 起显式移除「>300s 无更新」stale 判定（STATUS_STALE_SECONDS），
 # timeout 判定统一单一时钟源：run.start_ts 超 STREAM_MAX_DURATION_SECONDS(720s)。
 
@@ -461,7 +467,9 @@ def _session_exists(session_id: str) -> bool:
 # ---------- Hermes CLI 调用 ----------
 
 def _run_hermes_with_usage(
-    goal: str, session_id: str | None = None
+    goal: str,
+    session_id: str | None = None,
+    timeout_seconds: int = DEFAULT_TIMEOUT,
 ) -> tuple[str, str | None, dict[str, Any]]:
     """执行 Hermes CLI。
 
@@ -487,7 +495,7 @@ def _run_hermes_with_usage(
 
     try:
         r = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=DEFAULT_TIMEOUT,
+            cmd, capture_output=True, text=True, timeout=timeout_seconds,
             cwd=HERMES_CWD, env=env,
         )
         reply = r.stdout.strip() if r.returncode == 0 else (
@@ -681,7 +689,9 @@ def _workflow_run_sync(execution_id: str) -> None:
                     message=f"开始：{node.get('name') or node_id}",
                 )
             reply, new_sid, raw_usage = _run_hermes_with_usage(
-                _workflow_node_prompt(run, node), str(hermes_sid) if hermes_sid else None
+                _workflow_node_prompt(run, node),
+                str(hermes_sid) if hermes_sid else None,
+                WORKFLOW_NODE_TIMEOUT,
             )
             if new_sid:
                 hermes_sid = new_sid
