@@ -392,8 +392,9 @@ async def approve_plan(
                 ).scalars().all()
             )
             return execution_out(existing, existing_nodes)
-        if workflow.status != "awaiting_approval":
+        if workflow.status not in {"awaiting_approval", "ready"}:
             raise HTTPException(status_code=409, detail="当前没有待确认的计划")
+        is_rerun = workflow.status == "ready"
         if plan.validation_errors:
             raise HTTPException(status_code=409, detail="计划校验未通过，不能执行")
         compiled = DSLSafetyCompiler.compile_and_validate(plan.dsl)
@@ -444,7 +445,7 @@ async def approve_plan(
                 id=uid("wfa"),
                 workflow_id=workflow.id,
                 execution_id=execution.id,
-                approval_type="plan",
+                approval_type="plan_rerun" if is_rerun else "plan",
                 decision="approved",
                 actor_id=str(payload.get("user_id") or payload.get("sub") or ""),
                 comment=body.comment,

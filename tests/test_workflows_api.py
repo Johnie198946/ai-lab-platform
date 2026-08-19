@@ -147,6 +147,29 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(second.status_code, 201, second.text)
         self.assertEqual(first.json()["id"], second.json()["id"])
 
+    def test_ready_workflow_can_rerun_same_frozen_plan(self):
+        body = self.create()
+        first = self.request(
+            "POST",
+            f"/api/v1/workflows/{body['id']}/approve-plan",
+            json={"request_id": "ios-rerun-first-0001"},
+        )
+        rerun = self.request(
+            "POST",
+            f"/api/v1/workflows/{body['id']}/approve-plan",
+            json={"request_id": "ios-rerun-second-0002"},
+        )
+        duplicate = self.request(
+            "POST",
+            f"/api/v1/workflows/{body['id']}/approve-plan",
+            json={"request_id": "ios-rerun-second-0002"},
+        )
+        self.assertEqual(first.status_code, 201, first.text)
+        self.assertEqual(rerun.status_code, 201, rerun.text)
+        self.assertNotEqual(first.json()["id"], rerun.json()["id"])
+        self.assertEqual(rerun.json()["id"], duplicate.json()["id"])
+        self.assertEqual(first.json()["plan_id"], rerun.json()["plan_id"])
+
     def test_cross_tenant_workflow_is_invisible(self):
         body = self.create()
         response = self.request("GET", f"/api/v1/workflows/{body['id']}", sub="beta")
