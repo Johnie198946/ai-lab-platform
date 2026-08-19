@@ -8,6 +8,8 @@ from backend.services.showroom_insight_review import (
     create_revision,
     empty_insight_review,
     extract_revision_protocol,
+    extract_concept_review,
+    field_catalog_payload,
     looks_like_revision_intent,
     validate_revision_value,
 )
@@ -33,7 +35,7 @@ def complete_insight() -> dict:
             "special_checks": {
                 "cyber": {"status": "conditional"},
                 "reliability": {"status": "pass"},
-                "energy": {"status": "tbd"},
+                "energy": {"status": "tbd", "reason": "等待能耗基线", "owner": "能耗负责人", "action": "补充基线数据"},
                 "function_performance": {"status": "pass"},
             },
             "knowledge_status": {
@@ -58,6 +60,7 @@ def test_complete_concept_report_is_confirmable() -> None:
     coverage = calculate_insight_coverage(complete_insight())
     assert coverage["percent"] == 100
     assert coverage["confirmable"] is True
+    assert coverage["readiness"] == "conditional"
     assert coverage["verified_facts"] == 1
 
 
@@ -113,7 +116,7 @@ def test_explanation_is_not_mistaken_for_revision() -> None:
     assert looks_like_revision_intent("这个判断的依据是什么？") is False
 
 
-def test_revision_is_scoped_to_the_selected_report_section() -> None:
+def test_revision_uses_selected_section_as_hint_and_allows_semantic_cross_section_mapping() -> None:
     review = empty_insight_review()
     review["demand_hash"] = demand_fingerprint(demand())
     protocol = {
@@ -123,25 +126,43 @@ def test_revision_is_scoped_to_the_selected_report_section() -> None:
         "changes": [{"field": "concept.verdict", "after": {"decision": "accept"}}],
     }
     assert allowed_fields_for_section("concept-market") == {"concept.market", "sources"}
-    with pytest.raises(ValueError, match="不属于当前报告章节"):
-        create_revision(
-            protocol,
-            review=review,
-            insight=complete_insight(),
-            job={"job_id": "job-1"},
-            demand=demand(),
-            target_section="concept-market",
-        )
+    revision = create_revision(
+        protocol,
+        review=review,
+        insight=complete_insight(),
+        job={"job_id": "job-1"},
+        demand=demand(),
+        target_section="concept-market",
+    )
+    assert revision["changes"][0]["target_section"] == "concept-verdict"
+    assert revision["affected_sections"] == ["concept-verdict"]
 
-    with pytest.raises(ValueError, match="未知的报告章节"):
-        create_revision(
-            protocol,
-            review=review,
-            insight=complete_insight(),
-            job={"job_id": "job-1"},
-            demand=demand(),
-            target_section="concept-unknown",
-        )
+
+def test_v2_semantic_extraction_preserves_source_and_confidence() -> None:
+    review = empty_insight_review()
+    review["demand_hash"] = demand_fingerprint(demand())
+    protocol = {
+        "schema_version": "2.0",
+        "base_version": "V0.1",
+        "demand_hash": review["demand_hash"],
+        "job_id": "job-1",
+        "preferred_section": "concept-customer",
+        "extractions": [
+            {
+                "source_excerpt": "HR专员需要可审计的权限查询",
+                "semantic_intent": "用户与业务价值",
+                "target_section": "concept-customer",
+                "target_field": "concept.customer_user",
+                "value": {"user": "HR专员", "value": "权限查询可审计"},
+                "confidence": 0.94,
+                "reason": "描述了真实用户和价值",
+            }
+        ],
+    }
+    revision = create_revision(protocol, review=review, insight=complete_insight(), job={"job_id": "job-1"}, demand=demand())
+    assert revision["schema_version"] == "2.0"
+    assert revision["changes"][0]["source_excerpt"].startswith("HR专员")
+    assert revision["changes"][0]["confidence"] == 0.94
 
 
 def test_revision_rejects_html_and_invalid_source_schema() -> None:
@@ -149,3 +170,17 @@ def test_revision_rejects_html_and_invalid_source_schema() -> None:
         validate_revision_value("judgment", "<script>alert(1)</script>")
     with pytest.raises(ValueError, match="日期和置信度"):
         validate_revision_value("sources", [{"url": "https://example.com"}])
+
+
+def test_field_catalog_exposes_semantic_frontend_contract() -> None:
+    catalog = {item["field_id"]: item for item in field_catalog_payload(complete_insight())}
+    assert catalog["concept.customer_user"]["section"] == "concept-customer"
+    assert "业务场景" in catalog["concept.customer_user"]["meaning"]
+    assert catalog["concept.customer_user"]["current_value"]["user"] == "HR专员"
+
+
+def test_concept_review_protocol_normalizes_decisions() -> None:
+    content = '<!-- AI_LAB_CONCEPT_REVIEW_V1 {"decision":"conditional_accept","summary":"可带TBD进入","conditions":["补齐能耗基线"],"reviewer_results":[]} AI_LAB_CONCEPT_REVIEW_V1 -->'
+    result = extract_concept_review(content)
+    assert result["decision"] == "conditional"
+    assert result["conditions"] == ["补齐能耗基线"]

@@ -14,6 +14,7 @@ from backend.api.showroom import (
     InsightCompleteRequest,
     InsightMutationRequest,
     InsightProgressRequest,
+    InsightReviewCompleteRequest,
     InsightRevisionExtractionRequest,
     InsightStaffingPlanRequest,
     LEGACY_DEMAND,
@@ -33,7 +34,9 @@ from backend.api.showroom import (
     content_manifest,
     create_showroom_session,
     complete_showroom_insight_job,
+    complete_showroom_insight_review_task,
     confirm_showroom_insight,
+    create_showroom_insight_review_task,
     extract_showroom_demand,
     extract_showroom_insight_revision,
     generate_showroom_insight,
@@ -652,14 +655,36 @@ def test_insight_revision_preview_apply_and_human_confirmation(monkeypatch) -> N
         assert duplicate_apply["unchanged"] is True
         assert duplicate_apply["version"] == "V0.2"
         assert duplicate_apply["changed_fields"] == ["judgment"]
-        frozen = await confirm_showroom_insight(
+        assigned = await create_showroom_insight_review_task(
             "review-flow",
             InsightMutationRequest(job_id=job["job_id"], demand_hash=job["source_hash"], base_version="V0.2"),
             payload(),
         )
-        assert frozen["insight_review"]["version"] == "V1.0"
-        assert frozen["insight_review"]["status"] == "confirmed"
-        assert {"需求合理性·调研支撑", "需求评审结论", "初始产品包"} <= set(frozen["artifacts"])
+        assert assigned["task"]["status"] == "assigned"
+        assert len(assigned["task"]["ai_reviewers"]) == 3
+        review_content = (
+            '<!-- AI_LAB_CONCEPT_REVIEW_V1 '
+            '{"decision":"conditional","summary":"已有TBD处置动作，可进入001实践","conditions":["补齐能耗基线"],'
+            '"reviewer_results":[{"reviewer_id":"concept-chair","conclusion":"条件通过","comment":"切片完整"},'
+            '{"reviewer_id":"evidence-auditor","conclusion":"通过","comment":"来源可追溯"},'
+            '{"reviewer_id":"boundary-reviewer","conclusion":"条件通过","comment":"保留专项检查"}]} '
+            'AI_LAB_CONCEPT_REVIEW_V1 -->'
+        )
+        frozen = await complete_showroom_insight_review_task(
+            "review-flow",
+            assigned["task"]["task_id"],
+            InsightReviewCompleteRequest(
+                content=review_content,
+                job_id=job["job_id"],
+                demand_hash=job["source_hash"],
+                base_version="V0.2",
+            ),
+            payload(),
+        )
+        assert frozen["released"] is True
+        assert frozen["session"]["data"]["insight_review"]["version"] == "V1.0"
+        assert frozen["session"]["data"]["insight_review_gate"]["status"] == "conditional"
+        assert {"需求合理性·调研支撑", "需求评审结论", "初始产品包"} <= set(frozen["session"]["data"]["artifacts"])
         await engine.dispose()
 
     asyncio.run(scenario())

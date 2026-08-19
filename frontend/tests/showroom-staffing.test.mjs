@@ -29,7 +29,7 @@ test('summary completion drives incremental 004 reveal without fake progress', (
 });
 
 test('004 is a conversational IPD review workbench with controlled revisions', () => {
-  for (const label of ['洞察共创助手', '待回填内容 · 尚未应用', '应用回填到报告', '确认洞察结论，进入001 IPD实践', '需求理解有误，退回003修订']) {
+  for (const label of ['洞察共创助手', '待回填内容 · 尚未应用', '应用回填到报告', '确认当前洞察，提交AI评审', '需求理解有误，退回003修订', 'AI 概念评审会', '进入下一步前还缺什么']) {
     assert.match(app, new RegExp(label));
   }
   assert.match(app, /submitHermesSkill\(insightExecutionPrompt\(job, plan\), 'ipd-01-market-insight'/);
@@ -44,6 +44,9 @@ test('004 is a conversational IPD review workbench with controlled revisions', (
   assert.match(styles, /insight-cocreation-shell/);
   assert.match(styles, /revision-preview/);
   assert.match(styles, /insight-just-filled/);
+  assert.match(app, /AI_LAB_INSIGHT_REVISION_V2/);
+  assert.match(app, /createInsightReviewTask/);
+  assert.match(app, /registerInsightTbd/);
 });
 
 test('a failed final callback cannot overwrite an already completed report', () => {

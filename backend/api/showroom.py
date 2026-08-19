@@ -58,12 +58,18 @@ from backend.services.showroom_insight_review import (
     apply_revision,
     calculate_insight_coverage,
     confirmed_version,
+    create_insight_review_gate,
     create_revision,
     empty_insight_review,
+    empty_insight_review_gate,
+    extract_concept_review,
     extract_revision_protocol,
+    field_catalog_payload,
     looks_like_revision_intent,
+    materialize_missing_insight_items,
     next_draft_version,
     normalize_review,
+    register_insight_tbd,
     reopen_version,
 )
 from backend.services.visitor_insight import (
@@ -175,6 +181,22 @@ class InsightMutationRequest(BaseModel):
     job_id: str = Field(default="", max_length=120)
     demand_hash: str = Field(default="", max_length=128)
     base_version: str = Field(default="", max_length=40)
+
+
+class InsightTbdRequest(InsightMutationRequest):
+    field: str = Field(..., min_length=3, max_length=120)
+    reason: str = Field(..., min_length=1, max_length=1000)
+    owner: str = Field(..., min_length=1, max_length=160)
+    action: str = Field(..., min_length=1, max_length=1000)
+    due_at: str = Field(default="", max_length=80)
+
+
+class InsightReviewCompleteRequest(InsightMutationRequest):
+    content: str = Field(..., min_length=1, max_length=120_000)
+
+
+class InsightReviewOverrideRequest(InsightMutationRequest):
+    reason: str = Field(..., min_length=4, max_length=2000)
 
 
 class SessionMessage(BaseModel):
@@ -576,6 +598,7 @@ def _initial_session_data(slot: str) -> dict[str, Any]:
         "staffing_plan": {},
         "insight_job": {},
         "insight_review": empty_insight_review(),
+        "insight_review_gate": empty_insight_review_gate(),
         "prototype": {},
         "artifacts": {},
         "reviews": {},
@@ -1455,6 +1478,8 @@ async def start_showroom_insight_job(
         data["insight_job"] = job
         data["staffing_plan"] = {}
         data["insight"] = empty_insight()
+        data["insight_review"] = empty_insight_review()
+        data["insight_review_gate"] = empty_insight_review_gate()
         row.data = data
         row.step = max(row.step, 3)
         await database.commit()
@@ -1676,13 +1701,14 @@ async def complete_showroom_insight_job(
         insight["status"] = status
         insight["raw_markdown"] = visible_insight_message(body.content)[:60_000]
         insight["generated_at"] = now_iso()
+        insight, missing_items = materialize_missing_insight_items(insight)
         job.update(
             {
                 "status": status,
                 "active_stage": status,
                 "active_employee_id": "",
                 "updated_at": now_iso(),
-                "error": "" if complete else "部分章节尚未完成",
+                "error": "" if complete and not missing_items else f"{len(missing_items)}项内容需要在004补充或登记TBD",
             }
         )
 
@@ -1851,6 +1877,27 @@ async def extract_showroom_insight_revision(
             )
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        placement_candidates = []
+        for change in revision.get("changes") or []:
+            alternatives = change.get("alternative_targets") or []
+            if change.get("confidence", 1) < 0.7 and alternatives:
+                placement_candidates.append(
+                    {
+                        "source_excerpt": change.get("source_excerpt") or "",
+                        "recommended_field": change.get("field") or "",
+                        "recommended_section": change.get("target_section") or "",
+                        "confidence": change.get("confidence", 0),
+                        "alternatives": alternatives,
+                    }
+                )
+        if placement_candidates:
+            return {
+                "result_type": "placement_required",
+                "revision": None,
+                "placement_candidates": placement_candidates,
+                "session": _session_payload(row, session_id, row.slot),
+                "message": "AI找到了可回填内容，但需要你确认填写位置",
+            }
         revisions = list(review.get("revisions") or [])
         revisions.append(revision)
         review.update(
@@ -1870,6 +1917,7 @@ async def extract_showroom_insight_revision(
     return {
         "result_type": "revision_ready",
         "revision": revision,
+        "placement_candidates": [],
         "session": session_payload,
         "message": "回填草案已生成，请确认差异",
     }
@@ -1995,6 +2043,380 @@ async def discard_showroom_insight_revision(
     return {"revision": revision, "session": session_payload}
 
 
+def _freeze_insight_report(
+    data: dict[str, Any], *, confirmed_by: str, decision: str = "approved"
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    demand = data.get("demand") or {}
+    job = data.get("insight_job") or {}
+    insight = data.get("insight") or {}
+    review = normalize_review(data.get("insight_review"), demand=demand, job=job)
+    coverage = calculate_insight_coverage(insight)
+    version = confirmed_version(str(review.get("version") or "V0.1"))
+    confirmed_at = now_iso()
+    snapshot = {
+        "version": version,
+        "confirmed_by": confirmed_by,
+        "confirmed_at": confirmed_at,
+        "decision": decision,
+        "demand_hash": demand_fingerprint(demand),
+        "insight": copy.deepcopy(insight),
+    }
+    review.update(
+        {
+            "status": "confirmed",
+            "version": version,
+            "coverage": coverage,
+            "confirmed_by": confirmed_by,
+            "confirmed_at": confirmed_at,
+            "snapshots": (list(review.get("snapshots") or []) + [snapshot])[-20:],
+        }
+    )
+    artifacts = copy.deepcopy(data.get("artifacts") or {})
+    concept = insight.get("concept") or {}
+    artifacts["需求合理性·调研支撑"] = {
+        "title": "需求合理性·调研支撑", "owner": "IPD-01", "kind": "document",
+        "version": version, "frozen": True,
+        "content": {"market": concept.get("market") or {}, "competition": concept.get("competition") or [], "technology": concept.get("technology") or {}, "strategic_fit": concept.get("strategic_fit") or {}, "sources": insight.get("sources") or []},
+        "updated_at": confirmed_at,
+    }
+    artifacts["需求评审结论"] = {
+        "title": "需求评审结论", "owner": "IPD-02", "kind": "document",
+        "version": version, "frozen": True,
+        "content": {"verdict": concept.get("verdict") or {}, "assessment": concept.get("assessment") or {}, "special_checks": concept.get("special_checks") or {}, "capability_mapping": concept.get("capability_mapping") or []},
+        "updated_at": confirmed_at,
+    }
+    artifacts["初始产品包"] = {
+        "title": "初始产品包", "owner": "IPD-02", "kind": "document",
+        "version": version, "frozen": True,
+        "content": {"package": concept.get("initial_product_package") or {}, "demo_slice": concept.get("demo_slice") or {}},
+        "updated_at": confirmed_at,
+    }
+    data["insight_review"] = review
+    data["artifacts"] = artifacts
+    return data, review, artifacts
+
+
+@router.get("/sessions/{session_id}/insight/field-catalog")
+async def get_showroom_insight_field_catalog(
+    session_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        return {"schema_version": "2.0", "fields": field_catalog_payload((row.data or {}).get("insight") or {})}
+
+
+@router.post("/sessions/{session_id}/insight/tbds")
+async def register_showroom_insight_tbd(
+    session_id: str, body: InsightTbdRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        if review.get("status") == "confirmed":
+            raise HTTPException(status_code=409, detail="已确认版本不能登记TBD")
+        try:
+            insight = register_insight_tbd(
+                data.get("insight") or {}, field=body.field, reason=body.reason,
+                owner=body.owner, action=body.action, due_at=body.due_at,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        review["coverage"] = calculate_insight_coverage(insight)
+        data["insight"] = insight
+        data["insight_review"] = review
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_TBD_REGISTERED", session_id, data, field=body.field)
+    return {"session": session_payload, "coverage": review["coverage"]}
+
+
+def _concept_review_prompt(task: dict[str, Any], insight: dict[str, Any], coverage: dict[str, Any], demand_hash: str) -> str:
+    return "\n".join(
+        [
+            "[AI_LAB_CONTROL] 当前处于004 AI概念评审会。你是Supervision评审组，只做需求合理性预审，不输出建设方案。",
+            f"评审任务：{task['task_id']}",
+            f"报告版本：{task['report_version']}",
+            f"需求指纹：{demand_hash}",
+            f"覆盖状态：{json.dumps(coverage, ensure_ascii=False)}",
+            f"报告：{json.dumps(insight, ensure_ascii=False)[:80000]}",
+            "请分别以明鉴（概念主审）、证源（证据核验）、守界（专项审查）完成独立检查。结论只能为approved、conditional、changes、rejected。",
+            "通过或条件通过必须说明依据与条件；资料不足但已有责任人和补证动作时可conditional；没有处置的关键缺口必须changes。",
+            '<!-- AI_LAB_CONCEPT_REVIEW_V1 {"decision":"approved|conditional|changes|rejected","summary":"...","conditions":[],"changes":[],"reviewer_results":[{"reviewer_id":"concept-chair","conclusion":"...","comment":"..."},{"reviewer_id":"evidence-auditor","conclusion":"...","comment":"..."},{"reviewer_id":"boundary-reviewer","conclusion":"...","comment":"..."}]} AI_LAB_CONCEPT_REVIEW_V1 -->',
+        ]
+    )
+
+
+def _concept_review_notification(task: dict[str, Any], *, override_actor: str = "") -> tuple[str, str]:
+    decision = task.get("final_decision") or {}
+    title = "AI Lab 004 · 现场放行" if override_actor else "AI Lab 004 · AI概念预审"
+    lines = []
+    if override_actor:
+        lines.append(f"操作人：{override_actor}")
+    lines.extend(
+        [
+            f"结论：{decision.get('decision') or task.get('status') or 'unknown'}",
+            f"摘要：{decision.get('summary') or '暂无摘要'}",
+            f"报告版本：{task.get('report_version') or ''}",
+            "后续人工联系人："
+            + ", ".join(item.get("role", "") for item in task.get("human_contact_bindings") or []),
+        ]
+    )
+    return title, "\n".join(lines)
+
+
+async def _notify_insight_review_contacts(
+    session_id: str,
+    tenant_key: str,
+    task_id: str,
+    *,
+    title: str,
+    content: str,
+) -> None:
+    """Send the non-blocking Feishu notice and persist its real outcome."""
+    delivered = await send_feishu_async(title, content)
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            return
+        data = copy.deepcopy(row.data or {})
+        task = copy.deepcopy(data.get("insight_review_gate") or {})
+        if task.get("task_id") != task_id:
+            return
+        task["notification_status"] = "sent" if delivered else "failed"
+        task["notification_updated_at"] = now_iso()
+        data["insight_review_gate"] = task
+        row.data = data
+        await database.commit()
+    await _broadcast_insight_event(
+        "INSIGHT_REVIEW_NOTIFICATION_UPDATED",
+        session_id,
+        data,
+        task=task,
+    )
+
+
+@router.post("/sessions/{session_id}/insight/review-tasks")
+async def create_showroom_insight_review_task(
+    session_id: str, body: InsightMutationRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        coverage = calculate_insight_coverage(data.get("insight") or {})
+        if review.get("pending_revision_id"):
+            raise HTTPException(status_code=409, detail="请先应用或放弃待处理修订")
+        if not coverage.get("can_submit_review"):
+            raise HTTPException(status_code=422, detail="仍有未处置缺口，请先补齐或登记为TBD")
+        current = data.get("insight_review_gate") or {}
+        if current.get("task_id") and current.get("report_version") == review.get("version") and current.get("status") in {"assigned", "reviewing"}:
+            task = current
+        else:
+            task = create_insight_review_gate(
+                report_version=str(review.get("version") or "V0.1"),
+                assigned_by=str(payload.get("username") or payload.get("sub") or "showroom-user"),
+            )
+        data["insight_review_gate"] = task
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    await _broadcast_insight_event("INSIGHT_REVIEW_ASSIGNED", session_id, data, task=task)
+    return {"task": task, "review_prompt": _concept_review_prompt(task, data.get("insight") or {}, coverage, review.get("demand_hash") or ""), "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/review-tasks/{task_id}/complete")
+async def complete_showroom_insight_review_task(
+    session_id: str, task_id: str, body: InsightReviewCompleteRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        task = copy.deepcopy(data.get("insight_review_gate") or empty_insight_review_gate())
+        if task.get("task_id") != task_id or task.get("report_version") != review.get("version"):
+            raise HTTPException(status_code=409, detail="AI评审任务已切换")
+        if task.get("status") in {"approved", "conditional", "changes", "rejected"}:
+            return {"task": task, "session": _session_payload(row, session_id, row.slot), "unchanged": True, "released": task.get("status") in {"approved", "conditional"}}
+        try:
+            decision = extract_concept_review(body.content)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        if not decision:
+            task.update({"status": "failed", "error": "AI评审结果缺少结构化结论"})
+            data["insight_review_gate"] = task
+            row.data = data
+            await database.commit()
+            raise HTTPException(status_code=422, detail=task["error"])
+        by_id = {item.get("reviewer_id"): item for item in decision.get("reviewer_results") or []}
+        for reviewer in task.get("ai_reviewers") or []:
+            result = by_id.get(reviewer.get("reviewer_id")) or {}
+            reviewer.update({"status": "done", "conclusion": result.get("conclusion") or decision["decision"], "comment": result.get("comment") or ""})
+        task.update({"status": decision["decision"], "final_decision": decision, "notification_status": "queued", "error": ""})
+        released = decision["decision"] in {"approved", "conditional"}
+        if released:
+            data, review, _ = _freeze_insight_report(data, confirmed_by=f"AI评审会 · {task['assigned_by']}", decision=decision["decision"])
+            task["released_at"] = now_iso()
+            row.step = max(row.step, 4)
+        data["insight_review_gate"] = task
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    notification_title, notification_content = _concept_review_notification(task)
+    asyncio.create_task(
+        _notify_insight_review_contacts(
+            session_id,
+            tenant_key,
+            task_id,
+            title=notification_title,
+            content=notification_content,
+        )
+    )
+    await _broadcast_insight_event("INSIGHT_REVIEW_COMPLETED", session_id, data, task=task)
+    if released:
+        await _broadcast_insight_event("INSIGHT_REVIEW_RELEASED", session_id, data, task=task)
+    else:
+        await _broadcast_insight_event("INSIGHT_REVIEW_CHANGES_REQUESTED", session_id, data, task=task)
+    return {"task": task, "session": session_payload, "released": released, "next_view": "screen-05" if released else "screen-04"}
+
+
+@router.post("/sessions/{session_id}/insight/review-tasks/{task_id}/override")
+async def override_showroom_insight_review_task(
+    session_id: str, task_id: str, body: InsightReviewOverrideRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        task = copy.deepcopy(data.get("insight_review_gate") or empty_insight_review_gate())
+        if task.get("task_id") != task_id:
+            raise HTTPException(status_code=409, detail="AI评审任务已切换")
+        actor = str(payload.get("username") or payload.get("sub") or "showroom-user")[:120]
+        task.update({"status": "approved", "final_decision": {"decision": "approved", "summary": body.reason, "override": True, "reviewed_at": now_iso()}, "released_at": now_iso(), "notification_status": "queued"})
+        data, review, _ = _freeze_insight_report(data, confirmed_by=f"现场放行 · {actor}", decision="override")
+        data["insight_review_gate"] = task
+        row.data = data
+        row.step = max(row.step, 4)
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    notification_title, notification_content = _concept_review_notification(
+        task, override_actor=actor
+    )
+    asyncio.create_task(
+        _notify_insight_review_contacts(
+            session_id,
+            tenant_key,
+            task_id,
+            title=notification_title,
+            content=notification_content,
+        )
+    )
+    await _broadcast_insight_event("INSIGHT_REVIEW_RELEASED", session_id, data, task=task)
+    return {"task": task, "session": session_payload, "released": True, "next_view": "screen-05"}
+
+
+@router.post("/sessions/{session_id}/insight/review-tasks/{task_id}/retry")
+async def retry_showroom_insight_review_task(
+    session_id: str, task_id: str, body: InsightMutationRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(data.get("insight_review"), demand=data.get("demand") or {}, job=job)
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        task = copy.deepcopy(data.get("insight_review_gate") or {})
+        if task.get("task_id") != task_id:
+            raise HTTPException(status_code=409, detail="AI评审任务已切换")
+        task.update({"status": "assigned", "error": ""})
+        for reviewer in task.get("ai_reviewers") or []:
+            reviewer.update({"status": "waiting", "conclusion": "", "comment": ""})
+        data["insight_review_gate"] = task
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    return {"task": task, "review_prompt": _concept_review_prompt(task, data.get("insight") or {}, calculate_insight_coverage(data.get("insight") or {}), review.get("demand_hash") or ""), "session": session_payload}
+
+
+@router.post("/sessions/{session_id}/insight/review-tasks/{task_id}/notify")
+async def retry_showroom_insight_review_notification(
+    session_id: str,
+    task_id: str,
+    body: InsightMutationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = copy.deepcopy(row.data or {})
+        job = data.get("insight_job") or {}
+        review = normalize_review(
+            data.get("insight_review"), demand=data.get("demand") or {}, job=job
+        )
+        _validate_insight_mutation(body, data=data, job=job, review=review)
+        task = copy.deepcopy(data.get("insight_review_gate") or {})
+        if task.get("task_id") != task_id:
+            raise HTTPException(status_code=409, detail="AI评审任务已切换")
+        if not task.get("final_decision"):
+            raise HTTPException(status_code=409, detail="AI评审尚未形成结论")
+        task["notification_status"] = "queued"
+        data["insight_review_gate"] = task
+        row.data = data
+        await database.commit()
+        await database.refresh(row)
+        session_payload = _session_payload(row, session_id, row.slot)
+    title, content = _concept_review_notification(
+        task,
+        override_actor=str(payload.get("username") or payload.get("sub") or "")
+        if (task.get("final_decision") or {}).get("override")
+        else "",
+    )
+    asyncio.create_task(
+        _notify_insight_review_contacts(
+            session_id,
+            tenant_key,
+            task_id,
+            title=title,
+            content=content,
+        )
+    )
+    return {"task": task, "session": session_payload}
+
+
 @router.post("/sessions/{session_id}/insight/confirm")
 async def confirm_showroom_insight(
     session_id: str,
@@ -2018,71 +2440,8 @@ async def confirm_showroom_insight(
         if not coverage.get("confirmable"):
             missing = [name for name, done in coverage.get("dimensions", {}).items() if not done]
             raise HTTPException(status_code=422, detail=f"洞察尚未满足确认条件：{'、'.join(missing) or '证据或TBD动作不完整'}")
-        version = confirmed_version(str(review.get("version") or "V0.1"))
-        confirmed_at = now_iso()
         confirmed_by = str(payload.get("username") or payload.get("sub") or "showroom-user")[:120]
-        snapshot = {
-            "version": version,
-            "confirmed_by": confirmed_by,
-            "confirmed_at": confirmed_at,
-            "demand_hash": demand_fingerprint(demand),
-            "insight": copy.deepcopy(insight),
-        }
-        review.update(
-            {
-                "status": "confirmed",
-                "version": version,
-                "coverage": coverage,
-                "confirmed_by": confirmed_by,
-                "confirmed_at": confirmed_at,
-                "snapshots": (list(review.get("snapshots") or []) + [snapshot])[-20:],
-            }
-        )
-        artifacts = copy.deepcopy(data.get("artifacts") or {})
-        concept = insight.get("concept") or {}
-        artifacts["需求合理性·调研支撑"] = {
-            "title": "需求合理性·调研支撑",
-            "owner": "IPD-01",
-            "kind": "document",
-            "version": version,
-            "frozen": True,
-            "content": {
-                "market": concept.get("market") or {},
-                "competition": concept.get("competition") or [],
-                "technology": concept.get("technology") or {},
-                "strategic_fit": concept.get("strategic_fit") or {},
-                "sources": insight.get("sources") or [],
-            },
-            "updated_at": confirmed_at,
-        }
-        artifacts["需求评审结论"] = {
-            "title": "需求评审结论",
-            "owner": "IPD-02",
-            "kind": "document",
-            "version": version,
-            "frozen": True,
-            "content": {
-                "verdict": concept.get("verdict") or {},
-                "assessment": concept.get("assessment") or {},
-                "special_checks": concept.get("special_checks") or {},
-                "capability_mapping": concept.get("capability_mapping") or [],
-            },
-            "updated_at": confirmed_at,
-        }
-        artifacts["初始产品包"] = {
-            "title": "初始产品包",
-            "owner": "IPD-02",
-            "kind": "document",
-            "version": version,
-            "frozen": True,
-            "content": {
-                "package": concept.get("initial_product_package") or {},
-                "demo_slice": concept.get("demo_slice") or {},
-            },
-            "updated_at": confirmed_at,
-        }
-        data["insight_review"] = review
-        data["artifacts"] = artifacts
+        data, review, artifacts = _freeze_insight_report(data, confirmed_by=confirmed_by)
         row.data = data
         row.step = max(row.step, 4)
         await database.commit()
@@ -2165,6 +2524,7 @@ async def reopen_showroom_demand(
                 "insight_job": {},
                 "staffing_plan": {},
                 "insight_review": empty_insight_review(),
+                "insight_review_gate": empty_insight_review_gate(),
             }
         )
         row.data = data

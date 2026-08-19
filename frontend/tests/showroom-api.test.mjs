@@ -246,11 +246,19 @@ test('insight revisions and confirmation use concurrency metadata', async () => 
   });
   await api.applyInsightRevision('revision-1');
   await api.confirmInsight();
+  await api.registerInsightTbd({ field: 'concept.market', reason: '待核实', owner: '市场负责人', action: '补证' });
+  await api.createInsightReviewTask();
+  await api.completeInsightReviewTask('review-1', 'review block');
+  await api.retryInsightReviewNotification('review-1');
 
   assert.deepEqual(calls.map(([path]) => path), [
     '/api/showroom/sessions/visit-1/insight/revisions/extract',
     '/api/showroom/sessions/visit-1/insight/revisions/revision-1/apply',
     '/api/showroom/sessions/visit-1/insight/confirm',
+    '/api/showroom/sessions/visit-1/insight/tbds',
+    '/api/showroom/sessions/visit-1/insight/review-tasks',
+    '/api/showroom/sessions/visit-1/insight/review-tasks/review-1/complete',
+    '/api/showroom/sessions/visit-1/insight/review-tasks/review-1/notify',
   ]);
   assert.deepEqual(JSON.parse(JSON.stringify(calls[0][1])), {
     epoch: 12,

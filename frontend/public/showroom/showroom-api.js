@@ -21,7 +21,8 @@
     /<!--\s*AI_LAB_INSIGHT_STAGE_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_STAGE_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_SECTION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_SECTION_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_V1\s*-->/gi,
-    /<!--\s*AI_LAB_INSIGHT_REVISION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_REVISION_V1\s*-->/gi,
+    /<!--\s*AI_LAB_INSIGHT_REVISION_V[12]\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_REVISION_V[12]\s*-->/gi,
+    /<!--\s*AI_LAB_CONCEPT_REVIEW_V1\s*\{[\s\S]*?\}\s*AI_LAB_CONCEPT_REVIEW_V1\s*-->/gi,
   ];
   const CONTROL_PREFIX = "[AI_LAB_CONTROL]";
 
@@ -866,6 +867,58 @@
         this.emit("session", result.session);
       }
       return result;
+    }
+
+    async getInsightFieldCatalog() {
+      return this.request(`/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/field-catalog`);
+    }
+
+    async registerInsightTbd(item) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/tbds`,
+        { method: "POST", body: { ...this.insightMutationBody(), ...item } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async createInsightReviewTask() {
+      return this.insightMutation("/insight/review-tasks");
+    }
+
+    async completeInsightReviewTask(taskId, content) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/review-tasks/${encodeURIComponent(taskId)}/complete`,
+        { method: "POST", body: { ...this.insightMutationBody(), content } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async overrideInsightReviewTask(taskId, reason) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/review-tasks/${encodeURIComponent(taskId)}/override`,
+        { method: "POST", body: { ...this.insightMutationBody(), reason } },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async retryInsightReviewTask(taskId) {
+      return this.insightMutation(`/insight/review-tasks/${encodeURIComponent(taskId)}/retry`);
+    }
+
+    async retryInsightReviewNotification(taskId) {
+      return this.insightMutation(`/insight/review-tasks/${encodeURIComponent(taskId)}/notify`);
     }
 
     async applyInsightRevision(revisionId) {
