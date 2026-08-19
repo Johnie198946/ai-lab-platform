@@ -192,8 +192,14 @@
           global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
         }
         this.emit("bootstrap", bootstrap);
-        this.connect();
-        if (isConversationView()) this.resumeHermes();
+        // Some recovery flows need to refresh the authoritative Showroom
+        // session before opening Hermes again.  Keep bootstrap side-effect
+        // free when explicitly requested so an old in-memory Gateway cannot
+        // resume a stale provider session in parallel.
+        if (!options.skipHermes) {
+          this.connect();
+          if (isConversationView()) this.resumeHermes();
+        }
       } catch (error) {
         if (error.status === 401) {
           this.setStatus("auth-required", "登录已过期，正在返回登录页");

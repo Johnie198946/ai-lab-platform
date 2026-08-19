@@ -396,6 +396,9 @@ function friendlyHermesError(message = '') {
   if (/prompt_cache_(?:retention|options).*not supported/i.test(raw)) {
     return '当前模型不支持请求中的缓存参数，请联系管理员检查模型兼容配置。';
   }
+  if (/model is not supported when using Codex with a ChatGPT account|deepseek-v4-flash.*not supported/i.test(raw)) {
+    return '当前会话仍绑定旧模型，正在切换到可用模型；请重新备课。';
+  }
   return raw || '大架构师本轮回复失败';
 }
 
@@ -907,7 +910,7 @@ function controllerView() {
 function introView() {
   const mode = document.body.classList.contains('direct-mode') ? 'direct' : 'preview';
   return `<div class="screen motion-opening-host" aria-label="AI Lab 线下体验序章">
-    <iframe class="motion-opening-frame" src="./screen-00-replacement.html?embedded=${mode}" title="AI Lab 首屏：从灵感到价值" loading="eager"></iframe>
+    <iframe class="motion-opening-frame" src="./screen-00-html.html?embedded=${mode}" title="AI Lab 首屏：AI Lab × Token Factory HTML 品牌序章" loading="eager" allow="autoplay"></iframe>
   </div>`;
 }
 
@@ -1222,8 +1225,13 @@ function attachScreenActions() {
     state.hermesDetail = '';
     state.chatError = '';
     try {
+      // The page may still hold a Hermes session created with an older model
+      // provider.  Re-bootstrap first, then reconnect exactly once against
+      // the server's current active session (gpt-luna in production).
+      window.showroomApi.suspendHermes({ suspendShowroom: false });
+      await window.showroomApi.init({ force: true, skipHermes: true });
       state.session = await window.showroomApi.saveSession({ data: { host_greeting_initialized: false } });
-      await startHostGreeting({ force: true });
+      await window.showroomApi.retryHermes();
     } catch (error) {
       showToast(`重新备课失败：${friendlyHermesError(error.message)}`);
     }
