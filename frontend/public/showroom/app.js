@@ -44,6 +44,9 @@ const state = {
   controllerFailureHandling: false,
   hostGreetingPending: false,
   visitCompleteNotice: null,
+  visitEndConfirmOpen: false,
+  visitEndBusy: false,
+  lastRolloverSessionId: '',
   rawHermesMessageCount: 0,
   frontstageActivating: false,
   demandCorrectionPending: false,
@@ -75,6 +78,85 @@ const demandExtractionInFlight = new Set();
 const insightEventIds = new Set();
 let insightProgressQueue = Promise.resolve();
 let insightAutoTimer = null;
+
+function resetSessionUiState(nextSession = null) {
+  clearInsightAutoAdvance();
+  insightProgressQueue = Promise.resolve();
+  demandExtractionInFlight.clear();
+  insightEventIds.clear();
+  Object.assign(state, {
+    stage: 0,
+    experienceStep: Number(nextSession?.step || 0),
+    selectedPhase: 0,
+    selectedAgent: 'IPD-01',
+    pipelineMode: 'orchestration',
+    pipelinePlaying: false,
+    ipdDrawer: null,
+    agentDetailOpen: false,
+    selectedArtifact: null,
+    artifactOpen: false,
+    assistantOpen: false,
+    avatarSpeaking: false,
+    assistantQuestion: '',
+    assistantAnswer: '',
+    session: nextSession,
+    bootstrapped: Boolean(nextSession),
+    centers: [],
+    reviewStates: {},
+    activeReview: null,
+    reviewDecision: null,
+    pendingClarify: null,
+    streamingReply: '',
+    chatError: '',
+    lastQuestion: '',
+    chatMessages: [],
+    hermesStatus: 'idle',
+    hermesDetail: '',
+    hermesRetryStopped: false,
+    demandSheetVisible: false,
+    demandSheetPendingFocus: false,
+    visitorInsightBusy: false,
+    controllerHermesTask: '',
+    controllerFailureHandling: false,
+    hostGreetingPending: false,
+    visitCompleteNotice: null,
+    visitEndConfirmOpen: false,
+    visitEndBusy: false,
+    rawHermesMessageCount: 0,
+    frontstageActivating: false,
+    demandCorrectionPending: false,
+    insightCatalog: null,
+    insightTask: '',
+    selectedEmployeeId: '',
+    insightAutoSeconds: 0,
+    insightAutoPaused: false,
+    insightAssistantMessages: [],
+    insightAssistantBusy: false,
+    insightAssistantStatus: '',
+    insightSelectedSection: 'summary',
+    insightSelectedText: '',
+    insightPendingRevision: null,
+    insightActiveRequest: null,
+    insightRevisionError: null,
+    insightRevisionApplying: false,
+    insightHighlightedSections: [],
+    insightFieldCatalog: [],
+    insightPlacementCandidates: [],
+    insightReadinessOpen: false,
+    insightTbdTarget: null,
+    insightReviewRunning: false,
+    insightReviewTaskId: '',
+  });
+}
+
+function applySessionRollover(nextSession, runtime = null, expectedSessionId = '') {
+  const nextSessionId = nextSession?.session_id || expectedSessionId;
+  if (nextSessionId && state.lastRolloverSessionId === nextSessionId) return false;
+  resetSessionUiState(nextSession || null);
+  state.lastRolloverSessionId = nextSessionId;
+  if (runtime) applyBackendSnapshot(runtime, false);
+  return true;
+}
 
 const INSIGHT_REVISION_INTENT = /修改|修正|调整|改为|改成|补齐|补充到|删除|新增|更新|回填|填入|写入|同步|替换|应用到(?:本章|报告)/;
 const INSIGHT_FIELD_SECTIONS = {
@@ -1257,7 +1339,7 @@ function controllerView() {
       <section class="panel control-hero">
         <p class="kicker">TODAY'S LIVE TOUR · ${stages[state.stage][0]}</p>
         <h2 class="hero-title">${visitor.company_name ? `正在为 <em>${escapeHtml(visitor.company_name)}</em><br>准备一场有背景的共创。` : '先认识来访客户，<br>再开始一场<em>有准备的共创。</em>'}</h2>
-        <div class="visitor-session-bar"><span>当前客户 <b>${escapeHtml(visitor.company_name || '待录入')}</b></span><span>客户代码 <b>${escapeHtml(visitor.customer_code || '—')}</b></span><span>Session <b>${escapeHtml(state.session?.session_id || '—')}</b></span><button data-visit-complete ${visitor.company_name ? '' : 'disabled'}>结束本次接待</button></div>
+        <div class="visitor-session-bar"><span>当前客户 <b>${escapeHtml(visitor.company_name || '待录入')}</b></span><span>客户代码 <b>${escapeHtml(visitor.customer_code || '—')}</b></span><span>Session <b>${escapeHtml(state.session?.session_id || '—')}</b></span><button data-visit-complete ${visitor.company_name || state.visitCompleteNotice ? '' : 'disabled'}>结束本次接待</button></div>
         <div class="route-strip">${stages.map((s, i) => `<div class="route-card ${i === state.stage ? 'active' : ''}"><b>${s[0]} · ${s[1]}</b><span>${i < state.stage ? '已完成' : i === state.stage ? '正在进行' : '等待进入'}</span></div>`).join('')}</div>
       </section>
       <section class="panel visitor-workbench">
@@ -1289,7 +1371,8 @@ function controllerView() {
         <div class="panel-head"><strong>五个独立体验中心</strong><span>仅显示授权摘要</span></div>
         <div class="center-list">${centers.map((center, i) => `<div class="center-row"><span class="num">0${i + 1}</span><div><b>${escapeHtml(center.role || '访客')}</b><small>${experienceSteps[center.step] || '进入体验'}</small></div><span class="state">${center.status === 'idle' ? '可进入' : center.status === 'submitted' ? '已提交' : '运行中'}</span></div>`).join('')}</div>
       </section>
-      ${state.visitCompleteNotice ? `<section class="visit-complete-toast"><b>${escapeHtml(visitor.company_name || '当前客户')} 已完成参观</b><span>Wiki ${insight.private_record_path ? '已保存' : '待补齐'}，是否切换下一位？</span><div><button data-visit-continue>继续当前接待</button><button data-visit-rollover>归档并接待下一位</button></div></section>` : ''}
+      ${state.visitCompleteNotice ? `<section class="visit-complete-toast"><b>${escapeHtml(visitor.company_name || '当前客户')} 已完成参观</b><span>Wiki ${insight.private_record_path ? '已保存' : '待补齐'}，可结束本次接待并为下一位客户换场。</span><div><button data-visit-continue>稍后处理</button><button data-visit-open-confirm>结束并换场</button></div></section>` : ''}
+      ${state.visitEndConfirmOpen ? `<div class="visit-end-overlay" role="presentation"><section class="visit-end-dialog" role="dialog" aria-modal="true" aria-labelledby="visit-end-title"><span class="visit-end-icon">↗</span><p class="kicker">SESSION ROLLOVER</p><h3 id="visit-end-title">结束本次接待？</h3><p>当前接待将归档，并为下一位客户创建全新的 Session。主会话与五个体验工位的客户内容都会清空。</p><dl><div><dt>当前客户</dt><dd>${escapeHtml(visitor.company_name || '当前客户')}</dd></div><div><dt>当前 Session</dt><dd>${escapeHtml(state.session?.session_id || '—')}</dd></div></dl><div class="visit-end-actions"><button data-visit-end-cancel ${state.visitEndBusy ? 'disabled' : ''}>取消</button><button class="danger" data-visit-end-confirm ${state.visitEndBusy ? 'disabled' : ''}>${state.visitEndBusy ? '正在归档并创建新 Session…' : '结束并接待下一位'}</button></div></section></div>` : ''}
     </div>
   </div>`;
 }
@@ -1751,12 +1834,9 @@ function attachScreenActions() {
   document.getElementById('visitor-history')?.addEventListener('change', (event) => {
     document.querySelector('.visitor-history-session')?.classList.toggle('is-hidden', !event.currentTarget.checked);
   });
-  document.querySelector('[data-visit-complete]')?.addEventListener('click', async () => {
-    try {
-      state.session = await window.showroomApi.completeVisit('controller');
-      state.visitCompleteNotice = { session_id: state.session.session_id };
-      render('refresh');
-    } catch (error) { showToast(`结束接待失败：${error.message}`); }
+  document.querySelector('[data-visit-complete]')?.addEventListener('click', () => {
+    state.visitEndConfirmOpen = true;
+    render('refresh');
   });
   document.querySelector('[data-main-visit-complete]')?.addEventListener('click', async () => {
     try {
@@ -1768,15 +1848,31 @@ function attachScreenActions() {
     state.visitCompleteNotice = null;
     render('refresh');
   });
-  document.querySelector('[data-visit-rollover]')?.addEventListener('click', async () => {
+  document.querySelector('[data-visit-open-confirm]')?.addEventListener('click', () => {
+    state.visitEndConfirmOpen = true;
+    render('refresh');
+  });
+  document.querySelector('[data-visit-end-cancel]')?.addEventListener('click', () => {
+    if (state.visitEndBusy) return;
+    state.visitEndConfirmOpen = false;
+    render('refresh');
+  });
+  document.querySelector('[data-visit-end-confirm]')?.addEventListener('click', async () => {
+    if (state.visitEndBusy) return;
+    state.visitEndBusy = true;
+    render('refresh');
     try {
-      showToast('正在通知主演示屏幕安全换场…');
-      await window.showroomApi.rolloverVisit();
-      state.chatMessages = [];
-      state.visitCompleteNotice = null;
-      state.visitorInsightBusy = false;
-      location.reload();
-    } catch (error) { showToast(`换场失败：${error.message}`); }
+      const result = await window.showroomApi.rolloverVisit('controller');
+      const adopted = applySessionRollover(result.session, result.runtime);
+      render('refresh');
+      showToast(`换场完成 · 新 Session ${result.session.session_id}`);
+      if (adopted) await window.showroomApi.init({ force: true });
+    } catch (error) {
+      state.visitEndBusy = false;
+      state.visitEndConfirmOpen = true;
+      render('refresh');
+      showToast(`换场失败，当前接待未清空：${error.message}`);
+    }
   });
   document.querySelectorAll('[data-insight-section]').forEach((button) => button.addEventListener('click', () => {
     const target = document.getElementById(button.dataset.insightSection);
@@ -2896,13 +2992,18 @@ window.showroomApi?.on('message', (message) => {
     state.visitCompleteNotice = message;
     if (state.view === 'controller') render('refresh');
   }
+  if (message.type === 'SESSION_SWITCH_ABORT' && message.session_id === state.session?.session_id) {
+    state.visitEndBusy = false;
+    state.visitEndConfirmOpen = false;
+    if (state.view === 'controller') render('refresh');
+    showToast('换场未完成，已恢复当前接待');
+  }
   if (['VISITOR_UPDATED', 'INSIGHT_UPDATED', 'STAFFING_PLAN_READY', 'AI_EMPLOYEE_STATUS', 'INSIGHT_STAGE_UPDATED', 'INSIGHT_SECTION_COMPLETED', 'INSIGHT_JOB_COMPLETED', 'INSIGHT_JOB_FAILED', 'INSIGHT_REVISION_READY', 'INSIGHT_REVISION_APPLIED', 'INSIGHT_REVISION_DISCARDED', 'INSIGHT_TBD_REGISTERED', 'INSIGHT_CONFIRMED', 'INSIGHT_VERSION_OPENED', 'INSIGHT_REVIEW_ASSIGNED', 'AI_REVIEWER_STATUS', 'INSIGHT_REVIEW_COMPLETED', 'INSIGHT_REVIEW_CHANGES_REQUESTED', 'INSIGHT_REVIEW_RELEASED', 'INSIGHT_REVIEW_NOTIFICATION_UPDATED', 'DEMAND_REOPENED'].includes(message.type) && message.session_id === state.session?.session_id) {
     window.showroomApi.init({ force: true });
   }
   if (message.type === 'SESSION_SWITCH_COMMIT' && message.session_id === state.session?.session_id) {
-    state.chatMessages = [];
-    state.session = null;
-    state.bootstrapped = false;
+    applySessionRollover(null, message.state, message.new_session_id);
+    render('refresh');
     window.showroomApi.init({ force: true });
   }
 });

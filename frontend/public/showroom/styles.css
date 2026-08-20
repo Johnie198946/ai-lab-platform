@@ -779,6 +779,21 @@ button.network-pill { cursor:pointer;font-family:inherit; }
 .visit-complete-toast div { margin-top:15px;display:flex;gap:8px; }
 .visit-complete-toast button { flex:1;padding:10px;border:0;border-radius:11px;background:#efedff;color:#514bb7;font-weight:800;cursor:pointer; }
 .visit-complete-toast button:last-child { color:white;background:#6366f1; }
+.visit-end-overlay { position:fixed;inset:0;z-index:120;display:grid;place-items:center;padding:24px;background:rgba(14,18,32,.48);backdrop-filter:blur(14px); }
+.visit-end-dialog { width:min(520px,calc(100vw - 40px));padding:32px;border:1px solid rgba(255,255,255,.72);border-radius:28px;background:rgba(255,255,255,.97);box-shadow:0 36px 100px rgba(15,23,42,.3); }
+.visit-end-icon { display:grid;width:48px;height:48px;place-items:center;border-radius:16px;color:#9f285d;background:#ffe8f2;font-size:24px;font-weight:900; }
+.visit-end-dialog .kicker { margin-top:22px;color:#9f285d; }
+.visit-end-dialog h3 { margin:8px 0 0;color:var(--ink);font-size:30px;letter-spacing:-.04em; }
+.visit-end-dialog>p:not(.kicker) { margin:12px 0 0;color:var(--muted);font-size:14px;line-height:1.75; }
+.visit-end-dialog dl { margin:22px 0 0;padding:4px 18px;border:1px solid rgba(124,58,237,.1);border-radius:16px;background:#f8f7ff; }
+.visit-end-dialog dl div { display:flex;justify-content:space-between;gap:20px;padding:12px 0; }
+.visit-end-dialog dl div+div { border-top:1px solid rgba(124,58,237,.09); }
+.visit-end-dialog dt { color:var(--muted);font-size:11px; }
+.visit-end-dialog dd { margin:0;max-width:68%;overflow:hidden;color:var(--ink);font-size:12px;font-weight:800;text-overflow:ellipsis;white-space:nowrap; }
+.visit-end-actions { margin-top:24px;display:flex;justify-content:flex-end;gap:10px; }
+.visit-end-actions button { min-width:120px;padding:12px 18px;border:0;border-radius:13px;color:#56546c;background:#efedf6;font-weight:800;cursor:pointer; }
+.visit-end-actions button.danger { min-width:190px;color:#fff;background:linear-gradient(135deg,#c12d6b,#8d295b);box-shadow:0 12px 30px rgba(141,41,91,.22); }
+.visit-end-actions button:disabled { opacity:.58;cursor:wait; }
 @media (max-width:900px) { .visitor-control-grid { grid-template-columns:1fr; }.visitor-control-grid>* { grid-column:1!important; }.insight-mini-grid { grid-template-columns:1fr; } }
 
 /* 003.5 · controlled AI project staffing */
