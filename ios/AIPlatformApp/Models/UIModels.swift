@@ -356,6 +356,9 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
     public var degraded: Bool
     /// ChatGPT 风格思考胶囊真实耗时（秒）：流式完成时原子落盘，历史冷启动真实回显；无记录时优雅降级
     public var reasoningDuration: Int?
+    public var executingAgentId: String?
+    public var executingAgentName: String?
+    public var delegatedBy: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -369,7 +372,10 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         isDemoSample: Bool = false,
         pending: Bool = false,
         degraded: Bool = false,
-        reasoningDuration: Int? = nil
+        reasoningDuration: Int? = nil,
+        executingAgentId: String? = nil,
+        executingAgentName: String? = nil,
+        delegatedBy: String? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -383,6 +389,9 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         self.pending = pending
         self.degraded = degraded
         self.reasoningDuration = reasoningDuration
+        self.executingAgentId = executingAgentId
+        self.executingAgentName = executingAgentName
+        self.delegatedBy = delegatedBy
     }
 }
 
@@ -399,6 +408,9 @@ public struct PersistedMessage: Codable, Sendable {
     public let degraded: Bool
     public let isDemoSample: Bool
     public let reasoningDuration: Int?
+    public let executingAgentId: String?
+    public let executingAgentName: String?
+    public let delegatedBy: String?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -409,6 +421,9 @@ public struct PersistedMessage: Codable, Sendable {
         self.degraded = m.degraded
         self.isDemoSample = m.isDemoSample
         self.reasoningDuration = m.reasoningDuration
+        self.executingAgentId = m.executingAgentId
+        self.executingAgentName = m.executingAgentName
+        self.delegatedBy = m.delegatedBy
     }
 
     public func toChatMessage(sessionId: String) -> ChatMessage {
@@ -421,7 +436,10 @@ public struct PersistedMessage: Codable, Sendable {
             isDemoSample: isDemoSample,
             pending: pending,
             degraded: degraded,
-            reasoningDuration: reasoningDuration
+            reasoningDuration: reasoningDuration,
+            executingAgentId: executingAgentId,
+            executingAgentName: executingAgentName,
+            delegatedBy: delegatedBy
         )
     }
 }
@@ -432,12 +450,19 @@ public struct SessionRecord: Codable, Sendable {
     public var title: String
     public var updatedAt: Date
     public var messages: [PersistedMessage]
+    public var agentId: String?
+    public var agentName: String?
 
-    public init(id: String, title: String, updatedAt: Date, messages: [PersistedMessage]) {
+    public init(
+        id: String, title: String, updatedAt: Date, messages: [PersistedMessage],
+        agentId: String? = nil, agentName: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.updatedAt = updatedAt
         self.messages = messages
+        self.agentId = agentId
+        self.agentName = agentName
     }
 }
 
@@ -453,6 +478,8 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var activeSessionId: String? = nil
     @Published public private(set) var sessionTitles: [String: String] = [:]
     @Published public private(set) var sessionUpdatedAt: [String: Date] = [:]
+    @Published public private(set) var sessionAgentIds: [String: String] = [:]
+    @Published public private(set) var sessionAgentNames: [String: String] = [:]
 
     private let fm = FileManager.default
 
@@ -493,6 +520,8 @@ public final class SessionManager: ObservableObject {
         var loaded: [String: [ChatMessage]] = [:]
         var titles: [String: String] = [:]
         var updated: [String: Date] = [:]
+        var agentIds: [String: String] = [:]
+        var agentNames: [String: String] = [:]
         var latestId: String? = nil
         var latestDate: Date = .distantPast
 
@@ -503,6 +532,8 @@ public final class SessionManager: ObservableObject {
             loaded[rec.id] = msgs
             titles[rec.id] = rec.title
             updated[rec.id] = rec.updatedAt
+            agentIds[rec.id] = rec.agentId ?? "main_agent"
+            agentNames[rec.id] = rec.agentName ?? "Main 智能编排"
             if rec.updatedAt > latestDate {
                 latestDate = rec.updatedAt
                 latestId = rec.id
@@ -512,6 +543,8 @@ public final class SessionManager: ObservableObject {
         sessions = loaded
         sessionTitles = titles
         sessionUpdatedAt = updated
+        sessionAgentIds = agentIds
+        sessionAgentNames = agentNames
         // 恢复 updatedAt 最新的会话为 activeSessionId
         activeSessionId = latestId
     }
@@ -524,11 +557,15 @@ public final class SessionManager: ObservableObject {
     }
 
     @discardableResult
-    public func createSession() -> String {
+    public func createSession(
+        agentId: String = "main_agent", agentName: String = "Main 智能编排"
+    ) -> String {
         let id = UUID().uuidString
         sessions[id] = []
         sessionTitles[id] = "新会话"
         sessionUpdatedAt[id] = Date()
+        sessionAgentIds[id] = agentId
+        sessionAgentNames[id] = agentName
         activeSessionId = id
         persist(id: id)
         return id
@@ -544,6 +581,8 @@ public final class SessionManager: ObservableObject {
         sessions.removeValue(forKey: id)
         sessionTitles.removeValue(forKey: id)
         sessionUpdatedAt.removeValue(forKey: id)
+        sessionAgentIds.removeValue(forKey: id)
+        sessionAgentNames.removeValue(forKey: id)
         try? fm.removeItem(at: fileURL(id))
         if activeSessionId == id {
             activeSessionId = latestSessionID()
@@ -575,6 +614,14 @@ public final class SessionManager: ObservableObject {
 
     public func title(for id: String) -> String {
         sessionTitles[id] ?? "新会话"
+    }
+
+    public func agentId(for id: String) -> String {
+        sessionAgentIds[id] ?? "main_agent"
+    }
+
+    public func agentName(for id: String) -> String {
+        sessionAgentNames[id] ?? "Main 智能编排"
     }
 
     /// 整会话写入（消息级事件触发单次落盘，非 chunk 级）。标题按首条 user 前 20 字规则刷新。
@@ -612,13 +659,19 @@ public final class SessionManager: ObservableObject {
             msgs[idx].pending = false
             msgs[idx].isStreaming = false
             msgs[idx].degraded = response.degraded == true
+            msgs[idx].executingAgentId = response.resolvedAgent?.id
+            msgs[idx].executingAgentName = response.resolvedAgent?.name
+            msgs[idx].delegatedBy = response.delegatedBy
             // 后台完成不渲染逐步推理动画；用户切回时看到折叠推理卡/全文
             msgs[idx].blocks = []
         } else {
             msgs.append(ChatMessage(
                 sessionId: sessionId, role: .assistant,
                 content: response.answer, pending: false,
-                degraded: response.degraded == true
+                degraded: response.degraded == true,
+                executingAgentId: response.resolvedAgent?.id,
+                executingAgentName: response.resolvedAgent?.name,
+                delegatedBy: response.delegatedBy
             ))
         }
         setMessages(msgs, for: sessionId)
@@ -680,7 +733,9 @@ public final class SessionManager: ObservableObject {
             id: id,
             title: sessionTitles[id] ?? "新会话",
             updatedAt: sessionUpdatedAt[id] ?? Date(),
-            messages: msgs.map(PersistedMessage.init)
+            messages: msgs.map(PersistedMessage.init),
+            agentId: agentId(for: id),
+            agentName: agentName(for: id)
         )
         guard let data = try? Self.encoder.encode(rec) else { return }
         let url = fileURL(id)
@@ -942,6 +997,20 @@ public extension Notification.Name {
     static let tenantAgentsDidUpdate = Notification.Name("tenantAgentsDidUpdate")
 }
 
+public struct ChatAgentSelection: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let agentId: String
+    public let agentName: String
+    public let prompt: String?
+
+    public init(agentId: String, agentName: String, prompt: String? = nil) {
+        self.id = UUID()
+        self.agentId = agentId
+        self.agentName = agentName
+        self.prompt = prompt
+    }
+}
+
 @MainActor
 public final class AppState: ObservableObject {
     @Published public var isLoggedIn: Bool = false
@@ -949,6 +1018,8 @@ public final class AppState: ObservableObject {
     @Published public var currentProfile: TenantProfile
     @Published public var activeTab: Int = 0
     @Published public var selectedAgentId: String = "main_agent"
+    @Published public var selectedAgentName: String = "Main 智能编排"
+    @Published public var pendingChatAgent: ChatAgentSelection? = nil
     @Published public var pendingChatPrompt: String? = nil
     @Published public var pendingWorkflowId: String? = nil
     /// 内存会话级 session_id（不持久化磁盘；404/401 清重发；账号切换清空）
@@ -989,6 +1060,15 @@ public final class AppState: ObservableObject {
     public func navigateToChatWithPrompt(_ prompt: String) {
         self.pendingChatPrompt = prompt
         self.activeTab = 0 // Switch to Chat tab
+    }
+
+    public func openChat(agentId: String, agentName: String, prompt: String? = nil) {
+        selectedAgentId = agentId
+        selectedAgentName = agentName
+        pendingChatAgent = ChatAgentSelection(
+            agentId: agentId, agentName: agentName, prompt: prompt
+        )
+        activeTab = 0
     }
 }
 

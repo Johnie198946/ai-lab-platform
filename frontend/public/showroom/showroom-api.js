@@ -18,6 +18,7 @@
   ];
   const INSIGHT_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_STAFFING_PLAN_V1\s*\{[\s\S]*?\}\s*AI_LAB_STAFFING_PLAN_V1\s*-->/gi,
+    /<!--\s*AI_LAB_EMPLOYEE_STATUS_V1\s*\{[\s\S]*?\}\s*AI_LAB_EMPLOYEE_STATUS_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_STAGE_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_STAGE_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_SECTION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_SECTION_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_V1\s*-->/gi,

@@ -62,6 +62,125 @@ class EffectiveAgent:
         }
 
 
+@dataclass(frozen=True)
+class AgentInvocationMatch:
+    """Server-resolved explicit tenant Agent invocation."""
+
+    status: str
+    agent: EffectiveAgent | None = None
+    candidates: tuple[tuple[str, str], ...] = ()
+
+
+_INVOCATION_TRIGGER = re.compile(
+    r"(?:@|调用|使用|交给|切换到|请用|请调用)", re.IGNORECASE
+)
+_DIRECT_REQUEST_TRIGGER = re.compile(
+    r"(?:帮我(?:做|进行|完成)(?:一个)?|给我(?:做|进行)(?:一个)?|开始(?:做|进行))",
+    re.IGNORECASE,
+)
+
+
+def _agent_alias(value: str) -> str:
+    text = value.casefold().replace("·", "").replace("・", "")
+    text = re.sub(r"专属\s*agent", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bagent\b", "", text, flags=re.IGNORECASE)
+    return re.sub(r"[\s_\-—:：,，。.!！?？()（）\[\]【】]+", "", text)
+
+
+def _agent_intent_alias(value: str) -> str:
+    """Normalize a name inside an action phrase without fuzzy guessing.
+
+    ``能力`` is a common optional descriptor in Chinese assessment requests
+    (for example ``英语评估`` versus ``英语能力评估``).  Removing that one
+    descriptor can create multiple candidates, in which case the caller still
+    receives an ambiguity prompt rather than an arbitrary route.
+    """
+    return _agent_alias(value).replace("能力", "")
+
+
+async def match_explicit_tenant_agent(
+    db: AsyncSession,
+    *,
+    question: str,
+    tenant_id: str,
+    owner_user_id: str,
+) -> AgentInvocationMatch:
+    """Match only explicit invocation language against visible active Agents.
+
+    The LLM never receives an unverified Agent id.  Ambiguous aliases are
+    surfaced to the caller instead of being guessed.
+    """
+    explicit_invocation = _INVOCATION_TRIGGER.search(question) is not None
+    direct_request = _DIRECT_REQUEST_TRIGGER.search(question) is not None
+    normalized_question = _agent_alias(question)
+    intent_question = _agent_intent_alias(question)
+    rows = (
+        await db.execute(
+            select(TenantAgentModel).where(
+                TenantAgentModel.tenant_id == tenant_id,
+                TenantAgentModel.is_active.is_(True),
+            )
+        )
+    ).scalars().all()
+    visible = [
+        row for row in rows
+        if row.visibility != "private" or row.owner_user_id == owner_user_id
+    ]
+    route_token = re.search(r"#([A-Za-z0-9_-]{4,32})", question)
+    if route_token:
+        prefix = route_token.group(1)
+        token_matches = [row for row in visible if row.id.startswith(prefix)]
+        if len(token_matches) == 1:
+            target = token_matches[0]
+            agent = await resolve_agent(
+                db, agent_id=target.id, tenant_id=tenant_id,
+                owner_user_id=owner_user_id,
+            )
+            return AgentInvocationMatch(status="matched", agent=agent)
+
+    matched: list[TenantAgentModel] = []
+    for row in visible:
+        name = (row.custom_name or "").strip()
+        alias = _agent_alias(name)
+        intent_alias = _agent_intent_alias(name)
+        exact_name_mention = alias and alias in normalized_question
+        action_name_mention = (
+            (explicit_invocation or direct_request)
+            and bool(intent_alias)
+            and intent_alias in intent_question
+        )
+        if exact_name_mention or action_name_mention:
+            matched.append(row)
+
+    if not matched:
+        # Only claim a failed Agent lookup when the user actually used Agent
+        # language; generic sentences containing "使用" remain normal chat.
+        if re.search(r"agent|智能体|专属", question, re.IGNORECASE):
+            return AgentInvocationMatch(status="not_found")
+        return AgentInvocationMatch(status="none")
+
+    # Prefer the most specific alias.  Equal aliases are a real ambiguity.
+    longest = max(len(_agent_alias(row.custom_name or "")) for row in matched)
+    finalists = [
+        row for row in matched
+        if len(_agent_alias(row.custom_name or "")) == longest
+    ]
+    if len(finalists) != 1:
+        return AgentInvocationMatch(
+            status="ambiguous",
+            candidates=tuple((row.id, row.custom_name or row.base_agent_id) for row in finalists),
+        )
+
+    target = finalists[0]
+    agent = await resolve_agent(
+        db,
+        agent_id=target.id,
+        tenant_id=tenant_id,
+        owner_user_id=owner_user_id,
+    )
+    return AgentInvocationMatch(status="matched", agent=agent)
+
+
 def capability_catalog() -> dict[str, Any]:
     return {
         "safe_tools": list(SAFE_GLOBAL_TOOLS),

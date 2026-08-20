@@ -1996,7 +1996,16 @@ async def complete_showroom_insight_job(
             "job": job,
         }
     )
-    return {"job": job, "insight": insight, "session": session_payload}
+    return {
+        "job": job,
+        "insight": insight,
+        "session": session_payload,
+        # The browser uses this explicit list to start one bounded recovery
+        # pass when a model completed the job but omitted report fields.  Do
+        # not infer this from the percentage: a populated, actionable TBD is
+        # a valid report value and must not trigger an automatic loop.
+        "backfill_required_fields": missing_items,
+    }
 
 
 def _validate_insight_mutation(

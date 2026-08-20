@@ -186,4 +186,51 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(activities.first?.latestEvent?.payload.category, "skill_load")
         XCTAssertEqual(activities.first?.latestEvent?.payload.source, "hermes_reasoning_plugin")
     }
+
+    func testLegacySessionRecordDefaultsToMainAgent() throws {
+        let data = Data(
+            """
+            {
+              "id":"session-legacy","title":"旧会话",
+              "updatedAt":"2026-08-20T10:00:00Z","messages":[]
+            }
+            """.utf8
+        )
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(SessionRecord.self, from: data)
+        XCTAssertNil(record.agentId)
+        XCTAssertNil(record.agentName)
+    }
+
+    func testSessionRecordPersistsSelectedAgent() throws {
+        let record = SessionRecord(
+            id: "session-agent", title: "英语评估", updatedAt: Date(), messages: [],
+            agentId: "67d68724aefd431c967acdf0864e1949",
+            agentName: "小学生英语评估 · 专属 Agent"
+        )
+        let data = try JSONEncoder().encode(record)
+        let restored = try JSONDecoder().decode(SessionRecord.self, from: data)
+        XCTAssertEqual(restored.agentId, "67d68724aefd431c967acdf0864e1949")
+        XCTAssertEqual(restored.agentName, "小学生英语评估 · 专属 Agent")
+    }
+
+    func testAgentRouteSSEEventDecodesProvenance() throws {
+        let event = try XCTUnwrap(APIClient.StreamEvent.parse([
+            "type": "agent_route",
+            "agent": [
+                "id": "english-agent",
+                "name": "小学生英语评估 · 专属 Agent",
+                "delegated": true,
+            ],
+            "delegated_by": "main_agent",
+        ]))
+        guard case let .agentRoute(id, name, delegated, delegatedBy) = event else {
+            return XCTFail("expected agentRoute event")
+        }
+        XCTAssertEqual(id, "english-agent")
+        XCTAssertEqual(name, "小学生英语评估 · 专属 Agent")
+        XCTAssertTrue(delegated)
+        XCTAssertEqual(delegatedBy, "main_agent")
+    }
 }

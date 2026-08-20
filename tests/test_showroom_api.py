@@ -416,6 +416,8 @@ def test_staffing_job_is_idempotent_and_incrementally_persists_sections(monkeypa
             payload(),
         )
         assert partial["job"]["status"] == "partial"
+        assert "concept.customer_user" in partial["backfill_required_fields"]
+        assert partial["session"]["data"]["insight_review"]["coverage"]["blocking_items"]
 
         for section in ("concept", "root_causes", "impacts", "evidence", "recommendation"):
             await update_showroom_insight_progress(
@@ -443,6 +445,7 @@ def test_staffing_job_is_idempotent_and_incrementally_persists_sections(monkeypa
             payload(),
         )
         assert completed["job"]["status"] == "completed"
+        assert isinstance(completed["backfill_required_fields"], list)
 
         recovered = await _finish_showroom_insight_job(
             "showroom-staffing",
