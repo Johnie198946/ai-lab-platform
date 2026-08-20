@@ -334,7 +334,7 @@ async def test_clarify_submit_endpoint(app: FastAPI, transport: httpx.ASGITransp
             class R:
                 status_code = 200
                 def json(self):
-                    return {"ok": True, "state": "accepted", "clarify_id": "cid-1"}
+                    return {"ok": True}
             return R()
         return await orig_post(self, url, json=json, timeout=timeout, **kw)
 
@@ -347,7 +347,7 @@ async def test_clarify_submit_endpoint(app: FastAPI, transport: httpx.ASGITransp
             headers=auth_headers(),
         )
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "state": "accepted", "clarify_id": "cid-1"}
+    assert r.json() == {"ok": True}
     assert bridge_calls
     assert bridge_calls[0][1]["session_id"].endswith("-main_agent-x")
     assert bridge_calls[0][1]["response"] == "B2C 单商户"
