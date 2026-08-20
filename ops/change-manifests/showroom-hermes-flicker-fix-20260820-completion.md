@@ -2,7 +2,7 @@
 
 - task_id: `showroom-hermes-flicker-fix-20260820`
 - 目标：定位 Showroom 主控台反复请求当前 `visit-*` 会话并造成页面闪烁、洞察完成后仍显示运行中，以及客户洞察 JSON 提取失败的问题；在不改变公开 API 的前提下修复 Hermes 重连、会话恢复、前端渲染和洞察收口链路。
-- 当前状态：`TESTED`（等待提交、推送和部署）
+- 当前状态：`VERIFIED`
 
 ## 开工前 Git 盘点
 
@@ -59,17 +59,37 @@
 
 ## 交付与外部环境
 
-- commit SHA: 未授权/未执行。
-- GitHub remote/ref/SHA: 未授权 push，未执行 `git ls-remote` 发布核验。
-- server_before: 只读诊断时生产代码位于 `/opt/releases/ai-lab-platform-307cc15`；本任务未修改服务器。
-- server_after: 未授权部署，保持不变。
-- health_check: 诊断时服务可响应；本地修改尚未进入生产，未执行部署后健康检查。
-- functional_check: 本地 26/26 聚焦测试及生产构建通过；尚未执行生产浏览器闪屏验收。
-- rollback_point: 未部署，因此无需服务器回滚点；本地基线为 `007520599004e4337b552f9f24dfe4439d5d6000`。
+- implementation commit SHA: `750e070da0dbd5042e69bd4dd24ff2d84005ea5a`。
+- GitHub remote/ref/SHA:
+  - remote: `https://github.com/Johnie198946/ai-lab-platform.git`
+  - `refs/heads/main` 经 `git ls-remote` 核验包含实现提交 `750e070da0dbd5042e69bd4dd24ff2d84005ea5a`。
+  - 误推的远端 `codex/showroom-hermes-flicker-fix` 已删除；再次执行 `git ls-remote --heads` 只返回目标 `main`。
+- server_before:
+  - release: `/opt/releases/ai-lab-platform-307cc15`
+  - `.deploy-commit`: `5e6b8785094cf4775d5c8ecc9a7796677a1f0c40`
+  - API image: `sha256:e6995f3d9a1597b931cc6e2fe5c51c21da2aceb7abc54327460712f23bfd2ac4`
+  - frontend image: `sha256:46b659520331b3e9f7445cf4ee1c9485a0d086d7fa1d4a72c3ba00a1d0258647`
+  - `/health`: `{"status":"ok","version":"0.8.0"}`
+- server_after:
+  - release: `/opt/releases/ai-lab-platform-750e070`
+  - `.deploy-commit`: `750e070da0dbd5042e69bd4dd24ff2d84005ea5a`
+  - API image: `sha256:d7e115a51847f6f15f4c2ce777cc2c82eaf4f04f24bde22aeece599e47359d6c`
+  - frontend image: `sha256:f8bd6605173292f648e6caf4cae69b29fae4a278d36947c3dfdcddab54e6cc2c`
+- health_check:
+  - API 容器与前端容器均为 running，API healthy。
+  - `GET http://127.0.0.1:8000/health` 与经 Nginx 的 `GET /health` 均返回 `{"status":"ok","version":"0.8.0"}`。
+  - 部署后日志无应用异常，仅有正常启动和健康检查请求。
+- functional_check:
+  - Nginx 实际入口引用 `showroom-recovery-v2`，浏览器不会继续命中旧脚本。
+  - 生产 `app.js` 已核验包含局部状态更新、1200 字输出限制和失败重试文案。
+  - 生产 API 容器解析器冒烟测试将包含换行和尾逗号的损坏 JSON 修复为 `True ['a\\nb']`。
+  - 当前主 Session `visit-20260820123124-1e840af9` 的洞察状态已从遗留 `running` 收敛为 `failed`，刷新页面后按钮会恢复为“再次洞察”。
+  - Chrome 自动化临时页受自签名 HTTPS 安全提示限制，未绕过该提示；页面级行为由生产资源核验、数据库终态、27 项 Node 和 23 项 Python 回归共同覆盖。
+- rollback_point: `/opt/releases/ai-lab-platform-307cc15`，旧 release 未覆盖；回滚时原子切回该软链接并重建 API/frontend。
 
 ## 剩余风险与回滚
 
-- 生产页面在完成 push、部署和缓存刷新前仍运行旧逻辑。
 - 生产 Hermes 曾出现短时中断；本修复能阻止其演变为 UI 闪屏和 Session 写入风暴，但不能替代服务端容量与稳定性治理。
 - 生产主机内存较紧且无 swap 的历史风险仍需单独处理。
-- 如部署后出现回归，可恢复上述 baseline 对应的三个 Showroom 静态文件，并重启/刷新前端容器。
+- 用户当前 Chrome 标签页仍需执行一次普通刷新以载入 `showroom-recovery-v2`；刷新后遗留失败任务显示“再次洞察”。
+- 如部署后出现回归，可将 `/opt/ai-lab-platform` 原子切回 `/opt/releases/ai-lab-platform-307cc15`，再重建 API/frontend。
