@@ -45,17 +45,20 @@
   - frontend container: `ai-lab-platform-frontend-1`, running, created about 9 hours earlier
   - runtime SHA: `showroom.py fc27ad4d...`; `showroom-api.js 4ecabd53...`; `app.js a1613d03...`; `styles.css 6fdbfadc...`
 - server_after:
-  - API image: `sha256:5d3588dc83706f5c9ddba56b458c7c921abe90a44b8c1f9c1bac0e3e59b7fd0a`, healthy
-  - frontend image: `sha256:1571b5a0527352cf1469f676a959b5c8307cc15d19cd952f9bb8ea7e097b8701`, running
+  - API image: `sha256:75ab74235f979b475a3f2c3db5af508b33282a2388172edb816a5f2604642414`, healthy
+  - frontend image: `sha256:ac52a6ddbbcca2aefbbc120520dfa75da69c22a47727fde35ae61db0a71e8cc7`, running
   - runtime SHA 与本地一致：`showroom.py 60d31993...`; `showroom-api.js 503d9271...`; `app.js 9001ce5f...`; `styles.css d32a8b8c...`
 - health_check: `GET /health` 返回 `{"status":"ok","version":"0.8.0"}`；controller 入口 HTTP 200
 - functional_check:
   - 生产 `app.js` 已确认包含新版确认框与“结束并接待下一位”动作
+  - 生产入口已引用 `?v=20260820-rollover-v2`，浏览器会请求新版 JS/CSS
   - `screen-00-html.html`、`screen-00-html.js`、`audio/ai-lab-intro.wav` 均返回 HTTP 200
   - 后端原子归档、六 Session 新建、幂等与离线 successor 跟随由 20 项后端测试覆盖
   - 未代用户执行生产环境最终换场点击，避免主动归档当前真实接待数据；该项留给现场首次操作验收
 - rollback_point: `/opt/ai-lab-platform/backups/showroom-session-rollover-v2-20260820T020945Z.tar.gz`
   - SHA256: `fa8ca3244258c03ad568b0be3fe7ee992feafe230d38a02485c2705b253509aa`
+  - 入口备份：`/opt/ai-lab-platform/backups/showroom-index-pre-rollover-v2-20260820T021700Z.html`
+  - 入口备份 SHA256: `df28c9eecd90b134f76f684864487303bdc8b31d3e14ca05d0713670fecf153e`
 
 ## Risks and rollback
 
