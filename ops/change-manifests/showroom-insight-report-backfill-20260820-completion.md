@@ -10,6 +10,7 @@
 - `frontend/public/showroom/app.js`
 - `frontend/public/showroom/showroom-api.js`
 - `frontend/public/showroom/styles.css`
+- `frontend/public/showroom/index.html`
 - `frontend/tests/showroom-api.test.mjs`
 - `frontend/tests/showroom-staffing.test.mjs`
 - `tests/test_showroom_api.py`
