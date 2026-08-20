@@ -19,6 +19,7 @@
 - 生产迁移: `init_db` 在 PostgreSQL 上幂等执行 `ALTER COLUMN epoch TYPE BIGINT USING epoch::BIGINT`；已为 BIGINT 时不重复执行。
 - API 防御: 所有外部 epoch 字段限制在 signed BIGINT 范围，超限返回校验错误而不是数据库 500。
 - 回归: 增加毫秒 epoch 持久化/幂等测试和 INTEGER→BIGINT 迁移测试。
+- 二次生产复测发现并修复同一事务的 FK 插入顺序：先 flush workflow，再 flush plan，再 flush execution；专项 SQLite 测试强制开启 FK，避免再次被宽松测试环境掩盖。
 
 ## 变更文件
 

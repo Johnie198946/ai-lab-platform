@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import BigInteger, select
+from sqlalchemy import BigInteger, event, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
@@ -132,6 +132,13 @@ async def test_server_execution_is_idempotent_and_persists_six_nodes() -> None:
 @pytest.mark.asyncio
 async def test_server_execution_accepts_millisecond_epoch() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _enable_foreign_keys(dbapi_connection, _connection_record) -> None:
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
     maker = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)

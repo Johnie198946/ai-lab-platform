@@ -168,7 +168,16 @@ async def ensure_execution(
         tenant_key=session.tenant_key, status="queued", token_budget=58500,
         idempotency_key=f"showroom-insight:{session.tenant_key}:{session.session_id}:{epoch}:{demand_hash}",
     )
-    db.add_all([workflow, plan, execution])
+    # These objects are intentionally built from deterministic foreign-key IDs rather
+    # than ORM relationship assignment.  Flush each dependency boundary explicitly:
+    # SQLite normally leaves FK enforcement disabled and masked this ordering bug,
+    # while PostgreSQL correctly rejected execution-before-plan with a 500.
+    db.add(workflow)
+    await db.flush()
+    db.add(plan)
+    await db.flush()
+    db.add(execution)
+    await db.flush()
     order = DSLSafetyCompiler.check_dag_cycle_kahn(compiled)
     node_map = {node.id: node for node in compiled.nodes}
     for position, node_id in enumerate(order):
