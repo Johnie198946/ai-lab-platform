@@ -648,7 +648,21 @@ async def _call_bridge_stream(
             },
         ) as resp:
             if resp.status_code != 200:
-                yield f"data: {json.dumps({'type': 'error', 'code': 'bridge', 'message': f'HTTP {resp.status_code}'}, ensure_ascii=False)}\n\n"
+                body = await resp.aread()
+                raw = body.decode("utf-8", errors="replace")
+                denied = resp.status_code == 403 and (
+                    "knowledge_scope_denied" in raw
+                    or "套餐或知识权限已变化" in raw
+                )
+                event = {
+                    "type": "error",
+                    "code": "knowledge_scope_denied" if denied else "bridge",
+                    "message": (
+                        "套餐或知识权限已变化，请刷新知识权限后重试"
+                        if denied else f"HTTP {resp.status_code}"
+                    ),
+                }
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 return
             async for line in resp.aiter_lines():
                 if not line:

@@ -69,7 +69,9 @@ class TestOrchestrationAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
-    def test_create_get_and_update_session(self):
+    @patch("backend.api.orchestration._call_hermes", new_callable=AsyncMock)
+    def test_create_get_session(self, mock_hermes):
+        mock_hermes.return_value = "编排计划已生成"
         create_response = self.request(
             "POST",
             "/api/orchestration/sessions",
@@ -91,8 +93,10 @@ class TestOrchestrationAPI(unittest.TestCase):
         self.assertEqual(get_response.status_code, 200)
         self.assertEqual(get_response.json()["session_id"], session_id)
 
-    def test_update_requires_payload(self):
-        """验证空 payload 返回 400（roles 接口已移除，此测试保留作为回归）"""
+    @patch("backend.api.orchestration._call_hermes", new_callable=AsyncMock)
+    def test_second_session_can_be_created(self, mock_hermes):
+        """透明网关模式仍可独立创建另一会话。"""
+        mock_hermes.return_value = "协同计划已生成"
         create_response = self.request(
             "POST",
             "/api/orchestration/sessions",

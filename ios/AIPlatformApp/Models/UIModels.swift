@@ -995,6 +995,8 @@ public struct KnowledgeItem: Identifiable, Codable, Sendable, Hashable {
 public extension Notification.Name {
     /// 租户 Agent 切片列表变更广播：对话式创建成功 / 删除后触发拓扑页静默刷新。
     static let tenantAgentsDidUpdate = Notification.Name("tenantAgentsDidUpdate")
+    /// 服务端租户知识权益/策略版本变化，要求刷新权限并重新建立会话。
+    static let knowledgeAccessDidChange = Notification.Name("knowledgeAccessDidChange")
 }
 
 public struct ChatAgentSelection: Identifiable, Equatable, Sendable {

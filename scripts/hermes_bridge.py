@@ -43,7 +43,7 @@ from typing import Any, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 import uvicorn
 
 # 仓库根追加到 sys.path（不插 0 位）：仓库 tools/ 无 Hermes 网关模块，
@@ -262,11 +262,14 @@ def _get_user_lock(user_id: str) -> asyncio.Lock:
 
 
 class GoalRequest(BaseModel):
+    # V2 权限只能来自平台签发的 KnowledgeCapability。旧客户端继续发送
+    # pure/standard/kb 时必须显式失败，不能静默忽略后造成“看似隔离”的假象。
+    model_config = ConfigDict(extra="forbid")
+
     goal: str = Field(..., max_length=MAX_INPUT)
     request_id: str | None = Field(None, min_length=8, max_length=100)
     session_id: str | None = None  # 前端传入的 user_id（用于映射 Hermes 原生 session）
     skill_id: str | None = Field(None, max_length=80)
-    isolation: str = Field("standard", description="向后兼容·子Agent工厂使用")
     # 重新生成语义（2026-08-17 修复）：true 时作废旧 run（interrupt 旧 agent + discard 注册）
     # 再启动全新尝试——对齐 ChatGPT「重新生成」= 上次回答作废重跑，而非被并发防护拒绝
     regenerate: bool = Field(False, description="重新生成：作废旧 run 后全新执行")

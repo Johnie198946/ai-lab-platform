@@ -249,6 +249,45 @@ async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITran
 
 
 @pytest.mark.asyncio
+async def test_bridge_knowledge_denial_is_preserved_in_sse(monkeypatch):
+    """Bridge 的知识门禁拒绝必须原样到达客户端，不能退化成普通 HTTP 错误。"""
+    import backend.api.chat as chat_mod
+
+    class DeniedResponse:
+        status_code = 403
+
+        async def aread(self):
+            return b'{"detail":"knowledge_scope_denied"}'
+
+    class StreamContext:
+        async def __aenter__(self):
+            return DeniedResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return StreamContext()
+
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    frames = [
+        frame async for frame in chat_mod._call_bridge_stream(
+            "需要受限知识", "session-1", knowledge_capability="signed-capability"
+        )
+    ]
+    body = "".join(frames)
+    assert '"code": "knowledge_scope_denied"' in body
+    assert "套餐或知识权限已变化" in body
+
+
+@pytest.mark.asyncio
 async def test_stream_cancel_endpoint(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """取消端点透传 bridge 并清除 streaming 标记。"""
     import backend.api.chat as chat_mod
