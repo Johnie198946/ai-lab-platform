@@ -140,7 +140,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
              patch.object(bridge, "_session_exists", return_value=False), \
              patch.object(bridge, "_run_hermes", return_value=("ok", "sess_new")), \
              patch.object(bridge, "_readback_delta", return_value=rows):
-            result = self._run_chat(GoalRequest(goal="hi", session_id="u1"))
+            result = self._run_chat(GoalRequest(goal="hi", session_id="u1", isolation="standard"))
 
         self.assertEqual(result["reply"], "ok")
         self.assertEqual(result["hermes_session_id"], "sess_new")
@@ -153,7 +153,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
              patch.object(bridge, "_session_exists", return_value=False), \
              patch.object(bridge, "_run_hermes", return_value=("ok", "sess_new")), \
              patch.object(bridge, "_readback_delta", side_effect=sqlite3.Error("corrupt")):
-            result = self._run_chat(GoalRequest(goal="hi", session_id="u1"))
+            result = self._run_chat(GoalRequest(goal="hi", session_id="u1", isolation="standard"))
 
         # 失败降级：reply 正常返回，reasoning=[]，不抛 500
         self.assertEqual(result["reply"], "ok")
@@ -180,7 +180,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
              patch.object(bridge, "_run_hermes", side_effect=fake_run):
 
             async def run():
-                bodies = [GoalRequest(goal="g", session_id="same_user") for _ in range(4)]
+                bodies = [GoalRequest(goal="g", session_id="same_user", isolation="standard") for _ in range(4)]
                 await asyncio.gather(*[chat(b) for b in bodies])
 
             asyncio.run(run())
@@ -272,7 +272,7 @@ class TestConcurrencyGuard(unittest.TestCase):
              }), \
              patch.object(bridge, "_sse_from_in_process") as mock_sse:
             resp = asyncio.run(bridge.chat_stream(
-                GoalRequest(goal="hi", session_id="u_busy")
+                GoalRequest(goal="hi", session_id="u_busy", isolation="standard")
             ))
             body = self._collect(resp)
         self.assertIn('"phase": "running"', body)
@@ -282,14 +282,14 @@ class TestConcurrencyGuard(unittest.TestCase):
     def test_free_slot_starts_agent(self):
         import scripts.hermes_bridge as bridge
 
-        async def fake_sse(user_id, goal, allow_local_files=False):
+        async def fake_sse(user_id, goal, **kwargs):
             yield f"data: {json.dumps({'type': 'status', 'phase': 'boot'})}\n\n"
 
         with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
              patch.object(bridge, "_stream_run_get", return_value=None), \
              patch.object(bridge, "_sse_from_in_process", side_effect=fake_sse):
             resp = asyncio.run(bridge.chat_stream(
-                GoalRequest(goal="hi", session_id="u_free")
+                GoalRequest(goal="hi", session_id="u_free", isolation="standard")
             ))
             body = self._collect(resp)
         self.assertIn('"phase": "boot"', body)
@@ -298,11 +298,13 @@ class TestConcurrencyGuard(unittest.TestCase):
 class TestClarifyResolveReason(unittest.TestCase):
     """保活机制 v6（G-7）：clarify resolve 失败 reason 三态（expired/rejected/no_pending）。"""
 
-    def _resolve(self, session_id="s1", response="x"):
+    def _resolve(self, session_id="s1", response="x", clarify_id=None):
         import scripts.hermes_bridge as bridge
 
         return asyncio.run(bridge.clarify_resolve(
-            bridge.ClarifyResolveRequest(session_id=session_id, response=response)
+            bridge.ClarifyResolveRequest(
+                session_id=session_id, response=response, clarify_id=clarify_id
+            )
         ))
 
     def _mock_cg(self):
@@ -321,7 +323,8 @@ class TestClarifyResolveReason(unittest.TestCase):
         with patcher, \
              patch.object(bridge, "_stream_run_get", return_value=None):
             result = self._resolve()
-        self.assertEqual(result, {"ok": True})
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["state"], "accepted")
 
     def test_rejected_when_pending_exists(self):
         import scripts.hermes_bridge as bridge
@@ -332,7 +335,8 @@ class TestClarifyResolveReason(unittest.TestCase):
         with patcher, \
              patch.object(bridge, "_stream_run_get", return_value={"queue": queue.Queue()}):
             result = self._resolve()
-        self.assertEqual(result, {"ok": False, "reason": "rejected"})
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["state"], "rejected")
 
     def test_expired_when_issued_recently(self):
         import scripts.hermes_bridge as bridge
@@ -347,7 +351,8 @@ class TestClarifyResolveReason(unittest.TestCase):
              }), \
              patch.object(bridge, "CLARIFY_TIMEOUT_SECONDS", 180):
             result = self._resolve()
-        self.assertEqual(result, {"ok": False, "reason": "expired"})
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["state"], "expired")
 
     def test_no_pending_when_never_issued(self):
         import scripts.hermes_bridge as bridge
@@ -358,7 +363,91 @@ class TestClarifyResolveReason(unittest.TestCase):
         with patcher, \
              patch.object(bridge, "_stream_run_get", return_value=None):
             result = self._resolve()
-        self.assertEqual(result, {"ok": False, "reason": "no_pending"})
+        self.assertEqual(result["ok"], False)
+        self.assertEqual(result["state"], "no_pending")
+
+    def test_exact_id_miss_never_falls_back_to_session(self):
+        """旧卡不能通过 session fallback 误解锁下一轮新卡。"""
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        mock_cg.resolve_gateway_clarify = lambda *a, **k: False
+        fallback_calls = []
+        mock_cg.resolve_text_response_for_session = lambda *a, **k: fallback_calls.append(a) or True
+        mock_cg.has_pending = lambda *a, **k: True
+        pending = {"clarify_id": "current"}
+        with patcher, \
+             patch.object(bridge, "_pending_clarify", return_value=pending), \
+             patch.object(bridge, "_stream_run_get", return_value={"queue": queue.Queue()}), \
+             patch.dict(bridge._resolved_clarifies, {}, clear=True):
+            result = self._resolve(clarify_id="stale")
+        self.assertEqual(result["state"], "stale")
+        self.assertEqual(fallback_calls, [])
+
+    def test_exact_id_retry_is_replayed_idempotently(self):
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        calls = []
+        mock_cg.resolve_gateway_clarify = lambda *a, **k: calls.append(a) or True
+        with patcher, \
+             patch.object(bridge, "_pending_clarify", return_value={"clarify_id": "cid-1"}), \
+             patch.dict(bridge._resolved_clarifies, {}, clear=True):
+            first = self._resolve(response="A", clarify_id="cid-1")
+            second = self._resolve(response="A", clarify_id="cid-1")
+        self.assertEqual(first["state"], "accepted")
+        self.assertEqual(second["state"], "replayed")
+        self.assertEqual(len(calls), 1)
+
+    def test_same_id_different_response_is_stale(self):
+        """同一题被第二种答案重放时不能推进第二次。"""
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        calls = []
+        mock_cg.resolve_gateway_clarify = lambda *a, **k: calls.append(a) or True
+        with patcher, \
+             patch.object(bridge, "_pending_clarify", return_value={"clarify_id": "cid-1"}), \
+             patch.dict(bridge._resolved_clarifies, {}, clear=True):
+            first = self._resolve(response="A", clarify_id="cid-1")
+            second = self._resolve(response="B", clarify_id="cid-1")
+        self.assertEqual(first["state"], "accepted")
+        self.assertEqual(second["state"], "stale")
+        self.assertEqual(len(calls), 1)
+
+    def test_replay_cannot_cross_session(self):
+        """缓存命中的 clarify_id 仍须绑定原 Session，防止伪造会话重放。"""
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        calls = []
+        mock_cg.resolve_gateway_clarify = lambda *a, **k: calls.append(a) or True
+        def pending_for_session(session_id):
+            return {"clarify_id": "cid-1"} if session_id == "s1" else None
+
+        with patcher, \
+             patch.object(bridge, "_pending_clarify", side_effect=pending_for_session), \
+             patch.dict(bridge._resolved_clarifies, {}, clear=True):
+            first = self._resolve(session_id="s1", response="A", clarify_id="cid-1")
+            forged = self._resolve(session_id="s2", response="A", clarify_id="cid-1")
+        self.assertEqual(first["state"], "accepted")
+        self.assertEqual(forged["state"], "stale")
+        self.assertEqual(len(calls), 1)
+
+    def test_first_submit_cannot_cross_session(self):
+        """即使攻击者先提交了有效 ID，没有本 Session pending 也不能触发 gateway。"""
+        import scripts.hermes_bridge as bridge
+
+        mock_cg, patcher = self._mock_cg()
+        calls = []
+        mock_cg.resolve_gateway_clarify = lambda *a, **k: calls.append(a) or True
+        with patcher, \
+             patch.object(bridge, "_pending_clarify", return_value=None), \
+             patch.object(bridge, "_stream_run_get", return_value=None), \
+             patch.dict(bridge._resolved_clarifies, {}, clear=True):
+            forged = self._resolve(session_id="forged", response="A", clarify_id="cid-real")
+        self.assertEqual(forged["state"], "no_pending")
+        self.assertEqual(calls, [])
 
 
 if __name__ == "__main__":

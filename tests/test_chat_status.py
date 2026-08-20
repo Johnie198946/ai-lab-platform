@@ -315,6 +315,8 @@ class TestQueryStatusTetrad(unittest.TestCase):
         self.assertEqual(result["clarify"]["question"], "请选择方案?")
         self.assertEqual(result["clarify"]["choices"], ["A", "B"])
         self.assertTrue(result["clarify"]["multi_select"])
+        self.assertIn("expires_in_seconds", result["clarify"])
+        self.assertGreaterEqual(result["clarify"]["expires_in_seconds"], 0)
         # 其他 user 的 entry 被过滤
         self.assertNotEqual(result["clarify"]["clarify_id"], "c2")
 
