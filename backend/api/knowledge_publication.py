@@ -39,11 +39,11 @@ def _vault():
     return catalog_vault()
 
 
-async def _notify_authen(*, path: str, entitlement_key: str, approved_by: str, approval_version: str) -> None:
+async def _notify_authen(*, path: str, entitlement_key: str, approved_by: str) -> None:
     if not AUTHEN_TOKEN or not APPROVAL_SECRET:
         raise HTTPException(status_code=503, detail={"code": "authen_approval_sync_unconfigured", "message": "Yellow 审批联动尚未配置，文档未发布"})
     event = {
-        "event_id": "kpa_" + hashlib.sha256(f"{path}:{entitlement_key}:{approval_version}".encode()).hexdigest()[:32],
+        "event_id": "kpa_" + hashlib.sha256(f"{path}:{entitlement_key}".encode()).hexdigest()[:32],
         "application_id": "ai-lab-platform", "entitlement_key": entitlement_key,
         "approved_by": approved_by, "source_path": path,
     }
@@ -84,7 +84,7 @@ async def approve(body: PublicationDecision, payload=Depends(require_auth)):
         if body.security_level == "yellow":
             await _notify_authen(
                 path=body.path, entitlement_key=body.entitlement_key,
-                approved_by=actor, approval_version=str(metadata["approved_at"]),
+                approved_by=actor,
             )
     except HTTPException:
         restore_note(path, original)
