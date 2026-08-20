@@ -13,7 +13,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
-from backend.services.knowledge_color_projection import approved_color_documents, color_packs
+from backend.services.knowledge_color_projection import (
+    approved_color_documents,
+    clear_color_projection_cache,
+    color_packs,
+)
 
 
 CATALOG_FILENAME = "knowledge_catalog.json"
@@ -55,6 +59,7 @@ def load_manifest(vault: Path | None = None) -> dict[str, Any]:
 
 def clear_manifest_cache() -> None:
     _read_manifest.cache_clear()
+    clear_color_projection_cache()
 
 
 def document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:

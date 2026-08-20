@@ -46,10 +46,11 @@
 3. Green 审批成功后刷新 Catalog 与搜索缓存；不再要求先凑齐 5 篇 K5。
 4. Yellow 审批使用 HMAC 签名事件通知 Authen；Authen 失败时恢复原 Frontmatter，避免平台与权益真源产生半成功状态。
 5. iOS 将“全部建设中/K5 发布门槛”改为“等待内容批准/已批准条目”，并提供清晰的审批、加载、错误和禁用状态。
+6. 生产验证发现旧 `_rel_visible → document_index` 内层调用会放大为 N² Wiki YAML 扫描；增加 5 秒投影缓存，并在批准、回滚或 Catalog 清理时立即失效。
 
 ## 测试与校验
 
-- Python：`25 passed`
+- Python：`26 passed`
   - `tests/test_knowledge_color_autopublish.py`
   - `tests/test_subscription_api.py`
   - `tests/test_knowledge_policy_v2.py`

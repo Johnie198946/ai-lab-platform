@@ -10,7 +10,9 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
@@ -50,8 +52,7 @@ def _exact_entitlement(value: str) -> bool:
     return bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,127}", value)) and ".." not in value
 
 
-def approved_color_documents(vault: Path) -> list[dict[str, Any]]:
-    """Return explicit color decisions carrying the same atomic approval."""
+def _scan_approved_color_documents(vault: Path) -> list[dict[str, Any]]:
     wiki = vault / "wiki"
     if not wiki.is_dir():
         return []
@@ -96,6 +97,33 @@ def approved_color_documents(vault: Path) -> list[dict[str, Any]]:
             "source_count": len(sources), "approval_source": "atomic_color_approval",
         })
     return documents
+
+
+@lru_cache(maxsize=32)
+def _cached_approved_color_documents(
+    vault_text: str, five_second_bucket: int
+) -> tuple[dict[str, Any], ...]:
+    del five_second_bucket
+    return tuple(_scan_approved_color_documents(Path(vault_text)))
+
+
+def clear_color_projection_cache() -> None:
+    _cached_approved_color_documents.cache_clear()
+
+
+def approved_color_documents(vault: Path) -> list[dict[str, Any]]:
+    """Return approved colors without reparsing the Wiki once per document.
+
+    Knowledge endpoints call ``document_index`` from inner filtering loops.
+    A short cache prevents an N-squared full-Vault YAML scan while still
+    observing out-of-band Vault syncs within five seconds. Admin approvals
+    clear the cache synchronously.
+    """
+    bucket = int(time.monotonic() // 5)
+    return [
+        dict(item)
+        for item in _cached_approved_color_documents(str(vault.resolve()), bucket)
+    ]
 
 
 def color_approval_candidates(vault: Path) -> list[dict[str, Any]]:
@@ -155,6 +183,7 @@ def approve_color(vault: Path, *, relative_path: str, security_level: str, appro
     temporary = path.with_name(f".{path.name}.{os.getpid()}.approval.tmp")
     temporary.write_text(rendered, encoding="utf-8")
     os.replace(temporary, path)
+    clear_color_projection_cache()
     return path, original, metadata
 
 
@@ -162,6 +191,7 @@ def restore_note(path: Path, original: str) -> None:
     temporary = path.with_name(f".{path.name}.{os.getpid()}.rollback.tmp")
     temporary.write_text(original, encoding="utf-8")
     os.replace(temporary, path)
+    clear_color_projection_cache()
 
 
 def color_packs(documents: list[dict[str, Any]]) -> list[dict[str, Any]]:

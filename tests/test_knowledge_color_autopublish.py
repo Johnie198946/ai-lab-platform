@@ -46,6 +46,26 @@ def test_color_alone_is_not_approval_but_one_action_releases_green(tmp_path):
     assert compute_catalog(tmp_path)[0]["doc_count"] == 1
 
 
+def test_projection_scan_is_reused_inside_document_filter_loops(tmp_path, monkeypatch):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "wiki/方法论/公共方法.md"
+    _note(path, security="green", classification="approved")
+    projection.clear_color_projection_cache()
+    calls = 0
+    original = projection._scan_approved_color_documents
+
+    def counted(vault):
+        nonlocal calls
+        calls += 1
+        return original(vault)
+
+    monkeypatch.setattr(projection, "_scan_approved_color_documents", counted)
+    for _ in range(200):
+        assert approved_color_documents(tmp_path)[0]["security_level"] == "green"
+    assert calls == 1
+
+
 def test_yellow_approval_requires_exact_entitlement_and_no_k5_minimum(tmp_path):
     path = tmp_path / "wiki/方法论/专业方法.md"
     _note(path, security="yellow")
