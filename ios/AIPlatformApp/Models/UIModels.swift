@@ -196,11 +196,20 @@ public struct ClarifyOption: Identifiable, Sendable, Hashable {
     }
 }
 
+public enum ClarifySubmissionState: String, Codable, Sendable, Hashable {
+    case pending, submitting, accepted, continuing, rejected, expired, reconciling
+}
+
 /// 澄清卡片数据块（单选/多选 + 自定义输入 + 已提交态）
 public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public let id: String
     /// 后端澄清 ID（bridge clarify 事件携带）：提交时透传，精确解锁阻塞的 agent 线程（P0 修复）
     public var clarifyId: String?
+    public var requestId: String?
+    public var sessionId: String?
+    public var agentId: String?
+    public var expiresInSeconds: Int?
+    public var submissionState: ClarifySubmissionState
     public var question: String
     public var choices: [ClarifyOption]
     /// true = 多选（Checkbox），false = 单选（Radio）
@@ -215,6 +224,11 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public init(
         id: String = UUID().uuidString,
         clarifyId: String? = nil,
+        requestId: String? = nil,
+        sessionId: String? = nil,
+        agentId: String? = nil,
+        expiresInSeconds: Int? = nil,
+        submissionState: ClarifySubmissionState = .pending,
         question: String,
         choices: [String],
         multiSelect: Bool = false,
@@ -225,6 +239,11 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     ) {
         self.id = id
         self.clarifyId = clarifyId
+        self.requestId = requestId
+        self.sessionId = sessionId
+        self.agentId = agentId
+        self.expiresInSeconds = expiresInSeconds
+        self.submissionState = submissionState
         self.question = question
         self.choices = choices.map { ClarifyOption(label: $0) }
         self.multiSelect = multiSelect
@@ -238,6 +257,7 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public mutating func markSubmitted(selection: String) {
         self.isSubmitted = true
         self.submittedSelection = selection
+        self.submissionState = .accepted
     }
 }
 
@@ -411,6 +431,7 @@ public struct PersistedMessage: Codable, Sendable {
     public let executingAgentId: String?
     public let executingAgentName: String?
     public let delegatedBy: String?
+    public let clarify: PersistedClarify?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -424,10 +445,11 @@ public struct PersistedMessage: Codable, Sendable {
         self.executingAgentId = m.executingAgentId
         self.executingAgentName = m.executingAgentName
         self.delegatedBy = m.delegatedBy
+        self.clarify = m.clarifyBlock.map(PersistedClarify.init)
     }
 
     public func toChatMessage(sessionId: String) -> ChatMessage {
-        ChatMessage(
+        var message = ChatMessage(
             id: id,
             sessionId: sessionId,
             role: MessageRole(rawValue: role) ?? .assistant,
@@ -440,6 +462,64 @@ public struct PersistedMessage: Codable, Sendable {
             executingAgentId: executingAgentId,
             executingAgentName: executingAgentName,
             delegatedBy: delegatedBy
+        )
+        if let clarify {
+            message.blocks = [.clarify(clarify.toClarifyBlock(defaultSessionId: sessionId))]
+        }
+        return message
+    }
+}
+
+/// 可交互 Clarify 的最小恢复快照；普通展示 blocks 仍不落盘。
+public struct PersistedClarify: Codable, Sendable {
+    public let id: String
+    public let clarifyId: String?
+    public let requestId: String?
+    public let sessionId: String?
+    public let agentId: String?
+    public let expiresInSeconds: Int?
+    public let submissionState: ClarifySubmissionState?
+    public let question: String
+    public let choices: [String]
+    public let multiSelect: Bool
+    public let submitLabel: String
+    public let source: String
+    public let isSubmitted: Bool
+    public let submittedSelection: String
+
+    public init(_ block: ClarifyBlock) {
+        id = block.id
+        clarifyId = block.clarifyId
+        requestId = block.requestId
+        sessionId = block.sessionId
+        agentId = block.agentId
+        expiresInSeconds = block.expiresInSeconds
+        submissionState = block.submissionState
+        question = block.question
+        choices = block.choices.map(\.label)
+        multiSelect = block.multiSelect
+        submitLabel = block.submitLabel
+        source = block.source
+        isSubmitted = block.isSubmitted
+        submittedSelection = block.submittedSelection
+    }
+
+    public func toClarifyBlock(defaultSessionId: String) -> ClarifyBlock {
+        ClarifyBlock(
+            id: id,
+            clarifyId: clarifyId,
+            requestId: requestId,
+            sessionId: sessionId ?? defaultSessionId,
+            agentId: agentId,
+            expiresInSeconds: expiresInSeconds,
+            submissionState: submissionState ?? (isSubmitted ? .accepted : .pending),
+            question: question,
+            choices: choices,
+            multiSelect: multiSelect,
+            submitLabel: submitLabel,
+            source: source,
+            isSubmitted: isSubmitted,
+            submittedSelection: submittedSelection
         )
     }
 }

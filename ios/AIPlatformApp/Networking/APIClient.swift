@@ -379,12 +379,20 @@ public struct ChatClarifyDTO: Codable {
     public let choices: [String]
     public let multiSelect: Bool
     public let source: String?
+    public let clarifyId: String?
+    public let requestId: String?
+    public let expiresInSeconds: Int?
 
     enum CodingKeys: String, CodingKey {
         case question
         case choices
-        case multiSelect = "multi_select"
+        // APIClient 的 decoder 已启用 convertFromSnakeCase；这里必须保持 Swift 字段名，
+        // 否则会二次转换并导致 multi_select 解码失败。
+        case multiSelect
         case source
+        case clarifyId
+        case requestId
+        case expiresInSeconds
     }
 }
 
@@ -413,11 +421,19 @@ public extension ChatReasoningStepDTO {
 ///        / timeout / not_found
 public struct ChatStatusDTO: Codable {
     public let status: String
+    public let phase: String?
     public let answer: String?
     public let reasoning: [ChatReasoningStepDTO]?
     public let latestStep: String?
+    public let clarify: ChatClarifyDTO?
     /// 是否已消费（completed 且水位线已推进）；consume=1 时后端顺带标记
     public let consumed: Bool?
+}
+
+public struct ClarifySubmitResult: Codable, Sendable {
+    public let ok: Bool
+    public let state: String
+    public let clarifyId: String?
 }
 
 /// POST /api/v1/register 响应（token 为可选：当前后端仅返回 user_id，预留生产 JWT）
@@ -1838,7 +1854,8 @@ public final class APIClient: ObservableObject {
         case thought(String)
         case toolStart(id: String, tool: String, label: String)
         case toolComplete(id: String, tool: String)
-        case clarify(question: String, choices: [String], multiSelect: Bool, source: String, clarifyId: String?)
+        case clarify(question: String, choices: [String], multiSelect: Bool, source: String, clarifyId: String?, requestId: String?, expiresInSeconds: Int?)
+        case clarifyExpired(clarifyId: String?, requestId: String?)
         case clarifyRejected
         case status(phase: String, detail: String)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
@@ -1870,7 +1887,14 @@ public final class APIClient: ObservableObject {
                     choices: json["choices"] as? [String] ?? [],
                     multiSelect: json["multi_select"] as? Bool ?? false,
                     source: json["source"] as? String ?? "bridge",
-                    clarifyId: json["clarify_id"] as? String
+                    clarifyId: json["clarify_id"] as? String,
+                    requestId: json["request_id"] as? String,
+                    expiresInSeconds: json["expires_in_seconds"] as? Int
+                )
+            case "clarify_expired":
+                return .clarifyExpired(
+                    clarifyId: json["clarify_id"] as? String,
+                    requestId: json["request_id"] as? String
                 )
             case "clarify_rejected":
                 return .clarifyRejected
@@ -2019,8 +2043,10 @@ public final class APIClient: ObservableObject {
         response: String,
         clarifyId: String? = nil,
         agentId: String? = nil
-    ) async throws -> Bool {
-        guard let sessionId, !sessionId.isEmpty else { return false }
+    ) async throws -> ClarifySubmitResult {
+        guard let sessionId, !sessionId.isEmpty else {
+            return ClarifySubmitResult(ok: false, state: "no_pending", clarifyId: clarifyId)
+        }
         let url = baseURL.appendingPathComponent("api/chat/stream/clarify")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -2041,8 +2067,7 @@ public final class APIClient: ObservableObject {
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let data = try await perform(request, session: chatSession, canRetry: false)
-        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return (json?["ok"] as? Bool) ?? false
+        return try decoder.decode(ClarifySubmitResult.self, from: data)
     }
 
     /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。

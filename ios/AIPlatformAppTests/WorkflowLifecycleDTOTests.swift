@@ -233,4 +233,68 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertTrue(delegated)
         XCTAssertEqual(delegatedBy, "main_agent")
     }
+
+    func testClarifyStateSurvivesSessionPersistenceRoundTrip() throws {
+        let block = ClarifyBlock(
+            clarifyId: "cid-1",
+            requestId: "request-1",
+            sessionId: "session-1",
+            agentId: "main_agent",
+            expiresInSeconds: 123,
+            submissionState: .submitting,
+            question: "请提供具体任务",
+            choices: [],
+            source: "bridge",
+            submittedSelection: "测试英语水平"
+        )
+        let message = ChatMessage(
+            id: "message-1", sessionId: "session-1", role: .assistant,
+            content: "", blocks: [.clarify(block)]
+        )
+
+        let data = try JSONEncoder().encode(PersistedMessage(message))
+        let decoded = try JSONDecoder().decode(PersistedMessage.self, from: data)
+        let restored = try XCTUnwrap(decoded.toChatMessage(sessionId: "session-1").clarifyBlock)
+
+        XCTAssertEqual(restored.clarifyId, "cid-1")
+        XCTAssertEqual(restored.requestId, "request-1")
+        XCTAssertEqual(restored.submissionState, .submitting)
+        XCTAssertEqual(restored.submittedSelection, "测试英语水平")
+    }
+
+    func testLegacyPersistedMessageWithoutClarifyStillDecodes() throws {
+        let data = Data(
+            """
+            {
+              "id":"m1","role":"assistant","content":"旧回答",
+              "createdAt":0,"pending":false,"degraded":false,
+              "isDemoSample":false,"reasoningDuration":null
+            }
+            """.utf8
+        )
+        let legacy = try JSONDecoder().decode(PersistedMessage.self, from: data)
+        XCTAssertNil(legacy.clarify)
+        XCTAssertEqual(legacy.toChatMessage(sessionId: "s1").content, "旧回答")
+    }
+
+    func testChatStatusDecodesRecoverableClarifyMetadata() throws {
+        let data = Data(
+            """
+            {
+              "status":"running","phase":"clarify","answer":"",
+              "reasoning":[],"latest_step":"等待用户确认","consumed":false,
+              "clarify":{
+                "clarify_id":"cid-2","request_id":"request-2",
+                "question":"选择目标","choices":["A","B"],
+                "multi_select":false,"expires_in_seconds":88
+              }
+            }
+            """.utf8
+        )
+        let status = try decoder().decode(ChatStatusDTO.self, from: data)
+        XCTAssertEqual(status.phase, "clarify")
+        XCTAssertEqual(status.clarify?.clarifyId, "cid-2")
+        XCTAssertEqual(status.clarify?.requestId, "request-2")
+        XCTAssertEqual(status.clarify?.expiresInSeconds, 88)
+    }
 }

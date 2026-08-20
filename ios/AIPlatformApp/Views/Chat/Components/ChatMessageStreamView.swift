@@ -104,7 +104,8 @@ public struct ChatMessageStreamView: View {
                 block: clarify,
                 onSubmit: { selection in
                     coordinator.sendClarifySelection(messageId: message.id, selection: selection)
-                }
+                },
+                onRecover: { coordinator.recoverExpiredClarify(messageId: message.id) }
             )
         } else {
             // 提交后（isSubmitted）：降级为完整气泡渲染——思维链胶囊 + 已提交澄清卡 + 正文
@@ -147,6 +148,11 @@ public struct ChatMessageStreamView: View {
                     }) {
                         coordinator.sendClarifySelection(messageId: msg.id, selection: selection)
                     }
+                },
+                onRecover: {
+                    if let msg = coordinator.messages.last(where: {
+                        $0.clarifyBlock?.id == clarifyBlock.id
+                    }) { coordinator.recoverExpiredClarify(messageId: msg.id) }
                 }
             )
         default:

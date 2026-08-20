@@ -76,6 +76,73 @@ public final class TenantSessionCoordinator: ObservableObject {
         appState?.selectedAgentName = sessionManager.agentName(for: sid)
     }
 
+    /// 冷启动/回前台时以服务端为准恢复 Clarify；不启动新推理。
+    public func reconcileRestoredClarify() {
+        guard let idx = messages.lastIndex(where: {
+            guard let block = $0.clarifyBlock else { return false }
+            return block.source == "bridge" && !block.isSubmitted
+        }), let block = messages[idx].clarifyBlock else { return }
+        let messageId = messages[idx].id
+        let sid = block.sessionId ?? sessionManager.activeSessionID()
+        let requestId = block.requestId ?? messageId
+        let agentId = block.agentId ?? appState?.selectedAgentId
+        let selection = block.submittedSelection
+        clarifySubmissionTask?.cancel()
+        clarifySubmissionTask = Task { [weak self] in
+            guard let self else { return }
+            if [.submitting, .reconciling].contains(block.submissionState), !selection.isEmpty {
+                await self.reconcileClarifySubmission(
+                    messageId: messageId,
+                    selection: selection,
+                    requestId: requestId,
+                    sessionId: sid,
+                    agentId: agentId,
+                    serverState: "restore"
+                )
+                return
+            }
+            do {
+                let status = try await APIClient.shared.fetchChatStatus(
+                    sessionId: sid, agentId: agentId
+                )
+                guard let currentIdx = self.messages.firstIndex(where: { $0.id == messageId }) else { return }
+                if let pending = status.clarify, pending.clarifyId == block.clarifyId {
+                    if let blockIdx = self.messages[currentIdx].blocks.firstIndex(where: {
+                        if case .clarify = $0 { return true }; return false
+                    }), case .clarify(var restored) = self.messages[currentIdx].blocks[blockIdx] {
+                        restored.requestId = pending.requestId ?? requestId
+                        restored.sessionId = sid
+                        restored.agentId = agentId
+                        restored.expiresInSeconds = pending.expiresInSeconds
+                        restored.submissionState = .pending
+                        self.messages[currentIdx].blocks[blockIdx] = .clarify(restored)
+                        self.commitSession()
+                    }
+                } else if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                    self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
+                    self.setClarifyState(messageIndex: currentIdx, state: .expired)
+                    self.commitSession()
+                } else if status.status == "running" {
+                    self.isGenerating = true
+                    self.inflight = InFlightRequest(
+                        id: requestId, sessionId: sid, text: "", agentId: agentId
+                    )
+                    self.startRecoveredRunMonitor(
+                        requestId: requestId,
+                        sessionId: sid,
+                        agentId: agentId,
+                        outputMessageId: messageId
+                    )
+                } else {
+                    self.setClarifyState(messageIndex: currentIdx, state: .expired)
+                    self.commitSession()
+                }
+            } catch {
+                // 离线时保留本地卡片；用户点击后仍会走精确 clarify_id 提交与对账。
+            }
+        }
+    }
+
     public func commitSession() {
         let sid = sessionManager.activeSessionID()
         sessionManager.setMessages(messages, for: sid)
@@ -430,10 +497,14 @@ public final class TenantSessionCoordinator: ObservableObject {
                         }
                     }
 
-                case .clarify(let question, let choices, let multiSelect, let source, let clarifyId):
+                case .clarify(let question, let choices, let multiSelect, let source, let clarifyId, let requestId, let expiresInSeconds):
                     drainDeltaBuffer(messageId: outputId)
                     let block = ClarifyBlock(
                         clarifyId: clarifyId,
+                        requestId: requestId ?? req.id,
+                        sessionId: req.sessionId,
+                        agentId: req.agentId,
+                        expiresInSeconds: expiresInSeconds,
                         question: question,
                         choices: choices,
                         multiSelect: multiSelect,
@@ -456,6 +527,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                     }
+
+                case .clarifyExpired(let clarifyId, _):
+                    markClarifyExpired(clarifyId: clarifyId)
 
                 case .clarifyRejected:
                     showToast("选择未通过校验，请从选项中选择或输入有效内容")
@@ -641,6 +715,11 @@ public final class TenantSessionCoordinator: ObservableObject {
 
         if let payload = response.clarify, !payload.question.isEmpty {
             let clarify = ClarifyBlock(
+                clarifyId: payload.clarifyId,
+                requestId: req.id,
+                sessionId: req.sessionId,
+                agentId: req.agentId,
+                expiresInSeconds: payload.expiresInSeconds,
                 question: payload.question,
                 choices: payload.choices.isEmpty ? [] : payload.choices,
                 multiSelect: payload.multiSelect,
@@ -768,8 +847,10 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func sendClarifySelection(messageId: String, selection: String) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         guard let clarify = messages[idx].clarifyBlock, !clarify.isSubmitted else { return }
-        let sid = sessionManager.activeSessionID()
+        guard clarify.submissionState != .submitting else { return }
+        let sid = clarify.sessionId ?? sessionManager.activeSessionID()
         let clarifyId = clarify.clarifyId
+        let agentId = clarify.agentId ?? appState?.selectedAgentId
 
         // 本地预分类卡没有正在等待解锁的 Agent，按普通新问题处理。
         if clarify.source != "bridge" {
@@ -784,16 +865,84 @@ public final class TenantSessionCoordinator: ObservableObject {
             return
         }
 
-        // Bridge clarify 必须仍归属于当前 SSE。绝不能 finishGeneration/startGeneration：
-        // regenerate 会在服务端 interrupt 掉正在 wait_for_response 的旧 Agent。
-        // 多轮 Drill-me 中，第二张及后续卡片位于 continuation message；反查它所属的原始 run ID，
-        // 确保每次选择都只是解锁同一个 Agent，而不是被当作一条新 prompt。
-        let requestId = streamOutputMessageIds.first(where: { $0.value == messageId })?.key ?? messageId
-        guard let req = inflight, req.id == requestId, req.sessionId == sid, isGenerating else {
-            showToast("该确认请求已失效，请重新生成")
-            return
-        }
+        // 服务端 clarify_id 是唯一真值。requestId 仅用于把同一 Run 的续写定位到 UI，
+        // 不再以易失的 inflight/streamOutputMessageIds/isGenerating 作为提交门禁。
+        let requestId = clarify.requestId
+            ?? streamOutputMessageIds.first(where: { $0.value == messageId })?.key
+            ?? inflight?.id
+            ?? messageId
+        setClarifyState(messageIndex: idx, state: .submitting, selection: selection)
+        commitSession()
+        print("[Clarify] submit-start message=\(messageId) clarify=\(clarifyId ?? "legacy") request=\(requestId)")
 
+        clarifySubmissionTask?.cancel()
+        clarifySubmissionTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await APIClient.shared.submitClarify(
+                    sessionId: sid,
+                    response: selection,
+                    clarifyId: clarifyId,
+                    agentId: agentId
+                )
+                guard !Task.isCancelled else { return }
+                print("[Clarify] submit-result clarify=\(clarifyId ?? "legacy") state=\(result.state)")
+                if result.ok && ["accepted", "replayed"].contains(result.state) {
+                    self.acceptClarifySubmission(
+                        messageId: messageId,
+                        requestId: requestId,
+                        sessionId: sid,
+                        agentId: agentId,
+                        selection: selection
+                    )
+                    return
+                }
+                await self.reconcileClarifySubmission(
+                    messageId: messageId,
+                    selection: selection,
+                    requestId: requestId,
+                    sessionId: sid,
+                    agentId: agentId,
+                    serverState: result.state
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                print("[Clarify] failed message=\(messageId) clarify=\(clarifyId ?? "nil") error=\(error.localizedDescription)")
+                await self.reconcileClarifySubmission(
+                    messageId: messageId,
+                    selection: selection,
+                    requestId: requestId,
+                    sessionId: sid,
+                    agentId: agentId,
+                    serverState: "network_unknown"
+                )
+            }
+        }
+    }
+
+    private func setClarifyState(
+        messageIndex: Int,
+        state: ClarifySubmissionState,
+        selection: String? = nil
+    ) {
+        guard let blockIdx = messages[messageIndex].blocks.firstIndex(where: {
+            if case .clarify = $0 { return true }; return false
+        }), case .clarify(var block) = messages[messageIndex].blocks[blockIdx] else { return }
+        block.submissionState = state
+        if let selection { block.submittedSelection = selection }
+        messages[messageIndex].blocks[blockIdx] = .clarify(block)
+    }
+
+    private func acceptClarifySubmission(
+        messageId: String,
+        requestId: String,
+        sessionId: String,
+        agentId: String?,
+        selection: String
+    ) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         markClarifySubmitted(messageIndex: idx, selection: selection)
         let continuationMessageId = UUID().uuidString
         let continuationStep = ReasoningStep(
@@ -804,50 +953,247 @@ public final class TenantSessionCoordinator: ObservableObject {
         )
         messages.append(ChatMessage(
             id: continuationMessageId,
-            sessionId: sid,
+            sessionId: sessionId,
             role: .assistant,
             content: "",
             isStreaming: true,
             blocks: [.reasoning([continuationStep])]
         ))
-        streamOutputMessageIds[req.id] = continuationMessageId
+        if inflight?.id == requestId {
+            streamOutputMessageIds[requestId] = continuationMessageId
+        } else {
+            let original = messages[..<idx].last(where: { $0.role == .user })?.content ?? ""
+            inflight = InFlightRequest(
+                id: requestId, sessionId: sessionId, text: original, agentId: agentId
+            )
+            startRecoveredRunMonitor(
+                requestId: requestId,
+                sessionId: sessionId,
+                agentId: agentId,
+                outputMessageId: continuationMessageId
+            )
+        }
+        isGenerating = true
         thinkingPhase = "reasoning"
         thinkingDetail = "已收到选择，正在继续处理…"
         commitSession()
+    }
 
+    private func reconcileClarifySubmission(
+        messageId: String,
+        selection: String,
+        requestId: String,
+        sessionId: String,
+        agentId: String?,
+        serverState: String
+    ) async {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }),
+              let local = messages[idx].clarifyBlock else { return }
+        setClarifyState(messageIndex: idx, state: .reconciling, selection: selection)
+        commitSession()
+        do {
+            let status = try await APIClient.shared.fetchChatStatus(
+                sessionId: sessionId, agentId: agentId
+            )
+            print("[Clarify] reconcile clarify=\(local.clarifyId ?? "legacy") phase=\(status.phase ?? status.status)")
+            if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                markClarifySubmitted(messageIndex: idx, selection: selection)
+                messages.append(ChatMessage(sessionId: sessionId, role: .assistant, content: answer))
+                commitSession()
+                finishGeneration()
+                return
+            }
+            if let pending = status.clarify {
+                if pending.clarifyId == local.clarifyId {
+                    setClarifyState(
+                        messageIndex: idx,
+                        state: serverState == "rejected" ? .rejected : .pending,
+                        selection: selection
+                    )
+                    commitSession()
+                    showToast(serverState == "rejected" ? "该选择未通过校验，请修改后重试" : "连接已恢复，请再次确认")
+                } else {
+                    setClarifyState(messageIndex: idx, state: .expired, selection: selection)
+                    let next = ClarifyBlock(
+                        clarifyId: pending.clarifyId,
+                        requestId: pending.requestId ?? requestId,
+                        sessionId: sessionId,
+                        agentId: agentId,
+                        expiresInSeconds: pending.expiresInSeconds,
+                        question: pending.question,
+                        choices: pending.choices,
+                        multiSelect: pending.multiSelect,
+                        source: "bridge"
+                    )
+                    messages.append(ChatMessage(
+                        sessionId: sessionId, role: .assistant, content: "", blocks: [.clarify(next)]
+                    ))
+                    commitSession()
+                    showToast("旧确认已过期，已恢复到当前问题")
+                }
+                return
+            }
+            if status.status == "running" {
+                // POST 可能已成功但响应丢失；无 pending clarify 表示 Run 已继续。
+                acceptClarifySubmission(
+                    messageId: messageId,
+                    requestId: requestId,
+                    sessionId: sessionId,
+                    agentId: agentId,
+                    selection: selection
+                )
+                return
+            }
+            setClarifyState(messageIndex: idx, state: .expired, selection: selection)
+            commitSession()
+            showToast("确认已过期，请确认后恢复任务")
+        } catch {
+            setClarifyState(messageIndex: idx, state: .pending, selection: selection)
+            commitSession()
+            showToast("网络状态不确定，未重复执行；请重试确认")
+        }
+    }
+
+    private func startRecoveredRunMonitor(
+        requestId: String,
+        sessionId: String,
+        agentId: String?,
+        outputMessageId: String
+    ) {
+        statusPollTask?.cancel()
+        statusPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var attempts = 0
+            while attempts < 90 && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                do {
+                    let status = try await APIClient.shared.fetchChatStatus(
+                        sessionId: sessionId, agentId: agentId
+                    )
+                    if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                        if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
+                            self.messages[idx].content = answer
+                            self.messages[idx].pending = false
+                            self.messages[idx].isStreaming = false
+                            self.messages[idx].blocks = []
+                        }
+                        self.commitSession()
+                        if self.inflight?.id == requestId { self.finishGeneration() }
+                        return
+                    }
+                    if let pending = status.clarify {
+                        let block = ClarifyBlock(
+                            clarifyId: pending.clarifyId,
+                            requestId: pending.requestId ?? requestId,
+                            sessionId: sessionId,
+                            agentId: agentId,
+                            expiresInSeconds: pending.expiresInSeconds,
+                            question: pending.question,
+                            choices: pending.choices,
+                            multiSelect: pending.multiSelect,
+                            source: "bridge"
+                        )
+                        if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
+                            self.messages[idx].content = ""
+                            self.messages[idx].blocks = [.clarify(block)]
+                            self.messages[idx].pending = false
+                            self.messages[idx].isStreaming = false
+                        }
+                        self.streamOutputMessageIds[requestId] = outputMessageId
+                        self.commitSession()
+                        return
+                    }
+                    if ["timeout", "not_found"].contains(status.status) {
+                        if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
+                            self.messages[idx].role = .interrupted
+                            self.messages[idx].content = "任务已中断，可确认后恢复"
+                            self.messages[idx].isStreaming = false
+                        }
+                        self.commitSession()
+                        if self.inflight?.id == requestId { self.finishGeneration() }
+                        return
+                    }
+                } catch {
+                    // 短暂网络错误继续对账，不启动第二个 Run。
+                }
+                attempts += 1
+            }
+        }
+    }
+
+    private func markClarifyExpired(clarifyId: String?) {
+        guard let idx = messages.lastIndex(where: { message in
+            guard let block = message.clarifyBlock else { return false }
+            return clarifyId == nil || block.clarifyId == clarifyId
+        }) else { return }
+        setClarifyState(messageIndex: idx, state: .expired)
+        commitSession()
+        showToast("确认等待已超时，可确认后恢复任务")
+    }
+
+    public func recoverExpiredClarify(messageId: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }),
+              let block = messages[idx].clarifyBlock,
+              block.submissionState == .expired,
+              let userIdx = messages[..<idx].lastIndex(where: { $0.role == .user }) else { return }
+        let prompt = messages[userIdx].content
+        let quote = messages[userIdx].quotedContext
+        let sid = block.sessionId ?? sessionManager.activeSessionID()
+        let agentId = block.agentId ?? appState?.selectedAgentId
+        let requestId = block.requestId ?? messageId
         clarifySubmissionTask?.cancel()
         clarifySubmissionTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let accepted = try await APIClient.shared.submitClarify(
-                    sessionId: sid,
-                    response: selection,
-                    clarifyId: clarifyId,
-                    agentId: self.appState?.selectedAgentId
+                let status = try await APIClient.shared.fetchChatStatus(
+                    sessionId: sid, agentId: agentId
                 )
-                guard !Task.isCancelled else { return }
-                guard accepted else {
-                    self.rollbackClarifySubmission(
-                        messageId: messageId,
-                        requestId: requestId,
-                        continuationMessageId: continuationMessageId,
-                        toast: "选项未被服务端接受，请重试"
-                    )
+                if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                    self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
+                    self.commitSession()
+                    self.finishGeneration()
                     return
                 }
-                print("[Clarify] accepted message=\(messageId) clarify=\(clarifyId ?? "nil") session=\(sid)")
-            } catch is CancellationError {
-                return
+                if let pending = status.clarify, pending.clarifyId == block.clarifyId {
+                    self.setClarifyState(messageIndex: idx, state: .pending)
+                    self.commitSession()
+                    self.showToast("服务端仍在等待，请再次确认")
+                    return
+                }
+                if status.status == "running" {
+                    self.isGenerating = true
+                    self.inflight = InFlightRequest(
+                        id: requestId, sessionId: sid, text: prompt, quote: quote, agentId: agentId
+                    )
+                    self.startRecoveredRunMonitor(
+                        requestId: requestId,
+                        sessionId: sid,
+                        agentId: agentId,
+                        outputMessageId: messageId
+                    )
+                    self.showToast("原任务仍在后台运行，已恢复跟踪")
+                    return
+                }
+                guard ["timeout", "not_found"].contains(status.status) else {
+                    self.showToast("服务端状态尚未收敛，未重复执行")
+                    return
+                }
             } catch {
-                guard !Task.isCancelled else { return }
-                print("[Clarify] failed message=\(messageId) clarify=\(clarifyId ?? "nil") error=\(error.localizedDescription)")
-                self.rollbackClarifySubmission(
-                    messageId: messageId,
-                    requestId: requestId,
-                    continuationMessageId: continuationMessageId,
-                    toast: error.localizedDescription
-                )
+                // 网络不确定时绝不能创建第二个 Run；让用户稍后再次对账。
+                self.showToast("无法确认服务器状态，未重复执行")
+                return
             }
+            // 只有服务端明确无可恢复 Run 时才由用户这次点击触发 regenerate。
+            // 不 cancel 旧 SSE，避免其延迟 cancel 请求跨代杀死刚创建的新 Run。
+            self.statusPollTask?.cancel()
+            self.isGenerating = false
+            self.inflight = nil
+            if let currentIdx = self.messages.firstIndex(where: { $0.id == messageId }) {
+                self.messages.removeSubrange(currentIdx...)
+            }
+            self.commitSession()
+            self.startGeneration(text: prompt, quote: quote, regenerate: true)
         }
     }
 

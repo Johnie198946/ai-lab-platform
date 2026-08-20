@@ -113,6 +113,7 @@ public struct ChatView: View {
                 coordinator.refreshQuickCommands()
                 coordinator.handlePendingAgent()
                 coordinator.handlePendingPrompt()
+                coordinator.reconcileRestoredClarify()
             }
             .task { await refreshAgents() }
             .onReceive(NotificationCenter.default.publisher(for: .tenantAgentsDidUpdate)) { _ in
@@ -124,7 +125,10 @@ public struct ChatView: View {
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
             .onReceive(waitingTimer) { _ in coordinator.tickWaitingTimer() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { InboxFileManager.shared.cleanupStaleInboxFiles() }
+                if phase == .active {
+                    InboxFileManager.shared.cleanupStaleInboxFiles()
+                    coordinator.reconcileRestoredClarify()
+                }
             }
         }
     }
