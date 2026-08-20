@@ -17,6 +17,16 @@ from backend.api.chat import (  # noqa: E402
     derive_isolated_session_id,
 )
 from backend.api.chat import router as chat_router  # noqa: E402
+from backend.services.agent_capabilities import AgentInvocationMatch, EffectiveAgent  # noqa: E402
+
+
+def effective_agent(agent_id: str, name: str) -> EffectiveAgent:
+    return EffectiveAgent(
+        id=agent_id, base_agent_id="main_agent", name=name, prompt="prompt",
+        allowed_tools=("delegate_task",), capability_agent_ids=("main_agent",),
+        knowledge_scope=(), allow_network=True,
+        max_concurrent_children=1, max_spawn_depth=1,
+    )
 
 
 def auth_headers() -> dict:
@@ -165,6 +175,50 @@ async def test_stream_expands_requested_skill(
 
     assert response.status_code == 200
     assert observed == ["solution-consultant-persona::我们要缩短换模时间"]
+
+
+@pytest.mark.asyncio
+async def test_stream_emits_agent_route_and_handoffs_child_result(
+    app: FastAPI, transport: httpx.ASGITransport, monkeypatch
+):
+    import backend.api.chat as chat_mod
+
+    main = effective_agent("main_agent", "Main 智能编排")
+    target = effective_agent("english-agent", "小学生英语评估 · 专属 Agent")
+    observed = {}
+
+    async def fake_route(**_kwargs):
+        return main, AgentInvocationMatch(status="matched", agent=target)
+
+    async def fake_child(*_args, **kwargs):
+        observed["child_agent"] = kwargs["agent_config"]["id"]
+        observed["child_session"] = kwargs["session_id"]
+        return "英语评估结果", []
+
+    async def fake_bridge_stream(goal: str, session_id: str, **kwargs):
+        observed["main_agent"] = kwargs["agent_config"]["id"]
+        observed["main_session"] = session_id
+        observed["goal"] = goal
+        yield 'data: {"type":"done","answer":"已转交"}\n\n'
+
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", fake_route)
+    monkeypatch.setattr(chat_mod, "_call_hermes", fake_child)
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/stream",
+            json={"question": "调用小学生英语评估 Agent", "session_id": "s1"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert '"type": "agent_route"' in response.text
+    assert "小学生英语评估" in response.text
+    assert observed["child_agent"] == target.id
+    assert observed["main_agent"] == main.id
+    assert observed["child_session"] != observed["main_session"]
+    assert "英语评估结果" in observed["goal"]
 
 
 @pytest.mark.asyncio

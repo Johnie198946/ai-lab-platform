@@ -76,6 +76,20 @@ public struct MessageBubbleView: View {
     private var assistantBubbleContent: some View {
         let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         return VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            if let name = message.executingAgentName,
+               message.executingAgentId != "main_agent" {
+                HStack(spacing: 5) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                    Text(message.delegatedBy == nil ? "(name)" : "由 (name) 完成")
+                }
+                .font(AppTheme.Typography.micro.weight(.semibold))
+                .foregroundColor(AppTheme.Colors.quantumBlue)
+                .padding(.horizontal, AppTheme.Spacing.sm)
+                .padding(.vertical, 4)
+                .background(AppTheme.Colors.surfaceTint, in: Capsule())
+                .accessibilityLabel("执行 Agent：\(name)")
+            }
+
             // 演示样例标注
             if message.isDemoSample {
                 demoSampleBadge

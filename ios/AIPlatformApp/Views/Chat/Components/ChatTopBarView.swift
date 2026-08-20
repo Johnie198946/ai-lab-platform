@@ -11,7 +11,9 @@ import SwiftUI
 public struct ChatTopBarView: View {
     public let isGenerating: Bool
     public let title: String
+    public let agentName: String
     public let onTitleTap: () -> Void
+    public let onAgentTap: () -> Void
     public let onNewSession: () -> Void
     public let onHistoryTap: () -> Void
     public let onClearTap: () -> Void
@@ -19,14 +21,18 @@ public struct ChatTopBarView: View {
     public init(
         isGenerating: Bool,
         title: String,
+        agentName: String,
         onTitleTap: @escaping () -> Void,
+        onAgentTap: @escaping () -> Void,
         onNewSession: @escaping () -> Void,
         onHistoryTap: @escaping () -> Void,
         onClearTap: @escaping () -> Void
     ) {
         self.isGenerating = isGenerating
         self.title = title
+        self.agentName = agentName
         self.onTitleTap = onTitleTap
+        self.onAgentTap = onAgentTap
         self.onNewSession = onNewSession
         self.onHistoryTap = onHistoryTap
         self.onClearTap = onClearTap
@@ -36,8 +42,8 @@ public struct ChatTopBarView: View {
         HStack(spacing: AppTheme.Spacing.md) {
             QuantumAvatarView(size: 36)
 
-            Button(action: onTitleTap) {
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 3) {
+                Button(action: onTitleTap) {
                     HStack(spacing: 6) {
                         Text(title.isEmpty ? "新会话" : title)
                             .font(AppTheme.Typography.cardTitle)
@@ -47,20 +53,26 @@ public struct ChatTopBarView: View {
                             .font(.caption2.weight(.bold))
                             .foregroundColor(AppTheme.Icons.tertiary)
                     }
+                }
+                .buttonStyle(SoftButtonStyle())
 
+                Button(action: onAgentTap) {
                     HStack(spacing: 5) {
                         Circle()
                             .fill(isGenerating ? AppTheme.Colors.statusRunning : AppTheme.Colors.statusCompleted)
                             .frame(width: 6, height: 6)
-                        Text(isGenerating ? "LIVE · 正在执行" : "AI LAB · 已就绪")
+                        Text(agentName)
                             .font(AppTheme.Typography.micro)
                             .foregroundColor(AppTheme.Colors.textTertiary)
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(AppTheme.Icons.tertiary)
                     }
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .buttonStyle(SoftButtonStyle())
             }
-            .buttonStyle(SoftButtonStyle())
-            .accessibilityHint("打开历史会话")
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Spacer()
 

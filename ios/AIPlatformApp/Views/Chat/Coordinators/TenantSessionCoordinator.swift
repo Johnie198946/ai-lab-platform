@@ -72,6 +72,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         let sid = sessionManager.activeSessionID()
         self.messages = sessionManager.messages(for: sid)
         self.quotedContext = nil
+        appState?.selectedAgentId = sessionManager.agentId(for: sid)
+        appState?.selectedAgentName = sessionManager.agentName(for: sid)
     }
 
     public func commitSession() {
@@ -103,7 +105,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         refreshQuickCommands()
     }
 
-    public func newSession() {
+    public func newSession(agentId: String? = nil, agentName: String? = nil) {
         tenantEpoch += 1
         cancelAllTasksAndAnimations()
 
@@ -119,7 +121,11 @@ public final class TenantSessionCoordinator: ObservableObject {
         thinkingDetail = nil
         liveProgress = nil
 
-        let newId = sessionManager.createSession()
+        let resolvedAgentId = agentId ?? appState?.selectedAgentId ?? "main_agent"
+        let resolvedAgentName = agentName ?? appState?.selectedAgentName ?? "Main 智能编排"
+        let newId = sessionManager.createSession(
+            agentId: resolvedAgentId, agentName: resolvedAgentName
+        )
         sessionManager.switchTo(newId)
         restoreActiveSession()
         refreshQuickCommands()
@@ -178,6 +184,17 @@ public final class TenantSessionCoordinator: ObservableObject {
         if let prompt = appState?.pendingChatPrompt {
             self.inputText = prompt
             appState?.pendingChatPrompt = nil
+        }
+    }
+
+    public func handlePendingAgent() {
+        guard let selection = appState?.pendingChatAgent else { return }
+        appState?.pendingChatAgent = nil
+        appState?.selectedAgentId = selection.agentId
+        appState?.selectedAgentName = selection.agentName
+        newSession(agentId: selection.agentId, agentName: selection.agentName)
+        if let prompt = selection.prompt, !prompt.isEmpty {
+            inputText = prompt
         }
     }
 
@@ -465,6 +482,13 @@ public final class TenantSessionCoordinator: ObservableObject {
                         }
                     }
 
+                case .agentRoute(let id, let name, _, let delegatedBy):
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
+                        messages[idx].executingAgentId = id
+                        messages[idx].executingAgentName = name
+                        messages[idx].delegatedBy = delegatedBy
+                    }
+
                 case .done(_, let answer):
                     drainDeltaBuffer(messageId: outputId)
                     if let idx = messages.firstIndex(where: { $0.id == outputId }) {
@@ -577,6 +601,13 @@ public final class TenantSessionCoordinator: ObservableObject {
             return
         }
 
+        if let route = response.resolvedAgent,
+           let idx = messages.firstIndex(where: { $0.id == outputId }) {
+            messages[idx].executingAgentId = route.id
+            messages[idx].executingAgentName = route.name
+            messages[idx].delegatedBy = response.delegatedBy
+        }
+
         if response.degraded == true {
             if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 messages[idx].content = response.answer.isEmpty ? "服务暂时不可用，请稍后重试" : response.answer
@@ -607,7 +638,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                 question: payload.question,
                 choices: payload.choices.isEmpty ? [] : payload.choices,
                 multiSelect: payload.multiSelect,
-                submitLabel: "确认选择"
+                submitLabel: "确认选择",
+                source: payload.source ?? "bridge"
             )
             if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                 var blocks = messages[idx].blocks

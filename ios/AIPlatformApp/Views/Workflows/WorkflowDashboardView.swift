@@ -941,6 +941,7 @@ private struct WorkflowTaskStageHeader: View {
 }
 
 private struct WorkflowAgentReadyView: View {
+    @EnvironmentObject private var appState: AppState
     let workflow: WorkflowDTO
     let agent: WorkflowTaskAgentDTO
     let onStarted: (WorkflowExecutionDTO) -> Void
@@ -979,11 +980,23 @@ private struct WorkflowAgentReadyView: View {
             .padding(AppTheme.Metrics.contentGutter)
         }
         .safeAreaInset(edge: .bottom) {
-            Button(isStarting ? "正在启动…" : "启动任务", systemImage: "play.fill") { start() }
+            VStack(spacing: AppTheme.Spacing.sm) {
+                Button("与此 Agent 对话", systemImage: "bubble.left.and.bubble.right.fill") {
+                    appState.openChat(
+                        agentId: agent.id,
+                        agentName: agent.customName ?? workflow.title
+                    )
+                }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(isStarting)
                 .frame(maxWidth: .infinity, minHeight: 44)
+
+                Button(isStarting ? "正在启动…" : "启动任务", systemImage: "play.fill") { start() }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(isStarting)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
                 .padding(AppTheme.Metrics.contentGutter)
                 .background(.ultraThinMaterial)
         }

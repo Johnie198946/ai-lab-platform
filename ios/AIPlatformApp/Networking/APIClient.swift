@@ -317,15 +317,25 @@ public struct ChatResponseDTO: Codable {
     public let degraded: Bool?
     /// 澄清卡片载荷：非空时前端渲染 ClarifyCard（对齐 Hermes clarify 协议）
     public let clarify: ChatClarifyDTO?
+    public let resolvedAgent: ChatAgentRouteDTO?
+    public let delegatedBy: String?
 
-    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil) {
+    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil, resolvedAgent: ChatAgentRouteDTO? = nil, delegatedBy: String? = nil) {
         self.question = question
         self.answer = answer
         self.sessionId = sessionId
         self.reasoning = reasoning
         self.degraded = degraded
         self.clarify = clarify
+        self.resolvedAgent = resolvedAgent
+        self.delegatedBy = delegatedBy
     }
+}
+
+public struct ChatAgentRouteDTO: Codable, Hashable {
+    public let id: String
+    public let name: String
+    public let delegated: Bool
 }
 
 /// 后端澄清卡片载荷（对应 backend ClarifyPayload：question / choices / multi_select）
@@ -333,11 +343,13 @@ public struct ChatClarifyDTO: Codable {
     public let question: String
     public let choices: [String]
     public let multiSelect: Bool
+    public let source: String?
 
     enum CodingKeys: String, CodingKey {
         case question
         case choices
         case multiSelect = "multi_select"
+        case source
     }
 }
 
@@ -1757,6 +1769,7 @@ public final class APIClient: ObservableObject {
         case clarify(question: String, choices: [String], multiSelect: Bool, source: String, clarifyId: String?)
         case clarifyRejected
         case status(phase: String, detail: String)
+        case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -1794,6 +1807,14 @@ public final class APIClient: ObservableObject {
                 return .status(
                     phase: json["phase"] as? String ?? "",
                     detail: json["detail"] as? String ?? ""
+                )
+            case "agent_route":
+                let agent = json["agent"] as? [String: Any] ?? [:]
+                return .agentRoute(
+                    id: agent["id"] as? String ?? "",
+                    name: agent["name"] as? String ?? "专属 Agent",
+                    delegated: agent["delegated"] as? Bool ?? false,
+                    delegatedBy: json["delegated_by"] as? String
                 )
             case "done":
                 return .done(
