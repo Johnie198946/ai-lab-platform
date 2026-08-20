@@ -25,6 +25,7 @@ v4.1 (2026-08-10·Supervision 批复返工):
 用法: systemctl start hermes-bridge
 """
 import asyncio
+import hashlib
 import json
 import os
 import queue
@@ -171,6 +172,51 @@ _stream_runs_guard = threading.Lock()
 # 行为与原函数内 `from tools import clarify_gateway` 等价（模块对象恒定），
 # 且测试可直接 patch 此引用（测试环境 sys.path 无 tools 包）
 _clarify_gateway = None
+
+# 已成功解锁的 clarify 短期回放缓存。用于处理“服务端已接受、响应包丢失”后的
+# 客户端幂等重试；仅保存响应哈希，不保存用户正文。
+_resolved_clarifies: dict[str, dict[str, Any]] = {}
+_resolved_clarifies_guard = threading.Lock()
+CLARIFY_REPLAY_TTL_SECONDS = max(
+    CLARIFY_TIMEOUT_SECONDS + 60,
+    int(os.environ.get("HERMES_CLARIFY_REPLAY_TTL", "600")),
+)
+
+
+def _clarify_response_fingerprint(response: str) -> str:
+    return hashlib.sha256(response.encode("utf-8")).hexdigest()
+
+
+def _remember_resolved_clarify(clarify_id: str, response: str, session_id: str) -> None:
+    now = time.monotonic()
+    with _resolved_clarifies_guard:
+        expired = [
+            cid for cid, value in _resolved_clarifies.items()
+            if now - float(value.get("resolved_at") or 0) > CLARIFY_REPLAY_TTL_SECONDS
+        ]
+        for cid in expired:
+            _resolved_clarifies.pop(cid, None)
+        _resolved_clarifies[clarify_id] = {
+            "fingerprint": _clarify_response_fingerprint(response),
+            "session_id": session_id,
+            "resolved_at": now,
+        }
+
+
+def _resolved_clarify_state(clarify_id: str, response: str, session_id: str) -> str | None:
+    now = time.monotonic()
+    with _resolved_clarifies_guard:
+        value = _resolved_clarifies.get(clarify_id)
+        if value is None:
+            return None
+        if now - float(value.get("resolved_at") or 0) > CLARIFY_REPLAY_TTL_SECONDS:
+            _resolved_clarifies.pop(clarify_id, None)
+            return None
+        if value.get("session_id") != session_id:
+            return "stale"
+        if value.get("fingerprint") == _clarify_response_fingerprint(response):
+            return "replayed"
+        return "stale"
 
 
 def _get_clarify_gateway():
@@ -1422,12 +1468,18 @@ def _pending_clarify(user_id: str) -> dict | None:
             print(f"[bridge] _pending_clarify entries={len(items)} user={user_id[:20]} list={debug_entries}")
         for entry in items:
             if getattr(entry, "session_key", None) == user_id and getattr(entry, "response", "§") is None:
+                run = _stream_run_get(user_id)
+                issued = float((run or {}).get("clarify_issued") or time.monotonic())
                 return {
                     "clarify_id": entry.clarify_id,
+                    "request_id": (run or {}).get("request_id"),
                     "question": entry.question,
                     "choices": list(entry.choices) if entry.choices else [],
                     # 兼容服务器 Hermes v0.19.0（_ClarifyEntry 无 multi_select 字段，仅 awaiting_text）
                     "multi_select": bool(getattr(entry, "multi_select", False)),
+                    "expires_in_seconds": max(
+                        0, int(CLARIFY_TIMEOUT_SECONDS - (time.monotonic() - issued))
+                    ),
                 }
     except Exception as e:
         print(f"[bridge] pending clarify 查询失败·忽略: {e}")
@@ -1878,6 +1930,7 @@ async def chat_stream(body: GoalRequest):
                 _sse_from_in_process(
                     user_id,
                     goal,
+                    request_id=body.request_id,
                     allow_local_files=False,
                     agent_config=body.agent_config,
                 ),
@@ -2454,12 +2507,16 @@ def _build_in_process_agent(
                 question=question,
                 choices=list(choices) if choices else None,
             )
+        run_state = _stream_run_get(user_id)
+        request_id = (run_state or {}).get("request_id")
         _qput(stream_q, {
             "type": "clarify",
             "clarify_id": clarify_id,
+            "request_id": request_id,
             "question": question,
             "choices": list(choices) if choices else None,
             "multi_select": bool(multi_select) and bool(choices),
+            "expires_in_seconds": CLARIFY_TIMEOUT_SECONDS,
         })
         print(f"[bridge] clarify-REGISTER cid={clarify_id} user={user_id} q={str(question)[:30]}")
         # 记录 clarify 发出时间戳：resolve 失败分类依据（expired vs no_pending）
@@ -2467,9 +2524,15 @@ def _build_in_process_agent(
         if run_state:
             with _stream_runs_guard:
                 run_state["clarify_issued"] = time.monotonic()
+                run_state["clarify_id"] = clarify_id
         resp = cg.wait_for_response(clarify_id, timeout=float(CLARIFY_TIMEOUT_SECONDS))
         print(f"[bridge] clarify-WAIT-RETURN cid={clarify_id} resp={str(resp)[:40]!r}")
         if resp is None or resp == "":
+            _qput(stream_q, {
+                "type": "clarify_expired",
+                "clarify_id": clarify_id,
+                "request_id": request_id,
+            })
             return (
                 f"[user did not respond within {CLARIFY_TIMEOUT_SECONDS}s. "
                 "Make the most reasonable assumption and continue.]"
@@ -2616,6 +2679,7 @@ def _busy_sse(user_id: str):
 def _sse_from_in_process(
     user_id: str,
     goal: str,
+    request_id: str | None = None,
     allow_local_files: bool = False,
     agent_config: dict[str, Any] | None = None,
 ):
@@ -2650,14 +2714,15 @@ def _sse_from_in_process(
         daemon=True,
         name=f"agent-stream-{user_id[:12]}",
     )
-    worker.start()
     _stream_run_register(user_id, {
         "agent_holder": agent_holder,
         "queue": stream_q,
         "attached": True,
         "start_ts": start_ts,
         "run_id": run_id,
+        "request_id": request_id,
     })
+    worker.start()
 
     finished = False
     try:
@@ -2737,15 +2802,52 @@ async def clarify_resolve(body: ClarifyResolveRequest):
     # 官方 get_pending_for_session 返回 oldest entry（含已消费），多卡场景必错配；
     # 带 clarify_id 则精确解锁本次卡对应的 agent 等待线程。
     if body.clarify_id:
+        replay_state = _resolved_clarify_state(
+            body.clarify_id, body.response, body.session_id
+        )
+        if replay_state is not None:
+            return {
+                "ok": replay_state == "replayed",
+                "state": replay_state,
+                "clarify_id": body.clarify_id,
+            }
+
+        # clarify_id 本身不是授权凭证。必须先确认它属于 JWT 派生命名空间中的
+        # 当前 Session，才能调用全局 gateway 的精确 resolve。
+        pending = _pending_clarify(body.session_id)
+        if pending is None:
+            run = _stream_run_get(body.session_id)
+            issued = (run or {}).get("clarify_issued")
+            state = (
+                "expired"
+                if issued is not None
+                and (time.monotonic() - issued) <= CLARIFY_TIMEOUT_SECONDS + 60
+                else "no_pending"
+            )
+            return {"ok": False, "state": state, "clarify_id": body.clarify_id}
+        if pending.get("clarify_id") != body.clarify_id:
+            return {"ok": False, "state": "stale", "clarify_id": body.clarify_id}
+
         ok = cg.resolve_gateway_clarify(body.clarify_id, body.response)
         print(f"[bridge] clarify-RESOLVE cid={body.clarify_id} session={body.session_id} ok={ok}")
         if ok:
-            return {"ok": True}
-        # clarify_id 未命中（已超时/不存在）→ 回退 session 级 resolve（兼容旧前端）
+            _remember_resolved_clarify(body.clarify_id, body.response, body.session_id)
+            return {"ok": True, "state": "accepted", "clarify_id": body.clarify_id}
+
+        # 精确 ID 存在时绝不回退 session 级 resolve：旧卡不能误解锁新一轮 pending。
+        state = "rejected"
+        if state == "rejected":
+            run = _stream_run_get(body.session_id)
+            if run:
+                _qput(run["queue"], {"type": "clarify_rejected", "clarify_id": body.clarify_id})
+        return {"ok": False, "state": state, "clarify_id": body.clarify_id}
+
+    # 仅旧客户端未携带 clarify_id 时保留一版 session 级兼容。
+    print(f"[bridge] clarify legacy session fallback session={body.session_id}")
     ok = cg.resolve_text_response_for_session(body.session_id, body.response)
     print(f"[bridge] clarify-RESOLVE-SESSION session={body.session_id} ok={ok}")
     if ok:
-        return {"ok": True}
+        return {"ok": True, "state": "accepted", "clarify_id": None}
 
     run = _stream_run_get(body.session_id)
     if cg.has_pending(body.session_id):
@@ -2758,7 +2860,7 @@ async def clarify_resolve(body: ClarifyResolveRequest):
             reason = "no_pending"
     if run:
         _qput(run["queue"], {"type": "clarify_rejected"})
-    return {"ok": False, "reason": reason}
+    return {"ok": False, "state": reason, "clarify_id": None}
 
 
 @app.post("/v1/chat/stream/cancel")
