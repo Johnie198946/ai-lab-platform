@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect, useRef } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
+import { isShowroomAccount, SHOWROOM_CONTROLLER_PATH } from "../auth/entryRoute";
 import { API_ORIGIN_LABEL, AUTH_ORIGIN_LABEL, ENABLE_DEMO_FALLBACK } from "../config/env";
 import EvilEye from "../components/EvilEye";
 import "./Login.css";
@@ -10,7 +11,7 @@ const getErrorMessage = (error) => error?.message || "登录失败，请检查�
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { isAuthenticated, isReady, login, loginDev, loginWithToken } = useAuth();
+  const { authSession, isAuthenticated, isReady, login, loginDev, loginWithToken } = useAuth();
   
   const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
@@ -19,10 +20,21 @@ export function LoginPage() {
   const [error, setError] = useState("");
   const [activeTab, setActiveTab] = useState("account");
 
-  const nextPath = useMemo(
-    () => location.state?.from?.pathname || "/orchestration",
-    [location.state],
-  );
+  const nextPath = useMemo(() => {
+    const requestedPath = new URLSearchParams(location.search).get("next") || "";
+    if (requestedPath.startsWith("/") && !requestedPath.startsWith("//")) {
+      return requestedPath;
+    }
+    return location.state?.from?.pathname || "/orchestration";
+  }, [location.search, location.state]);
+
+  const hasExplicitNext = useMemo(() => Boolean(new URLSearchParams(location.search).get("next") || location.state?.from?.pathname), [location.search, location.state]);
+
+  useEffect(() => {
+    if (isReady && isAuthenticated && isShowroomAccount(authSession?.user)) {
+      window.location.replace(SHOWROOM_CONTROLLER_PATH);
+    }
+  }, [authSession, isAuthenticated, isReady]);
 
   if (!isReady) {
     return (
@@ -33,6 +45,9 @@ export function LoginPage() {
   }
 
   if (isReady && isAuthenticated) {
+    if (isShowroomAccount(authSession?.user)) {
+      return <div className="route-loading" style={{display:'grid', placeItems:'center', minHeight:'100vh'}}><h1>正在进入导览主控台…</h1></div>;
+    }
     return <Navigate to={nextPath} replace />;
   }
 
@@ -40,8 +55,12 @@ export function LoginPage() {
     setSubmittingMode(mode);
     setError("");
     try {
-      await action();
-      navigate(nextPath, { replace: true });
+      const session = await action();
+      if (isShowroomAccount(session?.user)) {
+        window.location.assign(SHOWROOM_CONTROLLER_PATH);
+      } else {
+        navigate(nextPath, { replace: true });
+      }
     } catch (actionError) {
       setError(getErrorMessage(actionError));
     } finally {

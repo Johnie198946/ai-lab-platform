@@ -451,6 +451,7 @@ public struct AgentNodeDetailSheet: View {
     public var onDelete: (() -> Void)? = nil
     
     @Environment(\.dismiss) private var dismiss
+    @State private var showEvaluation = false
     
     public var body: some View {
         NavigationStack {
@@ -558,6 +559,16 @@ public struct AgentNodeDetailSheet: View {
                     }
                     .buttonStyle(SoftButtonStyle())
 
+                    Button {
+                        showEvaluation = true
+                    } label: {
+                        Label("正式评估", systemImage: "checkmark.shield")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(maxWidth: .infinity)
+                            .frame(minHeight: 48)
+                    }
+                    .buttonStyle(.bordered)
+
                     // 切片删除（仅租户切片可删除；乐观更新 + 失败回滚）
                     if isDeletable {
                         Button(action: {
@@ -589,6 +600,144 @@ public struct AgentNodeDetailSheet: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showEvaluation) {
+            AgentEvaluationView(agentId: node.id, agentName: node.name)
+        }
+    }
+}
+
+private struct AgentEvaluationView: View {
+    let agentId: String
+    let agentName: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var run: AgentEvaluationRunDTO?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+                    if let run {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("综合得分").font(AppTheme.Typography.supporting)
+                                Text("\(Int(run.score))").font(.system(size: 40, weight: .bold, design: .rounded))
+                            }
+                            Spacer()
+                            Text(evaluationStatusLabel(run.status))
+                                .font(AppTheme.Typography.micro.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 32)
+                                .background(AppTheme.Colors.primary.opacity(0.1))
+                                .foregroundStyle(AppTheme.Colors.primary)
+                                .clipShape(Capsule())
+                        }
+                        .padding(AppTheme.Spacing.lg)
+                        .background(AppTheme.Colors.surfaceTint)
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl))
+
+                        ReasoningCard(
+                            steps: reasoningSteps(run.events),
+                            isStreaming: ["queued", "running"].contains(run.status),
+                            initiallyExpanded: true
+                        )
+
+                        ForEach(run.results) { result in
+                            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                                Image(systemName: result.status == "passed" ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                                    .foregroundStyle(result.status == "passed" ? AppTheme.Colors.statusCompleted : AppTheme.Colors.statusWarning)
+                                VStack(alignment: .leading, spacing: 4) {
+                                    HStack { Text(result.name).font(AppTheme.Typography.cardTitle); Spacer(); Text("\(Int(result.score))") }
+                                    Text(result.detail).font(AppTheme.Typography.supporting).foregroundStyle(AppTheme.Colors.textSecondary)
+                                }
+                            }
+                            .padding(AppTheme.Spacing.md)
+                            .background(AppTheme.Colors.cardBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+                        }
+                        if let usage = run.usage, let total = usage.totalTokens {
+                            Label("本次评估精确用量：\(total) tokens", systemImage: "gauge.with.dots.needle.50percent")
+                                .font(AppTheme.Typography.supporting)
+                        } else if ["queued", "running"].contains(run.status) {
+                            Label("本次调用计量中", systemImage: "clock.arrow.circlepath")
+                                .font(AppTheme.Typography.supporting)
+                        }
+                    } else if let errorMessage {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(AppTheme.Typography.supporting)
+                            .foregroundStyle(AppTheme.Colors.statusError)
+                            .padding(AppTheme.Spacing.md)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(AppTheme.Colors.statusError.opacity(0.1))
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+                        Button("重试") { Task { await startAndMonitor() } }.buttonStyle(.borderedProminent)
+                    } else {
+                        ProgressView("正在创建可恢复的正式评估…")
+                            .frame(maxWidth: .infinity, minHeight: 220)
+                    }
+                }
+                .padding(AppTheme.Metrics.contentGutter)
+            }
+            .navigationTitle("评估 · \(agentName)")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("完成") { dismiss() } } }
+            .task { await startAndMonitor() }
+        }
+    }
+
+    private func reasoningSteps(_ events: [AgentEvaluationEventDTO]) -> [ReasoningStep] {
+        events.map { event in
+            let category = event.payload?.category ?? event.type
+            let type: ReasoningStepType = category == "skill_load" ? .skillLoad : (category == "agent_spawn" ? .agentSpawn : (category.hasPrefix("tool") ? .toolCall : .thought))
+            return ReasoningStep(
+                id: String(event.seq), type: type, title: event.message,
+                detail: [event.payload?.tool, event.payload?.detail].compactMap { $0 }.joined(separator: " · "),
+                status: event.payload?.status ?? (event.type.hasSuffix("started") ? "running" : "done")
+            )
+        }
+    }
+
+    private func evaluationStatusLabel(_ status: String) -> String {
+        switch status {
+        case "queued": return "排队中"
+        case "running": return "评估中"
+        case "completed": return "已完成"
+        case "failed": return "失败"
+        default: return status
+        }
+    }
+
+    @MainActor
+    private func startAndMonitor() async {
+        errorMessage = nil
+        do {
+            let storageKey = "agent.evaluation.active.\(agentId)"
+            var current: AgentEvaluationRunDTO
+            if let saved = UserDefaults.standard.string(forKey: storageKey), !saved.isEmpty {
+                do {
+                    current = try await APIClient.shared.fetchAgentEvaluation(id: saved)
+                } catch {
+                    UserDefaults.standard.removeObject(forKey: storageKey)
+                    current = try await APIClient.shared.startAgentEvaluation(
+                        agentId: agentId, requestId: "ios-eval-\(UUID().uuidString)"
+                    )
+                }
+            } else {
+                current = try await APIClient.shared.startAgentEvaluation(
+                    agentId: agentId, requestId: "ios-eval-\(UUID().uuidString)"
+                )
+            }
+            UserDefaults.standard.set(current.id, forKey: storageKey)
+            run = current
+            while !Task.isCancelled && ["queued", "running"].contains(current.status) {
+                try await Task.sleep(for: .seconds(2))
+                current = try await APIClient.shared.fetchAgentEvaluation(id: current.id)
+                run = current
+            }
+        } catch is CancellationError {
+        } catch {
+            errorMessage = error.localizedDescription
         }
     }
 }

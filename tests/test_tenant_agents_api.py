@@ -62,10 +62,12 @@ class TestTenantAgentsAPI(unittest.TestCase):
         from sqlalchemy import delete
 
         from backend.db import SessionLocal
-        from backend.models.tenant_agent import TenantAgentModel
+        from backend.models.tenant_agent import AgentEvaluationEvent, AgentEvaluationRun, TenantAgentModel
 
         async def _wipe():
             async with SessionLocal() as db:
+                await db.execute(delete(AgentEvaluationEvent))
+                await db.execute(delete(AgentEvaluationRun))
                 await db.execute(delete(TenantAgentModel))
                 await db.commit()
 
@@ -101,7 +103,7 @@ class TestTenantAgentsAPI(unittest.TestCase):
                 "base_agent_id": "coder",
                 "custom_name": "Alpha 私有 Coder",
                 "private_prompt_delta": "严格遵循 PEP8",
-                "subscribed_knowledge_packs": ["pack_manufacturing_01"],
+                "subscribed_knowledge_packs": [],
                 "is_active": True,
             },
         )
@@ -111,7 +113,7 @@ class TestTenantAgentsAPI(unittest.TestCase):
         self.assertEqual(agent["tenant_id"], "tenant_A")
         self.assertEqual(agent["base_agent_id"], "coder")
         self.assertEqual(agent["custom_name"], "Alpha 私有 Coder")
-        self.assertEqual(agent["subscribed_knowledge_packs"], ["pack_manufacturing_01"])
+        self.assertEqual(agent["subscribed_knowledge_packs"], [])
         self.assertIsNotNone(agent["created_at"])
 
         # 列表
@@ -176,6 +178,40 @@ class TestTenantAgentsAPI(unittest.TestCase):
         # 租户 A 可删
         r = self._request("DELETE", f"/api/v1/tenant-agents/{aid}", sub="user-a")
         self.assertEqual(r.status_code, 204)
+
+    def test_safe_capabilities_and_durable_evaluation_are_tenant_scoped(self):
+        catalog = self._request("GET", "/api/v1/agent-capabilities")
+        self.assertEqual(catalog.status_code, 200, catalog.text)
+        self.assertIn("web_search", catalog.json()["safe_tools"])
+        self.assertNotIn("terminal", catalog.json()["safe_tools"])
+
+        created = self._request(
+            "POST", "/api/v1/tenant-agents",
+            json={
+                "base_agent_id": "knowledge",
+                "allowed_tools": ["web_search", "terminal"],
+                "capability_agent_ids": ["knowledge", "unknown"],
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        agent = created.json()
+        self.assertEqual(agent["allowed_tools"], ["web_search"])
+        self.assertEqual(agent["capability_agent_ids"], ["knowledge"])
+        self.assertEqual(agent["visibility"], "private")
+
+        started = self._request(
+            "POST", f"/api/v1/tenant-agents/{agent['id']}/evaluations",
+            json={"request_id": "evaluation-idempotency-1"},
+        )
+        self.assertEqual(started.status_code, 202, started.text)
+        run_id = started.json()["id"]
+        repeated = self._request(
+            "POST", f"/api/v1/tenant-agents/{agent['id']}/evaluations",
+            json={"request_id": "evaluation-idempotency-1"},
+        )
+        self.assertEqual(repeated.json()["id"], run_id)
+        denied = self._request("GET", f"/api/v1/agent-evaluations/{run_id}", sub="user-b")
+        self.assertEqual(denied.status_code, 404)
 
     # -------------------------------------------------------------- 认证
     def test_requires_auth(self):

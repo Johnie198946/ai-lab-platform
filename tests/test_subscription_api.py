@@ -1,115 +1,174 @@
-"""订阅制逻辑隔离测试 — 目录/订阅/检索过滤。"""
+"""Logical knowledge-pack catalog, wallet and retrieval isolation tests."""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import os
+import shutil
 import tempfile
 import unittest
-from pathlib import Path
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 
 os.environ["AI_LAB_HOME"] = "/tmp/nonexistent-vault-for-import"
 os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
 
-# 可配置的租户解析器（测试注入）
-FAKE_CATEGORIES = {"wiki"}
 FAKE_SUPER = False
 
 
-def _token(username="tester"):
+def _headers() -> dict[str, str]:
     from jose import jwt as jose_jwt
 
-    return jose_jwt.encode(
-        {
-            "sub": "1",
-            "username": username,
-            "exp": datetime.utcnow() + timedelta(hours=1),
-        },
+    token = jose_jwt.encode(
+        {"sub": "1", "exp": datetime.utcnow() + timedelta(hours=1)},
         "test-secret",
         algorithm="HS256",
     )
+    return {"Authorization": f"Bearer {token}"}
 
 
-def _headers():
-    return {"Authorization": f"Bearer {_token()}"}
-
-
-class TestSubscriptionIsolation(unittest.TestCase):
+class TestLogicalKnowledgePacks(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="sub-test-"))
-        (self.tmp / "wiki").mkdir(parents=True)
-        (self.tmp / "raw").mkdir()
-        (self.tmp / "产品设计").mkdir()
-        (self.tmp / "wiki" / "模型观察.md").write_text(
-            "---\ntitle: 模型观察\n---\n# 模型观察\nDeepSeek 新模型发布。",
+        self.tmp = Path(tempfile.mkdtemp(prefix="logical-catalog-test-"))
+        wiki = self.tmp / "wiki/方法论"
+        raw = self.tmp / "raw"
+        wiki.mkdir(parents=True)
+        raw.mkdir()
+        for name, body in [
+            ("公共方法", "DeepSeek 公共方法"),
+            ("审计", "公共审计知识"),
+            ("专业方法", "高级套餐证据"),
+            ("私有方法", "租户内部口径"),
+            ("待复核", "不得进入检索"),
+        ]:
+            (wiki / f"{name}.md").write_text(f"# {name}\n{body}\n", encoding="utf-8")
+        (raw / "原文.md").write_text("# 原文\n不得直接检索 DeepSeek。\n", encoding="utf-8")
+
+        packs = [
+            self._pack("knowledge/methodology/public", "公共方法论", "green", 1),
+            self._pack("knowledge/行业知识/审计", "审计", "green", 1),
+            self._pack(
+                "knowledge/methodology/entitlement/premium-methodology",
+                "专业方法论", "yellow", 1, entitlement="premium-methodology",
+            ),
+            self._pack(
+                "knowledge/methodology/private/u-test",
+                "私有方法论", "red", 1, owner="u-test",
+            ),
+        ]
+        documents = [
+            self._document("wiki/方法论/公共方法.md", packs[0]["category"], "green"),
+            self._document("wiki/方法论/审计.md", packs[1]["category"], "green"),
+            self._document("wiki/方法论/专业方法.md", packs[2]["category"], "yellow"),
+            self._document("wiki/方法论/私有方法.md", packs[3]["category"], "red"),
+        ]
+        (self.tmp / "knowledge_catalog.json").write_text(
+            json.dumps({
+                "version": "2.0",
+                "generated_at": "2026-08-19T00:00:00Z",
+                "packs": packs,
+                "documents": documents,
+                "excluded_count": 1,
+            }, ensure_ascii=False),
             encoding="utf-8",
-        )
-        (self.tmp / "wiki" / "华为.md").write_text(
-            "---\ntitle: 华为\n---\n# 华为\n芯片物理极限。",
-            encoding="utf-8",
-        )
-        (self.tmp / "raw" / "deepseek.md").write_text(
-            "# DeepSeek 原文\nDeepSeek 开源模型。", encoding="utf-8"
-        )
-        (self.tmp / "产品设计" / "TokenBox.md").write_text(
-            "# TokenBox\n产品方案。", encoding="utf-8"
         )
         matrix = {
             "version": "2.0",
-            "stats": {"total_documents": 3, "total_wikilinks": 1},
-            "entity_index": {"DeepSeek": ["wiki/模型观察.md"]},
+            "stats": {"total_documents": 5},
+            "entity_index": {
+                "DeepSeek": ["wiki/方法论/公共方法.md", "raw/原文.md"],
+                "私有口径": ["wiki/方法论/私有方法.md"],
+            },
             "categories": {
-                "wiki": ["wiki/模型观察.md", "wiki/华为.md"],
-                "raw": ["raw/deepseek.md"],
+                "wiki": {
+                    "公共方法": {"path": "wiki/方法论/公共方法.md"},
+                    "专业方法": {"path": "wiki/方法论/专业方法.md"},
+                    "私有方法": {"path": "wiki/方法论/私有方法.md"},
+                    "待复核": {"path": "wiki/方法论/待复核.md"},
+                },
+                "raw": {"原文": {"path": "raw/原文.md"}},
             },
         }
         (self.tmp / "knowledge_matrix.json").write_text(
             json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
         )
 
-        import backend.api.knowledge as k
         import backend.api.auth as auth
+        import backend.api.knowledge as knowledge
+        from backend.services.knowledge_catalog import clear_manifest_cache
 
-        self.k = k
         self.auth = auth
-        k._matrix.cache_clear()
-        self._old_vault = k._vault
-        k._vault = lambda: self.tmp
-        self._old_matrix_path = k.MATRIX_PATH
-        k.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
-
+        self.knowledge = knowledge
         self._old_resolver = auth.tenant_resolver
-        self._old_categories = FAKE_CATEGORIES
+        self._old_vault = knowledge._vault
+        self._old_matrix_path = knowledge.MATRIX_PATH
+        knowledge._vault = lambda: self.tmp
+        knowledge.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
+        knowledge._matrix.cache_clear()
+        clear_manifest_cache()
 
         async def fake_resolver(user_id):
             return {
                 "tenant_key": "u-test",
+                "org_id": "org-test",
                 "is_super_admin": FAKE_SUPER,
-                "categories": set(FAKE_CATEGORIES),
+                "categories": set(),
             }
 
         auth.tenant_resolver = fake_resolver
-
         from backend.main import app
 
-        self._transport = httpx.ASGITransport(app=app)
+        self.transport = httpx.ASGITransport(app=app)
+
+    @staticmethod
+    def _pack(category, title, security, count, owner="public", entitlement=""):
+        return {
+            "category": category,
+            "path_prefix": "wiki/",
+            "title": title,
+            "doc_count": count,
+            "open": True,
+            "security_level": security,
+            "owner_tenant": owner,
+            "entitlement_key": entitlement,
+            "knowledge_level": "K5",
+            "classification_status": "approved",
+            "freshness": "current",
+            "source_count": count * 2,
+        }
+
+    @staticmethod
+    def _document(path, pack, security):
+        return {
+            "knowledge_id": "kn-" + Path(path).stem,
+            "path": path,
+            "title": Path(path).stem,
+            "pack_id": pack,
+            "knowledge_level": "K5",
+            "classification_status": "approved",
+            "security_level": security,
+            "freshness": "current",
+            "source_count": 2,
+        }
 
     def tearDown(self):
-        import shutil
-
-        global FAKE_CATEGORIES, FAKE_SUPER
-        FAKE_CATEGORIES = {"wiki"}
+        global FAKE_SUPER
         FAKE_SUPER = False
         self.auth.tenant_resolver = self._old_resolver
-        self.k._vault = self._old_vault
-        self.k.MATRIX_PATH = self._old_matrix_path
-        self.k._matrix.cache_clear()
+        self.knowledge._vault = self._old_vault
+        self.knowledge.MATRIX_PATH = self._old_matrix_path
+        self.knowledge._matrix.cache_clear()
+        from backend.services.knowledge_catalog import clear_manifest_cache
+
+        clear_manifest_cache()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     async def _request(self, method, path, **kwargs):
         async with httpx.AsyncClient(
-            transport=self._transport,
+            transport=self.transport,
             base_url="http://testserver",
             headers=_headers(),
         ) as client:
@@ -118,221 +177,86 @@ class TestSubscriptionIsolation(unittest.TestCase):
     def request(self, method, path, **kwargs):
         return asyncio.run(self._request(method, path, **kwargs))
 
-    def test_catalog_lists_categories(self):
-        r = self.request("GET", "/api/v1/catalog")
-        self.assertEqual(r.status_code, 200)
-        cats = {c["category"] for c in r.json()["catalog"]}
-        self.assertIn("wiki", cats)
-        self.assertIn("raw", cats)
-        self.assertIn("产品设计", cats)
-        self.assertNotIn("00_Inbox", cats)  # 系统目录不进目录
+    def test_catalog_contains_logical_packs_not_physical_folders(self):
+        response = self.request("GET", "/api/v1/catalog")
+        self.assertEqual(response.status_code, 200)
+        catalog = {item["category"]: item for item in response.json()["catalog"]}
+        self.assertIn("knowledge/methodology/public", catalog)
+        self.assertIn("knowledge/methodology/private/u-test", catalog)
+        self.assertEqual(
+            catalog["knowledge/methodology/entitlement/premium-methodology"]["access_state"],
+            "upgrade_required",
+        )
+        self.assertNotIn("raw", catalog)
+        self.assertNotIn("wiki", catalog)
 
-    def test_stats_filtered_by_subscription(self):
-        # 只订阅了 wiki → stats 只统计 wiki
-        r = self.request("GET", "/api/knowledge/stats")
-        self.assertEqual(r.status_code, 200)
-        cats = r.json()["categories"]
-        self.assertEqual(cats.get("wiki"), 2)
-        self.assertNotIn("raw", cats)
-        self.assertNotIn("产品设计", cats)
+    def test_search_excludes_raw_pending_and_unentitled_yellow(self):
+        public = self.request("GET", "/api/knowledge/search", params={"q": "DeepSeek"})
+        paths = [item["path"] for item in public.json()["docs"]]
+        self.assertEqual(paths, ["wiki/方法论/公共方法.md"])
+        self.assertFalse(any(path.startswith("raw/") for path in paths))
+        premium = self.request("GET", "/api/knowledge/search", params={"q": "高级套餐"})
+        self.assertEqual(premium.json()["docs"], [])
+        pending = self.request("GET", "/api/knowledge/search", params={"q": "不得进入检索"})
+        self.assertEqual(pending.json()["docs"], [])
 
-    def test_wiki_list_filtered(self):
-        r = self.request("GET", "/api/knowledge/wiki")
-        self.assertEqual(r.status_code, 200)
-        entries = r.json()["entries"]
-        self.assertEqual(len(entries), 2)  # wiki/ 内 2 篇（已订阅）
-        r2 = self.request("GET", "/api/knowledge/wiki/模型观察")
-        self.assertEqual(r2.status_code, 200)
+    def test_red_owner_is_visible_and_matrix_cannot_leak_raw(self):
+        private = self.request("GET", "/api/knowledge/search", params={"q": "租户内部"})
+        self.assertEqual(private.json()["docs"][0]["security_level"], "red")
+        matrix = self.request("GET", "/api/knowledge/matrix").json()
+        all_paths = json.dumps(matrix, ensure_ascii=False)
+        self.assertNotIn("raw/原文.md", all_paths)
+        self.assertNotIn("待复核.md", all_paths)
 
-    def test_unsubscribed_wiki_detail_404(self):
-        # 切换到未订阅 wiki 的租户
-        global FAKE_CATEGORIES
-        FAKE_CATEGORIES = {"raw"}
-        r = self.request("GET", "/api/knowledge/wiki/模型观察")
-        self.assertEqual(r.status_code, 404)
-        # 已订阅的 raw 可见
-        r2 = self.request("GET", "/api/knowledge/stats")
-        self.assertIn("raw", r2.json()["categories"])
+    def test_wallet_accepts_effective_pack_and_rejects_physical_folder(self):
+        ok = self.request(
+            "POST", "/api/v1/me/subscriptions",
+            json={"category": "knowledge/methodology/public"},
+        )
+        self.assertEqual(ok.status_code, 200)
+        denied = self.request(
+            "POST", "/api/v1/me/subscriptions", json={"category": "raw"}
+        )
+        self.assertEqual(denied.status_code, 404)
 
-    def test_search_filtered(self):
-        r = self.request("GET", "/api/knowledge/search", params={"q": "DeepSeek"})
-        self.assertEqual(r.status_code, 200)
-        paths = [d["path"] for d in r.json()["docs"]]
-        self.assertTrue(all(p.startswith("wiki/") for p in paths))
+    def test_wallet_body_endpoint_preserves_chinese_multisegment_category(self):
+        category = "knowledge/行业知识/审计"
+        added = self.request(
+            "PUT", "/api/v1/me/knowledge-wallet", json={"category": category}
+        )
+        self.assertEqual(added.status_code, 200, added.text)
+        self.assertIn(category, added.json()["categories"])
 
-    def test_super_admin_sees_all(self):
+        removed = self.request(
+            "DELETE", "/api/v1/me/knowledge-wallet", json={"category": category}
+        )
+        self.assertEqual(removed.status_code, 200, removed.text)
+        self.assertNotIn(category, removed.json()["categories"])
+
+    def test_wallet_errors_are_actionable(self):
+        response = self.request(
+            "PUT", "/api/v1/me/knowledge-wallet", json={"category": "missing/类目"}
+        )
+        self.assertEqual(response.status_code, 404)
+        detail = response.json()["detail"]
+        self.assertEqual(detail["code"], "catalog_item_not_found")
+        self.assertEqual(detail["action"], "refresh_catalog")
+
+    def test_super_admin_still_cannot_see_pending_or_raw(self):
         global FAKE_SUPER
         FAKE_SUPER = True
-        r = self.request("GET", "/api/knowledge/stats")
-        cats = r.json()["categories"]
-        self.assertEqual(cats.get("wiki"), 2)
-        self.assertEqual(cats.get("raw"), 1)
-        self.assertEqual(cats.get("产品设计"), 1)
+        stats = self.request("GET", "/api/knowledge/stats").json()
+        self.assertEqual(stats["total_md_files"], 4)
+        catalog = self.request("GET", "/api/v1/catalog").json()
+        self.assertEqual(catalog["pending_review_count"], 1)
+        self.assertNotIn("raw", {item["category"] for item in catalog["catalog"]})
 
-    def test_matrix_filtered(self):
-        r = self.request("GET", "/api/knowledge/matrix")
-        cats = r.json()["categories"]
-        self.assertIn("wiki", cats)
-        self.assertNotIn("raw", cats)
-
-
-class TestCatalogWhitelistAndPrefixMatch(unittest.TestCase):
-    """catalog 白名单 + 行业知识二级展开 + _rel_visible 前缀匹配 + 根/私有不可订阅。"""
-
-    def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="catalog-test-"))
-        # 9 个公共目录
-        for name in [
-            "wiki", "raw", "研究系统", "竞品情报", "AI情报雷达",
-            "产品设计", "客户画像", "任务记录", "决策记录",
-        ]:
-            (self.tmp / name).mkdir(parents=True)
-            (self.tmp / name / "doc.md").write_text(
-                f"# {name}\n公共内容。", encoding="utf-8"
-            )
-        # 行业知识二级结构（knowledge/行业知识/<domain>）
-        (self.tmp / "knowledge" / "行业知识" / "金融").mkdir(parents=True)
-        (self.tmp / "knowledge" / "行业知识" / "金融" / "动态.md").write_text(
-            "# 金融动态\n金融行业动态。", encoding="utf-8"
-        )
-        (self.tmp / "knowledge" / "行业知识" / "医疗").mkdir(parents=True)
-        (self.tmp / "knowledge" / "行业知识" / "医疗" / "医院.md").write_text(
-            "# 医院管理\n医疗管理。", encoding="utf-8"
-        )
-        # knowledge 根目录本身放一个文件（根不可订/不进 catalog）
-        (self.tmp / "knowledge" / "根.md").write_text(
-            "# knowledge根\n不应暴露。", encoding="utf-8"
-        )
-        # 物理不可订目录
-        for name in ["tenants", "sandbox", "scripts", "访客画像"]:
-            (self.tmp / name).mkdir(parents=True)
-            (self.tmp / name / "私有.md").write_text(
-                f"# {name}\n私有内容。", encoding="utf-8"
-            )
-
-        matrix = {
-            "version": "2.0",
-            "stats": {},
-            "entity_index": {},
-            "categories": {},
-        }
-        (self.tmp / "knowledge_matrix.json").write_text(
-            json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
-        )
-
-        import backend.api.knowledge as k
-        import backend.api.auth as auth
-
-        self.k = k
-        self.auth = auth
-        k._matrix.cache_clear()
-        self._old_vault = k._vault
-        k._vault = lambda: self.tmp
-        self._old_matrix_path = k.MATRIX_PATH
-        k.MATRIX_PATH = self.tmp / "knowledge_matrix.json"
-
-        self.categories = {"wiki"}
-        self.is_super = False
-
-        self._old_resolver = auth.tenant_resolver
-
-        async def fake_resolver(user_id):
-            return {
-                "tenant_key": "u-test",
-                "is_super_admin": self.is_super,
-                "categories": set(self.categories),
-            }
-
-        auth.tenant_resolver = fake_resolver
-
-        from backend.main import app
-
-        self._transport = httpx.ASGITransport(app=app)
-
-    def tearDown(self):
-        import shutil
-
-        self.auth.tenant_resolver = self._old_resolver
-        self.k._vault = self._old_vault
-        self.k.MATRIX_PATH = self._old_matrix_path
-        self.k._matrix.cache_clear()
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    async def _request(self, method, path, **kwargs):
-        async with httpx.AsyncClient(
-            transport=self._transport,
-            base_url="http://testserver",
-            headers=_headers(),
-        ) as client:
-            return await client.request(method, path, **kwargs)
-
-    def request(self, method, path, **kwargs):
-        return asyncio.run(self._request(method, path, **kwargs))
-
-    def test_catalog_whitelist_in_root_not_in(self):
-        r = self.request("GET", "/api/v1/catalog")
-        self.assertEqual(r.status_code, 200)
-        cats = {c["category"] for c in r.json()["catalog"]}
-        for name in [
-            "wiki", "raw", "研究系统", "竞品情报", "AI情报雷达",
-            "产品设计", "客户画像", "任务记录", "决策记录",
-        ]:
-            self.assertIn(name, cats)
-        # 二级展开
-        self.assertIn("knowledge/行业知识/金融", cats)
-        self.assertIn("knowledge/行业知识/医疗", cats)
-        # 根/私有不进 catalog
-        self.assertNotIn("knowledge", cats)
-        self.assertNotIn("tenants", cats)
-        self.assertNotIn("sandbox", cats)
-        self.assertNotIn("scripts", cats)
-        self.assertNotIn("访客画像", cats)
-        self.assertNotIn("00_Inbox", cats)
-
-    def test_industry_secondary_expansion_doc_count(self):
-        r = self.request("GET", "/api/v1/catalog")
-        by_cat = {c["category"]: c for c in r.json()["catalog"]}
-        self.assertEqual(by_cat["knowledge/行业知识/金融"]["doc_count"], 1)
-        self.assertEqual(by_cat["knowledge/行业知识/医疗"]["doc_count"], 1)
-
-    def test_root_and_private_not_subscribable(self):
-        for bad in ["knowledge", "tenants", "sandbox", "scripts", "访客画像"]:
-            r = self.request(
-                "POST", "/api/v1/me/subscriptions", json={"category": bad}
-            )
-            self.assertEqual(r.status_code, 404, f"{bad} 应 404 不可订阅")
-        # 合法多段类目可订阅
-        r = self.request(
-            "POST",
-            "/api/v1/me/subscriptions",
-            json={"category": "knowledge/行业知识/金融"},
-        )
-        self.assertEqual(r.status_code, 200)
-
-    def test_prefix_match_visibility(self):
-        _rel_visible = self.k._rel_visible
-        vis = frozenset({"knowledge/行业知识/金融"})
-        self.assertTrue(_rel_visible("knowledge/行业知识/金融/动态.md", vis))
-        self.assertFalse(_rel_visible("knowledge/行业知识/医疗/医院.md", vis))
-        self.assertFalse(_rel_visible("knowledge/根.md", vis))
-        # 单层类目零回归
-        self.assertTrue(_rel_visible("wiki/doc.md", frozenset({"wiki"})))
-        self.assertFalse(_rel_visible("raw/doc.md", frozenset({"wiki"})))
-        # vis None 全可见
-        self.assertTrue(_rel_visible("tenants/私有.md", None))
-
-    def test_multi_segment_subscription_search_visible(self):
-        self.categories = {"knowledge/行业知识/金融"}
-        r = self.request("GET", "/api/knowledge/search", params={"q": "金融动态"})
-        self.assertEqual(r.status_code, 200)
-        paths = [d["path"] for d in r.json()["docs"]]
-        self.assertTrue(
-            any(p.startswith("knowledge/行业知识/金融/") for p in paths)
-        )
-        self.assertFalse(
-            any(p.startswith("knowledge/行业知识/医疗/") for p in paths)
-        )
-        self.assertFalse(any(p.startswith("wiki/") for p in paths))
+    def test_visibility_is_pack_membership_not_path_prefix(self):
+        visible = frozenset({"knowledge/methodology/public"})
+        self.assertTrue(self.knowledge._rel_visible("wiki/方法论/公共方法.md", visible))
+        self.assertFalse(self.knowledge._rel_visible("wiki/方法论/专业方法.md", visible))
+        self.assertFalse(self.knowledge._rel_visible("raw/原文.md", None))
+        self.assertFalse(self.knowledge._rel_visible("wiki/方法论/待复核.md", None))
 
 
 if __name__ == "__main__":

@@ -61,8 +61,8 @@ class TestKnowledgeAPI(unittest.TestCase):
         )
         matrix = {
             "version": "2.0",
-            "stats": {"total_documents": 3, "total_wikilinks": 2},
-            "entity_index": {"DeepSeek": ["raw/a.md"], "华为": ["raw/b.md"]},
+            "stats": {"total_documents": 1, "total_wikilinks": 1},
+            "entity_index": {"DeepSeek": ["wiki/模型观察.md"], "华为": ["raw/b.md"]},
             "categories": {
                 "raw": ["raw/a.md", "raw/b.md"],
                 "wiki": ["wiki/模型观察.md"],
@@ -71,11 +71,46 @@ class TestKnowledgeAPI(unittest.TestCase):
         (self.tmp / "knowledge_matrix.json").write_text(
             json.dumps(matrix, ensure_ascii=False), encoding="utf-8"
         )
+        manifest = {
+            "version": "2.0",
+            "generated_at": "2026-08-19T00:00:00Z",
+            "excluded_count": 3,
+            "packs": [{
+                "category": "knowledge/methodology/public",
+                "path_prefix": "wiki/",
+                "title": "方法论",
+                "doc_count": 1,
+                "open": True,
+                "security_level": "green",
+                "owner_tenant": "public",
+                "entitlement_key": "",
+                "knowledge_level": "K5",
+                "classification_status": "approved",
+                "freshness": "current",
+                "source_count": 2,
+            }],
+            "documents": [{
+                "knowledge_id": "kn-model",
+                "path": "wiki/模型观察.md",
+                "title": "模型观察",
+                "pack_id": "knowledge/methodology/public",
+                "knowledge_level": "K5",
+                "classification_status": "approved",
+                "security_level": "green",
+                "freshness": "current",
+                "source_count": 2,
+            }],
+        }
+        (self.tmp / "knowledge_catalog.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
 
         # 指向临时库（同时屏蔽真实矩阵，确保测试用夹具数据）
         import backend.api.knowledge as k
+        from backend.services.knowledge_catalog import clear_manifest_cache
 
         self.k = k
+        clear_manifest_cache()
         k._matrix.cache_clear()
         old = k._vault
         k._vault = lambda: self.tmp
@@ -109,6 +144,8 @@ class TestKnowledgeAPI(unittest.TestCase):
         self.k._vault = self._restore
         self.k.MATRIX_PATH = self._old_matrix_path
         self.k._matrix.cache_clear()
+        from backend.services.knowledge_catalog import clear_manifest_cache
+        clear_manifest_cache()
         import shutil
 
         shutil.rmtree(self.tmp, ignore_errors=True)
@@ -133,42 +170,44 @@ class TestKnowledgeAPI(unittest.TestCase):
         r = self.request("GET", "/api/knowledge/contract")
         self.assertEqual(r.status_code, 200)
         body = r.json()
-        self.assertEqual(body["machine_interface"], "knowledge_matrix")
+        self.assertEqual(body["machine_interface"], "knowledge_catalog+knowledge_matrix")
         self.assertEqual(body["matrix_version"], "2.0")
 
     def test_stats(self):
         r = self.request("GET", "/api/knowledge/stats")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.json()["total_md_files"], 4)
+        self.assertEqual(r.json()["total_md_files"], 1)
 
     def test_search_content(self):
-        r = self.request("GET", "/api/knowledge/search", params={"q": "华为"})
+        r = self.request("GET", "/api/knowledge/search", params={"q": "DeepSeek"})
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertGreaterEqual(body["total"], 1)
-        self.assertIn("华为", body["entity_hits"])
+        self.assertIn("DeepSeek", body["entity_hits"])
 
     def test_search_title_ranks_first(self):
-        r = self.request("GET", "/api/knowledge/search", params={"q": "测试文档"})
+        r = self.request("GET", "/api/knowledge/search", params={"q": "模型观察"})
         docs = r.json()["docs"]
         self.assertTrue(docs)
-        self.assertEqual(docs[0]["title"], "测试文档")
+        self.assertEqual(docs[0]["title"], "模型观察")
+        self.assertEqual(docs[0]["category"], "knowledge/methodology/public")
 
     def test_wiki_list(self):
         r = self.request("GET", "/api/knowledge/wiki")
         self.assertEqual(r.status_code, 200)
         entries = r.json()["entries"]
-        self.assertEqual(len(entries), 2)
+        self.assertEqual(len(entries), 1)
         statuses = {e["slug"]: e["status"] for e in entries}
         self.assertEqual(statuses["模型观察"], "active")
-        self.assertEqual(statuses["未定稿"], "draft")
+        self.assertNotIn("未定稿", statuses)
 
     def test_wiki_detail_and_wikilinks(self):
         r = self.request("GET", "/api/knowledge/wiki/模型观察")
         self.assertEqual(r.status_code, 200)
         body = r.json()
         self.assertEqual(body["title"], "模型观察")
-        self.assertIn("测试文档", body["wikilinks"])
+        # 不存在于可见 wiki 范围的目标不能通过 wikilink 侧向泄漏。
+        self.assertNotIn("测试文档", body["wikilinks"])
 
     def test_wiki_404(self):
         r = self.request("GET", "/api/knowledge/wiki/不存在")

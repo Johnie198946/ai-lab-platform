@@ -11,6 +11,7 @@ import json
 import os
 import re
 import uuid
+import hashlib
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 import httpx
@@ -19,11 +20,16 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
+from backend.api.catalog import compute_catalog
+from backend.api import knowledge
 from backend.api.identity import match_identity_rule
+from backend.db import SessionLocal
 from backend.models.agent_registry import (
     session_prefix_for,
 )
 from backend.services.reasoning_extractor import ReasoningStep
+from backend.services.knowledge_policy import KnowledgePolicy, mint_capability, resolve_policy
+from backend.services.agent_capabilities import BASELINE_AGENT_IDS, resolve_agent
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -188,7 +194,9 @@ def extract_clarify_payload(reasoning: List[ReasoningStep]) -> Optional[ClarifyP
 
 
 async def _call_hermes(
-    goal: str, session_id: Optional[str] = None, skill_id: Optional[str] = None
+    goal: str, session_id: Optional[str] = None, skill_id: Optional[str] = None,
+    knowledge_capability: Optional[str] = None, policy_version: Optional[str] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, List[ReasoningStep]]:
     """透传 Hermes bridge，返回 (reply, reasoning)。"""
     payload: Dict[str, Any] = {"goal": goal}
@@ -196,6 +204,11 @@ async def _call_hermes(
         payload["session_id"] = session_id
     if skill_id:
         payload["skill_id"] = skill_id
+    if knowledge_capability:
+        payload["knowledge_capability"] = knowledge_capability
+        payload["knowledge_policy_version"] = policy_version
+    if agent_config:
+        payload["agent_config"] = agent_config
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
         r = await client.post(HERMES_BRIDGE_URL, json=payload)
         if r.status_code == 200:
@@ -278,13 +291,63 @@ def derive_isolated_session_id(
     - 无 session_id 时生成随机 base；
     - 已带任意 Agent 前缀时先剥离，再套当前 Agent 前缀（支持切换 Agent 不叠加）。
     """
-    prefix = session_prefix_for(agent_id) + "-"
+    selected = (agent_id or "").strip()
+    if selected and selected.removeprefix("db_") not in BASELINE_AGENT_IDS:
+        prefix = "agent" + hashlib.sha256(selected.encode()).hexdigest()[:10] + "-"
+    else:
+        prefix = session_prefix_for(selected.removeprefix("db_") or None) + "-"
     base = (session_id or "").strip() or uuid.uuid4().hex
     for p in _KNOWN_SESSION_PREFIXES:
         if base.startswith(p):
             base = base[len(p) :]
             break
+    base = re.sub(r"^agent[0-9a-f]{10}-", "", base, count=1)
     return prefix + base
+
+
+def _tenant_namespaced_session(base: str, tenant_key: str, policy_version: str) -> str:
+    base = re.sub(r"^t[0-9a-f]{12}-p[0-9a-z]{1,24}-", "", base, count=1)
+    tenant_namespace = hashlib.sha256(tenant_key.encode()).hexdigest()[:12]
+    safe_policy = re.sub(r"[^0-9a-z]", "", policy_version.lower())[:12] or "legacy"
+    return f"t{tenant_namespace}-p{safe_policy}-{base}"[:100]
+
+
+async def _resolve_chat_policy(payload: Dict[str, Any]) -> KnowledgePolicy:
+    tenant_key = str(payload.get("tenant_key") or "public")
+    async with SessionLocal() as db:
+        policy, _ = await resolve_policy(
+            db,
+            tenant_key=tenant_key,
+            org_id=str(payload.get("org_id") or ""),
+            catalog=compute_catalog(),
+            is_super_admin=bool(payload.get("is_super_admin")),
+            is_guest=tenant_key == os.environ.get("GUEST_TENANT_KEY", "demo-guest"),
+            allow_admin_bypass=False,
+        )
+    return policy
+
+
+async def _knowledge_context(
+    payload: Dict[str, Any], subject_id: str, question: str, entry_point: str = "chat",
+    policy: KnowledgePolicy | None = None,
+) -> tuple[str, str, str, List[Dict[str, Any]]]:
+    """Mint a signed scope and attach only compact, already-authorized evidence."""
+    policy = policy or await _resolve_chat_policy(payload)
+    capability = mint_capability(policy, subject_id=subject_id, entry_point=entry_point)
+    docs = knowledge._search_docs(knowledge._vault(), question, 5)
+    evidence_lines = []
+    for doc in docs:
+        evidence_lines.append(
+            f"- [[{doc.get('path', '')}]] {doc.get('title', '')}: {str(doc.get('snippet') or '')[:240]}"
+        )
+    evidence = ""
+    if evidence_lines:
+        evidence = (
+            "\n\n以下是平台 Knowledge Gateway 已按当前租户权限过滤的证据摘要；"
+            "只能引用这些条目，不得自行读取 Vault 或推测不可见内容：\n"
+            + "\n".join(evidence_lines)
+        )
+    return capability, policy.policy_version, evidence, docs
 
 
 @router.post("", response_model=ChatResponse)
@@ -304,7 +367,22 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
 
     skill_id = validate_chat_skill(req.skill_id)
     goal = req.question
-    isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
+    policy = await _resolve_chat_policy(payload)
+    async with SessionLocal() as db:
+        agent = await resolve_agent(
+            db,
+            agent_id=req.agent_id,
+            tenant_id=str(payload.get("tenant_key") or "public"),
+            owner_user_id=str(payload.get("user_id") or payload.get("sub") or ""),
+        )
+    isolated_session_id = _tenant_namespaced_session(
+        derive_isolated_session_id(req.agent_id, req.session_id),
+        str(payload.get("tenant_key") or "public"), policy.policy_version
+    )
+    capability, policy_version, evidence, sources = await _knowledge_context(
+        payload, isolated_session_id, req.question, policy=policy
+    )
+    goal += evidence
 
     # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
     cached = await _check_cached_answer(req.question, isolated_session_id)
@@ -315,11 +393,15 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     try:
         if skill_id:
             reply, reasoning = await _call_hermes(
-                goal, session_id=isolated_session_id, skill_id=skill_id
+                goal, session_id=isolated_session_id, skill_id=skill_id,
+                knowledge_capability=capability, policy_version=policy_version,
+                agent_config=agent.bridge_config(),
             )
         else:
             reply, reasoning = await _call_hermes(
-                goal, session_id=isolated_session_id
+                goal, session_id=isolated_session_id,
+                knowledge_capability=capability, policy_version=policy_version,
+                agent_config=agent.bridge_config(),
             )
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
@@ -327,7 +409,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         return ChatResponse(
             question=req.question,
             answer=answer,
-            sources=[],
+            sources=sources,
             session_id=isolated_session_id,
             reasoning=reasoning,
             citations=citations,
@@ -363,6 +445,7 @@ async def chat_status(
     session_id: str,
     consume: bool = False,
     offset: int = 0,
+    agent_id: str | None = None,
     payload=Depends(require_auth),
 ) -> Dict[str, Any]:
     """长任务状态回读：透传 Bridge GET /v1/chat/status/{user_id}。
@@ -372,7 +455,11 @@ async def chat_status(
     """
     # session 前缀归一（对齐提交端点）：前端传原始 UUID，bridge run 注册为
     # main_agent-<UUID>——不 derive 则查不到 run 误报 not_found（微信模式必现）
-    isolated = derive_isolated_session_id(None, session_id)
+    policy = await _resolve_chat_policy(payload)
+    isolated = _tenant_namespaced_session(
+        derive_isolated_session_id(agent_id, session_id),
+        str(payload.get("tenant_key") or "public"), policy.policy_version
+    )
     data = await _call_hermes_status(isolated, consume=consume, offset=offset)
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
@@ -424,6 +511,9 @@ async def _call_bridge_stream(
     regenerate: bool = False,
     skill_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    knowledge_capability: Optional[str] = None,
+    policy_version: Optional[str] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
@@ -436,6 +526,9 @@ async def _call_bridge_stream(
                 "regenerate": regenerate,
                 "skill_id": skill_id,
                 "request_id": request_id,
+                "knowledge_capability": knowledge_capability,
+                "knowledge_policy_version": policy_version,
+                "agent_config": agent_config or {},
             },
         ) as resp:
             if resp.status_code != 200:
@@ -467,7 +560,18 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             },
         )
 
-    isolated_session_id = derive_isolated_session_id(req.agent_id, req.session_id)
+    policy = await _resolve_chat_policy(payload)
+    async with SessionLocal() as db:
+        agent = await resolve_agent(
+            db,
+            agent_id=req.agent_id,
+            tenant_id=str(payload.get("tenant_key") or "public"),
+            owner_user_id=str(payload.get("user_id") or payload.get("sub") or ""),
+        )
+    isolated_session_id = _tenant_namespaced_session(
+        derive_isolated_session_id(req.agent_id, req.session_id),
+        str(payload.get("tenant_key") or "public"), policy.policy_version
+    )
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
     goal = req.question
@@ -484,12 +588,22 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "表格内的关键差异与结论词请用 **加粗** 标注以突出重点。）"
         )
     skill_id = validate_chat_skill(req.skill_id)
+    capability, policy_version, evidence, _ = await _knowledge_context(
+        payload, isolated_session_id, req.question, policy=policy
+    )
+    goal += evidence
 
     _streaming_sessions.add(isolated_session_id)
 
     async def _gen():
         try:
-            kwargs = {"regenerate": req.regenerate, "skill_id": skill_id}
+            kwargs = {
+                "regenerate": req.regenerate,
+                "skill_id": skill_id,
+                "knowledge_capability": capability,
+                "policy_version": policy_version,
+                "agent_config": agent.bridge_config(),
+            }
             if req.request_id:
                 kwargs["request_id"] = req.request_id
             async for frame in _call_bridge_stream(goal, isolated_session_id, **kwargs):
@@ -519,7 +633,11 @@ async def chat_clarify_submit(
     （bridge 以 {session_id} 为 user_id 注册 clarify 阻塞线程；前端传无前缀
     本地会话 ID 会导致 resolve 失配 → 502「选项提交失败」）。
     """
-    isolated = derive_isolated_session_id(req.agent_id, req.session_id)
+    policy = await _resolve_chat_policy(payload)
+    isolated = _tenant_namespaced_session(
+        derive_isolated_session_id(req.agent_id, req.session_id),
+        str(payload.get("tenant_key") or "public"), policy.policy_version
+    )
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             HERMES_BRIDGE_CLARIFY_URL,
@@ -539,7 +657,11 @@ async def chat_stream_cancel(
     req: CancelRequest, payload=Depends(require_auth)
 ) -> Dict[str, Any]:
     """取消在途流式：透传 bridge interrupt（服务端回收线程与内存）。"""
-    isolated = derive_isolated_session_id(req.agent_id, req.session_id)
+    policy = await _resolve_chat_policy(payload)
+    isolated = _tenant_namespaced_session(
+        derive_isolated_session_id(req.agent_id, req.session_id),
+        str(payload.get("tenant_key") or "public"), policy.policy_version
+    )
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             HERMES_BRIDGE_CANCEL_URL,

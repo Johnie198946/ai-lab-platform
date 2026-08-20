@@ -17,10 +17,15 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.services.knowledge_catalog import compute_catalog
+from backend.db import SessionLocal
+from backend.models.tenant import TenantMapping
+from backend.models.tenant_agent import TenantAgentModel
 from backend.models.workflow import (
     WorkflowArtifact,
     WorkflowEvent,
     WorkflowExecution,
+    WorkflowDefinition,
     WorkflowNodeRun,
     WorkflowPlanVersion,
 )
@@ -29,6 +34,7 @@ from backend.services.workflow_artifacts import (
     initialize_run,
     store_artifact,
 )
+from backend.services.knowledge_policy import mint_capability, resolve_policy
 
 HERMES_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -129,6 +135,32 @@ async def _nodes(db: AsyncSession, execution_id: str) -> dict[str, WorkflowNodeR
 
 
 async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> dict[str, Any]:
+    async with SessionLocal() as policy_db:
+        mapping = (
+            await policy_db.execute(
+                select(TenantMapping).where(TenantMapping.tenant_key == execution.tenant_key).limit(1)
+            )
+        ).scalar_one_or_none()
+        policy, _ = await resolve_policy(
+            policy_db,
+            tenant_key=execution.tenant_key,
+            org_id=mapping.org_id if mapping else "",
+            catalog=compute_catalog(),
+            allow_admin_bypass=False,
+        )
+        allowed_scope = policy.restrict(plan.knowledge_scope or [])
+        capability = mint_capability(
+            policy,
+            subject_id=execution.id,
+            entry_point="workflow",
+            requested_scopes=allowed_scope,
+            ttl_seconds=900,
+        )
+        workflow = await policy_db.get(WorkflowDefinition, execution.workflow_id)
+        task_agent = (
+            await policy_db.get(TenantAgentModel, workflow.primary_agent_id)
+            if workflow and workflow.primary_agent_id else None
+        )
     payload = {
         "tenant_id": execution.tenant_key,
         "execution_id": execution.id,
@@ -137,8 +169,15 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
         "deliverable": plan.deliverable,
         "plan": plan.dsl,
         "allow_network": plan.allow_network,
-        "knowledge_scope": plan.knowledge_scope or [],
+        "knowledge_scope": sorted(allowed_scope),
+        "knowledge_capability": capability,
+        "knowledge_policy_version": policy.policy_version,
         "max_tokens": plan.max_tokens,
+        "agent_config": {
+            "id": task_agent.id,
+            "prompt": task_agent.private_prompt_delta,
+            "composition": task_agent.composition_manifest or {},
+        } if task_agent else {},
     }
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
@@ -172,6 +211,24 @@ def _set_usage(target: Any, usage: dict[str, Any]) -> None:
     target.model_used = str(usage.get("model") or "")
     target.provider_used = str(usage.get("provider") or "")
     target.token_used = int(usage.get("total_tokens") or 0)
+
+
+def _rollup_usage(execution: WorkflowExecution, nodes: dict[str, WorkflowNodeRun]) -> None:
+    """Publish the last exact per-call totals while the overall run is active."""
+    fields = (
+        "input_tokens", "output_tokens", "reasoning_tokens", "cache_read_tokens",
+        "cache_write_tokens", "api_calls", "token_used",
+    )
+    for field in fields:
+        setattr(execution, field, sum(int(getattr(node, field, 0) or 0) for node in nodes.values()))
+    execution.estimated_cost_usd = sum(
+        float(node.estimated_cost_usd or 0) for node in nodes.values()
+    )
+    completed = [node for node in nodes.values() if node.status == "succeeded"]
+    if completed:
+        latest = max(completed, key=lambda item: item.position)
+        execution.model_used = latest.model_used
+        execution.provider_used = latest.provider_used
 
 
 async def _artifact_exists(db: AsyncSession, execution_id: str, event_id: str) -> bool:
@@ -236,6 +293,7 @@ async def project_event(
             )
         if route.get("reason"):
             execution.route_reason = str(route["reason"])[:500]
+        _rollup_usage(execution, node_rows)
     elif event_type == "run_completed":
         execution.status = "awaiting_review"
         execution.progress = 100
@@ -262,6 +320,15 @@ async def project_event(
         node_id=node_id or None,
         usage=event.get("usage") or {},
         route=event.get("route") or {},
+        category=event.get("category") or event_type,
+        status=event.get("status") or (
+            "running" if event_type in {"run_started", "node_started", "tool_start", "agent_spawn"}
+            else "failed" if event_type in {"run_failed", "evaluation_failed"}
+            else "done"
+        ),
+        tool=event.get("tool"),
+        detail=event.get("detail") or "",
+        source=event.get("source") or "hermes_bridge",
     )
     execution.bridge_event_seq = max(
         execution.bridge_event_seq, int(event.get("seq") or 0)
@@ -315,6 +382,9 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
                 )
             ).scalar_one()
         )
+        from backend.services.showroom_insight_execution import project_execution
+
+        await project_execution(db, execution.id)
         await db.commit()
     except Exception as exc:
         # 外部执行器暂不可达不是业务失败；保留队列并释放租约，下轮安全重试同一幂等键。

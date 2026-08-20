@@ -9,20 +9,24 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.models.tenant import KnowledgeSubscription
+from backend.services.knowledge_catalog import compute_catalog
+from backend.models.tenant import TenantMapping
 from backend.models.tenant_agent import TenantAgentModel
 from backend.models.tenant_agent_schema import WorkflowDSLPlan
 from backend.models.workflow import WorkflowDefinition, WorkflowPlanVersion
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
+from backend.services.knowledge_policy import resolve_policy
 
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
 )
 HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
 HERMES_PLANNING_ENABLED = os.environ.get("WORKFLOW_HERMES_PLANNING", "false").lower() == "true"
+WORKFLOW_TOKEN_BUDGET = int(os.environ.get("WORKFLOW_TOKEN_BUDGET", "999999"))
+WORKFLOW_NODE_TOKEN_LIMIT = 128_000
 
 
 def _tenant_skill_agents(tenant: str) -> list[tuple[str, str]]:
@@ -65,6 +69,20 @@ def _tokens(text: str) -> set[str]:
     return set(re.findall(r"[a-z0-9_\-]+|[\u4e00-\u9fff]{2,}", text.lower()))
 
 
+async def _effective_knowledge_scopes(db: AsyncSession, tenant: str) -> list[str]:
+    mapping = (
+        await db.execute(select(TenantMapping).where(TenantMapping.tenant_key == tenant).limit(1))
+    ).scalar_one_or_none()
+    policy, _ = await resolve_policy(
+        db,
+        tenant_key=tenant,
+        org_id=mapping.org_id if mapping else "",
+        catalog=compute_catalog(),
+        allow_admin_bypass=False,
+    )
+    return sorted(policy.effective_categories)
+
+
 async def validate_plan_policy(
     db: AsyncSession,
     tenant: str,
@@ -73,6 +91,7 @@ async def validate_plan_policy(
     allow_network: bool,
     max_tokens: int,
     knowledge_scope: list[str],
+    owner_user_id: str = "",
 ) -> None:
     """Validate mutable plan fields that the structural DSL compiler cannot know."""
     from backend.models.agent_registry import agent_ids
@@ -83,6 +102,10 @@ async def validate_plan_policy(
                 select(TenantAgentModel.id).where(
                     TenantAgentModel.tenant_id == tenant,
                     TenantAgentModel.is_active.is_(True),
+                    or_(
+                        TenantAgentModel.visibility != "private",
+                        TenantAgentModel.owner_user_id == owner_user_id,
+                    ),
                 )
             )
         )
@@ -91,17 +114,7 @@ async def validate_plan_policy(
     )
     skill_agents = {agent_id for agent_id, _ in _tenant_skill_agents(tenant)}
     allowed_agents = set(agent_ids()) | db_agents | skill_agents
-    subscriptions = set(
-        (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == tenant
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    subscriptions = set(await _effective_knowledge_scopes(db, tenant))
     requested_scope = set(knowledge_scope)
     if not requested_scope.issubset(subscriptions):
         raise ValueError("计划包含当前租户未订阅的知识范围")
@@ -120,13 +133,19 @@ async def validate_plan_policy(
         raise ValueError(f"节点预算合计 {node_budget} 超过工作流预算 {max_tokens}")
 
 
-async def _select_tenant_agent(db: AsyncSession, tenant: str, description: str) -> str:
+async def _select_tenant_agent(
+    db: AsyncSession, tenant: str, description: str, owner_user_id: str
+) -> str:
     rows = (
         (
             await db.execute(
                 select(TenantAgentModel).where(
                     TenantAgentModel.tenant_id == tenant,
                     TenantAgentModel.is_active.is_(True),
+                    or_(
+                        TenantAgentModel.visibility != "private",
+                        TenantAgentModel.owner_user_id == owner_user_id,
+                    ),
                 )
             )
         )
@@ -148,7 +167,9 @@ async def _select_tenant_agent(db: AsyncSession, tenant: str, description: str) 
     return agent_id if score > 0 else "main_agent"
 
 
-async def _allowed_agent_ids(db: AsyncSession, tenant: str) -> list[str]:
+async def _allowed_agent_ids(
+    db: AsyncSession, tenant: str, owner_user_id: str
+) -> list[str]:
     from backend.models.agent_registry import agent_ids
 
     db_ids = list(
@@ -157,6 +178,10 @@ async def _allowed_agent_ids(db: AsyncSession, tenant: str) -> list[str]:
                 select(TenantAgentModel.id).where(
                     TenantAgentModel.tenant_id == tenant,
                     TenantAgentModel.is_active.is_(True),
+                    or_(
+                        TenantAgentModel.visibility != "private",
+                        TenantAgentModel.owner_user_id == owner_user_id,
+                    ),
                 )
             )
         ).scalars().all()
@@ -242,7 +267,7 @@ async def _plan_with_hermes(
                 "knowledge_scope": scopes,
                 "allowed_agents": allowed_agents,
                 "allow_network": True,
-                "max_tokens": 24000,
+                "max_tokens": WORKFLOW_TOKEN_BUDGET,
                 "revision_note": revision_note,
             },
         )
@@ -251,6 +276,11 @@ async def _plan_with_hermes(
     raw = payload.get("plan")
     if not isinstance(raw, dict):
         raise ValueError("Hermes 未返回有效计划")
+    return normalize_hermes_plan(raw, scopes)
+
+
+def normalize_hermes_plan(raw: dict[str, Any], scopes: list[str]) -> dict[str, Any]:
+    """Normalize bridge aliases while only narrowing model-requested permissions."""
     # Hermes 0.19.0 偶尔使用图论常见别名 from/to；在安全编译前只做字段
     # 兼容归一化，不补造节点、Agent 或权限。
     normalized = dict(raw)
@@ -285,27 +315,86 @@ async def _plan_with_hermes(
     return normalized
 
 
-async def build_plan(
+def fit_node_budgets(raw: dict[str, Any], max_tokens: int) -> dict[str, Any]:
+    """Fit Hermes budgets inside both workflow and per-node safety ceilings."""
+    nodes = raw.get("nodes")
+    if not isinstance(nodes, list) or max_tokens <= 0:
+        return raw
+    weighted: list[tuple[dict[str, Any], int]] = []
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        parameters = node.get("parameters")
+        if not isinstance(parameters, dict):
+            continue
+        try:
+            tokens = min(
+                WORKFLOW_NODE_TOKEN_LIMIT,
+                max(0, int(parameters.get("max_tokens") or 0)),
+            )
+        except (TypeError, ValueError):
+            tokens = 0
+        if tokens:
+            weighted.append((parameters, tokens))
+    if not weighted:
+        return raw
+    total = sum(tokens for _, tokens in weighted)
+    if total <= max_tokens:
+        # Even when the workflow has ample headroom, persist the per-node clamp.
+        # The DSL compiler rejects a node above 128k independently of the total.
+        for parameters, tokens in weighted:
+            parameters["max_tokens"] = tokens
+        return raw
+
+    # Allocate in 100-token units for readable, stable budgets.  Largest
+    # fractional remainders receive the spare units, preserving the total cap.
+    units = max_tokens // 100
+    allocations: list[int] = []
+    fractions: list[tuple[float, int]] = []
+    for index, (_, tokens) in enumerate(weighted):
+        exact = tokens * units / total
+        base = max(1, int(exact))
+        allocations.append(base)
+        fractions.append((exact - int(exact), index))
+    while sum(allocations) > units:
+        index = max(
+            (i for i, value in enumerate(allocations) if value > 1),
+            key=lambda i: allocations[i],
+        )
+        allocations[index] -= 1
+    remaining = units - sum(allocations)
+    for _, index in sorted(fractions, reverse=True)[:remaining]:
+        allocations[index] += 1
+    for (parameters, _), allocation in zip(weighted, allocations):
+        parameters["max_tokens"] = allocation * 100
+    return raw
+
+
+async def planning_context(
+    db: AsyncSession, workflow: WorkflowDefinition
+) -> tuple[list[str], list[str], str]:
+    """Resolve the exact tenant-scoped inputs submitted to the planning bridge."""
+    analysis_agent = await _select_tenant_agent(
+        db, workflow.tenant_key, workflow.description, workflow.created_by
+    )
+    scopes = await _effective_knowledge_scopes(db, workflow.tenant_key)
+    allowed_agents = await _allowed_agent_ids(
+        db, workflow.tenant_key, workflow.created_by
+    )
+    return scopes, allowed_agents, analysis_agent
+
+
+async def persist_raw_plan(
     db: AsyncSession,
     workflow: WorkflowDefinition,
+    raw: dict[str, Any],
     *,
+    scopes: list[str],
+    analysis_agent: str,
     revision_note: str = "",
+    bridge_error: str = "",
 ) -> WorkflowPlanVersion:
-    """Create an immediately reviewable plan; execution never starts here."""
-    analysis_agent = await _select_tenant_agent(
-        db, workflow.tenant_key, workflow.description
-    )
-    scopes = list(
-        (
-            await db.execute(
-                select(KnowledgeSubscription.category).where(
-                    KnowledgeSubscription.tenant_key == workflow.tenant_key
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
+    """Safety-compile a bridge DAG and persist one reviewable plan version."""
     version = (
         int(
             (
@@ -319,28 +408,18 @@ async def build_plan(
         + 1
     )
     plan_id = f"wfp_{uuid.uuid4().hex}"
-    allowed_agents = await _allowed_agent_ids(db, workflow.tenant_key)
     validation_errors: list[str] = []
-    raw: dict[str, Any]
-    if HERMES_PLANNING_ENABLED:
-        try:
-            raw = await _plan_with_hermes(
-                workflow, scopes, allowed_agents, revision_note
-            )
-            raw["plan_id"] = plan_id
-            raw.setdefault("name", workflow.title)
-            raw.setdefault("version", "1.0.0")
-        except Exception as exc:
-            raw = _safe_template(
-                workflow, plan_id, scopes, analysis_agent, revision_note
-            )
-            validation_errors = [
-                f"Hermes 规划暂不可用，当前仅为安全模板，请重新生成后确认：{str(exc)[:240]}"
-            ]
+    if bridge_error:
+        raw = _safe_template(workflow, plan_id, scopes, analysis_agent, revision_note)
+        validation_errors = [
+            f"Hermes 规划暂不可用，当前仅为安全模板，请重新生成后确认：{bridge_error[:240]}"
+        ]
     else:
-        raw = _safe_template(
-            workflow, plan_id, scopes, analysis_agent, revision_note
-        )
+        raw = normalize_hermes_plan(raw, scopes)
+        raw = fit_node_budgets(raw, WORKFLOW_TOKEN_BUDGET)
+        raw["plan_id"] = plan_id
+        raw.setdefault("name", workflow.title)
+        raw.setdefault("version", "1.0.0")
     try:
         compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(raw)
         await validate_plan_policy(
@@ -348,12 +427,11 @@ async def build_plan(
             workflow.tenant_key,
             compiled,
             allow_network=True,
-            max_tokens=24000,
+            max_tokens=WORKFLOW_TOKEN_BUDGET,
             knowledge_scope=scopes,
+            owner_user_id=workflow.created_by,
         )
     except Exception as exc:
-        # 无论 Bridge 还是模型输出不兼容，都返回一份可见但不可批准的安全模板。
-        # 用户可以看到原因并点击重新规划，审批接口仍会阻止实际执行。
         raw = _safe_template(workflow, plan_id, scopes, analysis_agent, revision_note)
         compiled = DSLSafetyCompiler.compile_and_validate(raw)
         await validate_plan_policy(
@@ -361,8 +439,9 @@ async def build_plan(
             workflow.tenant_key,
             compiled,
             allow_network=True,
-            max_tokens=24000,
+            max_tokens=WORKFLOW_TOKEN_BUDGET,
             knowledge_scope=scopes,
+            owner_user_id=workflow.created_by,
         )
         validation_errors = [
             f"Hermes 计划未通过安全编译，当前仅为安全模板，请重新生成：{str(exc)[:240]}"
@@ -375,7 +454,7 @@ async def build_plan(
         goal=workflow.description,
         deliverable=workflow.desired_output,
         allow_network=True,
-        max_tokens=24000,
+        max_tokens=WORKFLOW_TOKEN_BUDGET,
         estimated_tokens=22000,
         knowledge_scope=scopes,
         validation_errors=validation_errors,
@@ -385,3 +464,34 @@ async def build_plan(
     workflow.status = "planning" if validation_errors else "awaiting_approval"
     await db.flush()
     return plan
+
+
+async def build_plan(
+    db: AsyncSession,
+    workflow: WorkflowDefinition,
+    *,
+    revision_note: str = "",
+) -> WorkflowPlanVersion:
+    """Create an immediately reviewable plan; execution never starts here."""
+    scopes, allowed_agents, analysis_agent = await planning_context(db, workflow)
+    raw: dict[str, Any]
+    bridge_error = ""
+    if HERMES_PLANNING_ENABLED:
+        try:
+            raw = await _plan_with_hermes(
+                workflow, scopes, allowed_agents, revision_note
+            )
+        except Exception as exc:
+            raw = {}
+            bridge_error = str(exc)
+    else:
+        raw = _safe_template(workflow, "pending", scopes, analysis_agent, revision_note)
+    return await persist_raw_plan(
+        db,
+        workflow,
+        raw,
+        scopes=scopes,
+        analysis_agent=analysis_agent,
+        revision_note=revision_note,
+        bridge_error=bridge_error,
+    )

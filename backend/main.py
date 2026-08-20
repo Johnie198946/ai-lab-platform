@@ -2,6 +2,8 @@
 FastAPI 主入口 — OpenAPI 文档配置
 """
 
+import logging
+
 from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,7 +28,11 @@ from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router
 from backend.api.workflows import router as workflows_router
+from backend.api.knowledge_policy import router as knowledge_policy_router
+from backend.api.subscriptions import router as subscriptions_router
 from backend.db import init_db
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -34,22 +40,39 @@ async def lifespan(app: FastAPI):
     """启动: 启动守卫 + 初始化数据库表(幂等) + 启动 Agent 调度器。"""
     # 启动守卫：JWT secret 为空 → 开发态全可见，隔离承诺不生效
     check_dev_visibility_guard()
+    db_ready = True
     try:
         await init_db()
-        from backend.services.workflow_migration import migrate_legacy_workflows
-
-        await migrate_legacy_workflows()
     except Exception:
-        # DB 不可用时不阻塞启动(知识库文件驱动功能仍可用)
-        pass
+        db_ready = False
+        logger.exception("Database initialization failed; file-backed features remain available")
+    if db_ready:
+        try:
+            from backend.services.workflow_migration import migrate_legacy_workflows
+
+            await migrate_legacy_workflows()
+        except Exception:
+            logger.exception("Legacy workflow migration failed; continuing startup")
+        try:
+            from backend.api.workflows import resume_pending_planning
+
+            await resume_pending_planning()
+        except Exception:
+            logger.exception("Durable planning-job recovery failed; worker will retry")
     # 启动平台 Agent 调度器(容器重启自动恢复)
     from backend.services.agent_scheduler import start_scheduler
 
     start_scheduler()
+    from backend.services.entitlement_sync import start_entitlement_sync
+
+    start_entitlement_sync()
     yield
     from backend.services.agent_scheduler import stop_scheduler
 
     stop_scheduler()
+    from backend.services.entitlement_sync import stop_entitlement_sync
+
+    await stop_entitlement_sync()
 
 
 app = FastAPI(
@@ -61,7 +84,7 @@ app = FastAPI(
 - **知识库**: 原始材料 + 编译知识层 + knowledge_matrix 机读接口
 - **编译链**: Ingest → Diff → Synth → Distill
 - **Agent / Harness**: 调度 + 状态 + 日志 + policy + ledger
-- **多租户（订阅制）**: 每个用户默认空知识库，订阅知识分类后可见；超管可见全部
+- **多租户知识策略**: 绿色公共知识默认可见；黄色知识由 Authen 组织套餐授权；红色知识仅所属租户可见
   （租户由 Bearer JWT 派生，不信任客户端 X-Tenant-ID 头）
 
 ### 认证
@@ -99,6 +122,7 @@ app.include_router(orchestration_router, dependencies=[Depends(require_auth)])
 app.include_router(register_router)
 # 目录 / 订阅管理 / 当前用户
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
+app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
 app.include_router(me_router, dependencies=[Depends(require_auth)])
 # Agent 协议签署
 app.include_router(protocols_router, dependencies=[Depends(require_auth)])
@@ -119,6 +143,8 @@ app.include_router(hermes_router, dependencies=[Depends(require_auth)])
 app.include_router(showroom_router)
 # 可执行工作流：计划审批、持久执行、素材复核
 app.include_router(workflows_router, dependencies=[Depends(require_auth)])
+# Authen HMAC webhook + signed-capability Knowledge Gateway use their own auth.
+app.include_router(knowledge_policy_router)
 
 # ---------- 健康检查 ----------
 @app.get("/health")

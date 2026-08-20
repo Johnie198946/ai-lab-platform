@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		A10000000000000000000005 /* WorkflowLifecycleDTOTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000004 /* WorkflowLifecycleDTOTests.swift */; };
 		07939825DDB42FFA9B2649ED /* ChatInputBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB63B402208C7E69F946E7BD /* ChatInputBar.swift */; };
 		0D6B168E6164B25411D9D874 /* BlockCardDispatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2358634EFA73CA1C68794682 /* BlockCardDispatcher.swift */; };
 		1995D55E8A97BAB4170D7656 /* SpeechRecognizerService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC6CC416750077F6D7DF859B /* SpeechRecognizerService.swift */; };
@@ -54,6 +55,8 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		A10000000000000000000002 /* AIPlatformAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AIPlatformAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A10000000000000000000004 /* WorkflowLifecycleDTOTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowLifecycleDTOTests.swift; sourceTree = "<group>"; };
 		064407015708A682A63CF7D8 /* ChatTopBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTopBarView.swift; sourceTree = "<group>"; };
 		13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentCard.swift; sourceTree = "<group>"; };
 		1490C2A9375CE8604477437E /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -103,6 +106,14 @@
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
+		A10000000000000000000003 /* AIPlatformAppTests */ = {
+			isa = PBXGroup;
+			children = (
+				A10000000000000000000004 /* WorkflowLifecycleDTOTests.swift */,
+			);
+			path = AIPlatformAppTests;
+			sourceTree = "<group>";
+		};
 		1E494BE1071AB4A216C8927B /* Voice */ = {
 			isa = PBXGroup;
 			children = (
@@ -173,6 +184,7 @@
 			isa = PBXGroup;
 			children = (
 				B8DAEDBECC4DC10057CD9C1C /* AIPlatformApp */,
+				A10000000000000000000003 /* AIPlatformAppTests */,
 				66CC9398B1530934BB9FDDF8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -189,6 +201,7 @@
 			isa = PBXGroup;
 			children = (
 				7CE0824746D5B06C3C2B035E /* AIPlatformApp.app */,
+				A10000000000000000000002 /* AIPlatformAppTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -309,7 +322,34 @@
 		};
 /* End PBXGroup section */
 
+/* Begin PBXContainerItemProxy section */
+		A10000000000000000000009 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 4E99030589BC0737CB96B594 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E938C628C625CE7EB3E2B304;
+			remoteInfo = AIPlatformApp;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXNativeTarget section */
+		A10000000000000000000001 /* AIPlatformAppTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000000000000000000000C /* Build configuration list for PBXNativeTarget "AIPlatformAppTests" */;
+			buildPhases = (
+				A10000000000000000000006 /* Sources */,
+				A10000000000000000000007 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A10000000000000000000008 /* PBXTargetDependency */,
+			);
+			name = AIPlatformAppTests;
+			productName = AIPlatformAppTests;
+			productReference = A10000000000000000000002 /* AIPlatformAppTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		E938C628C625CE7EB3E2B304 /* AIPlatformApp */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 63723AC0F4A39D1DC0AF8F57 /* Build configuration list for PBXNativeTarget "AIPlatformApp" */;
@@ -337,6 +377,10 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
+					A10000000000000000000001 = {
+						CreatedOnToolsVersion = 26.1;
+						TestTargetID = E938C628C625CE7EB3E2B304;
+					};
 				};
 			};
 			buildConfigurationList = CE9BE94AECA5AC64671543B4 /* Build configuration list for PBXProject "AIPlatformApp" */;
@@ -355,9 +399,20 @@
 			projectRoot = "";
 			targets = (
 				E938C628C625CE7EB3E2B304 /* AIPlatformApp */,
+				A10000000000000000000001 /* AIPlatformAppTests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000000000000000000007 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXResourcesBuildPhase section */
 		00987747F71BE5DF9E6BA0B2 /* Resources */ = {
@@ -372,6 +427,14 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		A10000000000000000000006 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A10000000000000000000005 /* WorkflowLifecycleDTOTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		48AAA9836727B98528F3962F /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -423,7 +486,47 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		A10000000000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E938C628C625CE7EB3E2B304 /* AIPlatformApp */;
+			targetProxy = A10000000000000000000009 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
+		A1000000000000000000000A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ailab.AIPlatformAppTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AIPlatformApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/AIPlatformApp";
+			};
+			name = Debug;
+		};
+		A1000000000000000000000B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.ailab.AIPlatformAppTests;
+				SDKROOT = iphoneos;
+				SWIFT_VERSION = 5.9;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/AIPlatformApp.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/AIPlatformApp";
+			};
+			name = Release;
+		};
 		6B4BFC9A0160AB801E89BC3C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -588,6 +691,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		A1000000000000000000000C /* Build configuration list for PBXNativeTarget "AIPlatformAppTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000000000000000000000A /* Debug */,
+				A1000000000000000000000B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
 		63723AC0F4A39D1DC0AF8F57 /* Build configuration list for PBXNativeTarget "AIPlatformApp" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

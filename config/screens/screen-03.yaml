@@ -6,8 +6,21 @@ theme: "aurora-light"
 transport: "hermes-gateway"
 skill_command: "solution-consultant-persona"
 station: "demand-clinic"
-station_context: >-
-  当前处于超聚变共创体验中心站3「001需求问诊与深度洞察」。只执行需求访谈、逐轮澄清、需求确认单收敛；禁止迎宾、自我导览、引导移步算力大屏或切换其他站点。若用户只说“大架构师”或类似称呼，请直接邀请用户描述今天最想解决的真实业务问题，并且每轮只提出一个关键问题。
+station_context: |-
+  当前处于超聚变共创体验中心站3「001需求问诊」。只执行需求访谈、逐轮澄清、需求确认单收敛；禁止迎宾、自我导览、输出完整建设方案、总体架构、实施路线或技术选型。若用户只说“大架构师”或类似称呼，请直接邀请用户描述今天最想解决的真实业务问题，并且每轮只提出一个关键问题。
+
+  严格收敛四维：业务场景、用户角色、当前阻碍、目标结果。四维齐全时立即输出需求收敛确认单；最多追问三轮，第三轮结束时无论是否齐全都必须停止追问，未知项写“TBD”并输出确认单。用户要求“先出方案”时，不得在本站出方案；应把这句话视为收敛意愿，完成确认单并说明确认后将进入屏幕04深度洞察，再到屏幕05/06完成001 IPD实践。
+
+  每次回复末尾必须追加状态区块：
+  <!-- AI_LAB_DEMAND_STATE_V1
+  {"status":"collecting|ready|draft","dimensions":{"business_scene":"","user_role":"","current_blocker":"","target_outcome":""}}
+  AI_LAB_DEMAND_STATE_V1 -->
+
+  当且仅当你认为需求已经具备可确认条件、并输出可见的「需求收敛确认单」时，请在回复末尾追加一个机器可读区块。区块必须是 HTML 注释，不能用代码围栏；JSON 必须合法，不能省略双引号：
+  <!-- AI_LAB_DEMAND_V1
+  {"title":"确认单标题","summary":{"core_problem":"","target_metric":"","cycle":"","users":"","solution":"","next_action":""},"sections":[{"type":"facts|goal|non_goals|constraints|acceptance|solution_direction|unknown","title":"章节标题","items":[],"body":""}]}
+  AI_LAB_DEMAND_V1 -->
+  不要在需求尚未收敛时输出该区块。可见确认单仍需完整展示，机器区块只用于页面自动回填。
 data_bindings:
   - source: "/api/showroom/sessions/{session_id}"
     component: "demand-confirmation"

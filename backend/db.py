@@ -48,6 +48,8 @@ async def init_db() -> None:
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_workflow_v2_columns)
+        await conn.run_sync(_migrate_workflow_lifecycle_columns)
+        await conn.run_sync(_migrate_knowledge_policy_v2_columns)
 
 
 def _migrate_workflow_v2_columns(connection) -> None:
@@ -111,6 +113,100 @@ def _migrate_workflow_v2_columns(connection) -> None:
         if name not in existing_nodes:
             connection.exec_driver_sql(
                 f'ALTER TABLE workflow_node_runs ADD COLUMN "{name}" {definition}'
+            )
+
+
+def _migrate_workflow_lifecycle_columns(connection) -> None:
+    """Additive columns for resumable clarification and private task agents."""
+    schema = inspect(connection)
+    tables = set(schema.get_table_names())
+    if "workflows" in tables:
+        existing = {item["name"] for item in schema.get_columns("workflows")}
+        columns = {
+            "clarification_session_id": "VARCHAR(48)",
+            "requirements_snapshot": "JSON NOT NULL DEFAULT '{}'",
+            "primary_agent_id": "VARCHAR(32)",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.exec_driver_sql(
+                    f'ALTER TABLE workflows ADD COLUMN "{name}" {definition}'
+                )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_workflows_clarification_session_id "
+            "ON workflows (clarification_session_id)"
+        )
+    if (
+        "workflow_clarification_sessions" in tables
+        and connection.dialect.name == "postgresql"
+    ):
+        phase_column = next(
+            (
+                item
+                for item in schema.get_columns("workflow_clarification_sessions")
+                if item["name"] == "phase"
+            ),
+            None,
+        )
+        if phase_column is not None and (phase_column["type"].length or 0) < 48:
+            connection.exec_driver_sql(
+                "ALTER TABLE workflow_clarification_sessions "
+                "ALTER COLUMN phase TYPE VARCHAR(48)"
+            )
+    if "tenant_agents" in tables:
+        existing = {item["name"] for item in schema.get_columns("tenant_agents")}
+        columns = {
+            "owner_user_id": "VARCHAR(64)",
+            "origin_workflow_id": "VARCHAR(48)",
+            "visibility": "VARCHAR(16) NOT NULL DEFAULT 'tenant'",
+            "composition_manifest": "JSON NOT NULL DEFAULT '{}'",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.exec_driver_sql(
+                    f'ALTER TABLE tenant_agents ADD COLUMN "{name}" {definition}'
+                )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_tenant_agents_origin_workflow_id "
+            "ON tenant_agents (origin_workflow_id)"
+        )
+
+
+def _migrate_knowledge_policy_v2_columns(connection) -> None:
+    """Additive migration for the catalog-to-policy V2 transition."""
+    schema = inspect(connection)
+    if "knowledge_catalog" not in set(schema.get_table_names()):
+        return
+    existing = {item["name"] for item in schema.get_columns("knowledge_catalog")}
+    columns = {
+        "security_level": "VARCHAR(16) NOT NULL DEFAULT 'pending'",
+        "owner_tenant": "VARCHAR(64) NOT NULL DEFAULT 'public'",
+        "entitlement_key": "VARCHAR(128) NOT NULL DEFAULT ''",
+        "is_active": "BOOLEAN NOT NULL DEFAULT TRUE",
+    }
+    for name, definition in columns.items():
+        if name not in existing:
+            connection.exec_driver_sql(
+                f'ALTER TABLE knowledge_catalog ADD COLUMN "{name}" {definition}'
+            )
+    if "tenant_entitlement_snapshots" in set(schema.get_table_names()):
+        snapshot_columns = {
+            item["name"] for item in schema.get_columns("tenant_entitlement_snapshots")
+        }
+        if "last_event_id" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tenant_entitlement_snapshots "
+                "ADD COLUMN last_event_id VARCHAR(255) NOT NULL DEFAULT ''"
+            )
+        if "active_pack_grants" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tenant_entitlement_snapshots "
+                "ADD COLUMN active_pack_grants JSON NOT NULL DEFAULT '[]'"
+            )
+        if "pack_allowance" not in snapshot_columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tenant_entitlement_snapshots "
+                "ADD COLUMN pack_allowance INTEGER NOT NULL DEFAULT 0"
             )
 
 

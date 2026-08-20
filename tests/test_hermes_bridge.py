@@ -9,6 +9,7 @@ Tests cover:
 from __future__ import annotations
 
 import json
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -81,8 +82,19 @@ class TestBridgeCLIParms(unittest.TestCase):
             },
         )
         self.assertNotIn("prompt_cache_retention", cleaned)
-        self.assertNotIn("prompt_cache_options", cleaned["extra_body"])
+        self.assertNotIn("prompt_cache_options", cleaned)
+        self.assertNotIn("extra_body", cleaned)
         self.assertEqual(cleaned["temperature"], 0.2)
+
+    def test_deepseek_empty_cache_extra_body_is_removed(self):
+        from scripts.hermes_bridge import _cache_request_overrides
+
+        cleaned = _cache_request_overrides(
+            "deepseek-v4-flash",
+            "deepseek",
+            {"extra_body": {"prompt_cache_retention": None}},
+        )
+        self.assertNotIn("extra_body", cleaned)
 
     def test_other_provider_cache_parameters_are_preserved(self):
         from scripts.hermes_bridge import _cache_request_overrides
@@ -148,7 +160,9 @@ class TestSessionExistsAssertion(unittest.TestCase):
             result = asyncio.run(chat(body))
 
             # 验证：_run_hermes 被调用时 session_id=None（新建）
-            mock_hermes.assert_called_once_with("你好", None)
+            called_goal, called_session = mock_hermes.call_args.args
+            self.assertTrue(called_goal.endswith("【用户问题】你好"))
+            self.assertIsNone(called_session)
             # 验证：映射已更新为新 session
             self.assertEqual(bridge._user_session_map["user_1001"], "new_session_id")
             # 验证：返回新 session_id
@@ -331,7 +345,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
                     "parameters": {"allow_network": False},
                 }
             ),
-            ["file"],
+            ["skills"],
         )
         self.assertEqual(
             _workflow_toolsets(
@@ -410,6 +424,33 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         self.assertIn("直接证据摘要", prompt)
         self.assertNotIn("不应注入的内容", prompt)
 
+    def test_task_agent_rejects_unapproved_baseline_agent(self):
+        from scripts.hermes_bridge import _workflow_node_prompt
+
+        run = {
+            "goal": "生成报告",
+            "deliverable": "Markdown",
+            "plan": {"nodes": [], "edges": []},
+            "nodes": {},
+            "agent_config": {
+                "prompt": "按批准方案执行",
+                "composition": {
+                    "capability_agent_ids": ["main_agent", "knowledge"],
+                    "invoked_agent_ids": [],
+                    "delegation": {"max_concurrent_children": 3, "max_spawn_depth": 1},
+                },
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "不在已批准"):
+            _workflow_node_prompt(
+                run,
+                {
+                    "id": "code",
+                    "node_type": "PROMPT_TRANSFORM",
+                    "parameters": {"agent_id": "coder"},
+                },
+            )
+
     def test_retrieval_rejects_unfinished_tool_control_text(self):
         from scripts.hermes_bridge import _workflow_output_incomplete
 
@@ -449,6 +490,61 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         self.assertEqual(merged["api_calls"], 2)
         self.assertEqual(merged["estimated_cost_usd"], 0.002)
         self.assertEqual(merged["model"], "deepseek-v4-flash")
+
+
+class TestDurableWorkflowPlanningBridge(unittest.TestCase):
+    def setUp(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._planning_runs = {}
+        bridge._planning_threads = {}
+
+    def request(self, key: str = "workflow-plan:wf_1:v1"):
+        from scripts.hermes_bridge import WorkflowPlanningStartRequest
+
+        return WorkflowPlanningStartRequest(
+            planning_job_id="wfpj_12345678",
+            idempotency_key=key,
+            tenant_id="tenant-a",
+            workflow_id="wf_1",
+            title="任务",
+            description="生成可审阅方案",
+            deliverable="Markdown",
+        )
+
+    def test_start_is_idempotent_and_status_resumes_after_cursor(self):
+        import scripts.hermes_bridge as bridge
+
+        async def run():
+            with patch.object(bridge, "_start_planning_thread"), patch.object(
+                bridge, "_save_planning_runs"
+            ):
+                first = await bridge.start_workflow_plan(self.request(), None)
+                second = await bridge.start_workflow_plan(self.request(), None)
+                run = bridge._planning_runs[first["run_id"]]
+                bridge._planning_event(run, "skill_load", "加载技能: research")
+                bridge._planning_event(run, "tool_call", "调用工具: search_files")
+                status = await bridge.workflow_plan_status(first["run_id"], 1, None)
+                return first, second, status
+
+        first, second, status = asyncio.run(run())
+        self.assertEqual(first["run_id"], second["run_id"])
+        self.assertEqual([event["id"] for event in status["events"]], [2])
+
+    def test_idempotency_conflict_is_rejected(self):
+        import scripts.hermes_bridge as bridge
+        from fastapi import HTTPException
+
+        async def run():
+            with patch.object(bridge, "_start_planning_thread"), patch.object(
+                bridge, "_save_planning_runs"
+            ):
+                await bridge.start_workflow_plan(self.request(), None)
+                await bridge.start_workflow_plan(self.request("different-key"), None)
+
+        with self.assertRaises(HTTPException) as raised:
+            asyncio.run(run())
+        self.assertEqual(raised.exception.status_code, 409)
 
 
 if __name__ == "__main__":

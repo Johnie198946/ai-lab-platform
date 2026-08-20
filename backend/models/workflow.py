@@ -33,6 +33,11 @@ class WorkflowDefinition(Base):
     )
     status: Mapped[str] = mapped_column(String(32), default="planning", index=True)
     active_plan_id: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    clarification_session_id: Mapped[str | None] = mapped_column(
+        String(48), nullable=True, unique=True
+    )
+    requirements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    primary_agent_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -51,6 +56,112 @@ class WorkflowDefinition(Base):
     )
 
 
+class WorkflowClarificationSession(Base):
+    """Server-owned, resumable requirement clarification conversation."""
+
+    __tablename__ = "workflow_clarification_sessions"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    phase: Mapped[str] = mapped_column(String(48), default="clarifying", index=True)
+    round_number: Mapped[int] = mapped_column(Integer, default=0)
+    confirmed_spec: Mapped[dict] = mapped_column(JSON, default=dict)
+    last_event_seq: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WorkflowSessionMessage(Base):
+    __tablename__ = "workflow_session_messages"
+    __table_args__ = (
+        UniqueConstraint("session_id", "seq", name="uq_workflow_session_message_seq"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        ForeignKey("workflow_clarification_sessions.id", ondelete="CASCADE"), index=True
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    message_type: Mapped[str] = mapped_column(String(32), default="text")
+    content: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WorkflowLifecycleEvent(Base):
+    """Pre-execution lifecycle events; deliberately separate from WorkflowEvent."""
+
+    __tablename__ = "workflow_lifecycle_events"
+    __table_args__ = (
+        UniqueConstraint("workflow_id", "seq", name="uq_workflow_lifecycle_event_seq"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    session_id: Mapped[str] = mapped_column(String(48), nullable=False, index=True)
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String(48), nullable=False)
+    message: Mapped[str] = mapped_column(String(500), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class WorkflowPlanningJob(Base):
+    """Durable, lease-based plan generation job.
+
+    Planning deliberately has its own queue instead of borrowing execution rows: a
+    plan may be generated before an execution exists, and losing an API process must
+    never lose the confirmed requirement snapshot.
+    """
+
+    __tablename__ = "workflow_planning_jobs"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_workflow_planning_job_idempotency"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="CASCADE"), index=True
+    )
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    requirement_version: Mapped[int] = mapped_column(Integer, default=1)
+    requirements_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    revision_note: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    attempt: Mapped[int] = mapped_column(Integer, default=0)
+    bridge_run_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    bridge_event_cursor: Mapped[int] = mapped_column(Integer, default=0)
+    plan_id: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    lease_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class WorkflowPlanVersion(Base):
     __tablename__ = "workflow_plan_versions"
     __table_args__ = (
@@ -66,7 +177,7 @@ class WorkflowPlanVersion(Base):
     goal: Mapped[str] = mapped_column(Text, nullable=False)
     deliverable: Mapped[str] = mapped_column(String(300), nullable=False)
     allow_network: Mapped[bool] = mapped_column(Boolean, default=True)
-    max_tokens: Mapped[int] = mapped_column(Integer, default=24000)
+    max_tokens: Mapped[int] = mapped_column(Integer, default=999999)
     estimated_tokens: Mapped[int] = mapped_column(Integer, default=12000)
     knowledge_scope: Mapped[list] = mapped_column(JSON, default=list)
     validation_errors: Mapped[list] = mapped_column(JSON, default=list)
@@ -93,7 +204,7 @@ class WorkflowExecution(Base):
     tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued", index=True)
     progress: Mapped[int] = mapped_column(Integer, default=0)
-    token_budget: Mapped[int] = mapped_column(Integer, default=24000)
+    token_budget: Mapped[int] = mapped_column(Integer, default=999999)
     token_used: Mapped[int] = mapped_column(Integer, default=0)
     input_tokens: Mapped[int] = mapped_column(Integer, default=0)
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)

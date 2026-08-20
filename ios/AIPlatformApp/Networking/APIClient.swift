@@ -18,6 +18,16 @@ public struct CatalogCategory: Codable, Identifiable, Hashable {
     public let title: String
     public let docCount: Int
     public let open: Bool
+    public var securityLevel: String? = nil
+    public var ownerTenant: String? = nil
+    public var entitlementKey: String? = nil
+    public var accessState: String? = nil
+    public var subscriptionState: String? = nil
+    public var inWallet: Bool? = nil
+    public var knowledgeLevel: String? = nil
+    public var classificationStatus: String? = nil
+    public var freshness: String? = nil
+    public var sourceCount: Int? = nil
 
     public var id: String { category }
 }
@@ -25,6 +35,8 @@ public struct CatalogCategory: Codable, Identifiable, Hashable {
 /// GET /api/v1/catalog 响应
 public struct CatalogResponse: Codable {
     public let catalog: [CatalogCategory]
+    public var policyVersion: String? = nil
+    public var pendingReviewCount: Int? = nil
 }
 
 /// GET/PATCH /api/v1/me 返回的用户 Profile
@@ -47,22 +59,204 @@ public struct SubscriptionsResponse: Codable {
     public let categories: [String]
 }
 
+public struct KnowledgeAccessResponse: Codable {
+    public let tenantKey: String
+    public let organizationId: String
+    public let planId: String
+    public let planStatus: String
+    public let policyVersion: String
+    public let wallet: [String]
+    public let yellowEntitlements: [String]
+    public var activePackGrants: [KnowledgePackGrantDTO]? = nil
+    public var packAllowance: Int? = nil
+    public let effectiveCategories: [String]
+    public let entitlementStale: Bool
+}
+
+public struct SubscriptionPlanFeaturesDTO: Codable, Hashable {
+    public var knowledgeEntitlements: [String] = []
+    public var applicationIds: [String] = []
+    public var highlights: [String] = []
+
+    private enum CodingKeys: String, CodingKey {
+        case knowledgeEntitlements
+        case applicationIds
+        case highlights
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        knowledgeEntitlements = try container.decodeIfPresent([String].self, forKey: .knowledgeEntitlements) ?? []
+        applicationIds = try container.decodeIfPresent([String].self, forKey: .applicationIds) ?? []
+        highlights = try container.decodeIfPresent([String].self, forKey: .highlights) ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(knowledgeEntitlements, forKey: .knowledgeEntitlements)
+        try container.encode(applicationIds, forKey: .applicationIds)
+        try container.encode(highlights, forKey: .highlights)
+    }
+}
+
+public struct SubscriptionPlanDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let name: String
+    public let description: String?
+    public let durationDays: Int
+    public let price: Double
+    public let isActive: Bool
+    public let requestQuota: Int
+    public let tokenQuota: Int64
+    public let quotaPeriodDays: Int
+    public var features: SubscriptionPlanFeaturesDTO? = nil
+    public var packAllowance: Int? = nil
+    public var customOnly: Bool? = nil
+    public var selectablePackIds: [String]? = nil
+}
+
+public struct KnowledgePackDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let entitlementKey: String
+    public let name: String
+    public let description: String
+    public let status: String
+    public let isSelectable: Bool
+    public let sortOrder: Int
+    public let minimumDocumentCount: Int
+    public let approvedDocumentCount: Int
+    public let freshnessPercent: Int
+    public let riskLabel: String
+}
+
+public struct KnowledgePackGrantDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let knowledgePackId: String
+    public let entitlementKey: String
+    public let name: String
+    public let status: String
+    public let effectiveFrom: String
+    public let effectiveUntil: String
+}
+
+public struct OrganizationSubscriptionDTO: Codable, Hashable {
+    public let id: String
+    public let planId: String
+    public let planName: String
+    public let status: String
+    public let startDate: String
+    public let effectiveUntil: String?
+    public let entitlementVersion: Int
+    public let knowledgeEntitlements: [String]
+    public var packAllowance: Int? = nil
+    public var activePackGrants: [KnowledgePackGrantDTO]? = nil
+}
+
+public struct SubscriptionRequestDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let requestId: String
+    public let organizationId: String
+    public let applicationId: String
+    public let targetPlanId: String
+    public let targetPlanName: String
+    public let requestedBy: String
+    public let requestedEntitlements: [String]
+    public var requestedPackIds: [String]? = nil
+    public var approvedPackIds: [String]? = nil
+    public let reason: String
+    public let status: String
+    public let reviewedBy: String
+    public let reviewNote: String
+    public let reviewedAt: String?
+    public let createdAt: String?
+    public let updatedAt: String?
+    public var webhookDelivered: Bool? = nil
+}
+
+public struct SubscriptionCenterResponse: Codable {
+    public let organizationId: String
+    public let applicationId: String
+    public let subscription: OrganizationSubscriptionDTO?
+    public let requests: [SubscriptionRequestDTO]
+    public let plans: [SubscriptionPlanDTO]
+    public let isSuperAdmin: Bool
+    public let pendingCount: Int
+    public var knowledgePacks: [KnowledgePackDTO]? = nil
+    public var activePackGrants: [KnowledgePackGrantDTO]? = nil
+    public var packAllowance: Int? = nil
+    public var knowledgePackSubscriptionEnabled: Bool? = nil
+}
+
+public struct SubscriptionRequestsResponse: Codable {
+    public let applicationId: String
+    public let requests: [SubscriptionRequestDTO]
+}
+
+private struct SubscribeCategoryRequest: Encodable {
+    let category: String
+}
+
+private struct SubscriptionRequestCreateDTO: Encodable {
+    let requestId: String
+    let planId: String
+    let requestedEntitlements: [String]
+    let requestedPackIds: [String]
+    let reason: String
+
+    enum CodingKeys: String, CodingKey {
+        case reason
+        case requestId = "request_id"
+        case planId = "plan_id"
+        case requestedEntitlements = "requested_entitlements"
+        case requestedPackIds = "requested_pack_ids"
+    }
+}
+
+private struct SubscriptionReviewDTO: Encodable {
+    let reviewNote: String
+    let approvedPackIds: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case reviewNote = "review_note"
+        case approvedPackIds = "approved_pack_ids"
+    }
+}
+
 /// GET /api/knowledge/search 单条结果
 public struct SearchDoc: Codable, Identifiable, Hashable {
     public let path: String
     public let title: String
     public let score: Double
     public let snippet: String
+    public var knowledgePack: String? = nil
+    public var knowledgeLevel: String? = nil
+    public var classificationStatus: String? = nil
+    public var securityLevel: String? = nil
+    public var freshness: String? = nil
+    public var sourceCount: Int? = nil
 
     public var id: String { path }
 
     /// 该文档所属类目（首段路径前缀；行业知识取 knowledge/行业知识/<domain> 两段）
     public var category: String {
+        if let knowledgePack, !knowledgePack.isEmpty {
+            return knowledgePack
+        }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         if parts.count >= 3 && parts[0] == "knowledge" && parts[1] == "行业知识" {
             return "knowledge/行业知识/\(parts[2])"
         }
         return String(parts.first ?? "")
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case path, title, score, snippet
+        case knowledgePack = "category"
+        case knowledgeLevel
+        case classificationStatus
+        case securityLevel
+        case freshness
+        case sourceCount
     }
 }
 
@@ -220,6 +414,53 @@ public struct TenantAgentDTO: Codable, Identifiable, Hashable {
     public let customAvatar: String?
     public let isActive: Bool
     public let createdAt: String?
+    public let ownerUserId: String?
+    public let originWorkflowId: String?
+    public let visibility: String?
+    public let allowedTools: [String]?
+    public let capabilityAgentIds: [String]?
+    public let allowNetwork: Bool?
+}
+
+public struct AgentEvaluationRunDTO: Codable, Identifiable {
+    public let id: String
+    public let agentId: String
+    public let status: String
+    public let suite: [AgentEvaluationCaseDTO]
+    public let results: [AgentEvaluationResultDTO]
+    public let score: Double
+    public let usage: WorkflowUsageDTO?
+    public let errorMessage: String?
+    public let events: [AgentEvaluationEventDTO]
+}
+
+public struct AgentEvaluationCaseDTO: Codable, Identifiable {
+    public let id: String
+    public let name: String
+    public let prompt: String
+}
+
+public struct AgentEvaluationResultDTO: Codable, Identifiable {
+    public let id: String
+    public let name: String
+    public let status: String
+    public let score: Double
+    public let detail: String
+}
+
+public struct AgentEvaluationEventDTO: Codable, Identifiable {
+    public let id: Int
+    public let seq: Int
+    public let type: String
+    public let message: String
+    public let payload: AgentEvaluationEventPayloadDTO?
+}
+
+public struct AgentEvaluationEventPayloadDTO: Codable {
+    public let category: String?
+    public let status: String?
+    public let tool: String?
+    public let detail: String?
 }
 
 /// GET /api/v1/skills 响应（租户真实技能库）
@@ -281,30 +522,110 @@ public struct WorkflowDTO: Codable, Identifiable, Hashable {
     public let desiredOutput: String
     public let status: String
     public let activePlanId: String?
+    public let clarificationSessionId: String?
+    public let primaryAgentId: String?
     public let createdAt: String?
     public let updatedAt: String?
     public let latestExecution: WorkflowExecutionDTO?
+    public let agent: WorkflowTaskAgentDTO?
 }
 
 public struct WorkflowCreateResponseDTO: Codable {
-    public let id: String
-    public let title: String
-    public let description: String
-    public let desiredOutput: String
-    public let status: String
-    public let activePlanId: String?
-    public let createdAt: String?
-    public let updatedAt: String?
-    public let plan: WorkflowPlanDTO
+    public let workflow: WorkflowDTO
+    public let clarificationSession: WorkflowClarificationSessionDTO
+}
 
-    public var workflow: WorkflowDTO {
-        WorkflowDTO(
-            id: id, title: title, description: description,
-            desiredOutput: desiredOutput, status: status,
-            activePlanId: activePlanId, createdAt: createdAt,
-            updatedAt: updatedAt, latestExecution: nil
-        )
-    }
+public struct WorkflowClarificationSessionDTO: Codable, Hashable {
+    public let id: String
+    public let workflowId: String
+    public let phase: String
+    public let roundNumber: Int
+    public let lastEventSeq: Int
+}
+
+public struct WorkflowClarificationPayloadDTO: Codable, Hashable {
+    public let question: String?
+    public let choices: [String]?
+    public let multiSelect: Bool?
+    public let dimension: String?
+    public let submitLabel: String?
+    public let phase: String?
+    public let agentId: String?
+    public let planId: String?
+    public let tool: String?
+    public let detail: String?
+    public let stepId: String?
+    public let category: String?
+    public let status: String?
+    public let source: String?
+    public let planningJobId: String?
+}
+
+public struct WorkflowSessionMessageDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let seq: Int
+    public let role: String
+    public let messageType: String
+    public let content: String
+    public let payload: WorkflowClarificationPayloadDTO
+    public let createdAt: String?
+}
+
+public struct WorkflowLifecycleEventDTO: Codable, Identifiable, Hashable {
+    public let id: Int
+    public let workflowId: String
+    public let sessionId: String
+    public let type: String
+    public let message: String
+    public let payload: WorkflowClarificationPayloadDTO
+    public let createdAt: String?
+}
+
+public struct WorkflowClarificationSnapshotDTO: Codable {
+    public let workflow: WorkflowDTO
+    public let session: WorkflowClarificationSessionDTO
+    public let messages: [WorkflowSessionMessageDTO]
+    public let events: [WorkflowLifecycleEventDTO]
+}
+
+public struct WorkflowActiveActivityDTO: Codable {
+    public let workflow: WorkflowDTO
+    public let session: WorkflowClarificationSessionDTO
+    public let latestEvent: WorkflowLifecycleEventDTO?
+}
+
+public struct WorkflowActiveExecutionDTO: Codable {
+    public let workflow: WorkflowDTO
+    public let execution: WorkflowExecutionDTO
+}
+
+public struct WorkflowAgentDelegationDTO: Codable, Hashable {
+    public let maxConcurrentChildren: Int
+    public let maxSpawnDepth: Int
+}
+
+public struct WorkflowAgentCompositionDTO: Codable, Hashable {
+    public let capabilityAgentIds: [String]
+    public let invokedAgentIds: [String]?
+    public let delegation: WorkflowAgentDelegationDTO
+    public let knowledgeScope: [String]
+    public let planId: String
+}
+
+public struct WorkflowTaskAgentDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let ownerUserId: String?
+    public let originWorkflowId: String?
+    public let customName: String?
+    public let visibility: String
+    public let compositionManifest: WorkflowAgentCompositionDTO
+    public let subscribedKnowledgePacks: [String]
+    public let isActive: Bool
+}
+
+public struct WorkflowAgentBuildResponseDTO: Codable {
+    public let workflow: WorkflowDTO
+    public let agent: WorkflowTaskAgentDTO
 }
 
 public struct WorkflowPlanDTO: Codable, Identifiable, Hashable {
@@ -334,6 +655,21 @@ public struct WorkflowDSLDTO: Codable, Hashable {
         case planId = "plan_id"
         case name, nodes, edges, version
     }
+
+    private enum DecodingKeys: String, CodingKey {
+        case planId, name, nodes, edges, version
+    }
+
+    public init(from decoder: Decoder) throws {
+        // APIClient already applies convertFromSnakeCase, so decoding must use
+        // the transformed key. CodingKeys remains snake_case for PATCH encoding.
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
+        planId = try container.decodeIfPresent(String.self, forKey: .planId) ?? ""
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "执行计划"
+        nodes = try container.decodeIfPresent([WorkflowPlanNodeDTO].self, forKey: .nodes) ?? []
+        edges = try container.decodeIfPresent([WorkflowPlanEdgeDTO].self, forKey: .edges) ?? []
+        version = try container.decodeIfPresent(String.self, forKey: .version) ?? "1.0.0"
+    }
 }
 
 public struct WorkflowPlanNodeDTO: Codable, Identifiable, Hashable {
@@ -346,6 +682,30 @@ public struct WorkflowPlanNodeDTO: Codable, Identifiable, Hashable {
         case id
         case nodeType = "node_type"
         case name, parameters
+    }
+
+    private enum DecodingKeys: String, CodingKey {
+        case id, nodeType, name, parameters
+    }
+
+    public init(
+        id: String,
+        nodeType: String,
+        name: String?,
+        parameters: WorkflowNodeParametersDTO
+    ) {
+        self.id = id
+        self.nodeType = nodeType
+        self.name = name
+        self.parameters = parameters
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        nodeType = try container.decode(String.self, forKey: .nodeType)
+        name = try container.decodeIfPresent(String.self, forKey: .name)
+        parameters = try container.decode(WorkflowNodeParametersDTO.self, forKey: .parameters)
     }
 }
 
@@ -369,6 +729,46 @@ public struct WorkflowNodeParametersDTO: Codable, Hashable {
         case requiresReview = "requires_review"
         case maxTokens = "max_tokens"
         case revisionNote = "revision_note"
+    }
+
+    private enum DecodingKeys: String, CodingKey {
+        case agentId, query, instruction, outputFormat, knowledgeScope
+        case allowNetwork, requiresReview, maxTokens, revisionNote
+    }
+
+    public init(
+        agentId: String? = nil,
+        query: String? = nil,
+        instruction: String? = nil,
+        outputFormat: String? = nil,
+        knowledgeScope: [String]? = nil,
+        allowNetwork: Bool? = nil,
+        requiresReview: Bool? = nil,
+        maxTokens: Int? = nil,
+        revisionNote: String? = nil
+    ) {
+        self.agentId = agentId
+        self.query = query
+        self.instruction = instruction
+        self.outputFormat = outputFormat
+        self.knowledgeScope = knowledgeScope
+        self.allowNetwork = allowNetwork
+        self.requiresReview = requiresReview
+        self.maxTokens = maxTokens
+        self.revisionNote = revisionNote
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: DecodingKeys.self)
+        agentId = try container.decodeIfPresent(String.self, forKey: .agentId)
+        query = try container.decodeIfPresent(String.self, forKey: .query)
+        instruction = try container.decodeIfPresent(String.self, forKey: .instruction)
+        outputFormat = try container.decodeIfPresent(String.self, forKey: .outputFormat)
+        knowledgeScope = try container.decodeIfPresent([String].self, forKey: .knowledgeScope)
+        allowNetwork = try container.decodeIfPresent(Bool.self, forKey: .allowNetwork)
+        requiresReview = try container.decodeIfPresent(Bool.self, forKey: .requiresReview)
+        maxTokens = try container.decodeIfPresent(Int.self, forKey: .maxTokens)
+        revisionNote = try container.decodeIfPresent(String.self, forKey: .revisionNote)
     }
 }
 
@@ -453,12 +853,20 @@ public struct WorkflowEventDTO: Codable, Identifiable {
     public let type: String
     public let message: String
     public let payload: WorkflowEventPayloadDTO?
+    public let createdAt: String?
 }
 
 public struct WorkflowEventPayloadDTO: Codable {
     public let nodeId: String?
     public let usage: WorkflowUsageDTO?
     public let route: WorkflowRouteDTO?
+    public let category: String?
+    public let status: String?
+    public let tool: String?
+    public let detail: String?
+    public let source: String?
+    public let bridgeEventId: String?
+    public let bridgeSeq: Int?
 }
 
 public struct WorkflowUsageDTO: Codable {
@@ -528,6 +936,25 @@ public enum APIError: Error, LocalizedError {
         case .decoding(let msg): return "数据解析失败: \(msg)"
         case .timeout: return "响应超时，请重试"
         }
+    }
+}
+
+public struct ActionableAPIError: Decodable, Hashable {
+    public let code: String
+    public let message: String
+    public let action: String
+    public let retryable: Bool
+}
+
+private struct ActionableAPIErrorEnvelope: Decodable {
+    let detail: ActionableAPIError
+}
+
+public extension APIError {
+    var actionable: ActionableAPIError? {
+        guard case .server(_, let raw) = self,
+              let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONDecoder().decode(ActionableAPIErrorEnvelope.self, from: data).detail
     }
 }
 
@@ -668,7 +1095,6 @@ public final class APIClient: ObservableObject {
     }
 
     /// 底层请求执行：统一处理 401（不重试→needsReauth）、状态码、离线降级标注与 GET 幂等单次重试。
-    /// 底层请求执行：统一处理 401（不重试→needsReauth）、状态码、离线降级标注与 GET 幂等单次重试。
     /// - Parameter reauthOn401: 401 是否触发全局重登（清 token + needsReauth）。
     ///   主链路请求传 true；辅助/探测请求（如断点状态回读）传 false——失败静默降级，不误踢登录页。
     private func perform(
@@ -708,6 +1134,10 @@ public final class APIClient: ObservableObject {
                     attempt += 1
                     continue
                 }
+                if urlError.code == .timedOut {
+                    isOfflineMode = false
+                    throw APIError.timeout
+                }
                 isOfflineMode = true
                 throw APIError.network(urlError.localizedDescription)
             }
@@ -741,17 +1171,29 @@ public final class APIClient: ObservableObject {
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
-            throw APIError.decoding(error.localizedDescription)
+            throw APIError.decoding(Self.describeDecodingError(error))
         }
+    }
+
+    private static func describeDecodingError(_ error: Error) -> String {
+        guard let codingError = error as? DecodingError else { return error.localizedDescription }
+        let context: DecodingError.Context
+        switch codingError {
+        case let .keyNotFound(_, value): context = value
+        case let .typeMismatch(_, value): context = value
+        case let .valueNotFound(_, value): context = value
+        case let .dataCorrupted(value): context = value
+        @unknown default: return error.localizedDescription
+        }
+        let path = context.codingPath.map(\.stringValue).joined(separator: ".")
+        let location = path.isEmpty ? "根对象" : path
+        return "\(context.debugDescription)（字段路径：\(location)）"
     }
 
     // MARK: - 业务接口
 
-    public func fetchCatalog() async throws -> [CatalogCategory] {
-        let resp: CatalogResponse = try await request(
-            CatalogResponse.self, path: "catalog"
-        )
-        return resp.catalog
+    public func fetchCatalog() async throws -> CatalogResponse {
+        try await request(CatalogResponse.self, path: "catalog")
     }
 
     public func fetchSubscriptions() async throws -> [String] {
@@ -761,13 +1203,16 @@ public final class APIClient: ObservableObject {
         return resp.categories
     }
 
+    public func fetchKnowledgeAccess() async throws -> KnowledgeAccessResponse {
+        try await request(KnowledgeAccessResponse.self, path: "me/knowledge-access")
+    }
+
     public func subscribe(category: String) async throws -> [String] {
-        struct Body: Encodable { let category: String }
         let resp: SubscriptionsResponse = try await request(
             SubscriptionsResponse.self,
-            path: "me/subscriptions",
-            method: "POST",
-            body: Body(category: category)
+            path: "me/knowledge-wallet",
+            method: "PUT",
+            body: SubscribeCategoryRequest(category: category)
         )
         return resp.categories
     }
@@ -775,10 +1220,63 @@ public final class APIClient: ObservableObject {
     public func unsubscribe(category: String) async throws -> [String] {
         let resp: SubscriptionsResponse = try await request(
             SubscriptionsResponse.self,
-            path: "me/subscriptions/\(encodedPath(category))",
-            method: "DELETE"
+            path: "me/knowledge-wallet",
+            method: "DELETE",
+            body: SubscribeCategoryRequest(category: category)
         )
         return resp.categories
+    }
+
+    public func fetchSubscriptionCenter() async throws -> SubscriptionCenterResponse {
+        try await request(SubscriptionCenterResponse.self, path: "subscription-center")
+    }
+
+    public func createSubscriptionRequest(
+        planId: String,
+        entitlementKeys: [String],
+        packIds: [String] = [],
+        reason: String,
+        requestId: String = UUID().uuidString
+    ) async throws -> SubscriptionRequestDTO {
+        try await request(
+            SubscriptionRequestDTO.self,
+            path: "subscription-requests",
+            method: "POST",
+            body: SubscriptionRequestCreateDTO(
+                requestId: requestId,
+                planId: planId,
+                requestedEntitlements: entitlementKeys,
+                requestedPackIds: packIds,
+                reason: reason
+            )
+        )
+    }
+
+    public func cancelSubscriptionRequest(id: String) async throws -> SubscriptionRequestDTO {
+        try await request(
+            SubscriptionRequestDTO.self,
+            path: "subscription-requests/\(encodedPath(id))",
+            method: "DELETE"
+        )
+    }
+
+    public func fetchAdminSubscriptionRequests() async throws -> [SubscriptionRequestDTO] {
+        let response: SubscriptionRequestsResponse = try await request(
+            SubscriptionRequestsResponse.self,
+            path: "admin/subscription-requests"
+        )
+        return response.requests
+    }
+
+    public func reviewSubscriptionRequest(
+        id: String, approve: Bool, note: String = "", approvedPackIds: [String]? = nil
+    ) async throws -> SubscriptionRequestDTO {
+        try await request(
+            SubscriptionRequestDTO.self,
+            path: "admin/subscription-requests/\(encodedPath(id))/\(approve ? "approve" : "reject")",
+            method: "POST",
+            body: SubscriptionReviewDTO(reviewNote: note, approvedPackIds: approvedPackIds)
+        )
     }
 
     public func search(query: String, limit: Int = 20) async throws -> [SearchDoc] {
@@ -855,6 +1353,24 @@ public final class APIClient: ObservableObject {
         _ = try await perform(request, session: session, canRetry: false)
     }
 
+    public func startAgentEvaluation(agentId: String, requestId: String) async throws -> AgentEvaluationRunDTO {
+        struct Body: Encodable {
+            let requestId: String
+            enum CodingKeys: String, CodingKey { case requestId = "request_id" }
+        }
+        let resolvedId = agentId.hasPrefix("db_") ? String(agentId.dropFirst(3)) : agentId
+        return try await request(
+            AgentEvaluationRunDTO.self,
+            path: "tenant-agents/\(encodedPath(resolvedId))/evaluations",
+            method: "POST",
+            body: Body(requestId: requestId)
+        )
+    }
+
+    public func fetchAgentEvaluation(id: String) async throws -> AgentEvaluationRunDTO {
+        try await request(AgentEvaluationRunDTO.self, path: "agent-evaluations/\(encodedPath(id))")
+    }
+
     // MARK: - 可执行工作流 V1
 
     public func fetchWorkflows() async throws -> [WorkflowDTO] {
@@ -882,18 +1398,96 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    public func fetchWorkflowPlan(workflowId: String) async throws -> WorkflowPlanDTO {
+    public func fetchWorkflowClarification(
+        workflowId: String
+    ) async throws -> WorkflowClarificationSnapshotDTO {
         try await request(
+            WorkflowClarificationSnapshotDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/clarification"
+        )
+    }
+
+    public func fetchActiveWorkflowActivities() async throws -> [WorkflowActiveActivityDTO] {
+        try await request(
+            [WorkflowActiveActivityDTO].self,
+            path: "workflow-activities/active"
+        )
+    }
+
+    public func fetchActiveWorkflowExecutions() async throws -> [WorkflowActiveExecutionDTO] {
+        try await request(
+            [WorkflowActiveExecutionDTO].self,
+            path: "workflow-executions/active"
+        )
+    }
+
+    public func respondToWorkflowClarification(
+        workflowId: String,
+        response: String
+    ) async throws -> WorkflowClarificationSessionDTO {
+        struct Body: Encodable { let response: String }
+        return try await request(
+            WorkflowClarificationSessionDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/clarification/respond",
+            method: "POST",
+            body: Body(response: response)
+        )
+    }
+
+    public func workflowLifecycleEventStream(
+        workflowId: String,
+        after: Int = 0
+    ) -> AsyncThrowingStream<WorkflowLifecycleEventDTO, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let url = baseURL
+                        .appendingPathComponent("api/v1/workflows")
+                        .appendingPathComponent(workflowId)
+                        .appendingPathComponent("lifecycle-events")
+                    var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+                    components?.queryItems = [URLQueryItem(name: "after", value: String(after))]
+                    guard let finalURL = components?.url else { throw APIError.invalidURL }
+                    var request = URLRequest(url: finalURL)
+                    request.httpMethod = "GET"
+                    request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    if let token = currentToken(), !token.isEmpty {
+                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+                    }
+                    let (bytes, response) = try await streamSession.bytes(for: request)
+                    guard let http = response as? HTTPURLResponse,
+                          (200..<300).contains(http.statusCode) else {
+                        throw APIError.network("任务进度连接失败")
+                    }
+                    for try await line in bytes.lines where line.hasPrefix("data: ") {
+                        guard let data = String(line.dropFirst(6)).data(using: .utf8) else { continue }
+                        continuation.yield(try decoder.decode(WorkflowLifecycleEventDTO.self, from: data))
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
+
+    public func fetchWorkflowPlan(workflowId: String) async throws -> WorkflowPlanDTO {
+        var plan = try await request(
             WorkflowPlanDTO.self,
             path: "workflows/\(encodedPath(workflowId))/plan"
         )
+        if plan.dsl.planId.isEmpty { plan.dsl.planId = plan.id }
+        return plan
     }
 
     public func updateWorkflowPlan(
         workflowId: String,
         plan: WorkflowPlanDTO
     ) async throws -> WorkflowPlanDTO {
-        try await request(
+        var updated = try await request(
             WorkflowPlanDTO.self,
             path: "workflows/\(encodedPath(workflowId))/plan",
             method: "PATCH",
@@ -905,22 +1499,54 @@ public final class APIClient: ObservableObject {
                 knowledgeScope: plan.knowledgeScope
             )
         )
+        if updated.dsl.planId.isEmpty { updated.dsl.planId = updated.id }
+        return updated
     }
 
     public func replanWorkflow(
         workflowId: String,
         instruction: String
-    ) async throws -> WorkflowPlanDTO {
+    ) async throws -> WorkflowClarificationSessionDTO {
         struct Body: Encodable { let instruction: String }
         return try await request(
-            WorkflowPlanDTO.self,
+            WorkflowClarificationSessionDTO.self,
             path: "workflows/\(encodedPath(workflowId))/replan",
             method: "POST",
             body: Body(instruction: instruction)
         )
     }
 
-    public func approveWorkflowPlan(workflowId: String, requestId: String) async throws -> WorkflowExecutionDTO {
+    public func retryWorkflowPlanning(workflowId: String) async throws -> WorkflowClarificationSessionDTO {
+        try await request(
+            WorkflowClarificationSessionDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/planning/retry",
+            method: "POST"
+        )
+    }
+
+    public func reopenWorkflowClarification(workflowId: String) async throws -> WorkflowClarificationSessionDTO {
+        try await request(
+            WorkflowClarificationSessionDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/clarification/reopen",
+            method: "POST"
+        )
+    }
+
+    public func approveWorkflowPlan(workflowId: String, requestId: String) async throws -> WorkflowAgentBuildResponseDTO {
+        struct Body: Encodable {
+            let comment: String
+            let requestId: String
+            enum CodingKeys: String, CodingKey { case comment; case requestId = "request_id" }
+        }
+        return try await request(
+            WorkflowAgentBuildResponseDTO.self,
+            path: "workflows/\(encodedPath(workflowId))/approve-plan",
+            method: "POST",
+            body: Body(comment: "iOS 计划确认", requestId: requestId)
+        )
+    }
+
+    public func startWorkflow(workflowId: String, requestId: String) async throws -> WorkflowExecutionDTO {
         struct Body: Encodable {
             let comment: String
             let requestId: String
@@ -928,9 +1554,9 @@ public final class APIClient: ObservableObject {
         }
         return try await request(
             WorkflowExecutionDTO.self,
-            path: "workflows/\(encodedPath(workflowId))/approve-plan",
+            path: "workflows/\(encodedPath(workflowId))/start",
             method: "POST",
-            body: Body(comment: "iOS 计划确认", requestId: requestId)
+            body: Body(comment: "iOS 启动任务", requestId: requestId)
         )
     }
 
@@ -942,18 +1568,22 @@ public final class APIClient: ObservableObject {
     }
 
     public func workflowEventStream(
-        executionId: String
+        executionId: String,
+        after: Int = 0
     ) -> AsyncThrowingStream<WorkflowEventDTO, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    let url = baseURL
+                    var components = URLComponents(url: baseURL
                         .appendingPathComponent("api/v1/workflow-executions")
                         .appendingPathComponent(executionId)
-                        .appendingPathComponent("events")
+                        .appendingPathComponent("events"), resolvingAgainstBaseURL: false)
+                    components?.queryItems = [URLQueryItem(name: "after", value: String(after))]
+                    guard let url = components?.url else { throw APIError.invalidURL }
                     var request = URLRequest(url: url)
                     request.httpMethod = "GET"
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+                    if after > 0 { request.setValue(String(after), forHTTPHeaderField: "Last-Event-ID") }
                     if let token = currentToken(), !token.isEmpty {
                         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                     }
@@ -1322,13 +1952,20 @@ public final class APIClient: ObservableObject {
 
     /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。
     /// consume=true 时后端顺带将 completed 结果标记为已消费（断点续接后不会误命中旧答案）。
-    public func fetchChatStatus(sessionId: String, consume: Bool = false) async throws -> ChatStatusDTO {
+    public func fetchChatStatus(
+        sessionId: String,
+        consume: Bool = false,
+        agentId: String? = nil
+    ) async throws -> ChatStatusDTO {
         var url = baseURL
             .appendingPathComponent("api/chat/status")
             .appendingPathComponent(sessionId)
-        if consume {
+        if consume || agentId != nil {
             var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            comps?.queryItems = [URLQueryItem(name: "consume", value: "1")]
+            var items: [URLQueryItem] = []
+            if consume { items.append(URLQueryItem(name: "consume", value: "1")) }
+            if let agentId { items.append(URLQueryItem(name: "agent_id", value: agentId)) }
+            comps?.queryItems = items
             if let u = comps?.url { url = u }
         }
         var request = URLRequest(url: url)

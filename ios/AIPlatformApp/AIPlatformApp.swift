@@ -12,6 +12,7 @@ import SwiftUI
 public struct AIPlatformApp: App {
     @StateObject private var appState = AppState(isLoggedIn: ProcessInfo.processInfo.arguments.contains("-autoLogin"))
     @StateObject private var apiClient = APIClient.shared
+    @StateObject private var workflowActivities = WorkflowActivityCoordinator.shared
 
     public init() {}
 
@@ -20,6 +21,7 @@ public struct AIPlatformApp: App {
             AppRootCoordinatorView()
                 .environmentObject(appState)
                 .environmentObject(apiClient)
+                .environmentObject(workflowActivities)
                 .preferredColorScheme(.light)
         }
     }
@@ -29,6 +31,8 @@ public struct AIPlatformApp: App {
 public struct AppRootCoordinatorView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var apiClient: APIClient
+    @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
+    @Environment(\.scenePhase) private var scenePhase
 
     public var body: some View {
         Group {
@@ -50,6 +54,16 @@ public struct AppRootCoordinatorView: View {
                     apiClient.clearToken()
                     appState.logout()
                 }
+            }
+        }
+        .task(id: appState.isLoggedIn) {
+            if appState.isLoggedIn { await workflowActivities.bootstrap() }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                Task { await workflowActivities.resumeFromForeground() }
+            } else if phase == .background {
+                workflowActivities.pauseForBackground()
             }
         }
     }

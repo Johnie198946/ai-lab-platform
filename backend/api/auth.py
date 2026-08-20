@@ -21,7 +21,12 @@ from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
-from backend.api.tenant import current_tenant, current_visibility
+from backend.api.tenant import (
+    current_org,
+    current_policy_version,
+    current_tenant,
+    current_visibility,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +68,7 @@ async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
 
     fallback = {
         "tenant_key": _derived_tenant_key(user_id),
+        "org_id": "",
         "is_super_admin": False,
         "categories": set(),
     }
@@ -91,6 +97,7 @@ async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
             ).scalars().all()
             return {
                 "tenant_key": row.tenant_key,
+                "org_id": row.org_id or "",
                 "is_super_admin": bool(row.is_super_admin),
                 "categories": set(subs),
             }
@@ -137,12 +144,15 @@ async def require_auth(
     if not AUTHEN_JWT_SECRET:
         # 认证未配置 → 放行（本地开发模式，全部可见）
         current_tenant.set("demo")
+        current_org.set("demo")
         current_visibility.set(None)
+        current_policy_version.set("dev-admin")
         return {
             "sub": "",
             "user_id": "",
             "username": "dev",
             "tenant_key": "demo",
+            "org_id": "demo",
             "is_super_admin": True,
             "visible_categories": None,
         }
@@ -171,20 +181,58 @@ async def require_auth(
     except Exception:
         info = {
             "tenant_key": _derived_tenant_key(user_id),
+            "org_id": "",
             "is_super_admin": False,
             "categories": set(),
         }
     tenant_key = info["tenant_key"]
+    org_id = str(info.get("org_id") or "")
     is_super = bool(info["is_super_admin"]) or await _is_super_admin(user_id)
-    visible: Optional[FrozenSet[str]] = (
-        None if is_super else frozenset(info["categories"] or set())
-    )
+    # V2: old knowledge_subscriptions are wallet preferences, never grants.
+    # Resolve the server-side effective policy once per request and project it to
+    # the legacy visibility ContextVar consumed by the file-backed knowledge API.
+    visible: Optional[FrozenSet[str]]
+    policy_version = ""
+    try:
+        from backend.api.catalog import compute_catalog
+        from backend.db import SessionLocal
+        from backend.services.knowledge_policy import resolve_policy
+
+        async with SessionLocal() as db:
+            policy, _ = await resolve_policy(
+                db,
+                tenant_key=tenant_key,
+                org_id=org_id,
+                catalog=compute_catalog(),
+                is_super_admin=is_super,
+                is_guest=str(payload.get("role") or "") == "guest",
+                allow_admin_bypass=is_super,
+            )
+        visible = policy.effective_categories
+        policy_version = policy.policy_version
+    except Exception:
+        # Fail-safe: never fall back to all-visible in authenticated production.
+        # Only green public categories remain available when the DB/Authen
+        # projection cannot be read; configured yellow categories are excluded.
+        from backend.api.catalog import compute_catalog
+        visible = frozenset(
+            item["category"]
+            for item in compute_catalog()
+            if item.get("security_level") == "green"
+            and item.get("classification_status") == "approved"
+            and item.get("knowledge_level") == "K5"
+        )
+        policy_version = "degraded-green-only"
 
     current_tenant.set(tenant_key)
     current_visibility.set(visible)
+    current_org.set(org_id)
+    current_policy_version.set(policy_version)
 
     payload["user_id"] = user_id
     payload["tenant_key"] = tenant_key
+    payload["org_id"] = org_id
     payload["is_super_admin"] = is_super
     payload["visible_categories"] = visible
+    payload["knowledge_policy_version"] = policy_version
     return payload

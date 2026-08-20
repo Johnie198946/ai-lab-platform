@@ -26,6 +26,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 
 from backend.api.tenant import current_visibility
+from backend.services.knowledge_catalog import document_index, load_manifest
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -44,17 +45,18 @@ def _visibility():
 
 
 def _rel_visible(rel: str, vis: set[str] | frozenset[str] | None) -> bool:
-    """文档相对路径是否对当前可见范围可见（支持多段类目前缀匹配）。
+    """Authorize an approved K5 document by its compiled logical pack.
 
-    - ``vis is None`` → 全部可见（超管 / 开发态）
-    - 否则：rel 与任一已订类目相等，或以 ``类目/`` 为前缀即可见。
-      单层类目零回归（如 ``wiki/条目.md`` 对 ``wiki``）；
-      多段类目通过前缀对齐（如 ``knowledge/行业知识/金融/动态.md`` 对
-      ``knowledge/行业知识/金融``）。
+    A path absent from ``knowledge_catalog.json`` is always invisible, even to
+    a developer/super-admin request. ``vis is None`` only bypasses tenant pack
+    selection; it never bypasses governance admission.
     """
+    document = document_index(_vault()).get(rel)
+    if document is None:
+        return False
     if vis is None:
         return True
-    return any(rel == cat or rel.startswith(f"{cat}/") for cat in vis)
+    return str(document.get("pack_id") or "") in vis
 
 
 def _vault() -> Path:
@@ -90,15 +92,34 @@ def _wikilinks(text: str) -> List[str]:
     return [link.strip() for link in links if link.strip()]
 
 
+def _visible_wikilinks(text: str, vault: Path) -> List[str]:
+    """Return only links whose target is inside the current authorization scope."""
+    vis = _visibility()
+    visible: List[str] = []
+    for link in _wikilinks(text):
+        relative = f"wiki/{link}.md"
+        if _rel_visible(relative, vis) and (vault / relative).exists():
+            visible.append(link)
+    return visible
+
+
+def _filtered_entity_index(m: Dict[str, Any]) -> Dict[str, List[str]]:
+    vis = _visibility()
+    return {
+        str(entity): [str(path) for path in paths if _rel_visible(str(path), vis)]
+        for entity, paths in (m.get("entity_index") or {}).items()
+        if any(_rel_visible(str(path), vis) for path in paths)
+    }
+
+
 def _iter_md_files(vault: Path):
     vis = _visibility()
-    for p in sorted(vault.rglob("*.md")):
-        rel = p.relative_to(vault).as_posix()
-        if rel.startswith((".obsidian", "_archive", "00_Inbox", "模板", "workflows/")):
-            continue
+    for rel in sorted(document_index(vault)):
         if not _rel_visible(rel, vis):
             continue
-        yield p, rel
+        p = vault / rel
+        if p.is_file():
+            yield p, rel
 
 
 def _doc_title(text: str) -> str:
@@ -190,10 +211,13 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         for link in re.findall(r"\[\[([^\]]+)\]\]", htext):
             target = link.split("|")[0].strip()
             # 目标可能是 "竞品/DeepSeek" 或 "DeepSeek" → 定位到 wiki/ 下
-            tpath = (vault / "wiki" / f"{target}.md").as_posix()
-            if not (vault / tpath).exists():
+            candidate = (vault / "wiki" / f"{target}.md").resolve()
+            wiki_base = (vault / "wiki").resolve()
+            if not candidate.is_relative_to(wiki_base) or not candidate.exists():
                 continue
-            rel = tpath
+            rel = candidate.relative_to(vault.resolve()).as_posix()
+            if not _rel_visible(rel, vis):
+                continue
             if rel in scored:
                 scored[rel]["score"] += 3  # wikilinks 关联加分
             else:
@@ -274,7 +298,18 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
             "snippet": text[max(0, idx - 40) : idx + _SNIPPET_CHARS].replace("\n", " "),
         }
 
+    documents = document_index(vault)
     ranked = sorted(scored.values(), key=lambda d: (-d["score"], d["path"]))
+    for item in ranked:
+        meta = documents.get(item["path"], {})
+        item.update({
+            "category": meta.get("pack_id", ""),
+            "knowledge_level": meta.get("knowledge_level", "K5"),
+            "classification_status": meta.get("classification_status", "approved"),
+            "security_level": meta.get("security_level", ""),
+            "freshness": meta.get("freshness", "unknown"),
+            "source_count": int(meta.get("source_count") or 0),
+        })
     return ranked[:limit]
 
 
@@ -284,30 +319,22 @@ def get_matrix() -> Dict[str, Any]:
     if not m:
         raise HTTPException(status_code=404, detail="knowledge_matrix.json not found")
     vis = _visibility()
-    if vis is None:
-        return m
-    # 订阅制: 返回过滤后的矩阵（只含可见分类/条目）
+    # 矩阵始终按治理 Catalog 过滤；超管也不能读取未批准文档。
     filtered = dict(m)
     cats: Dict[str, Any] = {}
     for cat, entries in (m.get("categories") or {}).items():
         if isinstance(entries, dict):
-            if cat in vis:
-                cats[cat] = entries
-            else:
-                sub = {
-                    k: v
-                    for k, v in entries.items()
-                    if isinstance(v, dict) and _rel_visible(str(v.get("path", k)), vis)
-                }
-                if sub:
-                    cats[cat] = sub
+            sub = {
+                k: v
+                for k, v in entries.items()
+                if isinstance(v, dict) and _rel_visible(str(v.get("path", k)), vis)
+            }
+            if sub:
+                cats[cat] = sub
         elif isinstance(entries, list):
-            if cat in vis:
-                cats[cat] = entries
-            else:
-                sub = [p for p in entries if _rel_visible(str(p), vis)]
-                if sub:
-                    cats[cat] = sub
+            sub = [p for p in entries if _rel_visible(str(p), vis)]
+            if sub:
+                cats[cat] = sub
     filtered["categories"] = cats
     ei = m.get("entity_index", {})
     filtered["entity_index"] = {
@@ -323,12 +350,12 @@ def get_contract() -> Dict[str, Any]:
     if not m:
         raise HTTPException(status_code=404, detail="knowledge_matrix.json not found")
     return {
-        "machine_interface": "knowledge_matrix",
+        "machine_interface": "knowledge_catalog+knowledge_matrix",
         "matrix_version": m.get("version", "unknown"),
         "generated_at": m.get("generated_at"),
         "source_of_truth": {
-            "human": "编译后的知识层（研究系统 / wiki 兼容视图）",
-            "machine": "knowledge_matrix.json",
+            "human": "wiki/ 已批准 K5 frontmatter",
+            "machine": "knowledge_catalog.json（权限投影）+ knowledge_matrix.json（实体索引）",
         },
         "implemented": [
             "matrix",
@@ -344,8 +371,8 @@ def get_contract() -> Dict[str, Any]:
             "runtime_audit_dashboard",
             "policy-driven compile orchestration",
         ],
-        "categories_count": m.get("stats", {}).get("categories_count", 0),
-        "entity_count": m.get("stats", {}).get("total_entities_indexed", 0),
+        "categories_count": len(load_manifest(_vault()).get("packs") or []),
+        "entity_count": len(_filtered_entity_index(m)),
     }
 
 
@@ -360,11 +387,17 @@ def get_stats() -> Dict[str, Any]:
         "vault": str(vault),
         "total_md_files": len(md_files),
         "categories": {},
-        "matrix": m.get("stats", {}),
+        "matrix": {
+            "total_documents": len(md_files),
+            "categories_count": 0,
+            "total_entities_indexed": len(_filtered_entity_index(m)),
+        },
     }
+    documents = document_index(vault)
     for _, rel in md_files:
-        cat = rel.split("/")[0]
+        cat = str(documents.get(rel, {}).get("pack_id") or "unknown")
         stats["categories"][cat] = stats["categories"].get(cat, 0) + 1
+    stats["matrix"]["categories_count"] = len(stats["categories"])
     return stats
 
 
@@ -381,8 +414,9 @@ def search(
     # 实体命中（矩阵 entity_index）
     entities: List[str] = []
     m = _matrix()
-    if m.get("entity_index"):
-        for ent in m["entity_index"]:
+    filtered_entities = _filtered_entity_index(m)
+    if filtered_entities:
+        for ent in filtered_entities:
             if q.lower() in ent.lower():
                 entities.append(ent)
 
@@ -394,7 +428,7 @@ def entities(
     q: Optional[str] = Query(None, max_length=100),
 ) -> Dict[str, Any]:
     m = _matrix()
-    idx = m.get("entity_index", {})
+    idx = _filtered_entity_index(m)
     if not idx:
         raise HTTPException(status_code=404, detail="entity_index not found")
     if q:
@@ -423,7 +457,7 @@ def list_wiki() -> Dict[str, Any]:
                 "title": fm.get("title", p.stem),
                 "status": fm.get("status", "unknown"),
                 "tags": fm.get("tags", []),
-                "links_out": _wikilinks(text),
+                "links_out": _visible_wikilinks(text, vault),
             }
         )
     return {"total": len(entries), "entries": entries}
@@ -455,6 +489,6 @@ def get_wiki(slug: str) -> Dict[str, Any]:
         "status": fm.get("status", "unknown"),
         "tags": fm.get("tags", []),
         "frontmatter": fm,
-        "wikilinks": _wikilinks(text),
+        "wikilinks": _visible_wikilinks(text, vault),
         "content": body,
     }

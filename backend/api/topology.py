@@ -22,7 +22,7 @@ from sqlalchemy import select
 
 from backend.api.auth import current_tenant, require_auth
 from backend.db import SessionLocal
-from backend.models.tenant_agent import TenantAgentModel
+from backend.models.tenant_agent import AgentInvocationRelation, TenantAgentModel
 
 router = APIRouter(prefix="/api/v1", tags=["topology"])
 
@@ -214,6 +214,9 @@ async def get_tenant_topology(
         ).scalars().all()
 
         for r in rows:
+            owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
+            if r.visibility == "private" and r.owner_user_id != owner_user_id:
+                continue
             node_id = f"db_{r.id}"
             seen_ids.add(node_id)
             nodes.append(
@@ -238,6 +241,43 @@ async def get_tenant_topology(
 
     # 3. 动态构建真实协同边（有明确关系才连线）
     edges = _build_edges(nodes)
+    visible_ids = {node.id for node in nodes}
+    owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    async with SessionLocal() as db:
+        relations = list(
+            (
+                await db.execute(
+                    select(AgentInvocationRelation).where(
+                        AgentInvocationRelation.tenant_id == tenant_id,
+                        AgentInvocationRelation.owner_user_id == owner_user_id,
+                    )
+                )
+            ).scalars().all()
+        )
+    seen = {(edge.source, edge.target) for edge in edges}
+    for relation in relations:
+        source = f"db_{relation.source_agent_id}"
+        target = (
+            relation.target_agent_id
+            if relation.target_agent_id.startswith(("db_", "skill_"))
+            else f"db_{relation.target_agent_id}"
+        )
+        if source not in visible_ids or target not in visible_ids:
+            continue
+        if (source, target) in seen:
+            for edge in edges:
+                if edge.source == source and edge.target == target:
+                    edge.label = relation.description
+                    break
+        else:
+            edges.append(
+                TopologyEdgeOut(
+                    source=source,
+                    target=target,
+                    label=relation.description,
+                )
+            )
+            seen.add((source, target))
 
     return TenantTopologyOut(
         tenant_id=tenant_id,
