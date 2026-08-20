@@ -13,6 +13,12 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from backend.services.knowledge_color_projection import (
+    approved_color_documents,
+    clear_color_projection_cache,
+    color_packs,
+)
+
 
 CATALOG_FILENAME = "knowledge_catalog.json"
 LEGACY_FALLBACK_ENABLED = (
@@ -53,15 +59,20 @@ def load_manifest(vault: Path | None = None) -> dict[str, Any]:
 
 def clear_manifest_cache() -> None:
     _read_manifest.cache_clear()
+    clear_color_projection_cache()
 
 
 def document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:
+    vault = vault or _vault()
     manifest = load_manifest(vault)
-    return {
+    compiled = {
         str(item["path"]): item
         for item in manifest.get("documents", [])
         if isinstance(item, dict) and item.get("path") and item.get("pack_id")
     }
+    for item in approved_color_documents(vault):
+        compiled[str(item["path"])] = item
+    return compiled
 
 
 def _legacy_catalog(vault: Path) -> list[dict[str, Any]]:
@@ -91,17 +102,22 @@ def compute_catalog(vault: Path | None = None) -> list[dict[str, Any]]:
     vault = vault or _vault()
     manifest = load_manifest(vault)
     packs = manifest.get("packs")
+    compiled: list[dict[str, Any]] = []
     if isinstance(packs, list):
-        return [
+        compiled = [
             dict(item)
             for item in packs
             if isinstance(item, dict)
             and item.get("category")
-            and item.get("knowledge_level") == "K5"
             and item.get("classification_status") == "approved"
             and item.get("security_level") in {"green", "yellow", "red"}
         ]
-    return _legacy_catalog(vault) if LEGACY_FALLBACK_ENABLED else []
+    elif LEGACY_FALLBACK_ENABLED:
+        compiled = _legacy_catalog(vault)
+    by_category = {str(item["category"]): item for item in compiled}
+    for item in color_packs(approved_color_documents(vault)):
+        by_category[str(item["category"])] = item
+    return list(by_category.values())
 
 
 def pending_review_count(vault: Path | None = None) -> int:

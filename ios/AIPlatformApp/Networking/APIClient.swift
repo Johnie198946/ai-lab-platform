@@ -192,6 +192,41 @@ public struct SubscriptionRequestsResponse: Codable {
     public let requests: [SubscriptionRequestDTO]
 }
 
+public struct KnowledgePublicationCandidateDTO: Codable, Identifiable, Hashable {
+    public let path: String
+    public let title: String
+    public let securityLevel: String
+    public let entitlementKey: String
+    public let ownerTenant: String
+    public let knowledgeLevel: String
+    public var id: String { path }
+}
+
+public struct KnowledgePublicationCandidatesResponse: Codable {
+    public let items: [KnowledgePublicationCandidateDTO]
+}
+
+public struct KnowledgePublicationResultDTO: Codable {
+    public let path: String
+    public let securityLevel: String
+    public let classificationStatus: String
+    public let gatewayStatus: String
+}
+
+private struct KnowledgePublicationDecisionDTO: Encodable {
+    let path: String
+    let securityLevel: String
+    let entitlementKey: String
+    let ownerTenant: String
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case securityLevel = "security_level"
+        case entitlementKey = "entitlement_key"
+        case ownerTenant = "owner_tenant"
+    }
+}
+
 private struct SubscribeCategoryRequest: Encodable {
     let category: String
 }
@@ -1278,6 +1313,33 @@ public final class APIClient: ObservableObject {
             path: "admin/subscription-requests"
         )
         return response.requests
+    }
+
+    public func fetchKnowledgePublicationCandidates() async throws -> [KnowledgePublicationCandidateDTO] {
+        let response: KnowledgePublicationCandidatesResponse = try await request(
+            KnowledgePublicationCandidatesResponse.self,
+            path: "admin/knowledge-publication"
+        )
+        return response.items
+    }
+
+    public func approveKnowledgePublication(
+        path: String,
+        securityLevel: String,
+        entitlementKey: String,
+        ownerTenant: String
+    ) async throws -> KnowledgePublicationResultDTO {
+        try await request(
+            KnowledgePublicationResultDTO.self,
+            path: "admin/knowledge-publication/approve",
+            method: "POST",
+            body: KnowledgePublicationDecisionDTO(
+                path: path,
+                securityLevel: securityLevel,
+                entitlementKey: entitlementKey,
+                ownerTenant: ownerTenant
+            )
+        )
     }
 
     public func reviewSubscriptionRequest(

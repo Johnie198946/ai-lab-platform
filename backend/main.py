@@ -30,6 +30,7 @@ from backend.api.showroom import router as showroom_router
 from backend.api.workflows import router as workflows_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
 from backend.api.subscriptions import router as subscriptions_router
+from backend.api.knowledge_publication import router as knowledge_publication_router
 from backend.db import init_db
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ app.include_router(register_router)
 # 目录 / 订阅管理 / 当前用户
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
 app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
+app.include_router(knowledge_publication_router, dependencies=[Depends(require_auth)])
 app.include_router(me_router, dependencies=[Depends(require_auth)])
 # Agent 协议签署
 app.include_router(protocols_router, dependencies=[Depends(require_auth)])
