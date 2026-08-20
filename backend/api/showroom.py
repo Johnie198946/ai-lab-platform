@@ -244,6 +244,7 @@ class VisitCompleteRequest(BaseModel):
 
 class VisitRolloverRequest(BaseModel):
     epoch: int = Field(default=0, ge=0)
+    source: str = Field(default="controller", max_length=80)
 
 
 class ShowroomHub:
@@ -475,6 +476,11 @@ def _visit_session_id() -> str:
     return f"visit-{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
+def _workstation_session_id(slot: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"showroom-slot-{slot}-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
 def _customer_code(company_name: str) -> str:
     digest = int.from_bytes(company_name.encode("utf-8"), "little", signed=False) % 1000
     return f"C{digest:03d}"
@@ -669,6 +675,23 @@ async def _get_or_create_session(
         elif row.tenant_key != tenant_key:
             raise HTTPException(status_code=404, detail="体验会话不存在")
         else:
+            # A workstation can be offline while the guided tour rolls over.
+            # Follow the archived row's successor so reopening an old URL can
+            # never revive customer content from the previous reception.
+            visited = {row.session_id}
+            while row.status == "archived":
+                successor_id = str((row.data or {}).get("rollover_to") or "")
+                if not successor_id or successor_id in visited:
+                    break
+                successor = await database.get(ShowroomSession, successor_id)
+                if (
+                    successor is None
+                    or successor.tenant_key != tenant_key
+                    or successor.slot != slot
+                ):
+                    break
+                visited.add(successor_id)
+                row = successor
             migrated, changed = _migrate_legacy_session_data(row.data)
             if changed:
                 row.data = migrated
@@ -824,6 +847,7 @@ async def get_showroom_bootstrap(
                 await database.execute(
                     select(ShowroomSession)
                     .where(ShowroomSession.slot.in_(["1", "2", "3", "4", "5"]))
+                    .where(ShowroomSession.status != "archived")
                     .order_by(ShowroomSession.updated_at.desc())
                 )
             ).scalars()
@@ -1110,66 +1134,170 @@ async def rollover_showroom_visit(
     session_id: str, body: VisitRolloverRequest, payload=Depends(require_auth)
 ) -> dict[str, Any]:
     tenant_key = str(payload.get("tenant_key") or "demo")
-    epoch = max(
-        body.epoch,
-        int(hub.state.get("epoch") or 0) + 1,
-        int(datetime.now(timezone.utc).timestamp() * 1000),
-    )
-    hub.switch_ready.clear()
-    await hub.broadcast(
-        {"type": "SESSION_SWITCH_PREPARE", "session_id": session_id, "epoch": epoch}
-    )
-    targets = {
-        id(socket) for socket, client in hub.connections.items() if client == session_id
-    }
-    for _ in range(20):
-        if targets.issubset(hub.switch_ready):
-            break
-        await asyncio.sleep(0.25)
-    async with SessionLocal() as database:
-        old = await database.get(ShowroomSession, session_id)
-        if old is None or old.tenant_key != tenant_key or old.slot != "main":
-            raise HTTPException(status_code=404, detail="主演示会话不存在")
-        old.status = "archived"
-        old_data = copy.deepcopy(old.data or {})
-        old_data["visitor"] = _merge(
-            old_data.get("visitor") or {}, {"status": "archived"}
+    async with hub.lock:
+        epoch = max(
+            body.epoch,
+            int(hub.state.get("epoch") or 0) + 1,
+            int(datetime.now(timezone.utc).timestamp() * 1000),
         )
-        old.data = old_data
-        new_id = _visit_session_id()
-        new_data = _initial_session_data("main")
-        new_data["visitor"]["visit_id"] = new_id
-        database.add(
-            ShowroomSession(
-                session_id=new_id, tenant_key=tenant_key, slot="main", data=new_data
+
+        async with SessionLocal() as database:
+            requested = await database.get(ShowroomSession, session_id)
+            if (
+                requested is None
+                or requested.tenant_key != tenant_key
+                or requested.slot != "main"
+            ):
+                raise HTTPException(status_code=404, detail="主演示会话不存在")
+
+            # A retried request returns the already-created successors instead
+            # of producing another reception batch.
+            existing_switches = (requested.data or {}).get("rollover_switches") or []
+            existing_successor = str((requested.data or {}).get("rollover_to") or "")
+            if requested.status == "archived" and existing_successor:
+                successor = await database.get(ShowroomSession, existing_successor)
+                if successor is None or successor.tenant_key != tenant_key:
+                    raise HTTPException(status_code=409, detail="换场记录不完整，请人工检查")
+                return {
+                    "archived_session_id": session_id,
+                    "session": _session_payload(successor, successor.session_id, "main"),
+                    "runtime": hub.snapshot(),
+                    "session_switches": existing_switches,
+                }
+
+            rows = (
+                await database.execute(
+                    select(ShowroomSession)
+                    .where(ShowroomSession.tenant_key == tenant_key)
+                    .where(ShowroomSession.status != "archived")
+                    .where(ShowroomSession.slot.in_(["main", "1", "2", "3", "4", "5"]))
+                    .order_by(ShowroomSession.updated_at.desc())
+                )
+            ).scalars()
+            active_by_slot: dict[str, ShowroomSession] = {"main": requested}
+            for row in rows:
+                active_by_slot.setdefault(row.slot, row)
+
+        old_session_ids = {
+            row.session_id for row in active_by_slot.values() if row is not None
+        }
+        hub.switch_ready.clear()
+        for old_session_id in old_session_ids:
+            await hub.broadcast(
+                {
+                    "type": "SESSION_SWITCH_PREPARE",
+                    "session_id": old_session_id,
+                    "epoch": epoch,
+                }
             )
+        targets = {
+            id(socket)
+            for socket, client in hub.connections.items()
+            if client in old_session_ids
+        }
+        for _ in range(20):
+            if targets.issubset(hub.switch_ready):
+                break
+            await asyncio.sleep(0.25)
+
+        switches: list[dict[str, str]] = []
+        new_ids = {
+            "main": _visit_session_id(),
+            **{slot: _workstation_session_id(slot) for slot in ["1", "2", "3", "4", "5"]},
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            async with SessionLocal() as database:
+                refreshed: dict[str, ShowroomSession] = {}
+                for slot, row in active_by_slot.items():
+                    current = await database.get(ShowroomSession, row.session_id)
+                    if current is not None:
+                        refreshed[slot] = current
+
+                for slot in ["main", "1", "2", "3", "4", "5"]:
+                    old = refreshed.get(slot)
+                    new_id = new_ids[slot]
+                    switches.append(
+                        {
+                            "slot": slot,
+                            "old_session_id": old.session_id if old else "",
+                            "new_session_id": new_id,
+                        }
+                    )
+                    new_data = _initial_session_data(slot)
+                    if slot == "main":
+                        new_data["visitor"]["visit_id"] = new_id
+                    database.add(
+                        ShowroomSession(
+                            session_id=new_id,
+                            tenant_key=tenant_key,
+                            slot=slot,
+                            step=0,
+                            status="active",
+                            data=new_data,
+                        )
+                    )
+
+                for slot, old in refreshed.items():
+                    old.status = "archived"
+                    old_data = copy.deepcopy(old.data or {})
+                    old_data["rollover_to"] = new_ids[slot]
+                    old_data["rollover_at"] = now
+                    if slot == "main":
+                        old_data["visitor"] = _merge(
+                            old_data.get("visitor") or {}, {"status": "archived"}
+                        )
+                        old_data.setdefault("visit_completed_by", body.source)
+                        old_data.setdefault("visit_completed_at", now)
+                        old_data["rollover_switches"] = switches
+                    old.data = old_data
+
+                await database.commit()
+                new_main = await database.get(ShowroomSession, new_ids["main"])
+        except Exception:
+            for old_session_id in old_session_ids:
+                await hub.broadcast(
+                    {
+                        "type": "SESSION_SWITCH_ABORT",
+                        "session_id": old_session_id,
+                        "epoch": epoch,
+                    }
+                )
+            raise
+
+        hub.state.update(
+            {
+                "active_main_session_id": new_ids["main"],
+                "active_main_tenant_key": tenant_key,
+                "epoch": epoch,
+                "stage": "station-1",
+                "payload": {},
+                "reviews": {},
+                "updated_at": now,
+            }
         )
-        await database.commit()
-        new = await database.get(ShowroomSession, new_id)
-    hub.state.update(
-        {
-            "active_main_session_id": new_id,
-            "active_main_tenant_key": tenant_key,
-            "epoch": epoch,
-            "stage": "station-1",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+        await _persist_runtime()
+        runtime = hub.snapshot()
+        for switch in switches:
+            if not switch["old_session_id"]:
+                continue
+            await hub.broadcast(
+                {
+                    "type": "SESSION_SWITCH_COMMIT",
+                    "session_id": switch["old_session_id"],
+                    "new_session_id": switch["new_session_id"],
+                    "slot": switch["slot"],
+                    "session_switches": switches,
+                    "epoch": epoch,
+                    "state": runtime,
+                }
+            )
+        return {
+            "archived_session_id": session_id,
+            "session": _session_payload(new_main, new_ids["main"], "main"),
+            "runtime": runtime,
+            "session_switches": switches,
         }
-    )
-    await _persist_runtime()
-    await hub.broadcast(
-        {
-            "type": "SESSION_SWITCH_COMMIT",
-            "session_id": session_id,
-            "new_session_id": new_id,
-            "epoch": epoch,
-            "state": hub.snapshot(),
-        }
-    )
-    return {
-        "archived_session_id": session_id,
-        "session": _session_payload(new, new_id, "main"),
-        "runtime": hub.snapshot(),
-    }
 
 
 @router.get("/sessions/{session_id}")

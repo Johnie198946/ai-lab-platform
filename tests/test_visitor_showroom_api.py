@@ -10,7 +10,6 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import backend.api.showroom as showroom_api
 from backend.api.showroom import (
     FrontstageRequest,
-    VisitCompleteRequest,
     VisitRolloverRequest,
     VisitorInsightRequest,
     VisitorPatch,
@@ -130,7 +129,7 @@ def test_v17_gate_blocks_incompatible_persona(tmp_path, monkeypatch) -> None:
     asyncio.run(scenario())
 
 
-def test_frontstage_completion_and_rollover_preserve_experience_slots(
+def test_rollover_archives_main_and_replaces_all_experience_slots(
     tmp_path, monkeypatch
 ) -> None:
     skill = tmp_path / "solution-consultant-persona" / "SKILL.md"
@@ -145,9 +144,12 @@ def test_frontstage_completion_and_rollover_preserve_experience_slots(
         engine, maker = await memory_store(monkeypatch)
         main = await showroom_api._active_main_session("demo")
         main_id = main.session_id
-        slot = await showroom_api._get_or_create_session(
-            "experience-slot-1", "1", "demo", "体验访客"
-        )
+        slots = [
+            await showroom_api._get_or_create_session(
+                f"experience-slot-{index}", str(index), "demo", f"体验访客{index}"
+            )
+            for index in range(1, 6)
+        ]
 
         await showroom_api.update_showroom_visitor(
             main_id,
@@ -166,26 +168,58 @@ def test_frontstage_completion_and_rollover_preserve_experience_slots(
         assert "示例科技" in frontstage["station_context"]
         assert "禁止复述后台洞察" in frontstage["station_context"]
 
-        completed = await showroom_api.complete_showroom_visit(
-            main_id, VisitCompleteRequest(source="screen-09"), payload()
-        )
-        assert completed["data"]["visitor"]["status"] == "awaiting_rollover"
-
         rolled = await showroom_api.rollover_showroom_visit(
-            main_id, VisitRolloverRequest(epoch=1), payload()
+            main_id, VisitRolloverRequest(epoch=1, source="controller"), payload()
         )
         new_id = rolled["session"]["session_id"]
         assert new_id != main_id
         assert rolled["runtime"]["active_main_session_id"] == new_id
         assert rolled["session"]["data"]["visitor"]["status"] == "preparing"
+        assert rolled["runtime"]["stage"] == "station-1"
+        assert len(rolled["session_switches"]) == 6
+        assert {item["slot"] for item in rolled["session_switches"]} == {
+            "main", "1", "2", "3", "4", "5"
+        }
 
         async with maker() as database:
             archived = await database.get(ShowroomSession, main_id)
-            preserved_slot = await database.get(ShowroomSession, slot.session_id)
+            archived_slots = [
+                await database.get(ShowroomSession, slot.session_id) for slot in slots
+            ]
+            new_slots = [
+                await database.get(
+                    ShowroomSession,
+                    next(
+                        item["new_session_id"]
+                        for item in rolled["session_switches"]
+                        if item["slot"] == str(index)
+                    ),
+                )
+                for index in range(1, 6)
+            ]
         assert archived.status == "archived"
         assert archived.data["visitor"]["status"] == "archived"
-        assert preserved_slot.status == "active"
-        assert preserved_slot.data["role"] == "体验访客"
+        assert archived.data["visit_completed_by"] == "controller"
+        assert archived.data["rollover_to"] == new_id
+        assert all(row.status == "archived" for row in archived_slots)
+        assert all(row.data["rollover_to"] for row in archived_slots)
+        assert all(row.status == "active" and row.step == 0 for row in new_slots)
+        assert all(row.data["role"] == "" and row.data["messages"] == [] for row in new_slots)
+
+        repeated = await showroom_api.rollover_showroom_visit(
+            main_id, VisitRolloverRequest(epoch=2, source="controller"), payload()
+        )
+        assert repeated["session"]["session_id"] == new_id
+        assert repeated["session_switches"] == rolled["session_switches"]
+
+        reopened = await showroom_api._get_or_create_session(
+            slots[0].session_id, "1", "demo"
+        )
+        assert reopened.session_id == next(
+            item["new_session_id"]
+            for item in rolled["session_switches"]
+            if item["slot"] == "1"
+        )
         await engine.dispose()
 
     asyncio.run(scenario())

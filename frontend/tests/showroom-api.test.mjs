@@ -312,9 +312,12 @@ test('rollover adopts the new main visit session', async () => {
   const { api, window } = createApi();
   api.sessionId = 'visit-old';
   api.slot = 'main';
+  let rolloverEvent = null;
+  api.on('rollover', (result) => { rolloverEvent = result; });
   api.request = async (path, options) => {
     assert.equal(path, '/api/showroom/visits/visit-old/rollover');
     assert.equal(options.method, 'POST');
+    assert.equal(options.body.source, 'controller');
     return {
       session: {
         session_id: 'visit-new',
@@ -322,15 +325,45 @@ test('rollover adopts the new main visit session', async () => {
         data: { visitor: { status: 'preparing' } },
       },
       runtime: { active_main_session_id: 'visit-new', epoch: 8 },
+      session_switches: [
+        { slot: 'main', old_session_id: 'visit-old', new_session_id: 'visit-new' },
+      ],
     };
   };
 
-  await api.rolloverVisit();
+  const result = await api.rolloverVisit('controller');
 
   assert.equal(api.sessionId, 'visit-new');
   assert.equal(api.slot, 'main');
   assert.equal(api.state.active_main_session_id, 'visit-new');
   assert.equal(window.sessionStorage.getItem('ai-lab-showroom.session'), 'visit-new');
+  assert.equal(rolloverEvent, result);
+});
+
+test('bootstrap adopts the server successor for an archived workstation session', async () => {
+  const { api, window } = createApi();
+  api.slot = '2';
+  api.sessionId = 'experience-slot-old';
+  api.connect = () => {};
+  api.ensureHermes = async () => '';
+  api.request = async (path) => {
+    if (path === '/health') return { status: 'ok' };
+    assert.match(path, /slot=2/);
+    return {
+      runtime: { epoch: 9 },
+      session: { session_id: 'experience-slot-new', slot: '2', step: 0, data: {} },
+      screens: [],
+      content: {},
+      knowledge: {},
+      centers: [],
+      capabilities: {},
+    };
+  };
+
+  await api.init({ force: true });
+
+  assert.equal(api.sessionId, 'experience-slot-new');
+  assert.equal(window.sessionStorage.getItem('ai-lab-showroom.session'), 'experience-slot-new');
 });
 
 test('expired showroom authentication returns to login with the current screen', async () => {

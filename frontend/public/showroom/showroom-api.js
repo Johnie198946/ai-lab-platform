@@ -227,8 +227,11 @@
         this.bootstrap = bootstrap;
         this.state = bootstrap.runtime;
         this.session = bootstrap.session;
-        if (this.slot === "main" && bootstrap.active_main_session_id) {
-          this.sessionId = bootstrap.active_main_session_id;
+        const authoritativeSessionId = this.slot === "main"
+          ? bootstrap.active_main_session_id
+          : bootstrap.session?.session_id;
+        if (authoritativeSessionId) {
+          this.sessionId = authoritativeSessionId;
           global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
         }
         this.emit("bootstrap", bootstrap);
@@ -605,9 +608,14 @@
             }));
           });
         }
+        if (message.type === "SESSION_SWITCH_ABORT" && message.session_id === this.sessionId) {
+          this.hermesSuspended = Boolean(global.document?.hidden) || !isConversationView();
+          this.resumeHermes();
+        }
         if (message.type === "SESSION_SWITCH_COMMIT" && message.session_id === this.sessionId) {
           this.sessionId = message.new_session_id;
           global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+          this.session = null;
         }
         if (message.state) this.state = message.state;
         this.emit("message", message);
@@ -707,16 +715,17 @@
       return session;
     }
 
-    async rolloverVisit() {
+    async rolloverVisit(source = "controller") {
       const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/rollover`, {
         method: "POST",
-        body: { epoch: Date.now() },
+        body: { epoch: Date.now(), source },
       });
       this.sessionId = result.session.session_id;
       global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
       this.session = result.session;
       this.state = result.runtime;
       this.emit("session", result.session);
+      this.emit("rollover", result);
       return result;
     }
 
