@@ -28,6 +28,15 @@ test('summary completion drives incremental 004 reveal without fake progress', (
   assert.match(styles, /--employee-index/);
 });
 
+test('003.5 observes one server execution and 004 uses an isolated review lane', () => {
+  const api = readFileSync(new URL('../public/showroom/showroom-api.js', import.meta.url), 'utf8');
+  assert.match(api, /view === "screen-04"\) return "insight-review"/);
+  assert.doesNotMatch(api, /\["screen-03-team", "screen-04"\]\.includes\(view\) return "insight"/);
+  assert.match(app, /getInsightJob\(job\.job_id\)/);
+  assert.match(app, /window\.setInterval\(pollInsightServerJob, 2000\)/);
+  assert.match(app, /job\.execution_id/);
+});
+
 test('004 is a conversational IPD review workbench with controlled revisions', () => {
   for (const label of ['洞察共创助手', '待回填内容 · 尚未应用', '应用回填到报告', '确认当前洞察，提交AI评审', '需求理解有误，退回003修订', 'AI 概念评审会', '进入下一步前还缺什么']) {
     assert.match(app, new RegExp(label));

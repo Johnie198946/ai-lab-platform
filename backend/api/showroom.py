@@ -34,6 +34,7 @@ from backend.api.auth import AUTHEN_JWT_ALGORITHM, AUTHEN_JWT_SECRET, require_au
 from backend.api.screens import _load_all as load_screen_configs
 from backend.db import SessionLocal
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
+from backend.models.showroom import ShowroomInsightExecution
 from backend.services.demand_document import (
     calculate_demand_completeness,
     extract_demand_document,
@@ -72,6 +73,9 @@ from backend.services.showroom_insight_review import (
     register_insight_tbd,
     reopen_version,
 )
+from backend.services.showroom_insight_execution import ensure_execution, project_execution
+from backend.models.workflow import WorkflowExecution, WorkflowNodeRun
+from backend.services.workflow_executor import cancel_remote, retry_remote
 from backend.services.visitor_insight import (
     extract_visitor_insight,
     persist_visitor_wiki,
@@ -779,6 +783,33 @@ async def get_showroom_bootstrap(
             else await _get_or_create_session(session_id, slot, tenant_key)
         )
         session_id = session.session_id
+        session_values = copy.deepcopy(session.data or {})
+        demand = session_values.get("demand") or {}
+        insight = session_values.get("insight") or {}
+        job = session_values.get("insight_job") or {}
+        valid_report = (
+            insight.get("status") == "completed"
+            and bool(insight.get("concept"))
+            and bool(insight.get("title") or insight.get("recommendation"))
+        )
+        if demand.get("confirmed") and not valid_report and not job.get("execution_id"):
+            async with SessionLocal() as database:
+                stored = (
+                    await database.execute(
+                        select(ShowroomSession)
+                        .where(ShowroomSession.session_id == session_id)
+                        .with_for_update()
+                    )
+                ).scalar_one()
+                await ensure_execution(
+                    database,
+                    session=stored,
+                    demand_hash=demand_fingerprint(demand),
+                    epoch=int(hub.state.get("epoch", 0)),
+                )
+                await database.commit()
+                await database.refresh(stored)
+                session = stored
         session_data = _session_payload(session, session_id, slot)
     except HTTPException:
         raise
@@ -1450,7 +1481,13 @@ async def start_showroom_insight_job(
     """Create or resume the idempotent V1.7 staffing-and-insight job."""
     tenant_key = str(payload.get("tenant_key") or "demo")
     async with SessionLocal() as database:
-        row = await database.get(ShowroomSession, session_id)
+        row = (
+            await database.execute(
+                select(ShowroomSession)
+                .where(ShowroomSession.session_id == session_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         if row is None or row.tenant_key != tenant_key:
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
@@ -1458,32 +1495,14 @@ async def start_showroom_insight_job(
         if not demand.get("confirmed"):
             raise HTTPException(status_code=409, detail="请先确认需求")
         source_hash = demand_fingerprint(demand)
-        current_job = copy.deepcopy(data.get("insight_job") or {})
-        resumable = (
-            current_job.get("source_hash") == source_hash
-            and current_job.get("status")
-            in {"planning", "running", "partial", "completed", "interrupted"}
+        epoch = int(hub.state.get("epoch", 0))
+        binding, resumed = await ensure_execution(
+            database, session=row, demand_hash=source_hash, epoch=epoch
         )
-        if resumable:
-            return {
-                "resumed": True,
-                "job": current_job,
-                "plan": data.get("staffing_plan") or {},
-                "catalog": role_catalog_payload(),
-                "session": _session_payload(row, session_id, row.slot),
-            }
-
-        job_id = f"insight-{uuid.uuid4().hex[:16]}"
-        job = empty_insight_job(job_id, source_hash)
-        data["insight_job"] = job
-        data["staffing_plan"] = {}
-        data["insight"] = empty_insight()
-        data["insight_review"] = empty_insight_review()
-        data["insight_review_gate"] = empty_insight_review_gate()
-        row.data = data
-        row.step = max(row.step, 3)
         await database.commit()
         await database.refresh(row)
+        await database.refresh(binding)
+        job = copy.deepcopy((row.data or {}).get("insight_job") or {})
         session_payload = _session_payload(row, session_id, row.slot)
     await hub.broadcast(
         {
@@ -1495,12 +1514,98 @@ async def start_showroom_insight_job(
         }
     )
     return {
-        "resumed": False,
+        "resumed": resumed,
         "job": job,
-        "plan": {},
+        "plan": (row.data or {}).get("staffing_plan") or {},
         "catalog": role_catalog_payload(),
         "session": session_payload,
     }
+
+
+@router.get("/sessions/{session_id}/insight/jobs/{job_id}")
+async def get_showroom_insight_job(
+    session_id: str, job_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    changed = False
+    event_payload: dict[str, Any] = {}
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        binding = await database.get(ShowroomInsightExecution, job_id)
+        if row is None or row.tenant_key != tenant_key or binding is None or binding.session_id != session_id:
+            raise HTTPException(status_code=404, detail="洞察任务不存在")
+        before = copy.deepcopy((row.data or {}).get("insight_job") or {})
+        await project_execution(database, binding.execution_id)
+        await database.commit()
+        await database.refresh(row)
+        data = row.data or {}
+        job = (row.data or {}).get("insight_job") or {}
+        changed = before != job
+        event_payload = {
+            "type": "INSIGHT_JOB_COMPLETED" if job.get("status") == "completed" else "INSIGHT_JOB_FAILED" if job.get("status") == "failed" else "INSIGHT_STAGE_UPDATED",
+            "session_id": session_id,
+            "epoch": binding.epoch,
+            "job_id": job_id,
+            "execution_id": binding.execution_id,
+            "demand_hash": binding.demand_hash,
+            "job": job,
+        }
+        response = {
+            "job": job,
+            "plan": data.get("staffing_plan") or {},
+            "session": _session_payload(row, session_id, row.slot),
+        }
+    if changed:
+        await hub.broadcast(event_payload)
+    return response
+
+
+@router.get("/sessions/{session_id}/insight/report")
+async def get_showroom_insight_report(
+    session_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = row.data or {}
+        insight = data.get("insight") or {}
+        return {
+            "report": insight,
+            "version": (data.get("insight_review") or {}).get("version") or "V0.1",
+            "coverage": calculate_insight_coverage(insight),
+            "job": data.get("insight_job") or {},
+        }
+
+
+@router.post("/sessions/{session_id}/insight/jobs/{job_id}/retry")
+async def retry_showroom_insight_execution(
+    session_id: str, job_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        binding = await database.get(ShowroomInsightExecution, job_id)
+        if row is None or row.tenant_key != tenant_key or binding is None or binding.session_id != session_id:
+            raise HTTPException(status_code=404, detail="洞察任务不存在")
+        execution = await database.get(WorkflowExecution, binding.execution_id)
+        nodes = list((await database.execute(select(WorkflowNodeRun).where(WorkflowNodeRun.execution_id == binding.execution_id).order_by(WorkflowNodeRun.position))).scalars())
+        restart = next((node for node in nodes if node.status != "succeeded"), None)
+        if execution is None or restart is None:
+            raise HTTPException(status_code=409, detail="任务没有可重试节点")
+        await retry_remote(binding.execution_id, restart.node_id)
+        restart.status = "pending"
+        restart.error_message = None
+        execution.status = "queued"
+        execution.error_message = None
+        binding.status = "queued"
+        binding.attempt += 1
+        binding.error_message = ""
+        await project_execution(database, binding.execution_id)
+        await database.commit()
+        await database.refresh(row)
+        return {"job": (row.data or {}).get("insight_job") or {}, "session": _session_payload(row, session_id, row.slot)}
 
 
 @router.put("/sessions/{session_id}/insight/jobs/{job_id}/plan")
@@ -1517,6 +1622,8 @@ async def save_showroom_staffing_plan(
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
         job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("execution_id"):
+            raise HTTPException(status_code=409, detail="服务端洞察任务禁止浏览器写入规划")
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
         demand = data.get("demand") or {}
@@ -1571,6 +1678,8 @@ async def update_showroom_insight_progress(
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
         job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("execution_id"):
+            raise HTTPException(status_code=409, detail="服务端洞察任务禁止浏览器写入进度")
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
         if job.get("source_hash") != demand_fingerprint(data.get("demand") or {}):
@@ -1657,6 +1766,8 @@ async def complete_showroom_insight_job(
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
         job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("execution_id"):
+            raise HTTPException(status_code=409, detail="服务端洞察任务只接受已验证Artifact")
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
         insight = copy.deepcopy(data.get("insight") or empty_insight())
@@ -2642,6 +2753,24 @@ async def interrupt_showroom_insight_job(
     body: InsightFailureRequest,
     payload=Depends(require_auth),
 ) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        binding = await database.get(ShowroomInsightExecution, job_id)
+        if row is not None and row.tenant_key == tenant_key and binding is not None and binding.session_id == session_id:
+            execution = await database.get(WorkflowExecution, binding.execution_id)
+            if execution is not None:
+                await cancel_remote(binding.execution_id)
+                execution.status = "cancelled"
+                binding.status = "interrupted"
+                data = copy.deepcopy(row.data or {})
+                job = copy.deepcopy(data.get("insight_job") or {})
+                job.update({"status": "interrupted", "active_stage": "interrupted", "active_node": "", "active_employee_id": "", "updated_at": now_iso(), "error": body.message or "用户已停止生成"})
+                data["insight_job"] = job
+                row.data = data
+                await database.commit()
+                await database.refresh(row)
+                return {"job": job, "session": _session_payload(row, session_id, row.slot)}
     return await _finish_showroom_insight_job(
         session_id,
         job_id,

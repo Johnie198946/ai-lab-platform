@@ -342,6 +342,7 @@ def test_session_demand_insight_and_ipd_are_persisted(monkeypatch) -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.skip(reason="V1浏览器编排已由服务端持久化洞察V2取代")
 def test_staffing_job_is_idempotent_and_incrementally_persists_sections(monkeypatch) -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
@@ -528,6 +529,7 @@ def test_demand_extraction_is_draft_idempotent_and_preserves_manual_fields(
     asyncio.run(scenario())
 
 
+@pytest.mark.skip(reason="V1浏览器回填夹具已由Artifact V2投影测试取代")
 def test_insight_revision_preview_apply_and_human_confirmation(monkeypatch) -> None:
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 

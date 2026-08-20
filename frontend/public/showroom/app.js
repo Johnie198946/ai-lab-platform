@@ -75,6 +75,7 @@ const demandExtractionInFlight = new Set();
 const insightEventIds = new Set();
 let insightProgressQueue = Promise.resolve();
 let insightAutoTimer = null;
+let insightServerPollTimer = null;
 
 const INSIGHT_REVISION_INTENT = /修改|修正|调整|改为|改成|补齐|补充到|删除|新增|更新|回填|填入|写入|同步|替换|应用到(?:本章|报告)/;
 const INSIGHT_FIELD_SECTIONS = {
@@ -93,7 +94,7 @@ function isStaticDisplayView(view = state.view) {
 }
 
 function isConversationView(view = state.view) {
-  return ['controller', 'screen-03', 'screen-03-team', 'screen-04'].includes(view) || view.startsWith('experience-');
+  return ['controller', 'screen-03', 'screen-04'].includes(view) || view.startsWith('experience-');
 }
 
 const motionSystem = {
@@ -976,16 +977,34 @@ async function beginInsightFlow(demand) {
     startInsightAutoAdvance();
     return;
   }
-  if (result.plan && Object.keys(result.plan).length) {
-    if (!['generating', 'waiting'].includes(state.hermesStatus)) await beginInsightExecution(job, result.plan);
-    return;
+  startInsightServerPolling();
+}
+
+function stopInsightServerPolling() {
+  if (insightServerPollTimer) window.clearInterval(insightServerPollTimer);
+  insightServerPollTimer = null;
+}
+
+async function pollInsightServerJob() {
+  const job = currentInsightJob();
+  if (!job.job_id || !job.execution_id || !['screen-03-team', 'screen-04'].includes(state.view)) return;
+  try {
+    const result = await window.showroomApi.getInsightJob(job.job_id);
+    state.session = result.session;
+    const refreshed = result.job || {};
+    if ((refreshed.completed_sections || []).includes('summary') && state.view === 'screen-03-team') startInsightAutoAdvance();
+    if (['completed', 'failed', 'interrupted', 'superseded'].includes(refreshed.status)) stopInsightServerPolling();
+    render('refresh');
+  } catch (error) {
+    state.chatError = `读取服务端洞察进度失败：${error.message}`;
+    render('refresh');
   }
-  state.insightTask = 'planning';
-  state.hermesDetail = 'V1.7正在规划项目分工';
-  await window.showroomApi.submitHermesPrompt(insightPlanningPrompt(job, result.catalog), {
-    skillCommand: 'solution-consultant-persona',
-    stationContext: '当前处于003.5团队规划，只能使用受控角色库。',
-  });
+}
+
+function startInsightServerPolling() {
+  stopInsightServerPolling();
+  pollInsightServerJob();
+  insightServerPollTimer = window.setInterval(pollInsightServerJob, 2000);
 }
 
 function currentPrototype() {
@@ -2014,14 +2033,10 @@ function attachScreenActions() {
   }));
   document.querySelector('[data-insight-retry]')?.addEventListener('click', async () => {
     try {
-      const result = await window.showroomApi.startInsightJob();
+      const result = await window.showroomApi.retryInsightJob(currentInsightJob().job_id);
       state.session = result.session;
-      state.insightCatalog = result.catalog;
-      if (result.plan && Object.keys(result.plan).length) await beginInsightExecution(result.job, result.plan);
-      else {
-        state.insightTask = 'planning';
-        await window.showroomApi.submitHermesPrompt(insightPlanningPrompt(result.job, result.catalog), { skillCommand: 'solution-consultant-persona' });
-      }
+      startInsightServerPolling();
+      render('refresh');
     } catch (error) { showToast(`重新执行失败：${error.message}`); }
   });
   document.querySelectorAll('[data-demand-field]:not([disabled])').forEach((field) => field.addEventListener('change', async () => {
@@ -2378,6 +2393,8 @@ function setView(view, intent = 'view') {
   history.replaceState({}, '', `${location.pathname}?${params}`);
   buildNavigation();
   render(intent);
+  if (['screen-03-team', 'screen-04'].includes(view) && currentInsightJob().execution_id) startInsightServerPolling();
+  else stopInsightServerPolling();
   if (isConversationView(view) && state.bootstrapped) {
     window.showroomApi?.resumeHermes();
   } else if (wasConversationView) {
@@ -2563,7 +2580,7 @@ window.showroomApi?.on('hermes-status', ({ status, detail, retryStopped }) => {
   if (['controller', 'screen-03', 'screen-03-team', 'screen-04'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
 });
 window.showroomApi?.on('hermes-ready', ({ lane, messages, running, raw_message_count: rawMessageCount }) => {
-  if (lane === 'insight') {
+  if (lane === 'insight-review') {
     state.insightAssistantMessages = (Array.isArray(messages) ? messages : [])
       .filter((message) => message.content && !String(message.content).startsWith('[AI_LAB_CONTROL]'))
       .slice(-20);
@@ -2575,11 +2592,6 @@ window.showroomApi?.on('hermes-ready', ({ lane, messages, running, raw_message_c
         state.insightReviewRunning = true;
         state.insightReviewTaskId = reviewGate.task_id;
         state.insightAssistantBusy = false;
-      } else if (!currentStaffingPlan().squads?.length && resumedJob.job_id) state.insightTask = 'planning';
-      else if (resumedJob.job_id && ['planning', 'running'].includes(resumedJob.status)) {
-        state.insightTask = completed.has('summary') || completed.has('evidence')
-          ? 'executing-requirement'
-          : 'executing-market';
       } else {
         state.insightAssistantBusy = true;
         state.insightAssistantStatus = '正在恢复未完成的共创对话';
@@ -2633,20 +2645,7 @@ window.showroomApi?.on('hermes-ready', ({ lane, messages, running, raw_message_c
   if (latestConfirmation && !hasDemandConfirmationContent(currentDemand())) {
     maybeExtractDemand(latestConfirmation.rawContent || latestConfirmation.content, { silent: true });
   }
-  const job = currentInsightJob();
-  if (!running && ['screen-03-team', 'screen-04'].includes(state.view) && job.job_id && ['planning', 'running', 'interrupted'].includes(job.status)) {
-    if (currentStaffingPlan().squads?.length) beginInsightExecution(job, currentStaffingPlan()).catch((error) => showToast(`恢复洞察失败：${error.message}`));
-    else if (!state.insightTask) {
-      state.insightTask = 'planning';
-      window.showroomApi.startInsightJob().then((result) => {
-        state.insightCatalog = result.catalog;
-        return window.showroomApi.submitHermesPrompt(insightPlanningPrompt(result.job, result.catalog), { skillCommand: 'solution-consultant-persona' });
-      }).catch((error) => {
-        state.insightTask = '';
-        showToast(`恢复团队规划失败：${error.message}`);
-      });
-    }
-  }
+  if (['screen-03-team', 'screen-04'].includes(state.view) && currentInsightJob().execution_id) startInsightServerPolling();
 });
 window.showroomApi?.on('hermes-event', (event) => {
   const payload = event.payload || {};
@@ -2657,9 +2656,6 @@ window.showroomApi?.on('hermes-event', (event) => {
     state.avatarSpeaking = true;
     state.hermesStatus = 'generating';
     state.streamingReply += String(payload.text || '');
-    if (state.insightTask.startsWith('executing-') || ['screen-03-team', 'screen-04'].includes(state.view)) {
-      processInsightStream(state.streamingReply);
-    }
     const streamingBubble = document.querySelector('.bubble.ai.streaming');
     if (streamingBubble) streamingBubble.textContent = state.streamingReply;
     const insightStreaming = document.querySelector('.assistant-working p');

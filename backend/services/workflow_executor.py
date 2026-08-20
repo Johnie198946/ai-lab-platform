@@ -382,6 +382,9 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
                 )
             ).scalar_one()
         )
+        from backend.services.showroom_insight_execution import project_execution
+
+        await project_execution(db, execution.id)
         await db.commit()
     except Exception as exc:
         # 外部执行器暂不可达不是业务失败；保留队列并释放租约，下轮安全重试同一幂等键。

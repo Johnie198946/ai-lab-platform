@@ -72,13 +72,13 @@
 
   function isConversationView() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    return ["controller", "screen-03", "screen-03-team", "screen-04"].includes(view)
+    return ["controller", "screen-03", "screen-04"].includes(view)
       || /^experience-0?[1-5]$/.test(view);
   }
 
   function hermesLane() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    if (["screen-03-team", "screen-04"].includes(view)) return "insight";
+    if (view === "screen-04") return "insight-review";
     return view === "controller" ? "backstage" : "frontstage";
   }
 
@@ -799,6 +799,29 @@
       return result;
     }
 
+    async getInsightJob(jobId) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}`,
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async retryInsightJob(jobId) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/retry`,
+        { method: "POST" },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
     async saveStaffingPlan(jobId, plan) {
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/plan`,
@@ -966,7 +989,6 @@
     }
 
     async interruptInsightJob(jobId, message = "用户已停止生成") {
-      await this.interruptHermes().catch(() => null);
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/interrupt`,
         { method: "POST", body: { message } },
