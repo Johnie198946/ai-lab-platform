@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import BigInteger, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
@@ -57,6 +57,10 @@ def test_controlled_dag_has_six_ordered_bridge_nodes() -> None:
     assert compiled.nodes[-1].node_type.value == "OUTPUT_FORMAT"
     assert compiled.nodes[2].parameters["skill_id"] == "ipd-01-market-insight"
     assert compiled.nodes[3].parameters["skill_id"] == "ipd-02-requirement-analysis"
+
+
+def test_showroom_epoch_column_accepts_unix_milliseconds() -> None:
+    assert isinstance(ShowroomInsightExecution.__table__.c.epoch.type, BigInteger)
 
 
 def test_v2_artifact_projects_all_report_sections() -> None:
@@ -122,6 +126,34 @@ async def test_server_execution_is_idempotent_and_persists_six_nodes() -> None:
         assert [node.node_id for node in nodes] == list(NODE_IDS)
         bindings = list((await database.execute(select(ShowroomInsightExecution))).scalars())
         assert len(bindings) == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_server_execution_accepts_millisecond_epoch() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with maker() as database:
+        session = ShowroomSession(
+            session_id="showroom-bigint-epoch", tenant_key="demo", slot="main", step=2,
+            data={"demand": {"confirmed": True, "core_problem": "异构算力运营"}},
+        )
+        database.add(session)
+        await database.flush()
+        epoch = 1_787_229_084_053
+        first, resumed = await ensure_execution(
+            database, session=session, demand_hash="f" * 64, epoch=epoch
+        )
+        await database.commit()
+        assert resumed is False
+        assert first.epoch == epoch
+        second, resumed = await ensure_execution(
+            database, session=session, demand_hash="f" * 64, epoch=epoch
+        )
+        assert resumed is True
+        assert second.job_id == first.job_id
     await engine.dispose()
 
 

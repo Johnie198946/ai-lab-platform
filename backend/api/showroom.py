@@ -93,6 +93,7 @@ PERSONA_SKILL_PATH = Path(
     "/root/.hermes/skills/productivity/solution-consultant-persona/SKILL.md"
 )
 PERSONA_MIN_VERSION = (1, 7, 0)
+MAX_SHOWROOM_EPOCH = (1 << 63) - 1
 
 
 def _load_content() -> dict[str, Any]:
@@ -107,7 +108,7 @@ content_manifest = _load_content()
 
 class ShowroomCommand(BaseModel):
     type: Literal["PREPARE", "COMMIT"]
-    epoch: int = Field(..., ge=1)
+    epoch: int = Field(..., ge=1, le=MAX_SHOWROOM_EPOCH)
     stage: str = Field(..., pattern=r"^station-[1-5]$")
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -172,7 +173,7 @@ class InsightRevisionExtractionRequest(BaseModel):
     job_id: str = Field(..., min_length=4, max_length=120)
     demand_hash: str = Field(..., min_length=16, max_length=128)
     base_version: str = Field(..., min_length=3, max_length=40)
-    epoch: int = Field(default=0, ge=0)
+    epoch: int = Field(default=0, ge=0, le=MAX_SHOWROOM_EPOCH)
     user_instruction: str = Field(default="", max_length=12_000)
     target_section: str = Field(default="", max_length=120)
     selected_text: str = Field(default="", max_length=4_000)
@@ -181,7 +182,7 @@ class InsightRevisionExtractionRequest(BaseModel):
 
 
 class InsightMutationRequest(BaseModel):
-    epoch: int = Field(default=0, ge=0)
+    epoch: int = Field(default=0, ge=0, le=MAX_SHOWROOM_EPOCH)
     job_id: str = Field(default="", max_length=120)
     demand_hash: str = Field(default="", max_length=128)
     base_version: str = Field(default="", max_length=40)
@@ -243,7 +244,7 @@ class VisitCompleteRequest(BaseModel):
 
 
 class VisitRolloverRequest(BaseModel):
-    epoch: int = Field(default=0, ge=0)
+    epoch: int = Field(default=0, ge=0, le=MAX_SHOWROOM_EPOCH)
     source: str = Field(default="controller", max_length=80)
 
 

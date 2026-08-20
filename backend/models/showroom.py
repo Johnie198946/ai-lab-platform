@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import BigInteger, JSON, DateTime, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from backend.db import Base
@@ -57,7 +57,10 @@ class ShowroomInsightExecution(Base):
     job_id: Mapped[str] = mapped_column(String(48), primary_key=True)
     session_id: Mapped[str] = mapped_column(String(120), nullable=False, index=True)
     tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Rollover epochs are Unix milliseconds (13 digits), which exceed PostgreSQL
+    # INTEGER's signed 32-bit range. Keep this aligned with the browser/runtime
+    # contract instead of truncating the epoch and breaking stale-run detection.
+    epoch: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     demand_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     execution_id: Mapped[str] = mapped_column(String(48), nullable=False, unique=True, index=True)
     status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)

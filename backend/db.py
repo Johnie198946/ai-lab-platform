@@ -50,6 +50,7 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_workflow_v2_columns)
         await conn.run_sync(_migrate_workflow_lifecycle_columns)
         await conn.run_sync(_migrate_knowledge_policy_v2_columns)
+        await conn.run_sync(_migrate_showroom_epoch_bigint)
 
 
 def _migrate_workflow_v2_columns(connection) -> None:
@@ -208,6 +209,35 @@ def _migrate_knowledge_policy_v2_columns(connection) -> None:
                 "ALTER TABLE tenant_entitlement_snapshots "
                 "ADD COLUMN pack_allowance INTEGER NOT NULL DEFAULT 0"
             )
+
+
+def _migrate_showroom_epoch_bigint(connection) -> None:
+    """Widen persisted Showroom rollover epochs to signed 64-bit integers.
+
+    Showroom uses Unix milliseconds so a normal epoch is already 13 digits.  Existing
+    PostgreSQL installs created this column as INTEGER and fail before idempotency can
+    be evaluated.  New tables use ``BigInteger`` from the ORM; this startup migration
+    repairs existing tables without changing their values or unique constraint.
+    """
+    if connection.dialect.name != "postgresql":
+        return
+    schema = inspect(connection)
+    if "showroom_insight_executions" not in set(schema.get_table_names()):
+        return
+    epoch_column = next(
+        (
+            item
+            for item in schema.get_columns("showroom_insight_executions")
+            if item["name"] == "epoch"
+        ),
+        None,
+    )
+    if epoch_column is None or str(epoch_column["type"]).upper() == "BIGINT":
+        return
+    connection.exec_driver_sql(
+        "ALTER TABLE showroom_insight_executions "
+        "ALTER COLUMN epoch TYPE BIGINT USING epoch::BIGINT"
+    )
 
 
 async def get_session():
