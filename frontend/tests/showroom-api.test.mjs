@@ -198,6 +198,14 @@ test('staffing and incremental insight envelopes never reach the customer UI', (
   assert.equal(api.visibleAssistantMessage(content), '');
 });
 
+test('employee status machine envelopes never reach the insight copilot UI', () => {
+  const { api } = createApi();
+  const content = `洞察已完成
+<!-- AI_LAB_EMPLOYEE_STATUS_V1 {"employees":[{"employee_id":"researcher","status":"done"}]} AI_LAB_EMPLOYEE_STATUS_V1 -->`;
+
+  assert.equal(api.visibleAssistantMessage(content), '洞察已完成');
+});
+
 test('insight job API methods persist every returned session', async () => {
   const { api } = createApi();
   api.sessionId = 'visit-1';

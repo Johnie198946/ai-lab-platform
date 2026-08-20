@@ -47,6 +47,20 @@ test('004 is a conversational IPD review workbench with controlled revisions', (
   assert.match(app, /AI_LAB_INSIGHT_REVISION_V2/);
   assert.match(app, /createInsightReviewTask/);
   assert.match(app, /registerInsightTbd/);
+  assert.match(app, /data-readiness-continue/);
+  assert.match(app, /让AI继续完善报告/);
+  assert.match(app, /insightBackfillInstruction/);
+  assert.match(app, /autoApply: true/);
+  assert.match(app, /applyInsightRevision\(result\.revision\.revision_id\)/);
+  assert.match(app, /backfill_required_fields/);
+  assert.match(app, /已完成IPD-01洞察快照/);
+  assert.match(app, /reasoning\.delta/);
+  assert.match(app, /tool\.start/);
+  assert.match(app, /WORK TRACE · 角色化模拟视图/);
+  assert.match(app, /不展示模型内部隐性思考/);
+  assert.match(app, /INSIGHT_BACKFILL_EMPLOYEES/);
+  assert.match(styles, /backfill-trace/);
+  assert.match(styles, /trace-employees/);
 });
 
 test('a failed final callback cannot overwrite an already completed report', () => {
