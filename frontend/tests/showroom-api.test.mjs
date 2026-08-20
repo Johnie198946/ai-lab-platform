@@ -103,6 +103,55 @@ test('automatic reconnect uses five delays and then stops', () => {
   assert.equal(api.hermesReconnectTimer, null);
 });
 
+test('a short-lived connection does not reset reconnect backoff', () => {
+  const { api, timers } = createApi();
+  const gateway = { connectionState: 'open' };
+  api.hermes = gateway;
+  api.hermesReconnectCount = 4;
+
+  api.armHermesStabilityReset(gateway);
+
+  const timer = timers.get(api.hermesStableTimer);
+  assert.equal(timer.delay, 30000);
+  assert.equal(api.hermesReconnectCount, 4);
+
+  timer.callback();
+  assert.equal(api.hermesReconnectCount, 0);
+  assert.equal(api.hermesReconnectExhausted, false);
+});
+
+test('transient resume failure does not create and persist a replacement session', async () => {
+  const { api, window } = createApi();
+  let createRequests = 0;
+  let sessionWrites = 0;
+  api.bootstrap = { capabilities: { hermes_gateway: '/api/ws' } };
+  api.session = {
+    data: {
+      hermes_sessions: { frontstage_stored_session_id: 'stored-session' },
+    },
+  };
+  api.getHermesServeToken = async () => 'serve-token';
+  api.saveSession = async () => { sessionWrites += 1; };
+  window.HermesShared.buildHermesWebSocketUrl = () => 'wss://showroom.example/api/ws';
+  window.HermesShared.JsonRpcGatewayClient = class {
+    constructor() { this.connectionState = 'closed'; }
+    onEvent() {}
+    onState() {}
+    async connect() { this.connectionState = 'open'; }
+    close() { this.connectionState = 'closed'; }
+    async request(method) {
+      if (method === 'session.resume') throw new Error('temporary gateway disconnect');
+      if (method === 'session.create') createRequests += 1;
+      return {};
+    }
+  };
+
+  await assert.rejects(api.ensureHermes(), /temporary gateway disconnect/);
+  assert.equal(createRequests, 0);
+  assert.equal(sessionWrites, 0);
+  assert.equal(api.hermesStatus, 'reconnecting');
+});
+
 test('suspending a page closes both sockets and clears reconnect timers', () => {
   const { api, window } = createApi();
   let gatewayClosed = 0;
@@ -117,6 +166,7 @@ test('suspending a page closes both sockets and clears reconnect timers', () => 
   assert.equal(gatewayClosed, 1);
   assert.equal(showroomClosed, 1);
   assert.equal(api.hermesReconnectTimer, null);
+  assert.equal(api.hermesStableTimer, null);
   assert.equal(api.retryTimer, null);
   assert.equal(api.hermesStatus, 'idle');
 });
@@ -293,6 +343,21 @@ test('visitor insight extraction persists the active main session', async () => 
 
   await api.extractVisitorInsight('<!-- AI_LAB_VISITOR_INSIGHT_V1 {} AI_LAB_VISITOR_INSIGHT_V1 -->');
   assert.equal(api.session.data.customer_insight.status, 'completed');
+});
+
+test('visitor insight extraction propagates a terminal failed session', async () => {
+  const { api } = createApi();
+  api.sessionId = 'visit-current';
+  api.request = async () => ({
+    recognized: false,
+    reason: '客户洞察数据块不是有效 JSON',
+    session: { session_id: 'visit-current', data: { customer_insight: { status: 'failed' } } },
+  });
+
+  const result = await api.extractVisitorInsight('invalid envelope');
+
+  assert.equal(result.recognized, false);
+  assert.equal(api.session.data.customer_insight.status, 'failed');
 });
 
 test('bootstrap follows the server-owned active main visit session', async () => {

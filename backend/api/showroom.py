@@ -1006,9 +1006,30 @@ async def extract_showroom_visitor_insight(
             raise HTTPException(status_code=409, detail="Hermes 会话与当前接待不匹配")
         extraction = extract_visitor_insight(body.content)
         if not extraction.get("recognized"):
+            reason = str(extraction.get("reason") or "客户洞察提取失败")[:500]
+            current = _merge(_empty_customer_insight(), data.get("customer_insight") or {})
+            current["status"] = "failed"
+            current["warnings"] = [
+                *list(current.get("warnings") or [])[-9:],
+                reason,
+            ]
+            current["updated_at"] = datetime.now(timezone.utc).isoformat()
+            data["customer_insight"] = current
+            data["visitor"] = _merge(data.get("visitor") or {}, {"status": "research_failed"})
+            row.data = data
+            await database.commit()
+            await database.refresh(row)
+            await hub.broadcast(
+                {
+                    "type": "INSIGHT_UPDATED",
+                    "session_id": session_id,
+                    "epoch": hub.state.get("epoch", 0),
+                    "customer_insight": current,
+                }
+            )
             return {
                 "recognized": False,
-                "reason": extraction.get("reason"),
+                "reason": reason,
                 "session": _session_payload(row, session_id, "main"),
             }
         current = data.get("customer_insight") or {}

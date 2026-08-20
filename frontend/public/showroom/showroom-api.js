@@ -4,6 +4,7 @@
   const AUTH_KEY = "ai-lab-platform.auth";
   const SESSION_KEY = "ai-lab-showroom.session";
   const HERMES_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
+  const HERMES_STABLE_CONNECTION_MS = 30000;
   const DEMAND_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
@@ -151,6 +152,7 @@
       this.hermesLane = "";
       this.hermesStatus = "idle";
       this.hermesReconnectTimer = null;
+      this.hermesStableTimer = null;
       this.hermesReconnectCount = 0;
       this.hermesReconnectExhausted = false;
       this.hermesIntentionalClose = false;
@@ -255,7 +257,9 @@
     }
 
     setHermesStatus(status, detail = "") {
+      if (this.hermesStatus === status && this.hermesStatusDetail === detail) return;
       this.hermesStatus = status;
+      this.hermesStatusDetail = detail;
       this.emit("hermes-status", {
         status,
         detail,
@@ -270,11 +274,11 @@
         || this.hermesReconnectTimer
         || this.hermesReconnectExhausted
         || !accessToken()
-      ) return;
+      ) return false;
       if (this.hermesReconnectCount >= HERMES_RECONNECT_DELAYS.length) {
         this.hermesReconnectExhausted = true;
         this.setHermesStatus("error", "无法连接大架构师，已停止自动重试");
-        return;
+        return false;
       }
       const delay = HERMES_RECONNECT_DELAYS[this.hermesReconnectCount];
       this.hermesReconnectCount += 1;
@@ -283,6 +287,17 @@
         this.hermesReconnectTimer = null;
         this.ensureHermes().catch(() => {});
       }, delay);
+      return true;
+    }
+
+    armHermesStabilityReset(gateway) {
+      global.clearTimeout(this.hermesStableTimer);
+      this.hermesStableTimer = global.setTimeout(() => {
+        this.hermesStableTimer = null;
+        if (gateway !== this.hermes || gateway.connectionState !== "open") return;
+        this.hermesReconnectCount = 0;
+        this.hermesReconnectExhausted = false;
+      }, HERMES_STABLE_CONNECTION_MS);
     }
 
     async getHermesServeToken(options = {}) {
@@ -383,6 +398,7 @@
           || "",
         ).trim();
         let result;
+        let resumeError = null;
         if (storedId) {
           try {
             result = await gateway.request("session.resume", {
@@ -390,11 +406,15 @@
               source: "desktop",
               close_on_disconnect: false,
             });
-          } catch {
+          } catch (error) {
+            resumeError = error;
             result = null;
           }
         }
         if (!result?.session_id) {
+          if (storedId && !/not[ -]?found|unknown session|session.+(?:expired|invalid)|不存在|已过期|无效会话/i.test(String(resumeError?.message || ""))) {
+            throw resumeError || new Error("Hermes 会话恢复未返回有效会话，请稍后重试");
+          }
           result = await gateway.request("session.create", {
             source: "desktop",
             close_on_disconnect: false,
@@ -430,8 +450,7 @@
             },
           });
         }
-        this.hermesReconnectCount = 0;
-        this.hermesReconnectExhausted = false;
+        this.armHermesStabilityReset(gateway);
         this.setHermesStatus(result.running ? "generating" : "online", result.running ? "正在恢复生成" : "大架构师已连接");
         this.emit("hermes-ready", {
           lane,
@@ -452,8 +471,11 @@
           this.setHermesStatus("idle", "页面不可见，连接已暂停");
           throw error;
         }
-        this.setHermesStatus(error.status === 401 ? "auth-required" : "error", error.message);
-        this.scheduleHermesReconnect();
+        if (error.status === 401) {
+          this.setHermesStatus("auth-required", error.message);
+        } else if (!this.scheduleHermesReconnect() && this.hermesStatus !== "error") {
+          this.setHermesStatus("error", error.message);
+        }
         throw error;
       } finally {
         this.hermesConnectPromise = null;
@@ -476,6 +498,8 @@
       this.hermesSuspended = true;
       global.clearTimeout(this.hermesReconnectTimer);
       this.hermesReconnectTimer = null;
+      global.clearTimeout(this.hermesStableTimer);
+      this.hermesStableTimer = null;
       this.hermesIntentionalClose = true;
       const gateway = this.hermes;
       this.hermes = null;

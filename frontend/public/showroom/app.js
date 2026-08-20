@@ -510,6 +510,15 @@ function architectStatusLabel() {
   }[state.hermesStatus] || '等待连接';
 }
 
+function updateHermesStatusIndicators() {
+  document.querySelectorAll('[data-hermes-status-indicator]').forEach((indicator) => {
+    indicator.dataset.hermesStatus = state.hermesStatus;
+    indicator.textContent = architectStatusLabel();
+    indicator.title = state.hermesDetail || architectStatusLabel();
+    indicator.classList.toggle('error', ['error', 'quota-required', 'auth-required'].includes(state.hermesStatus));
+  });
+}
+
 function friendlyHermesError(message = '') {
   const raw = String(message || '').trim();
   if (/insufficient balance|余额不足|status[_ ]?code[^\d]*402|error code:\s*402/i.test(raw)) {
@@ -643,10 +652,20 @@ async function maybeExtractVisitorInsight(rawContent, options = {}) {
   try {
     const result = await window.showroomApi.extractVisitorInsight(content);
     state.visitorInsightBusy = false;
-    if (result?.recognized && !result.unchanged && !options.silent) showToast('客户洞察已回填并安全写入 Wiki');
+    state.controllerHermesTask = '';
+    if (!result?.recognized) {
+      const reason = result?.reason || '客户洞察结构化数据无法识别';
+      state.chatError = reason;
+      if (!options.silent) showToast(`${reason}，请点击重新洞察`);
+    } else if (!result.unchanged && !options.silent) {
+      showToast('客户洞察已回填并安全写入 Wiki');
+    }
+    render('refresh');
   } catch (error) {
     state.visitorInsightBusy = false;
+    state.controllerHermesTask = '';
     if (!options.silent) showToast(`客户洞察落盘失败：${error.message}`);
+    render('refresh');
   }
 }
 
@@ -679,7 +698,7 @@ async function beginVisitorInsight() {
   render('refresh');
   try {
     state.session = await window.showroomApi.saveVisitor(visitor);
-    const contract = `[AI_LAB_CONTROL] 主持人后台备课。请先检索内部 Wiki，再联网核验 ${visitor.company_name} 的公开近期动态。联网时只能使用企业名称与公开业务关键词，不得发送来访人姓名。输出可见摘要后，必须附带：\n<!-- AI_LAB_VISITOR_INSIGHT_V1 {"customer_positioning":[],"business_structure":[],"recent_actions":[],"verified_facts":[],"structural_tensions":[],"hypotheses":[],"reception_advice":[],"sources":[{"id":"S1","title":"","url":"","date":"","confidence":"high|medium|low"}],"warnings":[]} AI_LAB_VISITOR_INSIGHT_V1 -->`;
+    const contract = `[AI_LAB_CONTROL] 主持人后台备课。请先检索内部 Wiki，再联网核验 ${visitor.company_name} 的公开近期动态。联网时只能使用企业名称与公开业务关键词，不得发送来访人姓名。可见摘要限制在1200个汉字以内：只写客户定位、3条已核验动态、3条待验证假设和3条接待建议；不要输出完整检索过程、长表格或重复背景。末尾必须附带一个严格 JSON 数据块：\n<!-- AI_LAB_VISITOR_INSIGHT_V1 {"customer_positioning":[],"business_structure":[],"recent_actions":[],"verified_facts":[],"structural_tensions":[],"hypotheses":[],"reception_advice":[],"sources":[{"id":"S1","title":"","url":"","date":"","confidence":"high|medium|low"}],"warnings":[]} AI_LAB_VISITOR_INSIGHT_V1 -->\n机器块要求：只允许标准 JSON；所有键和字符串使用英文双引号；字符串内换行必须写成\\n；禁止尾逗号、注释、Markdown代码围栏和省略号占位；每个数组最多5项，sources最多8项。`;
     await window.showroomApi.submitHermesPrompt(contract, {
       skillCommand: 'solution-consultant-persona',
       stationContext: '当前处于主演示主控台的主持人后台备课态。不要进入前台问诊；不要展示工具日志。',
@@ -1377,7 +1396,7 @@ function controllerView() {
         <button class="form-cta visitor-insight-cta" data-visitor-insight ${state.visitorInsightBusy || insight.status === 'running' ? 'disabled' : ''}>${state.visitorInsightBusy || insight.status === 'running' ? 'V1.7 正在洞察…' : '再次洞察'}</button>
       </section>
       <section class="panel host-prep-panel">
-        <div class="panel-head"><div><strong>V1.7 主持人备课</strong><small>真实 Hermes 会话 · 不展示工具日志</small></div><span class="status ${hostError ? 'error' : ''}">${escapeHtml(architectStatusLabel())}</span></div>
+        <div class="panel-head"><div><strong>V1.7 主持人备课</strong><small>真实 Hermes 会话 · 不展示工具日志</small></div><span class="status ${hostError ? 'error' : ''}" data-hermes-status-indicator data-hermes-status="${escapeHtml(state.hermesStatus)}">${escapeHtml(architectStatusLabel())}</span></div>
         ${hostError ? `<div class="controller-error"><b>${state.hermesStatus === 'quota-required' ? '模型服务额度不足' : '本轮备课未完成'}</b><span>${escapeHtml(state.hermesDetail || state.chatError || '请稍后重试')}</span><button data-host-retry>重新备课</button></div>` : ''}
         <div class="host-message-list">${hostMessages.length ? hostMessages.map((message) => `<div class="host-message">${escapeHtml(message.content)}</div>`).join('') : '<div class="host-message empty">连接 V1.7 后，由大架构师主动询问今天接待哪位客户。</div>'}</div>
       </section>
@@ -1488,7 +1507,7 @@ function clinicView() {
     <div class="screen-content">
       <div class="clinic-head"><div><p class="kicker">IPD 001 · 需求问诊</p><h2 class="hero-title">${state.content?.screens?.['screen-03']?.headline || '把一句想法，收敛成一个可行动的问题。'}</h2></div><div><span class="tag orange">${escapeHtml(demand.industry || '待识别行业')}</span> <span class="tag blue">第 ${Math.max(1, Math.ceil(messages.length / 2))} 轮</span></div></div>
       <div class="clinic-grid${showDemandSheet ? ' has-demand-sheet' : ' conversation-only'}">
-        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status" data-hermes-status="${escapeHtml(state.hermesStatus)}">${escapeHtml(architectStatusLabel())}</span></div><div class="chat-body">${emptyChatState()}${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}<div class="bubble-note"><i></i>${escapeHtml(getScreenConfig('screen-03').skill_command || 'solution-consultant-persona')} · Hermes 独立会话</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向大架构师描述你的真实业务问题…" ${busy ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-demand-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送需求'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div></section>
+        <section class="panel chat-panel"><div class="panel-head"><strong>与${escapeHtml(architectRole)}对话</strong><span class="status" data-hermes-status-indicator data-hermes-status="${escapeHtml(state.hermesStatus)}">${escapeHtml(architectStatusLabel())}</span></div><div class="chat-body">${emptyChatState()}${messages.map((message) => `<div class="bubble ${message.role === 'user' ? 'user' : 'ai'}">${escapeHtml(message.content)}</div>`).join('')}${clarifyCard()}${liveChatFeedback()}<div class="bubble-note"><i></i>${escapeHtml(getScreenConfig('screen-03').skill_command || 'solution-consultant-persona')} · Hermes 独立会话</div></div><div class="chat-composer"><input id="demand-chat-input" placeholder="向大架构师描述你的真实业务问题…" ${busy ? 'disabled' : ''}><button ${state.hermesStatus === 'generating' ? 'data-demand-stop' : 'data-demand-send'} aria-label="${state.hermesStatus === 'generating' ? '停止生成' : '发送需求'}">${icon(state.hermesStatus === 'generating' ? 'stop' : 'send')}</button></div></section>
         ${demandSheet}
       </div>
     </div>
@@ -2670,10 +2689,17 @@ window.showroomApi?.on('bootstrap', ({ screens, content, runtime, session, knowl
   render('refresh');
 });
 window.showroomApi?.on('hermes-status', ({ status, detail, retryStopped }) => {
+  const previousStatus = state.hermesStatus;
   state.hermesStatus = status;
   state.hermesDetail = detail || '';
   state.hermesRetryStopped = Boolean(retryStopped);
-  if (['controller', 'screen-03', 'screen-03-team', 'screen-04'].includes(state.view) || state.view.startsWith('experience-')) render('refresh');
+  const structuralStatuses = new Set(['generating', 'waiting', 'error', 'quota-required', 'auth-required']);
+  const requiresStructuralRender = structuralStatuses.has(status) || structuralStatuses.has(previousStatus);
+  if (requiresStructuralRender && (['controller', 'screen-03', 'screen-03-team', 'screen-04'].includes(state.view) || state.view.startsWith('experience-'))) {
+    render('refresh');
+  } else {
+    updateHermesStatusIndicators();
+  }
 });
 window.showroomApi?.on('hermes-ready', ({ lane, messages, running, raw_message_count: rawMessageCount }) => {
   if (lane === 'insight-review') {

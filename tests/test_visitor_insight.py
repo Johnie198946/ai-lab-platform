@@ -42,6 +42,22 @@ def test_extracts_versioned_visitor_insight_and_rejects_unsafe_urls() -> None:
     assert result["sources"][1]["url"] == ""
 
 
+def test_repairs_literal_newlines_and_trailing_commas_in_model_json() -> None:
+    content = """摘要
+<!-- AI_LAB_VISITOR_INSIGHT_V1 {
+  "customer_positioning": ["第一行
+第二行",],
+  "verified_facts": ["已核验",],
+  "sources": [{"title": "官网", "url": "https://example.com",},],
+} AI_LAB_VISITOR_INSIGHT_V1 -->"""
+
+    result = extract_visitor_insight(content)
+
+    assert result["recognized"] is True
+    assert result["summary"]["customer_positioning"] == ["第一行\n第二行"]
+    assert result["sources"][0]["url"] == "https://example.com"
+
+
 def test_wiki_separates_public_facts_from_private_visit_data(
     tmp_path: Path, monkeypatch
 ) -> None:

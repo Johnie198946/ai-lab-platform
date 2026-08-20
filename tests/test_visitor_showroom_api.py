@@ -109,6 +109,45 @@ def test_active_visit_insight_and_wiki_round_trip(tmp_path, monkeypatch) -> None
     asyncio.run(scenario())
 
 
+def test_invalid_insight_payload_closes_running_state(tmp_path, monkeypatch) -> None:
+    skill = tmp_path / "solution-consultant-persona" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: solution-consultant-persona\nversion: 1.7.0\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("SHOWROOM_PERSONA_SKILL_PATH", str(skill))
+
+    async def scenario() -> None:
+        engine, _ = await memory_store(monkeypatch)
+        active = await showroom_api._active_main_session("demo")
+        session_id = active.session_id
+        await showroom_api.update_showroom_visitor(
+            session_id,
+            VisitorPatch(company_name="示例科技"),
+            payload(),
+        )
+
+        result = await showroom_api.extract_showroom_visitor_insight(
+            session_id,
+            VisitorInsightRequest(
+                content=(
+                    "摘要\n<!-- AI_LAB_VISITOR_INSIGHT_V1 {invalid} "
+                    "AI_LAB_VISITOR_INSIGHT_V1 -->"
+                )
+            ),
+            payload(),
+        )
+
+        assert result["recognized"] is False
+        assert result["session"]["data"]["customer_insight"]["status"] == "failed"
+        assert result["session"]["data"]["visitor"]["status"] == "research_failed"
+        assert "有效 JSON" in result["session"]["data"]["customer_insight"]["warnings"][-1]
+        await engine.dispose()
+
+    asyncio.run(scenario())
+
+
 def test_v17_gate_blocks_incompatible_persona(tmp_path, monkeypatch) -> None:
     skill = tmp_path / "solution-consultant-persona" / "SKILL.md"
     skill.parent.mkdir(parents=True)
