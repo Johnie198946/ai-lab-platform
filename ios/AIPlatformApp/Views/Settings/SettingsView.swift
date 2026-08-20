@@ -478,6 +478,11 @@ public struct SubscriptionCenterView: View {
     @State private var selectedPlanID: String?
     @State private var selectedPackIDs: Set<String> = []
     @State private var inspectedPack: KnowledgePackDTO?
+    @State private var publicationCandidates: [KnowledgePublicationCandidateDTO] = []
+    @State private var inspectedCandidate: KnowledgePublicationCandidateDTO?
+    @State private var publicationSecurity = "green"
+    @State private var publicationEntitlement = ""
+    @State private var publicationOwner = ""
 
     public init(highlightedEntitlementKey: String? = nil) {
         self.highlightedEntitlementKey = highlightedEntitlementKey
@@ -499,6 +504,9 @@ public struct SubscriptionCenterView: View {
                         currentPlanCard(center)
                         requestSection(center.requests)
                         plansSection(center)
+                        if center.isSuperAdmin, !publicationCandidates.isEmpty {
+                            publicationApprovalSection
+                        }
                         knowledgePacksSection(center)
                         if center.isSuperAdmin {
                             adminSection
@@ -541,6 +549,11 @@ public struct SubscriptionCenterView: View {
         }
         .sheet(item: $inspectedPack) { pack in
             knowledgePackDetail(pack)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
+        .sheet(item: $inspectedCandidate) { candidate in
+            publicationApprovalSheet(candidate)
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
@@ -815,6 +828,108 @@ public struct SubscriptionCenterView: View {
         }
     }
 
+    private var publicationApprovalSection: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            sectionHeader(
+                step: "ADMIN",
+                title: "知识发布审批",
+                subtitle: "一次批准颜色，Catalog、Authen 与网关自动联动"
+            )
+            ForEach(publicationCandidates.prefix(6)) { candidate in
+                Button {
+                    publicationSecurity = candidate.securityLevel
+                    publicationEntitlement = candidate.entitlementKey
+                    publicationOwner = candidate.ownerTenant
+                    inspectedCandidate = candidate
+                } label: {
+                    HStack(spacing: AppTheme.Spacing.md) {
+                        Image(systemName: candidate.securityLevel == "green" ? "checkmark.circle.fill" : (candidate.securityLevel == "yellow" ? "lock.open.fill" : "lock.shield.fill"))
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(candidate.securityLevel == "green" ? AppTheme.Colors.statusCompleted : (candidate.securityLevel == "yellow" ? AppTheme.Colors.statusWarning : AppTheme.Icons.destructive))
+                            .frame(width: 44, height: 44)
+                            .background(AppTheme.Colors.secondaryBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(candidate.title)
+                                .font(AppTheme.Typography.supporting.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .lineLimit(2)
+                            Text("建议 \(candidate.securityLevel.uppercased()) · 质量 \(candidate.knowledgeLevel)")
+                                .font(AppTheme.Typography.micro)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                        }
+                        Spacer()
+                        Text("审批")
+                            .font(AppTheme.Typography.micro.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.primary)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                    }
+                    .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(SoftButtonStyle())
+                if candidate.id != publicationCandidates.prefix(6).last?.id { Divider() }
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .subscriptionSurface()
+    }
+
+    private func publicationApprovalSheet(_ candidate: KnowledgePublicationCandidateDTO) -> some View {
+        NavigationStack {
+            Form {
+                Section("知识条目") {
+                    LabeledContent("标题", value: candidate.title)
+                    LabeledContent("当前质量", value: candidate.knowledgeLevel)
+                    Text(candidate.path)
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                Section("访问决定") {
+                    Picker("安全等级", selection: $publicationSecurity) {
+                        Text("GREEN").tag("green")
+                        Text("YELLOW").tag("yellow")
+                        Text("RED").tag("red")
+                    }
+                    .pickerStyle(.segmented)
+                    if publicationSecurity == "yellow" {
+                        TextField("精确 entitlement_key", text: $publicationEntitlement)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    if publicationSecurity == "red" {
+                        TextField("所属租户 owner_tenant", text: $publicationOwner)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                    }
+                    Text(publicationSecurity == "green" ? "批准后立即向正式租户开放。" : (publicationSecurity == "yellow" ? "批准后发布知识包，仅向获批订阅租户开放。" : "批准后仅所属租户可用。"))
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                Section {
+                    Button { approvePublication(candidate) } label: {
+                        busyLabel(id: "publish-\(candidate.id)", title: "批准并自动放行", systemImage: "checkmark.shield.fill")
+                            .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
+                    }
+                    .disabled(
+                        busyID != nil
+                        || (publicationSecurity == "yellow" && publicationEntitlement.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        || (publicationSecurity == "red" && publicationOwner.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    )
+                } footer: {
+                    Text("K5、来源数量与新鲜度会继续展示，但不再形成第二道权限开关。")
+                }
+            }
+            .navigationTitle("发布审批")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) { Button("取消") { inspectedCandidate = nil } }
+            }
+        }
+    }
+
     @ViewBuilder
     private func knowledgePacksSection(_ center: SubscriptionCenterResponse) -> some View {
         let packs = (center.knowledgePacks ?? []).sorted { $0.sortOrder < $1.sortOrder }
@@ -829,20 +944,20 @@ public struct SubscriptionCenterView: View {
             )
 
             if packs.isEmpty {
-                ContentUnavailableView("暂无已登记知识包", systemImage: "square.stack.3d.up.slash", description: Text("完成首批 K5 治理后会在这里开放。"))
+                ContentUnavailableView("暂无已登记知识包", systemImage: "square.stack.3d.up.slash", description: Text("管理员批准 Yellow 内容后会自动登记。"))
                     .frame(minHeight: 160)
             } else {
                 HStack(spacing: AppTheme.Spacing.sm) {
                     Label("\(launchPacks.count) 个首发包", systemImage: "square.stack.3d.up.fill")
                     Spacer()
-                    Text(readyCount == 0 ? "全部建设中" : "\(readyCount) 个可申请")
+                    Text(readyCount == 0 ? "等待内容批准" : "\(readyCount) 个可申请")
                         .foregroundStyle(readyCount == 0 ? AppTheme.Colors.textTertiary : AppTheme.Colors.statusCompleted)
                 }
                 .font(AppTheme.Typography.micro.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
                 if readyCount == 0 {
-                    Label("知识包正在完成 K5 来源与权限复核。你仍可先选择套餐，开放后再添加知识包。", systemImage: "info.circle.fill")
+                    Label("不再要求凑够 5 篇 K5。管理员批准一条 Yellow 后，对应知识包会自动开放；Green 批准后直接进入公共知识。", systemImage: "info.circle.fill")
                         .font(AppTheme.Typography.supporting)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .padding(AppTheme.Spacing.md)
@@ -895,7 +1010,7 @@ public struct SubscriptionCenterView: View {
         let selected = selectedPackIDs.contains(pack.id)
         let active = (center.activePackGrants ?? []).contains { $0.knowledgePackId == pack.id && $0.status == "active" }
         let pending = center.requests.contains { ($0.requestedPackIds ?? []).contains(pack.id) && $0.status == "pending" }
-        let governanceReady = pack.status == "published" && pack.isSelectable && pack.approvedDocumentCount >= pack.minimumDocumentCount
+        let governanceReady = pack.status == "published" && pack.isSelectable
 
         return Button {
             inspectedPack = pack
@@ -931,9 +1046,9 @@ public struct SubscriptionCenterView: View {
 
                 VStack(alignment: .leading, spacing: 5) {
                     HStack {
-                        Text("K5 治理进度")
+                        Text("已批准条目")
                         Spacer()
-                        Text("\(pack.approvedDocumentCount)/\(pack.minimumDocumentCount)")
+                        Text("\(pack.approvedDocumentCount) 篇")
                     }
                     .font(AppTheme.Typography.micro)
                     .foregroundStyle(AppTheme.Colors.textTertiary)
@@ -979,12 +1094,12 @@ public struct SubscriptionCenterView: View {
                     Text(pack.name)
                         .font(AppTheme.Typography.supporting.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("尚未达到发布门槛")
+                    Text("等待管理员批准 Yellow 内容")
                         .font(AppTheme.Typography.micro)
                         .foregroundStyle(AppTheme.Colors.textTertiary)
                 }
                 Spacer()
-                Text("建设中")
+                Text("待批准")
                     .font(AppTheme.Typography.micro.weight(.semibold))
                     .foregroundStyle(AppTheme.Colors.textTertiary)
                 Image(systemName: "chevron.right")
@@ -995,14 +1110,12 @@ public struct SubscriptionCenterView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("\(pack.name)，建设中")
+        .accessibilityLabel("\(pack.name)，等待内容批准")
         .accessibilityHint("点按查看治理详情")
     }
 
     private func knowledgePackDetail(_ pack: KnowledgePackDTO) -> some View {
-        let governanceReady = pack.status == "published"
-            && pack.isSelectable
-            && pack.approvedDocumentCount >= pack.minimumDocumentCount
+        let governanceReady = pack.status == "published" && pack.isSelectable
         let allowedByPlan = selectedPlan?.selectablePackIds?.contains(pack.id) == true
         let selected = selectedPackIDs.contains(pack.id)
         let canToggle = governanceReady && allowedByPlan
@@ -1034,7 +1147,7 @@ public struct SubscriptionCenterView: View {
                     VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                         Text("治理状态")
                             .font(AppTheme.Typography.cardTitle)
-                        detailRow(label: "正式 K5 条目", value: "\(pack.approvedDocumentCount)/\(pack.minimumDocumentCount)", icon: "doc.text.fill")
+                        detailRow(label: "已批准条目", value: "\(pack.approvedDocumentCount) 篇", icon: "doc.text.fill")
                         detailRow(label: "内容新鲜度", value: "\(pack.freshnessPercent)%", icon: "clock.arrow.circlepath")
                         detailRow(label: "授权标识", value: pack.entitlementKey, icon: "key.fill")
                     }
@@ -1044,7 +1157,7 @@ public struct SubscriptionCenterView: View {
                     Label(
                         canToggle
                             ? "该知识包可随当前套餐提交审批。"
-                            : (governanceReady ? "请先选择支持该知识包的套餐。" : "完成来源、权限和新鲜度复核后才会开放申请。"),
+                            : (governanceReady ? "请先选择支持该知识包的套餐。" : "管理员批准 Yellow 内容后自动开放，无需另配网关。"),
                         systemImage: canToggle ? "checkmark.circle.fill" : "info.circle.fill"
                     )
                     .font(AppTheme.Typography.supporting)
@@ -1253,13 +1366,36 @@ public struct SubscriptionCenterView: View {
             }
             if response.isSuperAdmin {
                 adminRequests = try await api.fetchAdminSubscriptionRequests()
+                publicationCandidates = try await api.fetchKnowledgePublicationCandidates()
             } else {
                 adminRequests = []
+                publicationCandidates = []
             }
         } catch {
             errorMessage = actionableMessage(for: error)
         }
         isLoading = false
+    }
+
+    private func approvePublication(_ candidate: KnowledgePublicationCandidateDTO) {
+        guard busyID == nil else { return }
+        Task {
+            busyID = "publish-\(candidate.id)"
+            defer { busyID = nil }
+            do {
+                _ = try await api.approveKnowledgePublication(
+                    path: candidate.path,
+                    securityLevel: publicationSecurity,
+                    entitlementKey: publicationSecurity == "yellow" ? publicationEntitlement : "",
+                    ownerTenant: publicationSecurity == "red" ? publicationOwner : ""
+                )
+                inspectedCandidate = nil
+                showSuccess(publicationSecurity == "green" ? "GREEN 已进入公共知识" : (publicationSecurity == "yellow" ? "YELLOW 已发布为可订阅知识包" : "RED 已向所属租户开放"))
+                await load()
+            } catch {
+                errorMessage = actionableMessage(for: error)
+            }
+        }
     }
 
     private func apply(for plan: SubscriptionPlanDTO) {
