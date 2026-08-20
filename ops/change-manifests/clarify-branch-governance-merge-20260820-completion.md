@@ -40,16 +40,20 @@
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 待提交
-- GitHub remote/ref/SHA: 待推送及 `git ls-remote` 核验
-- server_before: 待部署前采集
-- server_after: 待部署后采集
-- health_check: 待执行
-- functional_check: 待执行
-- rollback_point: 待部署前建立
+- status: `DEPLOYED`
+- implementation commit SHA: `f0f5f312ac06f2b9030e4c848ca750104b900e65`
+- GitHub remote/ref/SHA: `origin refs/heads/main f0f5f312ac06f2b9030e4c848ca750104b900e65`，已通过 `git ls-remote --heads origin` 核验；遗留远端分支已删除，核验时仅剩 `main`。
+- server_before: `/opt/releases/ai-lab-platform-750e070`，`.deploy-commit=615d9a8f72f07895bf36346c52352a77e977da2d`；API/数据库/Redis 健康。
+- server_after: `/opt/releases/ai-lab-platform-f0f5f31`，`.deploy-commit=f0f5f312ac06f2b9030e4c848ca750104b900e65`。
+- health_check: API `GET /health` 200 `{"status":"ok","version":"0.8.0"}`；前端 `GET /health` 200；核心容器运行且健康。
+- functional_check:
+  - Showroom 页面 `/showroom/` 返回 200。
+  - OpenAPI 包含 `/api/chat/stream/clarify`。
+  - 新 iOS 包已覆盖安装并启动，进程 PID `64869`，启动页截图 `/tmp/clarify-main-f0f5f31.png` 无崩溃/黑屏。
+  - 未达到 VERIFIED：生产日志发现 Showroom 洞察任务把 13 位毫秒 epoch 写入 PostgreSQL `INTEGER`，`POST .../insight/jobs` 返回 500 (`value out of int32 range`)。该故障不由本次 iOS 选择性移植产生，但会阻断 Showroom 洞察功能。
+- rollback_point: `/opt/releases/ai-lab-platform-750e070`，commit `615d9a8f72f07895bf36346c52352a77e977da2d`。
 
 ## 风险与回滚
 
-- 风险: 真正的 DeepSeek/Hermes 多轮 Clarify 仍需生产联调验证；单元测试无法完全模拟 180 秒边界竞争。
+- 风险: 真正的 DeepSeek/Hermes 多轮 Clarify 仍需生产联调验证；单元测试无法完全模拟 180 秒边界竞争。另有上述 Showroom epoch/int32 生产故障需要单独修复并重新做功能验收。
 - 回滚: GitHub 使用部署前 `main` SHA；服务器使用部署前 release 目录；iOS 可重新安装上一构建包。
