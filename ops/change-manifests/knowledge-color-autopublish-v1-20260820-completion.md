@@ -4,7 +4,7 @@
 - `status`: `VERIFIED`
 - `branch`: `codex/knowledge-color-autopublish-v1`
 - `worktree`: `/private/tmp/knowledge-color-autopublish-v1`
-- `head/local_commit`: `282e1191fd60f0b8987fa4050d1ecc22fca28c7d`（运行时代码提交；最终清单另有后续提交）
+- `head/local_commit`: `e6bf934f5e3c17d95408a5f3df5e89e3d00bc236`（运行时代码提交；最终清单另有后续提交）
 
 ## 任务目标
 
@@ -63,12 +63,13 @@
 
 ## 外部系统与发布状态
 
-- `commit SHA`: 平台运行时代码 `282e1191fd60f0b8987fa4050d1ecc22fca28c7d`；Authen 服务器兼容代码本地 commit `f369e8a`。
-- `GitHub remote/ref/SHA`: 运行时代码 SHA `282e1191fd60f0b8987fa4050d1ecc22fca28c7d` 已通过 `git ls-remote` 核对；最终分支还包含本清单的后续提交，其最新 SHA 在标准完成通报中记录（清单不能自引用其自身 commit）。用户明确项目仓库仅为 `Johnie198946/ai-lab-platform`，因此未向独立 Authen 仓库推送。
+- `commit SHA`: 平台运行时代码 `e6bf934f5e3c17d95408a5f3df5e89e3d00bc236`；Authen 服务器兼容代码本地 commit `f369e8a`。
+- `GitHub remote/ref/SHA`: 运行时代码 SHA `e6bf934f5e3c17d95408a5f3df5e89e3d00bc236` 已通过 `git ls-remote` 核对；最终分支还包含本清单的后续提交，其最新 SHA 在标准完成通报中记录（清单不能自引用其自身 commit）。用户明确项目仓库仅为 `Johnie198946/ai-lab-platform`，因此未向独立 Authen 仓库推送。
 - `server_before`: `/opt/ai-lab-platform` Git HEAD `f0119b980c144ffddca7ea7aaa813c4e26ec8bcd`；API image `sha256:91f1963290174bb5fb1394b0f072d7362bdbb1f14458ecd909a25af1063fc059`；Authen HEAD `1cb1a8cdcf745771aec2f76ffcbfe2a69b78dd7b`。
-- `server_after`: `/opt/ai-lab-platform/.deploy-commit=282e1191fd60f0b8987fa4050d1ecc22fca28c7d`；API image `sha256:16f4603fc1f2e2e1801ab3104f7c86d39d2db5b78edd8c5b2b0ced286ca34e91`；`.authen-compat-version=f369e8a8-authen-local-compat`。
-- `health_check`: Platform `/health` 返回 `{"status":"ok","version":"0.8.0"}`；API 容器 `healthy`；Authen systemd `active` 且根端点返回 `{"service":"订阅服务","status":"running"}`。
+- `server_after`: `/opt/ai-lab-platform/.deploy-commit=e6bf934f5e3c17d95408a5f3df5e89e3d00bc236`；API image `sha256:57ae234b15a3a560e979592c52519893483c2d79c417502a8009b35282403d20`；`.authen-compat-version=f369e8a8-authen-local-compat`。
+- `health_check`: Platform `/health` 返回 `{"status":"ok","version":"0.8.0"}`；修复后连续 12 次均为 HTTP 200、耗时约 3–8 ms；API 容器 `healthy`、FailingStreak `0`、CPU `0.18%`；Authen systemd `active` 且根端点返回 `{"service":"订阅服务","status":"running"}`。
 - `functional_check`: Platform 两个知识发布审批路由和 Authen 签名接收路由均出现在生产 OpenAPI；容器确认审批密钥已注入；正确签名的未登记知识包请求返回预期 `404 registered knowledge pack not found`，证明验签通过且未修改业务数据。iOS 在设备 `8386FBF2-321F-4F52-BF4C-337EF3780649` 构建成功、覆盖安装并启动，PID `4488`。
+- `performance_check`: 生产容器连续调用 `document_index()` 200 次总耗时 `1.010s`；修复前重复 Wiki 扫描曾使单核 CPU 达到约 `101%` 并令健康检查超时，修复后未复现。
 - `rollback_point`: `/opt/rollback-points/knowledge-color-autopublish-v1-20260820-170853`，包含平台/Authen 源码、部署前 Git 状态、Docker 镜像清单、`ai_lab.dump` 与 `auth.dump`。
 
 ## 风险与未完成项
