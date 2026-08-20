@@ -37,14 +37,14 @@
 
 ## 交付状态
 
-- status: `COMMITTED`
-- commit SHA: 本地提交（最终 SHA 见完成通报）
-- GitHub remote/ref/SHA: 当前任务未获明确授权，未推送；推送尝试被安全策略拒绝，远端 `main` 仍为 `86086220141eede16477fa26688d56a002c3b921`
-- server_before: 只读日志已确认生产故障为 `showroom_insight_executions.epoch` 的 int32 overflow；未执行本任务部署
-- server_after: 未授权/未执行
-- health_check: 未部署，不适用
-- functional_check: 本地 13 位 epoch 持久化与幂等测试通过；生产真实请求待部署后验证
-- rollback_point: 未授权部署，尚未创建
+- status: `DEPLOYED`
+- implementation commit SHA: `0e5a6f645313c13730a22186724a4071bab982c7`
+- GitHub remote/ref/SHA: `origin/main` 已推送实现提交；最终远端 SHA 以完成通报中的 `git ls-remote` 结果为准
+- server_before: `/opt/releases/ai-lab-platform-f119d7e`，`.deploy-commit=f119d7e6491e628f959fb2ce30f65c7bdba6b976`，API image `sha256:d7e115a51847f6f15f4c2ce777cc2c82eaf4f04f24bde22aeece599e47359d6c`，epoch 类型 `integer`，表内 0 行
+- server_after: `/opt/releases/ai-lab-platform-0e5a6f6`，`.deploy-commit=0e5a6f645313c13730a22186724a4071bab982c7`，API image `sha256:fd32a2a2113f0e85595fec42c8d71eb486a521758cf5cbbfdc7118018b571c13`，epoch 类型 `bigint`
+- health_check: API `GET /health` 200 `{"status":"ok","version":"0.8.0"}`；启动日志无 ERROR/Traceback/int32 overflow
+- functional_check: 生产 PostgreSQL 事务内成功写入并读回 `1787229084053`，随后 ROLLBACK；复查测试记录为 0。Chrome 已加载原失败会话和“需求已确认 · 查看深度洞察”按钮。未替用户点击，因为该动作会真实启动 Hermes 工作流并消耗 Token
+- rollback_point: `/opt/releases/ai-lab-platform-f119d7e`；数据库备份 `/opt/backups/showroom-epoch-bigint-20260820-2205/showroom_insight_executions.sql`，SHA256 `943e79be9487d062e47c2236d7570268716cf5546abefeff4c602473f3ea98d6`
 
 ## 风险与回滚
 
