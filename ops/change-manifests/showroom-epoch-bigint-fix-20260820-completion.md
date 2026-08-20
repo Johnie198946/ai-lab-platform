@@ -42,9 +42,9 @@
 - implementation commit SHA: `0e5a6f645313c13730a22186724a4071bab982c7`
 - GitHub remote/ref/SHA: `origin/main` 已推送实现提交；最终远端 SHA 以完成通报中的 `git ls-remote` 结果为准
 - server_before: `/opt/releases/ai-lab-platform-f119d7e`，`.deploy-commit=f119d7e6491e628f959fb2ce30f65c7bdba6b976`，API image `sha256:d7e115a51847f6f15f4c2ce777cc2c82eaf4f04f24bde22aeece599e47359d6c`，epoch 类型 `integer`，表内 0 行
-- server_after: `/opt/releases/ai-lab-platform-0e5a6f6`，`.deploy-commit=0e5a6f645313c13730a22186724a4071bab982c7`，API image `sha256:fd32a2a2113f0e85595fec42c8d71eb486a521758cf5cbbfdc7118018b571c13`，epoch 类型 `bigint`
+- server_after: `/opt/releases/ai-lab-platform-dda737e`，`.deploy-commit=dda737e`，API image `sha256:7f0878c99e15173892c34095eaaf43592116b640dd4a9002ef31d5d07d7d84fd`，epoch 类型 `bigint`；包含 workflow→plan→execution 显式 flush 顺序修复
 - health_check: API `GET /health` 200 `{"status":"ok","version":"0.8.0"}`；启动日志无 ERROR/Traceback/int32 overflow
-- functional_check: 生产 PostgreSQL 事务内成功写入并读回 `1787229084053`，随后 ROLLBACK；复查测试记录为 0。Chrome 已加载原失败会话和“需求已确认 · 查看深度洞察”按钮。未替用户点击，因为该动作会真实启动 Hermes 工作流并消耗 Token
+- functional_check: 首次部署后用户真实点击暴露第二个 500：`workflow_executions_plan_id_fkey`；已修复并二次部署。生产 API 容器内执行完整 `ensure_execution`，成功创建 13 位 epoch、workflow、plan、execution 和 6 个节点，输出 `epoch=1787229084999 resumed=False nodes=6`，随后 ROLLBACK；复查测试记录为 0。真实 `/jobs` 点击仍由用户触发，避免擅自启动 Hermes 和消耗 Token
 - rollback_point: `/opt/releases/ai-lab-platform-f119d7e`；数据库备份 `/opt/backups/showroom-epoch-bigint-20260820-2205/showroom_insight_executions.sql`，SHA256 `943e79be9487d062e47c2236d7570268716cf5546abefeff4c602473f3ea98d6`
 
 ## 风险与回滚
