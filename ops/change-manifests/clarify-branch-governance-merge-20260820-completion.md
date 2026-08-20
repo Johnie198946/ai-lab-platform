@@ -42,9 +42,9 @@
 
 - status: `DEPLOYED`
 - implementation commit SHA: `f0f5f312ac06f2b9030e4c848ca750104b900e65`
-- GitHub remote/ref/SHA: `origin refs/heads/main f0f5f312ac06f2b9030e4c848ca750104b900e65`，已通过 `git ls-remote --heads origin` 核验；遗留远端分支已删除，核验时仅剩 `main`。
+- GitHub remote/ref/SHA: 实现提交 `f0f5f312ac06f2b9030e4c848ca750104b900e65` 和部署证据提交 `f119d7e6491e628f959fb2ce30f65c7bdba6b976` 已推送至 `origin/main`；遗留远端分支已删除，核验时仅剩 `main`。最终文档提交 SHA 在完成通报中以 `git ls-remote` 结果为准。
 - server_before: `/opt/releases/ai-lab-platform-750e070`，`.deploy-commit=615d9a8f72f07895bf36346c52352a77e977da2d`；API/数据库/Redis 健康。
-- server_after: `/opt/releases/ai-lab-platform-f0f5f31`，`.deploy-commit=f0f5f312ac06f2b9030e4c848ca750104b900e65`。
+- server_after: `/opt/releases/ai-lab-platform-f119d7e`，`.deploy-commit=f119d7e6491e628f959fb2ce30f65c7bdba6b976`；相对实现 release 仅增加部署证据文档。
 - health_check: API `GET /health` 200 `{"status":"ok","version":"0.8.0"}`；前端 `GET /health` 200；核心容器运行且健康。
 - functional_check:
   - Showroom 页面 `/showroom/` 返回 200。
