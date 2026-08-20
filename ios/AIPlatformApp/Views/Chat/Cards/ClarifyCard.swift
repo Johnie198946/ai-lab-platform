@@ -197,7 +197,7 @@ public struct ClarifyCard: View {
         if !block.choices.isEmpty {
             selection = selectedIDs
                 .compactMap { id in block.choices.first { $0.id == id }?.label }
-                .joined(separator: "、")
+                .joined(separator: ", ")
         } else {
             selection = customText.trimmingCharacters(in: .whitespacesAndNewlines)
         }
