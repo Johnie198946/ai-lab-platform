@@ -2,7 +2,7 @@
 
 - task_id: `showroom-retry-conflict-fix-20260821`
 - objective: 修复洞察 Artifact 回填失败但执行节点全部 succeeded 时，显式 retry 错误返回 409，并阻止状态轮询无限增加格式化重试次数。
-- status: `TESTED`
+- status: `VERIFIED`
 
 ## Changed files
 
@@ -42,14 +42,14 @@
 
 ## Delivery evidence
 
-- current status: `TESTED`
-- commit SHA: pending
-- GitHub remote/ref/SHA: authorized, pending
-- server_before: `/opt/releases/ai-lab-platform-f6f8cfd`; API direct/proxy/public health 200 after frontend recovery.
-- server_after: pending
-- health_check: pending deployment
-- functional_check: pending production retry verification
-- rollback_point: `/opt/releases/ai-lab-platform-f6f8cfd`; database backup `/opt/releases/ai-lab-platform-898b89b/backups/pre-202d4af-20260821.sql.gz`.
+- current status: `VERIFIED`
+- implementation commit SHA: `59755d1705dd3220fdad29401f844b78eac2774b`
+- GitHub remote/ref/SHA: `origin/main` 经 `git ls-remote` 核验为 `59755d1705dd3220fdad29401f844b78eac2774b`。
+- server_before: `/opt/releases/ai-lab-platform-04a688b`，部署标记 `04a688bd1e522465babd809bc48657ebe43517d7`。
+- server_after: `/opt/releases/ai-lab-platform-59755d1`，部署标记 `59755d1705dd3220fdad29401f844b78eac2774b`；API、三个 Worker 和 frontend 均已重建并运行。
+- health_check: API direct、Nginx HTTP、Nginx HTTPS 与公网 `https://120.24.248.58/health` 均为 200；部署后近期 500/502/upstream 连接错误为 0。
+- functional_check: 对生产任务 `sij_81175a3aae09c08c93ebd6fb` 执行真实 retry 成功；前五个节点保持 succeeded 且 attempt 不变，只有 `output-format` 重跑；最终绑定与页面投影均为 completed，错误为空，部署后 retry 409 数量为 0。
+- rollback_point: release `/opt/releases/ai-lab-platform-04a688b`；数据库备份 `/opt/releases/ai-lab-platform-04a688b/backups/pre-59755d1-20260821.sql.gz`；稳定旧备份 `/opt/releases/ai-lab-platform-898b89b/backups/pre-202d4af-20260821.sql.gz`。
 
 ## Remaining risks
 
