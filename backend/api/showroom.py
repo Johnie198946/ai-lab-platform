@@ -73,7 +73,11 @@ from backend.services.showroom_insight_review import (
     register_insight_tbd,
     reopen_version,
 )
-from backend.services.showroom_insight_execution import ensure_execution, project_execution
+from backend.services.showroom_insight_execution import (
+    ensure_execution,
+    project_execution,
+    retry_node_for,
+)
 from backend.models.workflow import WorkflowExecution, WorkflowNodeRun
 from backend.services.workflow_executor import cancel_remote, retry_remote
 from backend.services.visitor_insight import (
@@ -1775,7 +1779,7 @@ async def retry_showroom_insight_execution(
             raise HTTPException(status_code=404, detail="洞察任务不存在")
         execution = await database.get(WorkflowExecution, binding.execution_id)
         nodes = list((await database.execute(select(WorkflowNodeRun).where(WorkflowNodeRun.execution_id == binding.execution_id).order_by(WorkflowNodeRun.position))).scalars())
-        restart = next((node for node in nodes if node.status != "succeeded"), None)
+        restart = retry_node_for(binding, nodes)
         if execution is None or restart is None:
             raise HTTPException(status_code=409, detail="任务没有可重试节点")
         await retry_remote(binding.execution_id, restart.node_id)
@@ -1785,6 +1789,7 @@ async def retry_showroom_insight_execution(
         execution.error_message = None
         binding.status = "queued"
         binding.attempt += 1
+        binding.format_attempt = 0
         binding.error_message = ""
         await project_execution(database, binding.execution_id)
         await database.commit()

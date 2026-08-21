@@ -12,6 +12,7 @@ from backend.services.showroom_insight_execution import (
     _parse_json,
     build_dsl,
     document_to_insight,
+    retry_node_for,
     validate_document,
     ensure_execution,
 )
@@ -62,6 +63,36 @@ def test_controlled_dag_has_six_ordered_bridge_nodes() -> None:
 
 def test_showroom_epoch_column_accepts_unix_milliseconds() -> None:
     assert isinstance(ShowroomInsightExecution.__table__.c.epoch.type, BigInteger)
+
+
+def test_failed_artifact_projection_retries_only_output_format() -> None:
+    binding = ShowroomInsightExecution(
+        job_id="job-1",
+        session_id="session-1",
+        tenant_key="demo",
+        epoch=1,
+        demand_hash="d" * 64,
+        execution_id="execution-1",
+        status="failed",
+        error_message="结构化回填失败：Artifact不存在",
+    )
+    nodes = [
+        WorkflowNodeRun(
+            id=f"node-{index}",
+            execution_id="execution-1",
+            node_id=node_id,
+            node_type="LLM_INFERENCE",
+            name=node_id,
+            position=index,
+            status="succeeded",
+        )
+        for index, node_id in enumerate(NODE_IDS)
+    ]
+
+    assert retry_node_for(binding, nodes).node_id == "output-format"
+    binding.status = "completed"
+    binding.error_message = ""
+    assert retry_node_for(binding, nodes) is None
 
 
 def test_v2_artifact_projects_all_report_sections() -> None:
@@ -343,4 +374,50 @@ async def test_valid_output_artifact_is_the_only_report_authority(tmp_path, monk
         ]
         assert session.data["insight"]["title"] == "HR AI权限治理"
         assert session.data["insight_review"]["source_job_id"] == binding.job_id
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_exhausted_artifact_projection_is_stable_across_polling() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with maker() as database:
+        session = ShowroomSession(
+            session_id="showroom-exhausted-format",
+            tenant_key="demo",
+            slot="main",
+            step=3,
+            data={"demand": {"confirmed": True, "core_problem": "异构算力运营"}},
+        )
+        database.add(session)
+        await database.flush()
+        binding, _ = await ensure_execution(
+            database, session=session, demand_hash="f" * 64, epoch=9
+        )
+        execution = await database.get(WorkflowExecution, binding.execution_id)
+        nodes = list((await database.execute(
+            select(WorkflowNodeRun).where(
+                WorkflowNodeRun.execution_id == binding.execution_id
+            )
+        )).scalars())
+        for node in nodes:
+            node.status = "succeeded"
+        execution.status = "awaiting_review"
+        binding.status = "failed"
+        binding.format_attempt = 3
+        binding.error_message = "结构化回填失败：Artifact不存在"
+        await database.flush()
+
+        await project_execution(database, execution.id)
+        await project_execution(database, execution.id)
+        await database.commit()
+        await database.refresh(binding)
+        await database.refresh(session)
+
+        assert binding.format_attempt == 3
+        assert binding.status == "failed"
+        assert session.data["insight_job"]["status"] == "failed"
+        assert session.data["insight_job"]["error"] == binding.error_message
     await engine.dispose()

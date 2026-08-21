@@ -463,6 +463,25 @@ def document_to_insight(document: dict[str, Any]) -> dict[str, Any]:
     return insight
 
 
+def retry_node_for(
+    binding: ShowroomInsightExecution,
+    nodes: list[WorkflowNodeRun],
+) -> WorkflowNodeRun | None:
+    """Return the cheapest safe restart point for an explicit user retry.
+
+    Artifact projection can fail after Hermes has already marked every node as
+    succeeded.  Rerunning only ``output-format`` repairs that state without
+    repeating the five expensive upstream nodes.
+    """
+
+    restart = next((node for node in nodes if node.status != "succeeded"), None)
+    if restart is not None:
+        return restart
+    if binding.status in {"partial", "failed"} and binding.error_message:
+        return next((node for node in nodes if node.node_id == "output-format"), None)
+    return None
+
+
 async def project_execution(db: AsyncSession, execution_id: str) -> dict[str, Any] | None:
     binding = (
         await db.execute(select(ShowroomInsightExecution).where(ShowroomInsightExecution.execution_id == execution_id))
@@ -530,7 +549,18 @@ async def project_execution(db: AsyncSession, execution_id: str) -> dict[str, An
     job["completed_sections"] = completed_sections
     job["status"] = "failed" if execution.status == "failed" else "running"
 
-    if execution.status == "awaiting_review" and statuses.get("output-format") == "succeeded":
+    if binding.status == "failed" and binding.format_attempt > 2:
+        # Polling only projects persisted state.  Once automatic Artifact repair
+        # is exhausted, refreshes must not keep incrementing format_attempt.
+        # Explicit retry resets the budget and reruns output-format below.
+        job.update({
+            "status": "failed",
+            "active_stage": "writing",
+            "active_node": "",
+            "active_employee_id": "",
+            "error": binding.error_message,
+        })
+    elif execution.status == "awaiting_review" and statuses.get("output-format") == "succeeded":
         output_node = next(node for node in nodes if node.node_id == "output-format")
         artifacts = list((await db.execute(select(WorkflowArtifact).where(WorkflowArtifact.execution_id == execution_id, WorkflowArtifact.node_run_id == output_node.id).order_by(WorkflowArtifact.created_at.desc()))).scalars())
         if artifacts:
