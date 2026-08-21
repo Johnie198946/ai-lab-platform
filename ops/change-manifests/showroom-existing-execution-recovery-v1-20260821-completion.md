@@ -72,3 +72,15 @@
 
 - 公网使用自签名 TLS 证书，标准 curl 会拒绝；本任务未改变证书配置。
 - 当前报告的两条模型“来源描述”不具备合法可追溯路径，因此生产结果 `source_count=0`；证据正文保留，但后续应要求 Hermes 输出合法 URL 或 Wiki path 才能展示来源卡。
+
+## Post-deploy 502 remediation (2026-08-21)
+
+- symptom: 公网与容器前端代理的 `/health` 返回 502，而 API 直连仍返回 200。
+- root_cause: API 容器重建后地址由旧的 `172.19.0.3` 变化为 `172.19.0.4`；未同步重建的 Nginx 进程继续使用启动时解析并缓存的旧 upstream 地址。
+- remediation: 在不重建 API、Worker 或数据库的前提下，执行 `docker compose -p ai-lab-platform up -d --force-recreate --no-deps frontend`，使 Nginx 重新解析 `api` 服务名。
+- server_before: release 与部署标记仍为 `/opt/releases/ai-lab-platform-f6f8cfd` / `f6f8cfd3b10df100b3f5cde16b6a82fb35e651c9`；API direct health 200，HTTP/HTTPS proxy health 502。
+- server_after: release 与部署标记不变；frontend 容器已重新创建并解析 `api → 172.19.0.4`。
+- health_check: API direct `/health → 200`；Nginx HTTP `/health → 200`；Nginx HTTPS `/health → 200`；外部 `https://120.24.248.58/health → 200`。
+- functional_check: 未认证 Catalog 经 HTTPS 代理返回 401（预期鉴权响应而非 502）；前端最近两分钟 `connect() failed` 数量为 0。
+- rollback_point: 应用与数据库均未变化，继续使用 `/opt/releases/ai-lab-platform-ce23e3f`、`rollback-ce23e3f-*` 和 `/opt/releases/ai-lab-platform-898b89b/backups/pre-202d4af-20260821.sql.gz`；如代理重建异常，可再次启动当前 release 的 frontend 镜像。
+- prevention: 后续凡是重建 API 容器，部署步骤必须同步重建或 reload frontend Nginx，避免其持有旧 Docker upstream 地址。
