@@ -24,17 +24,17 @@
 
 ## 交付状态
 
-- 当前状态：`TESTED`
-- commit SHA：未要求/未执行。
-- GitHub remote/ref/SHA：本任务未获得推送规则变更的明确授权，未执行 push 或 `git ls-remote` 验证。
-- `server_before`: 未授权/未执行部署。
-- `server_after`: 未授权/未执行部署。
-- `health_check`: 不适用，未执行部署。
-- `functional_check`: 不适用，未执行部署。
-- `rollback_point`: 不适用，未执行部署。
+- 当前状态：`VERIFIED`
+- commit SHA：`e5d2192`，已整合到唯一 `main`。
+- GitHub remote/ref/SHA：部署代码 `main` 为 `59755d1705dd3220fdad29401f844b78eac2774b`，已通过 `git ls-remote` 核验；最终证据 manifest 作为纯文档提交继续普通推送。
+- `server_before`: `/opt/releases/ai-lab-platform-f6f8cfd`。
+- `server_after`: `/opt/releases/ai-lab-platform-59755d1`；治理文件本身不改变运行逻辑。
+- `health_check`: 内外 `/health` 均通过，7 个服务运行。
+- `functional_check`: 平台与 Vault 已各自收敛为唯一 `main` 和唯一工作区；GitHub 仅保留 `main`。
+- `rollback_point`: `/opt/releases/ai-lab-platform-04a688b`，原始 `/opt/releases/ai-lab-platform-f6f8cfd` 继续保留；本地历史另由完整 bundle 归档保护。
 
 ## 风险、未完成项与回滚说明
 
-- 历史分支和 worktree 仍然存在；本规则禁止将它们用于新任务，但本任务不擅自删除。
+- 历史分支和 Worktree 已在完整归档和恢复验证后删除。
 - 单分支直接交付会降低并行开发能力；规则通过开工盘点、互斥协调、测试门禁、远端 SHA 核验和回滚点降低风险。
 - 本地回滚：未提交状态下，只需经用户确认后删除本任务新增的两个文件；不得使用 `git reset --hard`。

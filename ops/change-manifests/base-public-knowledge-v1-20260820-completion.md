@@ -4,7 +4,7 @@
 
 - task_id: `base-public-knowledge-v1-20260820`
 - objective: 修复团队知识基础版“套餐已开通但知识为空”的产品与技术闭环；公共知识不足门槛时显示建设状态，达到门槛后自动授权绿色 K5，并将绿色公共知识与黄色知识包分开展示。
-- current_status: `TESTED`
+- current_status: `VERIFIED`
 
 ## Worktrees and branches
 
@@ -70,17 +70,17 @@
 
 ## Delivery evidence
 
-- commit SHA: 未创建；用户未要求 commit。
-- GitHub remote/ref/SHA: 未授权 push，未执行 `git ls-remote`，不得标记 `PUSHED`。
-- server_before: 未授权生产部署，未读取。
-- server_after: 未授权生产部署，未执行。
-- health_check: 不适用；未部署服务器。
-- functional_check: 本地 API 回归、Swift 编译、模拟器安装与启动通过；真实登录后的服务器数据联调未执行。
-- rollback_point: 平台基线 `70aa5cb42eec9637c18ac24bfed00ed822d2c198`；Vault 基线 `489429e00da05663d7254908259c204e074806f0`。所有改动仅位于两个独立 Worktree，可通过放弃对应任务分支恢复；未修改生产数据。
+- integration commit: `befef66`，已整合进平台 `main`；最终部署代码 SHA 为 `59755d1705dd3220fdad29401f844b78eac2774b`。
+- GitHub remote/ref/SHA: `refs/heads/main` 已经 `git ls-remote` 核验到部署代码 SHA `59755d1705dd3220fdad29401f844b78eac2774b`；无 force push。
+- server_before: `/opt/releases/ai-lab-platform-f6f8cfd`，`.deploy-commit=f6f8cfd3b10df100b3f5cde16b6a82fb35e651c9`。
+- server_after: `/opt/releases/ai-lab-platform-59755d1`，`.deploy-commit=59755d1705dd3220fdad29401f844b78eac2774b`。
+- health_check: 内外 `/health` 均为 `{"status":"ok","version":"0.8.0"}`，7 个服务运行，部署后 API error 为 0。
+- functional_check: 生产容器内基础知识 `ready`，11 篇、2 分类，Catalog 2 项且均为绿色；本地受影响后端测试 26/26 通过。
+- rollback_point: `/opt/releases/ai-lab-platform-04a688b`；原始回退点 `/opt/releases/ai-lab-platform-f6f8cfd` 仍保留。
 
 ## Remaining risks and blockers
 
 - 尚需用户明确批准具体 Wiki 条目作为绿色公共知识。批准前 Catalog 继续为 0，基础版正确显示“建设中”。
 - 当前候选中“Agent 协议签署功能”和“展厅输出物格式协议”包含内部产品实现；若公开，所有正式租户均可检索，建议不要作为基础公共知识。
 - 首批 5 篇批准并编译后，仍需验证搜索、聊天、Agent 与工作流四条真实检索链路。
-- 未 push、未部署生产。
+- 生产验证已经通过；公共知识后续内容更新仍须继续遵守人工安全审批。

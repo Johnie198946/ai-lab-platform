@@ -114,4 +114,11 @@
 - health_check: 最终完整 Xcode 测试 18/18 通过；远端提交对应模拟器构建成功部署并启动（PID 89505）；迁移库为 1 会话/15 消息且 `PRAGMA integrity_check=ok`；生产服务器健康状态保持正常。
 - functional_check: 原两条长会话滚动、输入框聚焦滚动和任务/对话页往返已手工通过；1,000 条连续分页、返回最新、跨页截断和 12 段滚动由回归测试通过；部署后聊天页正常回显，2 秒采样无 `LazySubviewPlacements` 或 `makeAnchorTranslationIfNeeded`。
 - rollback_point: Git 回滚点为 `df2228894f29dbddd98995f5b714b897c22a123d`；数据回滚点为每会话 `.json.v1-backup`，当前未删除备份、未执行回滚。
-- remaining_risks: 尚未合并到 GitHub `main`，也未进行签名、TestFlight/App Store 或真机发布；这些操作需要 Apple Developer 签名配置和明确发布通道。历史翻页采用显式点击；500–1,000 条真实富 Markdown 混合历史和迁移期间立即发送的极端竞态尚未人工压测。
+- remaining_risks: 已合并并推送到 GitHub `main`，但未进行签名、TestFlight/App Store 或真机发布；这些操作需要 Apple Developer 签名配置和明确发布通道。历史翻页采用显式点击；500–1,000 条真实富 Markdown 混合历史和迁移期间立即发送的极端竞态尚未人工压测。
+
+## Final main integration
+
+- iOS 分页最终通过整合提交 `b368cd5` 进入唯一 `main`；最终服务器功能代码 SHA 为 `59755d1705dd3220fdad29401f844b78eac2774b`，并已在 GitHub `refs/heads/main` 经 `git ls-remote` 核验。
+- 最新整合构建在 iOS 26.1 `AIPlatform Preview` 完整测试为 21/21，通过覆盖安装、应用重启、真实长页滑动与进程采样；`LazySubviewPlacements` 和 `makeAnchorTranslationIfNeeded` 均命中 0 次。
+- 原任务分支和临时部署标签已在全引用 bundle、补丁、未跟踪文件包及 SHA-256 恢复验证通过后删除。服务器部署仅由同一整合中的知识包后端变更触发；iOS 分页本身不改变服务器回滚范围。
+- 最终状态仍为 `VERIFIED`（GitHub `main` + iOS 26.1 模拟器，不代表 TestFlight/App Store 或真机发布）。
