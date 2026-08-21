@@ -12,6 +12,8 @@ Authen 统一认证集成 — Bearer JWT 本地验签 + 租户上下文派生（
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import os
 import time
@@ -38,6 +40,8 @@ AUTHEN_PERMISSION_URL = os.environ.get(
 
 security = HTTPBearer(auto_error=False)
 
+_legacy_key_locks: Dict[str, asyncio.Lock] = {}
+
 
 def check_dev_visibility_guard() -> bool:
     """启动守卫：JWT secret 为空 → 开发态全可见，隔离承诺不生效。
@@ -59,51 +63,74 @@ def _derived_tenant_key(user_id: str) -> str:
     return "u-" + normalized[:8]
 
 
+def _derived_tenant_key_v2(user_id: str) -> str:
+    normalized = (user_id or "anonymous").strip() or "anonymous"
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+    return f"u2-{digest}"
+
+
 async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
     """DB 实现: TenantMapping 查/建 + 订阅集合。"""
-    from sqlalchemy import select
+    from sqlalchemy import select, text
 
     from backend.db import SessionLocal
     from backend.models.tenant import KnowledgeSubscription, TenantMapping
 
-    fallback = {
-        "tenant_key": _derived_tenant_key(user_id),
-        "org_id": "",
-        "is_super_admin": False,
-        "categories": set(),
-    }
-
+    legacy_key = _derived_tenant_key(user_id)
+    legacy_lock = _legacy_key_locks.setdefault(legacy_key, asyncio.Lock())
     try:
-        async with SessionLocal() as db:
-            row = (
-                await db.execute(
-                    select(TenantMapping).where(TenantMapping.user_id == user_id)
-                )
-            ).scalar_one_or_none()
-            if row is None:
-                row = TenantMapping(
-                    user_id=user_id,
-                    org_id="",
-                    tenant_key=_derived_tenant_key(user_id),
-                )
-                db.add(row)
-                await db.commit()
-            subs = (
-                await db.execute(
-                    select(KnowledgeSubscription.category).where(
-                        KnowledgeSubscription.tenant_key == row.tenant_key
+        async with legacy_lock:
+            async with SessionLocal() as db:
+                if db.bind.dialect.name == "postgresql":
+                    await db.execute(
+                        text(
+                            "SELECT pg_advisory_xact_lock(hashtext(:legacy_key))"
+                        ),
+                        {"legacy_key": legacy_key},
                     )
-                )
-            ).scalars().all()
-            return {
-                "tenant_key": row.tenant_key,
-                "org_id": row.org_id or "",
-                "is_super_admin": bool(row.is_super_admin),
-                "categories": set(subs),
-            }
-    except Exception:
-        # 本地未启动 DB 时仍允许 JWT 用户进入受保护页面，后续接口再按能力降级。
-        return fallback
+                row = (
+                    await db.execute(
+                        select(TenantMapping).where(TenantMapping.user_id == user_id)
+                    )
+                ).scalar_one_or_none()
+                if row is None:
+                    legacy_owner = (
+                        await db.execute(
+                            select(TenantMapping).where(
+                                TenantMapping.tenant_key == legacy_key,
+                                TenantMapping.user_id != user_id,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    row = TenantMapping(
+                        user_id=user_id,
+                        org_id="",
+                        tenant_key=(
+                            _derived_tenant_key_v2(user_id)
+                            if legacy_owner
+                            else legacy_key
+                        ),
+                    )
+                    db.add(row)
+                    await db.commit()
+                subs = (
+                    await db.execute(
+                        select(KnowledgeSubscription.category).where(
+                            KnowledgeSubscription.tenant_key == row.tenant_key
+                        )
+                    )
+                ).scalars().all()
+                return {
+                    "tenant_key": row.tenant_key,
+                    "org_id": row.org_id or "",
+                    "is_super_admin": bool(row.is_super_admin),
+                    "categories": set(subs),
+                }
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.exception("tenant resolution failed closed for user %s", user_id)
+        raise HTTPException(status_code=503, detail="租户解析暂不可用") from error
 
 
 tenant_resolver: Callable[[str], Any] = _default_resolve_tenant
@@ -178,13 +205,10 @@ async def require_auth(
     user_id = str(payload.get("sub", ""))
     try:
         info = await tenant_resolver(user_id)
-    except Exception:
-        info = {
-            "tenant_key": _derived_tenant_key(user_id),
-            "org_id": "",
-            "is_super_admin": False,
-            "categories": set(),
-        }
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="租户解析暂不可用") from error
     tenant_key = info["tenant_key"]
     org_id = str(info.get("org_id") or "")
     is_super = bool(info["is_super_admin"]) or await _is_super_admin(user_id)

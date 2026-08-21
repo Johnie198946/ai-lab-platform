@@ -74,7 +74,7 @@ class TestAuthAPI(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
 
-    def test_protected_degrades_when_tenant_resolution_fails(self):
+    def test_protected_fails_closed_when_tenant_resolution_fails(self):
         import backend.api.auth as auth
 
         async def broken_resolver(user_id):
@@ -86,7 +86,7 @@ class TestAuthAPI(unittest.TestCase):
                 "/api/screens",
                 headers={"Authorization": f"Bearer {_token()}"},
             )
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.status_code, 503)
 
     def test_me_degrades_when_db_unavailable(self):
         class BrokenSessionFactory:

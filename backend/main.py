@@ -27,6 +27,7 @@ from backend.api.skills import router as skills_router
 from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router
+from backend.api.customer_demands import router as customer_demands_router
 from backend.api.workflows import router as workflows_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
 from backend.api.subscriptions import router as subscriptions_router
@@ -143,6 +144,7 @@ app.include_router(tenant_agents_router, dependencies=[Depends(require_auth)])
 app.include_router(hermes_router, dependencies=[Depends(require_auth)])
 # 展厅运行态：HTTP 端点在路由内鉴权，WebSocket 使用 query token 单独验签。
 app.include_router(showroom_router)
+app.include_router(customer_demands_router, dependencies=[Depends(require_auth)])
 # 可执行工作流：计划审批、持久执行、素材复核
 app.include_router(workflows_router, dependencies=[Depends(require_auth)])
 # Authen HMAC webhook + signed-capability Knowledge Gateway use their own auth.

@@ -4,7 +4,7 @@ import test from 'node:test';
 
 const app = readFileSync(new URL('../public/showroom/app.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../public/showroom/styles.css', import.meta.url), 'utf8');
-const index = readFileSync(new URL('../public/showroom/index.html', import.meta.url), 'utf8');
+const index = readFileSync(new URL('../public/showroom/legacy.html', import.meta.url), 'utf8');
 
 test('confirmed demand enters the dedicated 003.5 staffing route', () => {
   assert.match(app, /await beginInsightFlow\(demand\)/);

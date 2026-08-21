@@ -1,58 +1,17 @@
 <!doctype html>
 <html lang="zh-CN">
   <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#F4F4FF" />
-    <title>AI Lab 共创体验中心 · 全套多屏原型</title>
-    <link rel="stylesheet" href="./styles.css?v=20260820-insight-backfill-v1" />
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f7f4ee">
+    <title>AI Lab · 制造业共创旅程</title>
+    <link rel="stylesheet" href="./showroom-journey.css?v=20260821-tokenfactory-v1">
   </head>
   <body>
-    <a class="skip-link" href="#screen-canvas">跳至屏幕内容</a>
-    <div class="shell">
-      <aside class="sidebar" aria-label="原型页面导航">
-        <div class="brand">
-          <div class="brand-glyph" aria-hidden="true"><i></i><i></i><i></i></div>
-          <div><strong>AI LAB</strong><small>CO-CREATION SPACE</small></div>
-        </div>
-        <nav id="view-nav" class="view-nav"></nav>
-        <div class="venue-card">
-          <div><span class="online-dot"></span><b>现场系统正常</b><strong>12 ms</strong></div>
-          <p>8 块展屏 · 5 个体验中心</p>
-        </div>
-      </aside>
-
-      <main class="workspace">
-        <header class="topbar">
-          <div>
-            <p class="eyebrow">AI LAB · MULTI-SCREEN PROTOTYPE</p>
-            <h1 id="page-title">导览主控台</h1>
-          </div>
-          <div class="top-actions">
-            <button class="network-pill" id="network-status" type="button" title="查看后端连接状态"><i></i><span>正在连接</span></button>
-            <button class="icon-button" id="motion-toggle" aria-label="暂停动态效果" title="暂停动态效果"><span data-icon="pause"></span></button>
-            <button class="outline-button" id="direct-toggle"><span data-icon="display"></span>直接上屏</button>
-          </div>
-        </header>
-
-        <section class="tourbar" aria-label="参观阶段控制">
-          <div class="tour-name"><small>LIVE TOUR</small><strong id="stage-name">站 1 · 迎宾</strong></div>
-          <div class="tour-steps" id="tour-steps"></div>
-          <button class="primary-button" id="next-stage">下一站<span data-icon="arrow"></span></button>
-        </section>
-
-        <section class="prototype-frame" aria-label="当前屏幕原型">
-          <div class="frame-meta"><span id="frame-label">CONTROLLER</span><span id="frame-size">1366 × 1024</span></div>
-          <div class="screen-canvas" id="screen-canvas" tabindex="-1" aria-live="polite"></div>
-        </section>
-      </main>
-    </div>
-
-    <button class="exit-direct" id="exit-direct"><span data-icon="close"></span>退出上屏预览</button>
-    <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./vendor/gsap.min.js"></script>
-    <script src="./hermes-gateway.js?v=20260819-10"></script>
-    <script src="./showroom-api.js?v=20260820-showroom-recovery-v2"></script>
-    <script src="./app.js?v=20260821-progress-contract-v1"></script>
+    <a class="skip-link" href="#journey-main">跳到旅程内容</a>
+    <div id="journey-app"></div>
+    <script src="./hermes-gateway.js?v=20260821-tokenfactory-v1"></script>
+    <script src="./showroom-api.js?v=20260821-tokenfactory-v2"></script>
+    <script src="./showroom-journey.js?v=20260821-tokenfactory-v1"></script>
   </body>
 </html>
