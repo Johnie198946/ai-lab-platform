@@ -53,6 +53,8 @@
 - `npm run build`：通过；仅保留既有大chunk警告。
 - `node --check`（新旅程与legacy app）、`bash -n scripts/update.sh`、`docker compose config --quiet`、`git diff --check`：通过。
 - 更新脚本无SHA调用：退出非零并给出“必须提供且仅提供一个精确的40位commit SHA”。
+- 首次服务器发布尝试（`c855d70`）：容器重建与API健康通过，但运行契约审计因`data/knowledge_matrix.json`、`data/manifests`、`data/runtime`入口未引导而硬失败，`.deployed-sha`保持不存在；本提交新增目录引导与指向Vault Matrix真源的符号链接后再审计。
+- 服务器临时复验：使用`data/vault/knowledge_matrix.json`并补齐空运行目录后，`audit_runtime_contracts.py`通过。
 - JWT真实HTTP并发：PATCH/confirm并发恰好`[200,409]`；双confirm并发恰好`[200,409]`；最终版本2。
 - 租户首次并发：两个相同legacy前缀的不同用户同时解析，持久化结果恰好一个legacy键、一个v2键且互不相等。
 - JWT隔离：客户端伪造tenant/user无效；用户B读取用户A需求为`404`；用户A为`200`。

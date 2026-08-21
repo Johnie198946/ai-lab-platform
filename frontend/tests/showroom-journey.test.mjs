@@ -39,14 +39,19 @@ test('S3 and S4 use structured demand fields and the shared showroom API', () =>
   assert.doesNotMatch(script, /JsonRpcGatewayClient/);
 });
 
-test('deployment marker is written only after restart and health check', () => {
+test('deployment prepares runtime contracts and writes marker only after hard audit', () => {
   const restart = updateScript.indexOf('docker compose up -d --build');
   const health = updateScript.indexOf('if [ -z "${status:-}" ]');
+  const runtimeDirs = updateScript.indexOf('mkdir -p data/manifests data/runtime');
+  const matrixLink = updateScript.indexOf('ln -s vault/knowledge_matrix.json data/knowledge_matrix.json');
   const audit = updateScript.indexOf('audit_runtime_contracts.py');
   const marker = updateScript.indexOf('mv -f "$marker_tmp" .deployed-sha');
-  assert.ok(restart >= 0 && health >= 0 && audit > health && marker > audit);
+  assert.ok(restart >= 0 && health > restart);
+  assert.ok(runtimeDirs > health && matrixLink > runtimeDirs && audit > matrixLink);
+  assert.ok(marker > audit);
   assert.match(updateScript, /\[ "\$#" -ne 1 \]/);
   assert.match(updateScript, /\^\[0-9a-fA-F\]\{40\}\$/);
   assert.doesNotMatch(updateScript, /refs\/heads\/main/);
+  assert.doesNotMatch(updateScript, /audit_runtime_contracts[^\n]*\|\|/);
   assert.match(updateScript, /trap cleanup EXIT/);
 });

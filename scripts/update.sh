@@ -43,6 +43,15 @@ if [ -z "${status:-}" ]; then
   exit 1
 fi
 echo "==> [4/4] 运行平台契约审计（容器内 Python 3.12，宿主机 3.6 兼容问题规避）"
+mkdir -p data/manifests data/runtime
+if [ ! -e data/knowledge_matrix.json ]; then
+  if [ ! -f data/vault/knowledge_matrix.json ]; then
+    echo "ERROR: 缺少 Vault knowledge_matrix.json，无法建立运行契约入口" >&2
+    exit 1
+  fi
+  rm -f data/knowledge_matrix.json
+  ln -s vault/knowledge_matrix.json data/knowledge_matrix.json
+fi
 docker compose exec -T api python scripts/audit_runtime_contracts.py --data-dir /app/data
 
 marker_tmp=$(mktemp .deployed-sha.XXXXXX)
