@@ -14,6 +14,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
+from backend.api import knowledge
+from backend.services.knowledge_catalog import (
+    base_knowledge_status,
+    tenant_private_knowledge_status,
+)
 
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"])
@@ -65,6 +70,30 @@ def _org(payload: dict[str, Any]) -> str:
             retryable=False,
         )
     return org_id
+
+
+def _is_base_plan(plan: dict[str, Any]) -> bool:
+    """Recognize the base tier without coupling to one Authen seed UUID."""
+    return (
+        str(plan.get("tier") or "").lower() == "base"
+        or str(plan.get("slug") or "").lower() in {
+            "team-knowledge-basic",
+            "knowledge-basic",
+        }
+        or "基础" in str(plan.get("name") or "")
+    )
+
+
+def _decorate_plan_availability(
+    plan: dict[str, Any], base_knowledge: dict[str, Any]
+) -> dict[str, Any]:
+    if _is_base_plan(plan) and base_knowledge["status"] != "ready":
+        return {
+            **plan,
+            "availability": "content_building",
+            "is_available": False,
+        }
+    return {**plan, "availability": "available", "is_available": True}
 
 
 async def _authen_request(
@@ -156,7 +185,13 @@ async def subscription_center(payload=Depends(require_auth)):
         params={"app_id": AUTHEN_APP_ID},
     )
     requests = center.get("requests") or []
-    plan_items = plans.get("plans") or []
+    vault = knowledge._vault()
+    base_status = base_knowledge_status(vault)
+    private_status = tenant_private_knowledge_status(payload["tenant_key"], vault)
+    plan_items = [
+        _decorate_plan_availability(item, base_status)
+        for item in (plans.get("plans") or [])
+    ]
     if not KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED:
         plan_items = [
             {**item, "pack_allowance": 0, "selectable_pack_ids": []}
@@ -168,6 +203,8 @@ async def subscription_center(payload=Depends(require_auth)):
     return {
         **center,
         "plans": plan_items,
+        "base_knowledge": base_status,
+        "tenant_private_knowledge": private_status,
         "knowledge_pack_subscription_enabled": KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED,
         "is_super_admin": bool(payload.get("is_super_admin")),
         "pending_count": sum(item.get("status") == "pending" for item in requests),
@@ -187,6 +224,27 @@ async def create_subscription_request(
             action="retry_later",
             retryable=True,
         )
+    plans = await _authen_request(
+        "GET", "/api/v1/internal/plans", params={"app_id": AUTHEN_APP_ID}
+    )
+    target_plan = next(
+        (item for item in plans.get("plans") or [] if str(item.get("id")) == body.plan_id),
+        None,
+    )
+    if target_plan and _is_base_plan(target_plan):
+        base_status = base_knowledge_status(knowledge._vault())
+        if base_status["status"] != "ready":
+            raise _error(
+                409,
+                code="base_knowledge_building",
+                message=(
+                    "基础公共知识正在完成来源与权限复核"
+                    f"（{base_status['document_count']}/"
+                    f"{base_status['minimum_document_count']}），开放后无需再次申请"
+                ),
+                action="retry_later",
+                retryable=True,
+            )
     return await _authen_request(
         "POST",
         f"/api/v1/internal/organizations/{org_id}/subscription-requests",

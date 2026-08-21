@@ -37,6 +37,7 @@ public struct KnowledgeView: View {
     @State private var walletBusyCategory: String? = nil
     @State private var successMessage: String? = nil
     @State private var pendingReviewCount: Int = 0
+    @State private var knowledgeAccess: KnowledgeAccessResponse? = nil
 
     public init() {}
 
@@ -62,6 +63,10 @@ public struct KnowledgeView: View {
         catalog.filter { !$0.requiresKnowledgePack }.count
     }
 
+    private var publicCategories: [CatalogCategory] {
+        orderedCatalog.filter { $0.securityLevel == "green" }
+    }
+
     public var body: some View {
         NavigationStack {
             ZStack {
@@ -79,6 +84,7 @@ public struct KnowledgeView: View {
                             governanceReviewBanner
                         }
 
+                        basePublicKnowledgeSection
                         knowledgeWalletSection
                         categorySubscriptionSection
                         subscribedContentSection
@@ -169,9 +175,12 @@ public struct KnowledgeView: View {
                     .font(AppTheme.Typography.supporting)
                     .foregroundColor(AppTheme.Colors.textSecondary)
 
-                Label("上下文已就绪", systemImage: "checkmark.circle.fill")
+                Label(
+                    knowledgeAccess?.baseKnowledge?.isReady == false ? "公共知识建设中" : "上下文已就绪",
+                    systemImage: knowledgeAccess?.baseKnowledge?.isReady == false ? "hammer.fill" : "checkmark.circle.fill"
+                )
                     .font(AppTheme.Typography.micro)
-                    .foregroundColor(AppTheme.Colors.statusCompleted)
+                    .foregroundColor(knowledgeAccess?.baseKnowledge?.isReady == false ? AppTheme.Colors.statusWarning : AppTheme.Colors.statusCompleted)
             }
 
             Spacer(minLength: 0)
@@ -233,6 +242,97 @@ public struct KnowledgeView: View {
         .background(AppTheme.Colors.warningSurface)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
         .accessibilityElement(children: .combine)
+    }
+
+    private var basePublicKnowledgeSection: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("基础公共知识")
+                        .font(AppTheme.Typography.sectionTitle)
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                    Text("正式租户自动可用，不占黄色知识包额度")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                }
+                Spacer()
+                if let base = knowledgeAccess?.baseKnowledge {
+                    Text(base.isReady ? "已开放" : "建设中")
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                        .foregroundColor(base.isReady ? AppTheme.Colors.statusCompleted : AppTheme.Colors.statusWarning)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background((base.isReady ? AppTheme.Colors.successSurface : AppTheme.Colors.warningSurface))
+                        .clipShape(Capsule())
+                }
+            }
+
+            if let base = knowledgeAccess?.baseKnowledge, !base.isReady {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                    Label("公共知识正在完成来源与权限复核", systemImage: "hammer.fill")
+                        .font(AppTheme.Typography.supporting.weight(.semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                    ProgressView(
+                        value: Double(base.documentCount),
+                        total: Double(max(base.minimumDocumentCount, 1))
+                    )
+                    .tint(AppTheme.Colors.statusWarning)
+                    Text("当前 \(base.documentCount)/\(base.minimumDocumentCount) 篇 · 开放后会自动出现在这里，无需再次申请。")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                }
+                .padding(AppTheme.Spacing.lg)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.Colors.warningSurface)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            } else if publicCategories.isEmpty {
+                Text("尚无通过治理准入的绿色 K5 知识。")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .padding(AppTheme.Spacing.lg)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.secondaryBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+            } else {
+                LazyVStack(spacing: AppTheme.Spacing.sm) {
+                    ForEach(publicCategories) { category in
+                        Button { selectedCategory = category } label: {
+                            HStack(spacing: AppTheme.Spacing.md) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundColor(AppTheme.Colors.statusCompleted)
+                                    .frame(width: 40, height: 40)
+                                    .background(AppTheme.Colors.successSurface)
+                                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(category.title)
+                                        .font(AppTheme.Typography.supporting.weight(.semibold))
+                                        .foregroundColor(AppTheme.Colors.textPrimary)
+                                    Text("\(category.docCount) 篇 · 可直接用于聊天、Agent 与工作流")
+                                        .font(AppTheme.Typography.micro)
+                                        .foregroundColor(AppTheme.Colors.textSecondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(AppTheme.Colors.textTertiary)
+                            }
+                            .padding(AppTheme.Spacing.md)
+                            .background(AppTheme.Colors.cardBackground)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                    }
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+        }
     }
 
     // MARK: - 上层：类目订阅卡
@@ -419,6 +519,7 @@ public struct KnowledgeView: View {
                 let response = try await api.fetchCatalog()
                 catalog = response.catalog
                 pendingReviewCount = response.pendingReviewCount ?? 0
+                knowledgeAccess = try? await api.fetchKnowledgeAccess()
             } catch {
                 if api.isOfflineMode && catalog.isEmpty {
                     catalog = Self.mockCatalog
@@ -428,6 +529,7 @@ public struct KnowledgeView: View {
                     permissionMessage = "知识目录不可用或权限已经变化，请刷新后重试。"
                     recoveryAction = .refreshCatalog
                 }
+                knowledgeAccess = try? await api.fetchKnowledgeAccess()
             }
             // 我的知识钱包（旧 subscriptions 接口仅作一个版本兼容）
             if let subs = try? await api.fetchSubscriptions() {

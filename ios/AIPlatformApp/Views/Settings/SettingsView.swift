@@ -572,7 +572,7 @@ public struct SubscriptionCenterView: View {
                     Text("组织订阅中心")
                         .font(AppTheme.Typography.sectionTitle)
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("套餐决定额度，知识包决定受限知识范围")
+                    Text("公共知识自动包含，受限知识按包审批")
                         .font(AppTheme.Typography.micro)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .lineLimit(1)
@@ -580,7 +580,7 @@ public struct SubscriptionCenterView: View {
                 Spacer()
             }
 
-            Text("绿色公共知识始终可用；黄色知识包需随组织套餐申请；红色私有知识不会在这里出售。")
+            Text("绿色公共知识通过治理后自动开放；黄色知识包需随组织套餐申请；红色私有知识不会在这里出售。")
                 .font(AppTheme.Typography.supporting)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -613,12 +613,14 @@ public struct SubscriptionCenterView: View {
                 }
                 let grants = subscription.activePackGrants ?? center.activePackGrants ?? []
                 let allowance = subscription.packAllowance ?? center.packAllowance ?? 0
+                let baseKnowledge = center.baseKnowledge
+                let privateKnowledge = center.tenantPrivateKnowledge
                 HStack(spacing: 0) {
-                    entitlementMetric(value: allowance < 0 ? "定制" : "\(grants.count)/\(allowance)", label: "知识包")
+                    entitlementMetric(value: "\(baseKnowledge?.documentCount ?? 0)篇", label: "公共知识")
                     Divider().frame(height: 34)
-                    entitlementMetric(value: "V\(subscription.entitlementVersion)", label: "权益版本")
+                    entitlementMetric(value: allowance < 0 ? "定制" : "\(grants.count)/\(allowance)", label: "黄色知识包")
                     Divider().frame(height: 34)
-                    entitlementMetric(value: subscription.effectiveUntil?.dateOnly ?? "长期", label: "有效期")
+                    entitlementMetric(value: "\(privateKnowledge?.documentCount ?? 0)篇", label: "私有知识")
                 }
                 .padding(.vertical, AppTheme.Spacing.sm)
                 .background(AppTheme.Colors.secondaryBackground)
@@ -628,6 +630,21 @@ public struct SubscriptionCenterView: View {
                         .font(AppTheme.Typography.supporting)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                 }
+                if let baseKnowledge, !baseKnowledge.isReady {
+                    Label(
+                        "公共知识正在完成来源与权限复核（\(baseKnowledge.documentCount)/\(baseKnowledge.minimumDocumentCount)），开放后会自动出现，无需再次申请。",
+                        systemImage: "hammer.fill"
+                    )
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.statusWarning)
+                    .padding(AppTheme.Spacing.md)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppTheme.Colors.statusWarning.opacity(0.10))
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                }
+                Text("权益版本 V\(subscription.entitlementVersion) · 有效期 \(subscription.effectiveUntil?.dateOnly ?? "长期")")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
             } else {
                 Text("尚未开通组织套餐")
                     .font(AppTheme.Typography.cardTitle)
@@ -741,6 +758,8 @@ public struct SubscriptionCenterView: View {
         let isSelected = selectedPlanID == plan.id
         let allowance = plan.packAllowance ?? 0
         let isCustom = plan.customOnly == true
+        let isBuilding = plan.isAvailable == false || plan.availability == "content_building"
+        let isBasePlan = plan.name.contains("基础")
 
         return VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             HStack(alignment: .top) {
@@ -768,7 +787,16 @@ public struct SubscriptionCenterView: View {
             VStack(spacing: AppTheme.Spacing.sm) {
                 planFact(icon: "arrow.triangle.2.circlepath", text: plan.requestQuota < 0 ? "请求额度定制" : "\(plan.requestQuota.formatted()) 次请求/月")
                 planFact(icon: "sparkles", text: plan.tokenQuota < 0 ? "Token 额度定制" : "\(tokenQuota(plan.tokenQuota))/月")
-                planFact(icon: "square.stack.3d.up.fill", text: isCustom ? "知识包按合同配置" : "最多 \(allowance) 个知识包")
+                if isBasePlan, let baseKnowledge = center.baseKnowledge {
+                    planFact(
+                        icon: baseKnowledge.isReady ? "checkmark.seal.fill" : "hammer.fill",
+                        text: baseKnowledge.isReady
+                            ? "自动包含 \(baseKnowledge.documentCount) 篇公共知识"
+                            : "公共知识建设中 \(baseKnowledge.documentCount)/\(baseKnowledge.minimumDocumentCount)"
+                    )
+                } else {
+                    planFact(icon: "square.stack.3d.up.fill", text: isCustom ? "知识包按合同配置" : "最多 \(allowance) 个黄色知识包")
+                }
             }
 
             Button {
@@ -776,15 +804,15 @@ public struct SubscriptionCenterView: View {
             } label: {
                 busyLabel(
                     id: plan.id,
-                    title: isCurrent ? "当前套餐" : (isCustom ? "联系管理员" : (pending == nil ? (isSelected ? "已选择" : "选择套餐") : "等待管理员审批")),
-                    systemImage: isCurrent || isSelected ? "checkmark" : (isCustom ? "person.badge.key.fill" : (pending == nil ? "checkmark.circle" : "clock.fill"))
+                    title: isCurrent ? "当前套餐" : (isBuilding ? "知识建设中" : (isCustom ? "联系管理员" : (pending == nil ? (isSelected ? "已选择" : "选择套餐") : "等待管理员审批"))),
+                    systemImage: isCurrent || isSelected ? "checkmark" : (isBuilding ? "hammer.fill" : (isCustom ? "person.badge.key.fill" : (pending == nil ? "checkmark.circle" : "clock.fill")))
                 )
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
             .tint(AppTheme.Colors.primary)
             .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-            .disabled(isCurrent || isCustom || pending != nil || busyID != nil)
+            .disabled(isCurrent || isBuilding || isCustom || pending != nil || busyID != nil)
         }
         .padding(AppTheme.Spacing.xl)
         .background(AppTheme.Colors.cardBackground)
@@ -1210,7 +1238,9 @@ public struct SubscriptionCenterView: View {
         if let plan = selectedPlan,
            center.subscription?.planId != plan.id,
            !center.requests.contains(where: { $0.targetPlanId == plan.id && $0.status == "pending" }),
-           plan.customOnly != true {
+           plan.customOnly != true,
+           plan.isAvailable != false,
+           plan.availability != "content_building" {
             let allowance = plan.packAllowance ?? 0
             HStack(spacing: AppTheme.Spacing.md) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -1251,6 +1281,7 @@ public struct SubscriptionCenterView: View {
     }
 
     private func select(_ plan: SubscriptionPlanDTO, center: SubscriptionCenterResponse) {
+        guard plan.isAvailable != false, plan.availability != "content_building" else { return }
         withAnimation(AppTheme.Motion.quick) {
             selectedPlanID = plan.id
             selectedPackIDs = selectedPackIDs.intersection(Set(plan.selectablePackIds ?? []))
@@ -1400,6 +1431,10 @@ public struct SubscriptionCenterView: View {
 
     private func apply(for plan: SubscriptionPlanDTO) {
         guard busyID == nil else { return }
+        guard plan.isAvailable != false, plan.availability != "content_building" else {
+            errorMessage = "基础公共知识仍在治理建设中，开放后无需再次申请。"
+            return
+        }
         Task {
             busyID = "submit-\(plan.id)"
             defer { busyID = nil }

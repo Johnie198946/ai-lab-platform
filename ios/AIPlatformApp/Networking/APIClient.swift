@@ -69,8 +69,28 @@ public struct KnowledgeAccessResponse: Codable {
     public let yellowEntitlements: [String]
     public var activePackGrants: [KnowledgePackGrantDTO]? = nil
     public var packAllowance: Int? = nil
+    public var baseKnowledge: BaseKnowledgeDTO? = nil
+    public var tenantPrivateKnowledge: TenantPrivateKnowledgeDTO? = nil
     public let effectiveCategories: [String]
     public let entitlementStale: Bool
+}
+
+public struct BaseKnowledgeDTO: Codable, Hashable {
+    public let status: String
+    public let documentCount: Int
+    public let minimumDocumentCount: Int
+    public let categoryCount: Int
+    public let minimumCategoryCount: Int
+    public let categories: [String]
+    public let lastCompiledAt: String?
+
+    public var isReady: Bool { status == "ready" }
+}
+
+public struct TenantPrivateKnowledgeDTO: Codable, Hashable {
+    public let documentCount: Int
+    public let categoryCount: Int
+    public let categories: [String]
 }
 
 public struct SubscriptionPlanFeaturesDTO: Codable, Hashable {
@@ -113,6 +133,8 @@ public struct SubscriptionPlanDTO: Codable, Identifiable, Hashable {
     public var packAllowance: Int? = nil
     public var customOnly: Bool? = nil
     public var selectablePackIds: [String]? = nil
+    public var availability: String? = nil
+    public var isAvailable: Bool? = nil
 }
 
 public struct KnowledgePackDTO: Codable, Identifiable, Hashable {
@@ -184,6 +206,8 @@ public struct SubscriptionCenterResponse: Codable {
     public var knowledgePacks: [KnowledgePackDTO]? = nil
     public var activePackGrants: [KnowledgePackGrantDTO]? = nil
     public var packAllowance: Int? = nil
+    public var baseKnowledge: BaseKnowledgeDTO? = nil
+    public var tenantPrivateKnowledge: TenantPrivateKnowledgeDTO? = nil
     public var knowledgePackSubscriptionEnabled: Bool? = nil
 }
 

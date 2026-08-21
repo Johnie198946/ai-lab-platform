@@ -21,6 +21,13 @@ from backend.services.knowledge_color_projection import (
 
 
 CATALOG_FILENAME = "knowledge_catalog.json"
+BASE_PUBLIC_KNOWLEDGE_MINIMUM_DOCUMENTS = int(
+    os.environ.get("BASE_PUBLIC_KNOWLEDGE_MINIMUM_DOCUMENTS", "5")
+)
+BASE_PUBLIC_KNOWLEDGE_MINIMUM_CATEGORIES = int(
+    os.environ.get("BASE_PUBLIC_KNOWLEDGE_MINIMUM_CATEGORIES", "2")
+)
+_LAST_VALID_MANIFEST: dict[str, dict[str, Any]] = {}
 LEGACY_FALLBACK_ENABLED = (
     os.environ.get("KNOWLEDGE_CATALOG_LEGACY_FALLBACK", "false").lower() == "true"
 )
@@ -41,9 +48,10 @@ def _read_manifest(path_text: str, mtime_ns: int) -> dict[str, Any]:
     try:
         value = json.loads(Path(path_text).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
+        return dict(_LAST_VALID_MANIFEST.get(path_text, {}))
     if not isinstance(value, dict) or value.get("version") != "2.0":
-        return {}
+        return dict(_LAST_VALID_MANIFEST.get(path_text, {}))
+    _LAST_VALID_MANIFEST[path_text] = value
     return value
 
 
@@ -126,3 +134,57 @@ def pending_review_count(vault: Path | None = None) -> int:
         return int(manifest.get("excluded_count") or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def base_knowledge_status(vault: Path | None = None) -> dict[str, Any]:
+    """Return the governed public corpus readiness, independent of paid packs."""
+    manifest = load_manifest(vault)
+    documents = [
+        item
+        for item in manifest.get("documents", [])
+        if isinstance(item, dict)
+        and item.get("knowledge_level") == "K5"
+        and item.get("classification_status") == "approved"
+        and item.get("security_level") == "green"
+        and item.get("path")
+        and item.get("pack_id")
+    ]
+    categories = sorted({str(item["pack_id"]) for item in documents})
+    document_count = len(documents)
+    ready = (
+        document_count >= BASE_PUBLIC_KNOWLEDGE_MINIMUM_DOCUMENTS
+        and len(categories) >= BASE_PUBLIC_KNOWLEDGE_MINIMUM_CATEGORIES
+    )
+    return {
+        "status": "ready" if ready else "building",
+        "document_count": document_count,
+        "minimum_document_count": BASE_PUBLIC_KNOWLEDGE_MINIMUM_DOCUMENTS,
+        "category_count": len(categories),
+        "minimum_category_count": BASE_PUBLIC_KNOWLEDGE_MINIMUM_CATEGORIES,
+        "categories": categories,
+        "last_compiled_at": manifest.get("generated_at"),
+    }
+
+
+def tenant_private_knowledge_status(
+    tenant_key: str, vault: Path | None = None
+) -> dict[str, Any]:
+    """Count only red K5 documents owned by the current tenant."""
+    manifest = load_manifest(vault)
+    documents = [
+        item
+        for item in manifest.get("documents", [])
+        if isinstance(item, dict)
+        and item.get("knowledge_level") == "K5"
+        and item.get("classification_status") == "approved"
+        and item.get("security_level") == "red"
+        and item.get("owner_tenant") == tenant_key
+        and item.get("path")
+        and item.get("pack_id")
+    ]
+    categories = sorted({str(item["pack_id"]) for item in documents})
+    return {
+        "document_count": len(documents),
+        "category_count": len(categories),
+        "categories": categories,
+    }
