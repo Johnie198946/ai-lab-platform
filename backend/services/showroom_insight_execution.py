@@ -278,12 +278,50 @@ async def ensure_execution(
     return binding, False
 
 
+def _truncated_json_suffix(text: str) -> str:
+    """Return the closing delimiters for a structurally valid EOF truncation."""
+    stack: list[str] = []
+    in_string = False
+    escaped = False
+    pairs = {"]": "[", "}": "{"}
+    for character in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            stack.append(character)
+        elif character in "]}":
+            if not stack or stack.pop() != pairs[character]:
+                return ""
+    if in_string or not stack or len(stack) > 4:
+        return ""
+    return "".join("]" if character == "[" else "}" for character in reversed(stack))
+
+
 def _parse_json(content: str) -> dict[str, Any]:
     text = (content or "").strip()
     fenced = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.I)
     if fenced:
         text = fenced.group(1).strip()
-    value = json.loads(text)
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        # DeepSeek can reach the output boundary after completing every field
+        # but before emitting the final brace. Repair only that provable EOF
+        # case; malformed middle content and unterminated strings still fail.
+        if exc.pos < len(text) - 1:
+            raise
+        suffix = _truncated_json_suffix(text)
+        if not suffix:
+            raise
+        value = json.loads(text + suffix)
     if not isinstance(value, dict):
         raise ValueError("洞察Artifact必须是JSON对象")
     return value

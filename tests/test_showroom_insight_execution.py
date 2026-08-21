@@ -9,6 +9,7 @@ from backend.services.showroom_insight_execution import (
     CONCEPT_KEYS,
     NODE_IDS,
     SCHEMA,
+    _parse_json,
     build_dsl,
     document_to_insight,
     validate_document,
@@ -90,6 +91,19 @@ def test_v2_artifact_rejects_unowned_tbd() -> None:
     document["sections"]["concept"]["market"].pop("owner")
     with pytest.raises(ValueError, match="TBD缺少"):
         validate_document(document, execution_id="run-1", demand_hash="d" * 64)
+
+
+def test_parse_json_closes_only_structurally_valid_eof_truncation() -> None:
+    assert _parse_json('{"schema":"AI_LAB","sections":{"summary":{}}') == {
+        "schema": "AI_LAB",
+        "sections": {"summary": {}},
+    }
+
+    with pytest.raises(__import__("json").JSONDecodeError):
+        _parse_json('{"schema":"AI_LAB" "sections":{}}')
+
+    with pytest.raises(__import__("json").JSONDecodeError):
+        _parse_json('{"schema":"unterminated}')
 
 
 @pytest.mark.asyncio
