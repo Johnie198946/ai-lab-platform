@@ -141,6 +141,56 @@ async def ensure_execution(
         ))
     ).scalar_one_or_none()
     if existing:
+        # Older browser-driven insight jobs can outlive an API deployment.  The
+        # binding is authoritative, so repair the session projection before the
+        # caller returns it to the browser.  Previously this early return left a
+        # legacy job_id (and no execution_id) in the session: /jobs returned 200,
+        # but the browser could never poll the persisted execution.
+        data = copy.deepcopy(session.data or {})
+        legacy = copy.deepcopy(data.get("insight_job") or {})
+        if legacy and legacy.get("execution_id") != existing.execution_id:
+            archived = copy.deepcopy(legacy)
+            archived["status"] = "superseded"
+            archived["superseded_at"] = now_iso()
+            archived["superseded_by_execution_id"] = existing.execution_id
+            history = data.setdefault("insight_execution_history", [])
+            if not any(
+                item.get("job_id") == archived.get("job_id")
+                and item.get("superseded_by_execution_id") == existing.execution_id
+                for item in history
+            ):
+                history.append(archived)
+
+        canonical = copy.deepcopy(legacy)
+        canonical.update({
+            "job_id": existing.job_id,
+            "execution_id": existing.execution_id,
+            "demand_hash": existing.demand_hash,
+            "source_hash": existing.demand_hash,
+        })
+        canonical.setdefault("status", "queued")
+        canonical.setdefault("active_node", "staffing-plan")
+        canonical.setdefault("active_stage", "planning")
+        canonical.setdefault("active_employee_id", "")
+        canonical.setdefault("completed_sections", [])
+        canonical.setdefault("node_statuses", {node: "pending" for node in NODE_IDS})
+        canonical.setdefault("attempt", 0)
+        canonical.setdefault("artifact_hash", "")
+        canonical.setdefault("started_at", now_iso())
+        canonical["updated_at"] = now_iso()
+        canonical.setdefault("error", "")
+        data["insight_job"] = canonical
+        data.setdefault(
+            "staffing_plan",
+            default_staffing_plan(
+                existing.job_id,
+                existing.demand_hash,
+                copy.deepcopy(data.get("demand") or {}),
+            ),
+        )
+        session.data = data
+        session.step = max(session.step, 3)
+        await db.flush()
         return existing, True
 
     job_id = _id("sij", session.tenant_key, session.session_id, str(epoch), demand_hash)

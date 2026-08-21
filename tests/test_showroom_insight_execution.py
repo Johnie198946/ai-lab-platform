@@ -130,6 +130,69 @@ async def test_server_execution_is_idempotent_and_persists_six_nodes() -> None:
 
 
 @pytest.mark.asyncio
+async def test_existing_binding_repairs_legacy_session_job_identity() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    async with maker() as database:
+        session = ShowroomSession(
+            session_id="showroom-existing-binding", tenant_key="demo", slot="main", step=3,
+            data={"demand": {"confirmed": True, "core_problem": "异构算力运营"}},
+        )
+        database.add(session)
+        await database.flush()
+        binding, _ = await ensure_execution(
+            database, session=session, demand_hash="a" * 64, epoch=11
+        )
+        execution = await database.get(WorkflowExecution, binding.execution_id)
+        nodes = list((await database.execute(
+            select(WorkflowNodeRun)
+            .where(WorkflowNodeRun.execution_id == binding.execution_id)
+            .order_by(WorkflowNodeRun.position)
+        )).scalars())
+        execution.status = "running"
+        nodes[0].status = "succeeded"
+        nodes[1].status = "running"
+        await database.commit()
+
+        session.data = {
+            **session.data,
+            "insight_job": {
+                "job_id": "legacy-browser-job",
+                "source_hash": "a" * 64,
+                "status": "running",
+                "active_stage": "internal_research",
+            },
+        }
+        await database.flush()
+
+        recovered, resumed = await ensure_execution(
+            database, session=session, demand_hash="a" * 64, epoch=11
+        )
+        await project_execution(database, recovered.execution_id)
+        await database.commit()
+        await database.refresh(session)
+
+        assert resumed is True
+        assert recovered.execution_id == binding.execution_id
+        assert session.data["insight_job"]["job_id"] == binding.job_id
+        assert session.data["insight_job"]["execution_id"] == binding.execution_id
+        assert session.data["insight_job"]["demand_hash"] == "a" * 64
+        assert session.data["insight_job"]["active_node"] == "evidence-research"
+        assert session.data["insight_job"]["active_employee_id"] == "researcher"
+        assert session.data["insight_job"]["node_statuses"]["staffing-plan"] == "succeeded"
+        assert session.data["insight_execution_history"][0]["job_id"] == "legacy-browser-job"
+
+        _, resumed = await ensure_execution(
+            database, session=session, demand_hash="a" * 64, epoch=11
+        )
+        assert resumed is True
+        assert len(session.data["insight_execution_history"]) == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_server_execution_accepts_millisecond_epoch() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
 

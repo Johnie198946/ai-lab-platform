@@ -857,12 +857,13 @@ async def get_showroom_bootstrap(
                         .with_for_update()
                     )
                 ).scalar_one()
-                await ensure_execution(
+                binding, _ = await ensure_execution(
                     database,
                     session=stored,
                     demand_hash=demand_fingerprint(demand),
                     epoch=int(hub.state.get("epoch", 0)),
                 )
+                await project_execution(database, binding.execution_id)
                 await database.commit()
                 await database.refresh(stored)
                 session = stored
@@ -1681,6 +1682,7 @@ async def start_showroom_insight_job(
         binding, resumed = await ensure_execution(
             database, session=row, demand_hash=source_hash, epoch=epoch
         )
+        await project_execution(database, binding.execution_id)
         await database.commit()
         await database.refresh(row)
         await database.refresh(binding)
