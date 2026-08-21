@@ -104,7 +104,9 @@ public struct MessageBubbleView: View {
             if !trimmed.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                     if !markdownBlocks.isEmpty {
-                        ForEach(markdownBlocks) { block in
+                        // MarkdownBlock.id 基于内容；重复段落/分隔线会产生相同 id。
+                        // 使用解析顺序作为局部身份，避免 SwiftUI 在长列表布局时合并重复节点。
+                        ForEach(Array(markdownBlocks.enumerated()), id: \.offset) { _, block in
                             MarkdownBlockCard(block: block)
                         }
                     } else if !trimmed.isEmpty {

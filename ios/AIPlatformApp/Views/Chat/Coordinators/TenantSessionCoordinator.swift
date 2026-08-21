@@ -25,6 +25,11 @@ public final class TenantSessionCoordinator: ObservableObject {
     @Published public var liveProgress: String? = nil
     @Published public var toastMessage: String? = nil
     @Published public var demoMode: Bool = false
+    @Published public private(set) var hasOlderMessages: Bool = false
+    @Published public private(set) var hasNewerMessages: Bool = false
+    @Published public private(set) var isLatestPage: Bool = true
+    @Published public private(set) var historyPageIdentity = UUID()
+    @Published public private(set) var historyPageStartsAtBottom: Bool = true
 
     public let sessionManager: SessionManager
     public weak var appState: AppState?
@@ -70,7 +75,7 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     public func restoreActiveSession() {
         let sid = sessionManager.activeSessionID()
-        self.messages = sessionManager.messages(for: sid)
+        applyHistoryPage(sessionManager.latestPage(for: sid), isLatest: true, startsAtBottom: true)
         self.quotedContext = nil
         appState?.selectedAgentId = sessionManager.agentId(for: sid)
         appState?.selectedAgentName = sessionManager.agentName(for: sid)
@@ -146,6 +151,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func commitSession() {
         let sid = sessionManager.activeSessionID()
         sessionManager.setMessages(messages, for: sid)
+        guard isLatestPage else { return }
+        trimVisibleMessageWindow()
+        sessionManager.cacheVisibleMessages(messages, for: sid)
     }
 
     public func switchSession(to sessionId: String) {
@@ -207,8 +215,52 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     public func clearCurrentSession() {
         cancelAllTasksAndAnimations()
+        let sid = sessionManager.activeSessionID()
+        sessionManager.clearSession(sid)
         messages.removeAll()
-        commitSession()
+        hasOlderMessages = false
+        hasNewerMessages = false
+        isLatestPage = true
+        historyPageStartsAtBottom = true
+        historyPageIdentity = UUID()
+    }
+
+    public func loadOlderMessagePage() {
+        guard !isGenerating, let first = messages.first else { return }
+        let sid = sessionManager.activeSessionID()
+        applyHistoryPage(sessionManager.pageBefore(first.id, sessionId: sid), isLatest: false, startsAtBottom: true)
+    }
+
+    public func loadNewerMessagePage() {
+        guard !isGenerating, let last = messages.last else { return }
+        let sid = sessionManager.activeSessionID()
+        let page = sessionManager.pageAfter(last.id, sessionId: sid)
+        applyHistoryPage(page, isLatest: !page.hasNewer, startsAtBottom: false)
+    }
+
+    public func returnToLatestMessages() {
+        guard !isGenerating else { return }
+        let sid = sessionManager.activeSessionID()
+        applyHistoryPage(sessionManager.latestPage(for: sid), isLatest: true, startsAtBottom: true)
+    }
+
+    private func applyHistoryPage(_ page: StoredMessagePage, isLatest: Bool, startsAtBottom: Bool) {
+        messages = page.messages
+        hasOlderMessages = page.hasOlder
+        hasNewerMessages = page.hasNewer
+        isLatestPage = isLatest && !page.hasNewer
+        historyPageStartsAtBottom = startsAtBottom
+        historyPageIdentity = UUID()
+    }
+
+    private func trimVisibleMessageWindow() {
+        var totalCharacters = messages.reduce(0) { $0 + $1.content.count }
+        while messages.count > 1 && (messages.count > ChatHistoryStore.pageMessageLimit || totalCharacters > ChatHistoryStore.pageCharacterLimit) {
+            totalCharacters -= messages.removeFirst().content.count
+            hasOlderMessages = true
+        }
+        hasNewerMessages = false
+        isLatestPage = true
     }
 
     public func cancelAllTasksAndAnimations() {
@@ -283,6 +335,8 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func sendMessage(text explicitText: String? = nil, regenerate: Bool = false) {
         let text = (explicitText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+
+        if !isLatestPage { returnToLatestMessages() }
 
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -1399,11 +1453,11 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func retryMessage(_ messageId: String) {
         guard !isGenerating else { return }
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        guard let userIdx = messages[..<idx].lastIndex(where: { $0.role == .user }) else { return }
-
-        let userPrompt = messages[userIdx].content
-        let quote = messages[userIdx].quotedContext
         let sid = sessionManager.activeSessionID()
+        let visibleUser = messages[..<idx].last(where: { $0.role == .user })
+        guard let userMessage = visibleUser ?? sessionManager.previousUserMessage(before: messageId, sessionId: sid) else { return }
+        let userPrompt = userMessage.content
+        let quote = userMessage.quotedContext
 
         // 未登录/无有效 token：断点探测与重跑均需认证，先给出明确提示（不无声硬跳登录页）
         guard APIClient.shared.currentToken() != nil else {
@@ -1428,7 +1482,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
             }
             // 未命中断点 → 全量重跑（携带上下文 + regenerate 标志，服务端作废旧 run 后全新执行）
+            sessionManager.truncateMessages(from: messageId, sessionId: sid)
             messages.removeSubrange(idx...)
+            hasNewerMessages = false
+            isLatestPage = true
             startGeneration(text: userPrompt, quote: quote, regenerate: true)
         }
         _ = probeTask

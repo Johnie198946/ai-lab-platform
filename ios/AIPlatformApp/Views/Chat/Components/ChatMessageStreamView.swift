@@ -3,8 +3,8 @@
 //  AIPlatformApp
 //
 //  ChatGPT / Gemini Style Message Stream (v2 - Butter-Smooth & Zero-Jank)
-//  - Pure ScrollViewReader + LazyVStack message canvas
-//  - Stable scroll anchor without continuous GeometryReader preference loops
+//  - Native ScrollView + deterministic VStack message canvas
+//  - No lazy placement or programmatic scroll transactions competing with gestures
 //
 
 import SwiftUI
@@ -17,64 +17,73 @@ public struct ChatMessageStreamView: View {
     }
 
     public var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: AppTheme.Spacing.md) {
-                    if coordinator.messages.isEmpty && coordinator.pendingQueue.isEmpty {
-                        ChatWelcomeView(
-                            quickCommands: coordinator.quickCommands,
-                            onSelect: { coordinator.selectCommand($0) }
-                        )
-                            .frame(minHeight: 420)
-                            .transition(.opacity)
+        ScrollView {
+            // iOS 26.1 的 LazyVStack 在“单条超高 Markdown + 尾部新增消息”后向下拖动时，
+            // 会持续重算 LazySubviewPlacements 并占满主线程。消息解析已有有界缓存，
+            // 因此这里优先采用确定性的 VStack，换取可收敛的滚动内容尺寸。
+            VStack(spacing: AppTheme.Spacing.md) {
+                if coordinator.hasOlderMessages {
+                    historyButton("加载更早消息", systemImage: "clock.arrow.circlepath") {
+                        coordinator.loadOlderMessagePage()
                     }
-
-                    ForEach(coordinator.messages) { message in
-                        messageRow(message).id(message.id)
-                    }
-                    ForEach(Array(coordinator.pendingQueue.enumerated()), id: \.element.id) { index, item in
-                        PendingPlaceholderView(
-                            position: index + 1,
-                            onCancel: { coordinator.cancelQueued(item.id) }
-                        ).id("pending_\(item.id)")
-                    }
-
-                    // 底部锚点，确保可靠滚动吸底
-                    Color.clear
-                        .frame(height: 1)
-                        .id("bottom_anchor")
                 }
-                .frame(maxWidth: AppTheme.Metrics.readableContentWidth)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, AppTheme.Spacing.md)
+
+                if coordinator.messages.isEmpty && coordinator.pendingQueue.isEmpty {
+                    ChatWelcomeView(
+                        quickCommands: coordinator.quickCommands,
+                        onSelect: { coordinator.selectCommand($0) }
+                    )
+                        .frame(minHeight: 420)
+                        .transition(.opacity)
+                }
+
+                ForEach(coordinator.messages) { message in
+                    messageRow(message).id(message.id)
+                }
+                ForEach(Array(coordinator.pendingQueue.enumerated()), id: \.element.id) { index, item in
+                    PendingPlaceholderView(
+                        position: index + 1,
+                        onCancel: { coordinator.cancelQueued(item.id) }
+                    ).id("pending_\(item.id)")
+                }
+
+                if coordinator.hasNewerMessages {
+                    HStack(spacing: AppTheme.Spacing.sm) {
+                        historyButton("加载更新消息", systemImage: "arrow.down.circle") {
+                            coordinator.loadNewerMessagePage()
+                        }
+                        historyButton("回到最新", systemImage: "arrow.down.to.line") {
+                            coordinator.returnToLatestMessages()
+                        }
+                    }
+                }
+
+                Color.clear.frame(height: 1)
             }
-            .scrollDismissesKeyboard(.interactively)
-            .onChange(of: coordinator.messages.count) { _, _ in
-                scrollToBottom(proxy)
-            }
-            .onChange(of: coordinator.pendingQueue.count) { _, _ in
-                scrollToBottom(proxy)
-            }
-            .onChange(of: coordinator.inflight?.id) { _, _ in
-                scrollToBottom(proxy)
-            }
-            // Clarify 卡是在既有续写消息上追加 block，不会改变 messages.count。
-            // 监听尾消息块签名，确保最终“需求确认单 + 确认卡”出现时自动滚入视野。
-            .onChange(of: tailBlockSignature) { _, _ in
-                scrollToBottom(proxy)
-            }
+            .frame(maxWidth: AppTheme.Metrics.readableContentWidth)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, AppTheme.Spacing.md)
         }
+        .id(coordinator.historyPageIdentity)
+        // 仅设置首次进入会话的位置。不能使用无 role 的 defaultScrollAnchor：
+        // 超长消息后继续发送时，它会参与内容尺寸变化的锚点平移，并在 iOS 26
+        // 触发消息栈的 AttributeGraph 布局循环。
+        .initialScrollAnchor(startsAtBottom: coordinator.historyPageStartsAtBottom)
+        .scrollDismissesKeyboard(.interactively)
     }
 
-    private var tailBlockSignature: String {
-        guard let last = coordinator.messages.last else { return "empty" }
-        return "\(last.id):\(last.blocks.count):\(last.clarifyBlock?.isSubmitted == true)"
-    }
-
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
-        withAnimation(.easeOut(duration: 0.25)) {
-            proxy.scrollTo("bottom_anchor", anchor: .bottom)
+    private func historyButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.footnote.weight(.medium))
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .padding(.vertical, AppTheme.Spacing.sm)
+                .background(.thinMaterial, in: Capsule())
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(Color.accentColor)
+        .disabled(coordinator.isGenerating)
+        .opacity(coordinator.isGenerating ? 0.45 : 1)
     }
 
     @ViewBuilder
@@ -157,6 +166,19 @@ public struct ChatMessageStreamView: View {
             )
         default:
             EmptyView()
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func initialScrollAnchor(startsAtBottom: Bool) -> some View {
+        if #available(iOS 18.0, *), startsAtBottom {
+            defaultScrollAnchor(.bottom, for: .initialOffset)
+        } else {
+            // iOS 17 没有按角色限定锚点的 API；保持原生顶部初始位置，
+            // 也不要恢复会影响后续内容尺寸变化的全局底部锚点。
+            self
         }
     }
 }

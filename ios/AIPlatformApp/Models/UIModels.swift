@@ -546,10 +546,7 @@ public struct SessionRecord: Codable, Sendable {
     }
 }
 
-/// 多会话状态管理器（@MainActor 严格串行，iPhone 单窗口）。
-/// - 内存 `sessions: [String: [ChatMessage]]` 字典隔离
-/// - 消息级原子落盘：Documents/Sessions/<id>.json（tmp + rename，杜绝断电损坏）
-/// - pending 标记：响应前 true / 完成后 false；冷启动恢复 updatedAt 最新会话为 active
+/// 多会话状态管理器。内存只缓存当前可见页，正文由 SQLite 分页持久化。
 @MainActor
 public final class SessionManager: ObservableObject {
     public static let shared = SessionManager()
@@ -560,79 +557,41 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var sessionUpdatedAt: [String: Date] = [:]
     @Published public private(set) var sessionAgentIds: [String: String] = [:]
     @Published public private(set) var sessionAgentNames: [String: String] = [:]
+    @Published public private(set) var sessionMessageCounts: [String: Int] = [:]
 
-    private let fm = FileManager.default
-
-    /// Documents/Sessions/<id>.json
-    private var directory: URL {
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? fm.temporaryDirectory
-        return docs.appendingPathComponent("Sessions", isDirectory: true)
-    }
-
-    private static let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.dateEncodingStrategy = .iso8601
-        e.outputFormatting = [.sortedKeys]
-        return e
-    }()
-
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
-        return d
-    }()
+    private let store: ChatHistoryStore
+    private var persistedFingerprints: [String: [String: Int]] = [:]
 
     private init() {
-        loadAll()
+        do { store = try ChatHistoryStore(performLegacyMigration: false) }
+        catch { fatalError("Chat history database unavailable: \(error)") }
+        loadMetadata()
+        Task.detached(priority: .utility) { [weak self] in
+            // A separate WAL connection avoids sharing a transaction with foreground page writes.
+            _ = try? ChatHistoryStore()
+            await self?.reloadMetadata()
+        }
     }
 
-    // MARK: - 冷启动恢复
+    public init(store: ChatHistoryStore) {
+        self.store = store
+        loadMetadata()
+    }
 
-    private func loadAll() {
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let files = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        var loaded: [String: [ChatMessage]] = [:]
-        var titles: [String: String] = [:]
-        var updated: [String: Date] = [:]
-        var agentIds: [String: String] = [:]
-        var agentNames: [String: String] = [:]
-        var latestId: String? = nil
-        var latestDate: Date = .distantPast
-
-        for url in files where url.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let rec = try? Self.decoder.decode(SessionRecord.self, from: data) else { continue }
-            let msgs = rec.messages.map { $0.toChatMessage(sessionId: rec.id) }
-            loaded[rec.id] = msgs
-            titles[rec.id] = rec.title
-            updated[rec.id] = rec.updatedAt
-            agentIds[rec.id] = rec.agentId ?? "main_agent"
-            agentNames[rec.id] = rec.agentName ?? "Main 智能编排"
-            if rec.updatedAt > latestDate {
-                latestDate = rec.updatedAt
-                latestId = rec.id
-            }
-        }
-
-        sessions = loaded
-        sessionTitles = titles
-        sessionUpdatedAt = updated
-        sessionAgentIds = agentIds
-        sessionAgentNames = agentNames
-        // 恢复 updatedAt 最新的会话为 activeSessionId
-        activeSessionId = latestId
+    private func loadMetadata() {
+        guard let summaries = try? store.summaries() else { return }
+        sessionTitles = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.title) })
+        sessionUpdatedAt = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.updatedAt) })
+        sessionAgentIds = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentId) })
+        sessionAgentNames = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentName) })
+        sessionMessageCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.messageCount) })
+        activeSessionId = summaries.first?.id
     }
 
     // MARK: - 会话生命周期
 
     public func activeSessionID() -> String {
-        if let active = activeSessionId, sessions[active] != nil { return active }
+        if let active = activeSessionId, sessionTitles[active] != nil { return active }
         return createSession()
     }
 
@@ -646,24 +605,29 @@ public final class SessionManager: ObservableObject {
         sessionUpdatedAt[id] = Date()
         sessionAgentIds[id] = agentId
         sessionAgentNames[id] = agentName
+        sessionMessageCounts[id] = 0
         activeSessionId = id
-        persist(id: id)
+        try? store.createSession(id: id, agentId: agentId, agentName: agentName)
         return id
     }
 
     public func switchTo(_ id: String) {
-        if sessions[id] == nil { sessions[id] = [] }
+        if sessionTitles[id] == nil {
+            try? store.createSession(id: id, agentId: "main_agent", agentName: "Main 智能编排")
+            loadMetadata()
+        }
         activeSessionId = id
     }
 
-    /// 删除会话：本地级联清理（内存 + 磁盘文件）。
     public func deleteSession(_ id: String) {
+        try? store.delete(id)
         sessions.removeValue(forKey: id)
         sessionTitles.removeValue(forKey: id)
         sessionUpdatedAt.removeValue(forKey: id)
         sessionAgentIds.removeValue(forKey: id)
         sessionAgentNames.removeValue(forKey: id)
-        try? fm.removeItem(at: fileURL(id))
+        sessionMessageCounts.removeValue(forKey: id)
+        persistedFingerprints.removeValue(forKey: id)
         if activeSessionId == id {
             activeSessionId = latestSessionID()
             if activeSessionId == nil { _ = createSession() }
@@ -678,18 +642,17 @@ public final class SessionManager: ObservableObject {
     }
 
     private func latestSessionID() -> String? {
-        sessions.keys.max { (sessionUpdatedAt[$0] ?? .distantPast) < (sessionUpdatedAt[$1] ?? .distantPast) }
+        sessionUpdatedAt.keys.max { (sessionUpdatedAt[$0] ?? .distantPast) < (sessionUpdatedAt[$1] ?? .distantPast) }
     }
 
-    // MARK: - 消息读写（消息级原子落盘）
-
     public func messages(for id: String) -> [ChatMessage] {
-        sessions[id] ?? []
+        if let cached = sessions[id] { return cached }
+        return latestPage(for: id).messages
     }
 
     public var activeMessages: [ChatMessage] {
         guard let id = activeSessionId else { return [] }
-        return sessions[id] ?? []
+        return messages(for: id)
     }
 
     public func title(for id: String) -> String {
@@ -704,17 +667,59 @@ public final class SessionManager: ObservableObject {
         sessionAgentNames[id] ?? "Main 智能编排"
     }
 
-    /// 整会话写入（消息级事件触发单次落盘，非 chunk 级）。标题按首条 user 前 20 字规则刷新。
+    public func messageCount(for id: String) -> Int { sessionMessageCounts[id] ?? 0 }
+
+    public func latestPage(for id: String) -> StoredMessagePage {
+        let page = (try? store.latest(sessionId: id)) ?? StoredMessagePage(messages: [], hasOlder: false, hasNewer: false)
+        cacheVisibleMessages(page.messages, for: id)
+        return page
+    }
+
+    public func pageBefore(_ messageId: String, sessionId: String) -> StoredMessagePage {
+        let page = (try? store.before(sessionId: sessionId, messageId: messageId)) ?? latestPage(for: sessionId)
+        cacheVisibleMessages(page.messages, for: sessionId)
+        return page
+    }
+
+    public func pageAfter(_ messageId: String, sessionId: String) -> StoredMessagePage {
+        let page = (try? store.after(sessionId: sessionId, messageId: messageId)) ?? latestPage(for: sessionId)
+        cacheVisibleMessages(page.messages, for: sessionId)
+        return page
+    }
+
     public func setMessages(_ messages: [ChatMessage], for id: String) {
         sessions[id] = messages
-        refreshTitle(for: id, messages: messages)
-        sessionUpdatedAt[id] = Date()
-        persist(id: id)
+        let known = persistedFingerprints[id] ?? [:]
+        let dirty = messages.filter { known[$0.id] != fingerprint($0) }
+        if let count = try? store.upsert(dirty, sessionId: id) {
+            sessionMessageCounts[id] = count
+            var updated = known
+            for message in dirty { updated[message.id] = fingerprint(message) }
+            persistedFingerprints[id] = updated
+        }
+        refreshMetadata(for: id)
+    }
+
+    public func previousUserMessage(before messageId: String, sessionId: String) -> ChatMessage? {
+        try? store.previousUser(sessionId: sessionId, before: messageId)
+    }
+
+    public func truncateMessages(from messageId: String, sessionId: String) {
+        try? store.truncate(sessionId: sessionId, from: messageId)
+        sessionMessageCounts[sessionId] = (try? store.count(sessionId)) ?? 0
+        persistedFingerprints[sessionId]?.removeAll()
+    }
+
+    public func clearSession(_ id: String) {
+        try? store.clear(id)
+        sessions[id] = []
+        persistedFingerprints[id] = [:]
+        refreshMetadata(for: id)
     }
 
     /// 会话屏障：在途请求被切换拦截时，在原会话把 pending 占位替换为 .interrupted（不静默丢弃）。
     public func markInterrupted(sessionId: String) {
-        guard var msgs = sessions[sessionId], !msgs.isEmpty else { return }
+        var msgs = latestPage(for: sessionId).messages
         if let idx = msgs.lastIndex(where: { $0.role == .assistant && $0.pending }) {
             msgs[idx].role = .interrupted
             msgs[idx].content = Self.interruptedText
@@ -733,99 +738,88 @@ public final class SessionManager: ObservableObject {
 
     /// 把归属会话中 requestId 对应的 pending 占位替换为真实响应（切走后由 handleSuccess 调用）。
     public func applyResponse(sessionId: String, requestId: String, response: ChatResponseDTO) {
-        guard var msgs = sessions[sessionId] else { return }
-        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
-            msgs[idx].content = response.answer
-            msgs[idx].pending = false
-            msgs[idx].isStreaming = false
-            msgs[idx].degraded = response.degraded == true
-            msgs[idx].executingAgentId = response.resolvedAgent?.id
-            msgs[idx].executingAgentName = response.resolvedAgent?.name
-            msgs[idx].delegatedBy = response.delegatedBy
-            // 后台完成不渲染逐步推理动画；用户切回时看到折叠推理卡/全文
-            msgs[idx].blocks = []
-        } else {
-            msgs.append(ChatMessage(
+        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+            var updated = existing
+            updated.content = response.answer; updated.pending = false; updated.isStreaming = false
+            updated.degraded = response.degraded == true; updated.executingAgentId = response.resolvedAgent?.id
+            updated.executingAgentName = response.resolvedAgent?.name; updated.delegatedBy = response.delegatedBy
+            updated.blocks = []
+            return updated
+        } ?? ChatMessage(
                 sessionId: sessionId, role: .assistant,
                 content: response.answer, pending: false,
                 degraded: response.degraded == true,
                 executingAgentId: response.resolvedAgent?.id,
                 executingAgentName: response.resolvedAgent?.name,
                 delegatedBy: response.delegatedBy
-            ))
-        }
-        setMessages(msgs, for: sessionId)
+            )
+        updateStoredMessage(message, sessionId: sessionId)
     }
 
     /// 断点续接已完成（status=completed）时，把结果写归属会话（切走后由 applyCompletedStatus 调用）。
     public func applyCompletedStatus(sessionId: String, requestId: String, answer: String) {
-        guard var msgs = sessions[sessionId] else { return }
-        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
-            msgs[idx].content = answer
-            msgs[idx].pending = false
-            msgs[idx].isStreaming = false
-            msgs[idx].degraded = false
-        } else {
-            msgs.append(ChatMessage(
-                sessionId: sessionId, role: .assistant,
-                content: answer, pending: false
-            ))
-        }
-        setMessages(msgs, for: sessionId)
+        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+            var updated = existing; updated.content = answer; updated.pending = false
+            updated.isStreaming = false; updated.degraded = false; return updated
+        } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: answer, pending: false)
+        updateStoredMessage(message, sessionId: sessionId)
     }
 
     /// 切走后任务失败：把 degraded 卡写归属会话（不中断、不静默）。
     public func applyDegraded(sessionId: String, requestId: String, text: String) {
-        guard var msgs = sessions[sessionId] else { return }
-        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
-            msgs[idx].content = text
-            msgs[idx].pending = false
-            msgs[idx].isStreaming = false
-            msgs[idx].degraded = true
-        } else {
-            msgs.append(ChatMessage(
-                sessionId: sessionId, role: .assistant,
-                content: text, pending: false, degraded: true
-            ))
-        }
-        setMessages(msgs, for: sessionId)
+        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+            var updated = existing; updated.content = text; updated.pending = false
+            updated.isStreaming = false; updated.degraded = true; return updated
+        } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: text, pending: false, degraded: true)
+        updateStoredMessage(message, sessionId: sessionId)
     }
 
-    private func refreshTitle(for id: String, messages: [ChatMessage]) {
-        guard let firstUser = messages.first(where: { $0.role == .user }) else {
-            sessionTitles[id] = "新会话"
-            return
+    private func updateStoredMessage(_ message: ChatMessage, sessionId: String) {
+        guard (try? store.upsert([message], sessionId: sessionId)) != nil else { return }
+        persistedFingerprints[sessionId, default: [:]][message.id] = fingerprint(message)
+        if var cached = sessions[sessionId], let index = cached.firstIndex(where: { $0.id == message.id }) {
+            cached[index] = message; sessions[sessionId] = cached
         }
-        let text = firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        sessionTitles[id] = text.isEmpty ? "新会话" : String(text.prefix(20))
+        refreshMetadata(for: sessionId)
     }
 
-    // MARK: - 原子落盘（tmp + rename）
-
-    private func fileURL(_ id: String) -> URL {
-        directory.appendingPathComponent("\(id).json")
+    private func refreshMetadata(for id: String) {
+        guard let summary = try? store.summaries().first(where: { $0.id == id }) else { return }
+        sessionTitles[id] = summary.title; sessionUpdatedAt[id] = summary.updatedAt
+        sessionAgentIds[id] = summary.agentId; sessionAgentNames[id] = summary.agentName
+        sessionMessageCounts[id] = summary.messageCount
     }
 
-    private func persist(id: String) {
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let msgs = sessions[id] else { return }
-        let rec = SessionRecord(
-            id: id,
-            title: sessionTitles[id] ?? "新会话",
-            updatedAt: sessionUpdatedAt[id] ?? Date(),
-            messages: msgs.map(PersistedMessage.init),
-            agentId: agentId(for: id),
-            agentName: agentName(for: id)
-        )
-        guard let data = try? Self.encoder.encode(rec) else { return }
-        let url = fileURL(id)
-        let tmp = directory.appendingPathComponent("\(id).json.tmp")
-        try? data.write(to: tmp, options: .atomic)
-        if fm.fileExists(atPath: url.path) {
-            _ = try? fm.replaceItemAt(url, withItemAt: tmp)
-        } else {
-            try? fm.moveItem(at: tmp, to: url)
+    public func cacheVisibleMessages(_ messages: [ChatMessage], for id: String) {
+        sessions[id] = messages
+        var known = persistedFingerprints[id] ?? [:]
+        for message in messages { known[message.id] = fingerprint(message) }
+        persistedFingerprints[id] = known
+    }
+
+    public func storedMessage(id: String, sessionId: String) -> ChatMessage? {
+        try? store.message(sessionId: sessionId, id: id)
+    }
+
+    public func updateMessage(_ message: ChatMessage, sessionId: String) {
+        updateStoredMessage(message, sessionId: sessionId)
+    }
+
+    public func reloadMetadata() {
+        let active = activeSessionId
+        loadMetadata()
+        if let active, sessionTitles[active] != nil {
+            activeSessionId = active
         }
+    }
+
+    private func fingerprint(_ message: ChatMessage) -> Int {
+        var hasher = Hasher()
+        hasher.combine(message.role.rawValue); hasher.combine(message.content); hasher.combine(message.createdAt)
+        hasher.combine(message.pending); hasher.combine(message.degraded); hasher.combine(message.isDemoSample)
+        hasher.combine(message.reasoningDuration); hasher.combine(message.executingAgentId)
+        hasher.combine(message.executingAgentName); hasher.combine(message.delegatedBy)
+        return hasher.finalize()
     }
 }
 

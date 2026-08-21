@@ -1,4 +1,5 @@
 import XCTest
+import SwiftUI
 @testable import AIPlatformApp
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
@@ -6,6 +7,113 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return decoder
+    }
+
+    func testMarkdownParserReusesBoundedMessageCache() {
+        let key = "streaming-\(UUID().uuidString)"
+        let first = MarkdownBlockParser.shared.parse("第一段", messageId: key)
+        let cached = MarkdownBlockParser.shared.parse("已变化但仍在流式", messageId: key)
+        let completed = MarkdownBlockParser.shared.parse(
+            "已变化但仍在流式",
+            messageId: "done-\(UUID().uuidString)"
+        )
+
+        XCTAssertEqual(cached, first)
+        XCTAssertNotEqual(completed, first)
+    }
+
+    func testMarkdownParserKeepsRepeatedBlocksInSourceOrder() {
+        let blocks = MarkdownBlockParser.shared.parse(
+            "重复段落\n\n重复段落\n\n---\n\n---",
+            messageId: "repeated-\(UUID().uuidString)"
+        )
+
+        XCTAssertEqual(blocks.count, 4)
+        XCTAssertEqual(blocks[0], blocks[1])
+        XCTAssertEqual(blocks[2], .divider)
+        XCTAssertEqual(blocks[3], .divider)
+    }
+
+    @MainActor
+    func testChatStreamRelayoutsAfterSendingBelowExtraTallMessage() async {
+        let coordinator = TenantSessionCoordinator()
+        let sessionId = coordinator.sessionManager.activeSessionID()
+        let longAssessment = Array(
+            repeating: """
+            ### 三年级英语基础水平评估测试
+            1. This is ___ apple. A. a B. an C. two
+            2. I ___ a student. A. am B. is C. are
+            3. What's your name? My name is Tom.
+
+            ```text
+            1-B
+            2-A
+            3-My name is Tom.
+            ```
+            """,
+            count: 18
+        ).joined(separator: "\n\n")
+        coordinator.messages = [
+            ChatMessage(sessionId: sessionId, role: .assistant, content: longAssessment)
+        ]
+
+        let host = UIHostingController(rootView: ChatMessageStreamView(coordinator: coordinator))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 720))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true }
+
+        host.view.layoutIfNeeded()
+
+        coordinator.messages.append(
+            ChatMessage(sessionId: sessionId, role: .user, content: "B A C A B A B C C D A B")
+        )
+        coordinator.messages.append(
+            ChatMessage(
+                sessionId: sessionId,
+                role: .assistant,
+                content: "",
+                isStreaming: true,
+                pending: true
+            )
+        )
+
+        for _ in 0..<4 {
+            await Task.yield()
+            host.view.setNeedsLayout()
+            host.view.layoutIfNeeded()
+        }
+
+        let scrollView = findScrollView(in: host.view)
+        XCTAssertEqual(coordinator.messages.count, 3)
+        XCTAssertGreaterThan(host.view.bounds.height, 0)
+        XCTAssertNotNil(scrollView)
+        XCTAssertGreaterThan(scrollView?.contentSize.height ?? 0, scrollView?.bounds.height ?? 0)
+
+        if let scrollView {
+            let maximumOffset = max(0, scrollView.contentSize.height - scrollView.bounds.height)
+            for step in 1...12 {
+                scrollView.setContentOffset(
+                    CGPoint(x: 0, y: maximumOffset * CGFloat(step) / 12),
+                    animated: false
+                )
+                scrollView.layoutIfNeeded()
+                await Task.yield()
+            }
+            XCTAssertEqual(scrollView.contentOffset.y, maximumOffset, accuracy: 1)
+        }
+    }
+
+    private func findScrollView(in view: UIView) -> UIScrollView? {
+        if let scrollView = view as? UIScrollView {
+            return scrollView
+        }
+        for subview in view.subviews {
+            if let scrollView = findScrollView(in: subview) {
+                return scrollView
+            }
+        }
+        return nil
     }
 
     func testCreateDraftResponseDecodesClarificationSession() throws {
@@ -296,5 +404,158 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(status.clarify?.clarifyId, "cid-2")
         XCTAssertEqual(status.clarify?.requestId, "request-2")
         XCTAssertEqual(status.clarify?.expiresInSeconds, 88)
+    }
+
+    func testChatHistoryStorePagesOneThousandMessagesWithinBudgets() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let sessionId = "large-history"
+        let messages = (0..<1_000).map { index in
+            ChatMessage(
+                id: "message-\(index)", sessionId: sessionId,
+                role: index.isMultiple(of: 2) ? .user : .assistant,
+                content: "正文-\(index)-" + String(repeating: "x", count: 120)
+            )
+        }
+
+        XCTAssertEqual(try store.upsert(messages, sessionId: sessionId), 1_000)
+        let latest = try store.latest(sessionId: sessionId)
+        XCTAssertLessThanOrEqual(latest.messages.count, ChatHistoryStore.pageMessageLimit)
+        XCTAssertLessThanOrEqual(latest.messages.reduce(0) { $0 + $1.content.count }, ChatHistoryStore.pageCharacterLimit)
+        XCTAssertEqual(latest.messages.last?.id, "message-999")
+        XCTAssertTrue(latest.hasOlder)
+        XCTAssertFalse(latest.hasNewer)
+
+        let older = try store.before(sessionId: sessionId, messageId: try XCTUnwrap(latest.messages.first?.id))
+        XCTAssertLessThanOrEqual(older.messages.count, ChatHistoryStore.pageMessageLimit)
+        XCTAssertTrue(older.hasNewer)
+        let newer = try store.after(sessionId: sessionId, messageId: try XCTUnwrap(older.messages.last?.id))
+        XCTAssertEqual(newer.messages.first?.id, latest.messages.first?.id)
+
+        let longSession = "character-budget"
+        let longMessages = (0..<3).map {
+            ChatMessage(id: "long-\($0)", sessionId: longSession, role: .assistant, content: String(repeating: "长", count: 40_001))
+        }
+        _ = try store.upsert(longMessages, sessionId: longSession)
+        let characterPage = try store.latest(sessionId: longSession)
+        XCTAssertEqual(characterPage.messages.count, 1)
+        XCTAssertEqual(characterPage.messages.first?.content.count, 40_001)
+
+        XCTAssertEqual(try store.previousUser(sessionId: sessionId, before: "message-51")?.id, "message-50")
+        try store.truncate(sessionId: sessionId, from: "message-51")
+        XCTAssertEqual(try store.count(sessionId), 51)
+        try store.clear(sessionId)
+        XCTAssertEqual(try store.count(sessionId), 0)
+        try store.delete(longSession)
+        XCTAssertNil(try store.summaries().first(where: { $0.id == longSession }))
+    }
+
+    func testChatHistoryStoreMigratesLegacyJSONAndKeepsBackup() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let legacy = root.appendingPathComponent("Sessions")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let messages = (0..<30).map {
+            PersistedMessage(ChatMessage(id: "legacy-\($0)", sessionId: "legacy", role: $0.isMultiple(of: 2) ? .user : .assistant, content: "历史 \($0)"))
+        }
+        let record = SessionRecord(
+            id: "legacy", title: "迁移会话", updatedAt: Date(timeIntervalSince1970: 1_750_000_000),
+            messages: messages, agentId: "english-agent", agentName: "英语评估"
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let source = legacy.appendingPathComponent("legacy.json")
+        try encoder.encode(record).write(to: source)
+
+        let store = try ChatHistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), legacyDirectory: legacy)
+        XCTAssertEqual(try store.count("legacy"), 30)
+        let latest = try store.latest(sessionId: "legacy")
+        XCTAssertEqual(latest.messages.last?.id, "legacy-29")
+        let summary = try XCTUnwrap(store.summaries().first)
+        XCTAssertEqual(summary.title, "迁移会话")
+        XCTAssertEqual(summary.agentId, "english-agent")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacy.appendingPathComponent("legacy.json.v1-backup").path))
+    }
+
+    func testChatHistoryStoreLeavesInvalidLegacyFileRecoverable() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let legacy = root.appendingPathComponent("Sessions")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = legacy.appendingPathComponent("broken.json")
+        try Data("not-json".utf8).write(to: source)
+
+        let store = try ChatHistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), legacyDirectory: legacy)
+        XCTAssertTrue(try store.summaries().isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+    }
+
+    func testChatHistoryStoreRollsBackFailedSessionMigration() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let legacy = root.appendingPathComponent("Sessions")
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let duplicated = ChatMessage(id: "same-id", sessionId: "rollback", role: .assistant, content: "重复")
+        let record = SessionRecord(
+            id: "rollback", title: "应回滚", updatedAt: Date(),
+            messages: [PersistedMessage(duplicated), PersistedMessage(duplicated)]
+        )
+        let encoder = JSONEncoder(); encoder.dateEncodingStrategy = .iso8601
+        let source = legacy.appendingPathComponent("rollback.json")
+        try encoder.encode(record).write(to: source)
+
+        let store = try ChatHistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), legacyDirectory: legacy)
+        XCTAssertNil(try store.summaries().first(where: { $0.id == "rollback" }))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: legacy.appendingPathComponent("rollback.json.v1-backup").path))
+    }
+
+    @MainActor
+    func testSessionManagerColdStartLoadsOnlyMetadataAndLatestPageOnDemand() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ChatHistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), legacyDirectory: root.appendingPathComponent("legacy"))
+        let sessionId = "metadata-only"
+        _ = try store.upsert((0..<100).map {
+            ChatMessage(id: "cold-\($0)", sessionId: sessionId, role: .assistant, content: "消息 \($0)")
+        }, sessionId: sessionId)
+
+        let manager = SessionManager(store: store)
+        XCTAssertEqual(manager.messageCount(for: sessionId), 100)
+        XCTAssertTrue(manager.sessions.isEmpty)
+        XCTAssertLessThanOrEqual(manager.latestPage(for: sessionId).messages.count, ChatHistoryStore.pageMessageLimit)
+        XCTAssertEqual(manager.sessions[sessionId]?.last?.id, "cold-99")
+    }
+
+    @MainActor
+    func testCoordinatorReplacesVisibleHistoryPages() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ChatHistoryStore(databaseURL: root.appendingPathComponent("history.sqlite"), legacyDirectory: root.appendingPathComponent("legacy"))
+        let sessionId = "paging-ui"
+        _ = try store.upsert((0..<60).map {
+            ChatMessage(id: "page-\($0)", sessionId: sessionId, role: .assistant, content: "消息 \($0)")
+        }, sessionId: sessionId)
+        let manager = SessionManager(store: store)
+        let coordinator = TenantSessionCoordinator(sessionManager: manager)
+
+        XCTAssertEqual(coordinator.messages.last?.id, "page-59")
+        XCTAssertLessThanOrEqual(coordinator.messages.count, ChatHistoryStore.pageMessageLimit)
+        XCTAssertTrue(coordinator.hasOlderMessages)
+        XCTAssertTrue(coordinator.isLatestPage)
+        coordinator.loadOlderMessagePage()
+        XCTAssertFalse(coordinator.isLatestPage)
+        XCTAssertTrue(coordinator.hasNewerMessages)
+        XCTAssertLessThanOrEqual(coordinator.messages.count, ChatHistoryStore.pageMessageLimit)
+        coordinator.loadNewerMessagePage()
+        XCTAssertEqual(coordinator.messages.first?.id, "page-36")
+        coordinator.returnToLatestMessages()
+        XCTAssertEqual(coordinator.messages.last?.id, "page-59")
+        XCTAssertTrue(coordinator.isLatestPage)
     }
 }

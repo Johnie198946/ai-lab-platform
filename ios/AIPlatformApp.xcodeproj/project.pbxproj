@@ -52,11 +52,13 @@
 		F3462447EFD8BB4DAFA14A1E /* WeChatLinkValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CC0682A56D72BAAB4097CFA /* WeChatLinkValidator.swift */; };
 		F97A7339A74692F2CEE74D86 /* ThinkingPlaceholderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6CC8A62E663E1EB37C7BE0B /* ThinkingPlaceholderView.swift */; };
 		F9D61280C020B647D7B3E1D2 /* ChatMessageStreamView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EF73CD2E97B8DC153BDFD826 /* ChatMessageStreamView.swift */; };
+		C0D3A0010000000000000001 /* ChatHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A0010000000000000002 /* ChatHistoryStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		A10000000000000000000002 /* AIPlatformAppTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AIPlatformAppTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000004 /* WorkflowLifecycleDTOTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowLifecycleDTOTests.swift; sourceTree = "<group>"; };
+		C0D3A0010000000000000002 /* ChatHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
 		064407015708A682A63CF7D8 /* ChatTopBarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatTopBarView.swift; sourceTree = "<group>"; };
 		13E7BDD63EC61CE3C89D4C05 /* AttachmentCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachmentCard.swift; sourceTree = "<group>"; };
 		1490C2A9375CE8604477437E /* LoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LoginView.swift; sourceTree = "<group>"; };
@@ -225,6 +227,7 @@
 		86A09AB8A1F908988E6AE52E /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				C0D3A0010000000000000002 /* ChatHistoryStore.swift */,
 				F8E70EAC9E0B5B8A7FA5B187 /* InboxFileManager.swift */,
 				5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */,
 				C46EACC0E8183D29E10202F1 /* QuickCommandTracker.swift */,
@@ -448,6 +451,7 @@
 				55FE0861FFFFA12CF6705B08 /* ChartCard.swift in Sources */,
 				7B344FB8483CFD19E23FE67F /* ChatInFlightPlaceholderView.swift in Sources */,
 				07939825DDB42FFA9B2649ED /* ChatInputBar.swift in Sources */,
+				C0D3A0010000000000000001 /* ChatHistoryStore.swift in Sources */,
 				F9D61280C020B647D7B3E1D2 /* ChatMessageStreamView.swift in Sources */,
 				353DDBE9B6F14BAA4DD7F20F /* ChatStatusCards.swift in Sources */,
 				80C9F09A4FE3A978D61E27F5 /* ChatTopBarView.swift in Sources */,
