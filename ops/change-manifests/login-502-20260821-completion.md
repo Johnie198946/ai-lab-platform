@@ -31,8 +31,8 @@
 ## 交付记录
 
 - 当前交付状态：`VERIFIED`
-- commit SHA：待提交本 manifest；应用版本未变化。
-- GitHub remote/ref/SHA：待提交与 `git ls-remote` 核验。
+- commit SHA：应用版本仍为 `817b81c1653f46e2f6a1caff2f2621f33ce18257`；incident manifest 首次提交为 `2f9dea46ba70c742bcab41389b8d1919f3a7cc77`。
+- GitHub remote/ref/SHA：`https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/main` / `2f9dea46ba70c742bcab41389b8d1919f3a7cc77`，已由 `git ls-remote` 核验。其后的 manifest 元数据修订属于自引用提交，最终 remote SHA 记录在当前任务的标准完成通报中。
 - `server_before`: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-817b81c`；`.deploy-commit=817b81c1653f46e2f6a1caff2f2621f33ce18257`；frontend 持有旧 upstream `172.19.0.3:8000`，登录/注册返回 502。
 - `server_after`: release 与 `.deploy-commit` 不变；frontend 已重启并连接当前 API `172.19.0.4:8000`。
 - `health_check`: 内网和公网健康检查均为 HTTP 200。
