@@ -4,6 +4,7 @@ import test from 'node:test';
 
 const app = readFileSync(new URL('../public/showroom/app.js', import.meta.url), 'utf8');
 const styles = readFileSync(new URL('../public/showroom/styles.css', import.meta.url), 'utf8');
+const index = readFileSync(new URL('../public/showroom/index.html', import.meta.url), 'utf8');
 
 test('confirmed demand enters the dedicated 003.5 staffing route', () => {
   assert.match(app, /await beginInsightFlow\(demand\)/);
@@ -26,6 +27,17 @@ test('summary completion drives incremental 004 reveal without fake progress', (
   assert.match(app, /insight-empty/);
   assert.match(styles, /prefers-reduced-motion:reduce/);
   assert.match(styles, /--employee-index/);
+});
+
+test('model-authored progress envelopes are normalized before the progress API call', () => {
+  assert.match(app, /\['progress', 'stage', \/<!--\\s\*AI_LAB_INSIGHT_STAGE_V1/);
+  assert.match(app, /\['progress', 'section', \/<!--\\s\*AI_LAB_INSIGHT_SECTION_V1/);
+  assert.match(app, /normalizeInsightProgressEvent\(payload, defaultKind\)/);
+  assert.match(app, /employee_status: 'employee'/);
+  assert.match(app, /insightPendingEventIds\.add\(event\.event_id\)/);
+  assert.match(app, /insightEventIds\.add\(event\.event_id\);\s+state\.session = result\.session/);
+  assert.match(app, /insightPendingEventIds\.delete\(event\.event_id\)/);
+  assert.match(index, /app\.js\?v=20260821-progress-contract-v1/);
 });
 
 test('003.5 observes one server execution and 004 uses an isolated review lane', () => {

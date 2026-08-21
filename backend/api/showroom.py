@@ -27,7 +27,7 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from jose import JWTError, jwt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from backend.api.auth import AUTHEN_JWT_ALGORITHM, AUTHEN_JWT_SECRET, require_auth
@@ -158,6 +158,38 @@ class InsightProgressRequest(BaseModel):
     employee_status: str = Field(default="", max_length=40)
     section: str = Field(default="", max_length=80)
     payload: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_event(cls, value: Any) -> Any:
+        """Normalize older model-authored progress envelopes."""
+
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        raw_kind = str(normalized.get("kind") or "").strip().lower()
+        kind_aliases = {
+            "stage_update": "stage",
+            "insight_stage": "stage",
+            "employee_status": "employee",
+            "employee_update": "employee",
+            "section_update": "section",
+            "insight_section": "section",
+        }
+        raw_kind = kind_aliases.get(raw_kind, raw_kind)
+        if raw_kind not in {"stage", "employee", "section"}:
+            if normalized.get("section"):
+                raw_kind = "section"
+            elif normalized.get("employee_id") and (
+                normalized.get("employee_status") or normalized.get("status")
+            ):
+                raw_kind = "employee"
+            elif normalized.get("stage"):
+                raw_kind = "stage"
+        normalized["kind"] = raw_kind
+        if raw_kind == "employee" and not normalized.get("employee_status"):
+            normalized["employee_status"] = normalized.get("status") or ""
+        return normalized
 
 
 class InsightCompleteRequest(BaseModel):

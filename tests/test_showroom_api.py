@@ -77,6 +77,28 @@ def reset_state() -> None:
     hub.ready_sessions.clear()
 
 
+def test_insight_progress_request_normalizes_model_authored_legacy_events() -> None:
+    stage = InsightProgressRequest.model_validate(
+        {"event_id": "stage-1", "stage": "analysis"}
+    )
+    section = InsightProgressRequest.model_validate(
+        {"event_id": "section-1", "section": "summary", "payload": {"title": "洞察"}}
+    )
+    employee = InsightProgressRequest.model_validate(
+        {
+            "event_id": "employee-1",
+            "kind": "employee_status",
+            "employee_id": "researcher",
+            "status": "working",
+        }
+    )
+
+    assert stage.kind == "stage"
+    assert section.kind == "section"
+    assert employee.kind == "employee"
+    assert employee.employee_status == "working"
+
+
 def test_showroom_prepare_commit_and_stale_epoch() -> None:
     reset_state()
     prepared = asyncio.run(

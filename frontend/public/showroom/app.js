@@ -805,30 +805,68 @@ function requirementAnalysisPrompt(job) {
 
 function extractInsightEnvelopes(content) {
   const patterns = [
-    ['plan', /<!--\s*AI_LAB_STAFFING_PLAN_V1\s*(\{[\s\S]*?\})\s*AI_LAB_STAFFING_PLAN_V1\s*-->/gi],
-    ['progress', /<!--\s*AI_LAB_INSIGHT_(?:STAGE|SECTION)_V1\s*(\{[\s\S]*?\})\s*AI_LAB_INSIGHT_(?:STAGE|SECTION)_V1\s*-->/gi],
+    ['plan', '', /<!--\s*AI_LAB_STAFFING_PLAN_V1\s*(\{[\s\S]*?\})\s*AI_LAB_STAFFING_PLAN_V1\s*-->/gi],
+    ['progress', 'stage', /<!--\s*AI_LAB_INSIGHT_STAGE_V1\s*(\{[\s\S]*?\})\s*AI_LAB_INSIGHT_STAGE_V1\s*-->/gi],
+    ['progress', 'section', /<!--\s*AI_LAB_INSIGHT_SECTION_V1\s*(\{[\s\S]*?\})\s*AI_LAB_INSIGHT_SECTION_V1\s*-->/gi],
   ];
   const found = [];
-  patterns.forEach(([type, pattern]) => {
+  patterns.forEach(([type, defaultKind, pattern]) => {
     let match;
     while ((match = pattern.exec(content))) {
-      try { found.push({ type, payload: JSON.parse(match[1]) }); } catch { /* wait for a valid complete block */ }
+      try {
+        const payload = JSON.parse(match[1]);
+        found.push({
+          type,
+          payload: type === 'progress' ? normalizeInsightProgressEvent(payload, defaultKind) : payload,
+        });
+      } catch { /* wait for a valid complete block */ }
     }
   });
   return found;
 }
 
+function normalizeInsightProgressEvent(event, defaultKind = '') {
+  const normalized = { ...(event || {}) };
+  const aliases = {
+    stage_update: 'stage',
+    insight_stage: 'stage',
+    employee_status: 'employee',
+    employee_update: 'employee',
+    section_update: 'section',
+    insight_section: 'section',
+  };
+  let kind = String(normalized.kind || '').trim().toLowerCase();
+  kind = aliases[kind] || kind;
+  if (!['stage', 'employee', 'section'].includes(kind)) {
+    if (normalized.section) kind = 'section';
+    else if (normalized.employee_id && (normalized.employee_status || normalized.status)) kind = 'employee';
+    else kind = defaultKind || (normalized.stage ? 'stage' : '');
+  }
+  normalized.kind = kind;
+  if (kind === 'employee' && !normalized.employee_status) {
+    normalized.employee_status = normalized.status || '';
+  }
+  return normalized;
+}
+
+const insightPendingEventIds = new Set();
+
 function queueInsightProgress(event) {
   const job = currentInsightJob();
-  if (!event?.event_id || insightEventIds.has(event.event_id) || event.job_id !== job.job_id) return;
-  insightEventIds.add(event.event_id);
+  if (!event?.event_id || insightEventIds.has(event.event_id) || insightPendingEventIds.has(event.event_id) || event.job_id !== job.job_id) return;
+  insightPendingEventIds.add(event.event_id);
   insightProgressQueue = insightProgressQueue.then(async () => {
-    const result = await window.showroomApi.updateInsightProgress(job.job_id, event);
-    state.session = result.session;
-    if (event.kind === 'section' && event.section === 'summary') startInsightAutoAdvance();
-  }).catch((error) => {
-    state.chatError = error.message;
-    showToast(`洞察进度保存失败：${error.message}`);
+    try {
+      const result = await window.showroomApi.updateInsightProgress(job.job_id, event);
+      insightEventIds.add(event.event_id);
+      state.session = result.session;
+      if (event.kind === 'section' && event.section === 'summary') startInsightAutoAdvance();
+    } catch (error) {
+      state.chatError = error.message;
+      showToast(`洞察进度保存失败：${error.message}`);
+    } finally {
+      insightPendingEventIds.delete(event.event_id);
+    }
   });
 }
 
