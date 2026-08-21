@@ -106,6 +106,37 @@ def test_parse_json_closes_only_structurally_valid_eof_truncation() -> None:
         _parse_json('{"schema":"unterminated}')
 
 
+def test_status_value_document_is_normalized_before_projection() -> None:
+    document = _document()
+    document.pop("sources")
+    document["sections"].update({
+        "summary": {"status": "inferred", "value": "异构算力运营洞察"},
+        "root_causes": {"status": "inferred", "value": ["资源与任务匹配不足"]},
+        "impacts": {
+            "status": "tbd", "reason": "影响指标待补充",
+            "owner": "客户运营负责人", "action": "补充利用率基线",
+        },
+        "evidence": {"status": "verified", "value": ["已确认调度约束"]},
+        "recommendation": {"status": "inferred", "value": "先验证调度闭环"},
+        "ipd_handoff": {"status": "inferred", "value": "进入001验证"},
+        "sources": [{
+            "title": "内部Wiki", "path": "wiki/方法论/算力运营.md",
+            "date": "2026-08-21", "confidence": "high",
+        }],
+    })
+
+    normalized = validate_document(
+        document, execution_id="run-1", demand_hash="d" * 64
+    )
+    insight = document_to_insight(normalized)
+
+    assert insight["title"] == "异构算力运营洞察"
+    assert insight["causes"][0]["title"] == "资源与任务匹配不足"
+    assert insight["evidence"][0][0] == "已确认调度约束"
+    assert insight["recommendation"] == "先验证调度闭环"
+    assert insight["sources"][0]["path"] == "wiki/方法论/算力运营.md"
+
+
 @pytest.mark.asyncio
 async def test_server_execution_is_idempotent_and_persists_six_nodes() -> None:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")

@@ -87,6 +87,9 @@ def _artifact_schema_prompt(run_id: str, demand_hash: str) -> str:
         "ipd_handoff、concept；concept必须包含demand_trace、customer_user、market、"
         "competition、technology、strategic_fit、capability_mapping、assessment、"
         "special_checks、knowledge_status、verdict、initial_product_package、demo_slice。"
+        "summary使用title/judgment/gap；root_causes使用causes数组且每项含title/detail；"
+        "impacts使用impacts数组且每项含label/score/basis；evidence使用evidence二维数组；"
+        "recommendation使用recommendation字符串；ipd_handoff使用JSON对象。"
         "每个业务字段必须标记verified/inferred/tbd/not_applicable；tbd必须包含"
         "reason、owner、action。sources包含title、url或path、date、confidence。"
         "不得输出完整建设方案，不得虚构来源。"
@@ -342,7 +345,72 @@ def _walk_status(value: Any, path: str = "sections") -> None:
             _walk_status(child, f"{path}[{index}]")
 
 
+def _normalize_document_sections(value: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the model's safe status/value shorthand into the UI contract."""
+    result = copy.deepcopy(value)
+    sections = result.get("sections")
+    if not isinstance(sections, dict):
+        return result
+
+    misplaced_sources = sections.get("sources")
+    if not result.get("sources") and isinstance(misplaced_sources, list):
+        result["sources"] = [
+            copy.deepcopy(source)
+            for source in misplaced_sources
+            if isinstance(source, dict)
+            and (
+                str(source.get("url") or "").startswith(("http://", "https://"))
+                or str(source.get("path") or "").startswith(("wiki/", "tenants/"))
+            )
+        ]
+
+    summary = sections.get("summary")
+    if isinstance(summary, dict) and summary.get("value") and not summary.get("title"):
+        summary["title"] = str(summary["value"])
+        summary["judgment"] = str(summary.get("status") or "")
+        summary["gap"] = str(summary.get("reason") or summary.get("action") or "")
+
+    root_causes = sections.get("root_causes")
+    if isinstance(root_causes, dict) and not root_causes.get("causes"):
+        items = root_causes.get("value")
+        if isinstance(items, list):
+            root_causes["causes"] = [
+                {"title": str(item), "detail": ""}
+                for item in items
+                if str(item).strip()
+            ]
+
+    impacts = sections.get("impacts")
+    if isinstance(impacts, dict) and not impacts.get("impacts"):
+        items = impacts.get("value")
+        if not isinstance(items, list):
+            items = [impacts.get("reason") or impacts.get("action")] if impacts.get("reason") or impacts.get("action") else []
+        impacts["impacts"] = [
+            {"label": str(item), "score": 0, "basis": str(impacts.get("action") or "")}
+            for item in items
+            if str(item).strip()
+        ]
+
+    evidence = sections.get("evidence")
+    if isinstance(evidence, dict) and not evidence.get("evidence"):
+        items = evidence.get("value")
+        if isinstance(items, list):
+            evidence["evidence"] = [[str(item), "", "", ""] for item in items if str(item).strip()]
+        if result.get("sources"):
+            evidence["sources"] = copy.deepcopy(result["sources"])
+
+    recommendation = sections.get("recommendation")
+    if isinstance(recommendation, dict) and recommendation.get("value") and not recommendation.get("recommendation"):
+        recommendation["recommendation"] = str(recommendation["value"])
+
+    handoff = sections.get("ipd_handoff")
+    if isinstance(handoff, dict) and handoff.get("value") and "summary" not in handoff:
+        handoff["summary"] = str(handoff["value"])
+    return result
+
+
 def validate_document(value: dict[str, Any], *, execution_id: str, demand_hash: str) -> dict[str, Any]:
+    value = _normalize_document_sections(value)
     if value.get("schema") != SCHEMA:
         raise ValueError("洞察Artifact schema不匹配")
     if value.get("run_id") != execution_id or value.get("demand_hash") != demand_hash:
