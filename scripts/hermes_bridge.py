@@ -720,10 +720,23 @@ def _run_hermes_with_usage(
     return reply, usage.get("session_id"), usage
 
 
+class HermesCallResult(tuple):
+    """Two-item legacy result with non-breaking exact usage metadata."""
+
+    usage: dict[str, Any]
+
+    def __new__(
+        cls, reply: str, session_id: str | None, usage: dict[str, Any]
+    ) -> "HermesCallResult":
+        value = super().__new__(cls, (reply, session_id))
+        value.usage = usage
+        return value
+
+
 def _run_hermes(goal: str, session_id: str | None = None) -> tuple[str, str | None]:
-    """向后兼容的二元返回包装；工作流使用 `_run_hermes_with_usage`。"""
-    reply, hermes_sid, _ = _run_hermes_with_usage(goal, session_id)
-    return reply, hermes_sid
+    """Backward-compatible two-item result carrying optional exact usage."""
+    reply, hermes_sid, usage = _run_hermes_with_usage(goal, session_id)
+    return HermesCallResult(reply, hermes_sid, usage)
 
 
 def _extract_usage(usage_file: Path) -> dict[str, Any]:
@@ -845,6 +858,10 @@ def _usage_delta(usage: dict[str, Any]) -> dict[str, Any]:
         "api_calls",
     )
     result = {field: int(usage.get(field) or 0) for field in integer_fields}
+    result["usage_available"] = any(
+        field in usage
+        for field in ("input_tokens", "output_tokens", "total_tokens")
+    )
     # Provider 的 total_tokens 会包含每次调用的输入与缓存读取量；它们必须完整
     # 展示，但计划/节点的 max_tokens 契约是生成上限。执行预算因此按输出与推理
     # 计量；输入、缓存和费用仍独立记录，不能伪装成 0。
@@ -2648,8 +2665,25 @@ def _run_agent_sync(
         _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
         agent_holder[0] = agent
         result = agent.run_conversation(goal)
-        final = (result.get("final_response") or "") if isinstance(result, dict) else str(result or "")
-        _qput(stream_q, {"type": "done", "session_id": user_id, "answer": final})
+        result_dict = result if isinstance(result, dict) else {}
+        final = (
+            result_dict.get("final_response") or ""
+            if result_dict else str(result or "")
+        )
+        raw_usage = (
+            result_dict.get("usage")
+            if isinstance(result_dict.get("usage"), dict)
+            else result_dict
+        )
+        _qput(
+            stream_q,
+            {
+                "type": "done",
+                "session_id": user_id,
+                "answer": final,
+                "usage": _usage_delta(raw_usage),
+            },
+        )
     except Exception as e:
         print(f"[bridge] ⚠️ 进程内 agent 执行失败: {e}")
         _qput(stream_q, {"type": "error", "code": "internal", "message": str(e)[:200]})
@@ -2920,12 +2954,16 @@ async def chat(body: GoalRequest):
 
                 # 3) CLI 执行（唯一真实执行路径·to_thread 不阻塞事件循环）
                 if not hermes_sid:
-                    reply, new_sid = await asyncio.to_thread(_run_hermes, goal, None)
+                    call_result = await asyncio.to_thread(_run_hermes, goal, None)
+                    reply, new_sid = call_result
+                    usage = getattr(call_result, "usage", {})
                     effective_sid = new_sid
                     if new_sid:
                         _update_session_mapping(user_id, new_sid)
                 else:
-                    reply, new_sid = await asyncio.to_thread(_run_hermes, goal, hermes_sid)
+                    call_result = await asyncio.to_thread(_run_hermes, goal, hermes_sid)
+                    reply, new_sid = call_result
+                    usage = getattr(call_result, "usage", {})
                     effective_sid = new_sid or hermes_sid
 
                 # 4) 执行后增量回读 + 真实思维链映射（失败降级·不 500）
@@ -2946,6 +2984,7 @@ async def chat(body: GoalRequest):
                     "session_id": user_id,
                     "hermes_session_id": effective_sid,
                     "reasoning": reasoning,
+                    "usage": _usage_delta(usage),
                 }
     finally:
         _clear_in_flight(user_id)

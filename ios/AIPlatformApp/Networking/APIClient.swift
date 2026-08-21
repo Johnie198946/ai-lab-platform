@@ -53,6 +53,39 @@ public struct ProfileDTO: Codable {
     public let hasSessions: Bool
 }
 
+public struct UsageDailyDTO: Codable, Identifiable, Hashable {
+    public var id: String { date }
+    public let date: String
+    public let calls: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let totalTokens: Int
+}
+
+public struct UsageModelDTO: Codable, Identifiable, Hashable {
+    public var id: String { "\(provider):\(model)" }
+    public let provider: String
+    public let model: String
+    public let calls: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let totalTokens: Int
+    public let missingUsageCalls: Int
+}
+
+public struct UsageSummaryDTO: Codable, Hashable {
+    public let days: Int
+    public let totalCalls: Int
+    public let successCalls: Int
+    public let failedCalls: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let totalTokens: Int
+    public let missingUsageCalls: Int
+    public let daily: [UsageDailyDTO]
+    public let models: [UsageModelDTO]
+}
+
 /// GET /api/v1/me/subscriptions 及订阅/退订返回
 public struct SubscriptionsResponse: Codable {
     public let tenantKey: String
@@ -2138,6 +2171,30 @@ public final class APIClient: ObservableObject {
         }
         let resp: UsageResponse = try await request(UsageResponse.self, path: "me/usage")
         return (resp.chatCalls, resp.tokenUsed)
+    }
+
+    /// GET /api/v1/usage/summary — 当前登录用户的真实 LLM 用量。
+    public func fetchUsageSummary(days: Int = 30) async throws -> UsageSummaryDTO {
+        var components = URLComponents(
+            url: baseURL
+                .appendingPathComponent("api/v1")
+                .appendingPathComponent("usage/summary"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "days", value: String(days))]
+        guard let url = components?.url else { throw APIError.invalidURL }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let data = try await perform(urlRequest, session: session, canRetry: true)
+        do {
+            return try decoder.decode(UsageSummaryDTO.self, from: data)
+        } catch {
+            throw APIError.decoding(Self.describeDecodingError(error))
+        }
     }
 
     /// POST /api/v1/register：自助注册（Authen 代理）。开发态 Authen 未起 → 连接失败，由调用方降级开发模式。

@@ -7,18 +7,22 @@
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional
+import time
+from contextvars import ContextVar
+from typing import Any, Dict, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
+from backend.services.llm_usage import record_llm_usage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
 HERMES_TIMEOUT = 300
+_last_usage: ContextVar[dict[str, Any]] = ContextVar("agent_last_usage", default={})
 
 
 class AgentRequest(BaseModel):
@@ -34,13 +38,18 @@ class AgentResponse(BaseModel):
 
 async def _call_hermes(mission: str, session_id: Optional[str] = None) -> str:
     """透传 Hermes bridge。"""
+    _last_usage.set({})
     payload: Dict[str, object] = {"goal": mission}
     if session_id:
         payload["session_id"] = session_id
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
         r = await client.post(HERMES_BRIDGE_URL, json=payload)
         if r.status_code == 200:
-            return r.json().get("reply", "").strip()
+            data = r.json()
+            _last_usage.set(
+                data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            )
+            return data.get("reply", "").strip()
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）"
 
 
@@ -49,12 +58,25 @@ async def execute_agent(
     body: AgentRequest, payload=Depends(require_auth)
 ) -> AgentResponse:
     """执行 Agent 任务 — 纯参数 + mission 直传 Hermes。"""
+    started = time.perf_counter()
     try:
         result = await _call_hermes(body.mission, session_id=body.session_id)
+        await record_llm_usage(
+            auth_payload=payload,
+            usage_payload=_last_usage.get(),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=bool(result) and not result.lstrip().startswith("⚠️"),
+        )
         return AgentResponse(
             mission=body.mission,
             result=result,
             session_id=body.session_id,
         )
     except Exception as e:
+        await record_llm_usage(
+            auth_payload=payload,
+            usage_payload=None,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=False,
+        )
         raise HTTPException(status_code=502, detail=f"Hermes 调用失败: {e}") from e

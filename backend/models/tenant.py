@@ -133,3 +133,34 @@ class TenantUsage(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class LLMUsageRecord(Base):
+    """One user-visible LLM invocation ledger entry.
+
+    Prompt and response bodies are intentionally excluded.  ``request_count``
+    preserves an upstream provider's exact API call count when Hermes performs
+    multiple model turns inside one platform invocation.
+    """
+
+    __tablename__ = "llm_usage_records"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"),
+        primary_key=True,
+        autoincrement=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(80), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    request_count: Mapped[int] = mapped_column(Integer, default=1)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    success: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    usage_available: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    total_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    called_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )

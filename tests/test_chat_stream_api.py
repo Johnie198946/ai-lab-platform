@@ -249,6 +249,38 @@ async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITran
 
 
 @pytest.mark.asyncio
+async def test_stream_records_exact_usage(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
+    import backend.api.chat as chat_mod
+
+    recorded: list[dict] = []
+
+    async def fake_bridge_stream(*args, **kwargs):
+        yield (
+            'data: {"type":"done","answer":"ok","usage":'
+            '{"input_tokens":12,"output_tokens":3,"total_tokens":15,'
+            '"provider":"dashscope","model":"qwen-plus"}}\n\n'
+        )
+
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+    monkeypatch.setattr(chat_mod, "record_llm_usage", fake_record)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/stream",
+            json={"question": "统计这次调用"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert len(recorded) == 1
+    assert recorded[0]["success"] is True
+    assert recorded[0]["usage_payload"]["total_tokens"] == 15
+
+
+@pytest.mark.asyncio
 async def test_bridge_knowledge_denial_is_preserved_in_sse(monkeypatch):
     """Bridge 的知识门禁拒绝必须原样到达客户端，不能退化成普通 HTTP 错误。"""
     import backend.api.chat as chat_mod

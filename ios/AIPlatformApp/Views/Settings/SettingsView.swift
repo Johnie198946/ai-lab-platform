@@ -32,7 +32,7 @@ public struct SettingsView: View {
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
                             .padding(.top, AppTheme.Spacing.lg)
 
-                        weeklyUsageOverview
+                        TokenSummaryCard()
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 1. 用户与租户身份卡（点击编辑）
@@ -41,10 +41,6 @@ public struct SettingsView: View {
 
                         // 2. 知识订阅与套餐
                         subscriptionEntryCard
-                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
-
-                        // 3. Token 极简卡
-                        TokenSummaryCard()
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 3. 创建智能体（替换提炼工作台）
@@ -151,71 +147,6 @@ public struct SettingsView: View {
             .buttonStyle(SoftButtonStyle())
             .accessibilityLabel("编辑个人资料")
         }
-    }
-
-    private var weeklyUsageOverview: some View {
-        let values: [CGFloat] = [0.28, 0.52, 0.39, 0.76]
-        let labels = ["第 1 周", "第 2 周", "第 3 周", "本周"]
-
-        return VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("用量趋势")
-                        .font(AppTheme.Typography.supporting)
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                    Text("76%")
-                        .font(.system(size: 36, weight: .semibold, design: .rounded))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("本周预算峰值")
-                        .font(AppTheme.Typography.micro)
-                        .foregroundColor(AppTheme.Colors.textTertiary)
-                }
-                Spacer()
-                Label("较上月 -12%", systemImage: "arrow.down.right")
-                    .font(AppTheme.Typography.micro)
-                    .foregroundColor(AppTheme.Colors.statusCompleted)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 6)
-                    .background(AppTheme.Colors.successSurface)
-                    .clipShape(Capsule())
-            }
-
-            HStack(alignment: .bottom, spacing: 12) {
-                ForEach(values.indices, id: \.self) { index in
-                    VStack(spacing: 7) {
-                        GeometryReader { proxy in
-                            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                                .fill(index == values.indices.last ? AnyShapeStyle(AppTheme.Colors.quantumGradient) : AnyShapeStyle(AppTheme.Colors.secondaryBackground))
-                                .frame(height: max(20, proxy.size.height * values[index]))
-                                .frame(maxHeight: .infinity, alignment: .bottom)
-                                .overlay(alignment: .bottom) {
-                                    Text("\(Int(values[index] * 100))%")
-                                        .font(.system(size: 10, weight: .bold))
-                                        .foregroundColor(index == values.indices.last ? .white : AppTheme.Colors.textSecondary)
-                                        .padding(.bottom, 8)
-                                }
-                        }
-                        .frame(height: 112)
-
-                        Text(labels[index])
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(AppTheme.Colors.textTertiary)
-                            .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-            }
-        }
-        .padding(AppTheme.Spacing.xl)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
-        }
-        .shadow(color: Color(hex: "6B5A8A").opacity(0.10), radius: 20, y: 8)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("本周 Token 预算峰值百分之 76，较上月下降 12%")
     }
 
     // MARK: - 1. 用户与租户身份卡

@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 import hashlib
+from contextvars import ContextVar
 from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
 
 import httpx
@@ -29,6 +31,7 @@ from backend.models.agent_registry import (
 )
 from backend.services.reasoning_extractor import ReasoningStep
 from backend.services.knowledge_policy import KnowledgePolicy, mint_capability, resolve_policy
+from backend.services.llm_usage import record_llm_usage
 from backend.services.agent_capabilities import (
     BASELINE_AGENT_IDS,
     AgentInvocationMatch,
@@ -38,6 +41,10 @@ from backend.services.agent_capabilities import (
 )
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+_last_hermes_usage: ContextVar[dict[str, Any]] = ContextVar(
+    "last_hermes_usage", default={}
+)
 
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -214,6 +221,7 @@ async def _call_hermes(
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, List[ReasoningStep]]:
     """透传 Hermes bridge，返回 (reply, reasoning)。"""
+    _last_hermes_usage.set({})
     payload: Dict[str, Any] = {"goal": goal}
     if session_id:
         payload["session_id"] = session_id
@@ -228,6 +236,9 @@ async def _call_hermes(
         r = await client.post(HERMES_BRIDGE_URL, json=payload)
         if r.status_code == 200:
             data = r.json()
+            _last_hermes_usage.set(
+                data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            )
             reply = data.get("reply", "").strip()
             reasoning = [
                 ReasoningStep(**s) if isinstance(s, dict) else s
@@ -235,6 +246,44 @@ async def _call_hermes(
             ]
             return reply, reasoning
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）", []
+
+
+async def _call_hermes_recorded(
+    goal: str,
+    *,
+    auth_payload: dict[str, Any],
+    session_id: Optional[str] = None,
+    skill_id: Optional[str] = None,
+    knowledge_capability: Optional[str] = None,
+    policy_version: Optional[str] = None,
+    agent_config: Optional[Dict[str, Any]] = None,
+) -> tuple[str, List[ReasoningStep]]:
+    started = time.perf_counter()
+    try:
+        reply, reasoning = await _call_hermes(
+            goal,
+            session_id=session_id,
+            skill_id=skill_id,
+            knowledge_capability=knowledge_capability,
+            policy_version=policy_version,
+            agent_config=agent_config,
+        )
+        success = bool(reply) and not reply.lstrip().startswith("⚠️")
+        await record_llm_usage(
+            auth_payload=auth_payload,
+            usage_payload=_last_hermes_usage.get(),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=success,
+        )
+        return reply, reasoning
+    except Exception:
+        await record_llm_usage(
+            auth_payload=auth_payload,
+            usage_payload=None,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=False,
+        )
+        raise
 
 
 async def _call_hermes_status(
@@ -486,8 +535,9 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             child_capability, child_policy_version, child_evidence, _ = await _knowledge_context(
                 payload, child_session_id, req.question, policy=policy
             )
-            child_reply, _ = await _call_hermes(
+            child_reply, _ = await _call_hermes_recorded(
                 req.question + child_evidence,
+                auth_payload=payload,
                 session_id=child_session_id,
                 knowledge_capability=child_capability,
                 policy_version=child_policy_version,
@@ -502,14 +552,16 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             ) + evidence
 
         if skill_id:
-            reply, reasoning = await _call_hermes(
+            reply, reasoning = await _call_hermes_recorded(
                 goal, session_id=isolated_session_id, skill_id=skill_id,
+                auth_payload=payload,
                 knowledge_capability=capability, policy_version=policy_version,
                 agent_config=agent.bridge_config(),
             )
         else:
-            reply, reasoning = await _call_hermes(
+            reply, reasoning = await _call_hermes_recorded(
                 goal, session_id=isolated_session_id,
+                auth_payload=payload,
                 knowledge_capability=capability, policy_version=policy_version,
                 agent_config=agent.bridge_config(),
             )
@@ -670,6 +722,17 @@ async def _call_bridge_stream(
                 yield line + "\n"
 
 
+def _stream_event(frame: str) -> dict[str, Any] | None:
+    line = frame.strip()
+    if not line.startswith("data:"):
+        return None
+    try:
+        event = json.loads(line[5:].strip())
+    except (json.JSONDecodeError, TypeError):
+        return None
+    return event if isinstance(event, dict) else None
+
+
 @router.post("/stream")
 async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> StreamingResponse:
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
@@ -736,6 +799,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
     delegated_target = invocation.agent if invocation.status == "matched" else None
 
     async def _gen():
+        started = time.perf_counter()
         try:
             routed_agent = delegated_target or agent
             yield _route_frame(routed_agent, delegated=delegated_target is not None)
@@ -751,8 +815,9 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     payload, child_session_id, req.question, policy=policy
                 )
                 try:
-                    child_reply, _ = await _call_hermes(
+                    child_reply, _ = await _call_hermes_recorded(
                         req.question + child_evidence,
+                        auth_payload=payload,
                         session_id=child_session_id,
                         knowledge_capability=child_capability,
                         policy_version=child_policy_version,
@@ -780,6 +845,18 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             if req.request_id:
                 kwargs["request_id"] = req.request_id
             async for frame in _call_bridge_stream(routed_goal, isolated_session_id, **kwargs):
+                event = _stream_event(frame)
+                if event and event.get("type") in {"done", "error"}:
+                    await record_llm_usage(
+                        auth_payload=payload,
+                        usage_payload=(
+                            event.get("usage")
+                            if isinstance(event.get("usage"), dict)
+                            else None
+                        ),
+                        latency_ms=round((time.perf_counter() - started) * 1000),
+                        success=event.get("type") == "done",
+                    )
                 yield frame
         finally:
             _streaming_sessions.discard(isolated_session_id)
