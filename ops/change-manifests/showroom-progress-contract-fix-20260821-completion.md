@@ -2,7 +2,7 @@
 
 - task_id: `showroom-progress-contract-fix-20260821`
 - goal: 修复 Showroom 深度洞察机器事件调用 `/progress` 时反复返回 422 的前后端协议不一致，并确保失败事件不会在成功前被永久去重。
-- status: `TESTED`
+- status: `VERIFIED`
 
 ## Changed files
 
@@ -33,20 +33,21 @@
 - `node --check frontend/public/showroom/app.js`: passed.
 - targeted Showroom frontend tests: `2 passed`.
 - full existing frontend suite: not green because two pre-existing baseline assertions fail (`rollover-v2` cache token and `data-readiness-continue`); the new progress test passed.
-- Vite build: not completed in this isolated Worktree because dependencies are not installed locally; direct syntax and targeted behavior checks passed.
+- production Docker frontend build: passed (`vite` built 2483 modules and the Showroom Gateway bundle completed).
+- local isolated Worktree Vite build was not used because dependencies were absent there; the same exact GitHub SHA completed the production multi-stage Docker build.
 
 ## Delivery evidence
 
-- commit SHA: 未执行（用户尚未在当前任务授权 commit/push）。
-- GitHub remote/ref/SHA: 未授权、未执行。
-- server_before: production application release `/opt/releases/ai-lab-platform-dda737e`, `.deploy-commit=dda737e` (read-only diagnosis only).
-- server_after: 未授权、未部署。
-- health_check: production API health observed as 200 during diagnosis; no post-deploy check applicable.
-- functional_check: local contract normalization and regression tests passed; production functional check not executed.
-- rollback_point: 不适用（未部署）。
+- implementation commit SHA: `898b89b90dadc99fd56d33915f00f66ff8f269bd`.
+- GitHub remote/ref/SHA: implementation commit pushed directly to `origin/main`; `git ls-remote origin refs/heads/main` returned `898b89b90dadc99fd56d33915f00f66ff8f269bd` before the evidence-only manifest update.
+- server_before: `/opt/releases/ai-lab-platform-dda737e`, `.deploy-commit=dda737e`, API image `sha256:bed98e37d8abf5483a32aa4ecdd2d44beddc21fc022324cd6e52645c1577a820`, frontend image `sha256:a4e062d5902a7997bbf247701744f0d9e864ad1f37b87989858ee60c58c1a574`, health 200.
+- server_after: `/opt/releases/ai-lab-platform-898b89b`, `.deploy-commit=898b89b90dadc99fd56d33915f00f66ff8f269bd`, API image `sha256:e67f05d8364499ca333fb388982bc2f0737b0fd0152c3505f5cefaf57bb3b113`, frontend image `sha256:f73faf8c93044cd32f90c688056415ccb390273107875ccc8ca9b5b92ff83d7f`.
+- health_check: internal and public `GET /health` both returned `{"status":"ok","version":"0.8.0"}`; API healthy; frontend and all three Workers running; recent API error scan returned 0.
+- functional_check: production Showroom HTML references `app.js?v=20260821-progress-contract-v1`; deployed JS contains `normalizeInsightProgressEvent`; production API container normalized smoke events to `stage section employee working` without 422.
+- rollback_point: `/opt/releases/ai-lab-platform-dda737e`; release remains intact and can be restored with an atomic symlink switch followed by Compose recreation.
 
 ## Remaining risks and rollback
 
-- 当前生产环境仍运行旧代码，直到用户明确授权 push 与部署后，线上 422 才会消失。
 - 旧式浏览器任务仍依赖模型机器块；此次修复兼容缺失/别名 `kind`，真正未知且无法推断的事件仍会 fail-closed。
-- 回滚方式：未提交、未部署；可直接停止使用本任务 Worktree 中的本地改动。
+- 部署前已经卡住且没有持久化机器事件的旧洞察不会被伪造恢复；用户应刷新页面并重新发起该轮洞察。
+- 回滚方式：将 `/opt/ai-lab-platform` 原子切回 `/opt/releases/ai-lab-platform-dda737e`，再重建 API、前端和 Workers。
