@@ -50,18 +50,18 @@
 
 ## Delivery state
 
-- status: `TESTED`
-- commit_sha: not created; user did not request a commit
-- GitHub remote/ref/SHA: not configured / not pushed / not authorized
-- server_before: not inspected; deployment not authorized in this task
-- server_after: not applicable
-- health_check: not applicable; not deployed
-- functional_check: local targeted Wiki/chat/tenant-sync tests passed
-- rollback_point: `70aa5cb42eec9637c18ac24bfed00ed822d2c198`
+- status: `VERIFIED`
+- commit_sha: `f064dbf3e81682a7228430952d04feafa6039a69` (before this manifest-only evidence commit)
+- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git`; refs `main` and `codex/wiki-agent-integration`; verified with `git ls-remote` at `f064dbf3e81682a7228430952d04feafa6039a69`
+- server_before: `/opt/ai-lab-platform/.deployed-sha` was `a3e12a5ccfecd595fe86bcb0b41afcff1c7262db`; health `{"status":"ok","version":"0.8.0"}`
+- server_after: `/opt/ai-lab-platform/.deployed-sha` is `f064dbf3e81682a7228430952d04feafa6039a69`; Docker Compose services rebuilt; `hermes-bridge` systemd service active
+- health_check: `bash scripts/update.sh f064dbf3e81682a7228430952d04feafa6039a69` passed runtime contract audit; `curl http://127.0.0.1:8000/health` returned `{"status":"ok","version":"0.8.0"}`
+- functional_check: server-side authenticated smoke query `超聚变是做什么的？` returned HTTP 200 with Wiki sources including `wiki/产品/超聚变官网洞察.md` and `wiki/竞品情报/华为vs超聚变一页纸.md`; local targeted suite after remote-main merge: `90 passed`
+- rollback_point: `/opt/ai-lab-platform-backups/wiki-hermes-agent-integration-20260822-115508.tgz`
 
 ## Remaining risks
 
 - The current chat loop performs one request-scoped Wiki retrieval before Hermes reasoning. Full iterative `wiki_search/wiki_read/wiki_neighbors` requires a request-context-aware MCP tool server in the next phase.
 - Production validation requires the mounted Vault and real `knowledge_catalog.json`/`knowledge_matrix.json`; repository data intentionally does not include them.
 - The iOS local note store exists on the separate `codex/knowledge-notion-ui` task branch. Its client-side uploader must be integrated after these branches are reconciled; this task provides the server sync contract only.
-- No deployment, remote push, or production health check was performed.
+- Manifest evidence is being finalized in a follow-up commit; the server will be refreshed to that final SHA so the deployment marker remains exact.
