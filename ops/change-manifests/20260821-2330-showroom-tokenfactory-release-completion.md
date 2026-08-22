@@ -106,10 +106,10 @@
 - backend_verification: `545 passed, 2 skipped, 31 warnings` after merge with origin/main.
 - frontend_verification: `67 passed`; production Vite/Gateway build passed; existing large-chunk warning remains.
 - static_verification: `git diff --check` passed.
-- commit_sha: `49571d24e2a796da0f413a93da00edf18750e8dd`
-- remote_sha: `49571d24e2a796da0f413a93da00edf18750e8dd`
-- server_before: `cd004cadab777306aea2a64a6c1910638f82396e` (initial deploy exposed stale codeload cache; no data loss)
-- server_after: `49571d24e2a796da0f413a93da00edf18750e8dd`
+- commit_sha: `e0a82564b9382d220c48a494b2b57d8b59744d30`
+- remote_sha: `e0a82564b9382d220c48a494b2b57d8b59744d30`
+- server_before: `3f14e2bb82a78267cf9b7ccccd11fd92b57eb1fd` (manifest-only release)
+- server_after: `e0a82564b9382d220c48a494b2b57d8b59744d30`
 - health_check: `PASS` — `/health` returned HTTP 200 and `{"status":"ok","version":"0.8.0"}`; all 7 Compose services running; runtime contract audit passed.
 - functional_check: `PASS` — `/showroom/index.html` HTTP 200; `/api/v1/workflow-executions/active`, `/explain-context`, and `/evidence-report` returned expected HTTP 401 without credentials; container/source workflow hash matched `462cb556...`; P6/P7 route decorators present.
 - rollback_point: `49571d24e2a796da0f413a93da00edf18750e8dd` (cache-busting deploy script + verified source)
