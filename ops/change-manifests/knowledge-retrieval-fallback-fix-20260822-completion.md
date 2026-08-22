@@ -42,22 +42,22 @@
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 未授权/未执行。
-- GitHub remote/ref/SHA: 未授权 push，未执行。
+- status: `DEPLOYED`
+- commit SHA: `09f70855fecc0ea916e25e80e6ec6c56490e5915`（应用代码部署 SHA；本 manifest 收尾提交为 docs-only）。
+- GitHub remote/ref/SHA: 应用提交 `09f70855fecc0ea916e25e80e6ec6c56490e5915` 已用 `git ls-remote` 核对；manifest 收尾 docs-only 提交的最终远端 SHA 以完成通报为准。
 
 ## 部署记录
 
 - server_before: 只读诊断时生产 `.deployed-sha=d3fb38c0879146b670767a3c8bdf3186784b99e5`；目标 Token Factory 核心文档分别为 red/yellow 且缺少必需 owner/entitlement，Bridge 日志记录 `knowledge_scope_denied`。
-- server_after: 未授权/未部署。
-- health_check: 未部署，不适用。
-- functional_check: 本地结构化工具、权限路径、联网降级提示和 Green 修复/备份测试通过；真实生产 Hermes 联网回退未执行。
-- rollback_point: 尚无服务器变更；未来执行治理修复时由脚本生成 `.governance-backups/xfusion-tokenfactory-<UTC timestamp>`。
+- server_after: `.deployed-sha=09f70855fecc0ea916e25e80e6ec6c56490e5915`；API/Workers/Frontend 重建运行；两篇 Vault 文档已修改为 Green/public；Hermes Bridge active。
+- health_check: `scripts/update.sh 09f70855fecc0ea916e25e80e6ec6c56490e5915` 通过 runtime contract audit；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；DDGS provider available；Bridge `/v1/skills` HTTP 200。
+- functional_check: 生产容器内 `document_index` 显示两篇目标文档均为 `knowledge/product/public`、`green`、`public`；`knowledge._search_docs` 在该 scope 下实际命中两篇文档；本地 102 项主回归及后续 53 项 slug/治理回归通过。真实 iOS 用户会话的 Hermes 模型联网回退尚未执行。
+- rollback_point: `/opt/ai-lab-rollbacks/knowledge-retrieval-fallback-fix-20260822-20260822-233821`，保存部署前 `2b0fce8`、release、Compose/Hermes 状态及 Vault backup 路径 `/opt/ai-lab-platform/data/vault/.governance-backups/xfusion-tokenfactory-20260822T153521Z`。
 
 ## 风险与未完成项
 
-- 尚需获得当前任务的 commit、push 和生产部署授权。
-- 部署时需先更新精确 main SHA，再对生产 Vault 执行修复脚本 `--apply`；随后用真实账号验证本地 Green 命中，并模拟零命中验证 Hermes 自动调用 web_search。
+- 已完成 commit、push、部署和生产 Vault 修复；manifest 收尾为 docs-only 记录，不改变运行时代码。
+- 仍需用真实账号执行一次“本地无命中 → Hermes web_search → 公开 URL 引用”的端到端验收，才能提升为 VERIFIED。
 - 公开范围只扩展两篇明确 Token Factory 公共事实文档；其他超聚变文档维持原 red/yellow 决策，避免权限扩大。
 
 ## 回滚说明
