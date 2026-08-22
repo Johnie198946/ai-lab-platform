@@ -42,6 +42,10 @@ from backend.services.ipd_scenario_registry import (
     SCENARIO_ID,
     is_registered_ipd_plan,
 )
+from backend.services.process_contract_registry import (
+    dependency_lock_digest,
+    validate_and_project_process_plan,
+)
 
 HERMES_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -143,6 +147,8 @@ async def _nodes(db: AsyncSession, execution_id: str) -> dict[str, WorkflowNodeR
 
 def executable_plan_projection(plan: dict[str, Any]) -> dict[str, Any]:
     """Project a registered display plan to only server-approved runtime nodes."""
+    if plan.get("process_contract_id"):
+        return validate_and_project_process_plan(plan)
     nodes = list(plan.get("nodes") or [])
     has_registered_identity = any(
         (node.get("parameters") or {}).get("scenario_id") == SCENARIO_ID
@@ -207,9 +213,14 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
         "tenant_id": execution.tenant_key,
         "execution_id": execution.id,
         "idempotency_key": execution.idempotency_key,
+        "command_id": f"workflow-command:{execution.id}",
+        "execution_request_id": execution.idempotency_key,
         "goal": plan.goal,
         "deliverable": plan.deliverable,
         "plan": executable_plan_projection(plan.dsl),
+        "process_contract_digest": plan.dsl.get("process_contract_digest"),
+        "dependency_lock_digest": dependency_lock_digest(plan.dsl),
+        "activation_revision": plan.dsl.get("activation_revision"),
         "allow_network": plan.allow_network,
         "knowledge_scope": sorted(allowed_scope),
         "knowledge_capability": capability,
@@ -248,6 +259,28 @@ async def read_bridge_run(
         )
     response.raise_for_status()
     return response.json()
+
+
+def contiguous_bridge_events(
+    events: list[dict[str, Any]], after_seq: int
+) -> list[dict[str, Any]]:
+    by_seq: dict[int, dict[str, Any]] = {}
+    for event in events:
+        seq = int(event.get("seq") or 0)
+        if seq <= after_seq:
+            continue
+        previous = by_seq.get(seq)
+        if previous and previous.get("event_id") != event.get("event_id"):
+            raise RuntimeError(f"Hermes event identity conflict at seq {seq}")
+        by_seq[seq] = event
+    ordered = [by_seq[seq] for seq in sorted(by_seq)]
+    expected = after_seq + 1
+    for event in ordered:
+        seq = int(event["seq"])
+        if seq != expected:
+            raise RuntimeError(f"Hermes event gap: expected {expected}, got {seq}")
+        expected += 1
+    return ordered
 
 
 def _set_usage(target: Any, usage: dict[str, Any]) -> None:
@@ -415,6 +448,11 @@ async def project_event(
         bridge_event_id=event.get("event_id"),
         bridge_seq=event.get("seq"),
         node_id=node_id or None,
+        node_attempt_id=event.get("node_attempt_id"),
+        tool_call_id=event.get("tool_call_id"),
+        idempotency_key=event.get("idempotency_key"),
+        receipt=event.get("receipt") or {},
+        resolved_manifest=event.get("resolved_manifest") or {},
         usage=event.get("usage") or {},
         route=event.get("route") or {},
         category=event.get("category") or event_type,
@@ -463,7 +501,9 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
         if snapshot.get("hermes_session_id"):
             execution.hermes_session_id = str(snapshot["hermes_session_id"])
         node_rows = await _nodes(db, execution.id)
-        for event in snapshot.get("events") or []:
+        for event in contiguous_bridge_events(
+            list(snapshot.get("events") or []), execution.bridge_event_seq
+        ):
             await project_event(db, execution, node_rows, event)
         if not snapshot.get("events") and snapshot.get("status") == "running":
             execution.status = "running"

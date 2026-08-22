@@ -115,3 +115,13 @@ export function projectResultViews({ requirement, evidence = [], gate, artifact 
     { type: "artifact", data: artifact ?? null },
   ];
 }
+
+export function showroomSessionIdFromSearch(search = "") {
+  const value = new URLSearchParams(search).get("showroom_session_id")?.trim() || "";
+  return /^[A-Za-z0-9._:-]{1,120}$/.test(value) ? value : "";
+}
+
+export function customerDemandIdFromSearch(search = "") {
+  const value = new URLSearchParams(search).get("customer_demand_id")?.trim() || "";
+  return /^dmd_[A-Za-z0-9_-]{1,44}$/.test(value) ? value : "";
+}

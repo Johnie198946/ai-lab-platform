@@ -1,0 +1,109 @@
+schema_version: "1.0"
+process:
+  id: xfusion.ipd
+  version: 1.0.0
+  domain: product-development
+  name: 超聚变IPD产品开发流程
+source:
+  type: compiled_wiki_snapshot
+  content_hashes:
+    wiki/方法论/超聚变IPD产品开发流程.md: 34a9470fdf78e1fa9fbd472794bf7783c82c35cc578e8345212e790448076857
+    wiki/方法论/超聚变IPD节点Agent定义与对外口径.md: b8e4c36eb601ce0f4639ec6aba889561b545ae2eb17a0788e88fb120900c9d66
+governance:
+  governance_status: approved
+  agent_callable: true
+  security_level: internal
+activation:
+  state: active
+  activation_revision: 1
+  approved_by: ai-lab-governance
+  activated_at: "2026-08-22T00:00:00+08:00"
+routing:
+  intents: [IPD, 产品开发, 新品, 研发流程, 需求评审, 产品规划]
+  anti_intents: [拒绝IPD, 不采用IPD]
+nodes:
+  - id: market_requirement_evidence
+    stage: 概念
+    name: 市场与需求证据
+    node_type: KNOWLEDGE_RETRIEVAL
+    role_ids: [ipd-01-market-insight]
+    skill_binding:
+      skill_id: ipd-01-market-insight
+      sha256: c0c990c9a121222d04a1ab4f226c393ebd03952ba5741b84b85e8093f6ae39c6
+    input_artifacts: [已确认需求, 来访洞察]
+    output_deliverables: [市场证据清单, 需求假设]
+    decision_gate: 概念证据门
+    pass_criteria: [关键事实带来源, 事实与推断分离, 缺证项登记TBD]
+    execution_enabled: true
+    allow_network: true
+    max_tokens: 4000
+  - id: product_concept_ipd_mapping
+    stage: 概念
+    name: 产品概念与需求分析
+    node_type: LLM_INFERENCE
+    role_ids: [ipd-02-requirement-analysis]
+    skill_binding:
+      skill_id: ipd-02-requirement-analysis
+      sha256: 59da5b77f4390c5d593570995fe9146e3eb045c5266058af87f92b3591ae4651
+    input_artifacts: [市场证据清单, 需求假设]
+    output_deliverables: [产品概念, 需求基线, IPD阶段映射]
+    decision_gate: CDCP概念决策
+    pass_criteria: [需求可追溯, 冲突未被覆盖, 验收标准明确]
+    execution_enabled: true
+    allow_network: false
+    max_tokens: 6000
+  - id: product_plan_definition
+    stage: 计划
+    name: 产品包与计划基线
+    node_type: AGGREGATION
+    role_ids: [ipd-03-product-planning]
+    input_artifacts: [产品概念, 需求基线]
+    output_deliverables: [产品包需求, 计划基线]
+    decision_gate: PDCP计划决策
+    pass_criteria: [范围与非目标明确, 资源承诺待人工批准]
+    execution_enabled: false
+    max_tokens: 3000
+  - id: architecture_and_development
+    stage: 开发
+    name: 架构与开发
+    node_type: LLM_INFERENCE
+    role_ids: [ipd-04-architecture, ipd-05-development, ipd-06-implementation]
+    input_artifacts: [产品包需求, 计划基线]
+    output_deliverables: [架构基线, 开发增量]
+    decision_gate: TR2/TR3技术评审
+    pass_criteria: [架构约束可验证, 开发证据可回放]
+    execution_enabled: false
+    max_tokens: 3000
+  - id: integration_and_validation
+    stage: 验证
+    name: 集成与验证
+    node_type: FILTER_PASS
+    role_ids: [ipd-07-integration-test, ipd-08-validation, ipd-09-compliance]
+    input_artifacts: [架构基线, 开发增量]
+    output_deliverables: [验证报告, 缺陷闭环]
+    decision_gate: TR5验证评审
+    pass_criteria: [需求验收逐项有证据, 缺陷有闭环结论]
+    execution_enabled: false
+    max_tokens: 3000
+  - id: release_readiness
+    stage: 发布
+    name: 发布准备
+    node_type: FILTER_PASS
+    role_ids: [ipd-10-release, ipd-11-marketing]
+    input_artifacts: [验证报告, 缺陷闭环]
+    output_deliverables: [发布包, 上市清单]
+    decision_gate: ADCP上市决策
+    pass_criteria: [发布风险已披露, 上市决定由人批准]
+    execution_enabled: false
+    max_tokens: 3000
+  - id: lifecycle_operations
+    stage: 生命周期
+    name: 生命周期运营
+    node_type: OUTPUT_FORMAT
+    role_ids: [ipd-12-lifecycle]
+    input_artifacts: [发布包, 上市清单]
+    output_deliverables: [运营指标, 生命周期计划]
+    decision_gate: EOP/EOM/EOS决策
+    pass_criteria: [运营指标可计量, 退出条件明确]
+    execution_enabled: false
+    max_tokens: 3000

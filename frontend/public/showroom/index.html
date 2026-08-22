@@ -3,13 +3,15 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="theme-color" content="#f7f9fb">
-    <meta http-equiv="refresh" content="0;url=/login?next=/architect">
-    <title>AI Lab · 架构工作台</title>
+    <meta name="theme-color" content="#f7f8fa">
+    <title>AI Lab · 客户共创旅程</title>
+    <link rel="stylesheet" href="./showroom-journey.css?v=20260822-workbench-v1">
+    <link rel="stylesheet" href="./showroom-handoff.css?v=20260822-workbench-v1">
   </head>
   <body>
-    <p>正在进入架构工作台…</p>
-    <!-- legacy assets remain available at legacy.html; this entry intentionally does not load showroom-journey.js or showroom-api.js. -->
-    <script>window.location.replace('/login?next=/architect');</script>
+    <div id="journey-app"></div>
+    <script src="./hermes-gateway.js?v=20260819-10"></script>
+    <script src="./showroom-api.js?v=20260820-showroom-recovery-v2"></script>
+    <script src="./showroom-journey.js?v=20260822-workbench-v1"></script>
   </body>
 </html>

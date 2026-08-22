@@ -10,7 +10,7 @@ import RoleFounder from "../pages/RoleFounder";
 import RoleMarketing from "../pages/RoleMarketing";
 import RoleSales from "../pages/RoleSales";
 import RoleProduct from "../pages/RoleProduct";
-import ArchitectPage from "../pages/ArchitectPage";
+import ArchitectPage from "../pages/ArchitectWorkbenchPage";
 import { isShowroomAccount } from "../auth/entryRoute";
 
 function ShowroomRedirect() {

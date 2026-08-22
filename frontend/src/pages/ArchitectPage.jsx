@@ -4,7 +4,7 @@ import "@xyflow/react/dist/style.css";
 import { ArrowUpRight, Check, GitBranch, Lock, MessageSquare, RefreshCw } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { platformApi } from "../services/platformApi";
-import { assertRevisionAllowed, canStartWorkflow, diffPlanVersions, hasResultData, pollExecutionUntilTerminal, pollForNewPlan, projectPlanToCanvas, projectPlanToReactFlow, projectResultViews } from "../architectContract";
+import { assertRevisionAllowed, canStartWorkflow, diffPlanVersions, hasResultData, pollExecutionUntilTerminal, pollForNewPlan, projectPlanToCanvas, projectPlanToReactFlow, projectResultViews, showroomSessionIdFromSearch } from "../architectContract";
 import "./ArchitectPage.css";
 
 const truthLabel = (value) => value || "UNCONNECTED";
@@ -31,6 +31,7 @@ function ResultArea({ workflow, clarification, execution, executionEvents, artif
 
 export default function ArchitectPage() {
   const { authSession, logout } = useAuth();
+  const showroomSessionId = useMemo(() => showroomSessionIdFromSearch(window.location.search), []);
   const [workflows, setWorkflows] = useState([]);
   const [workflow, setWorkflow] = useState(null);
   const [clarification, setClarification] = useState(null);
@@ -174,7 +175,7 @@ export default function ArchitectPage() {
   const send = async (event) => { event.preventDefault(); await submitClarification(); };
   const retryClarification = async () => { if (!workflow || !["needs_attention", "clarifying_pending"].includes(workflow.status)) return; setBusy(true); setError(""); try { await platformApi.reopenClarification(workflow.id); await loadWorkflow(workflow.id); } catch (retryError) { setError(retryError.message || "澄清恢复失败"); } finally { setBusy(false); } };
   const revise = async (event) => { event.preventDefault(); if (!revision.trim() || !workflow) return; try { assertRevisionAllowed(execution); setBusy(true); setError(""); const oldPlan = plan; await platformApi.reviseWorkflow(workflow.id, revision.trim()); const nextPlan = await pollForNewPlan(workflow.id, oldPlan, { getPlan: platformApi.getWorkflowPlan, getLifecycleEvents: platformApi.getLifecycleEvents }); setPreviousPlan(oldPlan); setPlan(nextPlan); await loadWorkflow(workflow.id); setRevision(""); } catch (revisionError) { setError(revisionError.message || "方案修订未完成"); } finally { setBusy(false); } };
-  const create = async (event) => { event.preventDefault(); if (!draft.trim()) return; setBusy(true); try { const result = await platformApi.createWorkflow({ title: "架构工作台任务", description: draft.trim(), desired_output: "服务端可审阅结果", clarification_mode: "dynamic" }); const createdWorkflow = result.workflow; setWorkflows((current) => [createdWorkflow, ...current.filter((item) => item.id !== createdWorkflow.id)]); setDraft(""); await loadWorkflow(createdWorkflow.id); } catch (createError) { setError(createError.message || "无法创建任务"); } finally { setBusy(false); } };
+  const create = async (event) => { event.preventDefault(); if (!draft.trim()) return; setBusy(true); try { const result = await platformApi.createWorkflow({ title: "架构工作台任务", description: draft.trim(), desired_output: "服务端可审阅结果", clarification_mode: "dynamic", ...(showroomSessionId ? { showroom_session_id: showroomSessionId } : {}) }); const createdWorkflow = result.workflow; setWorkflows((current) => [createdWorkflow, ...current.filter((item) => item.id !== createdWorkflow.id)]); setDraft(""); await loadWorkflow(createdWorkflow.id); } catch (createError) { setError(createError.message || "无法创建任务"); } finally { setBusy(false); } };
   const approve = async () => { if (!workflow || workflow.status !== "awaiting_approval") return; setBusy(true); try { await platformApi.approveWorkflowPlan(workflow.id); await loadWorkflow(workflow.id); } catch (approveError) { setError(approveError.message || "方案批准失败"); } finally { setBusy(false); } };
   const start = async () => { if (!workflow || !canStartWorkflow(workflow.status, execution)) return; const workflowId = workflow.id; setBusy(true); try { const started = await platformApi.startWorkflow(workflowId); const result = await pollExecutionUntilTerminal(started.id, { getExecution: platformApi.getExecution, getExecutionEvents: platformApi.getExecutionEvents, getExecutionArtifacts: platformApi.getExecutionArtifacts, onUpdate: ({ execution: nextExecution, events }) => { if (activeWorkflowIdRef.current !== workflowId) return; setExecution(nextExecution); setExecutionEvents(events); } }); if (activeWorkflowIdRef.current !== workflowId) return; setExecution(result.execution); setExecutionEvents(result.events); setArtifacts(result.artifacts); const refreshed = await platformApi.getWorkflow(workflowId); if (activeWorkflowIdRef.current === workflowId) setWorkflow(refreshed.workflow || refreshed); } catch (startError) { if (activeWorkflowIdRef.current === workflowId) setError(startError.message || "执行状态刷新失败"); } finally { if (activeWorkflowIdRef.current === workflowId) setBusy(false); } };
 

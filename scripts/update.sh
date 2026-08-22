@@ -20,7 +20,7 @@ echo "==> [1/4] 从 GitHub 拉取最新代码 (codeload)"
 TARBALL=$(mktemp /tmp/ailab-src.XXXXXX.tgz)
 cleanup() { rm -f "$TARBALL"; }
 trap cleanup EXIT
-curl -fsSL --retry 3 "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$SOURCE_REF" \
+curl -fsSL --retry 3 "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$SOURCE_REF?cachebust=${EXPECTED_SHA}-$(date +%s)" \
   -o "$TARBALL"
 tar xzf "$TARBALL" --strip-components=1 -C .
 echo "    代码已更新: $(git log --oneline -1 2>/dev/null || echo '(无 git 元数据, 以文件为准)')"

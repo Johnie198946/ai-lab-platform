@@ -45,6 +45,8 @@ class TestWorkflowsAPI(unittest.TestCase):
             WorkflowSessionMessage,
         )
         from backend.models.tenant_agent import AgentInvocationRelation, TenantAgentModel
+        from backend.models.showroom import ShowroomSession
+        from backend.models.customer_demand import CustomerDemand
 
         self._old_resolver = auth.tenant_resolver
         self._old_super = auth._is_super_admin
@@ -81,6 +83,8 @@ class TestWorkflowsAPI(unittest.TestCase):
                     WorkflowSessionMessage,
                     WorkflowClarificationSession,
                     WorkflowDefinition,
+                    ShowroomSession,
+                    CustomerDemand,
                     AgentInvocationRelation,
                     TenantAgentModel,
                 ):
@@ -175,6 +179,98 @@ class TestWorkflowsAPI(unittest.TestCase):
                 )
 
         self.assertEqual(asyncio.run(count()), 0)
+
+    def test_create_can_continue_authorized_showroom_context(self):
+        from backend.db import SessionLocal
+        from backend.models.showroom import ShowroomSession
+
+        async def seed_showroom():
+            async with SessionLocal() as db:
+                db.add(
+                    ShowroomSession(
+                        session_id="visit-bridge-alpha",
+                        tenant_key="tenant-alpha",
+                        slot="main",
+                        data={
+                            "visitor": {"company": "制造企业", "role": "研发负责人"},
+                            "customer_insight": {"summary": "关注需求到验证协同"},
+                            "hermes_sessions": {"backstage_stored_session_id": "private"},
+                        },
+                    )
+                )
+                await db.commit()
+
+        asyncio.run(seed_showroom())
+        response = self.request(
+            "POST",
+            "/api/v1/workflows",
+            json={
+                "title": "产品开发共创",
+                "description": "请拆解当前产品开发需求",
+                "showroom_session_id": "visit-bridge-alpha",
+            },
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
+        workflow = response.json()["workflow"]
+        context = workflow["requirements_snapshot"]["showroom_context"]
+        self.assertEqual(context["source"]["session_id"], "visit-bridge-alpha")
+        self.assertEqual(context["visitor"]["company"], "制造企业")
+        self.assertNotIn("hermes_sessions", context)
+        self.assertIn("关注需求到验证协同", workflow["description"])
+
+        denied = self.request(
+            "POST",
+            "/api/v1/workflows",
+            sub="beta",
+            json={
+                "title": "越权任务",
+                "description": "不得读取其他租户来访上下文",
+                "showroom_session_id": "visit-bridge-alpha",
+            },
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
+    def test_create_can_continue_confirmed_customer_demand(self):
+        from backend.db import SessionLocal
+        from backend.models.customer_demand import CustomerDemand
+
+        async def seed():
+            async with SessionLocal() as db:
+                db.add(CustomerDemand(
+                    demand_id="dmd_workflow_001",
+                    tenant_key="tenant-alpha",
+                    created_by="alpha",
+                    source_text="新品需求评审周期太长",
+                    source_hash="b" * 64,
+                    business_scene="产品开发",
+                    overall_goal="缩短评审周期",
+                    stakeholders=["产品", "研发"],
+                    requirement_items=["保留评审证据"],
+                    conflict_notes=[],
+                    constraints=["人工批准"],
+                    acceptance_criteria=["周期可度量"],
+                    status="confirmed",
+                    version=2,
+                ))
+                await db.commit()
+
+        asyncio.run(seed())
+        response = self.request(
+            "POST",
+            "/api/v1/workflows",
+            json={
+                "title": "需求续接",
+                "description": "继续生成AI员工",
+                "customer_demand_id": "dmd_workflow_001",
+            },
+        )
+        self.assertEqual(response.status_code, 201, response.text)
+        workflow = response.json()["workflow"]
+        snapshot = workflow["requirements_snapshot"]["customer_demand"]
+        self.assertEqual(snapshot["source"]["type"], "customer_demand")
+        self.assertEqual(snapshot["source"]["version"], 2)
+        self.assertIn("新品需求评审周期太长", workflow["description"])
 
     def test_delete_archives_owned_workflow_and_hides_it(self):
         from backend.db import SessionLocal
@@ -541,6 +637,37 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(
             [node["node_id"] for node in started.json()["nodes"]],
             ["market_requirement_evidence", "product_concept_ipd_mapping"],
+        )
+
+    def test_generic_product_request_persists_process_contract_plan(self):
+        from backend.services.workflow_planning import process_next_once
+
+        created = self.request(
+            "POST",
+            "/api/v1/workflows",
+            json={
+                "title": "新品评审提效",
+                "description": "我们要缩短新品需求评审周期，按IPD推进产品开发",
+                "desired_output": "IPD评审计划",
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+        path = f"/api/v1/workflows/{workflow_id}/clarification/respond"
+        for answer in ("产品与研发团队", "概念和需求评审", "评审周期可量化"):
+            self.assertEqual(self.request("POST", path, json={"response": answer}).status_code, 200)
+        self.assertEqual(self.request("POST", path, json={"intent": "confirm"}).status_code, 200)
+        self.assertTrue(asyncio.run(process_next_once()))
+
+        plan = self.request("GET", f"/api/v1/workflows/{workflow_id}/plan").json()["dsl"]
+        self.assertEqual(plan["process_contract_id"], "xfusion.ipd")
+        self.assertEqual(len(plan["process_contract_digest"]), 64)
+        self.assertEqual(
+            plan["nodes"][0]["parameters"]["skill_binding"]["skill_id"],
+            "ipd-01-market-insight",
+        )
+        self.assertEqual(
+            plan["nodes"][1]["parameters"]["skill_binding"]["skill_id"],
+            "ipd-02-requirement-analysis",
         )
 
     def test_registered_ipd_plan_rejects_runtime_contract_patch_and_reuses_projection(self):
@@ -1066,6 +1193,25 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertTrue(all(item.content_hash for item in artifacts))
         self.assertEqual(execution.token_used, 750)
         self.assertEqual(execution.cache_read_tokens, 125)
+
+        explain = self.request(
+            "GET", f"/api/v1/workflow-executions/{execution.id}/explain-context"
+        )
+        self.assertEqual(explain.status_code, 200, explain.text)
+        repeated = self.request(
+            "GET", f"/api/v1/workflow-executions/{execution.id}/explain-context"
+        )
+        self.assertEqual(explain.json()["snapshot_id"], repeated.json()["snapshot_id"])
+        report = self.request(
+            "GET", f"/api/v1/workflow-executions/{execution.id}/evidence-report"
+        )
+        self.assertEqual(report.status_code, 200, report.text)
+        self.assertTrue(report.json()["claims"])
+        self.assertTrue(all(item["status"] == "SUPPORTED" for item in report.json()["claims"]))
+        self.assertEqual(
+            report.json()["token_factory_recommendation"]["status"],
+            "NEEDS_BENCHMARK",
+        )
 
         artifact = artifacts[0]
         content_path = run_root(execution) / artifact.relative_path
