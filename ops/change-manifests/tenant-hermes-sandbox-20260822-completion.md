@@ -44,9 +44,9 @@
 ## Delivery state
 
 - implementation_commit: `7fbb1e43bf1a18185ed7108ca59322d4e423624f`
-- github_remote_ref_sha: `refs/heads/codex/tenant-hermes-sandbox` = `7fbb1e43bf1a18185ed7108ca59322d4e423624f`，已用 `git ls-remote` 核验。
+- github_remote_ref_sha: 实现提交 `7fbb1e43bf1a18185ed7108ca59322d4e423624f` 已推送；最终证据提交部署后再次用 `git ls-remote` 核验，精确 SHA 记录在标准完成通报。
 - server_before: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-1d06cd3`；`.deployed-sha=b2a6a5f5e5bcd6b5dedbea2501997107ae6c04cc`；API image `sha256:6d9fb47171a9db6b90b4ce50d503765576a294b95102870508390cfaa2496346`；API healthy，Bridge active，DDGS `9.15.0`。
-- server_after: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-7fbb1e4`；实现部署标记 `7fbb1e43bf1a18185ed7108ca59322d4e423624f`；API image `sha256:818ed5feb849833dbb973c869d0658498f4f42ab134e2da3e925674b8d04a2f0`；planning/workflow/evaluation Worker images 分别为 `fe3b470a` / `3c95c66f` / `97f6ae04`。
+- server_after: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-7fbb1e4`；最终证据部署标记在标准完成通报中与 GitHub SHA 一致；API image `sha256:0dd191aa6a8a328ff5e757721ab35c172ba5114932a0c77f4978e8fbcb5e1689`；planning/workflow/evaluation Worker images 分别为 `61243ce0` / `f779c1f0` / `0b91f5e1`。
 - health_check: 服务器内网 API、Hermes Bridge 和公网 API 均返回健康；Compose 的 API、frontend、三个 Worker、Postgres、Redis 均运行，API/Postgres/Redis healthy；runtime contract audit passed。
 - functional_check: 本地 `560 passed, 2 skipped`；生产双租户/双账号/同 Session ID 隔离通过；4 个独立 SessionDB 验证通过；真实 Hermes `web_search` 调用和 HTTPS 结果通过；本地与服务器 5 个关键运行文件 SHA-256 完全一致。
 - rollback_point: `/opt/releases/ai-lab-platform-1d06cd3` 保持不变；部署记录 `/opt/ai-lab-rollbacks/tenant-hermes-sandbox-20260822-7fbb1e4` 保存部署前 release、标记、镜像和 Bridge 状态。回滚时原子切回旧 release，重建 Compose 并重启 Hermes Bridge。
