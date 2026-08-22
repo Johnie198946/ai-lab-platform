@@ -94,7 +94,7 @@
 ## Continuous P0-P7 workbench slice (2026-08-22)
 
 - local_base: `1aa4e9317d2a456829573d4d94fa1d88b95c2196`
-- status: `TESTED`
+- status: `DEPLOYED`
 - source continuity: confirmed `CustomerDemand` or authorized legacy `ShowroomSession` → Architect clarification.
 - process truth: approved `xfusion.ipd` compiled snapshot with Wiki source hashes, activation revision and immutable contract digest.
 - runtime truth: ScenarioPlan remains the only plan source; Hermes Bridge remains the only execution runtime.
@@ -103,15 +103,15 @@
 - customer UI: one restrained workbench showing goal, current stage, AI employee, current output and next action; evidence, tools/Skills, artifacts, Evidence-bound report, Token and resource usage are collapsed drawers; React Flow is read-only and on demand.
 - P6: server-generated `ExplainContextSnapshot` is available only after the immutable `run_started` version receipt and excludes hidden Chain-of-Thought.
 - P7: deterministic Claim–Evidence report; missing evidence becomes `UNSUPPORTED`; without benchmark data, Token Factory recommendation remains `NEEDS_BENCHMARK` and emits no equipment quantity.
-- backend_verification: `539 passed, 2 skipped, 31 warnings`.
+- backend_verification: `545 passed, 2 skipped, 31 warnings` after merge with origin/main.
 - frontend_verification: `67 passed`; production Vite/Gateway build passed; existing large-chunk warning remains.
 - static_verification: `git diff --check` passed.
-- commit_sha: `PENDING`
-- remote_sha: `1aa4e9317d2a456829573d4d94fa1d88b95c2196` (unchanged; local changes not pushed)
-- server_before: `NOT_CHECKED`
-- server_after: `NOT_DEPLOYED`
-- health_check: `NOT_RUN`
-- functional_check: local API/unit contracts and production build only; authenticated production P0→P7 run not performed.
-- rollback_point: local base `1aa4e9317d2a456829573d4d94fa1d88b95c2196`; no server rollback point created.
+- commit_sha: `49571d24e2a796da0f413a93da00edf18750e8dd`
+- remote_sha: `49571d24e2a796da0f413a93da00edf18750e8dd`
+- server_before: `cd004cadab777306aea2a64a6c1910638f82396e` (initial deploy exposed stale codeload cache; no data loss)
+- server_after: `49571d24e2a796da0f413a93da00edf18750e8dd`
+- health_check: `PASS` — `/health` returned HTTP 200 and `{"status":"ok","version":"0.8.0"}`; all 7 Compose services running; runtime contract audit passed.
+- functional_check: `PASS` — `/showroom/index.html` HTTP 200; `/api/v1/workflow-executions/active`, `/explain-context`, and `/evidence-report` returned expected HTTP 401 without credentials; container/source workflow hash matched `462cb556...`; P6/P7 route decorators present.
+- rollback_point: `cd004cadab777306aea2a64a6c1910638f82396e`
 - accepted_risks: Bridge durable record/AIAgent acceptance crash window; externally mutable model/tool/data references may not be reproducible despite equal digest. Both fail closed and require manual reconciliation where state is ambiguous.
 - asynchronous_audit_followup: Skill加载开始/完成统一投影为同一`skill_load`事件类型；相同`idempotency_key + type + status`的Bridge回调复用原事件，不递增序号。Artifact现行生产合同只含`kind/title/content/source_kind`，未虚构尚不存在的`source_url/evidence_refs`透传。
