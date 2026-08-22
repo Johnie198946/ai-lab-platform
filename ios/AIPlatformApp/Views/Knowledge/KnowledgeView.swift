@@ -82,9 +82,9 @@ public struct KnowledgeView: View {
                     )
                 }
 
-                if !store.archivedNotes.isEmpty {
-                    archiveEntry
-                }
+                // Keep the archive affordance visible even before the first
+                // merge, so users can discover where archived notes will live.
+                archiveEntry
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)

@@ -379,15 +379,29 @@ public final class TenantSessionCoordinator: ObservableObject {
 
         let sid = sessionManager.activeSessionID()
         let clientSessionContext = sessionManager.clientSessionContext(for: sid)
+        let localNoteSnapshot = KnowledgeNoteStore.shared.notes.prefix(12).map { note in
+            ChatLocalNoteDTO(
+                id: note.id,
+                title: note.title,
+                markdown: String(KnowledgeNoteStore.shared.markdown(for: note).prefix(20_000)),
+                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt)
+            )
+        }
+        let enrichedClientSessionContext = ClientSessionContextDTO(
+            sessionId: clientSessionContext.sessionId,
+            messages: clientSessionContext.messages,
+            truncated: clientSessionContext.truncated,
+            localNotes: localNoteSnapshot
+        )
         messages.append(ChatMessage(sessionId: sid, role: .user, content: text, quotedContext: quote))
         inputText = ""
         quotedContext = nil
         commitSession()
 
         if isGenerating && !regenerate {
-            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote, contextScope: contextScope, clientSessionContext: clientSessionContext))
+            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote, contextScope: contextScope, clientSessionContext: enrichedClientSessionContext))
         } else {
-            startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope, clientSessionContext: clientSessionContext)
+            startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope, clientSessionContext: enrichedClientSessionContext)
         }
     }
 

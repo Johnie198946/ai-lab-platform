@@ -1136,6 +1136,41 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     )
 
 
+def _inline_user_note_matches(query: str, notes: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Find same-account notes supplied in the signed iOS context.
+
+    This is a deterministic recall fallback for local-first notes that have
+    not reached the Gateway yet. Hermes still decides the semantic query and
+    whether the returned notes are genuinely mergeable.
+    """
+    stop = {"笔记", "总结", "整理", "保存", "入库", "相关", "内容", "一下", "会话"}
+    terms = [term for term in re.findall(r"[a-z0-9][a-z0-9_.-]{1,}|[\u4e00-\u9fff]{2,}", query.casefold()) if term not in stop]
+    if not terms:
+        return []
+    ranked: list[tuple[int, dict[str, Any]]] = []
+    for raw in notes:
+        if not isinstance(raw, dict):
+            continue
+        note_id = str(raw.get("id") or "").strip()[:128]
+        title = str(raw.get("title") or "无标题").strip()[:200]
+        markdown = str(raw.get("markdown") or "")[:20_000]
+        haystack = f"{title}\n{markdown}".casefold()
+        score = sum((haystack.count(term) * (8 if term in title.casefold() else 2)) for term in terms)
+        if score <= 0 or not note_id:
+            continue
+        ranked.append((score, {
+            "id": note_id,
+            "title": title,
+            "snippet": markdown[:1_000],
+            "markdown": markdown,
+            "updated_at": raw.get("updated_at"),
+            "category": "user_notes",
+            "source": "user_notes",
+        }))
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    return [item[1] for item in ranked[:limit]]
+
+
 def _user_note_search_tool(args: dict[str, Any], **_kwargs) -> str:
     """Search only the authenticated user's synced notes through the Gateway."""
     context = getattr(_knowledge_tool_context, "value", None)
@@ -1152,6 +1187,11 @@ def _user_note_search_tool(args: dict[str, Any], **_kwargs) -> str:
     query = str((args or {}).get("query") or "").strip()
     if not query:
         return json.dumps({"success": False, "error": "query_required"})
+    client_context = getattr(_client_context_tool_context, "value", None)
+    inline_notes = []
+    if isinstance(client_context, dict):
+        inline_notes = client_context.get("inline_notes") or []
+    inline_docs = _inline_user_note_matches(query, inline_notes, max(1, min(10, int((args or {}).get("limit") or 5))))
     try:
         docs = _knowledge_gateway_search(
             str(context["capability"]),
@@ -1166,15 +1206,24 @@ def _user_note_search_tool(args: dict[str, Any], **_kwargs) -> str:
             ensure_ascii=False,
         )
     except Exception as exc:
-        return json.dumps(
-            {
-                "success": False,
-                "error": "knowledge_gateway_unavailable",
-                "detail": str(exc)[:160],
-            },
-            ensure_ascii=False,
-        )
-    client_context = getattr(_client_context_tool_context, "value", None)
+        if not inline_docs:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "knowledge_gateway_unavailable",
+                    "detail": str(exc)[:160],
+                },
+                ensure_ascii=False,
+            )
+        docs = []
+    merged_docs = []
+    seen_ids: set[str] = set()
+    for item in inline_docs + (docs if isinstance(docs, list) else []):
+        note_id = str(item.get("id") or "")
+        if note_id and note_id not in seen_ids:
+            seen_ids.add(note_id)
+            merged_docs.append(item)
+    docs = merged_docs[: max(1, min(10, int((args or {}).get("limit") or 5)))]
     if isinstance(client_context, dict):
         validated_docs: dict[str, dict[str, Any]] = {}
         for item in docs:
@@ -3529,6 +3578,7 @@ def _run_agent_sync(
                 "transcript": client_session_context,
                 "request_id": client_context_claims.get("request_id"),
                 "client_session_id": client_session_context.get("session_id"),
+                "inline_notes": client_session_context.get("local_notes") or [],
                 "account_scope": (
                     hashlib.sha256(str(client_context_claims.get("tenant_key") or "").encode()).hexdigest()[:20]
                     + ":"

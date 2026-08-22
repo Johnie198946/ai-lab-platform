@@ -170,6 +170,10 @@ class ClientSessionContext(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=100)
     messages: List[ClientSessionMessage] = Field(default_factory=list, max_length=200)
     truncated: bool = False
+    # Local-first note snapshot used only for current-user similarity checks.
+    # It is covered by the signed client-context capability and never becomes
+    # a tenant Wiki source.
+    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=12)
 
 
 def _validated_client_session_context(
@@ -181,6 +185,8 @@ def _validated_client_session_context(
         raise HTTPException(status_code=422, detail="client_session_context_mismatch")
     payload = context.model_dump()
     if sum(len(item["content"]) for item in payload["messages"]) > 120_000:
+        raise HTTPException(status_code=413, detail="client_session_context_too_large")
+    if sum(len(item["markdown"]) for item in payload.get("local_notes") or []) > 120_000:
         raise HTTPException(status_code=413, detail="client_session_context_too_large")
     return payload
 
