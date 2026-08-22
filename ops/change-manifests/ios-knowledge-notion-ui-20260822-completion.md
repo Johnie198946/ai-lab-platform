@@ -1,0 +1,34 @@
+# iOS Knowledge Notion UI completion
+
+- task_id: ios-knowledge-notion-ui-20260822
+- goal: replace the legacy knowledge catalog screen with a Notion-like local Markdown notes workspace while preserving the chat freeze fix.
+- changed_files:
+  - ios/AIPlatformApp/Views/Knowledge/KnowledgeView.swift
+  - ios/AIPlatformApp/Services/KnowledgeNoteStore.swift
+  - ios/AIPlatformApp/Models/UIModels.swift
+  - ios/AIPlatformApp/AIPlatformApp.swift
+  - ios/AIPlatformApp/Views/MainTabView.swift
+  - ios/AIPlatformApp.xcodeproj/project.pbxproj
+  - ios/AIPlatformApp.xcodeproj/xcshareddata/xcschemes/AIPlatformApp.xcscheme
+  - ios/AIPlatformAppTests/KnowledgeNoteStoreTests.swift
+  - ios/project.yml
+- preflight:
+  - status: clean on codex/ios-chat-freeze at 6060b590 before UI merge
+  - remote: origin https://github.com/Johnie198946/ai-lab-platform.git
+  - worktree: /private/tmp/ai-lab-ios-chat-freeze
+- validation:
+  - xcodebuild simulator build: passed
+  - xcodebuild simulator tests: passed, 25 tests, 0 failures
+  - simulator install/launch: passed with -autoLogin -knowledgeTab
+  - functional screenshot: /private/tmp/ai-lab-knowledge-notion.png shows “笔记” local Markdown workspace, not legacy catalog
+- status: TESTED
+- commit_sha: pending
+- remote_sha: pending
+- server_before: not applicable (iOS-only)
+- server_after: not applicable (iOS-only)
+- health_check: not applicable
+- functional_check: simulator launch and screenshot passed
+- rollback_point: 6060b590774f808a357d9fc9ec0174b1c4fdca2e
+- risks:
+  - no physical iPhone was connected; verification is on AIPlatform Preview simulator
+  - project.yml retains the existing Info.plist ATS behavior through ios/AIPlatformApp/Info.plist

@@ -32,7 +32,7 @@ public struct MainTabView: View {
                 }
                 .tag(1)
 
-            // Tab 3: 知识两层（类目订阅 + 已订内容分组浏览）；仅改显示字符串，内部 .tag(2)/枚举不变
+            // Tab 3: local-first Markdown notes workspace
             KnowledgeView()
                 .tabItem {
                     Label("知识", systemImage: "books.vertical.fill")

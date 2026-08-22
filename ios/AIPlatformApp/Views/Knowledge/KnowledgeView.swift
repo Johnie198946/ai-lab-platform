@@ -2,1006 +2,1081 @@
 //  KnowledgeView.swift
 //  AIPlatformApp
 //
-//  知识库 Tab 两层重构：
-//   上层 = 知识钱包偏好（不授予权限）
-//   下层 = 当前租户有效知识范围内的内容浏览
-//  双轨：联网真实 API，离线/失败自动切本地 Mock 并标注「演示数据」。
+//  Notion-like interface backed by an Obsidian-compatible local Markdown vault.
 //
 
 import SwiftUI
+import UIKit
 
-private enum KnowledgeRecoveryAction: Equatable {
-    case dismiss
-    case retry
-    case refreshCatalog
-    case viewPlans
+private enum NoteScope: String, CaseIterable, Identifiable {
+    case all = "全部"
+    case pinned = "已置顶"
+    case daily = "每日笔记"
+
+    var id: String { rawValue }
+}
+
+private enum NoteEditorMode: String, CaseIterable, Identifiable {
+    case edit = "编辑"
+    case preview = "阅读"
+
+    var id: String { rawValue }
 }
 
 public struct KnowledgeView: View {
     @EnvironmentObject private var appState: AppState
-    @EnvironmentObject private var api: APIClient
-    @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var store = KnowledgeNoteStore.shared
 
-    @State private var catalog: [CatalogCategory] = []
-    @State private var subscriptions: Set<String> = []
-    @State private var searchText: String = ""
-    @State private var searchDocs: [SearchDoc] = []
-    @State private var isLoadingCatalog: Bool = false
-    @State private var isSearching: Bool = false
-    @State private var loadTask: Task<Void, Never>? = nil
-    @State private var selectedCategory: CatalogCategory? = nil
-    @State private var permissionMessage: String? = nil
-    @State private var recoveryAction: KnowledgeRecoveryAction = .dismiss
-    @State private var showingSubscriptionCenter: Bool = false
-    @State private var highlightedEntitlementKey: String? = nil
-    @State private var walletBusyCategory: String? = nil
-    @State private var successMessage: String? = nil
-    @State private var pendingReviewCount: Int = 0
-    @State private var knowledgeAccess: KnowledgeAccessResponse? = nil
+    @State private var path: [String] = []
+    @State private var searchText = ""
+    @State private var scope: NoteScope = .all
+    @State private var selectedTag: String?
+    @State private var notePendingTrash: KnowledgeNote?
+    @State private var showingTrashConfirmation = false
 
     public init() {}
 
-    // 已订类目置顶
-    private var orderedCatalog: [CatalogCategory] {
-        catalog.sorted {
-            let lhsSub = subscriptions.contains($0.category)
-            let rhsSub = subscriptions.contains($1.category)
-            if lhsSub != rhsSub { return lhsSub }
-            return $0.category < $1.category
+    private var visibleNotes: [KnowledgeNote] {
+        store.search(searchText, tag: selectedTag).filter { note in
+            switch scope {
+            case .all: return true
+            case .pinned: return note.isPinned
+            case .daily: return note.isDailyNote
+            }
         }
     }
 
-    // 搜索结果按类目分组
-    private var groupedDocs: [(category: String, docs: [SearchDoc])] {
-        let groups = Dictionary(grouping: searchDocs, by: { $0.category })
-        return groups
-            .map { (category: $0.key, docs: $0.value) }
-            .sorted { $0.category < $1.category }
+    private var pinnedNotes: [KnowledgeNote] {
+        visibleNotes.filter(\.isPinned)
     }
 
-    private var availableCategoryCount: Int {
-        catalog.filter { !$0.requiresKnowledgePack }.count
-    }
-
-    private var publicCategories: [CatalogCategory] {
-        orderedCatalog.filter { $0.securityLevel == "green" }
+    private var recentNotes: [KnowledgeNote] {
+        visibleNotes.filter { !$0.isPinned || scope != .all }
     }
 
     public var body: some View {
-        NavigationStack {
-            ZStack {
-                QuantumMistBackground()
+        NavigationStack(path: $path) {
+            List {
+                workspaceHeader
+                quickActions
 
-                ScrollView {
-                    VStack(spacing: AppTheme.Spacing.md) {
-                        knowledgeHero
+                if !store.allTags.isEmpty {
+                    tagFilter
+                }
 
-                        if api.isOfflineMode {
-                            demoModeBanner
-                        }
+                scopePicker
 
-                        if appState.currentProfile.role == .masterAdmin && pendingReviewCount > 0 {
-                            governanceReviewBanner
-                        }
-
-                        basePublicKnowledgeSection
-                        knowledgeWalletSection
-                        categorySubscriptionSection
-                        subscribedContentSection
+                if store.isLoading && store.notes.isEmpty {
+                    loadingRow
+                } else if visibleNotes.isEmpty {
+                    emptyState
+                } else {
+                    if scope == .all && !pinnedNotes.isEmpty {
+                        noteSection(title: "置顶", systemImage: "pin", notes: pinnedNotes)
                     }
-                    .padding(.horizontal, AppTheme.Metrics.contentGutter)
-                    .padding(.top, AppTheme.Spacing.md)
-                    .padding(.bottom, AppTheme.Spacing.xl)
+                    noteSection(
+                        title: scope == .all ? "最近笔记" : scope.rawValue,
+                        systemImage: scope == .daily ? "calendar" : "clock",
+                        notes: recentNotes
+                    )
                 }
             }
-            .navigationTitle("知识")
-            .searchable(text: $searchText, prompt: "搜索当前可用知识...")
-            .onSubmit(of: .search) {
-                Task { await runSearch() }
-            }
-            .task {
-                await initialLoad()
-            }
-            .onDisappear {
-                loadTask?.cancel()
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .background(AppTheme.Colors.cardBackground)
+            .navigationTitle("笔记")
+            .navigationBarTitleDisplayMode(.large)
+            .searchable(
+                text: $searchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "搜索标题、正文和标签"
+            )
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            createNote()
+                        } label: {
+                            Label("新建笔记", systemImage: "square.and.pencil")
+                        }
+                        Button {
+                            openDailyNote()
+                        } label: {
+                            Label("打开每日笔记", systemImage: "calendar")
+                        }
+                    } label: {
+                        Image(systemName: "plus")
+                            .frame(width: AppTheme.Metrics.minimumTouchTarget, height: AppTheme.Metrics.minimumTouchTarget)
+                    }
+                    .accessibilityLabel("创建笔记")
+                }
             }
             .refreshable {
-                await initialLoad()
+                store.reload()
             }
-            .fullScreenCover(item: $selectedCategory) { category in
-                KnowledgeWalletDetail(
-                    category: category,
-                    isSubscribed: subscriptions.contains(category.category),
-                    onToggle: { toggleSubscription(category) },
-                    onDismiss: { selectedCategory = nil }
-                )
+            .navigationDestination(for: String.self) { noteID in
+                KnowledgeNoteEditor(noteID: noteID)
             }
-            .sheet(isPresented: $showingSubscriptionCenter) {
-                NavigationStack {
-                    SubscriptionCenterView(highlightedEntitlementKey: highlightedEntitlementKey)
-                }
-            }
-            .alert("知识权限", isPresented: Binding(
-                get: { permissionMessage != nil },
-                set: { if !$0 { permissionMessage = nil } }
-            )) {
-                if recoveryAction == .viewPlans {
-                    Button("查看套餐") {
-                        permissionMessage = nil
-                        showingSubscriptionCenter = true
+            .confirmationDialog(
+                "将“\(notePendingTrash?.title ?? "这篇笔记")”移到废纸篓？",
+                isPresented: $showingTrashConfirmation,
+                titleVisibility: .visible
+            ) {
+                Button("移到废纸篓", role: .destructive) {
+                    if let notePendingTrash {
+                        store.moveToTrash(id: notePendingTrash.id)
                     }
+                    notePendingTrash = nil
                 }
-                if recoveryAction == .retry || recoveryAction == .refreshCatalog {
-                    Button(recoveryAction == .refreshCatalog ? "刷新目录" : "重试") {
-                        permissionMessage = nil
-                        Task { await initialLoad() }
-                    }
+                Button("取消", role: .cancel) {
+                    notePendingTrash = nil
                 }
-                Button("关闭", role: .cancel) { permissionMessage = nil }
             } message: {
-                Text(permissionMessage ?? "套餐或知识权限已变化")
+                Text("文件会保留在 KnowledgeVault/.trash 中，可通过文件工具恢复。")
             }
-            .overlay(alignment: .top) {
-                if let successMessage {
-                    Label(successMessage, systemImage: "checkmark.circle.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                        .padding(.horizontal, AppTheme.Spacing.md)
-                        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-                        .background(AppTheme.Colors.successSurface)
-                        .clipShape(Capsule())
-                        .overlay { Capsule().stroke(AppTheme.Colors.border, lineWidth: 0.75) }
-                        .padding(.top, AppTheme.Spacing.sm)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                        .accessibilityAddTraits(.isStaticText)
-                }
+            .alert("笔记不可用", isPresented: Binding(
+                get: { store.lastError != nil },
+                set: { if !$0 { store.clearError() } }
+            )) {
+                Button("重新加载") { store.reload() }
+                Button("关闭", role: .cancel) { store.clearError() }
+            } message: {
+                Text(store.lastError ?? "请稍后重试")
             }
         }
     }
 
-    private var knowledgeHero: some View {
-        HStack(alignment: .center, spacing: AppTheme.Spacing.lg) {
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                Text("KNOWLEDGE · LIVE CONTEXT")
-                    .font(AppTheme.Typography.micro)
-                    .tracking(0.8)
-                    .foregroundColor(AppTheme.Icons.interactive)
-
-                Text("让知识随任务而来")
-                    .font(AppTheme.Typography.sectionTitle)
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-
-                Text("钱包 \(subscriptions.count) 张 · 当前可用 \(availableCategoryCount) 个类目")
-                    .font(AppTheme.Typography.supporting)
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-
-                Label(
-                    knowledgeAccess?.baseKnowledge?.isReady == false ? "公共知识建设中" : "上下文已就绪",
-                    systemImage: knowledgeAccess?.baseKnowledge?.isReady == false ? "hammer.fill" : "checkmark.circle.fill"
-                )
-                    .font(AppTheme.Typography.micro)
-                    .foregroundColor(knowledgeAccess?.baseKnowledge?.isReady == false ? AppTheme.Colors.statusWarning : AppTheme.Colors.statusCompleted)
-            }
-
-            Spacer(minLength: 0)
-
-            Image(systemName: "books.vertical.fill")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundColor(AppTheme.Icons.intelligence)
-                .frame(width: 68, height: 68)
-                .background(AppTheme.Colors.selectionTint)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-        }
-        .padding(AppTheme.Spacing.xl)
-        .background(
-            LinearGradient(
-                colors: [AppTheme.Colors.cardBackground, AppTheme.Colors.surfaceTint],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                .stroke(AppTheme.Colors.border.opacity(0.8), lineWidth: 0.75)
-        }
-        .shadow(color: Color(hex: "3D437E").opacity(0.08), radius: 18, y: 6)
-        .accessibilityElement(children: .combine)
-    }
-
-    // MARK: - 离线标注
-
-    private var demoModeBanner: some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "wifi.slash")
-                .font(.system(size: 12, weight: .semibold))
-            Text("演示数据 · 离线降级（联网后自动切回真实 API）")
-                .font(.system(size: 12, weight: .semibold))
-            Spacer()
-        }
-        .foregroundColor(AppTheme.Colors.onSemantic)
-        .padding(AppTheme.Spacing.sm)
-        .background(AppTheme.Colors.securityYellow)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-    }
-
-    private var governanceReviewBanner: some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "checklist.unchecked")
-                .font(.system(size: 13, weight: .semibold))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("知识治理待复核")
-                    .font(.system(size: 12, weight: .bold))
-                Text("还有 \(pendingReviewCount) 篇知识未完成权限与准入确认，不会进入检索。")
-                    .font(.system(size: 11))
-            }
-            Spacer()
-        }
-        .foregroundColor(AppTheme.Colors.textPrimary)
-        .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.warningSurface)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-        .accessibilityElement(children: .combine)
-    }
-
-    private var basePublicKnowledgeSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("基础公共知识")
-                        .font(AppTheme.Typography.sectionTitle)
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("正式租户自动可用，不占黄色知识包额度")
-                        .font(AppTheme.Typography.supporting)
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                }
-                Spacer()
-                if let base = knowledgeAccess?.baseKnowledge {
-                    Text(base.isReady ? "已开放" : "建设中")
-                        .font(AppTheme.Typography.micro.weight(.semibold))
-                        .foregroundColor(base.isReady ? AppTheme.Colors.statusCompleted : AppTheme.Colors.statusWarning)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background((base.isReady ? AppTheme.Colors.successSurface : AppTheme.Colors.warningSurface))
-                        .clipShape(Capsule())
-                }
-            }
-
-            if let base = knowledgeAccess?.baseKnowledge, !base.isReady {
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                    Label("公共知识正在完成来源与权限复核", systemImage: "hammer.fill")
-                        .font(AppTheme.Typography.supporting.weight(.semibold))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                    ProgressView(
-                        value: Double(base.documentCount),
-                        total: Double(max(base.minimumDocumentCount, 1))
-                    )
-                    .tint(AppTheme.Colors.statusWarning)
-                    Text("当前 \(base.documentCount)/\(base.minimumDocumentCount) 篇 · 开放后会自动出现在这里，无需再次申请。")
-                        .font(AppTheme.Typography.micro)
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                }
-                .padding(AppTheme.Spacing.lg)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(AppTheme.Colors.warningSurface)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-            } else if publicCategories.isEmpty {
-                Text("尚无通过治理准入的绿色 K5 知识。")
-                    .font(AppTheme.Typography.supporting)
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                    .padding(AppTheme.Spacing.lg)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(AppTheme.Colors.secondaryBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-            } else {
-                LazyVStack(spacing: AppTheme.Spacing.sm) {
-                    ForEach(publicCategories) { category in
-                        Button { selectedCategory = category } label: {
-                            HStack(spacing: AppTheme.Spacing.md) {
-                                Image(systemName: "checkmark.seal.fill")
-                                    .foregroundColor(AppTheme.Colors.statusCompleted)
-                                    .frame(width: 40, height: 40)
-                                    .background(AppTheme.Colors.successSurface)
-                                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(category.title)
-                                        .font(AppTheme.Typography.supporting.weight(.semibold))
-                                        .foregroundColor(AppTheme.Colors.textPrimary)
-                                    Text("\(category.docCount) 篇 · 可直接用于聊天、Agent 与工作流")
-                                        .font(AppTheme.Typography.micro)
-                                        .foregroundColor(AppTheme.Colors.textSecondary)
-                                }
-                                Spacer()
-                                Image(systemName: "chevron.right")
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(AppTheme.Colors.textTertiary)
-                            }
-                            .padding(AppTheme.Spacing.md)
-                            .background(AppTheme.Colors.cardBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-                    }
-                }
-            }
-        }
-        .padding(AppTheme.Spacing.lg)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
-        }
-    }
-
-    // MARK: - 上层：类目订阅卡
-
-    private var subscribedCategories: [CatalogCategory] {
-        orderedCatalog.filter { subscriptions.contains($0.category) }
-    }
-
-    private var knowledgeWalletSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("知识钱包")
-                        .font(AppTheme.Typography.sectionTitle)
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("上下滑动卡组；加入钱包只影响默认检索优先级")
-                        .font(AppTheme.Typography.supporting)
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                }
-                Spacer()
-                Text("\(subscribedCategories.count) 张")
-                    .font(AppTheme.Typography.label)
-                    .foregroundColor(AppTheme.Colors.primary)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
+    private var workspaceHeader: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                Image(systemName: "note.text")
+                    .font(.system(size: 24, weight: .medium))
+                    .foregroundStyle(AppTheme.Icons.interactive)
+                    .frame(width: 48, height: 48)
                     .background(AppTheme.Colors.selectionTint)
-                    .clipShape(Capsule())
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Text("我的笔记空间")
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text("\(store.notes.count) 篇笔记 · \(store.allTags.count) 个标签 · 本地 Markdown")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
             }
 
-            if subscribedCategories.isEmpty {
-                emptySubscriptionsHint
-            } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    LazyVStack(spacing: -116) {
-                        ForEach(Array(subscribedCategories.enumerated()), id: \.element.id) { index, category in
-                            Button {
-                                #if os(iOS)
-                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                                #endif
-                                selectedCategory = category
-                            } label: {
-                                KnowledgeWalletCard(category: category, index: index)
-                            }
-                            .buttonStyle(SoftButtonStyle())
-                            .zIndex(Double(subscribedCategories.count - index))
-                            .accessibilityHint("双击抽出此知识库卡片")
-                        }
+            Button {
+                appState.navigateToChatWithPrompt("请基于我的本地笔记，帮我整理最近记录的重点和待办。")
+            } label: {
+                HStack(spacing: AppTheme.Spacing.md) {
+                    Image(systemName: "sparkles")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(AppTheme.Icons.intelligence)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("用 AI 整理笔记")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                        Text("切换到对话页并带入整理任务")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
-                    .padding(.horizontal, 2)
-                    .padding(.bottom, 116)
+                    Spacer(minLength: AppTheme.Spacing.sm)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
                 }
-                .frame(height: min(330, 184 + CGFloat(max(0, subscribedCategories.count - 1)) * 42))
-                .scrollClipDisabled()
+                .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("切换到对话页")
         }
+        .padding(.vertical, AppTheme.Spacing.lg)
+        .listRowInsets(pageInsets(vertical: AppTheme.Spacing.sm))
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
+        .accessibilityElement(children: .contain)
     }
 
-    private var categorySubscriptionSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            sectionHeader(icon: "square.grid.2x2.fill", title: "知识目录与权限")
-
-            if isLoadingCatalog && catalog.isEmpty {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, AppTheme.Spacing.xl)
-            } else {
-                LazyVStack(spacing: AppTheme.Spacing.sm) {
-                    ForEach(orderedCatalog) { cat in
-                        CategorySubscriptionCard(
-                            category: cat,
-                            isSubscribed: subscriptions.contains(cat.category),
-                            isLoading: walletBusyCategory == cat.category,
-                            onToggle: { toggleSubscription(cat) }
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - 下层：已订内容分组浏览
-
-    private var subscribedContentSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            sectionHeader(icon: "text.book.closed.fill", title: "钱包内容（按类目分组）")
-
-            if subscriptions.isEmpty {
-                emptySubscriptionsHint
-            } else if searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                subscribedCategoryOverview
-            } else if isSearching {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, AppTheme.Spacing.xl)
-            } else if groupedDocs.isEmpty {
-                emptySearchResult
-            } else {
-                ForEach(groupedDocs, id: \.category) { group in
-                    SearchGroupCard(category: group.category, docs: group.docs)
-                }
-            }
-        }
-    }
-
-    private var emptySubscriptionsHint: some View {
-        VStack(spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "plus.magnifyingglass")
-                .font(.system(size: 34))
-                .foregroundColor(AppTheme.Icons.tertiary)
-            Text("知识钱包还是空的")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(AppTheme.Colors.textSecondary)
-            Text("绿色公共知识默认可用；加入钱包后会优先参与聊天与工作流检索。")
-                .font(.system(size: 12))
-                .foregroundColor(AppTheme.Colors.textTertiary)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, AppTheme.Spacing.xl)
-    }
-
-    private var subscribedCategoryOverview: some View {
-        VStack(spacing: AppTheme.Spacing.sm) {
-            ForEach(orderedCatalog.filter { subscriptions.contains($0.category) }) { cat in
-                HStack(spacing: AppTheme.Spacing.sm) {
-                    Image(systemName: "folder.fill")
-                        .font(.system(size: 13))
-                        .foregroundColor(AppTheme.Icons.intelligence)
-                    Text(cat.title)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                    Spacer()
-                    Text("\(cat.docCount) 篇")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.textTertiary)
-                }
-                .padding(AppTheme.Spacing.md)
-                .background(AppTheme.Colors.surfaceElevated)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                        .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
-                }
-            }
-            Text("输入关键词搜索，结果将按已订类目分组展示。")
-                .font(.system(size: 12))
-                .foregroundColor(AppTheme.Colors.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .center)
-                .padding(.top, AppTheme.Spacing.xs)
-        }
-    }
-
-    private var emptySearchResult: some View {
-        VStack(spacing: AppTheme.Spacing.sm) {
-            Image(systemName: "doc.text.magnifyingglass")
-                .font(.system(size: 32))
-                .foregroundColor(AppTheme.Icons.tertiary)
-            Text("未找到相关已订阅内容")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(AppTheme.Colors.textSecondary)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, AppTheme.Spacing.xl)
-    }
-
-    private func sectionHeader(icon: String, title: String) -> some View {
-        HStack(spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 13))
-                .foregroundColor(AppTheme.Icons.intelligence)
-            Text(title)
-                .font(.system(size: 15, weight: .bold))
-                .foregroundColor(AppTheme.Colors.textPrimary)
-            Spacer()
-        }
-    }
-
-    // MARK: - Actions
-
-    private func initialLoad() async {
-        loadTask = Task {
-            isLoadingCatalog = true
-            do {
-                let response = try await api.fetchCatalog()
-                catalog = response.catalog
-                pendingReviewCount = response.pendingReviewCount ?? 0
-                knowledgeAccess = try? await api.fetchKnowledgeAccess()
-            } catch {
-                if api.isOfflineMode && catalog.isEmpty {
-                    catalog = Self.mockCatalog
-                } else {
-                    catalog = []
-                    pendingReviewCount = 0
-                    permissionMessage = "知识目录不可用或权限已经变化，请刷新后重试。"
-                    recoveryAction = .refreshCatalog
-                }
-                knowledgeAccess = try? await api.fetchKnowledgeAccess()
-            }
-            // 我的知识钱包（旧 subscriptions 接口仅作一个版本兼容）
-            if let subs = try? await api.fetchSubscriptions() {
-                let validCategories = Set(catalog.map(\.category))
-                subscriptions = Set(subs).intersection(validCategories)
-            } else if !catalog.isEmpty {
-                subscriptions = Set(catalog.filter { $0.inWallet == true }.map(\.category))
-            } else if subscriptions.isEmpty {
-                subscriptions = Set(Self.mockSubscriptions)
-            }
-            isLoadingCatalog = false
-        }
-        await loadTask?.value
-    }
-
-    private func toggleSubscription(_ cat: CatalogCategory) {
-        if cat.requiresKnowledgePack {
-            highlightedEntitlementKey = cat.entitlementKey
-            selectedCategory = nil
-            DispatchQueue.main.async { showingSubscriptionCenter = true }
-            return
-        }
-        guard walletBusyCategory == nil else { return }
-        #if os(iOS)
-        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-        #endif
-        if api.isOfflineMode {
-            // 离线：本地 Mock 切换
-            if subscriptions.contains(cat.category) {
-                subscriptions.remove(cat.category)
-            } else {
-                subscriptions.insert(cat.category)
-            }
-            return
-        }
-        loadTask = Task {
-            walletBusyCategory = cat.category
-            defer { walletBusyCategory = nil }
-            do {
-                let removing = subscriptions.contains(cat.category)
-                if subscriptions.contains(cat.category) {
-                    let subs = try await api.unsubscribe(category: cat.category)
-                    let validCategories = Set(catalog.map(\.category))
-                    subscriptions = Set(subs).intersection(validCategories)
-                } else {
-                    let subs = try await api.subscribe(category: cat.category)
-                    let validCategories = Set(catalog.map(\.category))
-                    subscriptions = Set(subs).intersection(validCategories)
-                }
-                showSuccess(removing ? "已移出知识钱包" : "已加入知识钱包")
-            } catch {
-                handleKnowledgeError(error, category: cat)
-            }
-        }
-    }
-
-    private func showSuccess(_ message: String) {
-        withAnimation(.easeOut(duration: 0.2)) { successMessage = message }
-        Task {
-            try? await Task.sleep(nanoseconds: 2_400_000_000)
-            await MainActor.run {
-                withAnimation(.easeIn(duration: 0.16)) { successMessage = nil }
-            }
-        }
-    }
-
-    private func handleKnowledgeError(_ error: Error, category: CatalogCategory? = nil) {
-        if let apiError = error as? APIError, let detail = apiError.actionable {
-            permissionMessage = detail.message
-            switch detail.action {
-            case "view_plans":
-                highlightedEntitlementKey = category?.entitlementKey
-                recoveryAction = .viewPlans
-            case "refresh_catalog", "refresh_permissions":
-                recoveryAction = .refreshCatalog
-            case "retry":
-                recoveryAction = .retry
-            default:
-                recoveryAction = .dismiss
-            }
-        } else {
-            permissionMessage = error.localizedDescription
-            recoveryAction = api.isOfflineMode ? .retry : .refreshCatalog
-        }
-    }
-
-    private func runSearch() async {
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else {
-            searchDocs = []
-            return
-        }
-        isSearching = true
-        defer { isSearching = false }
-        if api.isOfflineMode {
-            // 离线 Mock：按类目过滤演示结果
-            searchDocs = Self.mockDocs.filter {
-                $0.title.localizedCaseInsensitiveContains(q)
-                    || $0.snippet.localizedCaseInsensitiveContains(q)
-            }
-            return
-        }
-        do {
-            searchDocs = try await api.search(query: q)
-        } catch {
-            if api.isOfflineMode {
-                searchDocs = Self.mockDocs.filter {
-                    $0.title.localizedCaseInsensitiveContains(q)
-                        || $0.snippet.localizedCaseInsensitiveContains(q)
-                }
-            } else {
-                searchDocs = []
-                handleKnowledgeError(error)
-            }
-        }
-    }
-}
-
-// MARK: - Knowledge Wallet
-
-private struct KnowledgeWalletCard: View {
-    let category: CatalogCategory
-    let index: Int
-
-    private var palette: [Color] {
-        let palettes: [[Color]] = [
-            [Color(hex: "8D69EA"), Color(hex: "6C4FD6")],
-            [Color(hex: "55BEEB"), Color(hex: "467CE2")],
-            [Color(hex: "42D0C4"), Color(hex: "3199C9")],
-            [Color(hex: "D58BD3"), Color(hex: "8C63DE")]
-        ]
-        return palettes[index % palettes.count]
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            HStack(alignment: .top) {
-                Image(systemName: "books.vertical.fill")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(Color.white.opacity(0.18))
-                    .clipShape(Circle())
-                Spacer()
-                Text("QUANTUM KNOWLEDGE")
-                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                    .tracking(1.0)
-                    .foregroundColor(.white.opacity(0.76))
-            }
-
-            Spacer(minLength: 0)
-
-            Text(category.title)
-                .font(.system(size: 21, weight: .semibold, design: .rounded))
-                .foregroundColor(.white)
-                .lineLimit(1)
-
-            HStack {
-                Text("\(category.docCount) 篇文档")
-                Spacer()
-                Label(category.securityLabel, systemImage: category.securityIcon)
-            }
-            .font(AppTheme.Typography.micro)
-            .foregroundColor(.white.opacity(0.86))
-        }
-        .padding(AppTheme.Spacing.lg)
-        .frame(maxWidth: .infinity)
-        .frame(height: 184)
-        .background(
-            LinearGradient(colors: palette, startPoint: .topLeading, endPoint: .bottomTrailing)
-        )
-        .overlay(alignment: .topTrailing) {
-            Circle()
-                .fill(Color.white.opacity(0.12))
-                .frame(width: 150, height: 150)
-                .offset(x: 55, y: -70)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 26, style: .continuous)
-                .stroke(Color.white.opacity(0.36), lineWidth: 0.8)
-        }
-        .shadow(color: palette.last!.opacity(0.23), radius: 22, y: 11)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(category.title)，\(category.docCount) 篇文档，\(category.securityLabel)，已加入知识钱包")
-    }
-}
-
-private struct KnowledgeWalletDetail: View {
-    let category: CatalogCategory
-    let isSubscribed: Bool
-    let onToggle: () -> Void
-    let onDismiss: () -> Void
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var appeared = false
-
-    var body: some View {
-        ZStack {
-            QuantumMistBackground()
-
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: AppTheme.Spacing.xxl) {
-                    HStack {
-                        Button(action: onDismiss) {
-                            Image(systemName: "chevron.down")
-                                .font(.body.weight(.semibold))
-                                .foregroundColor(AppTheme.Colors.textPrimary)
-                                .minimumTouchTarget()
-                                .background(AppTheme.Colors.cardBackground)
-                                .clipShape(Circle())
-                        }
-                        .buttonStyle(SoftButtonStyle())
-                        Spacer()
-                        Text("知识库详情")
-                            .font(AppTheme.Typography.cardTitle)
-                            .foregroundColor(AppTheme.Colors.textPrimary)
-                        Spacer()
-                        Color.clear.frame(width: 44, height: 44)
-                    }
-
-                    KnowledgeWalletCard(category: category, index: category.category.count)
-                        .scaleEffect(appeared ? 1 : (reduceMotion ? 1 : 0.88))
-                        .offset(y: appeared ? 0 : (reduceMotion ? 0 : 72))
-                        .opacity(appeared ? 1 : 0)
-
-                    VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
-                        detailRow("安全等级", value: category.securityLabel, icon: category.securityIcon)
-                        detailRow("权限来源", value: category.permissionSource, icon: "key.fill")
-                        detailRow("钱包状态", value: isSubscribed ? "参与默认检索" : "未加入", icon: "checkmark.seal.fill")
-                        detailRow("内容规模", value: "\(category.docCount) 篇", icon: "doc.on.doc.fill")
-                        detailRow("知识成熟度", value: category.maturityLabel, icon: "chart.line.uptrend.xyaxis")
-                        detailRow("新鲜度", value: category.freshnessLabel, icon: "clock.badge.checkmark.fill")
-                        detailRow("来源证据", value: "\(category.sourceCount ?? 0) 条", icon: "link.badge.plus")
-
-                        Button(action: onToggle) {
-                            Label(category.walletActionLabel(isInWallet: isSubscribed), systemImage: isSubscribed ? "minus" : "plus")
-                        }
-                        .buttonStyle(QuantumPrimaryButtonStyle())
-                    }
-                    .padding(AppTheme.Spacing.xl)
-                    .background(AppTheme.Colors.cardBackground)
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-                    .overlay {
-                        RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                            .stroke(AppTheme.Colors.border, lineWidth: 0.75)
-                    }
-                }
-                .padding(.horizontal, AppTheme.Metrics.contentGutter)
-                .padding(.top, AppTheme.Spacing.lg)
-                .padding(.bottom, AppTheme.Spacing.xxxl)
-            }
-        }
-        .onAppear {
-            withAnimation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.82)) {
-                appeared = true
-            }
-        }
-    }
-
-    private func detailRow(_ title: String, value: String, icon: String) -> some View {
+    private var quickActions: some View {
         HStack(spacing: AppTheme.Spacing.md) {
-            Image(systemName: icon)
-                .foregroundColor(AppTheme.Icons.interactive)
+            quickAction(
+                title: "新建笔记",
+                subtitle: "空白 Markdown",
+                systemImage: "square.and.pencil",
+                action: createNote
+            )
+            quickAction(
+                title: "每日笔记",
+                subtitle: "记录今天",
+                systemImage: "calendar",
+                action: openDailyNote
+            )
+        }
+        .padding(.vertical, AppTheme.Spacing.sm)
+        .listRowInsets(pageInsets(vertical: 0))
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
+    }
+
+    private func quickAction(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                Image(systemName: systemImage)
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(AppTheme.Icons.interactive)
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+            .frame(maxWidth: .infinity, minHeight: 88, alignment: .leading)
+            .padding(AppTheme.Spacing.md)
+            .background(AppTheme.Colors.surfaceTint)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var tagFilter: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                tagButton(title: "全部标签", tag: nil)
+                ForEach(store.allTags, id: \.self) { tag in
+                    tagButton(title: "#\(tag)", tag: tag)
+                }
+            }
+            .padding(.vertical, AppTheme.Spacing.xs)
+        }
+        .listRowInsets(pageInsets(vertical: AppTheme.Spacing.xs))
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
+        .accessibilityLabel("标签筛选")
+    }
+
+    private func tagButton(title: String, tag: String?) -> some View {
+        let selected = selectedTag == tag
+        return Button {
+            withAnimation(AppTheme.Motion.quick) {
+                selectedTag = tag
+            }
+        } label: {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(selected ? AppTheme.Colors.onPrimary : AppTheme.Colors.textSecondary)
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                .background(selected ? AppTheme.Colors.primary : AppTheme.Colors.surfaceTint)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+
+    private var scopePicker: some View {
+        Picker("笔记范围", selection: $scope) {
+            ForEach(NoteScope.allCases) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+        .padding(.vertical, AppTheme.Spacing.sm)
+        .listRowInsets(pageInsets(vertical: 0))
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
+    }
+
+    private func noteSection(title: String, systemImage: String, notes: [KnowledgeNote]) -> some View {
+        Section {
+            ForEach(notes) { note in
+                NavigationLink(value: note.id) {
+                    KnowledgeNoteRow(note: note, backlinkCount: store.backlinks(to: note).count)
+                }
+                .buttonStyle(.plain)
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        store.togglePin(id: note.id)
+                    } label: {
+                        Label(note.isPinned ? "取消置顶" : "置顶", systemImage: note.isPinned ? "pin.slash" : "pin")
+                    }
+                    .tint(AppTheme.Colors.primary)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button(role: .destructive) {
+                        notePendingTrash = note
+                        showingTrashConfirmation = true
+                    } label: {
+                        Label("移到废纸篓", systemImage: "trash")
+                    }
+                }
+                .listRowInsets(EdgeInsets(
+                    top: AppTheme.Spacing.xs,
+                    leading: AppTheme.Metrics.contentGutter,
+                    bottom: AppTheme.Spacing.xs,
+                    trailing: AppTheme.Spacing.md
+                ))
+                .listRowBackground(AppTheme.Colors.cardBackground)
+            }
+        } header: {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .textCase(nil)
+        }
+    }
+
+    private var loadingRow: some View {
+        HStack(spacing: AppTheme.Spacing.md) {
+            ProgressView()
+            Text("正在读取本地笔记…")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+        .frame(minHeight: 120)
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("没有匹配的笔记", systemImage: "note.text")
+        } description: {
+            Text(searchText.isEmpty ? "创建第一篇笔记，或切换其他筛选范围。" : "请尝试其他关键词或标签。")
+        } actions: {
+            Button("新建笔记") { createNote() }
+                .buttonStyle(.borderedProminent)
+        }
+        .frame(minHeight: 260)
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
+    }
+
+    private func pageInsets(vertical: CGFloat) -> EdgeInsets {
+        EdgeInsets(
+            top: vertical,
+            leading: AppTheme.Metrics.contentGutter,
+            bottom: vertical,
+            trailing: AppTheme.Metrics.contentGutter
+        )
+    }
+
+    private func createNote() {
+        guard let note = store.createNote() else { return }
+        path.append(note.id)
+    }
+
+    private func openDailyNote() {
+        guard let note = store.dailyNote() else { return }
+        path.append(note.id)
+    }
+}
+
+private struct KnowledgeNoteRow: View {
+    let note: KnowledgeNote
+    let backlinkCount: Int
+
+    var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+            Image(systemName: note.isDailyNote ? "calendar" : "doc.text")
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(note.isDailyNote ? AppTheme.Icons.intelligence : AppTheme.Icons.interactive)
                 .frame(width: 40, height: 40)
+                .background(AppTheme.Colors.surfaceTint)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xs, style: .continuous))
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                HStack(alignment: .firstTextBaseline, spacing: AppTheme.Spacing.xs) {
+                    Text(note.title)
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if note.isPinned {
+                        Image(systemName: "pin.fill")
+                            .font(.caption2)
+                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                            .accessibilityLabel("已置顶")
+                    }
+                }
+
+                if !note.preview.isEmpty {
+                    Text(note.preview)
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(2)
+                }
+
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Text(note.updatedAt, style: .relative)
+                    if !note.tags.isEmpty {
+                        Text("·")
+                        Text(note.tags.prefix(2).map { "#\($0)" }.joined(separator: "  "))
+                    }
+                    if backlinkCount > 0 {
+                        Text("·")
+                        Label("\(backlinkCount)", systemImage: "link")
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+                .lineLimit(1)
+            }
+        }
+        .padding(.vertical, AppTheme.Spacing.sm)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(note.title)，\(note.tags.map { "标签 \($0)" }.joined(separator: "，"))")
+        .accessibilityHint("打开笔记")
+    }
+}
+
+private struct KnowledgeNoteEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var store = KnowledgeNoteStore.shared
+
+    let noteID: String
+
+    @State private var title = ""
+    @State private var noteContent = ""
+    @State private var selectedRange = NSRange(location: 0, length: 0)
+    @State private var tagsText = ""
+    @State private var isPinned = false
+    @State private var mode: NoteEditorMode = .edit
+    @State private var isLoaded = false
+    @State private var saveStatus = "已保存到本地"
+    @State private var saveTask: Task<Void, Never>?
+    @State private var showingTrashConfirmation = false
+    @FocusState private var titleFocused: Bool
+
+    private var note: KnowledgeNote? { store.note(id: noteID) }
+
+    var body: some View {
+        Group {
+            if let note {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
+                        editorHeader(note: note)
+                        Divider()
+                        modePicker
+
+                        if mode == .edit {
+                            formattingToolbar
+                            editorBody
+                        } else {
+                            NoteReadingView(content: noteContent)
+                        }
+
+                        relationSection(note: note)
+                    }
+                    .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
+                    .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                    .padding(.top, AppTheme.Spacing.lg)
+                    .padding(.bottom, 120)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .background(AppTheme.Colors.cardBackground)
+            } else {
+                ContentUnavailableView(
+                    "笔记不存在",
+                    systemImage: "doc.questionmark",
+                    description: Text("文件可能已被移动或删除。")
+                )
+            }
+        }
+        .navigationTitle(title.isEmpty ? "笔记" : title)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                if let note {
+                    ShareLink(item: note.fileURL) {
+                        Image(systemName: "square.and.arrow.up")
+                            .frame(width: AppTheme.Metrics.minimumTouchTarget, height: AppTheme.Metrics.minimumTouchTarget)
+                    }
+                    .accessibilityLabel("分享 Markdown 文件")
+                }
+
+                Menu {
+                    Button {
+                        isPinned.toggle()
+                        scheduleSave()
+                    } label: {
+                        Label(isPinned ? "取消置顶" : "置顶", systemImage: isPinned ? "pin.slash" : "pin")
+                    }
+                    Button(role: .destructive) {
+                        showingTrashConfirmation = true
+                    } label: {
+                        Label("移到废纸篓", systemImage: "trash")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .frame(width: AppTheme.Metrics.minimumTouchTarget, height: AppTheme.Metrics.minimumTouchTarget)
+                }
+                .accessibilityLabel("更多笔记操作")
+            }
+        }
+        .task(id: noteID) {
+            loadNote()
+        }
+        .onChange(of: title) { _, _ in scheduleSave() }
+        .onChange(of: noteContent) { _, _ in scheduleSave() }
+        .onChange(of: tagsText) { _, _ in scheduleSave() }
+        .onDisappear {
+            saveTask?.cancel()
+            saveNow()
+        }
+        .confirmationDialog(
+            "将这篇笔记移到废纸篓？",
+            isPresented: $showingTrashConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("移到废纸篓", role: .destructive) {
+                store.moveToTrash(id: noteID)
+                dismiss()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("文件会保留在 KnowledgeVault/.trash 中。")
+        }
+    }
+
+    private func editorHeader(note: KnowledgeNote) -> some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            Image(systemName: note.isDailyNote ? "calendar" : "note.text")
+                .font(.system(size: 30, weight: .medium))
+                .foregroundStyle(AppTheme.Icons.interactive)
+                .frame(width: 60, height: 60)
                 .background(AppTheme.Colors.selectionTint)
-                .clipShape(Circle())
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+                .accessibilityHidden(true)
+
+            TextField("无标题", text: $title, axis: .vertical)
+                .font(.largeTitle.weight(.bold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .textFieldStyle(.plain)
+                .focused($titleFocused)
+                .accessibilityLabel("笔记标题")
+
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Label(saveStatus, systemImage: saveStatus == "正在保存…" ? "arrow.triangle.2.circlepath" : "checkmark.circle")
+                Text("·")
+                Text(note.fileURL.lastPathComponent)
+                    .lineLimit(1)
+            }
+            .font(.caption)
+            .foregroundStyle(AppTheme.Colors.textTertiary)
+
+            HStack(alignment: .firstTextBaseline, spacing: AppTheme.Spacing.md) {
+                Label("标签", systemImage: "number")
+                    .font(.subheadline)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .frame(width: 72, alignment: .leading)
+                TextField("项目, 灵感", text: $tagsText)
+                    .font(.subheadline)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .accessibilityLabel("标签，用逗号分隔")
+            }
+        }
+    }
+
+    private var modePicker: some View {
+        Picker("显示模式", selection: $mode) {
+            ForEach(NoteEditorMode.allCases) { item in
+                Text(item.rawValue).tag(item)
+            }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    private var formattingToolbar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                formatButton("标题", systemImage: "textformat.size") { insertMarkdown("## 标题", selecting: "标题") }
+                formatButton("待办", systemImage: "checklist") { insertMarkdown("- [ ] 待办事项", selecting: "待办事项") }
+                formatButton("双链", systemImage: "link") { insertMarkdown("[[页面名称]]", selecting: "页面名称") }
+                formatButton("标签", systemImage: "number") { insertMarkdown("#标签", selecting: "标签") }
+                formatButton("提示", systemImage: "lightbulb") { insertMarkdown("> [!tip] 提示\n> 内容", selecting: "内容") }
+                formatButton("代码", systemImage: "chevron.left.forwardslash.chevron.right") { insertMarkdown("```\n代码\n```", selecting: "代码") }
+            }
+        }
+        .accessibilityLabel("Markdown 格式工具栏")
+    }
+
+    private func formatButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .padding(.horizontal, AppTheme.Spacing.md)
+                .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                .background(AppTheme.Colors.surfaceTint)
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var editorBody: some View {
+        MarkdownTextEditor(text: $noteContent, selectedRange: $selectedRange)
+            .frame(minHeight: 420, alignment: .topLeading)
+            .accessibilityLabel("Markdown 正文")
+            .overlay(alignment: .topLeading) {
+                if noteContent.isEmpty {
+                    Text("开始记录。输入 [[笔记名称]] 创建双向链接…")
+                        .font(.body)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .padding(.top, 8)
+                        .padding(.leading, 5)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private func relationSection(note: KnowledgeNote) -> some View {
+        let resolvedLinks = note.outgoingLinks.compactMap { store.note(matchingLink: $0) }
+        let backlinks = store.backlinks(to: note)
+        let unresolved = store.unresolvedLinks(in: note)
+
+        if !resolvedLinks.isEmpty || !backlinks.isEmpty || !unresolved.isEmpty {
+            Divider()
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+                Text("连接")
+                    .font(.title3.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                if !resolvedLinks.isEmpty {
+                    relationGroup(title: "链接到", systemImage: "arrow.up.right") {
+                        ForEach(resolvedLinks) { linked in
+                            NavigationLink(value: linked.id) {
+                                relationRow(title: linked.title, detail: linked.preview)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                if !backlinks.isEmpty {
+                    relationGroup(title: "反向链接", systemImage: "arrow.uturn.backward") {
+                        ForEach(backlinks) { linked in
+                            NavigationLink(value: linked.id) {
+                                relationRow(title: linked.title, detail: linked.preview)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+
+                if !unresolved.isEmpty {
+                    relationGroup(title: "尚未创建", systemImage: "questionmark.diamond") {
+                        ForEach(unresolved, id: \.self) { link in
+                            Button {
+                                if let created = store.createNote(title: link) {
+                                    noteContent = noteContent.replacingOccurrences(of: "[[\(link)]]", with: "[[\(created.title)]]")
+                                }
+                            } label: {
+                                HStack {
+                                    Text(link)
+                                    Spacer()
+                                    Label("创建", systemImage: "plus")
+                                        .font(.caption.weight(.semibold))
+                                }
+                                .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(AppTheme.Icons.interactive)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func relationGroup<Content: View>(
+        title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            content()
+        }
+    }
+
+    private func relationRow(title: String, detail: String) -> some View {
+        HStack(spacing: AppTheme.Spacing.md) {
+            Image(systemName: "doc.text")
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+                .frame(width: 28)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
-                    .font(AppTheme.Typography.micro)
-                    .foregroundColor(AppTheme.Colors.textTertiary)
-                Text(value)
-                    .font(AppTheme.Typography.supporting.weight(.semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                    .lineLimit(2)
-            }
-            Spacer()
-        }
-    }
-}
-
-// MARK: - 类目订阅卡
-
-public struct CategorySubscriptionCard: View {
-    public let category: CatalogCategory
-    public let isSubscribed: Bool
-    public let isLoading: Bool
-    public var onToggle: () -> Void
-
-    public var body: some View {
-        HStack(spacing: AppTheme.Spacing.md) {
-            Image(systemName: isSubscribed ? "folder.fill" : "folder")
-                .font(.system(size: 20))
-                .foregroundColor(isSubscribed ? AppTheme.Icons.intelligence : AppTheme.Icons.tertiary)
-                .frame(width: 30)
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(category.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textPrimary)
-                    .lineLimit(1)
-                Text("\(category.docCount) 篇 · \(category.maturityLabel) · \(category.freshnessLabel)")
-                    .font(.system(size: 11))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
-                    .lineLimit(1)
-                Label(category.permissionSource, systemImage: category.securityIcon)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-            }
-
-            Spacer()
-
-            Button(action: onToggle) {
-                HStack(spacing: 4) {
-                    if isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: category.requiresKnowledgePack ? "lock.fill" : (isSubscribed ? "checkmark" : "plus"))
-                            .font(.system(size: 11, weight: .bold))
-                    }
-                    Text(category.walletActionLabel(isInWallet: isSubscribed))
-                        .font(.system(size: 12, weight: .bold))
-                }
-                .foregroundColor(isSubscribed ? AppTheme.Icons.success : AppTheme.Icons.onAccent)
-                .padding(.horizontal, 12)
-                .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-                .background(
-                    isSubscribed
-                        ? AnyShapeStyle(AppTheme.Colors.successSurface)
-                        : AnyShapeStyle(AppTheme.Colors.primary)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-            }
-            .buttonStyle(SoftButtonStyle())
-            .disabled(isLoading)
-            .accessibilityLabel(isLoading ? "正在更新知识钱包" : category.walletActionLabel(isInWallet: isSubscribed))
-        }
-        .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
-        }
-    }
-}
-
-private extension CatalogCategory {
-    var securityLabel: String {
-        switch securityLevel {
-        case "red": return "红色 · 租户私有"
-        case "yellow": return "黄色 · 套餐受限"
-        default: return "绿色 · 公共知识"
-        }
-    }
-
-    var securityIcon: String {
-        switch securityLevel {
-        case "red": return "lock.shield.fill"
-        case "yellow": return "checkmark.shield.fill"
-        default: return "globe.asia.australia.fill"
-        }
-    }
-
-    var permissionSource: String {
-        switch subscriptionState ?? accessState {
-        case "pack_included": return "当前组织知识包已开通"
-        case "pack_available": return "可随平台套餐申请"
-        case "approval_pending": return "组织申请正在审批"
-        case "governance_pending": return "知识治理建设中"
-        case "public_available": return "正式租户默认可用"
-        case "included": return "当前组织套餐已包含"
-        case "upgrade_required": return "当前套餐未包含"
-        case "private": return "所属租户私有资产"
-        default: return "正式租户默认可用"
-        }
-    }
-
-    var maturityLabel: String {
-        switch knowledgeLevel {
-        case "K5": return "K5 · 正式知识"
-        case "K4": return "K4 · 已蒸馏"
-        default: return "未完成治理"
-        }
-    }
-
-    var freshnessLabel: String {
-        freshness == "stale" ? "需要复核" : "当前有效"
-    }
-
-    func walletActionLabel(isInWallet: Bool) -> String {
-        if requiresKnowledgePack { return "查看套餐" }
-        return isInWallet ? "已加入" : "加入钱包"
-    }
-
-    var requiresKnowledgePack: Bool {
-        subscriptionState == "pack_available" || accessState == "upgrade_required"
-    }
-}
-
-// MARK: - 搜索结果分组卡
-
-public struct SearchGroupCard: View {
-    public let category: String
-    public let docs: [SearchDoc]
-
-    public var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            HStack(spacing: 6) {
-                Image(systemName: "folder.fill")
-                    .font(.system(size: 11))
-                Text(category)
-                    .font(.system(size: 12, weight: .bold))
-                Spacer()
-                Text("\(docs.count) 篇")
-                    .font(.system(size: 11))
-                    .foregroundColor(AppTheme.Colors.textTertiary)
-            }
-            .foregroundColor(AppTheme.Colors.accent)
-
-            Divider()
-
-            ForEach(docs) { doc in
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(doc.title)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                if !detail.isEmpty {
+                    Text(detail)
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
                         .lineLimit(1)
-                    if !doc.snippet.isEmpty {
-                        Text(doc.snippet)
-                            .font(.system(size: 11))
-                            .foregroundColor(AppTheme.Colors.textSecondary)
-                            .lineLimit(2)
-                    }
                 }
-                .padding(.vertical, 2)
             }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textTertiary)
         }
-        .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+        .contentShape(Rectangle())
+    }
+
+    private func loadNote() {
+        guard let note else { return }
+        saveTask?.cancel()
+        title = note.title
+        noteContent = note.body
+        tagsText = note.tags.joined(separator: ", ")
+        isPinned = note.isPinned
+        saveStatus = "已保存到本地"
+        isLoaded = true
+        if note.title == "无标题" {
+            Task { @MainActor in titleFocused = true }
+        }
+    }
+
+    private func scheduleSave() {
+        guard isLoaded else { return }
+        saveTask?.cancel()
+        saveStatus = "正在保存…"
+        saveTask = Task {
+            try? await Task.sleep(nanoseconds: 650_000_000)
+            guard !Task.isCancelled else { return }
+            await MainActor.run { saveNow() }
+        }
+    }
+
+    private func saveNow() {
+        guard isLoaded else { return }
+        let tags = tagsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }
+            .filter { !$0.isEmpty }
+        if store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) != nil {
+            saveStatus = "已保存到本地"
+        } else {
+            saveStatus = "保存失败"
+        }
+    }
+
+    private func insertMarkdown(_ template: String, selecting placeholder: String) {
+        let source = noteContent as NSString
+        let location = min(max(selectedRange.location, 0), source.length)
+        let length = min(max(selectedRange.length, 0), source.length - location)
+        let range = NSRange(location: location, length: length)
+        let selectedText = source.substring(with: range)
+        let replacement: String
+
+        if !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            switch placeholder {
+            case "页面名称": replacement = "[[\(selectedText)]]"
+            case "标签": replacement = "#\(selectedText.replacingOccurrences(of: "#", with: ""))"
+            case "标题": replacement = "## \(selectedText)"
+            case "待办事项": replacement = "- [ ] \(selectedText)"
+            case "内容": replacement = "> \(selectedText)"
+            case "代码": replacement = "```\n\(selectedText)\n```"
+            default: replacement = template
+            }
+        } else {
+            replacement = template
+        }
+
+        noteContent = source.replacingCharacters(in: range, with: replacement)
+        if let placeholderRange = replacement.range(of: placeholder) {
+            let offset = replacement.utf16.distance(from: replacement.utf16.startIndex, to: placeholderRange.lowerBound)
+            selectedRange = NSRange(location: location + offset, length: placeholder.utf16.count)
+        } else {
+            selectedRange = NSRange(location: location + (replacement as NSString).length, length: 0)
+        }
     }
 }
 
-// MARK: - 离线 Mock 数据
+private struct MarkdownTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    @Binding var selectedRange: NSRange
 
-extension KnowledgeView {
-    static let mockCatalog: [CatalogCategory] = [
-        CatalogCategory(category: "knowledge/methodology/public", pathPrefix: "wiki/", title: "公共方法论", docCount: 18, open: true, securityLevel: "green", accessState: "available", inWallet: true, knowledgeLevel: "K5", classificationStatus: "approved", freshness: "current", sourceCount: 46),
-        CatalogCategory(category: "knowledge/competitor-topic/entitlement/premium-intelligence", pathPrefix: "wiki/", title: "专业竞品情报", docCount: 12, open: true, securityLevel: "yellow", entitlementKey: "premium-intelligence", accessState: "upgrade_required", inWallet: false, knowledgeLevel: "K5", classificationStatus: "approved", freshness: "current", sourceCount: 38),
-        CatalogCategory(category: "knowledge/customer/private/demo", pathPrefix: "wiki/", title: "租户私有客户知识", docCount: 6, open: true, securityLevel: "red", ownerTenant: "demo", accessState: "private", inWallet: true, knowledgeLevel: "K5", classificationStatus: "approved", freshness: "stale", sourceCount: 17),
-    ]
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    static let mockSubscriptions: [String] = ["knowledge/methodology/public", "knowledge/customer/private/demo"]
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.font = UIFont.preferredFont(forTextStyle: .body)
+        textView.adjustsFontForContentSizeCategory = true
+        textView.textColor = UIColor.label
+        textView.backgroundColor = .clear
+        textView.isScrollEnabled = true
+        textView.alwaysBounceVertical = false
+        textView.keyboardDismissMode = .interactive
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 4, bottom: 8, right: 4)
+        textView.accessibilityLabel = "Markdown 正文"
+        return textView
+    }
 
-    static let mockDocs: [SearchDoc] = [
-        SearchDoc(path: "wiki/方法论/模型观察.md", title: "模型观察", score: 12, snippet: "演示数据：正式 K5 知识摘要。", knowledgePack: "knowledge/methodology/public", knowledgeLevel: "K5", classificationStatus: "approved", securityLevel: "green", freshness: "current", sourceCount: 2),
-        SearchDoc(path: "wiki/客户/示例客户.md", title: "示例客户", score: 10, snippet: "演示数据：租户私有知识。", knowledgePack: "knowledge/customer/private/demo", knowledgeLevel: "K5", classificationStatus: "approved", securityLevel: "red", freshness: "current", sourceCount: 3),
-    ]
+    func updateUIView(_ textView: UITextView, context: Context) {
+        if textView.text != text { textView.text = text }
+        let safeLocation = min(max(selectedRange.location, 0), textView.text.utf16.count)
+        let safeLength = min(max(selectedRange.length, 0), textView.text.utf16.count - safeLocation)
+        let safeRange = NSRange(location: safeLocation, length: safeLength)
+        if textView.selectedRange != safeRange { textView.selectedRange = safeRange }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var parent: MarkdownTextEditor
+
+        init(_ parent: MarkdownTextEditor) { self.parent = parent }
+
+        func textViewDidChange(_ textView: UITextView) {
+            parent.text = textView.text
+            parent.selectedRange = textView.selectedRange
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            parent.selectedRange = textView.selectedRange
+        }
+    }
 }
 
-// MARK: - Xcode #Preview
+private struct NoteReadingView: View {
+    let content: String
 
-#Preview("KnowledgeView - Light") {
+    private var blocks: [NoteReadingBlock] {
+        NoteReadingBlock.parse(content)
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            if blocks.isEmpty {
+                Text("这篇笔记还没有正文。")
+                    .font(.body)
+                    .foregroundStyle(AppTheme.Colors.textTertiary)
+            } else {
+                ForEach(blocks) { block in
+                    block.view
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .textSelection(.enabled)
+    }
+}
+
+private enum NoteReadingBlock: Identifiable {
+    case heading(level: Int, text: String, id: UUID = UUID())
+    case paragraph(String, id: UUID = UUID())
+    case list([String], ordered: Bool, id: UUID = UUID())
+    case quote(String, id: UUID = UUID())
+    case callout(type: String, title: String, text: String, id: UUID = UUID())
+    case code(String, id: UUID = UUID())
+    case divider(id: UUID = UUID())
+
+    var id: UUID {
+        switch self {
+        case .heading(_, _, let id), .paragraph(_, let id), .list(_, _, let id), .quote(_, let id),
+             .callout(_, _, _, let id), .code(_, let id), .divider(let id): return id
+        }
+    }
+
+    @ViewBuilder
+    var view: some View {
+        switch self {
+        case .heading(let level, let text, _):
+            Text(inlineMarkdown(text))
+                .font(level == 1 ? .title.weight(.bold) : level == 2 ? .title2.weight(.bold) : .title3.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .padding(.top, level <= 2 ? AppTheme.Spacing.sm : 0)
+        case .paragraph(let text, _):
+            Text(inlineMarkdown(text))
+                .font(.body)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .lineSpacing(5)
+                .fixedSize(horizontal: false, vertical: true)
+        case .list(let items, let ordered, _):
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                    HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                        if item.hasPrefix("[ ] ") || item.hasPrefix("[x] ") {
+                            Image(systemName: item.hasPrefix("[x]") ? "checkmark.square.fill" : "square")
+                                .foregroundStyle(AppTheme.Icons.interactive)
+                        } else {
+                            Text(ordered ? "\(index + 1)." : "•")
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .frame(width: 22, alignment: .trailing)
+                        }
+                        Text(inlineMarkdown(item.replacingOccurrences(of: #"^\[[ xX]\]\s*"#, with: "", options: .regularExpression)))
+                            .font(.body)
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+        case .quote(let text, _):
+            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                Rectangle()
+                    .fill(AppTheme.Colors.border)
+                    .frame(width: 3)
+                Text(inlineMarkdown(text))
+                    .font(.body.italic())
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        case .callout(_, let title, let text, _):
+            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                Image(systemName: "lightbulb")
+                    .foregroundStyle(AppTheme.Icons.intelligence)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Text(title)
+                        .font(.subheadline.weight(.semibold))
+                    Text(inlineMarkdown(text))
+                        .font(.subheadline)
+                        .lineSpacing(3)
+                }
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+            }
+            .padding(AppTheme.Spacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(AppTheme.Colors.surfaceTint)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+        case .code(let code, _):
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(code)
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(AppTheme.Colors.codeSyntaxForeground)
+                    .padding(AppTheme.Spacing.md)
+            }
+            .background(AppTheme.Colors.codeBlockBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+        case .divider:
+            Divider()
+        }
+    }
+
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        let wikilinks = text.replacingOccurrences(
+            of: #"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]"#,
+            with: "$2$1",
+            options: .regularExpression
+        )
+        return (try? AttributedString(markdown: wikilinks)) ?? AttributedString(wikilinks)
+    }
+
+    static func parse(_ source: String) -> [NoteReadingBlock] {
+        let lines = source.components(separatedBy: .newlines)
+        var result: [NoteReadingBlock] = []
+        var paragraph: [String] = []
+        var list: [String] = []
+        var ordered = false
+        var code: [String] = []
+        var inCode = false
+        var index = 0
+
+        func flushParagraph() {
+            if !paragraph.isEmpty {
+                result.append(.paragraph(paragraph.joined(separator: "\n")))
+                paragraph.removeAll()
+            }
+        }
+        func flushList() {
+            if !list.isEmpty {
+                result.append(.list(list, ordered: ordered))
+                list.removeAll()
+            }
+        }
+
+        while index < lines.count {
+            let raw = lines[index]
+            let line = raw.trimmingCharacters(in: .whitespaces)
+
+            if inCode {
+                if line.hasPrefix("```") {
+                    result.append(.code(code.joined(separator: "\n")))
+                    code.removeAll()
+                    inCode = false
+                } else {
+                    code.append(raw)
+                }
+                index += 1
+                continue
+            }
+
+            if line.hasPrefix("```") {
+                flushParagraph(); flushList(); inCode = true; index += 1; continue
+            }
+            if line == "---" || line == "***" {
+                flushParagraph(); flushList(); result.append(.divider()); index += 1; continue
+            }
+            if line.hasPrefix("#") {
+                flushParagraph(); flushList()
+                let level = min(line.prefix(while: { $0 == "#" }).count, 3)
+                result.append(.heading(level: level, text: line.dropFirst(level).trimmingCharacters(in: .whitespaces)))
+                index += 1; continue
+            }
+            if line.hasPrefix("> [!") {
+                flushParagraph(); flushList()
+                let close = line.firstIndex(of: "]")
+                let type = close.map { String(line[line.index(line.startIndex, offsetBy: 4)..<$0]) } ?? "note"
+                let title = close.map { String(line[line.index(after: $0)...]).trimmingCharacters(in: .whitespaces) } ?? "提示"
+                var content: [String] = []
+                var cursor = index + 1
+                while cursor < lines.count, lines[cursor].trimmingCharacters(in: .whitespaces).hasPrefix(">") {
+                    content.append(String(lines[cursor].trimmingCharacters(in: .whitespaces).dropFirst()).trimmingCharacters(in: .whitespaces))
+                    cursor += 1
+                }
+                result.append(.callout(type: type, title: title.isEmpty ? type.capitalized : title, text: content.joined(separator: "\n")))
+                index = cursor; continue
+            }
+            if line.hasPrefix(">") {
+                flushParagraph(); flushList()
+                result.append(.quote(String(line.dropFirst()).trimmingCharacters(in: .whitespaces)))
+                index += 1; continue
+            }
+            if line.hasPrefix("- ") || line.hasPrefix("* ") {
+                flushParagraph()
+                if list.isEmpty { ordered = false }
+                list.append(String(line.dropFirst(2)))
+                index += 1; continue
+            }
+            if let match = line.range(of: #"^\d+[.)]\s+"#, options: .regularExpression) {
+                flushParagraph()
+                if list.isEmpty { ordered = true }
+                list.append(String(line[match.upperBound...]))
+                index += 1; continue
+            }
+            if line.isEmpty {
+                flushParagraph(); flushList(); index += 1; continue
+            }
+
+            flushList()
+            paragraph.append(raw)
+            index += 1
+        }
+
+        if inCode { result.append(.code(code.joined(separator: "\n"))) }
+        flushParagraph(); flushList()
+        return result
+    }
+}
+
+#Preview("Knowledge Notes") {
     KnowledgeView()
         .environmentObject(AppState())
         .environmentObject(APIClient.shared)
-}
-
-#Preview("KnowledgeView - Dark") {
-    KnowledgeView()
-        .environmentObject(AppState())
-        .environmentObject(APIClient.shared)
-        .preferredColorScheme(.dark)
 }

@@ -34,9 +34,6 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationPortrait
-        # ATS：内测直连云端明文 HTTP 必需（嵌套字典 INFOPLIST_KEY_ 无法表达，必须显式 Info.plist）
-        NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ailab.AIPlatformApp
@@ -47,4 +44,21 @@ targets:
         CODE_SIGNING_ALLOWED: NO
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: YES
     scheme:
-      testTargets: []
+      testTargets:
+        - AIPlatformAppTests
+
+  AIPlatformAppTests:
+    type: bundle.unit-test
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - AIPlatformAppTests
+    dependencies:
+      - target: AIPlatformApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ailab.AIPlatformAppTests
+        SWIFT_VERSION: "5.9"
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO

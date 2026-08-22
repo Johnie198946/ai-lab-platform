@@ -1148,11 +1148,13 @@ public final class AppState: ObservableObject {
     public init(
         isLoggedIn: Bool = true,
         isGuestMode: Bool = false,
-        currentProfile: TenantProfile = MockData.tenantProfile
+        currentProfile: TenantProfile = MockData.tenantProfile,
+        activeTab: Int = 0
     ) {
         self.isLoggedIn = isLoggedIn
         self.isGuestMode = isGuestMode
         self.currentProfile = currentProfile
+        self.activeTab = activeTab
     }
     
     public func loginAsGuest() {
