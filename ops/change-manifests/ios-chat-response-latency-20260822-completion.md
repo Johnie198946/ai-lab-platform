@@ -7,6 +7,8 @@
   - `ios/AIPlatformApp/Networking/APIClient.swift`
   - `scripts/hermes_bridge.py`
   - `tests/test_chat_stream_api.py`
+  - `backend/services/user_note_context.py`
+  - iOS 本地笔记上下文与 UI DTO 兼容文件
   - `ops/change-manifests/ios-chat-response-latency-20260822-completion.md`
 
 ## 开工前 Git 盘点
@@ -14,7 +16,7 @@
 - 原工作区 status: `codex/showroom-visitor-session-v17` 存在多项其他任务的已修改和未跟踪文件；本任务未触碰这些改动。
 - 本任务 branch: `codex/ios-chat-response-latency`
 - 本任务 worktree: `/private/tmp/ai-lab-ios-chat-response-latency`
-- 起始 HEAD: `70aa5cb42eec9637c18ac24bfed00ed822d2c198`
+- 起始 HEAD: `70aa5cb42eec9637c18ac24bfed00ed822d2c198`（随后按要求基于 `origin/main=9532879` 重放）
 - remote: `origin https://github.com/Johnie198946/ai-lab-platform.git`
 - worktree: 已通过 `git worktree list --porcelain` 确认本任务使用独立 Worktree。
 
@@ -30,7 +32,7 @@
 
 ## 测试与校验
 
-- `PYTHONPATH=. pytest -q tests/test_chat_stream_api.py tests/test_chat_api.py tests/test_bridge_locking.py tests/test_knowledge_policy_v2.py`: `53 passed`。
+- `PYTHONPATH=. pytest -q tests/test_chat_stream_api.py tests/test_chat_api.py tests/test_chat_agent_routing.py tests/test_knowledge_policy_v2.py tests/test_user_note_context.py tests/test_knowledge_sync_api.py`: `59 passed`。
 - `python3 -m py_compile backend/api/chat.py scripts/hermes_bridge.py`: 通过。
 - `git diff --check`: 通过。
 - `xcodebuild -quiet -project ios/AIPlatformApp.xcodeproj -scheme AIPlatformApp -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`: 通过。
@@ -38,20 +40,20 @@
 
 ## 交付状态
 
-- 当前状态: `TESTED`（提交、推送和部署证据将在执行后补记）。
-- commit SHA: 待提交。
-- GitHub remote/ref/SHA: 待推送并执行 `git ls-remote` 核验。
+- 当前状态: `VERIFIED`。
+- commit SHA: `bfc7819abdcc314435135111067c8dd9b3c63f3b`。
+- GitHub remote/ref/SHA: `origin refs/heads/main bfc7819abdcc314435135111067c8dd9b3c63f3b`；任务分支同 SHA，已用 `git ls-remote` 核验。
 
 ## 部署与回滚
 
 - server_before: API `{"status":"ok","version":"0.8.0"}`；Bridge `status=ok/version=v6.0`；`chat.py sha256=877498f9...`，`hermes_bridge.py sha256=f4782f4a...`。
-- server_after: 待部署后补记。
-- health_check: 待部署后补记。
-- functional_check: 本地 API 定向测试与 iOS 模拟器编译通过；线上功能检查未执行。
-- rollback_point: 未部署，不适用；本地变更可按本 manifest 列出的文件逐项撤销。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=bfc7819abdcc314435135111067c8dd9b3c63f3b`；API `chat.py sha256=d672ae17e7e4cb602f9a0e265007bf680d5d9b0005dd3617352941bb7dfaa80c`；Bridge `hermes_bridge.py sha256=5b6c3582b7f290d72826448ff657247b744c666379b4188aac01eb7eed820872`，均与本地提交一致。
+- health_check: API `{"status":"ok","version":"0.8.0"}`；Bridge `{"status":"ok","service":"hermes-bridge","version":"v6.0",...}`；`hermes-bridge.service` active (running)；runtime contract audit passed。
+- functional_check: 59 项定向回归测试通过；生产 Hermes 运行时只读注册表兼容探针已通过；部署后 API/Bridge 健康检查通过。首次 Bridge 重启在实例池预热期间短暂未响应，预热完成后复核通过。
+- rollback_point: `/opt/ai-lab-rollbacks/ios-chat-response-latency-20260822-145321`，包含部署前 `chat.py`、`hermes_bridge.py`、`docker-compose.yml`、服务状态、镜像 ID 与哈希记录。
 
 ## 风险与未完成项
 
 - 尚未在真实 iPhone、移动网络上采集端到端 TTFB，因此无法预先给出缩短秒数。
 - 权限策略解析仍位于首个 SSE 帧之前，以保留准确的租户/策略会话 ID 响应头。
-- 提交、推送、部署和远端功能检查待执行。
+- 全量 pytest 未执行成功：本地环境存在与任务无关的 Starlette TestClient/httpx 版本不兼容；定向测试与编译校验均通过。
