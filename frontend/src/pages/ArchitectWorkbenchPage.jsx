@@ -3,16 +3,22 @@ import { ReactFlow } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Check, ChevronDown, GitBranch, LogOut, Play, Plus, RefreshCw } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
+import { isShowroomAccount } from "../auth/entryRoute";
 import { platformApi } from "../services/platformApi";
 import {
+  architectSearchWithView,
+  architectViewFromSearch,
+  architectWorkflowForContext,
   canStartWorkflow,
   customerDemandIdFromSearch,
   pollExecutionUntilTerminal,
   pollForNewPlan,
   projectPlanToCanvas,
   projectPlanToReactFlow,
+  projectOfficeProjection,
   showroomSessionIdFromSearch,
 } from "../architectContract";
+import ProjectOfficeView from "../features/project-office/ProjectOfficeView";
 import "./ArchitectWorkbenchPage.css";
 
 const STATUS_COPY = {
@@ -57,6 +63,8 @@ function DetailDrawer({ title, count, children }) {
 
 export default function ArchitectPage() {
   const { isAuthenticated, authSession, logout } = useAuth();
+  const defaultArchitectView = isShowroomAccount(authSession?.user) ? "office" : "workbench";
+  const [architectView, setArchitectView] = useState(() => architectViewFromSearch(window.location.search, defaultArchitectView));
   const showroomSessionId = useMemo(() => showroomSessionIdFromSearch(window.location.search), []);
   const customerDemandId = useMemo(() => customerDemandIdFromSearch(window.location.search), []);
   const [workflows, setWorkflows] = useState([]);
@@ -71,6 +79,7 @@ export default function ArchitectPage() {
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [connectionState, setConnectionState] = useState("SYNCING");
   const activeWorkflowIdRef = useRef("");
 
   const planDsl = plan?.dsl || plan || null;
@@ -86,6 +95,16 @@ export default function ArchitectPage() {
   const recentEvents = listValue(executionEvents).slice(-6);
   const toolEvents = listValue(executionEvents).filter((event) => ["tool_start", "tool_complete", "skill_load", "agent_spawn"].includes(event.event_type || event.type));
   const tokenTotal = Number(execution?.input_tokens || 0) + Number(execution?.output_tokens || 0) + Number(execution?.reasoning_tokens || 0);
+  const officeProjection = useMemo(
+    () => projectOfficeProjection({ workflow, plan, execution, events: executionEvents, artifacts, connectionState }),
+    [workflow, plan, execution, executionEvents, artifacts, connectionState],
+  );
+
+  const switchArchitectView = (view) => {
+    const search = architectSearchWithView(window.location.search, view);
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
+    setArchitectView(view);
+  };
 
   const resumeExecution = async (executionId, workflowId) => {
     try {
@@ -95,16 +114,21 @@ export default function ArchitectPage() {
         getExecutionArtifacts: platformApi.getExecutionArtifacts,
         onUpdate: ({ execution: nextExecution, events }) => {
           if (activeWorkflowIdRef.current !== workflowId) return;
+          setConnectionState("CONNECTED");
           setExecution(nextExecution);
           setExecutionEvents(events);
         },
       });
       if (activeWorkflowIdRef.current !== workflowId) return;
+      setConnectionState("CONNECTED");
       setExecution(result.execution);
       setExecutionEvents(result.events);
       setArtifacts(result.artifacts);
     } catch (nextError) {
-      if (activeWorkflowIdRef.current === workflowId) setError(nextError.message || "执行状态读取失败");
+      if (activeWorkflowIdRef.current === workflowId) {
+        setConnectionState("UNCONNECTED");
+        setError(nextError.message || "执行状态读取失败");
+      }
     }
   };
 
@@ -120,6 +144,7 @@ export default function ArchitectPage() {
     setEvidenceReport(null);
     setError("");
     if (!id) return;
+    setConnectionState("SYNCING");
     setBusy(true);
     try {
       const [workflowData, clarificationData, planData] = await Promise.all([
@@ -129,6 +154,7 @@ export default function ArchitectPage() {
       ]);
       if (activeWorkflowIdRef.current !== id) return;
       const loaded = workflowData.workflow || workflowData;
+      setConnectionState("CONNECTED");
       setWorkflow(loaded);
       setClarification(clarificationData);
       setPlan(planData);
@@ -157,7 +183,10 @@ export default function ArchitectPage() {
         if (["queued", "running"].includes(fullExecution.status)) void resumeExecution(fullExecution.id, id);
       }
     } catch (nextError) {
-      if (activeWorkflowIdRef.current === id) setError(nextError.message || "无法读取工作台");
+      if (activeWorkflowIdRef.current === id) {
+        setConnectionState("UNCONNECTED");
+        setError(nextError.message || "无法读取工作台");
+      }
     } finally {
       if (activeWorkflowIdRef.current === id) setBusy(false);
     }
@@ -168,8 +197,14 @@ export default function ArchitectPage() {
       const rows = data.workflows || data || [];
       const architectRows = rows.filter((item) => item.clarification_session_id);
       setWorkflows(architectRows);
-      if (architectRows[0]) loadWorkflow(architectRows[0].id);
-    }).catch(() => setWorkflows([]));
+      setConnectionState("CONNECTED");
+      const selected = architectWorkflowForContext(architectRows, { customerDemandId, showroomSessionId });
+      if (selected) loadWorkflow(selected.id);
+    }).catch((nextError) => {
+      setWorkflows([]);
+      setConnectionState("UNCONNECTED");
+      setError(nextError.message || "无法读取任务列表");
+    });
   }, []);
 
   const create = async (event) => {
@@ -245,10 +280,10 @@ export default function ArchitectPage() {
     <main className="architect-page">
       <header className="architect-topbar">
         <div className="brand-lockup"><span className="quantum-mark" /><strong>AI Lab</strong><span>共创工作台</span></div>
-        <div className="topbar-actions"><span className="connection-state">{isAuthenticated ? "已连接" : "未连接"}</span><span>{authSession?.user?.username || "account"}</span><button type="button" onClick={logout} aria-label="退出"><LogOut size={16} /></button></div>
+        <div className="topbar-actions"><div className="architect-view-toggle" aria-label="Architect 视图"><button type="button" className={architectView === "office" ? "is-active" : ""} aria-pressed={architectView === "office"} onClick={() => switchArchitectView("office")}>Office</button><button type="button" className={architectView === "workbench" ? "is-active" : ""} aria-pressed={architectView === "workbench"} onClick={() => switchArchitectView("workbench")}>Workbench</button></div><span className="connection-state">{isAuthenticated ? "已登录" : "未登录"}</span><span>{authSession?.user?.username || "account"}</span><button type="button" onClick={logout} aria-label="退出"><LogOut size={16} /></button></div>
       </header>
 
-      <div className="workbench-layout">
+      {architectView === "office" ? <ProjectOfficeView projection={officeProjection} error={error} busy={busy} onSwitchToWorkbench={() => switchArchitectView("workbench")} /> : <div className="workbench-layout">
         <aside className="workbench-nav">
           <button className="new-task" type="button" onClick={() => loadWorkflow("")}><Plus size={16} />新任务</button>
           <label htmlFor="workflow-select">当前任务</label>
@@ -308,7 +343,7 @@ export default function ArchitectPage() {
         </section>
 
         <aside className="explain-panel"><span className="eyebrow">解释 AI</span><h2>为什么是这一步？</h2><p>{explainContext?.why_this_step || stageReason}</p>{explainContext && <small>Snapshot {explainContext.snapshot_id.slice(0, 10)}</small>}<div><strong>系统不会做什么</strong><ul><li>不展示隐藏思维链</li><li>不绕过人工批准</li><li>不把参考流程标成 LIVE</li></ul></div><button type="button" onClick={() => workflow && loadWorkflow(workflow.id)} disabled={busy}><RefreshCw size={15} />刷新真实状态</button></aside>
-      </div>
+      </div>}
     </main>
   );
 }
