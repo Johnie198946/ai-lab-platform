@@ -1974,6 +1974,31 @@ public final class APIClient: ObservableObject {
         )
     }
 
+    public func archiveKnowledgeNote(id: String, mergedIntoNoteId: String) async throws {
+        struct Body: Encodable {
+            let mergedIntoNoteId: String
+            enum CodingKeys: String, CodingKey { case mergedIntoNoteId = "merged_into_note_id" }
+        }
+        struct Response: Decodable { let archiveStatus: String }
+        let _: Response = try await request(
+            Response.self,
+            path: "me/knowledge-notes/\(encodedPath(id))/archive",
+            method: "POST",
+            body: Body(mergedIntoNoteId: mergedIntoNoteId)
+        )
+    }
+
+    public func restoreKnowledgeNote(id: String) async throws {
+        struct Body: Encodable {}
+        struct Response: Decodable { let archiveStatus: String }
+        let _: Response = try await request(
+            Response.self,
+            path: "me/knowledge-notes/\(encodedPath(id))/restore",
+            method: "POST",
+            body: Body()
+        )
+    }
+
     /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
     /// Task.cancel 传播中断客户端等待；404 可区分（清 session_id 幂等重发一次），超时单独抛 `.timeout`）。
     public func chat(
@@ -2047,7 +2072,7 @@ public final class APIClient: ObservableObject {
         case clarifyRejected
         case status(phase: String, detail: String)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
-        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?)
+        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String])
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -2102,6 +2127,15 @@ public final class APIClient: ObservableObject {
                     delegatedBy: json["delegated_by"] as? String
                 )
             case "note_draft":
+                let mergeCandidates = (json["merge_candidates"] as? [[String: Any]] ?? []).compactMap { item -> NoteMergeCandidate? in
+                    guard let id = item["id"] as? String, !id.isEmpty else { return nil }
+                    return NoteMergeCandidate(
+                        id: id,
+                        title: item["title"] as? String ?? "无标题",
+                        snippet: item["snippet"] as? String ?? "",
+                        updatedAt: item["updated_at"] as? String
+                    )
+                }
                 return .noteDraft(
                     id: json["draft_id"] as? String ?? "",
                     title: json["title"] as? String ?? "无标题",
@@ -2109,7 +2143,11 @@ public final class APIClient: ObservableObject {
                     tags: json["tags"] as? [String] ?? [],
                     sourceSessionId: json["source_session_id"] as? String,
                     sourceMessageIds: json["source_message_ids"] as? [String] ?? [],
-                    accountScope: json["account_scope"] as? String
+                    accountScope: json["account_scope"] as? String,
+                    mergeCandidates: mergeCandidates,
+                    mergedTitle: json["merged_title"] as? String,
+                    mergedMarkdown: json["merged_markdown"] as? String,
+                    mergedTags: json["merged_tags"] as? [String] ?? []
                 )
             case "done":
                 return .done(

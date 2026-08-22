@@ -21,6 +21,28 @@ public struct KnowledgeNote: Identifiable, Hashable, Sendable {
     public var isPinned: Bool
     public var fileURL: URL
     public var outgoingLinks: [String]
+    public var archivedAt: Date?
+    public var mergedIntoNoteId: String?
+
+    public init(
+        id: String, title: String, body: String, tags: [String], aliases: [String],
+        createdAt: Date, updatedAt: Date, isPinned: Bool, fileURL: URL,
+        outgoingLinks: [String], archivedAt: Date? = nil,
+        mergedIntoNoteId: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.body = body
+        self.tags = tags
+        self.aliases = aliases
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.isPinned = isPinned
+        self.fileURL = fileURL
+        self.outgoingLinks = outgoingLinks
+        self.archivedAt = archivedAt
+        self.mergedIntoNoteId = mergedIntoNoteId
+    }
 
     public var preview: String {
         var text = body
@@ -54,6 +76,7 @@ public final class KnowledgeNoteStore: ObservableObject {
     public static let shared = KnowledgeNoteStore()
 
     @Published public private(set) var notes: [KnowledgeNote] = []
+    @Published public private(set) var archivedNotes: [KnowledgeNote] = []
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
 
@@ -80,6 +103,10 @@ public final class KnowledgeNoteStore: ObservableObject {
         Array(Set(notes.flatMap(\.tags))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
+    public var archiveDirectory: URL {
+        vaultDirectory.appendingPathComponent(".archive", isDirectory: true)
+    }
+
     private init() {}
 
     public func activate(tenantKey: String, userId: String) {
@@ -87,6 +114,7 @@ public final class KnowledgeNoteStore: ObservableObject {
         let user = Self.namespace(userId)
         guard tenant != tenantNamespace || user != userNamespace else { return }
         notes.removeAll()
+        archivedNotes.removeAll()
         tenantNamespace = tenant
         userNamespace = user
         accountFingerprint = "\(tenant):\(user)"
@@ -95,6 +123,7 @@ public final class KnowledgeNoteStore: ObservableObject {
 
     public func deactivate() {
         notes.removeAll()
+        archivedNotes.removeAll()
         tenantNamespace = "unconfigured"
         userNamespace = "unconfigured"
         accountFingerprint = "unconfigured"
@@ -113,6 +142,7 @@ public final class KnowledgeNoteStore: ObservableObject {
         do {
             try fileManager.createDirectory(at: vaultDirectory, withIntermediateDirectories: true)
             var loaded: [KnowledgeNote] = []
+            var archived: [KnowledgeNote] = []
             if let enumerator = fileManager.enumerator(
                 at: vaultDirectory,
                 includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
@@ -121,12 +151,17 @@ public final class KnowledgeNoteStore: ObservableObject {
                 for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
                     guard !url.path.contains("/.trash/") else { continue }
                     if let note = try parseNote(at: url) {
-                        loaded.append(note)
+                        if url.path.contains("/.archive/") {
+                            archived.append(note)
+                        } else {
+                            loaded.append(note)
+                        }
                     }
                 }
             }
 
             notes = sorted(loaded)
+            archivedNotes = sorted(archived)
             lastError = nil
         } catch {
             lastError = "无法读取本地笔记：\(error.localizedDescription)"
@@ -255,6 +290,55 @@ public final class KnowledgeNoteStore: ObservableObject {
         }
     }
 
+    /// Merged source notes remain recoverable but are excluded from active search and sync.
+    @discardableResult
+    public func archive(id: String, mergedInto: String) -> KnowledgeNote? {
+        guard let index = notes.firstIndex(where: { $0.id == id }) else {
+            return archivedNotes.first { $0.id == id }
+        }
+        var note = notes[index]
+        do {
+            try fileManager.createDirectory(at: archiveDirectory, withIntermediateDirectories: true)
+            var destination = archiveDirectory.appendingPathComponent(note.fileURL.lastPathComponent)
+            if fileManager.fileExists(atPath: destination.path) {
+                destination = archiveDirectory.appendingPathComponent("\(note.id)-\(note.fileURL.lastPathComponent)")
+            }
+            try fileManager.moveItem(at: note.fileURL, to: destination)
+            note.fileURL = destination
+            note.archivedAt = Date()
+            note.mergedIntoNoteId = mergedInto
+            try write(note)
+            notes.remove(at: index)
+            archivedNotes = sorted(archivedNotes + [note])
+            lastError = nil
+            return note
+        } catch {
+            lastError = "无法归档笔记：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @discardableResult
+    public func restoreArchivedNote(id: String) -> KnowledgeNote? {
+        guard let index = archivedNotes.firstIndex(where: { $0.id == id }) else { return nil }
+        var note = archivedNotes[index]
+        do {
+            let destination = uniqueURL(for: note.title)
+            try fileManager.moveItem(at: note.fileURL, to: destination)
+            note.fileURL = destination
+            note.archivedAt = nil
+            note.mergedIntoNoteId = nil
+            try write(note)
+            archivedNotes.remove(at: index)
+            notes = sorted(notes + [note])
+            lastError = nil
+            return note
+        } catch {
+            lastError = "无法恢复归档笔记：\(error.localizedDescription)"
+            return nil
+        }
+    }
+
     public func note(id: String) -> KnowledgeNote? {
         notes.first { $0.id == id }
     }
@@ -343,7 +427,9 @@ public final class KnowledgeNoteStore: ObservableObject {
             updatedAt: updated,
             isPinned: metadata["pinned"] == "true",
             fileURL: url,
-            outgoingLinks: extractWikiLinks(from: body)
+            outgoingLinks: extractWikiLinks(from: body),
+            archivedAt: metadata["archived_at"].flatMap(isoFormatter.date(from:)),
+            mergedIntoNoteId: metadata["merged_into"].flatMap { $0.isEmpty ? nil : $0 }
         )
     }
 
@@ -364,6 +450,8 @@ public final class KnowledgeNoteStore: ObservableObject {
             "created: \(isoFormatter.string(from: note.createdAt))",
             "updated: \(isoFormatter.string(from: note.updatedAt))",
             "pinned: \(note.isPinned ? "true" : "false")",
+            note.archivedAt.map { "archived_at: \(isoFormatter.string(from: $0))" } ?? "archived_at:",
+            note.mergedIntoNoteId.map { "merged_into: \(yamlString($0))" } ?? "merged_into:",
             note.tags.isEmpty ? "tags: []" : "tags:",
         ]
         lines.append(contentsOf: note.tags.map { "  - \(yamlString($0))" })

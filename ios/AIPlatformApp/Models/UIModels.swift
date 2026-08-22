@@ -313,6 +313,20 @@ public enum NoteDraftState: String, Codable, Sendable, Hashable {
     case discarded
 }
 
+public struct NoteMergeCandidate: Identifiable, Codable, Sendable, Hashable {
+    public let id: String
+    public let title: String
+    public let snippet: String
+    public let updatedAt: String?
+
+    public init(id: String, title: String, snippet: String, updatedAt: String? = nil) {
+        self.id = id
+        self.title = title
+        self.snippet = snippet
+        self.updatedAt = updatedAt
+    }
+}
+
 public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public var title: String
@@ -323,8 +337,12 @@ public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
     public let accountScope: String?
     public var state: NoteDraftState
     public var savedNoteId: String?
+    public var mergeCandidates: [NoteMergeCandidate]?
+    public var mergedTitle: String?
+    public var mergedMarkdown: String?
+    public var mergedTags: [String]?
 
-    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil) {
+    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil, mergeCandidates: [NoteMergeCandidate]? = nil, mergedTitle: String? = nil, mergedMarkdown: String? = nil, mergedTags: [String]? = nil) {
         self.id = id
         self.title = title
         self.markdown = markdown
@@ -334,6 +352,10 @@ public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
         self.accountScope = accountScope
         self.state = state
         self.savedNoteId = savedNoteId
+        self.mergeCandidates = mergeCandidates
+        self.mergedTitle = mergedTitle
+        self.mergedMarkdown = mergedMarkdown
+        self.mergedTags = mergedTags
     }
 }
 

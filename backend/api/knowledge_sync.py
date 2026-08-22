@@ -20,7 +20,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
-from backend.services.user_note_context import namespace, note_paths, sync_root
+from backend.services.user_note_context import (
+    archived_note_paths,
+    namespace,
+    note_paths,
+    sync_root,
+)
 
 
 router = APIRouter(prefix="/api/v1/me/knowledge-notes", tags=["knowledge-sync"])
@@ -33,6 +38,10 @@ class NoteSyncRequest(BaseModel):
     content_hash: str = Field(..., min_length=64, max_length=64)
     base_hash: str | None = Field(None, min_length=64, max_length=64)
     updated_at: datetime | None = None
+
+
+class NoteArchiveRequest(BaseModel):
+    merged_into_note_id: str = Field(..., min_length=1, max_length=128)
 
 
 def _sync_root() -> Path:
@@ -71,6 +80,12 @@ def _paths(tenant_key: str, user_id: str, note_id: str) -> tuple[Path, Path]:
     if not _NOTE_ID.fullmatch(note_id):
         raise HTTPException(status_code=422, detail={"code": "invalid_note_id"})
     return note_paths(tenant_key, user_id, note_id, _sync_root())
+
+
+def _archived_paths(tenant_key: str, user_id: str, note_id: str) -> tuple[Path, Path]:
+    if not _NOTE_ID.fullmatch(note_id):
+        raise HTTPException(status_code=422, detail={"code": "invalid_note_id"})
+    return archived_note_paths(tenant_key, user_id, note_id, _sync_root())
 
 
 @router.put("/{note_id}")
@@ -156,3 +171,94 @@ async def note_sync_status(
         "content_hash": _digest(note_path.read_bytes()),
         "sync_status": "synced",
     }
+
+
+@router.post("/{note_id}/archive")
+async def archive_note(
+    note_id: str,
+    body: NoteArchiveRequest,
+    payload: dict[str, Any] = Depends(require_auth),
+) -> dict[str, Any]:
+    if not _NOTE_ID.fullmatch(body.merged_into_note_id):
+        raise HTTPException(status_code=422, detail={"code": "invalid_merged_note_id"})
+    tenant_key = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    note_path, metadata_path = _paths(tenant_key, user_id, note_id)
+    archived_note, archived_metadata = _archived_paths(tenant_key, user_id, note_id)
+    if archived_note.is_file():
+        removed_active = False
+        if note_path.is_file():
+            note_path.unlink()
+            removed_active = True
+        if metadata_path.is_file():
+            metadata_path.unlink()
+        return {
+            "note_id": note_id,
+            "archive_status": "archived",
+            "merged_into_note_id": body.merged_into_note_id,
+            "changed": removed_active,
+        }
+    if not note_path.is_file():
+        raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
+    archived_note.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(note_path, archived_note)
+    metadata: dict[str, Any] = {}
+    if metadata_path.is_file():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+    metadata.update({
+        "archive_status": "archived",
+        "archived_at": datetime.now(timezone.utc).isoformat(),
+        "merged_into_note_id": body.merged_into_note_id,
+    })
+    _atomic_write(
+        archived_metadata,
+        json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+    try:
+        metadata_path.unlink()
+    except FileNotFoundError:
+        pass
+    return {
+        "note_id": note_id,
+        "archive_status": "archived",
+        "merged_into_note_id": body.merged_into_note_id,
+        "changed": True,
+    }
+
+
+@router.post("/{note_id}/restore")
+async def restore_note(
+    note_id: str,
+    payload: dict[str, Any] = Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    note_path, metadata_path = _paths(tenant_key, user_id, note_id)
+    archived_note, archived_metadata = _archived_paths(tenant_key, user_id, note_id)
+    if note_path.is_file():
+        return {"note_id": note_id, "archive_status": "active", "changed": False}
+    if not archived_note.is_file():
+        raise HTTPException(status_code=404, detail={"code": "archived_note_not_found"})
+    note_path.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(archived_note, note_path)
+    metadata: dict[str, Any] = {}
+    if archived_metadata.is_file():
+        try:
+            metadata = json.loads(archived_metadata.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+    metadata.pop("archived_at", None)
+    metadata.pop("merged_into_note_id", None)
+    metadata["archive_status"] = "active"
+    _atomic_write(
+        metadata_path,
+        json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+    try:
+        archived_metadata.unlink()
+    except FileNotFoundError:
+        pass
+    return {"note_id": note_id, "archive_status": "active", "changed": True}

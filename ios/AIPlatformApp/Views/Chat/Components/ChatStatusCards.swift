@@ -73,6 +73,7 @@ public enum InFlightPhase: Equatable, Sendable {
 public struct NoteDraftCard: View {
     public let draft: NoteDraftBlock
     public let onSave: () -> Void
+    public let onMerge: () -> Void
     public let onEdit: () -> Void
     public let onDiscard: () -> Void
 
@@ -86,9 +87,35 @@ public struct NoteDraftCard: View {
                 .font(.footnote)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .lineLimit(8)
+            if let candidates = draft.mergeCandidates, !candidates.isEmpty {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                    Label("发现 \(candidates.count) 篇同类笔记", systemImage: "arrow.triangle.merge")
+                        .font(.footnote.weight(.semibold))
+                    ForEach(candidates.prefix(3)) { candidate in
+                        Text("• \(candidate.title)")
+                            .font(.caption)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .lineLimit(1)
+                    }
+                    Text("合并后会重新整理内容，旧笔记将移入归档并可恢复。")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+                .padding(AppTheme.Spacing.sm)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(AppTheme.Colors.surfaceTint)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
+            }
             if draft.state == .awaitingConfirmation {
-                HStack {
-                    Button("保存到笔记", action: onSave).buttonStyle(.borderedProminent)
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                    if draft.mergeCandidates?.isEmpty == false {
+                        Button("合并整理并归档旧笔记", action: onMerge)
+                            .buttonStyle(.borderedProminent)
+                            .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                        Button("仍保存为新笔记", action: onSave).buttonStyle(.bordered)
+                    } else {
+                        Button("保存到笔记", action: onSave).buttonStyle(.borderedProminent)
+                    }
                     Button("编辑后保存", action: onEdit).buttonStyle(.bordered)
                     Button("放弃", role: .destructive, action: onDiscard).buttonStyle(.plain)
                 }

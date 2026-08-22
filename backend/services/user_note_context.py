@@ -49,6 +49,13 @@ def note_paths(
     return directory / f"{note_id}.md", directory / f"{note_id}.sync.json"
 
 
+def archived_note_paths(
+    tenant_key: str, user_id: str, note_id: str, root: Path | None = None
+) -> tuple[Path, Path]:
+    directory = note_directory(tenant_key, user_id, root) / ".archive"
+    return directory / f"{note_id}.md", directory / f"{note_id}.sync.json"
+
+
 def _frontmatter_value(markdown: str, key: str) -> str:
     match = re.search(
         rf"^---\s*$.*?^\s*{re.escape(key)}\s*:\s*(.+?)\s*$.*?^---\s*$",

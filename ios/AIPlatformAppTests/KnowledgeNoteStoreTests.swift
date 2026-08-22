@@ -3,6 +3,19 @@ import XCTest
 
 @MainActor
 final class KnowledgeNoteStoreTests: XCTestCase {
+    func testArchiveExcludesNoteFromActiveSearchAndCanRestore() throws {
+        let store = KnowledgeNoteStore.shared
+        store.activate(tenantKey: "archive-tenant-\(UUID())", userId: "archive-user")
+        let note = try XCTUnwrap(store.createNote(title: "待合并", body: "超聚变内容"))
+        let archived = try XCTUnwrap(store.archive(id: note.id, mergedInto: "merged-id"))
+        XCTAssertNil(store.note(id: note.id))
+        XCTAssertTrue(store.search("超聚变").isEmpty)
+        XCTAssertEqual(store.archivedNotes.first(where: { $0.id == note.id })?.id, archived.id)
+        XCTAssertNotNil(store.restoreArchivedNote(id: note.id))
+        XCTAssertEqual(store.note(id: note.id)?.body, "超聚变内容")
+        store.moveToTrash(id: note.id)
+    }
+
     func testNotesAreIsolatedByTenantAndUser() throws {
         let store = KnowledgeNoteStore.shared
         let tenantA = "tenant-a-\(UUID().uuidString)"

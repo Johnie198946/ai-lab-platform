@@ -204,14 +204,22 @@ async def capability_search(
             query=body.query,
             limit=body.limit,
         )
-        docs.extend({
-            "path": f"user-notes/{item['id']}.md",
-            "title": item["title"],
-            "snippet": str(item.get("markdown") or "")[:1000],
-            "category": "user_notes",
-            "freshness": item.get("updated_at") or "unknown",
-            "source": "user_notes",
-        } for item in notes)
+        remaining_note_chars = 60_000
+        for item in notes:
+            markdown = str(item.get("markdown") or "")[: min(20_000, remaining_note_chars)]
+            remaining_note_chars -= len(markdown)
+            docs.append({
+                "id": item["id"],
+                "path": f"user-notes/{item['id']}.md",
+                "title": item["title"],
+                "snippet": markdown[:1000],
+                "markdown": markdown,
+                "category": "user_notes",
+                "freshness": item.get("updated_at") or "unknown",
+                "source": "user_notes",
+            })
+            if remaining_note_chars <= 0:
+                break
     docs = docs[: body.limit]
     async with SessionLocal() as db:
         db.add(KnowledgeAccessAudit(

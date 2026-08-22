@@ -650,7 +650,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].delegatedBy = delegatedBy
                     }
 
-                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope):
+                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope, let mergeCandidates, let mergedTitle, let mergedMarkdown, let mergedTags):
                     drainDeltaBuffer(messageId: outputId)
                     guard sourceSessionId == nil || sourceSessionId == req.sessionId else { continue }
                     let draft = NoteDraftBlock(
@@ -660,7 +660,11 @@ public final class TenantSessionCoordinator: ObservableObject {
                         tags: tags,
                         sourceSessionId: sourceSessionId,
                         sourceMessageIds: sourceMessageIds,
-                        accountScope: accountScope
+                        accountScope: accountScope,
+                        mergeCandidates: mergeCandidates.isEmpty ? nil : mergeCandidates,
+                        mergedTitle: mergedTitle,
+                        mergedMarkdown: mergedMarkdown,
+                        mergedTags: mergedTags.isEmpty ? nil : mergedTags
                     )
                     if let idx = messages.firstIndex(where: { $0.id == outputId }),
                        !messages[idx].blocks.contains(where: {
@@ -1696,9 +1700,17 @@ public final class TenantSessionCoordinator: ObservableObject {
             showToast("账号已切换，不能保存其他账号的笔记草稿")
             return
         }
+        let shouldMerge = action == "merge"
+        let noteTitle = shouldMerge ? (draft.mergedTitle ?? draft.title) : draft.title
+        let noteMarkdown = shouldMerge ? (draft.mergedMarkdown ?? draft.markdown) : draft.markdown
+        let noteTags = shouldMerge ? (draft.mergedTags ?? draft.tags) : draft.tags
+        guard !shouldMerge || (draft.mergeCandidates?.isEmpty == false && draft.mergedMarkdown?.isEmpty == false) else {
+            showToast("合并稿不可用，请保存为新笔记")
+            return
+        }
         guard appState?.isLoggedIn == true,
               let note = KnowledgeNoteStore.shared.createNote(
-                  title: draft.title, body: draft.markdown, tags: draft.tags
+                  title: noteTitle, body: noteMarkdown, tags: noteTags
               ) else {
             showToast("无法保存笔记，请检查本地存储")
             return
@@ -1707,6 +1719,15 @@ public final class TenantSessionCoordinator: ObservableObject {
         draft.savedNoteId = note.id
         messages[messageIndex].blocks[blockIndex] = .noteDraft(draft)
         commitSession()
+        let archivedNotes: [KnowledgeNote]
+        if shouldMerge {
+            archivedNotes = (draft.mergeCandidates ?? []).compactMap { candidate in
+                KnowledgeNoteStore.shared.archive(id: candidate.id, mergedInto: note.id)
+            }
+            showToast("已合并，并将 \(archivedNotes.count) 篇旧笔记归档")
+        } else {
+            archivedNotes = []
+        }
         if action == "edit" {
             appState?.activeTab = 2
             showToast("已保存到本地，可在笔记页继续编辑")
@@ -1719,6 +1740,16 @@ public final class TenantSessionCoordinator: ObservableObject {
                     markdown: KnowledgeNoteStore.shared.markdown(for: note),
                     updatedAt: note.updatedAt
                 )
+                for archived in archivedNotes {
+                    try await APIClient.shared.syncKnowledgeNote(
+                        id: archived.id,
+                        markdown: KnowledgeNoteStore.shared.markdown(for: archived),
+                        updatedAt: archived.updatedAt
+                    )
+                    try await APIClient.shared.archiveKnowledgeNote(
+                        id: archived.id, mergedIntoNoteId: note.id
+                    )
+                }
                 guard let self, self.tenantEpoch == expectedEpoch,
                       let currentMessageIndex = self.messages.firstIndex(where: { $0.id == messageId }),
                       let currentBlockIndex = self.messages[currentMessageIndex].blocks.firstIndex(where: {

@@ -79,6 +79,7 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         "client_session_id": "session-a",
         "account_scope": "tenant:user",
         "read": False,
+        "user_note_search_completed": False,
         "emit": events.append,
     }
     try:
@@ -86,6 +87,11 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         assert denied["error"] == "session_context_read_required"
         transcript = json.loads(bridge._session_context_read_tool({}))
         assert transcript["messages"][0]["content"] == "超聚变是一家公司"
+        search_denied = json.loads(bridge._note_draft_tool({
+            "title": "超聚变", "markdown": "正文",
+        }))
+        assert search_denied["error"] == "user_note_search_required"
+        bridge._client_context_tool_context.value["user_note_search_completed"] = True
         result = json.loads(bridge._note_draft_tool({
             "title": "超聚变",
             "markdown": "# 超聚变\n\n正文",
@@ -134,3 +140,39 @@ def test_user_note_search_uses_only_signed_user_note_source():
         )
     finally:
         bridge._knowledge_tool_context.value = None
+
+
+def test_note_draft_only_accepts_merge_candidates_from_current_search():
+    import scripts.hermes_bridge as bridge
+
+    events = []
+    bridge._client_context_tool_context.value = {
+        "transcript": {"session_id": "s", "messages": []},
+        "request_id": "request-merge",
+        "client_session_id": "s",
+        "account_scope": "tenant:user",
+        "read": True,
+        "user_note_search_completed": True,
+        "emit": events.append,
+        "user_note_search_results": {
+            "allowed": {
+                "id": "allowed", "title": "超聚变旧笔记",
+                "snippet": "旧内容", "updated_at": None,
+            }
+        },
+    }
+    try:
+        result = json.loads(bridge._note_draft_tool({
+            "title": "超聚变",
+            "markdown": "新内容",
+            "source_message_ids": [],
+            "merge_candidate_ids": ["allowed", "cross-user-forged"],
+            "merged_title": "超聚变整理",
+            "merged_markdown": "重新编排后的完整内容",
+            "merged_tags": ["企业"],
+        }))
+        assert result["merge_candidate_count"] == 1
+        assert [item["id"] for item in events[0]["merge_candidates"]] == ["allowed"]
+        assert events[0]["merged_markdown"] == "重新编排后的完整内容"
+    finally:
+        bridge._client_context_tool_context.value = None

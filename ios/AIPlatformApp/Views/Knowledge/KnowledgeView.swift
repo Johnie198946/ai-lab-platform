@@ -33,6 +33,7 @@ public struct KnowledgeView: View {
     @State private var selectedTag: String?
     @State private var notePendingTrash: KnowledgeNote?
     @State private var showingTrashConfirmation = false
+    @State private var showingArchive = false
 
     public init() {}
 
@@ -79,6 +80,10 @@ public struct KnowledgeView: View {
                         systemImage: scope == .daily ? "calendar" : "clock",
                         notes: recentNotes
                     )
+                }
+
+                if !store.archivedNotes.isEmpty {
+                    archiveEntry
                 }
             }
             .listStyle(.plain)
@@ -146,7 +151,34 @@ public struct KnowledgeView: View {
             .task {
                 await syncLocalNotes()
             }
+            .sheet(isPresented: $showingArchive) {
+                KnowledgeArchiveView()
+            }
         }
+    }
+
+    private var archiveEntry: some View {
+        Button {
+            showingArchive = true
+        } label: {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: "archivebox")
+                Text("归档")
+                Text("\(store.archivedNotes.count)")
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+            }
+            .font(.footnote)
+            .foregroundStyle(AppTheme.Colors.textTertiary)
+            .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("归档笔记，\(store.archivedNotes.count) 篇")
+        .listRowInsets(pageInsets(vertical: AppTheme.Spacing.xs))
+        .listRowSeparator(.hidden)
+        .listRowBackground(AppTheme.Colors.cardBackground)
     }
 
     private var workspaceHeader: some View {
@@ -418,6 +450,82 @@ public struct KnowledgeView: View {
                 markdown: store.markdown(for: note),
                 updatedAt: note.updatedAt
             )
+        }
+        for note in store.archivedNotes {
+            guard let mergedIntoNoteId = note.mergedIntoNoteId else { continue }
+            try? await APIClient.shared.syncKnowledgeNote(
+                id: note.id,
+                markdown: store.markdown(for: note),
+                updatedAt: note.updatedAt
+            )
+            try? await APIClient.shared.archiveKnowledgeNote(
+                id: note.id, mergedIntoNoteId: mergedIntoNoteId
+            )
+        }
+    }
+}
+
+private struct KnowledgeArchiveView: View {
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var store = KnowledgeNoteStore.shared
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if store.archivedNotes.isEmpty {
+                    ContentUnavailableView(
+                        "没有归档笔记",
+                        systemImage: "archivebox",
+                        description: Text("合并整理后的旧笔记会保留在这里。")
+                    )
+                } else {
+                    Section {
+                        ForEach(store.archivedNotes) { note in
+                            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                                    Text(note.title)
+                                        .font(.body.weight(.semibold))
+                                    if !note.preview.isEmpty {
+                                        Text(note.preview)
+                                            .font(.subheadline)
+                                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                                            .lineLimit(2)
+                                    }
+                                }
+                                Spacer(minLength: AppTheme.Spacing.sm)
+                                Button("恢复") { restore(note) }
+                                    .buttonStyle(.bordered)
+                                    .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+                            }
+                            .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                Button {
+                                    restore(note)
+                                } label: {
+                                    Label("恢复", systemImage: "arrow.uturn.backward")
+                                }
+                                .tint(AppTheme.Colors.primary)
+                            }
+                            .accessibilityAction(named: "恢复笔记") { restore(note) }
+                        }
+                    } footer: {
+                        Text("归档不会删除内容；向右轻扫可恢复到当前笔记列表。")
+                    }
+                }
+            }
+            .navigationTitle("归档")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func restore(_ note: KnowledgeNote) {
+        guard KnowledgeNoteStore.shared.restoreArchivedNote(id: note.id) != nil else { return }
+        Task {
+            try? await APIClient.shared.restoreKnowledgeNote(id: note.id)
         }
     }
 }

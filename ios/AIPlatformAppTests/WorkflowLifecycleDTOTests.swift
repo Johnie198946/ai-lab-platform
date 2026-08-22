@@ -396,8 +396,14 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
             "source_session_id": "session-1",
             "source_message_ids": ["m1"],
             "account_scope": "tenant:user",
+            "merge_candidates": [[
+                "id": "old-1", "title": "旧笔记", "snippet": "旧内容"
+            ]],
+            "merged_title": "超聚变整理",
+            "merged_markdown": "# 合并内容",
+            "merged_tags": ["企业"],
         ]))
-        guard case let .noteDraft(id, title, markdown, _, sessionId, messageIds, accountScope) = event else {
+        guard case let .noteDraft(id, title, markdown, _, sessionId, messageIds, accountScope, candidates, mergedTitle, mergedMarkdown, _) = event else {
             return XCTFail("expected noteDraft event")
         }
         XCTAssertEqual(id, "draft-1")
@@ -406,6 +412,9 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(sessionId, "session-1")
         XCTAssertEqual(messageIds, ["m1"])
         XCTAssertEqual(accountScope, "tenant:user")
+        XCTAssertEqual(candidates.map(\.id), ["old-1"])
+        XCTAssertEqual(mergedTitle, "超聚变整理")
+        XCTAssertEqual(mergedMarkdown, "# 合并内容")
     }
 
     func testClarifyStateSurvivesSessionPersistenceRoundTrip() throws {
