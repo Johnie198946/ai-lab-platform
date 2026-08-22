@@ -176,3 +176,28 @@ def test_note_draft_only_accepts_merge_candidates_from_current_search():
         assert events[0]["merged_markdown"] == "重新编排后的完整内容"
     finally:
         bridge._client_context_tool_context.value = None
+
+
+def test_user_note_search_recalls_signed_unsynced_local_note():
+    import scripts.hermes_bridge as bridge
+
+    bridge._knowledge_tool_context.value = {
+        "capability": "signed",
+        "scopes": ["public"],
+        "sources": ["user_notes"],
+    }
+    bridge._client_context_tool_context.value = {
+        "inline_notes": [{
+            "id": "local-1",
+            "title": "超聚变业务梳理",
+            "markdown": "# 超聚变\n服务器与算力基础设施",
+        }],
+    }
+    try:
+        with patch.object(bridge, "_knowledge_gateway_search", return_value=[]):
+            payload = json.loads(bridge._user_note_search_tool({"query": "超聚变"}))
+        assert payload["success"] is True
+        assert payload["docs"][0]["id"] == "local-1"
+    finally:
+        bridge._knowledge_tool_context.value = None
+        bridge._client_context_tool_context.value = None

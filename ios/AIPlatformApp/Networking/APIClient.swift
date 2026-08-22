@@ -439,16 +439,29 @@ public struct ClientSessionContextDTO: Codable, Hashable, Sendable {
     public let sessionId: String
     public let messages: [ClientSessionMessageDTO]
     public let truncated: Bool
+    /// Local-first notes are signed into the request context so Hermes can
+    /// compare notes that have not completed background sync yet.
+    public let localNotes: [ChatLocalNoteDTO]
 
-    public init(sessionId: String, messages: [ClientSessionMessageDTO], truncated: Bool) {
+    public init(sessionId: String, messages: [ClientSessionMessageDTO], truncated: Bool, localNotes: [ChatLocalNoteDTO] = []) {
         self.sessionId = sessionId
         self.messages = messages
         self.truncated = truncated
+        self.localNotes = localNotes
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case messages, truncated
+        case localNotes = "local_notes"
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionId = try container.decode(String.self, forKey: .sessionId)
+        messages = try container.decode([ClientSessionMessageDTO].self, forKey: .messages)
+        truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        localNotes = try container.decodeIfPresent([ChatLocalNoteDTO].self, forKey: .localNotes) ?? []
     }
 }
 
