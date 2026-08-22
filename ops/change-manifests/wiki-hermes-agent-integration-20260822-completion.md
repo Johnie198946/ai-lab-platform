@@ -54,7 +54,7 @@
 - commit_sha: `6540ffbd3dba3ced82ed6be1146b35912e2e6b41`
 - GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git`; refs `main` and `codex/wiki-agent-integration`; verified with `git ls-remote` at `6540ffbd3dba3ced82ed6be1146b35912e2e6b41`
 - server_before: `/opt/ai-lab-platform/.deployed-sha` was `a3e12a5ccfecd595fe86bcb0b41afcff1c7262db`; health `{"status":"ok","version":"0.8.0"}`
-- server_after: `/opt/ai-lab-platform/.deployed-sha` is `f064dbf3e81682a7228430952d04feafa6039a69`; Docker Compose services rebuilt; `hermes-bridge` systemd service active
+- server_after: `/opt/ai-lab-platform/.deployed-sha` is `162a9e16b808edefcd00464bc8c22d77ff1ff51f`; Docker Compose services rebuilt; `hermes-bridge` systemd service active
 - health_check: `bash scripts/update.sh f064dbf3e81682a7228430952d04feafa6039a69` passed runtime contract audit; `curl http://127.0.0.1:8000/health` returned `{"status":"ok","version":"0.8.0"}`
 - functional_check: server-side authenticated smoke query `超聚变是做什么的？` returned HTTP 200 with Wiki sources including `wiki/产品/超聚变官网洞察.md` and `wiki/竞品情报/华为vs超聚变一页纸.md`; local targeted suite after remote-main merge: `90 passed`
 - rollback_point: `/opt/ai-lab-platform-backups/wiki-hermes-agent-integration-20260822-115508.tgz`
