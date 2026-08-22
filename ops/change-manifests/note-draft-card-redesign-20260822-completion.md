@@ -28,7 +28,7 @@ task_id: note-draft-card-redesign-20260822
 
 DEPLOYED
 
-commit SHA: `2c28a625b9c30665bc95b7f0dfce024ef9a865c6`（main 合并提交）
+commit SHA: 应用合并提交 `2c28a625b9c30665bc95b7f0dfce024ef9a865c6`；最终清单提交 `ee2b04dfccb3dd406a09457b8d5465af12b95574`
 GitHub remote/ref/SHA: `origin refs/heads/main 2c28a625b9c30665bc95b7f0dfce024ef9a865c6`（`git ls-remote` 已核对）
 
 server_before: `.deployed-sha=09f70855fecc0ea916e25e80e6ec6c56490e5915`；release `/opt/releases/ai-lab-platform-7fbb1e4`；API `/health` 为 HTTP 200；API、Postgres、Redis healthy；Hermes Bridge systemd active
