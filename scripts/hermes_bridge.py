@@ -68,6 +68,13 @@ from backend.services.client_context_capability import (  # noqa: E402
     context_digest,
     verify_client_context_capability,
 )
+from backend.services.tenant_hermes_sandbox import (  # noqa: E402
+    TenantHermesSandbox,
+    ensure_tenant_sandbox,
+    list_sandbox_skills,
+    persist_agent_snapshot,
+    read_sandbox_skill,
+)
 
 app = FastAPI(title="Hermes Bridge v6.0")
 
@@ -415,46 +422,58 @@ class AgentEvaluationRequest(BaseModel):
     knowledge_policy_version: str = Field(..., min_length=8, max_length=80)
 
 
-def _expand_requested_skill(goal: str, skill_id: str | None) -> str:
-    """在Hermes进程内按官方skill command协议加载白名单技能。"""
+def _expand_requested_skill(
+    goal: str,
+    skill_id: str | None,
+    sandbox: TenantHermesSandbox,
+) -> str:
+    """Load an explicit Skill only from the authenticated tenant sandbox."""
     if not skill_id:
         return goal
     if skill_id not in ALLOWED_CHAT_SKILLS:
         raise HTTPException(status_code=400, detail=f"unsupported skill: {skill_id}")
-    from agent.skill_commands import (
-        build_skill_invocation_message,
-        resolve_skill_command_key,
+    instructions = read_sandbox_skill(sandbox, skill_id)
+    if not instructions:
+        raise HTTPException(status_code=503, detail=f"skill not installed: {skill_id}")
+    return (
+        "【已从当前租户 Hermes 沙箱加载 Skill；只遵循以下副本】\n"
+        + instructions
+        + "\n\n【用户请求】\n"
+        + goal
     )
 
-    command_key = resolve_skill_command_key(skill_id)
-    if not command_key:
-        raise HTTPException(status_code=503, detail=f"skill not installed: {skill_id}")
-    expanded = build_skill_invocation_message(command_key, goal)
-    if not expanded:
-        raise HTTPException(status_code=503, detail=f"skill load failed: {skill_id}")
-    return expanded
 
-
-def _verify_workflow_skill_binding(binding: dict[str, Any]) -> dict[str, str]:
-    """Resolve one Skill through Hermes' registry and verify its frozen bytes."""
+def _verify_workflow_skill_binding(
+    binding: dict[str, Any], sandbox: TenantHermesSandbox
+) -> dict[str, str]:
+    """Verify frozen Skill bytes from the authenticated tenant sandbox."""
     skill_id = str(binding.get("skill_id") or "")
     expected = str(binding.get("sha256") or "")
     if not skill_id or len(expected) != 64:
         raise ValueError("invalid workflow Skill binding")
-    from agent.skill_commands import get_skill_commands, scan_skill_commands
-
     command_key = f"/{skill_id.replace('_', '-')}"
-    commands = get_skill_commands()
-    info = commands.get(command_key)
-    if not info:
-        info = scan_skill_commands().get(command_key)
-    path = Path(str((info or {}).get("skill_md_path") or ""))
-    if not path.is_file():
+    skill_text = read_sandbox_skill(sandbox, skill_id, max_chars=1_000_000)
+    if not skill_text:
         raise ValueError(f"workflow Skill not installed: {skill_id}")
-    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    actual = hashlib.sha256(skill_text.encode("utf-8")).hexdigest()
     if actual != expected:
         raise ValueError(f"workflow Skill hash mismatch: {skill_id}")
     return {"skill_id": skill_id, "sha256": actual, "command_key": command_key}
+
+
+def _expand_workflow_skill(
+    goal: str, receipt: dict[str, str], sandbox: TenantHermesSandbox
+) -> str:
+    skill_id = receipt["skill_id"]
+    instructions = read_sandbox_skill(sandbox, skill_id, max_chars=80_000)
+    if not instructions:
+        raise ValueError(f"workflow Skill not installed: {skill_id}")
+    return (
+        "【当前租户 Hermes 沙箱 Skill（已校验摘要）】\n"
+        + instructions
+        + "\n\n【工作流节点任务】\n"
+        + goal
+    )
 
 
 # ---------- 映射持久化 ----------
@@ -902,17 +921,65 @@ def _validated_client_context_claims(
     return claims
 
 
+def _tenant_sandbox_from_claims(
+    *,
+    subject_id: str,
+    knowledge_claims: dict[str, Any] | None,
+    client_claims: dict[str, Any] | None,
+) -> TenantHermesSandbox:
+    """Resolve writable Hermes state only from server-signed identity claims."""
+    if knowledge_claims and client_claims:
+        for field in ("tenant_key", "user_id"):
+            left = str(knowledge_claims.get(field) or "")
+            right = str(client_claims.get(field) or "")
+            if left and right and left != right:
+                raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    tenant_key = str(
+        (knowledge_claims or {}).get("tenant_key")
+        or (client_claims or {}).get("tenant_key")
+        or "public"
+    )
+    user_id = str(
+        (knowledge_claims or {}).get("user_id")
+        or (client_claims or {}).get("user_id")
+        or subject_id
+    )
+    return ensure_tenant_sandbox(tenant_key=tenant_key, user_id=user_id)
+
+
+def _workflow_sandbox(run: dict[str, Any]) -> TenantHermesSandbox:
+    """Re-verify persisted workflow authorization before opening its sandbox."""
+    claims = _validated_knowledge_claims(
+        str(run.get("knowledge_capability") or ""),
+        subject_id=str(run.get("execution_id") or ""),
+        policy_version=str(run.get("knowledge_policy_version") or ""),
+    )
+    if str((claims or {}).get("tenant_key") or "") != str(run.get("tenant_id") or ""):
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    return _tenant_sandbox_from_claims(
+        subject_id=str(run.get("execution_id") or ""),
+        knowledge_claims=claims,
+        client_claims=None,
+    )
+
+
 def _knowledge_gateway_search(
     token: str,
     *,
     query: str,
     category_scope: list[str],
+    sources: list[str] | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
     response = httpx.post(
         KNOWLEDGE_GATEWAY_URL,
         headers={"X-Knowledge-Capability": token},
-        json={"query": query[:200], "category_scope": category_scope, "limit": limit},
+        json={
+            "query": query[:200],
+            "category_scope": category_scope,
+            "sources": list(sources or ["tenant_knowledge"]),
+            "limit": limit,
+        },
         timeout=20.0,
     )
     if response.status_code == 403:
@@ -922,58 +989,15 @@ def _knowledge_gateway_search(
     return payload.get("docs") if isinstance(payload.get("docs"), list) else []
 
 
-def _format_authorized_wiki_evidence(docs: list[dict[str, Any]]) -> str:
-    """Render governed Wiki material as evidence, never as user-facing notes."""
-    if not docs:
-        return ""
-    rows = []
-    for item in docs[:10]:
-        path = str(item.get("path") or "").strip()
-        title = str(item.get("title") or path).strip()
-        snippet = re.sub(r"\s+", " ", str(item.get("snippet") or "")).strip()
-        if not path or not snippet:
-            continue
-        rows.append(f"- [[{path}]] **{title}**：{snippet[:700]}")
-    if not rows:
-        return ""
-    return (
-        "\n\n【Knowledge Gateway 当前租户可见的 Wiki 素材】\n"
-        "这些是素材和事实片段，不是成稿。先回答事实；若用户要求洞察、比较或方案，"
-        "可把这些素材连同明确任务委派给子 Agent，再综合其结论。"
-        "所有事实必须保留 [[path]] 引用。\n"
-        + "\n".join(rows)
-    )
-
-
-async def _request_scoped_wiki_evidence(
-    body: GoalRequest, claims: dict[str, Any] | None
-) -> str:
-    """Fetch Wiki evidence with the signed tenant capability for this turn."""
-    query = str(body.knowledge_query or body.goal or "").strip()[:200]
-    token = str(body.knowledge_capability or "")
-    scopes = [str(item) for item in (claims or {}).get("scopes") or []]
-    if not query or not token or not scopes:
-        return ""
-    try:
-        docs = await asyncio.to_thread(
-            _knowledge_gateway_search,
-            token,
-            query=query,
-            category_scope=scopes,
-            limit=10,
-        )
-    except Exception as exc:
-        print(f"[bridge] Knowledge Gateway 检索失败·按证据缺口继续: {exc}")
-        return ""
-    return _format_authorized_wiki_evidence(docs)
-
-
 # Hermes tool registry is process-global while chat authorization is request-local.
 # The AIAgent executes tools on its worker thread, so a thread-local capability keeps
 # signed tenant scope out of the model-visible schema and prevents cross-run leakage.
 _knowledge_tool_context = threading.local()
 _knowledge_tool_registration_lock = threading.Lock()
 _knowledge_tool_registered = False
+_sandbox_tool_context = threading.local()
+_sandbox_tool_registration_lock = threading.Lock()
+_sandbox_tool_registered = False
 _client_context_tool_context = threading.local()
 _client_context_tool_registration_lock = threading.Lock()
 _client_context_tools_registered = False
@@ -1004,6 +1028,13 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             {"success": False, "error": "knowledge_scope_unavailable"},
             ensure_ascii=False,
         )
+    if "tenant_knowledge" not in set(
+        context.get("sources") or ["tenant_knowledge"]
+    ):
+        return json.dumps(
+            {"success": False, "error": "knowledge_source_denied"},
+            ensure_ascii=False,
+        )
     query = str((args or {}).get("query") or "").strip()
     if not query:
         return json.dumps(
@@ -1023,6 +1054,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             str(context["capability"]),
             query=query,
             category_scope=sorted(requested_scope),
+            sources=["tenant_knowledge"],
             limit=max(1, min(10, int((args or {}).get("limit") or 5))),
         )
     except PermissionError:
@@ -1050,6 +1082,63 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
                 for item in docs
             ],
         },
+        ensure_ascii=False,
+    )
+
+
+def _user_note_search_tool(args: dict[str, Any], **_kwargs) -> str:
+    """Search only the authenticated user's synced notes through the Gateway."""
+    context = getattr(_knowledge_tool_context, "value", None)
+    if not isinstance(context, dict) or not context.get("capability"):
+        return json.dumps(
+            {"success": False, "error": "knowledge_scope_unavailable"},
+            ensure_ascii=False,
+        )
+    if "user_notes" not in set(context.get("sources") or []):
+        return json.dumps(
+            {"success": False, "error": "knowledge_source_denied"},
+            ensure_ascii=False,
+        )
+    query = str((args or {}).get("query") or "").strip()
+    if not query:
+        return json.dumps({"success": False, "error": "query_required"})
+    try:
+        docs = _knowledge_gateway_search(
+            str(context["capability"]),
+            query=query,
+            category_scope=[],
+            sources=["user_notes"],
+            limit=max(1, min(10, int((args or {}).get("limit") or 5))),
+        )
+    except PermissionError:
+        return json.dumps(
+            {"success": False, "error": "knowledge_source_denied"},
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {
+                "success": False,
+                "error": "knowledge_gateway_unavailable",
+                "detail": str(exc)[:160],
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {"success": True, "query": query, "docs": docs}, ensure_ascii=False
+    )
+
+
+def _tenant_skill_read_tool(args: dict[str, Any], **_kwargs) -> str:
+    sandbox = getattr(_sandbox_tool_context, "value", None)
+    if not isinstance(sandbox, TenantHermesSandbox):
+        return json.dumps({"success": False, "error": "sandbox_unavailable"})
+    name = str((args or {}).get("name") or "").strip()
+    content = read_sandbox_skill(sandbox, name)
+    if not content:
+        return json.dumps({"success": False, "error": "skill_not_found"})
+    return json.dumps(
+        {"success": True, "name": name, "instructions": content},
         ensure_ascii=False,
     )
 
@@ -1097,7 +1186,59 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
             },
             handler=lambda args, **kwargs: _knowledge_search_tool(args, **kwargs),
         )
+        registry.register(
+            name="user_note_search",
+            toolset="knowledge_gateway",
+            schema={
+                "name": "user_note_search",
+                "description": (
+                    "Search only the authenticated current user's synced Markdown notes. "
+                    "Never use this for another user or for platform Wiki facts."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {
+                            "type": "integer", "minimum": 1, "maximum": 10,
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+            handler=lambda args, **kwargs: _user_note_search_tool(args, **kwargs),
+        )
         _knowledge_tool_registered = True
+
+
+def _ensure_tenant_skill_tool_registered() -> None:
+    global _sandbox_tool_registered
+    if _sandbox_tool_registered:
+        return
+    with _sandbox_tool_registration_lock:
+        if _sandbox_tool_registered:
+            return
+        from tools.registry import registry
+
+        registry.register(
+            name="tenant_skill_read",
+            toolset="tenant_skills",
+            schema={
+                "name": "tenant_skill_read",
+                "description": (
+                    "Read one Agent/Skill instruction copy from the authenticated "
+                    "tenant Hermes sandbox."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+            },
+            handler=lambda args, **kwargs: _tenant_skill_read_tool(args, **kwargs),
+        )
+        _sandbox_tool_registered = True
 
 
 def _session_context_read_tool(args: dict[str, Any], **_kwargs) -> str:
@@ -1341,15 +1482,15 @@ def _workflow_toolsets(node: dict[str, Any]) -> list[str]:
         # Tenant knowledge is fetched by Bridge through Knowledge Gateway before
         # model execution. Hermes may only supplement an explicit evidence gap
         # with the web tool; local Vault/file tools are never granted.
-        return ["web"] if bool(params.get("allow_network")) else ["skills"]
+        return ["web"] if bool(params.get("allow_network")) else ["tenant_skills"]
     if node_type == "LLM_INFERENCE" and str(params.get("agent_id") or "") not in {
         "",
         "main_agent",
     }:
-        return ["skills"]
+        return ["tenant_skills"]
     # AIAgent 对空列表存在跨版本 fallback 差异；给纯推理节点一个无执行副作用的
     # 最小 skill 元数据面，同时在节点 Prompt 中明确禁止工具调用。
-    return ["skills"]
+    return ["tenant_skills"]
 
 
 def _workflow_turn_token_cap(node: dict[str, Any]) -> int:
@@ -1380,6 +1521,7 @@ def _run_workflow_node_in_process(
     session_id: str | None = None,
     execution_id: str | None = None,
     event_callback=None,
+    sandbox: TenantHermesSandbox | None = None,
 ) -> tuple[str, str | None, dict[str, Any]]:
     """通过 Hermes AIAgent 原生 Session 执行节点。
 
@@ -1397,7 +1539,11 @@ def _run_workflow_node_in_process(
         else model_cfg.get("default") or model_cfg.get("model") or ""
     )
     runtime = _get_cached_runtime(cfg)
-    session_db = _create_thread_local_session_db()
+    if sandbox is None:
+        raise RuntimeError("tenant_sandbox_unavailable")
+    _ensure_tenant_skill_tool_registered()
+    _sandbox_tool_context.value = sandbox
+    session_db = _create_sandbox_session_db(sandbox)
     agent = None
     timeout_fired = threading.Event()
     timeout_timer = None
@@ -1501,6 +1647,7 @@ def _run_workflow_node_in_process(
             session_db.close()
         except Exception:
             pass
+        _sandbox_tool_context.value = None
 
 
 def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
@@ -1625,6 +1772,7 @@ def _workflow_run_sync(execution_id: str) -> None:
             message="Hermes 工作流开始执行",
         )
     try:
+        sandbox = _workflow_sandbox(run)
         plan = run["plan"]
         node_map = {str(node["id"]): node for node in plan.get("nodes") or []}
         order = _workflow_order(plan)
@@ -1654,8 +1802,8 @@ def _workflow_run_sync(execution_id: str) -> None:
             node_prompt = _workflow_node_prompt(run, node)
             binding = (node.get("parameters") or {}).get("skill_binding") or {}
             if binding:
-                receipt = _verify_workflow_skill_binding(binding)
-                node_prompt = _expand_requested_skill(node_prompt, receipt["skill_id"])
+                receipt = _verify_workflow_skill_binding(binding, sandbox)
+                node_prompt = _expand_workflow_skill(node_prompt, receipt, sandbox)
                 with _workflow_runs_lock:
                     _workflow_event(
                         run,
@@ -1714,6 +1862,7 @@ def _workflow_run_sync(execution_id: str) -> None:
                     str(hermes_sid) if hermes_sid else None,
                     execution_id,
                     event_callback=_node_event,
+                    sandbox=sandbox,
                 )
                 if new_sid:
                     hermes_sid = new_sid
@@ -2380,7 +2529,12 @@ async def chat_stream(body: GoalRequest):
         request_id=body.request_id,
         policy_version=body.knowledge_policy_version,
     )
-    goal = _expand_requested_skill(body.goal, body.skill_id)
+    sandbox = _tenant_sandbox_from_claims(
+        subject_id=user_id,
+        knowledge_claims=knowledge_claims,
+        client_claims=client_context_claims,
+    )
+    goal = _expand_requested_skill(body.goal, body.skill_id, sandbox)
     _mark_in_flight(user_id)
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
@@ -2424,6 +2578,7 @@ async def chat_stream(body: GoalRequest):
                     knowledge_claims=knowledge_claims,
                     client_session_context=body.client_session_context,
                     client_context_claims=client_context_claims,
+                    sandbox=sandbox,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -2435,6 +2590,11 @@ async def chat_stream(body: GoalRequest):
             )
         except Exception as stream_err:
             print(f"[bridge] v7 进程内流式失败·降级: {stream_err}")
+
+    if knowledge_claims or client_context_claims:
+        raise HTTPException(
+            status_code=503, detail="tenant_sandbox_requires_in_process_runtime"
+        )
 
     try:
         hermes_sid = _hermes_session_for_request(user_id, body.client_session_context)
@@ -2639,6 +2799,16 @@ def _create_thread_local_session_db():
     """线程局部 SessionDB（避免 SQLite 跨线程冲突）：轻量创建 <0.2ms。"""
     from hermes_cli.oneshot import _create_session_db_for_oneshot
     return _create_session_db_for_oneshot()
+
+
+def _create_sandbox_session_db(sandbox: TenantHermesSandbox):
+    """Open one request-local connection to the current tenant/user database."""
+    try:
+        from hermes_state import SessionDB
+
+        return SessionDB(db_path=sandbox.state_db)
+    except Exception as exc:
+        raise RuntimeError("tenant_session_db_unavailable") from exc
 
 
 # 全局共享 SessionDB 单例（实例池化核心）：160MB state.db 每次新建需 6.6s，
@@ -2907,18 +3077,15 @@ def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, functio
     })
 
 
-def _tenantize_created_skill(function_args) -> None:
-    """技能创建租户化：skill_manage(action=create) 后把新技能从全局分类目录
-    迁移到 skills/tenants/<TENANT_ID>/<name>/（租户设置页只显示租户专属技能）。
-
-    TENANT_ID 为空/public 时跳过（public 环境技能留在全局库）。
-    """
+def _tenantize_created_skill(
+    function_args, sandbox: TenantHermesSandbox | None
+) -> None:
+    """Copy a newly-created Skill into the authenticated tenant overlay."""
     try:
         args = function_args or {}
         if args.get("action") != "create" or not args.get("name"):
             return
-        tenant = os.environ.get("TENANT_ID", "").strip()
-        if not tenant or tenant == "public":
+        if sandbox is None:
             return
         name = str(args["name"]).strip()
         if not name:
@@ -2929,12 +3096,14 @@ def _tenantize_created_skill(function_args) -> None:
         candidates = list(skills_root.glob(f"*/{name}")) + list(skills_root.glob(name))
         for src in candidates:
             if src.is_dir() and (src / "SKILL.md").exists() and "tenants" not in src.parts:
-                dst = skills_root / "tenants" / tenant / name
+                dst = sandbox.custom_skills / name
                 dst.parent.mkdir(parents=True, exist_ok=True)
-                if dst.exists():
-                    shutil.rmtree(str(dst))
-                shutil.move(str(src), str(dst))
-                print(f"[bridge] 技能租户化: {name} → tenants/{tenant}/")
+                if not dst.exists():
+                    shutil.copytree(str(src), str(dst), symlinks=False)
+                print(
+                    f"[bridge] 技能租户化副本: {name} → "
+                    f"tenant={sandbox.tenant_namespace}"
+                )
                 return
     except Exception as e:
         print(f"[bridge] 技能租户化失败: {e}")
@@ -2960,6 +3129,7 @@ def _build_in_process_agent(
     agent_config: dict[str, Any] | None = None,
     knowledge_capability: str | None = None,
     client_context_enabled: bool = False,
+    sandbox: TenantHermesSandbox | None = None,
 ) -> object:
     """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
 
@@ -2985,11 +3155,16 @@ def _build_in_process_agent(
 
     runtime = _get_cached_runtime(cfg)  # 常驻单例：0ms 解析
     agent_config = dict(agent_config or {})
+    if sandbox is None:
+        raise RuntimeError("tenant_sandbox_unavailable")
+    persist_agent_snapshot(sandbox, agent_config)
     allowed_tools = set(str(item) for item in agent_config.get("allowed_tools") or [])
     toolsets_list = _resolve_dynamic_toolsets(goal, cfg)
     knowledge_tool_enabled = bool(
-        knowledge_capability and "knowledge_search" in allowed_tools
+        knowledge_capability
+        and allowed_tools & {"knowledge_search", "user_note_search"}
     )
+    tenant_skill_enabled = "skill_load" in allowed_tools
     network_tool_requested = bool(
         agent_config.get("allow_network")
         and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
@@ -3003,6 +3178,10 @@ def _build_in_process_agent(
         _ensure_knowledge_gateway_tool_registered()
         if "knowledge_gateway" not in toolsets_list:
             toolsets_list.append("knowledge_gateway")
+    if tenant_skill_enabled:
+        _ensure_tenant_skill_tool_registered()
+        if "tenant_skills" not in toolsets_list:
+            toolsets_list.append("tenant_skills")
     if client_context_enabled:
         _ensure_client_context_tools_registered()
         if "client_context" not in toolsets_list:
@@ -3011,8 +3190,8 @@ def _build_in_process_agent(
         requested_toolsets = {"clarify", "memory", "session_search"}
         if allowed_tools & {"web_search", "web_extract", "browser_navigate"}:
             requested_toolsets.add("web")
-        if "skill_load" in allowed_tools:
-            requested_toolsets.add("skills")
+        if tenant_skill_enabled:
+            requested_toolsets.add("tenant_skills")
         if "delegate_task" in allowed_tools:
             requested_toolsets.add("delegation")
         if knowledge_tool_enabled:
@@ -3029,7 +3208,7 @@ def _build_in_process_agent(
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
     _fb = _get_cached_fallback(cfg)  # 常驻单例
-    session_db = _get_shared_session_db()  # 常驻单例（预热完成）：消灭 6.6s SessionDB 冷建
+    session_db = _create_sandbox_session_db(sandbox)
     drill_me_enabled = _is_drill_me_goal(goal)
     clarify_round = 0
 
@@ -3117,7 +3296,7 @@ def _build_in_process_agent(
         # 技能创建租户化：skill_manage(action=create) 完成后把新技能迁移到 tenants/<tenant>/
         # （租户设置页只显示租户专属技能——用户创建的技能自动归租户，不留在 public）
         if function_name == "skill_manage":
-            _tenantize_created_skill(function_args)
+            _tenantize_created_skill(function_args, sandbox)
 
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
     # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
@@ -3144,6 +3323,11 @@ def _build_in_process_agent(
             + "\n允许委派的基线 Agent："
             + json.dumps(agent_config.get("capability_agent_ids") or [], ensure_ascii=False)
             + "。不得声称缺少已列出的工具；不得调用列表外工具。"
+            + "\nSkill 只能通过 tenant_skill_read 从当前租户沙箱副本读取；"
+              "禁止读取全局 Hermes Skill 目录。"
+            + "\n知识来源路由：当前对话用 session_context_read；当前用户笔记用"
+              " user_note_search；租户内部 Wiki/业务资料用 knowledge_search；"
+              "互联网公开信息用 web_search。仅在用户意图需要该来源时调用。"
             + "\n当用户要求洞察、比较、诊断或方案，且 delegate_task 已获授权时，"
               "应把当前回合已授权的 Wiki 素材作为 context 明确传给子 Agent；"
               "子 Agent 不继承父会话上下文，不得让它自行读取本地 Vault。"
@@ -3193,6 +3377,7 @@ def _run_agent_sync(
     knowledge_claims: dict[str, Any] | None = None,
     client_session_context: dict[str, Any] | None = None,
     client_context_claims: dict[str, Any] | None = None,
+    sandbox: TenantHermesSandbox | None = None,
 ) -> None:
     """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
     agent = None
@@ -3201,7 +3386,13 @@ def _run_agent_sync(
         _knowledge_tool_context.value = {
             "capability": knowledge_capability,
             "scopes": list((knowledge_claims or {}).get("scopes") or []),
+            "sources": list(
+                (knowledge_claims or {}).get("sources") or ["tenant_knowledge"]
+            ),
         }
+        if sandbox is None:
+            raise RuntimeError("tenant_sandbox_unavailable")
+        _sandbox_tool_context.value = sandbox
         if client_session_context is not None and client_context_claims is not None:
             _client_context_tool_context.value = {
                 "transcript": client_session_context,
@@ -3235,6 +3426,7 @@ def _run_agent_sync(
             client_context_enabled=(
                 client_session_context is not None and client_context_claims is not None
             ),
+            sandbox=sandbox,
         )
         # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
         # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
@@ -3292,6 +3484,7 @@ def _run_agent_sync(
     finally:
         _knowledge_tool_context.value = None
         _client_context_tool_context.value = None
+        _sandbox_tool_context.value = None
         # 显式回收：agent.close + session_db.close（防内存泄漏）
         try:
             if agent is not None:
@@ -3324,6 +3517,7 @@ def _sse_from_in_process(
     knowledge_claims: dict[str, Any] | None = None,
     client_session_context: dict[str, Any] | None = None,
     client_context_claims: dict[str, Any] | None = None,
+    sandbox: TenantHermesSandbox | None = None,
 ):
     """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。
 
@@ -3352,7 +3546,7 @@ def _sse_from_in_process(
         args=(
             goal, user_id, hermes_sid, stream_q, agent_holder,
             allow_local_files, agent_config, knowledge_capability, knowledge_claims,
-            client_session_context, client_context_claims,
+            client_session_context, client_context_claims, sandbox,
         ),
         daemon=True,
         name=f"agent-stream-{user_id[:12]}",
@@ -3667,74 +3861,115 @@ async def clarify_workflow(
     }
 
 
-@app.post("/v1/chat")
-async def chat(body: GoalRequest):
-    """非流式对话入口（向后兼容·Agent 工厂/子代理使用）。
-
-    两级锁序固定：全局 Semaphore(2) → user 细粒度锁，先取 Semaphore 再取 user 锁。
-    临界区全程覆盖：解析映射 → 快照水位线 → CLI 执行(to_thread) → 增量回读 → 映射更新。
-    思维链回读失败降级 reasoning=[] 并打 Warning 日志，严禁向客户端抛 500。
-    在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
-    """
-    user_id = body.session_id or "anonymous"
-    claims = _validated_knowledge_claims(
-        body.knowledge_capability,
-        subject_id=user_id,
-        policy_version=body.knowledge_policy_version,
-    )
-    evidence = await _request_scoped_wiki_evidence(body, claims)
-    agent_directive = str((body.agent_config or {}).get("prompt") or "")[:3000]
-    goal = (
-        KB_RETRIEVAL_DISCIPLINE
-        + ("\n\n【当前 Agent 指令】\n" + agent_directive if agent_directive else "")
-        + "\n\n【用户问题】"
-        + _expand_requested_skill(body.goal, body.skill_id)
-        + evidence
-    )
+async def _legacy_nonstream_chat(body: GoalRequest, user_id: str) -> dict[str, Any]:
+    """Preserve the pre-capability Bridge contract for old internal callers."""
     _mark_in_flight(user_id)
     try:
         async with _semaphore:
-            user_lock = _get_user_lock(user_id)
-            async with user_lock:
-                # 1) 解析 session 映射（失效则清除）
+            async with _get_user_lock(user_id):
                 hermes_sid = _resolve_hermes_session(user_id)
-
-                # 2) 请求前快照：水位线 baseline_id
                 baseline_id = await asyncio.to_thread(_get_baseline_id, hermes_sid)
-
-                # 3) CLI 执行（唯一真实执行路径·to_thread 不阻塞事件循环）
-                if not hermes_sid:
-                    call_result = await asyncio.to_thread(_run_hermes, goal, None)
-                    reply, new_sid = call_result
-                    usage = getattr(call_result, "usage", {})
-                    effective_sid = new_sid
-                    if new_sid:
-                        _update_session_mapping(user_id, new_sid)
-                else:
-                    call_result = await asyncio.to_thread(_run_hermes, goal, hermes_sid)
-                    reply, new_sid = call_result
-                    usage = getattr(call_result, "usage", {})
-                    effective_sid = new_sid or hermes_sid
-
-                # 4) 执行后增量回读 + 真实思维链映射（失败降级·不 500）
-                reasoning: list[dict] = []
+                legacy_goal = KB_RETRIEVAL_DISCIPLINE + "\n\n【用户问题】" + body.goal
+                call_result = await asyncio.to_thread(_run_hermes, legacy_goal, hermes_sid)
+                reply, new_sid = call_result
+                usage = getattr(call_result, "usage", {})
+                effective_sid = new_sid or hermes_sid
+                if new_sid:
+                    _update_session_mapping(user_id, new_sid)
+                reasoning: list[dict[str, Any]] = []
                 try:
                     rows = await asyncio.to_thread(
                         _readback_delta, effective_sid, baseline_id
                     )
-                    reasoning = [s.model_dump() for s in extract_steps(rows)]
-                except Exception as e:
-                    print(f"[bridge] ⚠️ 思维链回读失败·降级空 reasoning: {e}")
-
-                # 投递成功后推进消费水位线（断点 0ms 回读判定依据）
+                    reasoning = [step.model_dump() for step in extract_steps(rows)]
+                except Exception as exc:
+                    print(f"[bridge] legacy reasoning readback skipped: {exc}")
                 _mark_consumed(user_id, effective_sid)
-
                 return {
                     "reply": reply,
                     "session_id": user_id,
                     "hermes_session_id": effective_sid,
                     "reasoning": reasoning,
                     "usage": _usage_delta(usage),
+                }
+    finally:
+        _clear_in_flight(user_id)
+
+
+@app.post("/v1/chat")
+async def chat(body: GoalRequest):
+    """Non-streaming endpoint; signed requests use the tenant sandbox."""
+    user_id = body.session_id or "anonymous"
+    knowledge_claims = _validated_knowledge_claims(
+        body.knowledge_capability,
+        subject_id=user_id,
+        policy_version=body.knowledge_policy_version,
+    )
+    client_context_claims = _validated_client_context_claims(
+        body.client_context_capability,
+        body.client_session_context,
+        subject_id=user_id,
+        request_id=body.request_id,
+        policy_version=body.knowledge_policy_version,
+    )
+    if knowledge_claims is None and client_context_claims is None:
+        if body.skill_id:
+            raise HTTPException(status_code=403, detail="sandbox_identity_required")
+        return await _legacy_nonstream_chat(body, user_id)
+    sandbox = _tenant_sandbox_from_claims(
+        subject_id=user_id,
+        knowledge_claims=knowledge_claims,
+        client_claims=client_context_claims,
+    )
+    agent_directive = str((body.agent_config or {}).get("prompt") or "")[:3000]
+    goal = (
+        KB_RETRIEVAL_DISCIPLINE
+        + ("\n\n【当前 Agent 指令】\n" + agent_directive if agent_directive else "")
+        + "\n\n【用户问题】"
+        + _expand_requested_skill(body.goal, body.skill_id, sandbox)
+    )
+    _mark_in_flight(user_id)
+    try:
+        async with _semaphore:
+            user_lock = _get_user_lock(user_id)
+            async with user_lock:
+                hermes_sid = _resolve_hermes_session(user_id)
+                event_queue: queue.Queue = queue.Queue()
+                agent_holder: list[Any] = [None]
+                await asyncio.to_thread(
+                    _run_agent_sync,
+                    goal,
+                    user_id,
+                    hermes_sid,
+                    event_queue,
+                    agent_holder,
+                    False,
+                    body.agent_config,
+                    body.knowledge_capability,
+                    knowledge_claims,
+                    body.client_session_context,
+                    client_context_claims,
+                    sandbox,
+                )
+                events: list[dict[str, Any]] = []
+                while not event_queue.empty():
+                    item = event_queue.get_nowait()
+                    if isinstance(item, dict):
+                        events.append(item)
+                error = next((item for item in events if item.get("type") == "error"), None)
+                if error:
+                    raise HTTPException(status_code=502, detail=error.get("message") or "Hermes failed")
+                done = next((item for item in reversed(events) if item.get("type") == "done"), {})
+                return {
+                    "reply": str(done.get("answer") or ""),
+                    "session_id": user_id,
+                    "hermes_session_id": _user_session_map.get(user_id),
+                    "reasoning": [],
+                    "usage": done.get("usage") or {},
+                    "events": [
+                        item for item in events
+                        if item.get("type") in {"note_draft", "tool_start", "tool_complete"}
+                    ],
                 }
     finally:
         _clear_in_flight(user_id)
@@ -4080,6 +4315,13 @@ async def start_workflow_run(
     allowed = set(str(item) for item in (claims or {}).get("scopes") or [])
     if not set(body.knowledge_scope).issubset(allowed):
         raise HTTPException(status_code=403, detail="knowledge_scope_denied")
+    if str((claims or {}).get("tenant_key") or "") != body.tenant_id:
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    sandbox = _tenant_sandbox_from_claims(
+        subject_id=body.execution_id,
+        knowledge_claims=claims,
+        client_claims=None,
+    )
     if body.plan.get("process_contract_id"):
         from backend.services.process_contract_registry import dependency_lock_digest
 
@@ -4110,7 +4352,7 @@ async def start_workflow_run(
             for node in body.plan.get("nodes") or []:
                 binding = (node.get("parameters") or {}).get("skill_binding") or {}
                 if binding:
-                    skill_receipts.append(_verify_workflow_skill_binding(binding))
+                    skill_receipts.append(_verify_workflow_skill_binding(binding, sandbox))
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         run = body.model_dump(mode="json")
@@ -4225,58 +4467,26 @@ async def retry_workflow_run(
 
 
 @app.get("/v1/skills")
-async def list_skills(tenant: str = "public"):
-    """技能库列表（租户隔离·软隔离）：读 HERMES_HOME/skills。
-
-    目录约定：
-    - skills/<category>/<name>/SKILL.md          → public 技能（全局分类）
-    - skills/tenants/<tenant>/<name>/SKILL.md   → 租户专属技能（切片隔离）
-    tenant 过滤：public 返回全局分类技能；指定 tenant 返回其专属技能 + public 技能。
-    """
-    home = Path(os.environ.get("HERMES_HOME", str(Path.home())))
-    # HERMES_HOME 已是 ~/.hermes（含 .hermes）；未设置时补 .hermes
-    skills_root = home / "skills" if home.name == ".hermes" else home / ".hermes" / "skills"
-    items = []
-    if not skills_root.exists():
-        return {"skills": [], "tenant": tenant}
-    for skill_md in sorted(skills_root.rglob("SKILL.md")):
-        rel = skill_md.relative_to(skills_root)
-        parts = rel.parts
-        # parts: (名称, SKILL.md) | (分类, 名称, SKILL.md) | (tenants, <tenant>, 名称, SKILL.md)
-        is_tenant = len(parts) >= 4 and parts[0] == "tenants"
-        skill_tenant = parts[1] if is_tenant else "public"
-        # 租户隔离：public 查询只返回全局技能；租户查询只返回该租户专属（互不含）
-        if tenant == "public":
-            if is_tenant:
-                continue
-        elif skill_tenant != tenant:
-            continue
-        if len(parts) == 2:
-            name, category = parts[0], ""
-        elif is_tenant:
-            name, category = parts[2], parts[1]
-        else:
-            name, category = parts[1], parts[0]
-        desc = ""
-        created = None
-        try:
-            lines = skill_md.read_text(encoding="utf-8", errors="replace").splitlines()
-            for line in lines:
-                low = line.lower()
-                if low.startswith("description:") and not desc:
-                    desc = line.split(":", 1)[1].strip()
-                if low.startswith("date:") and created is None:
-                    created = line.split(":", 1)[1].strip()
-        except Exception:
-            pass
-        items.append({
-            "name": name,
-            "description": desc[:120],
-            "category": category,
-            "tenant": skill_tenant,
-            "created_at": created,
-        })
-    return {"skills": items, "tenant": tenant}
+async def list_skills(
+    x_knowledge_capability: str = Header(default=""),
+):
+    """List only Skill copies selected by a signed tenant/user capability."""
+    try:
+        claims = verify_capability(x_knowledge_capability)
+    except KnowledgeScopeDenied as exc:
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied") from exc
+    if str(claims.get("entry_point") or "") != "skills":
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    sandbox = _tenant_sandbox_from_claims(
+        subject_id=str(claims.get("subject_id") or "skills"),
+        knowledge_claims=claims,
+        client_claims=None,
+    )
+    return {
+        "skills": list_sandbox_skills(sandbox),
+        "tenant_namespace": sandbox.tenant_namespace,
+        "template_version": sandbox.template_version,
+    }
 
 
 @app.get("/health")

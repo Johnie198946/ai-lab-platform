@@ -34,11 +34,19 @@ def _token(sub: str) -> str:
 class TestTenantAgentsAPI(unittest.TestCase):
     def setUp(self):
         import backend.api.auth as auth
+        import backend.api.tenant_agents as tenant_agents
         from backend.db import init_db
         from backend.main import app
 
         self._old_resolver = auth.tenant_resolver
         self._old_super = auth._is_super_admin
+        self._tenant_agents_module = tenant_agents
+        self._old_catalog = tenant_agents.fetch_skill_catalog
+
+        async def empty_catalog(*_args, **_kwargs):
+            return []
+
+        tenant_agents.fetch_skill_catalog = empty_catalog
 
         # 注入 fake resolver：user-a -> tenant_A, user-b -> tenant_B
         async def fake_resolver(user_id):
@@ -80,6 +88,7 @@ class TestTenantAgentsAPI(unittest.TestCase):
 
         auth.tenant_resolver = self._old_resolver
         auth._is_super_admin = self._old_super
+        self._tenant_agents_module.fetch_skill_catalog = self._old_catalog
 
     def _request(self, method, path, sub: str | None = "user-a", json=None):
         async def _run():

@@ -223,19 +223,28 @@ def mint_capability(
     subject_id: str,
     entry_point: str,
     requested_scopes: Iterable[str] | None = None,
+    user_id: str | None = None,
+    sources: Iterable[str] | None = None,
     ttl_seconds: int | None = None,
 ) -> str:
     scopes = sorted(policy.restrict(requested_scopes))
+    allowed_sources = {"tenant_knowledge", "user_notes"}
+    requested_sources = set(sources or ("tenant_knowledge",))
+    if not requested_sources.issubset(allowed_sources):
+        raise ValueError("unsupported knowledge capability source")
     payload = {
         "v": 1,
         "tenant_key": policy.tenant_key,
         "subject_id": subject_id,
         "entry_point": entry_point,
         "scopes": scopes,
+        "sources": sorted(requested_sources),
         "policy_version": policy.policy_version,
         "iat": int(time.time()),
         "exp": int(time.time()) + (ttl_seconds or CAPABILITY_TTL_SECONDS),
     }
+    if user_id:
+        payload["user_id"] = str(user_id)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()
     encoded = base64.urlsafe_b64encode(raw).rstrip(b"=")
     signature = hmac.new(CAPABILITY_SECRET.encode(), encoded, hashlib.sha256).digest()

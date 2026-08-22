@@ -1,7 +1,7 @@
 """租户专属 Agent 拓扑接口 — 动态装配租户业务 Agent DAG。
 
 遵循原则（2026-08-17 迭代）：
-1. 100% 租户专属：DB 切片（TenantAgentModel）+ 租户技能目录（_scan_tenant_skill_agents）；
+1. 100% 租户专属：DB 切片（TenantAgentModel）+ capability 保护的 Hermes 沙箱目录；
 2. 彻底剔除底层基线 4 Agent，零基线泄露；
 3. 真实关系连线：严格基于 SKILL.md 中的 depends_on/related_skills 与业务工作流连接，
    连线上必须携带明确语义动作标注（如『输入转会数据』『输出需求规格』『调用xxx』）；
@@ -11,9 +11,7 @@
 
 from __future__ import annotations
 
-import os
 import re
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends
@@ -21,8 +19,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from backend.api.auth import current_tenant, require_auth
+from backend.api.chat import _resolve_chat_policy
 from backend.db import SessionLocal
 from backend.models.tenant_agent import AgentInvocationRelation, TenantAgentModel
+from backend.services.hermes_sandbox_catalog import fetch_skill_catalog
 
 router = APIRouter(prefix="/api/v1", tags=["topology"])
 
@@ -57,57 +57,20 @@ def _sanitize_tenant_id(tenant_id: str) -> str:
     return cleaned or "demo"
 
 
-def _get_skills_dir() -> Path:
-    env_path = os.environ.get("HERMES_SKILLS_DIR", "")
-    if env_path:
-        return Path(env_path)
-    return Path(os.path.expanduser("~/.hermes/skills"))
-
-
-def _scan_tenant_skill_agents(tenant_id: str) -> List[TopologyNodeOut]:
-    """扫描 skills/tenants/<tenant>/<name>/SKILL.md 动态生成技能 Agent 节点。"""
-    skills_root = _get_skills_dir()
-    tenant_dir = skills_root / "tenants" / tenant_id
-
-    # 防御路径穿越
-    try:
-        tenant_dir_resolved = tenant_dir.resolve()
-        skills_root_resolved = skills_root.resolve()
-        if not str(tenant_dir_resolved).startswith(str(skills_root_resolved)):
-            return []
-    except Exception:
-        return []
-
-    if not tenant_dir.is_dir():
-        return []
-
+def _sandbox_skill_agents(catalog: list[dict[str, Any]]) -> List[TopologyNodeOut]:
+    """Build topology nodes only from Bridge's capability-scoped catalog."""
     items: List[TopologyNodeOut] = []
-    for skill_dir in sorted(tenant_dir.iterdir()):
-        if not skill_dir.is_dir():
+    for skill in catalog:
+        name = str(skill.get("name") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
             continue
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.is_file():
-            continue
-
-        name = skill_dir.name
-        base_agent = "main_agent"
-        desc = ""
-        deps: List[str] = []
-        try:
-            head = skill_md.read_text(encoding="utf-8", errors="replace")[:3000]
-            for line in head.splitlines():
-                line = line.strip()
-                if line.startswith("base_agent:"):
-                    base_agent = line.split(":", 1)[1].strip() or "main_agent"
-                elif line.startswith("description:"):
-                    desc = line.split(":", 1)[1].strip()
-                elif line.startswith("depends_on:") or line.startswith("related_skills:"):
-                    raw_deps = line.split(":", 1)[1].strip()
-                    if raw_deps.startswith("[") and raw_deps.endswith("]"):
-                        items_raw = raw_deps[1:-1].split(",")
-                        deps = [d.strip().strip("'\"") for d in items_raw if d.strip()]
-        except Exception:
-            pass
+        base_agent = str(skill.get("base_agent") or "main_agent")[:100]
+        desc = str(skill.get("description") or "")[:500]
+        raw_deps = str(skill.get("depends_on") or "").strip()
+        deps = [
+            item.strip().strip("'\"")
+            for item in raw_deps.strip("[]").split(",") if item.strip()
+        ]
 
         items.append(
             TopologyNodeOut(
@@ -233,7 +196,14 @@ async def get_tenant_topology(
             )
 
     # 2. 扫描租户技能沙箱（命名空间 skill_，去重）
-    skill_agents = _scan_tenant_skill_agents(tenant_id)
+    try:
+        catalog = await fetch_skill_catalog(
+            await _resolve_chat_policy(payload),
+            user_id=str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+        )
+    except Exception:
+        catalog = []
+    skill_agents = _sandbox_skill_agents(catalog)
     for sa in skill_agents:
         if sa.id not in seen_ids:
             seen_ids.add(sa.id)

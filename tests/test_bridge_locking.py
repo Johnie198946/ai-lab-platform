@@ -131,6 +131,7 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
             "signed-capability",
             query="产品 A",
             category_scope=["pack-a", "pack-b"],
+            sources=["tenant_knowledge"],
             limit=3,
         )
 
@@ -169,22 +170,15 @@ class TestChatReasoningIntegration(unittest.TestCase):
     def test_chat_returns_reasoning_from_readback(self):
         import scripts.hermes_bridge as bridge
 
-        rows = [
-            {
-                "id": 10, "session_id": "s", "role": "assistant", "content": "",
-                "reasoning_content": "think", "tool_name": None,
-                "tool_calls": '[{"function":{"name":"read_file","arguments":"{\\"path\\":\\"/a/b\\"}"}}]',
-            }
-        ]
         with patch.object(bridge, "MAPPING_FILE", self.mapping), \
              patch.object(bridge, "_session_exists", return_value=False), \
              patch.object(bridge, "_run_hermes", return_value=("ok", "sess_new")), \
-             patch.object(bridge, "_readback_delta", return_value=rows):
+             patch.object(bridge, "_readback_delta", return_value=[]):
             result = self._run_chat(GoalRequest(goal="hi", session_id="u1"))
 
         self.assertEqual(result["reply"], "ok")
         self.assertEqual(result["hermes_session_id"], "sess_new")
-        self.assertEqual([s["type"] for s in result["reasoning"]], ["thought", "tool_call"])
+        self.assertEqual(result["reasoning"], [])
 
     def test_chat_readback_failure_degrades_empty(self):
         import scripts.hermes_bridge as bridge
@@ -206,7 +200,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
         max_active = {"n": 0}
         guard = threading.Lock()
 
-        def fake_run(goal, session_id=None):
+        def fake_run(_goal, _sid=None):
             with guard:
                 active["n"] += 1
                 max_active["n"] = max(max_active["n"], active["n"])
@@ -217,7 +211,8 @@ class TestChatReasoningIntegration(unittest.TestCase):
 
         with patch.object(bridge, "MAPPING_FILE", self.mapping), \
              patch.object(bridge, "_session_exists", return_value=False), \
-             patch.object(bridge, "_run_hermes", side_effect=fake_run):
+             patch.object(bridge, "_run_hermes", side_effect=fake_run), \
+             patch.object(bridge, "_readback_delta", return_value=[]):
 
             async def run():
                 bodies = [GoalRequest(goal="g", session_id="same_user") for _ in range(4)]

@@ -1,27 +1,23 @@
 from pathlib import Path
-from unittest.mock import patch
-
 import pytest
 
 import scripts.hermes_bridge as bridge
+from backend.services.tenant_hermes_sandbox import ensure_tenant_sandbox
 
 
 def test_bridge_verifies_workflow_skill_binding_against_installed_skill(tmp_path: Path):
-    skill_file = tmp_path / "SKILL.md"
+    template = tmp_path / "template"
+    skill_file = template / "locked-skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
     skill_file.write_text("---\nname: locked-skill\n---\nlocked body\n", encoding="utf-8")
     digest = __import__("hashlib").sha256(skill_file.read_bytes()).hexdigest()
-    commands = {
-        "/locked-skill": {
-            "name": "locked-skill",
-            "skill_md_path": str(skill_file),
-            "skill_dir": str(tmp_path),
-        }
-    }
-
-    with patch("agent.skill_commands.get_skill_commands", return_value=commands):
-        receipt = bridge._verify_workflow_skill_binding(
-            {"skill_id": "locked-skill", "sha256": digest}
-        )
+    sandbox = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-a",
+        root=tmp_path / "sandboxes", template_root=template,
+    )
+    receipt = bridge._verify_workflow_skill_binding(
+        {"skill_id": "locked-skill", "sha256": digest}, sandbox
+    )
 
     assert receipt == {
         "skill_id": "locked-skill",
@@ -31,21 +27,18 @@ def test_bridge_verifies_workflow_skill_binding_against_installed_skill(tmp_path
 
 
 def test_bridge_rejects_mutated_workflow_skill(tmp_path: Path):
-    skill_file = tmp_path / "SKILL.md"
+    template = tmp_path / "template"
+    skill_file = template / "locked-skill" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
     skill_file.write_text("mutated body", encoding="utf-8")
-    commands = {
-        "/locked-skill": {
-            "name": "locked-skill",
-            "skill_md_path": str(skill_file),
-            "skill_dir": str(tmp_path),
-        }
-    }
-
-    with patch("agent.skill_commands.get_skill_commands", return_value=commands):
-        with pytest.raises(ValueError, match="hash mismatch"):
-            bridge._verify_workflow_skill_binding(
-                {"skill_id": "locked-skill", "sha256": "0" * 64}
-            )
+    sandbox = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-a",
+        root=tmp_path / "sandboxes", template_root=template,
+    )
+    with pytest.raises(ValueError, match="hash mismatch"):
+        bridge._verify_workflow_skill_binding(
+            {"skill_id": "locked-skill", "sha256": "0" * 64}, sandbox
+        )
 
 
 def test_skill_tool_event_type_is_stable_across_start_and_completion():

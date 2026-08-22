@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
 from backend.api.auth import require_auth
+from backend.api.chat import _resolve_chat_policy
 from backend.api.tenant import current_tenant, current_visibility
 from backend.db import SessionLocal
 from backend.models.agent_registry import agent_ids
@@ -35,6 +36,7 @@ from backend.services.agent_capabilities import (
     SAFE_GLOBAL_TOOLS,
     capability_catalog,
 )
+from backend.services.hermes_sandbox_catalog import fetch_skill_catalog
 
 router = APIRouter(prefix="/api/v1", tags=["tenant-agents"])
 
@@ -299,9 +301,7 @@ async def list_tenant_agents(
     """列出当前租户的切片列表（多租户隔离，双源合并）：
 
     1. DB 切片（设置页 POST /tenant-agents 创建）
-    2. 租户技能目录（对话中 skill_manage create 自动租户化到
-       skills/tenants/<tenant>/<name>/SKILL.md —— 即"对话创建 agent"的插件化载体，
-       经 /root/.hermes/skills 挂载点直接扫描，无需 DB 行）
+    2. Hermes Bridge 返回的 capability 保护租户 Skill 沙箱目录。
     """
     tenant_id = _tenant_id()
     combined: List[TenantAgentOut] = []
@@ -322,8 +322,14 @@ async def list_tenant_agents(
         combined.append(_to_out(m))
         seen.add(m.id)
 
-    # 租户技能 → 租户 Agent（对话创建载体）：skills/tenants/<tenant>/<name>/SKILL.md
-    for skill_agent in _scan_tenant_skill_agents(tenant_id):
+    # 租户 Skill → 租户 Agent（只消费 Bridge 的签名沙箱目录）
+    try:
+        catalog = await fetch_skill_catalog(
+            await _resolve_chat_policy(payload), user_id=owner_user_id or "anonymous"
+        )
+    except Exception:
+        catalog = []
+    for skill_agent in _sandbox_skill_agents(tenant_id, catalog):
         if skill_agent.id not in seen:
             combined.append(skill_agent)
             seen.add(skill_agent.id)
@@ -331,56 +337,23 @@ async def list_tenant_agents(
     return combined
 
 
-def _scan_tenant_skill_agents(tenant_id: str) -> List[TenantAgentOut]:
-    """扫描挂载的租户技能目录，将技能登记为租户 Agent（前端拓扑/设置同源展示）。
-
-    每个租户技能目录 = 一个 Agent：SKILL.md frontmatter 提供
-    name/description/base_agent，
-    正文即该 Agent 的角色提示词（private_prompt_delta）。
-    路径约定：<skills_root>/tenants/<tenant>/<name>/SKILL.md
-    """
-    try:
-        from pathlib import Path
-
-        skills_root = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
-        tenant_dir = skills_root / "tenants" / tenant_id
-        if not tenant_dir.is_dir():
-            return []
-        items: List[TenantAgentOut] = []
-        for skill_dir in sorted(tenant_dir.iterdir()):
-            if not skill_dir.is_dir():
-                continue
-            skill_md = skill_dir / "SKILL.md"
-            if not skill_md.is_file():
-                continue
-            name = skill_dir.name
-            base_agent = "main_agent"
-            description = ""
-            try:
-                head = skill_md.read_text(encoding="utf-8", errors="replace")[:2000]
-                for line in head.splitlines():
-                    line = line.strip()
-                    if line.startswith("base_agent:"):
-                        base_agent = line.split(":", 1)[1].strip() or "main_agent"
-                    elif line.startswith("description:"):
-                        description = line.split(":", 1)[1].strip()
-            except Exception:
-                pass
-            items.append(
-                TenantAgentOut(
-                    id=f"skill_{name}",
-                    tenant_id=tenant_id,
-                    base_agent_id=base_agent,
-                    custom_name=name,
-                    private_prompt_delta=description,
-                    subscribed_knowledge_packs=[],
-                    is_active=True,
-                    created_at=None,
-                )
-            )
-        return items
-    except Exception:
-        return []
+def _sandbox_skill_agents(
+    tenant_id: str, catalog: list[dict[str, Any]]
+) -> List[TenantAgentOut]:
+    """Project capability-scoped Bridge catalog entries as tenant Agents."""
+    items: List[TenantAgentOut] = []
+    for skill in catalog:
+        name = str(skill.get("name") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", name):
+            continue
+        items.append(TenantAgentOut(
+            id=f"skill_{name}", tenant_id=tenant_id,
+            base_agent_id=str(skill.get("base_agent") or "main_agent")[:100],
+            custom_name=name,
+            private_prompt_delta=str(skill.get("description") or "")[:2000],
+            subscribed_knowledge_packs=[], is_active=True, created_at=None,
+        ))
+    return items
 
 
 @router.delete("/tenant-agents/{agent_id}", status_code=204, response_model=None)

@@ -1,10 +1,7 @@
 """GET /api/v1/skills 契约测试 — 租户真实技能库（非演示数据）。"""
 import asyncio
 import os
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 
 import httpx
 
@@ -32,10 +29,17 @@ def _token(tenant="u-topo"):
 class TestTenantSkillsAPI(unittest.TestCase):
     def setUp(self):
         import backend.api.auth as auth
+        import backend.api.skills as skills
 
         self._old_resolver = auth.tenant_resolver
-        self._test_dir = tempfile.mkdtemp()
-        os.environ["HERMES_SKILLS_DIR"] = self._test_dir
+        self._skills_module = skills
+        self._old_bridge_entries = skills._bridge_skill_entries
+        self._fake_skills = []
+
+        async def fake_entries(_payload):
+            return list(self._fake_skills)
+
+        skills._bridge_skill_entries = fake_entries
 
         async def fake_resolver(user_id):
             return {
@@ -58,7 +62,7 @@ class TestTenantSkillsAPI(unittest.TestCase):
         import backend.api.auth as auth
 
         auth.tenant_resolver = self._old_resolver
-        shutil.rmtree(self._test_dir, ignore_errors=True)
+        self._skills_module._bridge_skill_entries = self._old_bridge_entries
 
     def _get(self, path):
         async def _run():
@@ -79,12 +83,11 @@ class TestTenantSkillsAPI(unittest.TestCase):
         self.assertEqual(body["tenant_id"], "u-topo")
 
     def test_tenant_skills_scans_real_dir(self):
-        t_dir = Path(self._test_dir) / "tenants" / "u-topo" / "bayern-insight"
-        t_dir.mkdir(parents=True, exist_ok=True)
-        (t_dir / "SKILL.md").write_text(
-            "---\ndescription: 追踪拜仁转会\ndate: 2026-08-17\n---\n正文",
-            encoding="utf-8",
-        )
+        from backend.api.skills import TenantSkillOut
+        self._fake_skills = [TenantSkillOut(
+            name="bayern-insight", description="追踪拜仁转会",
+            category="tenant", created_at="2026-08-17",
+        )]
 
         r = self._get("/api/v1/skills")
         self.assertEqual(r.status_code, 200)
@@ -96,11 +99,7 @@ class TestTenantSkillsAPI(unittest.TestCase):
         self.assertEqual(skill["created_at"], "2026-08-17")
 
     def test_tenant_isolation(self):
-        """其他租户技能不可见（租户隔离）。"""
-        other_dir = Path(self._test_dir) / "tenants" / "other-tenant" / "secret-skill"
-        other_dir.mkdir(parents=True, exist_ok=True)
-        (other_dir / "SKILL.md").write_text("---\ndescription: 别的租户\n---\n", encoding="utf-8")
-
+        """Bridge 返回空目录时 API 不得补入全局或其他租户技能。"""
         r = self._get("/api/v1/skills")
         body = r.json()
         self.assertEqual(body["skills"], [])

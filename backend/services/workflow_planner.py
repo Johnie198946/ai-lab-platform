@@ -6,7 +6,6 @@ import re
 import os
 import time
 import uuid
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -22,6 +21,7 @@ from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.knowledge_policy import resolve_policy
 from backend.services.llm_usage import record_llm_usage
 from backend.services.ipd_scenario_registry import build_registered_ipd_plan
+from backend.services.hermes_sandbox_catalog import fetch_skill_catalog
 from backend.services.process_contract_registry import build_routed_process_plan
 
 HERMES_BRIDGE_URL = os.environ.get(
@@ -33,27 +33,26 @@ WORKFLOW_TOKEN_BUDGET = int(os.environ.get("WORKFLOW_TOKEN_BUDGET", "999999"))
 WORKFLOW_NODE_TOKEN_LIMIT = 128_000
 
 
-def _tenant_skill_agents(tenant: str) -> list[tuple[str, str]]:
-    """Read tenant skill capability summaries without depending on the HTTP layer."""
-    root = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
-    tenant_dir = root / "tenants" / tenant
-    if not tenant_dir.is_dir():
-        return []
-    result: list[tuple[str, str]] = []
-    for skill_dir in sorted(tenant_dir.iterdir()):
-        skill_file = skill_dir / "SKILL.md"
-        if not skill_file.is_file():
-            continue
-        description = ""
-        try:
-            for line in skill_file.read_text(encoding="utf-8", errors="replace")[:2000].splitlines():
-                if line.strip().startswith("description:"):
-                    description = line.split(":", 1)[1].strip()
-                    break
-        except OSError:
-            pass
-        result.append((f"skill_{skill_dir.name}", f"{skill_dir.name} {description}"))
-    return result
+async def _tenant_skill_agents(
+    db: AsyncSession, tenant: str, owner_user_id: str
+) -> list[tuple[str, str]]:
+    """Read Skill summaries through the signed Hermes sandbox catalog."""
+    mapping = (
+        await db.execute(select(TenantMapping).where(TenantMapping.tenant_key == tenant).limit(1))
+    ).scalar_one_or_none()
+    policy, _ = await resolve_policy(
+        db, tenant_key=tenant, org_id=mapping.org_id if mapping else "",
+        catalog=compute_catalog(), allow_admin_bypass=False,
+    )
+    try:
+        catalog = await fetch_skill_catalog(policy, user_id=owner_user_id or "anonymous")
+    except Exception:
+        catalog = []
+    return [
+        (f"skill_{item['name']}", f"{item['name']} {item.get('description') or ''}")
+        for item in catalog
+        if re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", str(item.get("name") or ""))
+    ]
 
 
 def _bridge_base_url() -> str:
@@ -116,7 +115,9 @@ async def validate_plan_policy(
         .scalars()
         .all()
     )
-    skill_agents = {agent_id for agent_id, _ in _tenant_skill_agents(tenant)}
+    skill_agents = {
+        agent_id for agent_id, _ in await _tenant_skill_agents(db, tenant, owner_user_id)
+    }
     allowed_agents = set(agent_ids()) | db_agents | skill_agents
     subscriptions = set(await _effective_knowledge_scopes(db, tenant))
     requested_scope = set(knowledge_scope)
@@ -160,7 +161,7 @@ async def _select_tenant_agent(
         (row.id, f"{row.custom_name or ''} {row.private_prompt_delta or ''}")
         for row in rows
     ]
-    candidates.extend(_tenant_skill_agents(tenant))
+    candidates.extend(await _tenant_skill_agents(db, tenant, owner_user_id))
     goal_tokens = _tokens(description)
     if not goal_tokens or not candidates:
         return "main_agent"
@@ -190,7 +191,9 @@ async def _allowed_agent_ids(
             )
         ).scalars().all()
     )
-    skill_ids = [agent_id for agent_id, _ in _tenant_skill_agents(tenant)]
+    skill_ids = [
+        agent_id for agent_id, _ in await _tenant_skill_agents(db, tenant, owner_user_id)
+    ]
     return sorted(set(agent_ids()) | set(db_ids) | set(skill_ids))
 
 

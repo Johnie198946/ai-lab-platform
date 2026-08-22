@@ -341,7 +341,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
                     "parameters": {"allow_network": False},
                 }
             ),
-            ["skills"],
+            ["tenant_skills"],
         )
         self.assertEqual(
             _workflow_toolsets(
@@ -354,7 +354,7 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
         )
         self.assertEqual(
             _workflow_toolsets({"node_type": "OUTPUT_FORMAT", "parameters": {}}),
-            ["skills"],
+            ["tenant_skills"],
         )
 
     def test_dsl_node_budget_is_converted_to_per_turn_cap(self):

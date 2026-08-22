@@ -25,7 +25,6 @@ from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
 from backend.api.catalog import compute_catalog
-from backend.api import knowledge
 from backend.api.identity import match_identity_rule
 from backend.db import SessionLocal
 from backend.models.agent_registry import (
@@ -41,7 +40,6 @@ from backend.services.llm_usage import record_llm_usage
 from backend.services.user_note_context import (
     normalize_inline_notes,
     render_local_note_context,
-    search_user_notes,
 )
 from backend.services.agent_capabilities import (
     BASELINE_AGENT_IDS,
@@ -293,9 +291,8 @@ async def _call_hermes(
         payload["knowledge_capability"] = knowledge_capability
         payload["knowledge_policy_version"] = policy_version
     if knowledge_query:
-        # Keep the raw user question separate from the augmented goal.  The
-        # Bridge uses it for a capability-protected Wiki lookup, so prompt
-        # instructions and previously injected excerpts cannot pollute search.
+        # Compatibility hint only. Hermes selects and queries a source through
+        # capability-protected tools; the platform does not prefetch evidence.
         payload["knowledge_query"] = knowledge_query
     if agent_config:
         payload["agent_config"] = agent_config
@@ -472,18 +469,17 @@ async def _knowledge_context(
     payload: Dict[str, Any], subject_id: str, question: str, entry_point: str = "chat",
     policy: KnowledgePolicy | None = None,
 ) -> tuple[str, str, str, List[Dict[str, Any]]]:
-    """Mint a signed scope and resolve UI source previews.
-
-    Wiki evidence is fetched by Hermes Bridge with the signed capability and
-    the raw ``knowledge_query``.  Keeping it out of the goal avoids duplicate
-    snippets and prevents augmented prompt text from becoming a search query.
-    """
+    """Mint source permissions; Hermes decides whether and what to retrieve."""
     policy = policy or await _resolve_chat_policy(payload)
-    capability = mint_capability(policy, subject_id=subject_id, entry_point=entry_point)
-    docs = await asyncio.to_thread(
-        knowledge._search_docs, knowledge._vault(), question, 5
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    capability = mint_capability(
+        policy,
+        subject_id=subject_id,
+        entry_point=entry_point,
+        user_id=user_id,
+        sources=("tenant_knowledge", "user_notes"),
     )
-    return capability, policy.policy_version, "", docs
+    return capability, policy.policy_version, question, []
 
 
 @dataclass(frozen=True)
@@ -504,24 +500,15 @@ async def _resolve_source_context(
     policy: KnowledgePolicy,
     prefetch_platform: bool = True,
 ) -> ResolvedSourceContext:
-    """Resolve private notes and governed Wiki without mixing semantics."""
+    """Authorize sources without performing AI retrieval in the platform API."""
     mode = scope.mode
-    local_notes: list[dict[str, Any]] = []
-    if mode in {"auto", "local_only", "combined"}:
-        local_notes = normalize_inline_notes(scope.local_notes)
-        if not local_notes:
-            local_notes = search_user_notes(
-                tenant_key=str(payload.get("tenant_key") or "public"),
-                user_id=str(payload.get("user_id") or payload.get("sub") or ""),
-                query=question,
-            )
-
-    use_wiki = mode in {"platform_only", "combined"} or (
-        mode == "auto" and not local_notes
-    )
+    local_notes = normalize_inline_notes(scope.local_notes)
     evidence = ""
     sources: List[Dict[str, Any]] = []
-    if mode == "local_only" or local_notes:
+    # Inline notes are explicit request data and may be unsynced. The backend
+    # may transmit those bytes, but it no longer decides which stored notes or
+    # Wiki documents to retrieve; Hermes chooses a scoped Gateway tool.
+    if local_notes:
         evidence = render_local_note_context(
             local_notes, exclusive=mode != "combined"
         )
@@ -532,19 +519,22 @@ async def _resolve_source_context(
             "updated_at": note.get("updated_at"),
         } for note in local_notes)
 
-    capability: str | None = None
-    knowledge_query: str | None = None
+    allowed_sources = {
+        "auto": ("tenant_knowledge", "user_notes"),
+        "platform_only": ("tenant_knowledge",),
+        "local_only": ("user_notes",),
+        "combined": ("tenant_knowledge", "user_notes"),
+    }[mode]
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    capability = mint_capability(
+        policy,
+        subject_id=subject_id,
+        entry_point="chat",
+        user_id=user_id,
+        sources=allowed_sources,
+    )
+    knowledge_query: str | None = question
     policy_version = policy.policy_version
-    if use_wiki:
-        if prefetch_platform:
-            capability, policy_version, wiki_evidence, wiki_sources = await _knowledge_context(
-                payload, subject_id, question, policy=policy
-            )
-            evidence += wiki_evidence
-            sources.extend(wiki_sources)
-        else:
-            capability = mint_capability(policy, subject_id=subject_id, entry_point="chat")
-        knowledge_query = question
 
     return ResolvedSourceContext(
         evidence=evidence,
@@ -746,21 +736,33 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
 
 
 @router.get("/skills")
-async def list_skills(tenant: str = "public", payload=Depends(require_auth)) -> Dict[str, Any]:
-    """技能库列表（租户软隔离）：透传 Bridge GET /v1/skills?tenant=。
-
-    目录约定：skills/<category>/<name>/ → public；skills/tenants/<tenant>/<name>/ → 租户专属。
-    tenant 过滤：public 返回全局；指定 tenant 返回专属 + public。
-    """
+async def list_skills(payload=Depends(require_auth)) -> Dict[str, Any]:
+    """List the authenticated tenant's copied Skill template and overlays."""
+    policy = await _resolve_chat_policy(payload)
+    tenant_key = str(payload.get("tenant_key") or "public")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
+    subject_id = _tenant_namespaced_session(
+        "skills", tenant_key, policy.policy_version, user_id
+    )
+    capability = mint_capability(
+        policy,
+        subject_id=subject_id,
+        entry_point="skills",
+        user_id=user_id,
+        sources=("tenant_knowledge", "user_notes"),
+    )
     async with httpx.AsyncClient(timeout=httpx.Timeout(10)) as client:
         base = HERMES_BRIDGE_URL.rstrip("/")
         # HERMES_BRIDGE_URL 含 /v1/chat 前缀（如 host.docker.internal:9118/v1/chat）——
         # /v1/skills 在基地址层，剥离前缀
         if base.endswith("/v1/chat"):
             base = base[: -len("/v1/chat")]
-        resp = await client.get(base + "/v1/skills", params={"tenant": tenant})
+        resp = await client.get(
+            base + "/v1/skills",
+            headers={"X-Knowledge-Capability": capability},
+        )
         if resp.status_code != 200:
-            return {"skills": [], "tenant": tenant}
+            return {"skills": [], "tenant_namespace": "unavailable"}
         return resp.json()
 
 
@@ -1002,9 +1004,6 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             delegated_target = invocation.agent if invocation.status == "matched" else None
             routed_agent = delegated_target or agent
             yield _route_frame(routed_agent, delegated=delegated_target is not None)
-            capability = mint_capability(
-                policy, subject_id=isolated_session_id, entry_point="chat"
-            )
             policy_version = policy.policy_version
             setup_ms = (time.monotonic() - setup_started) * 1000.0
             print(
@@ -1022,7 +1021,13 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     str(payload.get("user_id") or payload.get("sub") or "anonymous"),
                 )
                 child_capability = mint_capability(
-                    policy, subject_id=child_session_id, entry_point="chat"
+                    policy,
+                    subject_id=child_session_id,
+                    entry_point="chat",
+                    user_id=str(
+                        payload.get("user_id") or payload.get("sub") or "anonymous"
+                    ),
+                    sources=("tenant_knowledge", "user_notes"),
                 )
                 child_policy_version = policy.policy_version
                 try:

@@ -1,6 +1,8 @@
 import json
+from unittest.mock import patch
 
 import pytest
+from fastapi import HTTPException
 
 from backend.api.chat import _tenant_namespaced_session
 from backend.services.client_context_capability import (
@@ -97,3 +99,38 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         assert bridge._client_context_tool_context.value["draft_emitted"] is True
     finally:
         bridge._client_context_tool_context.value = None
+
+
+def test_sandbox_identity_rejects_cross_user_claim_mix():
+    import scripts.hermes_bridge as bridge
+
+    with pytest.raises(HTTPException) as denied:
+        bridge._tenant_sandbox_from_claims(
+            subject_id="session-a",
+            knowledge_claims={"tenant_key": "tenant-a", "user_id": "user-a"},
+            client_claims={"tenant_key": "tenant-a", "user_id": "user-b"},
+        )
+    assert denied.value.detail == "sandbox_identity_denied"
+
+
+def test_user_note_search_uses_only_signed_user_note_source():
+    import scripts.hermes_bridge as bridge
+
+    bridge._knowledge_tool_context.value = {
+        "capability": "signed",
+        "scopes": ["public"],
+        "sources": ["user_notes"],
+    }
+    try:
+        with patch.object(
+            bridge, "_knowledge_gateway_search",
+            return_value=[{"path": "user-notes/n1.md", "title": "私有笔记"}],
+        ) as search:
+            payload = json.loads(bridge._user_note_search_tool({"query": "超聚变"}))
+        assert payload["success"] is True
+        search.assert_called_once_with(
+            "signed", query="超聚变", category_scope=[],
+            sources=["user_notes"], limit=5,
+        )
+    finally:
+        bridge._knowledge_tool_context.value = None

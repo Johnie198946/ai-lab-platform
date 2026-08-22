@@ -1,4 +1,4 @@
-import asyncio
+import json
 from unittest.mock import patch
 
 
@@ -14,23 +14,22 @@ def test_dynamic_chat_tools_include_delegation_when_platform_supports_it():
     assert "delegation" in resolved
 
 
-def test_request_scoped_wiki_evidence_uses_raw_query_and_capability_scope():
+def test_hermes_knowledge_tool_uses_model_selected_query_and_capability_scope():
     import scripts.hermes_bridge as bridge
 
-    body = bridge.GoalRequest(
-        goal="augmented prompt that must not be searched",
-        session_id="tenant-session",
-        knowledge_capability="signed-capability-token",
-        knowledge_policy_version="policy-version-1",
-        knowledge_query="超聚变是做什么的？",
-    )
+    bridge._knowledge_tool_context.value = {
+        "capability": "signed-capability-token",
+        "scopes": ["knowledge/company/green"],
+        "sources": ["tenant_knowledge"],
+    }
     captured = {}
 
-    def fake_search(token, *, query, category_scope, limit):
+    def fake_search(token, *, query, category_scope, sources, limit):
         captured.update({
             "token": token,
             "query": query,
             "category_scope": category_scope,
+            "sources": sources,
             "limit": limit,
         })
         return [{
@@ -39,15 +38,16 @@ def test_request_scoped_wiki_evidence_uses_raw_query_and_capability_scope():
             "snippet": "超聚变提供服务器与算力基础设施产品。",
         }]
 
-    with patch.object(bridge, "_knowledge_gateway_search", side_effect=fake_search):
-        evidence = asyncio.run(
-            bridge._request_scoped_wiki_evidence(
-                body,
-                {"scopes": ["knowledge/company/green"]},
-            )
-        )
+    try:
+        with patch.object(bridge, "_knowledge_gateway_search", side_effect=fake_search):
+            payload = json.loads(bridge._knowledge_search_tool({
+                "query": "超聚变是做什么的？",
+                "category_scope": ["knowledge/company/green"],
+            }))
+    finally:
+        bridge._knowledge_tool_context.value = None
 
     assert captured["query"] == "超聚变是做什么的？"
     assert captured["category_scope"] == ["knowledge/company/green"]
-    assert "[[wiki/超聚变.md]]" in evidence
-    assert "服务器与算力基础设施" in evidence
+    assert captured["sources"] == ["tenant_knowledge"]
+    assert payload["docs"][0]["path"] == "wiki/超聚变.md"

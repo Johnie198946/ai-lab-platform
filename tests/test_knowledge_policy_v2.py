@@ -81,11 +81,17 @@ async def test_stale_authen_projection_fails_closed_only_for_yellow(policy_rows)
 async def test_capability_is_signed_scoped_and_bound_to_policy(policy_rows):
     async with SessionLocal() as db:
         policy, _ = await resolve_policy(db, tenant_key="tenant-a", org_id="org-a", catalog=CATALOG)
-    token = mint_capability(policy, subject_id="run-1", entry_point="workflow", requested_scopes=["premium"])
+    token = mint_capability(
+        policy, subject_id="run-1", entry_point="workflow",
+        requested_scopes=["premium"], user_id="user-a",
+        sources=("tenant_knowledge", "user_notes"),
+    )
     claims = verify_capability(token)
     assert claims["tenant_key"] == "tenant-a"
     assert claims["subject_id"] == "run-1"
     assert claims["scopes"] == ["premium"]
+    assert claims["user_id"] == "user-a"
+    assert claims["sources"] == ["tenant_knowledge", "user_notes"]
     payload, signature = token.split(".", 1)
     tampered = ("A" if payload[0] != "A" else "B") + payload[1:] + "." + signature
     with pytest.raises(KnowledgeScopeDenied):

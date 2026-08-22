@@ -1,10 +1,7 @@
 """GET /api/v1/topology 契约测试 — 租户专属业务 Agent 拓扑（Supervision 批复全覆盖）。"""
 import asyncio
 import os
-import shutil
-import tempfile
 import unittest
-from pathlib import Path
 
 import httpx
 
@@ -31,10 +28,17 @@ def _token(tenant="u-topo"):
 class TestTenantTopologyAPI(unittest.TestCase):
     def setUp(self):
         import backend.api.auth as auth
+        import backend.api.topology as topology
 
         self._old_resolver = auth.tenant_resolver
-        self._test_dir = tempfile.mkdtemp()
-        os.environ["HERMES_SKILLS_DIR"] = self._test_dir
+        self._topology = topology
+        self._old_catalog = topology.fetch_skill_catalog
+        self._catalog = []
+
+        async def fake_catalog(*_args, **_kwargs):
+            return list(self._catalog)
+
+        topology.fetch_skill_catalog = fake_catalog
 
         async def fake_resolver(user_id):
             return {
@@ -54,7 +58,7 @@ class TestTenantTopologyAPI(unittest.TestCase):
     def tearDown(self):
         import backend.api.auth as auth
         auth.tenant_resolver = self._old_resolver
-        shutil.rmtree(self._test_dir, ignore_errors=True)
+        self._topology.fetch_skill_catalog = self._old_catalog
 
     def _get(self, path, token=None):
         tok = token or _token()
@@ -79,12 +83,10 @@ class TestTenantTopologyAPI(unittest.TestCase):
 
     def test_topology_scans_tenant_skills_no_baseline(self):
         """Supervision 条件 7/8：只展示租户专属技能 Agent，彻底剔除底层基线 4 Agent"""
-        tenant_skills = Path(self._test_dir) / "tenants" / "u-topo" / "bayern-insight"
-        tenant_skills.mkdir(parents=True, exist_ok=True)
-        (tenant_skills / "SKILL.md").write_text(
-            "---\nname: 拜仁转会洞察\ndescription: 追踪拜仁转会\nbase_agent: main_agent\n---\n角色正文",
-            encoding="utf-8"
-        )
+        self._catalog = [{
+            "name": "bayern-insight", "description": "追踪拜仁转会",
+            "base_agent": "main_agent", "depends_on": "",
+        }]
 
         r = self._get("/api/v1/topology")
         self.assertEqual(r.status_code, 200)
@@ -106,15 +108,10 @@ class TestTenantTopologyAPI(unittest.TestCase):
 
     def test_topology_edges_construction(self):
         """消费 SKILL.md 中的 depends_on 声明，并标注具体调用动作"""
-        t_dir = Path(self._test_dir) / "tenants" / "u-topo"
-        (t_dir / "hub-agent").mkdir(parents=True, exist_ok=True)
-        (t_dir / "hub-agent" / "SKILL.md").write_text(
-            "---\nname: 调度中枢\nbase_agent: main_agent\n---\n", encoding="utf-8"
-        )
-        (t_dir / "vert-agent").mkdir(parents=True, exist_ok=True)
-        (t_dir / "vert-agent" / "SKILL.md").write_text(
-            "---\nname: 垂直分析\nbase_agent: coder\ndepends_on: [hub-agent]\n---\n", encoding="utf-8"
-        )
+        self._catalog = [
+            {"name": "hub-agent", "base_agent": "main_agent", "depends_on": ""},
+            {"name": "vert-agent", "base_agent": "coder", "depends_on": "[hub-agent]"},
+        ]
 
         r = self._get("/api/v1/topology")
         self.assertEqual(r.status_code, 200)
@@ -128,11 +125,10 @@ class TestTenantTopologyAPI(unittest.TestCase):
 
     def test_topology_known_pipelines(self):
         """预置真实业务管道连线与精确语义动作标注（有关系才连，无关系独立）"""
-        t_dir = Path(self._test_dir) / "tenants" / "u-topo"
-        for name in ("product-drill-me", "clarify-ladder-scoping", "backend-mvp-scaffolding", "isolated-agent"):
-            d = t_dir / name
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+        self._catalog = [{"name": name} for name in (
+            "product-drill-me", "clarify-ladder-scoping",
+            "backend-mvp-scaffolding", "isolated-agent",
+        )]
 
         r = self._get("/api/v1/topology")
         self.assertEqual(r.status_code, 200)
@@ -148,11 +144,11 @@ class TestTenantTopologyAPI(unittest.TestCase):
 
     def test_path_traversal_protection(self):
         """Supervision 条件 9：tenant_id 路径穿越安全防护"""
-        from backend.api.topology import _sanitize_tenant_id, _scan_tenant_skill_agents
+        from backend.api.topology import _sanitize_tenant_id, _sandbox_skill_agents
         self.assertEqual(_sanitize_tenant_id("../../etc/passwd"), "etcpasswd")
         self.assertEqual(_sanitize_tenant_id("normal_tenant-123"), "normal_tenant-123")
         # 恶意路径返回空
-        items = _scan_tenant_skill_agents("../../root")
+        items = _sandbox_skill_agents([{"name": "../../root"}])
         self.assertEqual(items, [])
 
 

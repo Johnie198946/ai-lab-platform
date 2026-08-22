@@ -24,6 +24,7 @@ from backend.services.knowledge_policy import (
     resolve_policy,
     verify_capability,
 )
+from backend.services.user_note_context import search_user_notes
 
 router = APIRouter(tags=["knowledge-policy"])
 AUTHEN_WEBHOOK_SECRET = os.environ.get("AUTHEN_ENTITLEMENT_WEBHOOK_SECRET", "")
@@ -31,10 +32,17 @@ _SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _SEARCH_CACHE_TTL = int(os.environ.get("KNOWLEDGE_GATEWAY_CACHE_SECONDS", "300"))
 
 
-def _cache_key(tenant: str, policy_version: str, scope: set[str], query: str) -> str:
+def _cache_key(
+    tenant: str,
+    policy_version: str,
+    scope: set[str],
+    query: str,
+    sources: set[str],
+) -> str:
     scope_hash = hashlib.sha256("\0".join(sorted(scope)).encode()).hexdigest()[:16]
     query_hash = hashlib.sha256(query.strip().lower().encode()).hexdigest()[:20]
-    return f"{tenant}:{policy_version}:{scope_hash}:{query_hash}"
+    source_hash = hashlib.sha256("\0".join(sorted(sources)).encode()).hexdigest()[:12]
+    return f"{tenant}:{policy_version}:{scope_hash}:{source_hash}:{query_hash}"
 
 
 def _clear_tenant_cache(tenant_keys: list[str]) -> None:
@@ -60,6 +68,7 @@ class EntitlementChange(BaseModel):
 class GatewaySearchRequest(BaseModel):
     query: str = Field(..., min_length=1, max_length=200)
     category_scope: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
     limit: int = Field(default=10, ge=1, le=20)
 
 
@@ -146,6 +155,14 @@ async def capability_search(
             detail={"code": KnowledgeScopeDenied.code, "message": "套餐或知识权限已变化"},
         )
     capability_scopes = set(str(item) for item in claims.get("scopes") or [])
+    capability_sources = set(
+        str(item) for item in claims.get("sources") or ["tenant_knowledge"]
+    )
+    requested_sources = set(body.sources or capability_sources)
+    if not requested_sources.issubset(capability_sources):
+        raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
+    if not requested_sources.issubset({"tenant_knowledge", "user_notes"}):
+        raise HTTPException(status_code=422, detail="unsupported knowledge source")
     requested = set(body.category_scope or capability_scopes)
     if not requested.issubset(capability_scopes):
         async with SessionLocal() as db:
@@ -156,17 +173,46 @@ async def capability_search(
             ))
             await db.commit()
         raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
-    key = _cache_key(tenant_key, policy.policy_version, requested, body.query)
-    cached = _SEARCH_CACHE.get(key)
-    if cached and cached[0] > time.monotonic():
-        docs = cached[1][: body.limit]
-    else:
-        token = current_visibility.set(frozenset(requested))
-        try:
-            docs = knowledge._search_docs(knowledge._vault(), body.query, body.limit)
-        finally:
-            current_visibility.reset(token)
-        _SEARCH_CACHE[key] = (time.monotonic() + _SEARCH_CACHE_TTL, docs)
+    docs: list[dict[str, Any]] = []
+    if "tenant_knowledge" in requested_sources:
+        key = _cache_key(
+            tenant_key, policy.policy_version, requested, body.query,
+            {"tenant_knowledge"},
+        )
+        cached = _SEARCH_CACHE.get(key)
+        if cached and cached[0] > time.monotonic():
+            wiki_docs = cached[1][: body.limit]
+        else:
+            token = current_visibility.set(frozenset(requested))
+            try:
+                wiki_docs = knowledge._search_docs(
+                    knowledge._vault(), body.query, body.limit
+                )
+            finally:
+                current_visibility.reset(token)
+            _SEARCH_CACHE[key] = (
+                time.monotonic() + _SEARCH_CACHE_TTL, wiki_docs
+            )
+        docs.extend({**item, "source": "tenant_knowledge"} for item in wiki_docs)
+    if "user_notes" in requested_sources:
+        user_id = str(claims.get("user_id") or "")
+        if not user_id:
+            raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
+        notes = search_user_notes(
+            tenant_key=tenant_key,
+            user_id=user_id,
+            query=body.query,
+            limit=body.limit,
+        )
+        docs.extend({
+            "path": f"user-notes/{item['id']}.md",
+            "title": item["title"],
+            "snippet": str(item.get("markdown") or "")[:1000],
+            "category": "user_notes",
+            "freshness": item.get("updated_at") or "unknown",
+            "source": "user_notes",
+        } for item in notes)
+    docs = docs[: body.limit]
     async with SessionLocal() as db:
         db.add(KnowledgeAccessAudit(
             tenant_key=tenant_key, entry_point=str(claims.get("entry_point") or "gateway"),
@@ -179,5 +225,6 @@ async def capability_search(
         "query": body.query,
         "policy_version": policy.policy_version,
         "category_scope": sorted(requested),
+        "sources": sorted(requested_sources),
         "docs": docs,
     }

@@ -197,14 +197,16 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
             allow_admin_bypass=False,
         )
         allowed_scope = policy.restrict(plan.knowledge_scope or [])
+        workflow = await policy_db.get(WorkflowDefinition, execution.workflow_id)
         capability = mint_capability(
             policy,
             subject_id=execution.id,
             entry_point="workflow",
             requested_scopes=allowed_scope,
+            user_id=str((workflow and workflow.created_by) or execution.id),
+            sources=("tenant_knowledge", "user_notes"),
             ttl_seconds=900,
         )
-        workflow = await policy_db.get(WorkflowDefinition, execution.workflow_id)
         task_agent = (
             await policy_db.get(TenantAgentModel, workflow.primary_agent_id)
             if workflow and workflow.primary_agent_id else None

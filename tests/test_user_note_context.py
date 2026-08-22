@@ -4,6 +4,7 @@ import pytest
 
 from backend.api.chat import ChatContextScope, LocalNoteContext, _resolve_source_context
 from backend.services.knowledge_policy import KnowledgePolicy
+from backend.services.knowledge_policy import verify_capability
 from backend.services.user_note_context import note_paths, search_user_notes
 from backend.services.user_note_context import (
     LOCAL_NOTE_CONTEXT_MAX_CHARS,
@@ -74,22 +75,22 @@ async def test_local_only_never_calls_platform_wiki(monkeypatch):
         question="整理我的本地待办",
         policy=policy(),
     )
-    assert resolved.capability is None
-    assert resolved.knowledge_query is None
+    claims = verify_capability(resolved.capability or "")
+    assert claims["sources"] == ["user_notes"]
+    assert claims["user_id"] == "user-a"
+    assert resolved.knowledge_query == "整理我的本地待办"
     assert "本地计划" in resolved.evidence
     assert resolved.sources[0]["source"] == "user_note"
 
 
 @pytest.mark.asyncio
-async def test_auto_falls_back_to_platform_wiki_only_after_local_miss(monkeypatch):
+async def test_auto_defers_source_selection_to_hermes(monkeypatch):
     import backend.api.chat as chat
 
-    monkeypatch.setattr(chat, "search_user_notes", lambda **_kwargs: [])
+    async def forbidden(*_args, **_kwargs):
+        raise AssertionError("auto must not prefetch a platform source")
 
-    async def fake_wiki(*_args, **_kwargs):
-        return "signed-capability", "policy-test", "", [{"title": "平台 Wiki"}]
-
-    monkeypatch.setattr(chat, "_knowledge_context", fake_wiki)
+    monkeypatch.setattr(chat, "_knowledge_context", forbidden)
     resolved = await _resolve_source_context(
         scope=ChatContextScope(mode="auto"),
         payload={"tenant_key": "tenant-a", "user_id": "user-a"},
@@ -97,6 +98,8 @@ async def test_auto_falls_back_to_platform_wiki_only_after_local_miss(monkeypatc
         question="超聚变是做什么的",
         policy=policy(),
     )
-    assert resolved.capability == "signed-capability"
+    claims = verify_capability(resolved.capability or "")
+    assert set(claims["sources"]) == {"tenant_knowledge", "user_notes"}
+    assert claims["user_id"] == "user-a"
     assert resolved.knowledge_query == "超聚变是做什么的"
-    assert resolved.sources == [{"title": "平台 Wiki"}]
+    assert resolved.sources == []

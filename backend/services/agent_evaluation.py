@@ -108,7 +108,9 @@ async def sync_run(run_id: str, db: AsyncSession) -> None:
         )
         capability = mint_capability(
             policy, subject_id=run.id, entry_point="agent_evaluation",
-            requested_scopes=policy.restrict(list(agent.knowledge_scope)), ttl_seconds=900,
+            requested_scopes=policy.restrict(list(agent.knowledge_scope)),
+            user_id=run.owner_user_id,
+            sources=("tenant_knowledge", "user_notes"), ttl_seconds=900,
         )
         body = {
             "run_id": run.id, "idempotency_key": run.idempotency_key,

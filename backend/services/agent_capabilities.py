@@ -8,9 +8,7 @@ evaluations.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import os
 import re
-from pathlib import Path
 from typing import Any
 
 from fastapi import HTTPException
@@ -19,12 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.models.agent_registry import AGENT_NODES, DEFAULT_AGENT_ID, system_prompt_for
 from backend.models.tenant_agent import TenantAgentModel
-
-
 SAFE_GLOBAL_TOOLS = (
     "web_search",
     "web_extract",
     "knowledge_search",
+    "user_note_search",
     "skill_load",
     "delegate_task",
 )
@@ -235,18 +232,27 @@ async def resolve_agent(
         skill_name = requested[6:]
         if not re.fullmatch(r"[A-Za-z0-9_.-]{1,80}", skill_name):
             raise HTTPException(status_code=404, detail="agent_not_found")
-        root = Path(os.environ.get("HERMES_SKILLS_DIR", "/root/.hermes/skills"))
-        skill_file = root / "tenants" / tenant_id / skill_name / "SKILL.md"
-        if skill_file.is_file():
-            text = skill_file.read_text(encoding="utf-8", errors="replace")[:12000]
-            return EffectiveAgent(
-                id=requested, base_agent_id="main_agent", name=skill_name,
-                prompt=system_prompt_for("main_agent") + "\n\n租户专属技能指令：\n" + text,
-                allowed_tools=SAFE_GLOBAL_TOOLS,
-                capability_agent_ids=BASELINE_AGENT_IDS,
-                knowledge_scope=(), allow_network=True,
-                max_concurrent_children=3, max_spawn_depth=1,
-            )
+        # The API container must never mount or inspect Hermes' filesystem.
+        # Existence and bytes are resolved inside Bridge from the authenticated
+        # tenant sandbox by the tenant_skill_read tool.
+        return EffectiveAgent(
+            id=requested,
+            base_agent_id="main_agent",
+            name=skill_name,
+            prompt=(
+                system_prompt_for("main_agent")
+                + "\n\n本 Agent 绑定租户 Skill："
+                + skill_name
+                + "。开始任务前必须调用 tenant_skill_read 读取当前租户沙箱副本；"
+                  "读取失败时必须明确失败，禁止回退到全局 Skill。"
+            ),
+            allowed_tools=SAFE_GLOBAL_TOOLS,
+            capability_agent_ids=BASELINE_AGENT_IDS,
+            knowledge_scope=(),
+            allow_network=True,
+            max_concurrent_children=3,
+            max_spawn_depth=1,
+        )
 
     row = (
         await db.execute(
