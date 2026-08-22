@@ -24,6 +24,7 @@ v4.1 (2026-08-10·Supervision 批复返工):
 
 用法: systemctl start hermes-bridge
 """
+import ast
 import asyncio
 import hashlib
 import json
@@ -1049,7 +1050,16 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     start, end = raw.find("{"), raw.rfind("}")
     if start < 0 or end <= start:
         raise ValueError("Hermes 未返回 JSON 计划")
-    value = json.loads(raw[start : end + 1])
+    candidate = raw[start : end + 1]
+    try:
+        value = json.loads(candidate)
+    except json.JSONDecodeError as json_error:
+        # Hermes occasionally emits a Python-dict-shaped object (single quotes
+        # or a trailing comma). literal_eval is data-only; never use eval here.
+        try:
+            value = ast.literal_eval(candidate)
+        except (SyntaxError, ValueError, TypeError):
+            raise json_error
     if not isinstance(value, dict):
         raise ValueError("Hermes 计划必须是 JSON 对象")
     return value
