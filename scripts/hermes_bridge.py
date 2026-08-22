@@ -2326,7 +2326,7 @@ async def chat_stream(body: GoalRequest):
             print(f"[bridge] v7 进程内流式失败·降级: {stream_err}")
 
     try:
-        hermes_sid = _resolve_hermes_session(user_id)
+        hermes_sid = _hermes_session_for_request(user_id, body.client_session_context)
 
         # 首次对话：先通过 CLI 新建会话·捕获 session_id
         if not hermes_sid:
@@ -2481,6 +2481,21 @@ def _resolve_dynamic_toolsets(goal: str, cfg: dict) -> list:
         "delegation",
     }
     return sorted(list(core_tools & platform_tools))
+
+
+def _hermes_session_for_request(
+    user_id: str, client_session_context: dict[str, Any] | None
+) -> str | None:
+    """Return the resumable Hermes session only when no client snapshot is present.
+
+    A client snapshot is the authoritative transcript for the iOS note flow.  A
+    stale mapped Hermes session can contain unrelated historical material (for
+    example an old Turkey research turn), so snapshot-backed requests must start
+    an isolated Hermes turn instead of resuming that mapped session.
+    """
+    if client_session_context is not None:
+        return None
+    return _resolve_hermes_session(user_id)
 
 
 def _prewarm_bridge_agent() -> None:
@@ -2864,6 +2879,15 @@ def _build_in_process_agent(
     knowledge_tool_enabled = bool(
         knowledge_capability and "knowledge_search" in allowed_tools
     )
+    network_tool_requested = bool(
+        agent_config.get("allow_network")
+        and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
+    )
+    platform_tools = set(_get_cached_tools(cfg))
+    if network_tool_requested and "web" not in platform_tools:
+        raise RuntimeError(
+            "web_toolset_unavailable: Hermes sandbox has no usable web provider"
+        )
     if knowledge_tool_enabled:
         _ensure_knowledge_gateway_tool_registered()
         if "knowledge_gateway" not in toolsets_list:
@@ -2885,6 +2909,12 @@ def _build_in_process_agent(
         if client_context_enabled:
             requested_toolsets.add("client_context")
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
+    if client_context_enabled:
+        # The signed iOS snapshot is authoritative for this request. Do not let
+        # Hermes memory/session_search reintroduce unrelated historical turns.
+        toolsets_list = [
+            item for item in toolsets_list if item not in {"memory", "session_search"}
+        ]
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
     _fb = _get_cached_fallback(cfg)  # 常驻单例
@@ -3013,6 +3043,7 @@ def _build_in_process_agent(
                 "只依据返回的会话事实生成 Markdown，再调用 note_draft。note_draft 仅生成"
                 "待用户确认的草稿，绝不能声称已经保存或入库。除非用户明确要求，不要为"
                 "这种任务调用 knowledge_search，也不要混入旧笔记或平台 Wiki。"
+                "本请求不使用 Hermes 历史记忆或 session_search；不得引用快照之外的事实。"
                 if client_context_enabled else ""
             )
         ),
@@ -3086,7 +3117,7 @@ def _run_agent_sync(
         # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
         # 前端 probeAndResume 断点恢复不依赖 SSE 连接。
         agent_sid = getattr(agent, "session_id", None) or hermes_sid
-        if agent_sid:
+        if agent_sid and client_session_context is None:
             _update_session_mapping(user_id, agent_sid)
         # 第二帧状态：agent 构建完成（build 返回后、run_conversation 前）→ 进入推理
         _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
@@ -3170,7 +3201,7 @@ def _sse_from_in_process(
     # 首帧状态（worker 启动前入队 → SSE 首帧即 boot，<10ms 真实构建状态）
     _qput(stream_q, {"type": "status", "phase": "boot", "detail": "正在初始化推理引擎…"})
 
-    hermes_sid = _resolve_hermes_session(user_id)
+    hermes_sid = _hermes_session_for_request(user_id, client_session_context)
 
     worker = threading.Thread(
         target=_run_agent_sync,

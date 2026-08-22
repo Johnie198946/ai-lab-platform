@@ -20,6 +20,16 @@ def test_session_namespace_includes_user_boundary():
     assert "-u" in first
 
 
+def test_snapshot_request_never_resumes_mapped_hermes_history(monkeypatch):
+    import scripts.hermes_bridge as bridge
+
+    monkeypatch.setattr(bridge, "_resolve_hermes_session", lambda _user_id: "old-hermes-session")
+    assert bridge._hermes_session_for_request("isolated-user", None) == "old-hermes-session"
+    assert bridge._hermes_session_for_request(
+        "isolated-user", {"session_id": "ios-session", "messages": []}
+    ) is None
+
+
 def test_client_context_capability_binds_context_and_rejects_tamper():
     context = {
         "session_id": "session-a",

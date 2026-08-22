@@ -26,6 +26,13 @@ tar xzf "$TARBALL" --strip-components=1 -C .
 echo "    代码已更新: $(git log --oneline -1 2>/dev/null || echo '(无 git 元数据, 以文件为准)')"
 
 echo "==> [2/4] 重建并重启服务"
+# Hermes Bridge runs in its dedicated venv (outside the API image).  Install the
+# credential-free DDGS provider when absent so the built-in web toolset passes
+# Hermes' availability gate in the production sandbox.
+if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
+  echo "    安装 Hermes DDGS 联网 provider"
+  /opt/hermes/venv/bin/pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ 'ddgs>=9.0'
+fi
 docker compose up -d --build
 
 echo "==> [3/4] 健康检查"
