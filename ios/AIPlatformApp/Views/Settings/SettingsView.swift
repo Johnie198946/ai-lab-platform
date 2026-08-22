@@ -2,8 +2,7 @@
 //  SettingsView.swift
 //  AIPlatformApp
 //
-//  个人中心：个人信息卡（点击编辑 sheet）→ Token 极简卡 → 创建智能体 → 账号操作。
-//  提炼工作台（Prompt Refinement Studio）已下线，由「创建智能体」替换。
+//  个人中心：个人信息卡（点击编辑 sheet）→ Token 极简卡 → 账号操作。
 //
 
 import SwiftUI
@@ -43,11 +42,7 @@ public struct SettingsView: View {
                         subscriptionEntryCard
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
-                        // 3. 创建智能体（替换提炼工作台）
-                        AgentCreatorView()
-                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
-
-                        // 3.5 我创建的智能体 + 我制作的技能（演示数据·不可交互）
+                        // 3. 我创建的智能体 + 我制作的技能（纯云端真实数据）
                         VStack(spacing: AppTheme.Spacing.md) {
                             createdAgentsSection()
                             createdSkillsSection()
@@ -228,7 +223,7 @@ public struct SettingsView: View {
         .buttonStyle(SoftButtonStyle())
     }
 
-    // MARK: - 3.5 我创建的智能体 + 我制作的技能（纯云端真实数据）
+    // MARK: - 我创建的智能体 + 我制作的技能（纯云端真实数据）
 
     private func createdAgentsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
@@ -243,7 +238,7 @@ public struct SettingsView: View {
                 )
             }
             if rows.isEmpty {
-                emptyArtifactHint("尚未创建智能体，使用上方「创建智能体」或在对话中提出「创建一个…的agent」")
+                emptyArtifactHint("尚未创建智能体，请在任务页创建任务，或在对话中提出「创建一个…的agent」")
             } else {
                 ForEach(rows) { row in
                     artifactRow(
