@@ -112,6 +112,6 @@
 - server_after: `49571d24e2a796da0f413a93da00edf18750e8dd`
 - health_check: `PASS` — `/health` returned HTTP 200 and `{"status":"ok","version":"0.8.0"}`; all 7 Compose services running; runtime contract audit passed.
 - functional_check: `PASS` — `/showroom/index.html` HTTP 200; `/api/v1/workflow-executions/active`, `/explain-context`, and `/evidence-report` returned expected HTTP 401 without credentials; container/source workflow hash matched `462cb556...`; P6/P7 route decorators present.
-- rollback_point: `cd004cadab777306aea2a64a6c1910638f82396e`
+- rollback_point: `49571d24e2a796da0f413a93da00edf18750e8dd` (cache-busting deploy script + verified source)
 - accepted_risks: Bridge durable record/AIAgent acceptance crash window; externally mutable model/tool/data references may not be reproducible despite equal digest. Both fail closed and require manual reconciliation where state is ambiguous.
 - asynchronous_audit_followup: Skill加载开始/完成统一投影为同一`skill_load`事件类型；相同`idempotency_key + type + status`的Bridge回调复用原事件，不递增序号。Artifact现行生产合同只含`kind/title/content/source_kind`，未虚构尚不存在的`source_url/evidence_refs`透传。
