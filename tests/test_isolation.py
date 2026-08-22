@@ -107,6 +107,30 @@ def test_gateway_receives_capability_and_bounded_scope(monkeypatch) -> None:
     assert captured["json"]["limit"] == 3
 
 
+def test_gateway_omits_scope_when_capability_should_supply_all_categories(monkeypatch) -> None:
+    captured: dict = {}
+
+    class Response:
+        status_code = 200
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"docs": []}
+
+    def fake_post(url, *, headers, json, timeout):
+        captured.update(json=json)
+        return Response()
+
+    monkeypatch.setattr(hermes_bridge.httpx, "post", fake_post)
+    hermes_bridge._knowledge_gateway_search(
+        "signed-capability", query="research", category_scope=None, limit=3
+    )
+
+    assert "category_scope" not in captured["json"]
+
+
 def test_gateway_denial_fails_closed(monkeypatch) -> None:
     class Response:
         status_code = 403

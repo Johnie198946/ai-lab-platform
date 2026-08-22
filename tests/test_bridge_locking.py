@@ -130,23 +130,63 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
         search.assert_called_once_with(
             "signed-capability",
             query="产品 A",
-            category_scope=["pack-a", "pack-b"],
+            category_scope=None,
             sources=["tenant_knowledge"],
             limit=3,
         )
 
-    def test_search_rejects_scope_escalation_before_gateway_call(self):
+    def test_search_ignores_non_path_scope_and_uses_capability_default(self):
         import scripts.hermes_bridge as bridge
 
         bridge._knowledge_tool_context.value = {
             "capability": "signed-capability",
             "scopes": ["pack-a"],
         }
-        with patch.object(bridge, "_knowledge_gateway_search") as search:
+        with patch.object(bridge, "_knowledge_gateway_search", return_value=[]) as search:
             payload = json.loads(bridge._knowledge_search_tool({
                 "query": "产品 A", "category_scope": ["pack-secret"]
             }))
+        self.assertTrue(payload["success"])
+        search.assert_called_once_with(
+            "signed-capability", query="产品 A", category_scope=None,
+            sources=["tenant_knowledge"], limit=5,
+        )
+
+    def test_search_filters_only_with_complete_authorized_path(self):
+        import scripts.hermes_bridge as bridge
+
+        public_scope = "knowledge/product/public"
+        entitlement_scope = "knowledge/methodology/entitlement/pro"
+        bridge._knowledge_tool_context.value = {
+            "capability": "signed-capability",
+            "scopes": [public_scope, entitlement_scope],
+        }
+        with patch.object(bridge, "_knowledge_gateway_search", return_value=[]) as search:
+            payload = json.loads(bridge._knowledge_search_tool({
+                "query": "产品 A",
+                "category_scope": [public_scope, entitlement_scope],
+            }))
+        self.assertTrue(payload["success"])
+        search.assert_called_once_with(
+            "signed-capability", query="产品 A",
+            category_scope=[entitlement_scope, public_scope],
+            sources=["tenant_knowledge"], limit=5,
+        )
+
+    def test_search_rejects_complete_path_scope_escalation_and_recommends_web(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._knowledge_tool_context.value = {
+            "capability": "signed-capability",
+            "scopes": ["knowledge/product/public"],
+        }
+        with patch.object(bridge, "_knowledge_gateway_search") as search:
+            payload = json.loads(bridge._knowledge_search_tool({
+                "query": "产品 A",
+                "category_scope": ["knowledge/secret/entitlement/root"],
+            }))
         self.assertEqual(payload["error"], "knowledge_scope_denied")
+        self.assertTrue(payload["fallback_recommended"])
         search.assert_not_called()
 
 

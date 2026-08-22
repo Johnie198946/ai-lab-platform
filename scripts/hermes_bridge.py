@@ -967,19 +967,21 @@ def _knowledge_gateway_search(
     token: str,
     *,
     query: str,
-    category_scope: list[str],
+    category_scope: list[str] | None = None,
     sources: list[str] | None = None,
     limit: int = 10,
 ) -> list[dict[str, Any]]:
+    request_body: dict[str, Any] = {
+        "query": query[:200],
+        "sources": list(sources or ["tenant_knowledge"]),
+        "limit": limit,
+    }
+    if category_scope is not None:
+        request_body["category_scope"] = category_scope
     response = httpx.post(
         KNOWLEDGE_GATEWAY_URL,
         headers={"X-Knowledge-Capability": token},
-        json={
-            "query": query[:200],
-            "category_scope": category_scope,
-            "sources": list(sources or ["tenant_knowledge"]),
-            "limit": limit,
-        },
+        json=request_body,
         timeout=20.0,
     )
     if response.status_code == 403:
@@ -1006,6 +1008,10 @@ _NOTE_DRAFT_REQUEST_RE = re.compile(
     r"|(?:笔记|note).{0,20}(?:保存|入库|总结|整理)",
     re.IGNORECASE,
 )
+_FULL_KNOWLEDGE_CATEGORY_RE = re.compile(
+    r"^knowledge/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+"
+    r"(?:public|entitlement/[A-Za-z0-9][A-Za-z0-9._-]*)$"
+)
 
 
 def _is_note_draft_request(goal: str) -> bool:
@@ -1020,57 +1026,101 @@ def _fallback_note_title(markdown: str) -> str:
     return "会话笔记"
 
 
+def _explicit_knowledge_category_scope(args: dict[str, Any]) -> list[str] | None:
+    """Return only complete governed category paths selected by Hermes.
+
+    Model shorthand such as ``green`` or a company/category name is not an
+    authorization scope.  Ignoring it lets the signed capability supply every
+    category that the current tenant may actually read.
+    """
+    raw_scope = args.get("category_scope")
+    if not isinstance(raw_scope, list) or not raw_scope:
+        return None
+    normalized = [str(item).strip() for item in raw_scope]
+    if any(
+        not item or not _FULL_KNOWLEDGE_CATEGORY_RE.fullmatch(item)
+        for item in normalized
+    ):
+        return None
+    return list(dict.fromkeys(normalized))
+
+
+def _knowledge_fallback_payload(error: str, *, query: str) -> dict[str, Any]:
+    """Tell Hermes how to continue without performing AI routing in Bridge."""
+    return {
+        "success": False,
+        "error": error,
+        "query": query,
+        "fallback_recommended": True,
+        "fallback_source": "public_web",
+        "fallback_instruction": (
+            "If web_search is authorized, search the public web with this query, "
+            "cite URLs, and label the result as public information rather than "
+            "tenant knowledge. Never infer or reconstruct restricted knowledge."
+        ),
+    }
+
+
 def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     """Hermes-facing knowledge_search handler backed by the platform Gateway."""
+    query = str((args or {}).get("query") or "").strip()
+    if not query:
+        return json.dumps(
+            {"success": False, "error": "query_required"}, ensure_ascii=False
+        )
     context = getattr(_knowledge_tool_context, "value", None)
     if not isinstance(context, dict) or not context.get("capability"):
         return json.dumps(
-            {"success": False, "error": "knowledge_scope_unavailable"},
+            _knowledge_fallback_payload("knowledge_scope_unavailable", query=query),
             ensure_ascii=False,
         )
     if "tenant_knowledge" not in set(
         context.get("sources") or ["tenant_knowledge"]
     ):
         return json.dumps(
-            {"success": False, "error": "knowledge_source_denied"},
+            _knowledge_fallback_payload("knowledge_source_denied", query=query),
             ensure_ascii=False,
         )
-    query = str((args or {}).get("query") or "").strip()
-    if not query:
-        return json.dumps(
-            {"success": False, "error": "query_required"}, ensure_ascii=False
-        )
     allowed_scope = set(str(item) for item in context.get("scopes") or [])
-    requested_scope = set(
-        str(item) for item in (args or {}).get("category_scope") or allowed_scope
-    )
-    if not requested_scope.issubset(allowed_scope):
+    explicit_scope = _explicit_knowledge_category_scope(args or {})
+    requested_scope = set(explicit_scope or [])
+    if explicit_scope is not None and not requested_scope.issubset(allowed_scope):
         return json.dumps(
-            {"success": False, "error": "knowledge_scope_denied"},
+            _knowledge_fallback_payload("knowledge_scope_denied", query=query),
             ensure_ascii=False,
         )
     try:
         docs = _knowledge_gateway_search(
             str(context["capability"]),
             query=query,
-            category_scope=sorted(requested_scope),
+            category_scope=(
+                sorted(requested_scope) if explicit_scope is not None else None
+            ),
             sources=["tenant_knowledge"],
             limit=max(1, min(10, int((args or {}).get("limit") or 5))),
         )
     except PermissionError:
         return json.dumps(
-            {"success": False, "error": "knowledge_scope_denied"},
+            _knowledge_fallback_payload("knowledge_scope_denied", query=query),
             ensure_ascii=False,
         )
     except Exception as exc:
-        return json.dumps(
-            {"success": False, "error": "knowledge_gateway_unavailable", "detail": str(exc)[:160]},
-            ensure_ascii=False,
+        payload = _knowledge_fallback_payload(
+            "knowledge_gateway_unavailable", query=query
         )
+        payload["detail"] = str(exc)[:160]
+        return json.dumps(payload, ensure_ascii=False)
     return json.dumps(
         {
             "success": True,
             "query": query,
+            "fallback_recommended": not bool(docs),
+            "fallback_source": "public_web" if not docs else None,
+            "fallback_instruction": (
+                "No authorized tenant knowledge matched. If web_search is "
+                "authorized, search public sources and label them clearly."
+                if not docs else None
+            ),
             "docs": [
                 {
                     "path": item.get("path", ""),
@@ -1189,7 +1239,12 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
                         "category_scope": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Optional subset of the authorized categories.",
+                            "description": (
+                                "Omit by default so the signed capability supplies all authorized "
+                                "categories. Only pass a complete path such as "
+                                "knowledge/product/public or "
+                                "knowledge/methodology/entitlement/premium."
+                            ),
                         },
                         "limit": {
                             "type": "integer",
@@ -2950,8 +3005,15 @@ KB_RETRIEVAL_DISCIPLINE = (
     "润色、翻译、闲聊、纯创作和无需内部证据的问题不要调用。\n"
     "2. knowledge_search 是唯一允许的租户知识入口；禁止使用 file、bash、search_files、"
     "read_file 或任何本机路径读取知识 Vault。\n"
-    "3. 工具零命中时明确说明证据缺口；不得猜测其他租户、过期套餐或历史 Session 中的知识。\n"
-    "4. 使用工具结果时必须保留 [[path]] 引用，不得伪造来源。"
+    "3. 调用 knowledge_search 时默认只传 query，不传 category_scope，让签名 capability 提供"
+    "当前租户全部已授权分类；只有已知完整的 knowledge/.../public 或 "
+    "knowledge/.../entitlement/... 路径时才可传 category_scope，禁止猜测 green、yellow、"
+    "公司名或短分类。\n"
+    "4. 若 knowledge_search 零命中、权限不可用或 Gateway 暂时不可用，且当前 Agent 已获"
+    "联网权限，必须继续调用 web_search；需要核实正文时再调用 web_extract。公开网络结果"
+    "必须标注为“公开网络资料”并引用 URL，不得伪装成租户知识，也不得借联网推测或重构"
+    "red/yellow 受限内容。若未获联网权限，才明确说明证据缺口。\n"
+    "5. 租户知识结果必须保留 [[path]] 引用；公开网络结果必须保留 URL，不得伪造来源。"
 )
 
 CLARIFY_GATE_PROMPT = f"""【AI Lab 全局交互与对话规范】
@@ -3248,7 +3310,7 @@ def _build_in_process_agent(
             toolsets_list.append("client_context")
     if allowed_tools:
         requested_toolsets = {"clarify", "memory", "session_search"}
-        if allowed_tools & {"web_search", "web_extract", "browser_navigate"}:
+        if network_tool_requested:
             requested_toolsets.add("web")
         if tenant_skill_enabled:
             requested_toolsets.add("tenant_skills")
@@ -3387,7 +3449,10 @@ def _build_in_process_agent(
               "禁止读取全局 Hermes Skill 目录。"
             + "\n知识来源路由：当前对话用 session_context_read；当前用户笔记用"
               " user_note_search；租户内部 Wiki/业务资料用 knowledge_search；"
-              "互联网公开信息用 web_search。仅在用户意图需要该来源时调用。"
+              "互联网公开信息用 web_search。租户知识检索零命中、被权限策略拒绝或暂时不可用时，"
+              "如果 web_search 已列入允许工具，必须继续检索公开网络；必要时用 web_extract 核实"
+              "原文。回答中分开标注租户知识 [[path]] 与公开网络 URL，绝不能用公开网页猜测"
+              "受限知识内容。仅在用户明确要求只用内部知识时停止于证据缺口。"
             + "\n当用户要求洞察、比较、诊断或方案，且 delegate_task 已获授权时，"
               "应把当前回合已授权的 Wiki 素材作为 context 明确传给子 Agent；"
               "子 Agent 不继承父会话上下文，不得让它自行读取本地 Vault。"
