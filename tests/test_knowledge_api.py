@@ -192,6 +192,43 @@ class TestKnowledgeAPI(unittest.TestCase):
         self.assertEqual(docs[0]["title"], "模型观察")
         self.assertEqual(docs[0]["category"], "knowledge/methodology/public")
 
+    def test_natural_language_entity_question_returns_wiki_facts(self):
+        """A title hit must include body evidence, not an empty snippet."""
+        page = self.tmp / "wiki" / "超聚变.md"
+        page.write_text(
+            "---\ntitle: 超聚变\naliases: [xFusion]\n---\n"
+            "# 超聚变\n\n超聚变是一家提供服务器与算力基础设施产品的企业。\n",
+            encoding="utf-8",
+        )
+        manifest_path = self.tmp / "knowledge_catalog.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["documents"].append({
+            "knowledge_id": "kn-xfusion",
+            "path": "wiki/超聚变.md",
+            "title": "超聚变",
+            "pack_id": "knowledge/methodology/public",
+            "knowledge_level": "K5",
+            "classification_status": "approved",
+            "security_level": "green",
+            "freshness": "current",
+            "source_count": 1,
+        })
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        from backend.api.tenant import current_visibility
+        from backend.services.knowledge_catalog import clear_manifest_cache
+
+        clear_manifest_cache()
+        token = current_visibility.set(None)
+        try:
+            docs = self.k._search_docs(self.tmp, "超聚变是做什么的？", 5)
+        finally:
+            current_visibility.reset(token)
+        self.assertTrue(docs)
+        self.assertEqual(docs[0]["path"], "wiki/超聚变.md")
+        self.assertIn("服务器与算力基础设施", docs[0]["snippet"])
+
     def test_wiki_list(self):
         r = self.request("GET", "/api/knowledge/wiki")
         self.assertEqual(r.status_code, 200)

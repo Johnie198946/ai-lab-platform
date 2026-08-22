@@ -1,0 +1,37 @@
+topic: AI Lab Wiki-native Hermes-style multi-tenant agent chat integration
+items:
+  - name: NousResearch/hermes-agent
+    role: primary agent runtime
+    decision: adopt
+  - name: AI Lab Wiki gateway
+    role: canonical Markdown Wiki, catalog, matrix and signed capability
+    decision: retain
+  - name: PrefectHQ/FastMCP
+    role: request-scoped Wiki tool server for Hermes
+    decision: adopt_next
+  - name: zcag/tela
+    role: Markdown-native Wiki and MCP boundary reference
+    decision: adapt_reference
+  - name: Meilisearch
+    role: optional lexical, alias and typo-tolerant Wiki index
+    decision: optional_at_scale
+  - name: OpenFGA
+    role: future relationship authorization engine
+    decision: defer
+  - name: Open WebUI
+    role: multi-user agent chat UX reference
+    decision: reference_only
+  - name: LibreChat
+    role: multi-user MCP and tool-approval UX reference
+    decision: reference_only
+  - name: Microsoft GraphRAG
+    role: graph reasoning research reference
+    decision: reject_as_knowledge_core
+  - name: Neo4j GraphRAG Python
+    role: graph traversal implementation reference
+    decision: reject_as_knowledge_core
+execution:
+  batch_size: 1
+  items_per_agent: 10
+  output_dir: ./results
+time_range: since 2024

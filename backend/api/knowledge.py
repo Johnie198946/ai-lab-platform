@@ -36,7 +36,16 @@ MATRIX_PATH = (
 )
 
 SEARCH_LIMIT = 20
-_SNIPPET_CHARS = 160
+# Wiki is an evidence store, not a list of finished articles.  Chat needs enough
+# surrounding facts to reason over a hit; the old 160 character window often
+# returned only a heading (and title hits returned an empty snippet entirely).
+_SNIPPET_CHARS = 600
+
+_QUERY_NOISE = (
+    "请问", "帮我查一下", "帮我查询", "查询一下", "查一下", "介绍一下",
+    "我想了解", "想了解", "关于", "是做什么的", "做什么的", "是什么",
+    "有什么", "怎么样", "如何", "请介绍", "请", "一下",
+)
 
 
 def _visibility():
@@ -136,15 +145,49 @@ def _doc_title(text: str) -> str:
 
 
 def _tokenize_query(text: str) -> List[str]:
-    """优先使用 jieba；缺失时退回轻量正则切词，避免本地依赖不全直接 500。"""
+    """Extract entity-oriented lexical terms from a natural-language question.
+
+    The Wiki is queried by entity names and aliases.  Keeping only the raw
+    sentence (for example ``超聚变是做什么的``) makes title matching fail, so
+    we also retain a question-stripped phrase before normal tokenization.
+    """
     normalized = text.lower()
+    cleaned = normalized
+    for phrase in _QUERY_NOISE:
+        cleaned = cleaned.replace(phrase, " ")
+    cleaned = re.sub(r"[^\w\u4e00-\u9fff]+", " ", cleaned).strip()
+    candidates: List[str] = []
+    if 2 <= len(cleaned) <= 40:
+        candidates.append(cleaned)
     try:
         import jieba
 
         tokens = [t.strip() for t in jieba.cut(normalized)]
     except ModuleNotFoundError:
         tokens = re.findall(r"[\w\u4e00-\u9fff]{2,}", normalized)
-    return [token for token in tokens if len(token) >= 2]
+    candidates.extend(
+        token for token in tokens
+        if len(token) >= 2 and token not in _QUERY_NOISE
+    )
+    return list(dict.fromkeys(candidates))
+
+
+def _aliases(text: str) -> List[str]:
+    raw = _frontmatter(text).get("aliases") or []
+    if isinstance(raw, str):
+        raw = [raw]
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def _snippet(text: str, terms: List[str]) -> str:
+    """Return a useful factual window rather than an empty title-only hit."""
+    body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL)
+    body = re.sub(r"^#\s+.*$", "", body, count=1, flags=re.MULTILINE).strip()
+    low = body.lower()
+    positions = [low.find(term) for term in terms if term and low.find(term) >= 0]
+    start = max(0, (min(positions) if positions else 0) - 80)
+    value = body[start : start + _SNIPPET_CHARS]
+    return re.sub(r"\s+", " ", value).strip()
 
 
 def _matrix_doc_entries(m: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -178,25 +221,36 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     # 1) wiki/ 优先: 实体名 → wiki/ 目录定位（wiki 是唯一真理源）
     vis = _visibility()
     wiki_root = vault / "wiki"
+    wiki_targets: Dict[str, str] = {}
     if wiki_root.exists():
-        for wf in sorted(wiki_root.rglob("*.md")):
-            rel = wf.relative_to(vault).as_posix()
-            if not _rel_visible(rel, vis):
+        for wf, rel in _iter_md_files(vault):
+            if not rel.startswith("wiki/"):
                 continue
-            title = _doc_title(wf.read_text(encoding="utf-8", errors="ignore"))
+            text = wf.read_text(encoding="utf-8", errors="ignore")
+            title = _doc_title(text)
+            aliases = _aliases(text)
             title_low = title.lower()
+            searchable_names = [
+                title_low,
+                wf.stem.lower(),
+                *[alias.lower() for alias in aliases],
+            ]
+            for name in searchable_names:
+                wiki_targets.setdefault(name, rel)
+            logical_path = rel.removeprefix("wiki/").removesuffix(".md").lower()
+            wiki_targets.setdefault(logical_path, rel)
             wscore = 0
             for t in qtokens:
-                if t in title_low or t in wf.stem.lower():
+                if any(t in name or name in t for name in searchable_names):
                     wscore += 6  # wiki 命中高权重
-            if ql in title_low or ql in wf.stem.lower():
+            if any(ql in name or name in ql for name in searchable_names):
                 wscore += 4
             if wscore > 0:
                 scored[rel] = {
                     "path": rel,
                     "title": title,
                     "score": wscore,
-                    "snippet": "",
+                    "snippet": _snippet(text, qtokens),
                 }
 
     # 1.5) wikilinks 追读: 命中 wiki 条目的关联条目计入候选（Karpathy 知识网）
@@ -209,13 +263,10 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         except OSError:
             continue
         for link in re.findall(r"\[\[([^\]]+)\]\]", htext):
-            target = link.split("|")[0].strip()
-            # 目标可能是 "竞品/DeepSeek" 或 "DeepSeek" → 定位到 wiki/ 下
-            candidate = (vault / "wiki" / f"{target}.md").resolve()
-            wiki_base = (vault / "wiki").resolve()
-            if not candidate.is_relative_to(wiki_base) or not candidate.exists():
+            target = link.split("|")[0].split("#")[0].strip()
+            rel = wiki_targets.get(target.lower())
+            if rel is None:
                 continue
-            rel = candidate.relative_to(vault.resolve()).as_posix()
             if not _rel_visible(rel, vis):
                 continue
             if rel in scored:
@@ -302,6 +353,14 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     ranked = sorted(scored.values(), key=lambda d: (-d["score"], d["path"]))
     for item in ranked:
         meta = documents.get(item["path"], {})
+        if not item.get("snippet"):
+            try:
+                item["snippet"] = _snippet(
+                    (vault / item["path"]).read_text(encoding="utf-8", errors="ignore"),
+                    qtokens,
+                )
+            except OSError:
+                item["snippet"] = ""
         item.update({
             "category": meta.get("pack_id", ""),
             "knowledge_level": meta.get("knowledge_level", "K5"),

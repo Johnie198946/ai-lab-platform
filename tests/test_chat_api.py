@@ -183,6 +183,7 @@ class TestChatAPIEndpoint(unittest.TestCase):
 
         async def fake_hermes(goal, session_id=None, **kwargs):
             captured_goal["goal"] = goal
+            captured_goal["knowledge_query"] = kwargs.get("knowledge_query")
             return "直接回答", []
 
         with patch("backend.api.chat.match_identity_rule", return_value=None), \
@@ -193,6 +194,7 @@ class TestChatAPIEndpoint(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         # 验证向 Hermes 传递的 goal 废除了硬编码角色前缀拼接，原样传递
         self.assertEqual(captured_goal["goal"], "请审查代码")
+        self.assertEqual(captured_goal.get("knowledge_query"), "请审查代码")
 
     def test_custom_agent_configuration_is_resolved_and_forwarded(self):
         created = self.request(

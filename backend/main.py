@@ -29,6 +29,7 @@ from backend.api.hermes import router as hermes_router
 from backend.api.showroom import router as showroom_router
 from backend.api.workflows import router as workflows_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
+from backend.api.knowledge_sync import router as knowledge_sync_router
 from backend.api.subscriptions import router as subscriptions_router
 from backend.db import init_db
 
@@ -114,6 +115,8 @@ app.include_router(screens_router, dependencies=[Depends(require_auth)])
 app.include_router(tasks_router, dependencies=[Depends(require_auth)])
 # 知识引擎: 矩阵/检索/wiki/实体（订阅过滤）
 app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
+# 用户笔记只同步到 raw/dialogues；编译、治理和正式存储继续由平台既有链路负责。
+app.include_router(knowledge_sync_router, dependencies=[Depends(require_auth)])
 # 问答: 基于知识库的回答（订阅过滤 + 会话记录）
 app.include_router(chat_router, dependencies=[Depends(require_auth)])
 # 前端原型编排: 角色生成与编辑回写

@@ -272,6 +272,9 @@ class GoalRequest(BaseModel):
     regenerate: bool = Field(False, description="重新生成：作废旧 run 后全新执行")
     knowledge_capability: str | None = None
     knowledge_policy_version: str | None = None
+    # Raw user question, separate from the augmented goal.  This is the only
+    # text used for the request-scoped Wiki lookup.
+    knowledge_query: str | None = Field(None, max_length=200)
     agent_config: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -742,6 +745,52 @@ def _knowledge_gateway_search(
     response.raise_for_status()
     payload = response.json()
     return payload.get("docs") if isinstance(payload.get("docs"), list) else []
+
+
+def _format_authorized_wiki_evidence(docs: list[dict[str, Any]]) -> str:
+    """Render governed Wiki material as evidence, never as user-facing notes."""
+    if not docs:
+        return ""
+    rows = []
+    for item in docs[:10]:
+        path = str(item.get("path") or "").strip()
+        title = str(item.get("title") or path).strip()
+        snippet = re.sub(r"\s+", " ", str(item.get("snippet") or "")).strip()
+        if not path or not snippet:
+            continue
+        rows.append(f"- [[{path}]] **{title}**：{snippet[:700]}")
+    if not rows:
+        return ""
+    return (
+        "\n\n【Knowledge Gateway 当前租户可见的 Wiki 素材】\n"
+        "这些是素材和事实片段，不是成稿。先回答事实；若用户要求洞察、比较或方案，"
+        "可把这些素材连同明确任务委派给子 Agent，再综合其结论。"
+        "所有事实必须保留 [[path]] 引用。\n"
+        + "\n".join(rows)
+    )
+
+
+async def _request_scoped_wiki_evidence(
+    body: GoalRequest, claims: dict[str, Any] | None
+) -> str:
+    """Fetch Wiki evidence with the signed tenant capability for this turn."""
+    query = str(body.knowledge_query or body.goal or "").strip()[:200]
+    token = str(body.knowledge_capability or "")
+    scopes = [str(item) for item in (claims or {}).get("scopes") or []]
+    if not query or not token or not scopes:
+        return ""
+    try:
+        docs = await asyncio.to_thread(
+            _knowledge_gateway_search,
+            token,
+            query=query,
+            category_scope=scopes,
+            limit=10,
+        )
+    except Exception as exc:
+        print(f"[bridge] Knowledge Gateway 检索失败·按证据缺口继续: {exc}")
+        return ""
+    return _format_authorized_wiki_evidence(docs)
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -1833,12 +1882,13 @@ async def chat_stream(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
-    _validated_knowledge_claims(
+    claims = _validated_knowledge_claims(
         body.knowledge_capability,
         subject_id=user_id,
         policy_version=body.knowledge_policy_version,
     )
-    goal = _expand_requested_skill(body.goal, body.skill_id)
+    evidence = await _request_scoped_wiki_evidence(body, claims)
+    goal = _expand_requested_skill(body.goal, body.skill_id) + evidence
     _mark_in_flight(user_id)
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
@@ -2037,7 +2087,13 @@ def _resolve_dynamic_toolsets(goal: str, cfg: dict) -> list:
         return sorted(list(platform_tools))
     
     # 核心轻量对话与技能管理工具集（仅 6 个核心工具）
-    core_tools = {"clarify", "skills", "web", "file", "memory", "session_search"}
+    # Delegation is part of the normal Hermes reasoning loop, not only a coding
+    # task.  Omitting it here made ``delegate_task`` impossible even when the
+    # server-owned agent capability explicitly allowed it.
+    core_tools = {
+        "clarify", "skills", "web", "file", "memory", "session_search",
+        "delegation",
+    }
     return sorted(list(core_tools & platform_tools))
 
 
@@ -2419,8 +2475,10 @@ def _build_in_process_agent(
         requested_toolsets = {"clarify", "memory", "session_search"}
         if allowed_tools & {"web_search", "web_extract", "browser_navigate"}:
             requested_toolsets.add("web")
-        if allowed_tools & {"skill_load", "delegate_task"}:
+        if "skill_load" in allowed_tools:
             requested_toolsets.add("skills")
+        if "delegate_task" in allowed_tools:
+            requested_toolsets.add("delegation")
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
@@ -2530,6 +2588,10 @@ def _build_in_process_agent(
             + "\n允许委派的基线 Agent："
             + json.dumps(agent_config.get("capability_agent_ids") or [], ensure_ascii=False)
             + "。不得声称缺少已列出的工具；不得调用列表外工具。"
+            + "\n当用户要求洞察、比较、诊断或方案，且 delegate_task 已获授权时，"
+              "应把当前回合已授权的 Wiki 素材作为 context 明确传给子 Agent；"
+              "子 Agent 不继承父会话上下文，不得让它自行读取本地 Vault。"
+              "父 Agent 负责汇总子 Agent 结论并保留原始 [[path]] 引用。"
         ),
         clarify_callback=_clarify_cb,
         stream_delta_callback=_delta_cb,
@@ -2790,17 +2852,19 @@ async def chat(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
-    _validated_knowledge_claims(
+    claims = _validated_knowledge_claims(
         body.knowledge_capability,
         subject_id=user_id,
         policy_version=body.knowledge_policy_version,
     )
+    evidence = await _request_scoped_wiki_evidence(body, claims)
     agent_directive = str((body.agent_config or {}).get("prompt") or "")[:3000]
     goal = (
         KB_RETRIEVAL_DISCIPLINE
         + ("\n\n【当前 Agent 指令】\n" + agent_directive if agent_directive else "")
         + "\n\n【用户问题】"
         + _expand_requested_skill(body.goal, body.skill_id)
+        + evidence
     )
     _mark_in_flight(user_id)
     try:

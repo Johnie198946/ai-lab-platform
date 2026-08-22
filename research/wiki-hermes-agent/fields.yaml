@@ -1,0 +1,43 @@
+categories:
+  architecture_fit:
+    detail_level: detailed
+    fields:
+      - wiki_native
+      - canonical_markdown
+      - wikilink_traversal
+      - vector_dependency
+      - source_of_truth_boundary
+  hermes_fit:
+    detail_level: detailed
+    fields:
+      - mcp_exposure_model
+      - delegation_support
+      - child_context_semantics
+      - skills_and_sessions
+  isolation:
+    detail_level: detailed
+    fields:
+      - tenant_context_propagation
+      - authorization_before_retrieval
+      - cache_scope
+      - session_scope
+      - request_scoped_capability
+  governance:
+    detail_level: moderate
+    fields:
+      - provenance_and_citations
+      - write_path_governance
+      - audit_and_replay
+      - index_freshness
+  operations:
+    detail_level: moderate
+    fields:
+      - license
+      - activity_since_2024
+      - deployment_complexity
+      - python_fastapi_fit
+      - open_core_feature_gating
+uncertain:
+  - production throughput on the mounted AI Lab Wiki
+  - exact Hermes 0.19 MCP request-context injection API on the deployed host
+  - production Wiki alias and link quality

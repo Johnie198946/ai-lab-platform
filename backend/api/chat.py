@@ -196,6 +196,7 @@ def extract_clarify_payload(reasoning: List[ReasoningStep]) -> Optional[ClarifyP
 async def _call_hermes(
     goal: str, session_id: Optional[str] = None, skill_id: Optional[str] = None,
     knowledge_capability: Optional[str] = None, policy_version: Optional[str] = None,
+    knowledge_query: Optional[str] = None,
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, List[ReasoningStep]]:
     """透传 Hermes bridge，返回 (reply, reasoning)。"""
@@ -207,6 +208,11 @@ async def _call_hermes(
     if knowledge_capability:
         payload["knowledge_capability"] = knowledge_capability
         payload["knowledge_policy_version"] = policy_version
+    if knowledge_query:
+        # Keep the raw user question separate from the augmented goal.  The
+        # Bridge uses it for a capability-protected Wiki lookup, so prompt
+        # instructions and previously injected excerpts cannot pollute search.
+        payload["knowledge_query"] = knowledge_query
     if agent_config:
         payload["agent_config"] = agent_config
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
@@ -331,23 +337,16 @@ async def _knowledge_context(
     payload: Dict[str, Any], subject_id: str, question: str, entry_point: str = "chat",
     policy: KnowledgePolicy | None = None,
 ) -> tuple[str, str, str, List[Dict[str, Any]]]:
-    """Mint a signed scope and attach only compact, already-authorized evidence."""
+    """Mint a signed scope and resolve UI source previews.
+
+    Wiki evidence is fetched by Hermes Bridge with the signed capability and
+    the raw ``knowledge_query``.  Keeping it out of the goal avoids duplicate
+    snippets and prevents augmented prompt text from becoming a search query.
+    """
     policy = policy or await _resolve_chat_policy(payload)
     capability = mint_capability(policy, subject_id=subject_id, entry_point=entry_point)
     docs = knowledge._search_docs(knowledge._vault(), question, 5)
-    evidence_lines = []
-    for doc in docs:
-        evidence_lines.append(
-            f"- [[{doc.get('path', '')}]] {doc.get('title', '')}: {str(doc.get('snippet') or '')[:240]}"
-        )
-    evidence = ""
-    if evidence_lines:
-        evidence = (
-            "\n\n以下是平台 Knowledge Gateway 已按当前租户权限过滤的证据摘要；"
-            "只能引用这些条目，不得自行读取 Vault 或推测不可见内容：\n"
-            + "\n".join(evidence_lines)
-        )
-    return capability, policy.policy_version, evidence, docs
+    return capability, policy.policy_version, "", docs
 
 
 @router.post("", response_model=ChatResponse)
@@ -395,12 +394,14 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             reply, reasoning = await _call_hermes(
                 goal, session_id=isolated_session_id, skill_id=skill_id,
                 knowledge_capability=capability, policy_version=policy_version,
+                knowledge_query=req.question,
                 agent_config=agent.bridge_config(),
             )
         else:
             reply, reasoning = await _call_hermes(
                 goal, session_id=isolated_session_id,
                 knowledge_capability=capability, policy_version=policy_version,
+                knowledge_query=req.question,
                 agent_config=agent.bridge_config(),
             )
         answer = trim_boilerplate(reply)
@@ -513,6 +514,7 @@ async def _call_bridge_stream(
     request_id: Optional[str] = None,
     knowledge_capability: Optional[str] = None,
     policy_version: Optional[str] = None,
+    knowledge_query: Optional[str] = None,
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
@@ -528,6 +530,7 @@ async def _call_bridge_stream(
                 "request_id": request_id,
                 "knowledge_capability": knowledge_capability,
                 "knowledge_policy_version": policy_version,
+                "knowledge_query": knowledge_query,
                 "agent_config": agent_config or {},
             },
         ) as resp:
@@ -602,6 +605,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 "skill_id": skill_id,
                 "knowledge_capability": capability,
                 "policy_version": policy_version,
+                "knowledge_query": req.question,
                 "agent_config": agent.bridge_config(),
             }
             if req.request_id:
