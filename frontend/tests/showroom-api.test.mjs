@@ -103,6 +103,55 @@ test('automatic reconnect uses five delays and then stops', () => {
   assert.equal(api.hermesReconnectTimer, null);
 });
 
+test('a short-lived connection does not reset reconnect backoff', () => {
+  const { api, timers } = createApi();
+  const gateway = { connectionState: 'open' };
+  api.hermes = gateway;
+  api.hermesReconnectCount = 4;
+
+  api.armHermesStabilityReset(gateway);
+
+  const timer = timers.get(api.hermesStableTimer);
+  assert.equal(timer.delay, 30000);
+  assert.equal(api.hermesReconnectCount, 4);
+
+  timer.callback();
+  assert.equal(api.hermesReconnectCount, 0);
+  assert.equal(api.hermesReconnectExhausted, false);
+});
+
+test('transient resume failure does not create and persist a replacement session', async () => {
+  const { api, window } = createApi();
+  let createRequests = 0;
+  let sessionWrites = 0;
+  api.bootstrap = { capabilities: { hermes_gateway: '/api/ws' } };
+  api.session = {
+    data: {
+      hermes_sessions: { frontstage_stored_session_id: 'stored-session' },
+    },
+  };
+  api.getHermesServeToken = async () => 'serve-token';
+  api.saveSession = async () => { sessionWrites += 1; };
+  window.HermesShared.buildHermesWebSocketUrl = () => 'wss://showroom.example/api/ws';
+  window.HermesShared.JsonRpcGatewayClient = class {
+    constructor() { this.connectionState = 'closed'; }
+    onEvent() {}
+    onState() {}
+    async connect() { this.connectionState = 'open'; }
+    close() { this.connectionState = 'closed'; }
+    async request(method) {
+      if (method === 'session.resume') throw new Error('temporary gateway disconnect');
+      if (method === 'session.create') createRequests += 1;
+      return {};
+    }
+  };
+
+  await assert.rejects(api.ensureHermes(), /temporary gateway disconnect/);
+  assert.equal(createRequests, 0);
+  assert.equal(sessionWrites, 0);
+  assert.equal(api.hermesStatus, 'reconnecting');
+});
+
 test('suspending a page closes both sockets and clears reconnect timers', () => {
   const { api, window } = createApi();
   let gatewayClosed = 0;
@@ -117,6 +166,7 @@ test('suspending a page closes both sockets and clears reconnect timers', () => 
   assert.equal(gatewayClosed, 1);
   assert.equal(showroomClosed, 1);
   assert.equal(api.hermesReconnectTimer, null);
+  assert.equal(api.hermesStableTimer, null);
   assert.equal(api.retryTimer, null);
   assert.equal(api.hermesStatus, 'idle');
 });
@@ -196,6 +246,14 @@ test('staffing and incremental insight envelopes never reach the customer UI', (
 <!-- AI_LAB_INSIGHT_V1 {"job_id":"job-1"} AI_LAB_INSIGHT_V1 -->`;
 
   assert.equal(api.visibleAssistantMessage(content), '');
+});
+
+test('employee status machine envelopes never reach the insight copilot UI', () => {
+  const { api } = createApi();
+  const content = `洞察已完成
+<!-- AI_LAB_EMPLOYEE_STATUS_V1 {"employees":[{"employee_id":"researcher","status":"done"}]} AI_LAB_EMPLOYEE_STATUS_V1 -->`;
+
+  assert.equal(api.visibleAssistantMessage(content), '洞察已完成');
 });
 
 test('insight job API methods persist every returned session', async () => {
@@ -287,6 +345,21 @@ test('visitor insight extraction persists the active main session', async () => 
   assert.equal(api.session.data.customer_insight.status, 'completed');
 });
 
+test('visitor insight extraction propagates a terminal failed session', async () => {
+  const { api } = createApi();
+  api.sessionId = 'visit-current';
+  api.request = async () => ({
+    recognized: false,
+    reason: '客户洞察数据块不是有效 JSON',
+    session: { session_id: 'visit-current', data: { customer_insight: { status: 'failed' } } },
+  });
+
+  const result = await api.extractVisitorInsight('invalid envelope');
+
+  assert.equal(result.recognized, false);
+  assert.equal(api.session.data.customer_insight.status, 'failed');
+});
+
 test('bootstrap follows the server-owned active main visit session', async () => {
   const { api, window } = createApi();
   api.connect = () => {};
@@ -312,9 +385,12 @@ test('rollover adopts the new main visit session', async () => {
   const { api, window } = createApi();
   api.sessionId = 'visit-old';
   api.slot = 'main';
+  let rolloverEvent = null;
+  api.on('rollover', (result) => { rolloverEvent = result; });
   api.request = async (path, options) => {
     assert.equal(path, '/api/showroom/visits/visit-old/rollover');
     assert.equal(options.method, 'POST');
+    assert.equal(options.body.source, 'controller');
     return {
       session: {
         session_id: 'visit-new',
@@ -322,15 +398,45 @@ test('rollover adopts the new main visit session', async () => {
         data: { visitor: { status: 'preparing' } },
       },
       runtime: { active_main_session_id: 'visit-new', epoch: 8 },
+      session_switches: [
+        { slot: 'main', old_session_id: 'visit-old', new_session_id: 'visit-new' },
+      ],
     };
   };
 
-  await api.rolloverVisit();
+  const result = await api.rolloverVisit('controller');
 
   assert.equal(api.sessionId, 'visit-new');
   assert.equal(api.slot, 'main');
   assert.equal(api.state.active_main_session_id, 'visit-new');
   assert.equal(window.sessionStorage.getItem('ai-lab-showroom.session'), 'visit-new');
+  assert.equal(rolloverEvent, result);
+});
+
+test('bootstrap adopts the server successor for an archived workstation session', async () => {
+  const { api, window } = createApi();
+  api.slot = '2';
+  api.sessionId = 'experience-slot-old';
+  api.connect = () => {};
+  api.ensureHermes = async () => '';
+  api.request = async (path) => {
+    if (path === '/health') return { status: 'ok' };
+    assert.match(path, /slot=2/);
+    return {
+      runtime: { epoch: 9 },
+      session: { session_id: 'experience-slot-new', slot: '2', step: 0, data: {} },
+      screens: [],
+      content: {},
+      knowledge: {},
+      centers: [],
+      capabilities: {},
+    };
+  };
+
+  await api.init({ force: true });
+
+  assert.equal(api.sessionId, 'experience-slot-new');
+  assert.equal(window.sessionStorage.getItem('ai-lab-showroom.session'), 'experience-slot-new');
 });
 
 test('expired showroom authentication returns to login with the current screen', async () => {

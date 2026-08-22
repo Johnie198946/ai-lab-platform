@@ -17,6 +17,16 @@ from backend.api.chat import (  # noqa: E402
     derive_isolated_session_id,
 )
 from backend.api.chat import router as chat_router  # noqa: E402
+from backend.services.agent_capabilities import AgentInvocationMatch, EffectiveAgent  # noqa: E402
+
+
+def effective_agent(agent_id: str, name: str) -> EffectiveAgent:
+    return EffectiveAgent(
+        id=agent_id, base_agent_id="main_agent", name=name, prompt="prompt",
+        allowed_tools=("delegate_task",), capability_agent_ids=("main_agent",),
+        knowledge_scope=(), allow_network=True,
+        max_concurrent_children=1, max_spawn_depth=1,
+    )
 
 
 def auth_headers() -> dict:
@@ -168,6 +178,50 @@ async def test_stream_expands_requested_skill(
 
 
 @pytest.mark.asyncio
+async def test_stream_emits_agent_route_and_handoffs_child_result(
+    app: FastAPI, transport: httpx.ASGITransport, monkeypatch
+):
+    import backend.api.chat as chat_mod
+
+    main = effective_agent("main_agent", "Main 智能编排")
+    target = effective_agent("english-agent", "小学生英语评估 · 专属 Agent")
+    observed = {}
+
+    async def fake_route(**_kwargs):
+        return main, AgentInvocationMatch(status="matched", agent=target)
+
+    async def fake_child(*_args, **kwargs):
+        observed["child_agent"] = kwargs["agent_config"]["id"]
+        observed["child_session"] = kwargs["session_id"]
+        return "英语评估结果", []
+
+    async def fake_bridge_stream(goal: str, session_id: str, **kwargs):
+        observed["main_agent"] = kwargs["agent_config"]["id"]
+        observed["main_session"] = session_id
+        observed["goal"] = goal
+        yield 'data: {"type":"done","answer":"已转交"}\n\n'
+
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", fake_route)
+    monkeypatch.setattr(chat_mod, "_call_hermes", fake_child)
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/stream",
+            json={"question": "调用小学生英语评估 Agent", "session_id": "s1"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert '"type": "agent_route"' in response.text
+    assert "小学生英语评估" in response.text
+    assert observed["child_agent"] == target.id
+    assert observed["main_agent"] == main.id
+    assert observed["child_session"] != observed["main_session"]
+    assert "英语评估结果" in observed["goal"]
+
+
+@pytest.mark.asyncio
 async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """bridge 返回非 200 时下发 error 帧而非崩溃。"""
 
@@ -192,6 +246,77 @@ async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITran
             async for chunk in resp.aiter_text():
                 body += chunk
     assert "error" in body
+
+
+@pytest.mark.asyncio
+async def test_stream_records_exact_usage(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
+    import backend.api.chat as chat_mod
+
+    recorded: list[dict] = []
+
+    async def fake_bridge_stream(*args, **kwargs):
+        yield (
+            'data: {"type":"done","answer":"ok","usage":'
+            '{"input_tokens":12,"output_tokens":3,"total_tokens":15,'
+            '"provider":"dashscope","model":"qwen-plus"}}\n\n'
+        )
+
+    async def fake_record(**kwargs):
+        recorded.append(kwargs)
+
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+    monkeypatch.setattr(chat_mod, "record_llm_usage", fake_record)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/stream",
+            json={"question": "统计这次调用"},
+            headers=auth_headers(),
+        )
+
+    assert response.status_code == 200
+    assert len(recorded) == 1
+    assert recorded[0]["success"] is True
+    assert recorded[0]["usage_payload"]["total_tokens"] == 15
+
+
+@pytest.mark.asyncio
+async def test_bridge_knowledge_denial_is_preserved_in_sse(monkeypatch):
+    """Bridge 的知识门禁拒绝必须原样到达客户端，不能退化成普通 HTTP 错误。"""
+    import backend.api.chat as chat_mod
+
+    class DeniedResponse:
+        status_code = 403
+
+        async def aread(self):
+            return b'{"detail":"knowledge_scope_denied"}'
+
+    class StreamContext:
+        async def __aenter__(self):
+            return DeniedResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            return StreamContext()
+
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    frames = [
+        frame async for frame in chat_mod._call_bridge_stream(
+            "需要受限知识", "session-1", knowledge_capability="signed-capability"
+        )
+    ]
+    body = "".join(frames)
+    assert '"code": "knowledge_scope_denied"' in body
+    assert "套餐或知识权限已变化" in body
 
 
 @pytest.mark.asyncio

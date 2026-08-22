@@ -53,6 +53,39 @@ public struct ProfileDTO: Codable {
     public let hasSessions: Bool
 }
 
+public struct UsageDailyDTO: Codable, Identifiable, Hashable {
+    public var id: String { date }
+    public let date: String
+    public let calls: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let totalTokens: Int
+}
+
+public struct UsageModelDTO: Codable, Identifiable, Hashable {
+    public var id: String { "\(provider):\(model)" }
+    public let provider: String
+    public let model: String
+    public let calls: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let totalTokens: Int
+    public let missingUsageCalls: Int
+}
+
+public struct UsageSummaryDTO: Codable, Hashable {
+    public let days: Int
+    public let totalCalls: Int
+    public let successCalls: Int
+    public let failedCalls: Int
+    public let inputTokens: Int
+    public let outputTokens: Int
+    public let totalTokens: Int
+    public let missingUsageCalls: Int
+    public let daily: [UsageDailyDTO]
+    public let models: [UsageModelDTO]
+}
+
 /// GET /api/v1/me/subscriptions 及订阅/退订返回
 public struct SubscriptionsResponse: Codable {
     public let tenantKey: String
@@ -69,8 +102,28 @@ public struct KnowledgeAccessResponse: Codable {
     public let yellowEntitlements: [String]
     public var activePackGrants: [KnowledgePackGrantDTO]? = nil
     public var packAllowance: Int? = nil
+    public var baseKnowledge: BaseKnowledgeDTO? = nil
+    public var tenantPrivateKnowledge: TenantPrivateKnowledgeDTO? = nil
     public let effectiveCategories: [String]
     public let entitlementStale: Bool
+}
+
+public struct BaseKnowledgeDTO: Codable, Hashable {
+    public let status: String
+    public let documentCount: Int
+    public let minimumDocumentCount: Int
+    public let categoryCount: Int
+    public let minimumCategoryCount: Int
+    public let categories: [String]
+    public let lastCompiledAt: String?
+
+    public var isReady: Bool { status == "ready" }
+}
+
+public struct TenantPrivateKnowledgeDTO: Codable, Hashable {
+    public let documentCount: Int
+    public let categoryCount: Int
+    public let categories: [String]
 }
 
 public struct SubscriptionPlanFeaturesDTO: Codable, Hashable {
@@ -113,6 +166,8 @@ public struct SubscriptionPlanDTO: Codable, Identifiable, Hashable {
     public var packAllowance: Int? = nil
     public var customOnly: Bool? = nil
     public var selectablePackIds: [String]? = nil
+    public var availability: String? = nil
+    public var isAvailable: Bool? = nil
 }
 
 public struct KnowledgePackDTO: Codable, Identifiable, Hashable {
@@ -184,12 +239,49 @@ public struct SubscriptionCenterResponse: Codable {
     public var knowledgePacks: [KnowledgePackDTO]? = nil
     public var activePackGrants: [KnowledgePackGrantDTO]? = nil
     public var packAllowance: Int? = nil
+    public var baseKnowledge: BaseKnowledgeDTO? = nil
+    public var tenantPrivateKnowledge: TenantPrivateKnowledgeDTO? = nil
     public var knowledgePackSubscriptionEnabled: Bool? = nil
 }
 
 public struct SubscriptionRequestsResponse: Codable {
     public let applicationId: String
     public let requests: [SubscriptionRequestDTO]
+}
+
+public struct KnowledgePublicationCandidateDTO: Codable, Identifiable, Hashable {
+    public let path: String
+    public let title: String
+    public let securityLevel: String
+    public let entitlementKey: String
+    public let ownerTenant: String
+    public let knowledgeLevel: String
+    public var id: String { path }
+}
+
+public struct KnowledgePublicationCandidatesResponse: Codable {
+    public let items: [KnowledgePublicationCandidateDTO]
+}
+
+public struct KnowledgePublicationResultDTO: Codable {
+    public let path: String
+    public let securityLevel: String
+    public let classificationStatus: String
+    public let gatewayStatus: String
+}
+
+private struct KnowledgePublicationDecisionDTO: Encodable {
+    let path: String
+    let securityLevel: String
+    let entitlementKey: String
+    let ownerTenant: String
+
+    enum CodingKeys: String, CodingKey {
+        case path
+        case securityLevel = "security_level"
+        case entitlementKey = "entitlement_key"
+        case ownerTenant = "owner_tenant"
+    }
 }
 
 private struct SubscribeCategoryRequest: Encodable {
@@ -317,15 +409,25 @@ public struct ChatResponseDTO: Codable {
     public let degraded: Bool?
     /// 澄清卡片载荷：非空时前端渲染 ClarifyCard（对齐 Hermes clarify 协议）
     public let clarify: ChatClarifyDTO?
+    public let resolvedAgent: ChatAgentRouteDTO?
+    public let delegatedBy: String?
 
-    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil) {
+    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil, resolvedAgent: ChatAgentRouteDTO? = nil, delegatedBy: String? = nil) {
         self.question = question
         self.answer = answer
         self.sessionId = sessionId
         self.reasoning = reasoning
         self.degraded = degraded
         self.clarify = clarify
+        self.resolvedAgent = resolvedAgent
+        self.delegatedBy = delegatedBy
     }
+}
+
+public struct ChatAgentRouteDTO: Codable, Hashable {
+    public let id: String
+    public let name: String
+    public let delegated: Bool
 }
 
 /// 后端澄清卡片载荷（对应 backend ClarifyPayload：question / choices / multi_select）
@@ -333,11 +435,21 @@ public struct ChatClarifyDTO: Codable {
     public let question: String
     public let choices: [String]
     public let multiSelect: Bool
+    public let source: String?
+    public let clarifyId: String?
+    public let requestId: String?
+    public let expiresInSeconds: Int?
 
     enum CodingKeys: String, CodingKey {
         case question
         case choices
-        case multiSelect = "multi_select"
+        // APIClient 的 decoder 已启用 convertFromSnakeCase；这里必须保持 Swift 字段名，
+        // 否则会二次转换并导致 multi_select 解码失败。
+        case multiSelect
+        case source
+        case clarifyId
+        case requestId
+        case expiresInSeconds
     }
 }
 
@@ -366,11 +478,19 @@ public extension ChatReasoningStepDTO {
 ///        / timeout / not_found
 public struct ChatStatusDTO: Codable {
     public let status: String
+    public let phase: String?
     public let answer: String?
     public let reasoning: [ChatReasoningStepDTO]?
     public let latestStep: String?
+    public let clarify: ChatClarifyDTO?
     /// 是否已消费（completed 且水位线已推进）；consume=1 时后端顺带标记
     public let consumed: Bool?
+}
+
+public struct ClarifySubmitResult: Codable, Sendable {
+    public let ok: Bool
+    public let state: String
+    public let clarifyId: String?
 }
 
 /// POST /api/v1/register 响应（token 为可选：当前后端仅返回 user_id，预留生产 JWT）
@@ -917,6 +1037,7 @@ public struct WorkflowPlanEditRequestDTO: Encodable {
 public enum APIError: Error, LocalizedError {
     case invalidURL
     case unauthorized
+    case knowledgeScopeChanged
     case server(Int, String)
     case network(String)
     case decoding(String)
@@ -926,6 +1047,8 @@ public enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL: return "无效的请求地址"
         case .unauthorized: return "登录态失效，请重新登录"
+        case .knowledgeScopeChanged:
+            return "套餐或知识权限已变化，请刷新知识权限后重试"
         case .server(let code, let msg):
             // 502/503：服务端部署窗口/过载，明确提示而非笼统"不可用"
             if code == 502 || code == 503 || code == 504 {
@@ -936,6 +1059,16 @@ public enum APIError: Error, LocalizedError {
         case .decoding(let msg): return "数据解析失败: \(msg)"
         case .timeout: return "响应超时，请重试"
         }
+    }
+
+    /// 将后端结构化 403 统一映射为权限变化，避免把知识撤权误报为普通服务器错误。
+    public static func fromHTTP(statusCode: Int, body: Data, fallback: String = "") -> APIError {
+        let raw = String(data: body, encoding: .utf8) ?? fallback
+        if statusCode == 403,
+           raw.contains("knowledge_scope_denied") || raw.contains("套餐或知识权限已变化") {
+            return .knowledgeScopeChanged
+        }
+        return .server(statusCode, raw)
     }
 }
 
@@ -1120,10 +1253,7 @@ public final class APIClient: ObservableObject {
                     throw APIError.unauthorized
                 }
                 guard (200..<300).contains(http.statusCode) else {
-                    throw APIError.server(
-                        http.statusCode,
-                        String(data: data, encoding: .utf8) ?? ""
-                    )
+                    throw APIError.fromHTTP(statusCode: http.statusCode, body: data)
                 }
                 isOfflineMode = false
                 return data
@@ -1268,6 +1398,33 @@ public final class APIClient: ObservableObject {
         return response.requests
     }
 
+    public func fetchKnowledgePublicationCandidates() async throws -> [KnowledgePublicationCandidateDTO] {
+        let response: KnowledgePublicationCandidatesResponse = try await request(
+            KnowledgePublicationCandidatesResponse.self,
+            path: "admin/knowledge-publication"
+        )
+        return response.items
+    }
+
+    public func approveKnowledgePublication(
+        path: String,
+        securityLevel: String,
+        entitlementKey: String,
+        ownerTenant: String
+    ) async throws -> KnowledgePublicationResultDTO {
+        try await request(
+            KnowledgePublicationResultDTO.self,
+            path: "admin/knowledge-publication/approve",
+            method: "POST",
+            body: KnowledgePublicationDecisionDTO(
+                path: path,
+                securityLevel: securityLevel,
+                entitlementKey: entitlementKey,
+                ownerTenant: ownerTenant
+            )
+        )
+    }
+
     public func reviewSubscriptionRequest(
         id: String, approve: Bool, note: String = "", approvedPackIds: [String]? = nil
     ) async throws -> SubscriptionRequestDTO {
@@ -1379,6 +1536,19 @@ public final class APIClient: ObservableObject {
 
     public func fetchWorkflow(id: String) async throws -> WorkflowDTO {
         try await request(WorkflowDTO.self, path: "workflows/\(encodedPath(id))")
+    }
+
+    public func deleteWorkflow(id: String) async throws {
+        let url = baseURL
+            .appendingPathComponent("api/v1/workflows")
+            .appendingPathComponent(id)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        _ = try await perform(request, session: session, canRetry: false)
     }
 
     public func createWorkflow(
@@ -1728,7 +1898,7 @@ public final class APIClient: ObservableObject {
                 throw APIError.unauthorized
             }
             guard (200..<300).contains(http.statusCode) else {
-                throw APIError.server(http.statusCode, String(data: data, encoding: .utf8) ?? "")
+                throw APIError.fromHTTP(statusCode: http.statusCode, body: data)
             }
             isOfflineMode = false
             do {
@@ -1754,9 +1924,11 @@ public final class APIClient: ObservableObject {
         case thought(String)
         case toolStart(id: String, tool: String, label: String)
         case toolComplete(id: String, tool: String)
-        case clarify(question: String, choices: [String], multiSelect: Bool, source: String, clarifyId: String?)
+        case clarify(question: String, choices: [String], multiSelect: Bool, source: String, clarifyId: String?, requestId: String?, expiresInSeconds: Int?)
+        case clarifyExpired(clarifyId: String?, requestId: String?)
         case clarifyRejected
         case status(phase: String, detail: String)
+        case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -1785,7 +1957,14 @@ public final class APIClient: ObservableObject {
                     choices: json["choices"] as? [String] ?? [],
                     multiSelect: json["multi_select"] as? Bool ?? false,
                     source: json["source"] as? String ?? "bridge",
-                    clarifyId: json["clarify_id"] as? String
+                    clarifyId: json["clarify_id"] as? String,
+                    requestId: json["request_id"] as? String,
+                    expiresInSeconds: json["expires_in_seconds"] as? Int
+                )
+            case "clarify_expired":
+                return .clarifyExpired(
+                    clarifyId: json["clarify_id"] as? String,
+                    requestId: json["request_id"] as? String
                 )
             case "clarify_rejected":
                 return .clarifyRejected
@@ -1794,6 +1973,14 @@ public final class APIClient: ObservableObject {
                 return .status(
                     phase: json["phase"] as? String ?? "",
                     detail: json["detail"] as? String ?? ""
+                )
+            case "agent_route":
+                let agent = json["agent"] as? [String: Any] ?? [:]
+                return .agentRoute(
+                    id: agent["id"] as? String ?? "",
+                    name: agent["name"] as? String ?? "专属 Agent",
+                    delegated: agent["delegated"] as? Bool ?? false,
+                    delegatedBy: json["delegated_by"] as? String
                 )
             case "done":
                 return .done(
@@ -1851,7 +2038,9 @@ public final class APIClient: ObservableObject {
                         return
                     }
                     guard (200..<300).contains(http.statusCode) else {
-                        continuation.finish(throwing: APIError.server(http.statusCode, "流式端点错误"))
+                        continuation.finish(throwing: http.statusCode == 403
+                            ? APIError.knowledgeScopeChanged
+                            : APIError.server(http.statusCode, "流式端点错误"))
                         return
                     }
                     var buffer = ""
@@ -1924,8 +2113,10 @@ public final class APIClient: ObservableObject {
         response: String,
         clarifyId: String? = nil,
         agentId: String? = nil
-    ) async throws -> Bool {
-        guard let sessionId, !sessionId.isEmpty else { return false }
+    ) async throws -> ClarifySubmitResult {
+        guard let sessionId, !sessionId.isEmpty else {
+            return ClarifySubmitResult(ok: false, state: "no_pending", clarifyId: clarifyId)
+        }
         let url = baseURL.appendingPathComponent("api/chat/stream/clarify")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
@@ -1946,8 +2137,7 @@ public final class APIClient: ObservableObject {
         }
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let data = try await perform(request, session: chatSession, canRetry: false)
-        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        return (json?["ok"] as? Bool) ?? false
+        return try decoder.decode(ClarifySubmitResult.self, from: data)
     }
 
     /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。
@@ -1994,6 +2184,30 @@ public final class APIClient: ObservableObject {
         }
         let resp: UsageResponse = try await request(UsageResponse.self, path: "me/usage")
         return (resp.chatCalls, resp.tokenUsed)
+    }
+
+    /// GET /api/v1/usage/summary — 当前登录用户的真实 LLM 用量。
+    public func fetchUsageSummary(days: Int = 30) async throws -> UsageSummaryDTO {
+        var components = URLComponents(
+            url: baseURL
+                .appendingPathComponent("api/v1")
+                .appendingPathComponent("usage/summary"),
+            resolvingAgainstBaseURL: false
+        )
+        components?.queryItems = [URLQueryItem(name: "days", value: String(days))]
+        guard let url = components?.url else { throw APIError.invalidURL }
+        var urlRequest = URLRequest(url: url)
+        urlRequest.httpMethod = "GET"
+        urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let data = try await perform(urlRequest, session: session, canRetry: true)
+        do {
+            return try decoder.decode(UsageSummaryDTO.self, from: data)
+        } catch {
+            throw APIError.decoding(Self.describeDecodingError(error))
+        }
     }
 
     /// POST /api/v1/register：自助注册（Authen 代理）。开发态 Authen 未起 → 连接失败，由调用方降级开发模式。

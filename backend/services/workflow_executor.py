@@ -35,6 +35,7 @@ from backend.services.workflow_artifacts import (
     store_artifact,
 )
 from backend.services.knowledge_policy import mint_capability, resolve_policy
+from backend.services.llm_usage import build_llm_usage_record
 
 HERMES_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -189,12 +190,20 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
     return response.json()
 
 
-async def read_bridge_run(execution: WorkflowExecution) -> dict[str, Any]:
+async def read_bridge_run(
+    execution: WorkflowExecution,
+    *,
+    after_seq: int | None = None,
+) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(
             f"{bridge_base_url()}/v1/workflow-runs/{execution.id}",
             headers=bridge_headers(),
-            params={"after_seq": execution.bridge_event_seq},
+            params={
+                "after_seq": (
+                    execution.bridge_event_seq if after_seq is None else after_seq
+                )
+            },
         )
     response.raise_for_status()
     return response.json()
@@ -229,6 +238,37 @@ def _rollup_usage(execution: WorkflowExecution, nodes: dict[str, WorkflowNodeRun
         latest = max(completed, key=lambda item: item.position)
         execution.model_used = latest.model_used
         execution.provider_used = latest.provider_used
+
+
+async def _add_workflow_usage_record(
+    db: AsyncSession,
+    execution: WorkflowExecution,
+    usage: dict[str, Any] | None,
+    *,
+    success: bool,
+    provider: str = "",
+    model: str = "",
+) -> None:
+    owner = (
+        await db.execute(
+            select(WorkflowDefinition.created_by).where(
+                WorkflowDefinition.id == execution.workflow_id
+            )
+        )
+    ).scalar_one_or_none()
+    db.add(
+        build_llm_usage_record(
+            auth_payload={
+                "user_id": str(owner or ""),
+                "tenant_key": execution.tenant_key,
+            },
+            usage_payload=usage,
+            latency_ms=0,
+            success=success,
+            provider=provider,
+            model=model,
+        )
+    )
 
 
 async def _artifact_exists(db: AsyncSession, execution_id: str, event_id: str) -> bool:
@@ -271,6 +311,14 @@ async def project_event(
         route = event.get("route") or {}
         node.model_used = str(route.get("model") or node.model_used)
         node.provider_used = str(route.get("provider") or node.provider_used)
+        await _add_workflow_usage_record(
+            db,
+            execution,
+            usage,
+            success=True,
+            provider=node.provider_used,
+            model=node.model_used,
+        )
         execution.progress = int(event.get("progress") or execution.progress)
         artifact = event.get("artifact") or {}
         event_id = str(event.get("event_id") or "")
@@ -307,6 +355,14 @@ async def project_event(
             node.status = "failed"
             node.error_message = execution.error_message
             node.finished_at = utcnow()
+            await _add_workflow_usage_record(
+                db,
+                execution,
+                event.get("usage") if isinstance(event.get("usage"), dict) else None,
+                success=False,
+                provider=node.provider_used,
+                model=node.model_used,
+            )
     elif event_type == "run_cancelled":
         execution.status = "cancelled"
         execution.finished_at = utcnow()
@@ -382,6 +438,9 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
                 )
             ).scalar_one()
         )
+        from backend.services.showroom_insight_execution import project_execution
+
+        await project_execution(db, execution.id)
         await db.commit()
     except Exception as exc:
         # 外部执行器暂不可达不是业务失败；保留队列并释放租约，下轮安全重试同一幂等键。

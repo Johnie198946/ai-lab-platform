@@ -165,6 +165,47 @@ class TestWorkflowsAPI(unittest.TestCase):
 
         self.assertEqual(asyncio.run(count()), 0)
 
+    def test_delete_archives_owned_workflow_and_hides_it(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import (
+            WorkflowClarificationSession,
+            WorkflowDefinition,
+        )
+
+        workflow = self.create()
+        denied = self.request(
+            "DELETE", f"/api/v1/workflows/{workflow['id']}", sub="gamma"
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
+        deleted = self.request("DELETE", f"/api/v1/workflows/{workflow['id']}")
+        self.assertEqual(deleted.status_code, 204, deleted.text)
+        self.assertNotIn(
+            workflow["id"],
+            [item["id"] for item in self.request("GET", "/api/v1/workflows").json()],
+        )
+        self.assertEqual(
+            self.request("GET", f"/api/v1/workflows/{workflow['id']}").status_code,
+            404,
+        )
+
+        async def archived_state():
+            async with SessionLocal() as db:
+                row = await db.get(WorkflowDefinition, workflow["id"])
+                session = (
+                    await db.execute(
+                        select(WorkflowClarificationSession).where(
+                            WorkflowClarificationSession.workflow_id == workflow["id"]
+                        )
+                    )
+                ).scalar_one()
+                return row.status, row.archived_at, session.phase
+
+        status, archived_at, phase = asyncio.run(archived_state())
+        self.assertEqual(status, "archived")
+        self.assertIsNotNone(archived_at)
+        self.assertEqual(phase, "archived")
+
     def test_clarification_phase_column_fits_confirmation_state(self):
         from backend.models.workflow import WorkflowClarificationSession
 
@@ -399,7 +440,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(second.status_code, 201, second.text)
         self.assertEqual(first.json()["agent"]["id"], second.json()["agent"]["id"])
 
-    def test_ready_workflow_can_start_same_frozen_plan_twice(self):
+    def test_active_workflow_rejects_second_start(self):
         body = self.create_ready()
         approved = self.request(
             "POST", f"/api/v1/workflows/{body['id']}/approve-plan",
@@ -422,10 +463,64 @@ class TestWorkflowsAPI(unittest.TestCase):
             json={"request_id": "ios-rerun-second-0002"},
         )
         self.assertEqual(first.status_code, 201, first.text)
-        self.assertEqual(rerun.status_code, 201, rerun.text)
-        self.assertNotEqual(first.json()["id"], rerun.json()["id"])
-        self.assertEqual(rerun.json()["id"], duplicate.json()["id"])
-        self.assertEqual(first.json()["plan_id"], rerun.json()["plan_id"])
+        self.assertEqual(rerun.status_code, 409, rerun.text)
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertIn("已有活动执行", rerun.json()["detail"])
+
+    def test_dynamic_create_ready_enters_requirement_confirmation(self):
+        with patch(
+            "backend.api.workflows.request_bridge_clarification",
+            new=AsyncMock(return_value={
+                "status": "READY",
+                "source": "hermes",
+                "truth": "LIVE",
+                "simulation": False,
+                "usage": {},
+            }),
+        ):
+            created = self.request(
+                "POST",
+                "/api/v1/workflows",
+                json={
+                    "title": "Dynamic ready",
+                    "description": "Build an IPD workspace for our team.",
+                    "desired_output": "Decision record",
+                    "clarification_mode": "dynamic",
+                },
+            )
+        self.assertEqual(created.status_code, 201, created.text)
+        workflow_id = created.json()["workflow"]["id"]
+        clarification = self.request("GET", f"/api/v1/workflows/{workflow_id}/clarification")
+        self.assertEqual(clarification.status_code, 200, clarification.text)
+        self.assertEqual(clarification.json()["session"]["phase"], "awaiting_requirement_confirmation")
+        self.assertTrue(clarification.json()["messages"][-1]["content"])
+
+    def test_dynamic_create_question_clears_pending_status(self):
+        with patch(
+            "backend.api.workflows.request_bridge_clarification",
+            new=AsyncMock(return_value={
+                "status": "question",
+                "question": "Who is the primary user?",
+                "dimension": "target user",
+                "source": "hermes",
+                "truth": "LIVE",
+                "simulation": False,
+                "usage": {},
+            }),
+        ):
+            created = self.request(
+                "POST",
+                "/api/v1/workflows",
+                json={
+                    "title": "Dynamic question",
+                    "description": "Build an IPD workspace for our team.",
+                    "desired_output": "Decision record",
+                    "clarification_mode": "dynamic",
+                },
+            )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["workflow"]["status"], "clarifying")
+        self.assertEqual(created.json()["clarification_session"]["phase"], "clarifying")
 
     def test_cross_tenant_workflow_is_invisible(self):
         body = self.create_ready()
@@ -599,6 +694,7 @@ class TestWorkflowsAPI(unittest.TestCase):
     def test_worker_executes_nodes_and_persists_artifacts(self):
         from backend.db import SessionLocal
         from backend.models.workflow import WorkflowArtifact, WorkflowExecution
+        from backend.services.workflow_artifacts import run_root
         import backend.services.workflow_executor as executor
 
         body = self.create_ready()
@@ -713,6 +809,43 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertTrue(all(item.content_hash for item in artifacts))
         self.assertEqual(execution.token_used, 750)
         self.assertEqual(execution.cache_read_tokens, 125)
+
+        artifact = artifacts[0]
+        content_path = run_root(execution) / artifact.relative_path
+        content_path.unlink()
+
+        async def full_snapshot(execution, *, after_seq=None):
+            self.assertEqual(after_seq, 0)
+            return {"events": events}
+
+        with patch("backend.api.workflows.read_bridge_run", full_snapshot):
+            recovered = self.request(
+                "GET",
+                f"/api/v1/workflow-executions/{execution.id}/artifacts/{artifact.id}/content",
+            )
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+        self.assertEqual(recovered.json()["content"], "# 节点成果\n\n证据与结论已整理。")
+        self.assertTrue(content_path.is_file())
+
+        content_path.unlink()
+        artifact.content_hash = "0" * 64
+
+        async def corrupt_hash():
+            from backend.db import SessionLocal
+
+            async with SessionLocal() as db:
+                row = await db.get(WorkflowArtifact, artifact.id)
+                row.content_hash = artifact.content_hash
+                await db.commit()
+
+        asyncio.run(corrupt_hash())
+        with patch("backend.api.workflows.read_bridge_run", full_snapshot):
+            rejected = self.request(
+                "GET",
+                f"/api/v1/workflow-executions/{execution.id}/artifacts/{artifact.id}/content",
+            )
+        self.assertEqual(rejected.status_code, 404, rejected.text)
+        self.assertFalse(content_path.exists())
 
 
 if __name__ == "__main__":

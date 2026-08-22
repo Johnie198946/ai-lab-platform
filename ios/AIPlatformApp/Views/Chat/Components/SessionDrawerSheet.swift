@@ -43,7 +43,7 @@ public struct SessionDrawerSheet: View {
                         } label: {
                             SessionRow(
                                 title: sessionManager.title(for: id),
-                                messageCount: sessionManager.messages(for: id).count,
+                                messageCount: sessionManager.messageCount(for: id),
                                 updatedAt: sessionManager.sessionUpdatedAt[id] ?? .distantPast,
                                 isActive: sessionManager.activeSessionId == id
                             )

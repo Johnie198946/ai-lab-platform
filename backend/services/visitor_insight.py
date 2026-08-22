@@ -39,6 +39,59 @@ def _slug(value: str, fallback: str, limit: int = 72) -> str:
     return clean[:limit] or fallback
 
 
+def _repair_common_json_defects(value: str) -> str:
+    """Repair only deterministic model-output defects without evaluating code."""
+    repaired: list[str] = []
+    in_string = False
+    escaped = False
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if in_string:
+            if escaped:
+                escaped = False
+                repaired.append(char)
+            elif char == "\\":
+                escaped = True
+                repaired.append(char)
+            elif char == '"':
+                in_string = False
+                repaired.append(char)
+            elif char in {"\n", "\r", "\t"}:
+                repaired.append({"\n": "\\n", "\r": "\\r", "\t": "\\t"}[char])
+            else:
+                repaired.append(char)
+            index += 1
+            continue
+        if char == '"':
+            in_string = True
+            repaired.append(char)
+            index += 1
+            continue
+        if char == ",":
+            lookahead = index + 1
+            while lookahead < len(value) and value[lookahead].isspace():
+                lookahead += 1
+            if lookahead < len(value) and value[lookahead] in {"}", "]"}:
+                index += 1
+                continue
+        repaired.append(char)
+        index += 1
+    return "".join(repaired)
+
+
+def _decode_payload(value: str) -> dict[str, Any] | None:
+    candidates = [value, _repair_common_json_defects(value)]
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
 def extract_visitor_insight(content: str) -> dict[str, Any]:
     raw = _text(content, 60_000)
     match = ENVELOPE.search(raw)
@@ -47,12 +100,9 @@ def extract_visitor_insight(content: str) -> dict[str, Any]:
             "recognized": False,
             "reason": "未找到 AI_LAB_VISITOR_INSIGHT_V1 数据块",
         }
-    try:
-        payload = json.loads(match.group(1))
-    except json.JSONDecodeError:
+    payload = _decode_payload(match.group(1))
+    if payload is None:
         return {"recognized": False, "reason": "客户洞察数据块不是有效 JSON"}
-    if not isinstance(payload, dict):
-        return {"recognized": False, "reason": "客户洞察数据结构无效"}
 
     sources = []
     for index, item in enumerate(payload.get("sources") or []):

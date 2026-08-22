@@ -27,13 +27,14 @@ from fastapi import (
     WebSocketDisconnect,
 )
 from jose import JWTError, jwt
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from backend.api.auth import AUTHEN_JWT_ALGORITHM, AUTHEN_JWT_SECRET, require_auth
 from backend.api.screens import _load_all as load_screen_configs
 from backend.db import SessionLocal
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
+from backend.models.showroom import ShowroomInsightExecution
 from backend.services.demand_document import (
     calculate_demand_completeness,
     extract_demand_document,
@@ -72,6 +73,13 @@ from backend.services.showroom_insight_review import (
     register_insight_tbd,
     reopen_version,
 )
+from backend.services.showroom_insight_execution import (
+    ensure_execution,
+    project_execution,
+    retry_node_for,
+)
+from backend.models.workflow import WorkflowExecution, WorkflowNodeRun
+from backend.services.workflow_executor import cancel_remote, retry_remote
 from backend.services.visitor_insight import (
     extract_visitor_insight,
     persist_visitor_wiki,
@@ -89,6 +97,7 @@ PERSONA_SKILL_PATH = Path(
     "/root/.hermes/skills/productivity/solution-consultant-persona/SKILL.md"
 )
 PERSONA_MIN_VERSION = (1, 7, 0)
+MAX_SHOWROOM_EPOCH = (1 << 63) - 1
 
 
 def _load_content() -> dict[str, Any]:
@@ -103,7 +112,7 @@ content_manifest = _load_content()
 
 class ShowroomCommand(BaseModel):
     type: Literal["PREPARE", "COMMIT"]
-    epoch: int = Field(..., ge=1)
+    epoch: int = Field(..., ge=1, le=MAX_SHOWROOM_EPOCH)
     stage: str = Field(..., pattern=r"^station-[1-5]$")
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -154,6 +163,38 @@ class InsightProgressRequest(BaseModel):
     section: str = Field(default="", max_length=80)
     payload: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_legacy_event(cls, value: Any) -> Any:
+        """Normalize older model-authored progress envelopes."""
+
+        if not isinstance(value, dict):
+            return value
+        normalized = dict(value)
+        raw_kind = str(normalized.get("kind") or "").strip().lower()
+        kind_aliases = {
+            "stage_update": "stage",
+            "insight_stage": "stage",
+            "employee_status": "employee",
+            "employee_update": "employee",
+            "section_update": "section",
+            "insight_section": "section",
+        }
+        raw_kind = kind_aliases.get(raw_kind, raw_kind)
+        if raw_kind not in {"stage", "employee", "section"}:
+            if normalized.get("section"):
+                raw_kind = "section"
+            elif normalized.get("employee_id") and (
+                normalized.get("employee_status") or normalized.get("status")
+            ):
+                raw_kind = "employee"
+            elif normalized.get("stage"):
+                raw_kind = "stage"
+        normalized["kind"] = raw_kind
+        if raw_kind == "employee" and not normalized.get("employee_status"):
+            normalized["employee_status"] = normalized.get("status") or ""
+        return normalized
+
 
 class InsightCompleteRequest(BaseModel):
     content: str = Field(default="", max_length=120_000)
@@ -168,7 +209,7 @@ class InsightRevisionExtractionRequest(BaseModel):
     job_id: str = Field(..., min_length=4, max_length=120)
     demand_hash: str = Field(..., min_length=16, max_length=128)
     base_version: str = Field(..., min_length=3, max_length=40)
-    epoch: int = Field(default=0, ge=0)
+    epoch: int = Field(default=0, ge=0, le=MAX_SHOWROOM_EPOCH)
     user_instruction: str = Field(default="", max_length=12_000)
     target_section: str = Field(default="", max_length=120)
     selected_text: str = Field(default="", max_length=4_000)
@@ -177,7 +218,7 @@ class InsightRevisionExtractionRequest(BaseModel):
 
 
 class InsightMutationRequest(BaseModel):
-    epoch: int = Field(default=0, ge=0)
+    epoch: int = Field(default=0, ge=0, le=MAX_SHOWROOM_EPOCH)
     job_id: str = Field(default="", max_length=120)
     demand_hash: str = Field(default="", max_length=128)
     base_version: str = Field(default="", max_length=40)
@@ -239,7 +280,8 @@ class VisitCompleteRequest(BaseModel):
 
 
 class VisitRolloverRequest(BaseModel):
-    epoch: int = Field(default=0, ge=0)
+    epoch: int = Field(default=0, ge=0, le=MAX_SHOWROOM_EPOCH)
+    source: str = Field(default="controller", max_length=80)
 
 
 class ShowroomHub:
@@ -471,6 +513,11 @@ def _visit_session_id() -> str:
     return f"visit-{timestamp}-{uuid.uuid4().hex[:8]}"
 
 
+def _workstation_session_id(slot: str) -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"showroom-slot-{slot}-{timestamp}-{uuid.uuid4().hex[:8]}"
+
+
 def _customer_code(company_name: str) -> str:
     digest = int.from_bytes(company_name.encode("utf-8"), "little", signed=False) % 1000
     return f"C{digest:03d}"
@@ -665,6 +712,23 @@ async def _get_or_create_session(
         elif row.tenant_key != tenant_key:
             raise HTTPException(status_code=404, detail="体验会话不存在")
         else:
+            # A workstation can be offline while the guided tour rolls over.
+            # Follow the archived row's successor so reopening an old URL can
+            # never revive customer content from the previous reception.
+            visited = {row.session_id}
+            while row.status == "archived":
+                successor_id = str((row.data or {}).get("rollover_to") or "")
+                if not successor_id or successor_id in visited:
+                    break
+                successor = await database.get(ShowroomSession, successor_id)
+                if (
+                    successor is None
+                    or successor.tenant_key != tenant_key
+                    or successor.slot != slot
+                ):
+                    break
+                visited.add(successor_id)
+                row = successor
             migrated, changed = _migrate_legacy_session_data(row.data)
             if changed:
                 row.data = migrated
@@ -779,6 +843,34 @@ async def get_showroom_bootstrap(
             else await _get_or_create_session(session_id, slot, tenant_key)
         )
         session_id = session.session_id
+        session_values = copy.deepcopy(session.data or {})
+        demand = session_values.get("demand") or {}
+        insight = session_values.get("insight") or {}
+        job = session_values.get("insight_job") or {}
+        valid_report = (
+            insight.get("status") == "completed"
+            and bool(insight.get("concept"))
+            and bool(insight.get("title") or insight.get("recommendation"))
+        )
+        if demand.get("confirmed") and not valid_report and not job.get("execution_id"):
+            async with SessionLocal() as database:
+                stored = (
+                    await database.execute(
+                        select(ShowroomSession)
+                        .where(ShowroomSession.session_id == session_id)
+                        .with_for_update()
+                    )
+                ).scalar_one()
+                binding, _ = await ensure_execution(
+                    database,
+                    session=stored,
+                    demand_hash=demand_fingerprint(demand),
+                    epoch=int(hub.state.get("epoch", 0)),
+                )
+                await project_execution(database, binding.execution_id)
+                await database.commit()
+                await database.refresh(stored)
+                session = stored
         session_data = _session_payload(session, session_id, slot)
     except HTTPException:
         raise
@@ -793,6 +885,7 @@ async def get_showroom_bootstrap(
                 await database.execute(
                     select(ShowroomSession)
                     .where(ShowroomSession.slot.in_(["1", "2", "3", "4", "5"]))
+                    .where(ShowroomSession.status != "archived")
                     .order_by(ShowroomSession.updated_at.desc())
                 )
             ).scalars()
@@ -951,9 +1044,30 @@ async def extract_showroom_visitor_insight(
             raise HTTPException(status_code=409, detail="Hermes 会话与当前接待不匹配")
         extraction = extract_visitor_insight(body.content)
         if not extraction.get("recognized"):
+            reason = str(extraction.get("reason") or "客户洞察提取失败")[:500]
+            current = _merge(_empty_customer_insight(), data.get("customer_insight") or {})
+            current["status"] = "failed"
+            current["warnings"] = [
+                *list(current.get("warnings") or [])[-9:],
+                reason,
+            ]
+            current["updated_at"] = datetime.now(timezone.utc).isoformat()
+            data["customer_insight"] = current
+            data["visitor"] = _merge(data.get("visitor") or {}, {"status": "research_failed"})
+            row.data = data
+            await database.commit()
+            await database.refresh(row)
+            await hub.broadcast(
+                {
+                    "type": "INSIGHT_UPDATED",
+                    "session_id": session_id,
+                    "epoch": hub.state.get("epoch", 0),
+                    "customer_insight": current,
+                }
+            )
             return {
                 "recognized": False,
-                "reason": extraction.get("reason"),
+                "reason": reason,
                 "session": _session_payload(row, session_id, "main"),
             }
         current = data.get("customer_insight") or {}
@@ -1079,66 +1193,170 @@ async def rollover_showroom_visit(
     session_id: str, body: VisitRolloverRequest, payload=Depends(require_auth)
 ) -> dict[str, Any]:
     tenant_key = str(payload.get("tenant_key") or "demo")
-    epoch = max(
-        body.epoch,
-        int(hub.state.get("epoch") or 0) + 1,
-        int(datetime.now(timezone.utc).timestamp() * 1000),
-    )
-    hub.switch_ready.clear()
-    await hub.broadcast(
-        {"type": "SESSION_SWITCH_PREPARE", "session_id": session_id, "epoch": epoch}
-    )
-    targets = {
-        id(socket) for socket, client in hub.connections.items() if client == session_id
-    }
-    for _ in range(20):
-        if targets.issubset(hub.switch_ready):
-            break
-        await asyncio.sleep(0.25)
-    async with SessionLocal() as database:
-        old = await database.get(ShowroomSession, session_id)
-        if old is None or old.tenant_key != tenant_key or old.slot != "main":
-            raise HTTPException(status_code=404, detail="主演示会话不存在")
-        old.status = "archived"
-        old_data = copy.deepcopy(old.data or {})
-        old_data["visitor"] = _merge(
-            old_data.get("visitor") or {}, {"status": "archived"}
+    async with hub.lock:
+        epoch = max(
+            body.epoch,
+            int(hub.state.get("epoch") or 0) + 1,
+            int(datetime.now(timezone.utc).timestamp() * 1000),
         )
-        old.data = old_data
-        new_id = _visit_session_id()
-        new_data = _initial_session_data("main")
-        new_data["visitor"]["visit_id"] = new_id
-        database.add(
-            ShowroomSession(
-                session_id=new_id, tenant_key=tenant_key, slot="main", data=new_data
+
+        async with SessionLocal() as database:
+            requested = await database.get(ShowroomSession, session_id)
+            if (
+                requested is None
+                or requested.tenant_key != tenant_key
+                or requested.slot != "main"
+            ):
+                raise HTTPException(status_code=404, detail="主演示会话不存在")
+
+            # A retried request returns the already-created successors instead
+            # of producing another reception batch.
+            existing_switches = (requested.data or {}).get("rollover_switches") or []
+            existing_successor = str((requested.data or {}).get("rollover_to") or "")
+            if requested.status == "archived" and existing_successor:
+                successor = await database.get(ShowroomSession, existing_successor)
+                if successor is None or successor.tenant_key != tenant_key:
+                    raise HTTPException(status_code=409, detail="换场记录不完整，请人工检查")
+                return {
+                    "archived_session_id": session_id,
+                    "session": _session_payload(successor, successor.session_id, "main"),
+                    "runtime": hub.snapshot(),
+                    "session_switches": existing_switches,
+                }
+
+            rows = (
+                await database.execute(
+                    select(ShowroomSession)
+                    .where(ShowroomSession.tenant_key == tenant_key)
+                    .where(ShowroomSession.status != "archived")
+                    .where(ShowroomSession.slot.in_(["main", "1", "2", "3", "4", "5"]))
+                    .order_by(ShowroomSession.updated_at.desc())
+                )
+            ).scalars()
+            active_by_slot: dict[str, ShowroomSession] = {"main": requested}
+            for row in rows:
+                active_by_slot.setdefault(row.slot, row)
+
+        old_session_ids = {
+            row.session_id for row in active_by_slot.values() if row is not None
+        }
+        hub.switch_ready.clear()
+        for old_session_id in old_session_ids:
+            await hub.broadcast(
+                {
+                    "type": "SESSION_SWITCH_PREPARE",
+                    "session_id": old_session_id,
+                    "epoch": epoch,
+                }
             )
+        targets = {
+            id(socket)
+            for socket, client in hub.connections.items()
+            if client in old_session_ids
+        }
+        for _ in range(20):
+            if targets.issubset(hub.switch_ready):
+                break
+            await asyncio.sleep(0.25)
+
+        switches: list[dict[str, str]] = []
+        new_ids = {
+            "main": _visit_session_id(),
+            **{slot: _workstation_session_id(slot) for slot in ["1", "2", "3", "4", "5"]},
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            async with SessionLocal() as database:
+                refreshed: dict[str, ShowroomSession] = {}
+                for slot, row in active_by_slot.items():
+                    current = await database.get(ShowroomSession, row.session_id)
+                    if current is not None:
+                        refreshed[slot] = current
+
+                for slot in ["main", "1", "2", "3", "4", "5"]:
+                    old = refreshed.get(slot)
+                    new_id = new_ids[slot]
+                    switches.append(
+                        {
+                            "slot": slot,
+                            "old_session_id": old.session_id if old else "",
+                            "new_session_id": new_id,
+                        }
+                    )
+                    new_data = _initial_session_data(slot)
+                    if slot == "main":
+                        new_data["visitor"]["visit_id"] = new_id
+                    database.add(
+                        ShowroomSession(
+                            session_id=new_id,
+                            tenant_key=tenant_key,
+                            slot=slot,
+                            step=0,
+                            status="active",
+                            data=new_data,
+                        )
+                    )
+
+                for slot, old in refreshed.items():
+                    old.status = "archived"
+                    old_data = copy.deepcopy(old.data or {})
+                    old_data["rollover_to"] = new_ids[slot]
+                    old_data["rollover_at"] = now
+                    if slot == "main":
+                        old_data["visitor"] = _merge(
+                            old_data.get("visitor") or {}, {"status": "archived"}
+                        )
+                        old_data.setdefault("visit_completed_by", body.source)
+                        old_data.setdefault("visit_completed_at", now)
+                        old_data["rollover_switches"] = switches
+                    old.data = old_data
+
+                await database.commit()
+                new_main = await database.get(ShowroomSession, new_ids["main"])
+        except Exception:
+            for old_session_id in old_session_ids:
+                await hub.broadcast(
+                    {
+                        "type": "SESSION_SWITCH_ABORT",
+                        "session_id": old_session_id,
+                        "epoch": epoch,
+                    }
+                )
+            raise
+
+        hub.state.update(
+            {
+                "active_main_session_id": new_ids["main"],
+                "active_main_tenant_key": tenant_key,
+                "epoch": epoch,
+                "stage": "station-1",
+                "payload": {},
+                "reviews": {},
+                "updated_at": now,
+            }
         )
-        await database.commit()
-        new = await database.get(ShowroomSession, new_id)
-    hub.state.update(
-        {
-            "active_main_session_id": new_id,
-            "active_main_tenant_key": tenant_key,
-            "epoch": epoch,
-            "stage": "station-1",
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+        await _persist_runtime()
+        runtime = hub.snapshot()
+        for switch in switches:
+            if not switch["old_session_id"]:
+                continue
+            await hub.broadcast(
+                {
+                    "type": "SESSION_SWITCH_COMMIT",
+                    "session_id": switch["old_session_id"],
+                    "new_session_id": switch["new_session_id"],
+                    "slot": switch["slot"],
+                    "session_switches": switches,
+                    "epoch": epoch,
+                    "state": runtime,
+                }
+            )
+        return {
+            "archived_session_id": session_id,
+            "session": _session_payload(new_main, new_ids["main"], "main"),
+            "runtime": runtime,
+            "session_switches": switches,
         }
-    )
-    await _persist_runtime()
-    await hub.broadcast(
-        {
-            "type": "SESSION_SWITCH_COMMIT",
-            "session_id": session_id,
-            "new_session_id": new_id,
-            "epoch": epoch,
-            "state": hub.snapshot(),
-        }
-    )
-    return {
-        "archived_session_id": session_id,
-        "session": _session_payload(new, new_id, "main"),
-        "runtime": hub.snapshot(),
-    }
 
 
 @router.get("/sessions/{session_id}")
@@ -1450,7 +1668,13 @@ async def start_showroom_insight_job(
     """Create or resume the idempotent V1.7 staffing-and-insight job."""
     tenant_key = str(payload.get("tenant_key") or "demo")
     async with SessionLocal() as database:
-        row = await database.get(ShowroomSession, session_id)
+        row = (
+            await database.execute(
+                select(ShowroomSession)
+                .where(ShowroomSession.session_id == session_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
         if row is None or row.tenant_key != tenant_key:
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
@@ -1458,32 +1682,15 @@ async def start_showroom_insight_job(
         if not demand.get("confirmed"):
             raise HTTPException(status_code=409, detail="请先确认需求")
         source_hash = demand_fingerprint(demand)
-        current_job = copy.deepcopy(data.get("insight_job") or {})
-        resumable = (
-            current_job.get("source_hash") == source_hash
-            and current_job.get("status")
-            in {"planning", "running", "partial", "completed", "interrupted"}
+        epoch = int(hub.state.get("epoch", 0))
+        binding, resumed = await ensure_execution(
+            database, session=row, demand_hash=source_hash, epoch=epoch
         )
-        if resumable:
-            return {
-                "resumed": True,
-                "job": current_job,
-                "plan": data.get("staffing_plan") or {},
-                "catalog": role_catalog_payload(),
-                "session": _session_payload(row, session_id, row.slot),
-            }
-
-        job_id = f"insight-{uuid.uuid4().hex[:16]}"
-        job = empty_insight_job(job_id, source_hash)
-        data["insight_job"] = job
-        data["staffing_plan"] = {}
-        data["insight"] = empty_insight()
-        data["insight_review"] = empty_insight_review()
-        data["insight_review_gate"] = empty_insight_review_gate()
-        row.data = data
-        row.step = max(row.step, 3)
+        await project_execution(database, binding.execution_id)
         await database.commit()
         await database.refresh(row)
+        await database.refresh(binding)
+        job = copy.deepcopy((row.data or {}).get("insight_job") or {})
         session_payload = _session_payload(row, session_id, row.slot)
     await hub.broadcast(
         {
@@ -1495,12 +1702,99 @@ async def start_showroom_insight_job(
         }
     )
     return {
-        "resumed": False,
+        "resumed": resumed,
         "job": job,
-        "plan": {},
+        "plan": (row.data or {}).get("staffing_plan") or {},
         "catalog": role_catalog_payload(),
         "session": session_payload,
     }
+
+
+@router.get("/sessions/{session_id}/insight/jobs/{job_id}")
+async def get_showroom_insight_job(
+    session_id: str, job_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    changed = False
+    event_payload: dict[str, Any] = {}
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        binding = await database.get(ShowroomInsightExecution, job_id)
+        if row is None or row.tenant_key != tenant_key or binding is None or binding.session_id != session_id:
+            raise HTTPException(status_code=404, detail="洞察任务不存在")
+        before = copy.deepcopy((row.data or {}).get("insight_job") or {})
+        await project_execution(database, binding.execution_id)
+        await database.commit()
+        await database.refresh(row)
+        data = row.data or {}
+        job = (row.data or {}).get("insight_job") or {}
+        changed = before != job
+        event_payload = {
+            "type": "INSIGHT_JOB_COMPLETED" if job.get("status") == "completed" else "INSIGHT_JOB_FAILED" if job.get("status") == "failed" else "INSIGHT_STAGE_UPDATED",
+            "session_id": session_id,
+            "epoch": binding.epoch,
+            "job_id": job_id,
+            "execution_id": binding.execution_id,
+            "demand_hash": binding.demand_hash,
+            "job": job,
+        }
+        response = {
+            "job": job,
+            "plan": data.get("staffing_plan") or {},
+            "session": _session_payload(row, session_id, row.slot),
+        }
+    if changed:
+        await hub.broadcast(event_payload)
+    return response
+
+
+@router.get("/sessions/{session_id}/insight/report")
+async def get_showroom_insight_report(
+    session_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        if row is None or row.tenant_key != tenant_key:
+            raise HTTPException(status_code=404, detail="体验会话不存在")
+        data = row.data or {}
+        insight = data.get("insight") or {}
+        return {
+            "report": insight,
+            "version": (data.get("insight_review") or {}).get("version") or "V0.1",
+            "coverage": calculate_insight_coverage(insight),
+            "job": data.get("insight_job") or {},
+        }
+
+
+@router.post("/sessions/{session_id}/insight/jobs/{job_id}/retry")
+async def retry_showroom_insight_execution(
+    session_id: str, job_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        binding = await database.get(ShowroomInsightExecution, job_id)
+        if row is None or row.tenant_key != tenant_key or binding is None or binding.session_id != session_id:
+            raise HTTPException(status_code=404, detail="洞察任务不存在")
+        execution = await database.get(WorkflowExecution, binding.execution_id)
+        nodes = list((await database.execute(select(WorkflowNodeRun).where(WorkflowNodeRun.execution_id == binding.execution_id).order_by(WorkflowNodeRun.position))).scalars())
+        restart = retry_node_for(binding, nodes)
+        if execution is None or restart is None:
+            raise HTTPException(status_code=409, detail="任务没有可重试节点")
+        await retry_remote(binding.execution_id, restart.node_id)
+        restart.status = "pending"
+        restart.error_message = None
+        execution.status = "queued"
+        execution.error_message = None
+        binding.status = "queued"
+        binding.attempt += 1
+        binding.format_attempt = 0
+        binding.error_message = ""
+        await project_execution(database, binding.execution_id)
+        await database.commit()
+        await database.refresh(row)
+        return {"job": (row.data or {}).get("insight_job") or {}, "session": _session_payload(row, session_id, row.slot)}
 
 
 @router.put("/sessions/{session_id}/insight/jobs/{job_id}/plan")
@@ -1517,6 +1811,8 @@ async def save_showroom_staffing_plan(
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
         job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("execution_id"):
+            raise HTTPException(status_code=409, detail="服务端洞察任务禁止浏览器写入规划")
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
         demand = data.get("demand") or {}
@@ -1571,6 +1867,8 @@ async def update_showroom_insight_progress(
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
         job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("execution_id"):
+            raise HTTPException(status_code=409, detail="服务端洞察任务禁止浏览器写入进度")
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
         if job.get("source_hash") != demand_fingerprint(data.get("demand") or {}):
@@ -1657,6 +1955,8 @@ async def complete_showroom_insight_job(
             raise HTTPException(status_code=404, detail="体验会话不存在")
         data = copy.deepcopy(row.data or {})
         job = copy.deepcopy(data.get("insight_job") or {})
+        if job.get("execution_id"):
+            raise HTTPException(status_code=409, detail="服务端洞察任务只接受已验证Artifact")
         if job.get("job_id") != job_id:
             raise HTTPException(status_code=409, detail="洞察任务已切换")
         insight = copy.deepcopy(data.get("insight") or empty_insight())
@@ -1757,7 +2057,16 @@ async def complete_showroom_insight_job(
             "job": job,
         }
     )
-    return {"job": job, "insight": insight, "session": session_payload}
+    return {
+        "job": job,
+        "insight": insight,
+        "session": session_payload,
+        # The browser uses this explicit list to start one bounded recovery
+        # pass when a model completed the job but omitted report fields.  Do
+        # not infer this from the percentage: a populated, actionable TBD is
+        # a valid report value and must not trigger an automatic loop.
+        "backfill_required_fields": missing_items,
+    }
 
 
 def _validate_insight_mutation(
@@ -2642,6 +2951,24 @@ async def interrupt_showroom_insight_job(
     body: InsightFailureRequest,
     payload=Depends(require_auth),
 ) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "demo")
+    async with SessionLocal() as database:
+        row = await database.get(ShowroomSession, session_id)
+        binding = await database.get(ShowroomInsightExecution, job_id)
+        if row is not None and row.tenant_key == tenant_key and binding is not None and binding.session_id == session_id:
+            execution = await database.get(WorkflowExecution, binding.execution_id)
+            if execution is not None:
+                await cancel_remote(binding.execution_id)
+                execution.status = "cancelled"
+                binding.status = "interrupted"
+                data = copy.deepcopy(row.data or {})
+                job = copy.deepcopy(data.get("insight_job") or {})
+                job.update({"status": "interrupted", "active_stage": "interrupted", "active_node": "", "active_employee_id": "", "updated_at": now_iso(), "error": body.message or "用户已停止生成"})
+                data["insight_job"] = job
+                row.data = data
+                await database.commit()
+                await database.refresh(row)
+                return {"job": job, "session": _session_payload(row, session_id, row.slot)}
     return await _finish_showroom_insight_job(
         session_id,
         job_id,

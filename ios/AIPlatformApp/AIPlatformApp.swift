@@ -13,6 +13,8 @@ public struct AIPlatformApp: App {
     @StateObject private var appState = AppState(isLoggedIn: ProcessInfo.processInfo.arguments.contains("-autoLogin"))
     @StateObject private var apiClient = APIClient.shared
     @StateObject private var workflowActivities = WorkflowActivityCoordinator.shared
+    // Start metadata recovery and legacy JSON migration independently of authentication/chat navigation.
+    @StateObject private var sessionManager = SessionManager.shared
 
     public init() {}
 
@@ -22,6 +24,7 @@ public struct AIPlatformApp: App {
                 .environmentObject(appState)
                 .environmentObject(apiClient)
                 .environmentObject(workflowActivities)
+                .environmentObject(sessionManager)
                 .preferredColorScheme(.light)
         }
     }

@@ -9,12 +9,14 @@
     "build": "vite build && npm run build:showroom-gateway",
     "build:showroom-gateway": "esbuild src/showroom-hermes-gateway.ts --bundle --format=iife --global-name=HermesShared --outfile=dist/showroom/hermes-gateway.js",
     "preview": "vite preview",
+    "test": "npm run test:showroom",
     "test:showroom": "node --test tests/*.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.7.0",
     "@fontsource-variable/geist": "^5.3.0",
     "@gsap/react": "^2.1.2",
+    "@xyflow/react": "^12.8.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^13.0.0",

@@ -4,6 +4,7 @@
   const AUTH_KEY = "ai-lab-platform.auth";
   const SESSION_KEY = "ai-lab-showroom.session";
   const HERMES_RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 15000];
+  const HERMES_STABLE_CONNECTION_MS = 30000;
   const DEMAND_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*AI_LAB_DEMAND_V1\s*-->/gi,
     /```(?:json\s+)?AI_LAB_DEMAND_V1\s*\{[\s\S]*?\}\s*```/gi,
@@ -18,6 +19,7 @@
   ];
   const INSIGHT_ENVELOPE_PATTERNS = [
     /<!--\s*AI_LAB_STAFFING_PLAN_V1\s*\{[\s\S]*?\}\s*AI_LAB_STAFFING_PLAN_V1\s*-->/gi,
+    /<!--\s*AI_LAB_EMPLOYEE_STATUS_V1\s*\{[\s\S]*?\}\s*AI_LAB_EMPLOYEE_STATUS_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_STAGE_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_STAGE_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_SECTION_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_SECTION_V1\s*-->/gi,
     /<!--\s*AI_LAB_INSIGHT_V1\s*\{[\s\S]*?\}\s*AI_LAB_INSIGHT_V1\s*-->/gi,
@@ -72,13 +74,13 @@
 
   function isConversationView() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    return ["controller", "screen-03", "screen-03-team", "screen-04"].includes(view)
+    return ["controller", "screen-03", "screen-04"].includes(view)
       || /^experience-0?[1-5]$/.test(view);
   }
 
   function hermesLane() {
     const view = new URLSearchParams(global.location.search).get("view") || "controller";
-    if (["screen-03-team", "screen-04"].includes(view)) return "insight";
+    if (view === "screen-04") return "insight-review";
     return view === "controller" ? "backstage" : "frontstage";
   }
 
@@ -150,6 +152,7 @@
       this.hermesLane = "";
       this.hermesStatus = "idle";
       this.hermesReconnectTimer = null;
+      this.hermesStableTimer = null;
       this.hermesReconnectCount = 0;
       this.hermesReconnectExhausted = false;
       this.hermesIntentionalClose = false;
@@ -227,8 +230,11 @@
         this.bootstrap = bootstrap;
         this.state = bootstrap.runtime;
         this.session = bootstrap.session;
-        if (this.slot === "main" && bootstrap.active_main_session_id) {
-          this.sessionId = bootstrap.active_main_session_id;
+        const authoritativeSessionId = this.slot === "main"
+          ? bootstrap.active_main_session_id
+          : bootstrap.session?.session_id;
+        if (authoritativeSessionId) {
+          this.sessionId = authoritativeSessionId;
           global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
         }
         this.emit("bootstrap", bootstrap);
@@ -251,7 +257,9 @@
     }
 
     setHermesStatus(status, detail = "") {
+      if (this.hermesStatus === status && this.hermesStatusDetail === detail) return;
       this.hermesStatus = status;
+      this.hermesStatusDetail = detail;
       this.emit("hermes-status", {
         status,
         detail,
@@ -266,11 +274,11 @@
         || this.hermesReconnectTimer
         || this.hermesReconnectExhausted
         || !accessToken()
-      ) return;
+      ) return false;
       if (this.hermesReconnectCount >= HERMES_RECONNECT_DELAYS.length) {
         this.hermesReconnectExhausted = true;
         this.setHermesStatus("error", "无法连接大架构师，已停止自动重试");
-        return;
+        return false;
       }
       const delay = HERMES_RECONNECT_DELAYS[this.hermesReconnectCount];
       this.hermesReconnectCount += 1;
@@ -279,6 +287,17 @@
         this.hermesReconnectTimer = null;
         this.ensureHermes().catch(() => {});
       }, delay);
+      return true;
+    }
+
+    armHermesStabilityReset(gateway) {
+      global.clearTimeout(this.hermesStableTimer);
+      this.hermesStableTimer = global.setTimeout(() => {
+        this.hermesStableTimer = null;
+        if (gateway !== this.hermes || gateway.connectionState !== "open") return;
+        this.hermesReconnectCount = 0;
+        this.hermesReconnectExhausted = false;
+      }, HERMES_STABLE_CONNECTION_MS);
     }
 
     async getHermesServeToken(options = {}) {
@@ -379,6 +398,7 @@
           || "",
         ).trim();
         let result;
+        let resumeError = null;
         if (storedId) {
           try {
             result = await gateway.request("session.resume", {
@@ -386,11 +406,15 @@
               source: "desktop",
               close_on_disconnect: false,
             });
-          } catch {
+          } catch (error) {
+            resumeError = error;
             result = null;
           }
         }
         if (!result?.session_id) {
+          if (storedId && !/not[ -]?found|unknown session|session.+(?:expired|invalid)|不存在|已过期|无效会话/i.test(String(resumeError?.message || ""))) {
+            throw resumeError || new Error("Hermes 会话恢复未返回有效会话，请稍后重试");
+          }
           result = await gateway.request("session.create", {
             source: "desktop",
             close_on_disconnect: false,
@@ -426,8 +450,7 @@
             },
           });
         }
-        this.hermesReconnectCount = 0;
-        this.hermesReconnectExhausted = false;
+        this.armHermesStabilityReset(gateway);
         this.setHermesStatus(result.running ? "generating" : "online", result.running ? "正在恢复生成" : "大架构师已连接");
         this.emit("hermes-ready", {
           lane,
@@ -448,8 +471,11 @@
           this.setHermesStatus("idle", "页面不可见，连接已暂停");
           throw error;
         }
-        this.setHermesStatus(error.status === 401 ? "auth-required" : "error", error.message);
-        this.scheduleHermesReconnect();
+        if (error.status === 401) {
+          this.setHermesStatus("auth-required", error.message);
+        } else if (!this.scheduleHermesReconnect() && this.hermesStatus !== "error") {
+          this.setHermesStatus("error", error.message);
+        }
         throw error;
       } finally {
         this.hermesConnectPromise = null;
@@ -472,6 +498,8 @@
       this.hermesSuspended = true;
       global.clearTimeout(this.hermesReconnectTimer);
       this.hermesReconnectTimer = null;
+      global.clearTimeout(this.hermesStableTimer);
+      this.hermesStableTimer = null;
       this.hermesIntentionalClose = true;
       const gateway = this.hermes;
       this.hermes = null;
@@ -605,9 +633,14 @@
             }));
           });
         }
+        if (message.type === "SESSION_SWITCH_ABORT" && message.session_id === this.sessionId) {
+          this.hermesSuspended = Boolean(global.document?.hidden) || !isConversationView();
+          this.resumeHermes();
+        }
         if (message.type === "SESSION_SWITCH_COMMIT" && message.session_id === this.sessionId) {
           this.sessionId = message.new_session_id;
           global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
+          this.session = null;
         }
         if (message.state) this.state = message.state;
         this.emit("message", message);
@@ -707,16 +740,17 @@
       return session;
     }
 
-    async rolloverVisit() {
+    async rolloverVisit(source = "controller") {
       const result = await this.request(`/api/showroom/visits/${encodeURIComponent(this.sessionId)}/rollover`, {
         method: "POST",
-        body: { epoch: Date.now() },
+        body: { epoch: Date.now(), source },
       });
       this.sessionId = result.session.session_id;
       global.sessionStorage.setItem(SESSION_KEY, this.sessionId);
       this.session = result.session;
       this.state = result.runtime;
       this.emit("session", result.session);
+      this.emit("rollover", result);
       return result;
     }
 
@@ -790,6 +824,29 @@
     async startInsightJob() {
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs`,
+        { method: "POST" },
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async getInsightJob(jobId) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}`,
+      );
+      if (result?.session) {
+        this.session = result.session;
+        this.emit("session", result.session);
+      }
+      return result;
+    }
+
+    async retryInsightJob(jobId) {
+      const result = await this.request(
+        `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/retry`,
         { method: "POST" },
       );
       if (result?.session) {
@@ -966,7 +1023,6 @@
     }
 
     async interruptInsightJob(jobId, message = "用户已停止生成") {
-      await this.interruptHermes().catch(() => null);
       const result = await this.request(
         `/api/showroom/sessions/${encodeURIComponent(this.sessionId)}/insight/jobs/${encodeURIComponent(jobId)}/interrupt`,
         { method: "POST", body: { message } },

@@ -26,6 +26,7 @@ from backend.services.workflow_planner import (
     persist_raw_plan,
     planning_context,
 )
+from backend.services.llm_usage import build_llm_usage_record
 
 LEASE_SECONDS = 45
 POLL_SECONDS = 1.0
@@ -389,6 +390,21 @@ async def process_job(job_id: str, owner: str) -> None:
                     job.bridge_event_cursor = current_job.bridge_event_cursor
                     status = str(state.get("status") or "running")
                     if status == "completed":
+                        db.add(
+                            build_llm_usage_record(
+                                auth_payload={
+                                    "user_id": current_job.owner_user_id,
+                                    "tenant_key": current_job.tenant_key,
+                                },
+                                usage_payload=(
+                                    state.get("usage")
+                                    if isinstance(state.get("usage"), dict)
+                                    else None
+                                ),
+                                latency_ms=0,
+                                success=True,
+                            )
+                        )
                         raw_plan = state.get("plan")
                         if not isinstance(raw_plan, dict):
                             raise ValueError("Hermes 未返回有效计划")
@@ -465,6 +481,21 @@ async def process_job(job_id: str, owner: str) -> None:
                         await db.commit()
                         return
                     if status == "failed":
+                        db.add(
+                            build_llm_usage_record(
+                                auth_payload={
+                                    "user_id": current_job.owner_user_id,
+                                    "tenant_key": current_job.tenant_key,
+                                },
+                                usage_payload=(
+                                    state.get("usage")
+                                    if isinstance(state.get("usage"), dict)
+                                    else None
+                                ),
+                                latency_ms=0,
+                                success=False,
+                            )
+                        )
                         await db.commit()
                         await _fail_job(db, current_job, str(state.get("error") or "Hermes 规划失败"))
                         return

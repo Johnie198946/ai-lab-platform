@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import os
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ from backend.models.tenant_agent_schema import WorkflowDSLPlan
 from backend.models.workflow import WorkflowDefinition, WorkflowPlanVersion
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.knowledge_policy import resolve_policy
+from backend.services.llm_usage import record_llm_usage
 
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -254,25 +256,51 @@ async def _plan_with_hermes(
     allowed_agents: list[str],
     revision_note: str,
 ) -> dict[str, Any]:
-    async with httpx.AsyncClient(timeout=300) as client:
-        response = await client.post(
-            f"{_bridge_base_url()}/v1/workflows/plan",
-            headers=_bridge_headers(),
-            json={
-                "tenant_id": workflow.tenant_key,
-                "workflow_id": workflow.id,
-                "title": workflow.title,
-                "description": workflow.description,
-                "deliverable": workflow.desired_output,
-                "knowledge_scope": scopes,
-                "allowed_agents": allowed_agents,
-                "allow_network": True,
-                "max_tokens": WORKFLOW_TOKEN_BUDGET,
-                "revision_note": revision_note,
+    started = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.post(
+                f"{_bridge_base_url()}/v1/workflows/plan",
+                headers=_bridge_headers(),
+                json={
+                    "tenant_id": workflow.tenant_key,
+                    "workflow_id": workflow.id,
+                    "title": workflow.title,
+                    "description": workflow.description,
+                    "deliverable": workflow.desired_output,
+                    "knowledge_scope": scopes,
+                    "allowed_agents": allowed_agents,
+                    "allow_network": True,
+                    "max_tokens": WORKFLOW_TOKEN_BUDGET,
+                    "revision_note": revision_note,
+                },
+            )
+        response.raise_for_status()
+        payload = response.json()
+        await record_llm_usage(
+            auth_payload={
+                "user_id": workflow.created_by,
+                "tenant_key": workflow.tenant_key,
             },
+            usage_payload=(
+                payload.get("usage")
+                if isinstance(payload.get("usage"), dict)
+                else None
+            ),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=True,
         )
-    response.raise_for_status()
-    payload = response.json()
+    except Exception:
+        await record_llm_usage(
+            auth_payload={
+                "user_id": workflow.created_by,
+                "tenant_key": workflow.tenant_key,
+            },
+            usage_payload=None,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=False,
+        )
+        raise
     raw = payload.get("plan")
     if not isinstance(raw, dict):
         raise ValueError("Hermes 未返回有效计划")

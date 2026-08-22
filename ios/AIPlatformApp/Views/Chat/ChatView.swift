@@ -18,6 +18,8 @@ public struct ChatView: View {
     @State private var showingVoiceInput: Bool = false
     @State private var showingPlusMenu: Bool = false
     @State private var showingSessionDrawer: Bool = false
+    @State private var showingAgentPicker: Bool = false
+    @State private var tenantAgents: [TenantAgentDTO] = []
 
     private let waitingTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -36,7 +38,9 @@ public struct ChatView: View {
                     ChatTopBarView(
                         isGenerating: coordinator.isGenerating,
                         title: coordinator.sessionManager.title(for: coordinator.sessionManager.activeSessionID()),
+                        agentName: appState.selectedAgentName,
                         onTitleTap: { showingSessionDrawer = true },
+                        onAgentTap: { showingAgentPicker = true },
                         onNewSession: { coordinator.newSession() },
                         onHistoryTap: { showingSessionDrawer = true },
                         onClearTap: { isShowingClearAlert = true }
@@ -92,17 +96,56 @@ public struct ChatView: View {
                     onDelete: { id in coordinator.deleteSession(id) }
                 )
             }
+            .sheet(isPresented: $showingAgentPicker) {
+                ChatAgentPickerSheet(
+                    tenantAgents: tenantAgents,
+                    selectedAgentId: appState.selectedAgentId,
+                    onSelect: { id, name in
+                        showingAgentPicker = false
+                        appState.openChat(agentId: id, agentName: name)
+                        coordinator.handlePendingAgent()
+                    }
+                )
+            }
             .onAppear {
                 coordinator.appState = appState
                 coordinator.restoreActiveSession()
                 coordinator.refreshQuickCommands()
+                coordinator.handlePendingAgent()
                 coordinator.handlePendingPrompt()
+                coordinator.reconcileRestoredClarify()
+            }
+            .task { await refreshAgents() }
+            .onReceive(NotificationCenter.default.publisher(for: .tenantAgentsDidUpdate)) { _ in
+                Task { await refreshAgents() }
+            }
+            .onChange(of: appState.pendingChatAgent?.id) { _, _ in
+                coordinator.handlePendingAgent()
             }
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
             .onReceive(waitingTimer) { _ in coordinator.tickWaitingTimer() }
             .onChange(of: scenePhase) { _, phase in
-                if phase == .active { InboxFileManager.shared.cleanupStaleInboxFiles() }
+                if phase == .active {
+                    InboxFileManager.shared.cleanupStaleInboxFiles()
+                    coordinator.reconcileRestoredClarify()
+                }
             }
+        }
+    }
+
+    @MainActor
+    private func refreshAgents() async {
+        do {
+            tenantAgents = try await APIClient.shared.fetchTenantAgents().filter(\.isActive)
+            let baseline = ["main_agent", "supervision", "coder", "knowledge"]
+            if !baseline.contains(appState.selectedAgentId),
+               !tenantAgents.contains(where: { $0.id == appState.selectedAgentId }) {
+                appState.openChat(agentId: "main_agent", agentName: "Main 智能编排")
+                coordinator.handlePendingAgent()
+                coordinator.showToast("原 Agent 已停用或不可访问，已切换到 Main Agent")
+            }
+        } catch {
+            coordinator.showToast("Agent 列表加载失败，保留当前会话")
         }
     }
 
@@ -119,6 +162,72 @@ public struct ChatView: View {
                 .shadow(color: AppTheme.Colors.auroraBlue.opacity(0.22), radius: 12, y: 5)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .padding(.bottom, 90)
+        }
+    }
+}
+
+private struct ChatAgentPickerSheet: View {
+    let tenantAgents: [TenantAgentDTO]
+    let selectedAgentId: String
+    let onSelect: (String, String) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private let baseline: [(String, String)] = [
+        ("main_agent", "Main 智能编排"),
+        ("supervision", "Supervision 架构审查"),
+        ("coder", "Coder 独立开发"),
+        ("knowledge", "知识星海"),
+    ]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section("平台 Agent") {
+                    ForEach(baseline, id: \.0) { item in
+                        agentRow(id: item.0, name: item.1, detail: "平台基线 Agent")
+                    }
+                }
+                if !tenantAgents.isEmpty {
+                    Section("我的专属 Agent") {
+                        ForEach(tenantAgents) { agent in
+                            agentRow(
+                                id: agent.id,
+                                name: agent.customName ?? "专属 Agent",
+                                detail: agent.visibility == "private" ? "仅自己可见" : "租户可见"
+                            )
+                        }
+                    }
+                }
+            }
+            .navigationTitle("选择 Agent")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func agentRow(id: String, name: String, detail: String) -> some View {
+        Button {
+            onSelect(id, name)
+        } label: {
+            HStack(spacing: AppTheme.Spacing.md) {
+                Image(systemName: id == "main_agent" ? "sparkles" : "person.crop.circle.badge.checkmark")
+                    .foregroundColor(AppTheme.Colors.quantumBlue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(name).foregroundColor(AppTheme.Colors.textPrimary)
+                    Text(detail)
+                        .font(AppTheme.Typography.micro)
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                }
+                Spacer()
+                if id == selectedAgentId {
+                    Image(systemName: "checkmark.circle.fill")
+                        .foregroundColor(AppTheme.Colors.quantumBlue)
+                }
+            }
         }
     }
 }

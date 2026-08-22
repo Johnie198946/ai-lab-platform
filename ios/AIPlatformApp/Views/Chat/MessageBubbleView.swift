@@ -76,6 +76,20 @@ public struct MessageBubbleView: View {
     private var assistantBubbleContent: some View {
         let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
         return VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            if let name = message.executingAgentName,
+               message.executingAgentId != "main_agent" {
+                HStack(spacing: 5) {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                    Text(message.delegatedBy == nil ? "(name)" : "由 (name) 完成")
+                }
+                .font(AppTheme.Typography.micro.weight(.semibold))
+                .foregroundColor(AppTheme.Colors.quantumBlue)
+                .padding(.horizontal, AppTheme.Spacing.sm)
+                .padding(.vertical, 4)
+                .background(AppTheme.Colors.surfaceTint, in: Capsule())
+                .accessibilityLabel("执行 Agent：\(name)")
+            }
+
             // 演示样例标注
             if message.isDemoSample {
                 demoSampleBadge
@@ -90,7 +104,9 @@ public struct MessageBubbleView: View {
             if !trimmed.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                     if !markdownBlocks.isEmpty {
-                        ForEach(markdownBlocks) { block in
+                        // MarkdownBlock.id 基于内容；重复段落/分隔线会产生相同 id。
+                        // 使用解析顺序作为局部身份，避免 SwiftUI 在长列表布局时合并重复节点。
+                        ForEach(Array(markdownBlocks.enumerated()), id: \.offset) { _, block in
                             MarkdownBlockCard(block: block)
                         }
                     } else if !trimmed.isEmpty {

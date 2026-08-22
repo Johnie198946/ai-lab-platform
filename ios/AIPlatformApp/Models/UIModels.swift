@@ -196,11 +196,20 @@ public struct ClarifyOption: Identifiable, Sendable, Hashable {
     }
 }
 
+public enum ClarifySubmissionState: String, Codable, Sendable, Hashable {
+    case pending, submitting, accepted, continuing, rejected, expired, reconciling
+}
+
 /// 澄清卡片数据块（单选/多选 + 自定义输入 + 已提交态）
 public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public let id: String
     /// 后端澄清 ID（bridge clarify 事件携带）：提交时透传，精确解锁阻塞的 agent 线程（P0 修复）
     public var clarifyId: String?
+    public var requestId: String?
+    public var sessionId: String?
+    public var agentId: String?
+    public var expiresInSeconds: Int?
+    public var submissionState: ClarifySubmissionState
     public var question: String
     public var choices: [ClarifyOption]
     /// true = 多选（Checkbox），false = 单选（Radio）
@@ -215,6 +224,11 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public init(
         id: String = UUID().uuidString,
         clarifyId: String? = nil,
+        requestId: String? = nil,
+        sessionId: String? = nil,
+        agentId: String? = nil,
+        expiresInSeconds: Int? = nil,
+        submissionState: ClarifySubmissionState = .pending,
         question: String,
         choices: [String],
         multiSelect: Bool = false,
@@ -225,6 +239,11 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     ) {
         self.id = id
         self.clarifyId = clarifyId
+        self.requestId = requestId
+        self.sessionId = sessionId
+        self.agentId = agentId
+        self.expiresInSeconds = expiresInSeconds
+        self.submissionState = submissionState
         self.question = question
         self.choices = choices.map { ClarifyOption(label: $0) }
         self.multiSelect = multiSelect
@@ -238,6 +257,7 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     public mutating func markSubmitted(selection: String) {
         self.isSubmitted = true
         self.submittedSelection = selection
+        self.submissionState = .accepted
     }
 }
 
@@ -356,6 +376,9 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
     public var degraded: Bool
     /// ChatGPT 风格思考胶囊真实耗时（秒）：流式完成时原子落盘，历史冷启动真实回显；无记录时优雅降级
     public var reasoningDuration: Int?
+    public var executingAgentId: String?
+    public var executingAgentName: String?
+    public var delegatedBy: String?
 
     public init(
         id: String = UUID().uuidString,
@@ -369,7 +392,10 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         isDemoSample: Bool = false,
         pending: Bool = false,
         degraded: Bool = false,
-        reasoningDuration: Int? = nil
+        reasoningDuration: Int? = nil,
+        executingAgentId: String? = nil,
+        executingAgentName: String? = nil,
+        delegatedBy: String? = nil
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -383,6 +409,9 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         self.pending = pending
         self.degraded = degraded
         self.reasoningDuration = reasoningDuration
+        self.executingAgentId = executingAgentId
+        self.executingAgentName = executingAgentName
+        self.delegatedBy = delegatedBy
     }
 }
 
@@ -399,6 +428,10 @@ public struct PersistedMessage: Codable, Sendable {
     public let degraded: Bool
     public let isDemoSample: Bool
     public let reasoningDuration: Int?
+    public let executingAgentId: String?
+    public let executingAgentName: String?
+    public let delegatedBy: String?
+    public let clarify: PersistedClarify?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -409,10 +442,14 @@ public struct PersistedMessage: Codable, Sendable {
         self.degraded = m.degraded
         self.isDemoSample = m.isDemoSample
         self.reasoningDuration = m.reasoningDuration
+        self.executingAgentId = m.executingAgentId
+        self.executingAgentName = m.executingAgentName
+        self.delegatedBy = m.delegatedBy
+        self.clarify = m.clarifyBlock.map(PersistedClarify.init)
     }
 
     public func toChatMessage(sessionId: String) -> ChatMessage {
-        ChatMessage(
+        var message = ChatMessage(
             id: id,
             sessionId: sessionId,
             role: MessageRole(rawValue: role) ?? .assistant,
@@ -421,7 +458,68 @@ public struct PersistedMessage: Codable, Sendable {
             isDemoSample: isDemoSample,
             pending: pending,
             degraded: degraded,
-            reasoningDuration: reasoningDuration
+            reasoningDuration: reasoningDuration,
+            executingAgentId: executingAgentId,
+            executingAgentName: executingAgentName,
+            delegatedBy: delegatedBy
+        )
+        if let clarify {
+            message.blocks = [.clarify(clarify.toClarifyBlock(defaultSessionId: sessionId))]
+        }
+        return message
+    }
+}
+
+/// 可交互 Clarify 的最小恢复快照；普通展示 blocks 仍不落盘。
+public struct PersistedClarify: Codable, Sendable {
+    public let id: String
+    public let clarifyId: String?
+    public let requestId: String?
+    public let sessionId: String?
+    public let agentId: String?
+    public let expiresInSeconds: Int?
+    public let submissionState: ClarifySubmissionState?
+    public let question: String
+    public let choices: [String]
+    public let multiSelect: Bool
+    public let submitLabel: String
+    public let source: String
+    public let isSubmitted: Bool
+    public let submittedSelection: String
+
+    public init(_ block: ClarifyBlock) {
+        id = block.id
+        clarifyId = block.clarifyId
+        requestId = block.requestId
+        sessionId = block.sessionId
+        agentId = block.agentId
+        expiresInSeconds = block.expiresInSeconds
+        submissionState = block.submissionState
+        question = block.question
+        choices = block.choices.map(\.label)
+        multiSelect = block.multiSelect
+        submitLabel = block.submitLabel
+        source = block.source
+        isSubmitted = block.isSubmitted
+        submittedSelection = block.submittedSelection
+    }
+
+    public func toClarifyBlock(defaultSessionId: String) -> ClarifyBlock {
+        ClarifyBlock(
+            id: id,
+            clarifyId: clarifyId,
+            requestId: requestId,
+            sessionId: sessionId ?? defaultSessionId,
+            agentId: agentId,
+            expiresInSeconds: expiresInSeconds,
+            submissionState: submissionState ?? (isSubmitted ? .accepted : .pending),
+            question: question,
+            choices: choices,
+            multiSelect: multiSelect,
+            submitLabel: submitLabel,
+            source: source,
+            isSubmitted: isSubmitted,
+            submittedSelection: submittedSelection
         )
     }
 }
@@ -432,19 +530,23 @@ public struct SessionRecord: Codable, Sendable {
     public var title: String
     public var updatedAt: Date
     public var messages: [PersistedMessage]
+    public var agentId: String?
+    public var agentName: String?
 
-    public init(id: String, title: String, updatedAt: Date, messages: [PersistedMessage]) {
+    public init(
+        id: String, title: String, updatedAt: Date, messages: [PersistedMessage],
+        agentId: String? = nil, agentName: String? = nil
+    ) {
         self.id = id
         self.title = title
         self.updatedAt = updatedAt
         self.messages = messages
+        self.agentId = agentId
+        self.agentName = agentName
     }
 }
 
-/// 多会话状态管理器（@MainActor 严格串行，iPhone 单窗口）。
-/// - 内存 `sessions: [String: [ChatMessage]]` 字典隔离
-/// - 消息级原子落盘：Documents/Sessions/<id>.json（tmp + rename，杜绝断电损坏）
-/// - pending 标记：响应前 true / 完成后 false；冷启动恢复 updatedAt 最新会话为 active
+/// 多会话状态管理器。内存只缓存当前可见页，正文由 SQLite 分页持久化。
 @MainActor
 public final class SessionManager: ObservableObject {
     public static let shared = SessionManager()
@@ -453,98 +555,79 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var activeSessionId: String? = nil
     @Published public private(set) var sessionTitles: [String: String] = [:]
     @Published public private(set) var sessionUpdatedAt: [String: Date] = [:]
+    @Published public private(set) var sessionAgentIds: [String: String] = [:]
+    @Published public private(set) var sessionAgentNames: [String: String] = [:]
+    @Published public private(set) var sessionMessageCounts: [String: Int] = [:]
 
-    private let fm = FileManager.default
-
-    /// Documents/Sessions/<id>.json
-    private var directory: URL {
-        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first
-            ?? fm.temporaryDirectory
-        return docs.appendingPathComponent("Sessions", isDirectory: true)
-    }
-
-    private static let encoder: JSONEncoder = {
-        let e = JSONEncoder()
-        e.dateEncodingStrategy = .iso8601
-        e.outputFormatting = [.sortedKeys]
-        return e
-    }()
-
-    private static let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.dateDecodingStrategy = .iso8601
-        return d
-    }()
+    private let store: ChatHistoryStore
+    private var persistedFingerprints: [String: [String: Int]] = [:]
 
     private init() {
-        loadAll()
+        do { store = try ChatHistoryStore(performLegacyMigration: false) }
+        catch { fatalError("Chat history database unavailable: \(error)") }
+        loadMetadata()
+        Task.detached(priority: .utility) { [weak self] in
+            // A separate WAL connection avoids sharing a transaction with foreground page writes.
+            _ = try? ChatHistoryStore()
+            await self?.reloadMetadata()
+        }
     }
 
-    // MARK: - 冷启动恢复
+    public init(store: ChatHistoryStore) {
+        self.store = store
+        loadMetadata()
+    }
 
-    private func loadAll() {
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let files = try? fm.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        var loaded: [String: [ChatMessage]] = [:]
-        var titles: [String: String] = [:]
-        var updated: [String: Date] = [:]
-        var latestId: String? = nil
-        var latestDate: Date = .distantPast
-
-        for url in files where url.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: url),
-                  let rec = try? Self.decoder.decode(SessionRecord.self, from: data) else { continue }
-            let msgs = rec.messages.map { $0.toChatMessage(sessionId: rec.id) }
-            loaded[rec.id] = msgs
-            titles[rec.id] = rec.title
-            updated[rec.id] = rec.updatedAt
-            if rec.updatedAt > latestDate {
-                latestDate = rec.updatedAt
-                latestId = rec.id
-            }
-        }
-
-        sessions = loaded
-        sessionTitles = titles
-        sessionUpdatedAt = updated
-        // 恢复 updatedAt 最新的会话为 activeSessionId
-        activeSessionId = latestId
+    private func loadMetadata() {
+        guard let summaries = try? store.summaries() else { return }
+        sessionTitles = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.title) })
+        sessionUpdatedAt = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.updatedAt) })
+        sessionAgentIds = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentId) })
+        sessionAgentNames = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentName) })
+        sessionMessageCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.messageCount) })
+        activeSessionId = summaries.first?.id
     }
 
     // MARK: - 会话生命周期
 
     public func activeSessionID() -> String {
-        if let active = activeSessionId, sessions[active] != nil { return active }
+        if let active = activeSessionId, sessionTitles[active] != nil { return active }
         return createSession()
     }
 
     @discardableResult
-    public func createSession() -> String {
+    public func createSession(
+        agentId: String = "main_agent", agentName: String = "Main 智能编排"
+    ) -> String {
         let id = UUID().uuidString
         sessions[id] = []
         sessionTitles[id] = "新会话"
         sessionUpdatedAt[id] = Date()
+        sessionAgentIds[id] = agentId
+        sessionAgentNames[id] = agentName
+        sessionMessageCounts[id] = 0
         activeSessionId = id
-        persist(id: id)
+        try? store.createSession(id: id, agentId: agentId, agentName: agentName)
         return id
     }
 
     public func switchTo(_ id: String) {
-        if sessions[id] == nil { sessions[id] = [] }
+        if sessionTitles[id] == nil {
+            try? store.createSession(id: id, agentId: "main_agent", agentName: "Main 智能编排")
+            loadMetadata()
+        }
         activeSessionId = id
     }
 
-    /// 删除会话：本地级联清理（内存 + 磁盘文件）。
     public func deleteSession(_ id: String) {
+        try? store.delete(id)
         sessions.removeValue(forKey: id)
         sessionTitles.removeValue(forKey: id)
         sessionUpdatedAt.removeValue(forKey: id)
-        try? fm.removeItem(at: fileURL(id))
+        sessionAgentIds.removeValue(forKey: id)
+        sessionAgentNames.removeValue(forKey: id)
+        sessionMessageCounts.removeValue(forKey: id)
+        persistedFingerprints.removeValue(forKey: id)
         if activeSessionId == id {
             activeSessionId = latestSessionID()
             if activeSessionId == nil { _ = createSession() }
@@ -559,35 +642,84 @@ public final class SessionManager: ObservableObject {
     }
 
     private func latestSessionID() -> String? {
-        sessions.keys.max { (sessionUpdatedAt[$0] ?? .distantPast) < (sessionUpdatedAt[$1] ?? .distantPast) }
+        sessionUpdatedAt.keys.max { (sessionUpdatedAt[$0] ?? .distantPast) < (sessionUpdatedAt[$1] ?? .distantPast) }
     }
 
-    // MARK: - 消息读写（消息级原子落盘）
-
     public func messages(for id: String) -> [ChatMessage] {
-        sessions[id] ?? []
+        if let cached = sessions[id] { return cached }
+        return latestPage(for: id).messages
     }
 
     public var activeMessages: [ChatMessage] {
         guard let id = activeSessionId else { return [] }
-        return sessions[id] ?? []
+        return messages(for: id)
     }
 
     public func title(for id: String) -> String {
         sessionTitles[id] ?? "新会话"
     }
 
-    /// 整会话写入（消息级事件触发单次落盘，非 chunk 级）。标题按首条 user 前 20 字规则刷新。
+    public func agentId(for id: String) -> String {
+        sessionAgentIds[id] ?? "main_agent"
+    }
+
+    public func agentName(for id: String) -> String {
+        sessionAgentNames[id] ?? "Main 智能编排"
+    }
+
+    public func messageCount(for id: String) -> Int { sessionMessageCounts[id] ?? 0 }
+
+    public func latestPage(for id: String) -> StoredMessagePage {
+        let page = (try? store.latest(sessionId: id)) ?? StoredMessagePage(messages: [], hasOlder: false, hasNewer: false)
+        cacheVisibleMessages(page.messages, for: id)
+        return page
+    }
+
+    public func pageBefore(_ messageId: String, sessionId: String) -> StoredMessagePage {
+        let page = (try? store.before(sessionId: sessionId, messageId: messageId)) ?? latestPage(for: sessionId)
+        cacheVisibleMessages(page.messages, for: sessionId)
+        return page
+    }
+
+    public func pageAfter(_ messageId: String, sessionId: String) -> StoredMessagePage {
+        let page = (try? store.after(sessionId: sessionId, messageId: messageId)) ?? latestPage(for: sessionId)
+        cacheVisibleMessages(page.messages, for: sessionId)
+        return page
+    }
+
     public func setMessages(_ messages: [ChatMessage], for id: String) {
         sessions[id] = messages
-        refreshTitle(for: id, messages: messages)
-        sessionUpdatedAt[id] = Date()
-        persist(id: id)
+        let known = persistedFingerprints[id] ?? [:]
+        let dirty = messages.filter { known[$0.id] != fingerprint($0) }
+        if let count = try? store.upsert(dirty, sessionId: id) {
+            sessionMessageCounts[id] = count
+            var updated = known
+            for message in dirty { updated[message.id] = fingerprint(message) }
+            persistedFingerprints[id] = updated
+        }
+        refreshMetadata(for: id)
+    }
+
+    public func previousUserMessage(before messageId: String, sessionId: String) -> ChatMessage? {
+        try? store.previousUser(sessionId: sessionId, before: messageId)
+    }
+
+    public func truncateMessages(from messageId: String, sessionId: String) {
+        try? store.truncate(sessionId: sessionId, from: messageId)
+        sessionMessageCounts[sessionId] = (try? store.count(sessionId)) ?? 0
+        persistedFingerprints[sessionId]?.removeAll()
+    }
+
+    public func clearSession(_ id: String) {
+        try? store.clear(id)
+        sessions[id] = []
+        persistedFingerprints[id] = [:]
+        refreshMetadata(for: id)
     }
 
     /// 会话屏障：在途请求被切换拦截时，在原会话把 pending 占位替换为 .interrupted（不静默丢弃）。
     public func markInterrupted(sessionId: String) {
-        guard var msgs = sessions[sessionId], !msgs.isEmpty else { return }
+        var msgs = latestPage(for: sessionId).messages
         if let idx = msgs.lastIndex(where: { $0.role == .assistant && $0.pending }) {
             msgs[idx].role = .interrupted
             msgs[idx].content = Self.interruptedText
@@ -606,91 +738,88 @@ public final class SessionManager: ObservableObject {
 
     /// 把归属会话中 requestId 对应的 pending 占位替换为真实响应（切走后由 handleSuccess 调用）。
     public func applyResponse(sessionId: String, requestId: String, response: ChatResponseDTO) {
-        guard var msgs = sessions[sessionId] else { return }
-        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
-            msgs[idx].content = response.answer
-            msgs[idx].pending = false
-            msgs[idx].isStreaming = false
-            msgs[idx].degraded = response.degraded == true
-            // 后台完成不渲染逐步推理动画；用户切回时看到折叠推理卡/全文
-            msgs[idx].blocks = []
-        } else {
-            msgs.append(ChatMessage(
+        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+            var updated = existing
+            updated.content = response.answer; updated.pending = false; updated.isStreaming = false
+            updated.degraded = response.degraded == true; updated.executingAgentId = response.resolvedAgent?.id
+            updated.executingAgentName = response.resolvedAgent?.name; updated.delegatedBy = response.delegatedBy
+            updated.blocks = []
+            return updated
+        } ?? ChatMessage(
                 sessionId: sessionId, role: .assistant,
                 content: response.answer, pending: false,
-                degraded: response.degraded == true
-            ))
-        }
-        setMessages(msgs, for: sessionId)
+                degraded: response.degraded == true,
+                executingAgentId: response.resolvedAgent?.id,
+                executingAgentName: response.resolvedAgent?.name,
+                delegatedBy: response.delegatedBy
+            )
+        updateStoredMessage(message, sessionId: sessionId)
     }
 
     /// 断点续接已完成（status=completed）时，把结果写归属会话（切走后由 applyCompletedStatus 调用）。
     public func applyCompletedStatus(sessionId: String, requestId: String, answer: String) {
-        guard var msgs = sessions[sessionId] else { return }
-        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
-            msgs[idx].content = answer
-            msgs[idx].pending = false
-            msgs[idx].isStreaming = false
-            msgs[idx].degraded = false
-        } else {
-            msgs.append(ChatMessage(
-                sessionId: sessionId, role: .assistant,
-                content: answer, pending: false
-            ))
-        }
-        setMessages(msgs, for: sessionId)
+        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+            var updated = existing; updated.content = answer; updated.pending = false
+            updated.isStreaming = false; updated.degraded = false; return updated
+        } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: answer, pending: false)
+        updateStoredMessage(message, sessionId: sessionId)
     }
 
     /// 切走后任务失败：把 degraded 卡写归属会话（不中断、不静默）。
     public func applyDegraded(sessionId: String, requestId: String, text: String) {
-        guard var msgs = sessions[sessionId] else { return }
-        if let idx = msgs.firstIndex(where: { $0.id == requestId }) {
-            msgs[idx].content = text
-            msgs[idx].pending = false
-            msgs[idx].isStreaming = false
-            msgs[idx].degraded = true
-        } else {
-            msgs.append(ChatMessage(
-                sessionId: sessionId, role: .assistant,
-                content: text, pending: false, degraded: true
-            ))
-        }
-        setMessages(msgs, for: sessionId)
+        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+            var updated = existing; updated.content = text; updated.pending = false
+            updated.isStreaming = false; updated.degraded = true; return updated
+        } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: text, pending: false, degraded: true)
+        updateStoredMessage(message, sessionId: sessionId)
     }
 
-    private func refreshTitle(for id: String, messages: [ChatMessage]) {
-        guard let firstUser = messages.first(where: { $0.role == .user }) else {
-            sessionTitles[id] = "新会话"
-            return
+    private func updateStoredMessage(_ message: ChatMessage, sessionId: String) {
+        guard (try? store.upsert([message], sessionId: sessionId)) != nil else { return }
+        persistedFingerprints[sessionId, default: [:]][message.id] = fingerprint(message)
+        if var cached = sessions[sessionId], let index = cached.firstIndex(where: { $0.id == message.id }) {
+            cached[index] = message; sessions[sessionId] = cached
         }
-        let text = firstUser.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        sessionTitles[id] = text.isEmpty ? "新会话" : String(text.prefix(20))
+        refreshMetadata(for: sessionId)
     }
 
-    // MARK: - 原子落盘（tmp + rename）
-
-    private func fileURL(_ id: String) -> URL {
-        directory.appendingPathComponent("\(id).json")
+    private func refreshMetadata(for id: String) {
+        guard let summary = try? store.summaries().first(where: { $0.id == id }) else { return }
+        sessionTitles[id] = summary.title; sessionUpdatedAt[id] = summary.updatedAt
+        sessionAgentIds[id] = summary.agentId; sessionAgentNames[id] = summary.agentName
+        sessionMessageCounts[id] = summary.messageCount
     }
 
-    private func persist(id: String) {
-        try? fm.createDirectory(at: directory, withIntermediateDirectories: true)
-        guard let msgs = sessions[id] else { return }
-        let rec = SessionRecord(
-            id: id,
-            title: sessionTitles[id] ?? "新会话",
-            updatedAt: sessionUpdatedAt[id] ?? Date(),
-            messages: msgs.map(PersistedMessage.init)
-        )
-        guard let data = try? Self.encoder.encode(rec) else { return }
-        let url = fileURL(id)
-        let tmp = directory.appendingPathComponent("\(id).json.tmp")
-        try? data.write(to: tmp, options: .atomic)
-        if fm.fileExists(atPath: url.path) {
-            _ = try? fm.replaceItemAt(url, withItemAt: tmp)
-        } else {
-            try? fm.moveItem(at: tmp, to: url)
+    public func cacheVisibleMessages(_ messages: [ChatMessage], for id: String) {
+        sessions[id] = messages
+        var known = persistedFingerprints[id] ?? [:]
+        for message in messages { known[message.id] = fingerprint(message) }
+        persistedFingerprints[id] = known
+    }
+
+    public func storedMessage(id: String, sessionId: String) -> ChatMessage? {
+        try? store.message(sessionId: sessionId, id: id)
+    }
+
+    public func updateMessage(_ message: ChatMessage, sessionId: String) {
+        updateStoredMessage(message, sessionId: sessionId)
+    }
+
+    public func reloadMetadata() {
+        let active = activeSessionId
+        loadMetadata()
+        if let active, sessionTitles[active] != nil {
+            activeSessionId = active
         }
+    }
+
+    private func fingerprint(_ message: ChatMessage) -> Int {
+        var hasher = Hasher()
+        hasher.combine(message.role.rawValue); hasher.combine(message.content); hasher.combine(message.createdAt)
+        hasher.combine(message.pending); hasher.combine(message.degraded); hasher.combine(message.isDemoSample)
+        hasher.combine(message.reasoningDuration); hasher.combine(message.executingAgentId)
+        hasher.combine(message.executingAgentName); hasher.combine(message.delegatedBy)
+        return hasher.finalize()
     }
 }
 
@@ -940,6 +1069,22 @@ public struct KnowledgeItem: Identifiable, Codable, Sendable, Hashable {
 public extension Notification.Name {
     /// 租户 Agent 切片列表变更广播：对话式创建成功 / 删除后触发拓扑页静默刷新。
     static let tenantAgentsDidUpdate = Notification.Name("tenantAgentsDidUpdate")
+    /// 服务端租户知识权益/策略版本变化，要求刷新权限并重新建立会话。
+    static let knowledgeAccessDidChange = Notification.Name("knowledgeAccessDidChange")
+}
+
+public struct ChatAgentSelection: Identifiable, Equatable, Sendable {
+    public let id: UUID
+    public let agentId: String
+    public let agentName: String
+    public let prompt: String?
+
+    public init(agentId: String, agentName: String, prompt: String? = nil) {
+        self.id = UUID()
+        self.agentId = agentId
+        self.agentName = agentName
+        self.prompt = prompt
+    }
 }
 
 @MainActor
@@ -949,6 +1094,8 @@ public final class AppState: ObservableObject {
     @Published public var currentProfile: TenantProfile
     @Published public var activeTab: Int = 0
     @Published public var selectedAgentId: String = "main_agent"
+    @Published public var selectedAgentName: String = "Main 智能编排"
+    @Published public var pendingChatAgent: ChatAgentSelection? = nil
     @Published public var pendingChatPrompt: String? = nil
     @Published public var pendingWorkflowId: String? = nil
     /// 内存会话级 session_id（不持久化磁盘；404/401 清重发；账号切换清空）
@@ -989,6 +1136,15 @@ public final class AppState: ObservableObject {
     public func navigateToChatWithPrompt(_ prompt: String) {
         self.pendingChatPrompt = prompt
         self.activeTab = 0 // Switch to Chat tab
+    }
+
+    public func openChat(agentId: String, agentName: String, prompt: String? = nil) {
+        selectedAgentId = agentId
+        selectedAgentName = agentName
+        pendingChatAgent = ChatAgentSelection(
+            agentId: agentId, agentName: agentName, prompt: prompt
+        )
+        activeTab = 0
     }
 }
 

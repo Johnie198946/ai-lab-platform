@@ -15,8 +15,10 @@ from backend.api.auth import require_auth
 from backend.api import knowledge
 from backend.services.knowledge_policy import KnowledgeScopeDenied, resolve_policy
 from backend.services.knowledge_catalog import (
+    base_knowledge_status,
     compute_catalog as _compute_catalog,
     pending_review_count,
+    tenant_private_knowledge_status,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
@@ -320,6 +322,7 @@ async def my_knowledge_access(payload=Depends(require_auth)):
     from backend.db import SessionLocal
     from backend.models.tenant import TenantEntitlementSnapshot
 
+    vault = knowledge._vault()
     catalog = compute_catalog()
     async with SessionLocal() as db:
         policy, _ = await resolve_policy(
@@ -342,6 +345,10 @@ async def my_knowledge_access(payload=Depends(require_auth)):
         "yellow_entitlements": sorted(policy.entitled_yellow),
         "active_pack_grants": (snapshot.active_pack_grants or []) if snapshot else [],
         "pack_allowance": int(snapshot.pack_allowance or 0) if snapshot else 0,
+        "base_knowledge": base_knowledge_status(vault),
+        "tenant_private_knowledge": tenant_private_knowledge_status(
+            payload["tenant_key"], vault
+        ),
         "effective_categories": sorted(policy.effective_categories),
         "entitlement_stale": policy.entitlement_stale,
     }

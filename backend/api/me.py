@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from backend.api.auth import require_auth
@@ -216,3 +216,15 @@ async def my_usage(payload=Depends(require_auth)):
         "chat_calls": usage.chat_calls if usage else 0,
         "token_used": usage.token_used if usage else 0,
     }
+
+
+@router.get("/usage/summary")
+async def my_usage_summary(
+    days: int = Query(30), payload=Depends(require_auth)
+):
+    """Return exact, post-launch LLM usage for the authenticated user."""
+    if days not in {7, 30, 90}:
+        raise HTTPException(status_code=400, detail="days 仅支持 7、30 或 90")
+    from backend.services.llm_usage import usage_summary
+
+    return await usage_summary(payload, days)

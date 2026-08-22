@@ -13,19 +13,29 @@ import SwiftUI
 public struct ClarifyCard: View {
     public let block: ClarifyBlock
     public var onSubmit: ((String) -> Void)? = nil
+    public var onRecover: (() -> Void)? = nil
 
     @State private var selectedIDs: Set<String> = []
     @State private var customText: String = ""
 
-    public init(block: ClarifyBlock, onSubmit: ((String) -> Void)? = nil) {
+    public init(
+        block: ClarifyBlock,
+        onSubmit: ((String) -> Void)? = nil,
+        onRecover: (() -> Void)? = nil
+    ) {
         self.block = block
         self.onSubmit = onSubmit
+        self.onRecover = onRecover
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             headerView
-            if block.isSubmitted {
+            if block.submissionState == .expired {
+                expiredRecoveryView
+            } else if [.submitting, .reconciling].contains(block.submissionState) {
+                submittingView
+            } else if block.isSubmitted {
                 submittedBadgeView
             } else {
                 optionsListView
@@ -37,6 +47,33 @@ public struct ClarifyCard: View {
         }
         .padding(AppTheme.Spacing.xl)
         .quantumCard()
+    }
+
+    private var submittingView: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            ProgressView()
+            Text(block.submissionState == .reconciling ? "正在核对服务端状态…" : "正在提交确认…")
+                .font(AppTheme.Typography.supporting.weight(.medium))
+                .foregroundColor(AppTheme.Colors.textSecondary)
+            Spacer()
+        }
+        .frame(minHeight: AppTheme.Metrics.inputHeight)
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .background(AppTheme.Colors.surfaceTint)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+    }
+
+    private var expiredRecoveryView: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Label("本次确认已超时，系统不会自动重复执行", systemImage: "clock.badge.exclamationmark")
+                .font(AppTheme.Typography.supporting.weight(.semibold))
+                .foregroundColor(AppTheme.Colors.textSecondary)
+            Button(action: { onRecover?() }) {
+                Label("确认后恢复任务", systemImage: "arrow.clockwise")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(QuantumPrimaryButtonStyle())
+        }
     }
 
     // MARK: - Header
@@ -64,6 +101,11 @@ public struct ClarifyCard: View {
             Text(helperText)
                 .font(AppTheme.Typography.supporting)
                 .foregroundColor(AppTheme.Colors.textSecondary)
+            if let seconds = block.expiresInSeconds, seconds > 0, !block.isSubmitted {
+                Text("等待确认剩余约 \(seconds) 秒")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+            }
         }
     }
 
@@ -140,7 +182,7 @@ public struct ClarifyCard: View {
     }
 
     private func handleOptionTap(_ option: ClarifyOption) {
-        guard !block.isSubmitted else { return }
+        guard !block.isSubmitted, block.submissionState != .submitting else { return }
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         #endif
@@ -197,7 +239,7 @@ public struct ClarifyCard: View {
         if !block.choices.isEmpty {
             selection = selectedIDs
                 .compactMap { id in block.choices.first { $0.id == id }?.label }
-                .joined(separator: "、")
+                .joined(separator: ", ")
         } else {
             selection = customText.trimmingCharacters(in: .whitespacesAndNewlines)
         }

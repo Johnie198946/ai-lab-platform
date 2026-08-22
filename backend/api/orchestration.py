@@ -8,20 +8,28 @@
 from __future__ import annotations
 
 import os
+import json
+import time
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from backend.api.identity import match_identity_rule
+from backend.api.auth import require_auth
+from backend.services.llm_usage import record_llm_usage
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
 HERMES_BRIDGE_STREAM_URL = os.environ.get("HERMES_BRIDGE_STREAM_URL", "http://host.docker.internal:9118/v1/chat/stream")
 HERMES_TIMEOUT = 300
+_last_usage: ContextVar[dict[str, Any]] = ContextVar(
+    "orchestration_last_usage", default={}
+)
 
 router = APIRouter(prefix="/api/orchestration", tags=["orchestration"])
 
@@ -57,13 +65,18 @@ _sessions: Dict[str, OrchestrationSession] = {}
 
 async def _call_hermes(goal: str, session_id: Optional[str] = None) -> str:
     """透传 Hermes bridge（非流式）。"""
+    _last_usage.set({})
     payload: Dict[str, object] = {"goal": goal}
     if session_id:
         payload["session_id"] = session_id
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
         r = await client.post(HERMES_BRIDGE_URL, json=payload)
         if r.status_code == 200:
-            return r.json().get("reply", "").strip()
+            data = r.json()
+            _last_usage.set(
+                data.get("usage") if isinstance(data.get("usage"), dict) else {}
+            )
+            return data.get("reply", "").strip()
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）"
 
 
@@ -95,6 +108,7 @@ async def _stream_hermes(goal: str, session_id: Optional[str] = None):
 @router.post("/sessions", status_code=201, response_model=None)
 async def create_session(
     body: SessionCreateRequest,
+    payload=Depends(require_auth),
 ) -> Union[OrchestrationSession, StreamingResponse]:
     """编排入口 — 身份规则优先，其余全交 Hermes。
 
@@ -124,8 +138,30 @@ async def create_session(
     # 流式模式：返回 SSE 流（前端通过 fetch 读取）
     if body.stream:
         try:
+            async def recorded_stream():
+                started = time.perf_counter()
+                async for frame in _stream_hermes(body.goal, session_id=client_sid):
+                    line = frame.strip()
+                    if line.startswith("data:"):
+                        try:
+                            event = json.loads(line[5:].strip())
+                        except (json.JSONDecodeError, TypeError):
+                            event = None
+                        if isinstance(event, dict) and event.get("type") in {"done", "error"}:
+                            await record_llm_usage(
+                                auth_payload=payload,
+                                usage_payload=(
+                                    event.get("usage")
+                                    if isinstance(event.get("usage"), dict)
+                                    else None
+                                ),
+                                latency_ms=round((time.perf_counter() - started) * 1000),
+                                success=event.get("type") == "done",
+                            )
+                    yield frame
+
             return StreamingResponse(
-                _stream_hermes(body.goal, session_id=client_sid),
+                recorded_stream(),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -139,9 +175,22 @@ async def create_session(
             print(f"[orchestration] 流式失败·降级: {e}")
 
     # 非流式模式（默认）
+    started = time.perf_counter()
     try:
         reply = await _call_hermes(body.goal, session_id=client_sid)
+        await record_llm_usage(
+            auth_payload=payload,
+            usage_payload=_last_usage.get(),
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=bool(reply) and not reply.lstrip().startswith("⚠️"),
+        )
     except Exception as e:
+        await record_llm_usage(
+            auth_payload=payload,
+            usage_payload=None,
+            latency_ms=round((time.perf_counter() - started) * 1000),
+            success=False,
+        )
         raise HTTPException(status_code=502, detail=f"Hermes 调用失败: {e}") from e
 
     session = OrchestrationSession(

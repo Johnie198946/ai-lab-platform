@@ -117,8 +117,13 @@ public struct TopologyCanvasView: View {
                     node: node,
                     onChatWithAgent: { agentId in
                         selectedNode = nil
-                        appState.selectedAgentId = agentId
-                        appState.navigateToChatWithPrompt("以「\(node.name)」角色发起协作对话")
+                        let resolvedId = agentId.hasPrefix("db_")
+                            ? String(agentId.dropFirst(3)) : agentId
+                        appState.openChat(
+                            agentId: resolvedId,
+                            agentName: node.name,
+                            prompt: "以「\(node.name)」角色发起协作对话"
+                        )
                     },
                     isDeletable: tenantAgentIds.contains(node.id),
                     onDelete: {

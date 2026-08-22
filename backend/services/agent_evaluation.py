@@ -18,6 +18,7 @@ from backend.models.tenant_agent import AgentEvaluationEvent, AgentEvaluationRun
 from backend.services.agent_capabilities import resolve_agent
 from backend.services.knowledge_catalog import compute_catalog
 from backend.services.knowledge_policy import mint_capability, resolve_policy
+from backend.services.llm_usage import build_llm_usage_record
 
 HERMES_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
 INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
@@ -129,11 +130,31 @@ async def sync_run(run_id: str, db: AsyncSession) -> None:
         data = snapshot.json()
         for event in data.get("events") or []:
             await _append(db, run, event)
+        previous_status = run.status
         run.status = str(data.get("status") or run.status)
         run.results = data.get("results") or run.results
         run.score = float(data.get("score") or run.score)
         run.usage = data.get("usage") or run.usage
         run.error_message = str(data.get("error") or "") or None
+        if (
+            previous_status not in {"completed", "failed"}
+            and run.status in {"completed", "failed"}
+        ):
+            db.add(
+                build_llm_usage_record(
+                    auth_payload={
+                        "user_id": run.owner_user_id,
+                        "tenant_key": run.tenant_id,
+                    },
+                    usage_payload=(
+                        data.get("usage")
+                        if isinstance(data.get("usage"), dict)
+                        else None
+                    ),
+                    latency_ms=0,
+                    success=run.status == "completed",
+                )
+            )
         run.lease_owner = None
         run.lease_until = None
         await db.commit()

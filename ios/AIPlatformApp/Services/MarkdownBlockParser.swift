@@ -40,8 +40,27 @@ public enum MarkdownBlock: Identifiable, Hashable {
 public final class MarkdownBlockParser {
     public static let shared = MarkdownBlockParser()
 
+    private final class CacheEntry: NSObject {
+        let blocks: [MarkdownBlock]
+
+        init(_ blocks: [MarkdownBlock]) {
+            self.blocks = blocks
+        }
+    }
+
+    private let cache: NSCache<NSString, CacheEntry> = {
+        let cache = NSCache<NSString, CacheEntry>()
+        cache.countLimit = 256
+        cache.totalCostLimit = 8 * 1024 * 1024
+        return cache
+    }()
+
     public func parse(_ content: String, messageId: String = "") -> [MarkdownBlock] {
         guard !content.isEmpty else { return [] }
+        let cacheKey = messageId as NSString
+        if !messageId.isEmpty, let cached = cache.object(forKey: cacheKey) {
+            return cached.blocks
+        }
         let lines = content.components(separatedBy: "\n")
         var blocks: [MarkdownBlock] = []
         var index = 0
@@ -105,6 +124,13 @@ public final class MarkdownBlockParser {
         }
         if inCode { blocks.append(.codeBlock(language: codeLang, code: codeLines.joined(separator: "\n"))) }
         flushAll()
+        if !messageId.isEmpty {
+            cache.setObject(
+                CacheEntry(blocks),
+                forKey: cacheKey,
+                cost: min(content.utf8.count, 1_000_000)
+            )
+        }
         return blocks
     }
 
