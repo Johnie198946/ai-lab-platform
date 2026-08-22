@@ -73,6 +73,7 @@ test("App root route uses the destructured authSession", () => {
 test("an empty workbench can submit the first requirement", () => {
   const source = fs.readFileSync(new URL("../src/pages/ArchitectPage.jsx", import.meta.url), "utf8");
   assert.match(source, /onSubmit=\{workflow\s*\?\s*send\s*:\s*create\}/);
+  assert.match(source, /rows\.filter\(\(item\)\s*=>\s*item\.clarification_session_id\)/);
   assert.match(source, /workflow\s*\?\s*["']提交回复["']\s*:\s*["']开始澄清["']/);
 });
 

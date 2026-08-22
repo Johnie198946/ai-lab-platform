@@ -135,7 +135,7 @@ export default function ArchitectPage() {
     }
   };
 
-  useEffect(() => { platformApi.listWorkflows().then((data) => { const rows = data.workflows || data || []; setWorkflows(rows); if (rows[0]) loadWorkflow(rows[0].id); }).catch(() => setWorkflows([])); }, []);
+  useEffect(() => { platformApi.listWorkflows().then((data) => { const rows = data.workflows || data || []; const architectRows = rows.filter((item) => item.clarification_session_id); setWorkflows(architectRows); if (architectRows[0]) loadWorkflow(architectRows[0].id); }).catch(() => setWorkflows([])); }, []);
   const messages = clarification?.messages || [];
   const latestPrompt = [...messages].reverse().find((item) => item.role === "assistant");
   const diff = useMemo(() => previousPlan && plan ? diffPlanVersions(previousPlan, plan) : null, [previousPlan, plan]);
