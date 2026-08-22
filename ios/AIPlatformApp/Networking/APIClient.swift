@@ -8,6 +8,7 @@
 
 import Foundation
 import Combine
+import CryptoKit
 
 // MARK: - 后端 API DTO（snake_case → camelCase 自动转换）
 
@@ -371,6 +372,50 @@ public struct ProfileUpdateRequest: Encodable {
     }
 }
 
+public enum ChatContextMode: String, Codable, Sendable {
+    case auto
+    case localOnly = "local_only"
+    case platformOnly = "platform_only"
+    case combined
+}
+
+public struct ChatLocalNoteDTO: Codable, Hashable, Sendable {
+    public let id: String
+    public let title: String
+    public let markdown: String
+    public let updatedAt: String?
+    public let contentHash: String?
+
+    public init(id: String, title: String, markdown: String, updatedAt: String? = nil, contentHash: String? = nil) {
+        self.id = id
+        self.title = title
+        self.markdown = markdown
+        self.updatedAt = updatedAt
+        self.contentHash = contentHash
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, markdown
+        case updatedAt = "updated_at"
+        case contentHash = "content_hash"
+    }
+}
+
+public struct ChatContextScopeDTO: Codable, Hashable, Sendable {
+    public let mode: ChatContextMode
+    public let localNotes: [ChatLocalNoteDTO]
+
+    public init(mode: ChatContextMode = .auto, localNotes: [ChatLocalNoteDTO] = []) {
+        self.mode = mode
+        self.localNotes = localNotes
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case mode
+        case localNotes = "local_notes"
+    }
+}
+
 /// POST /api/chat 请求体（snake_case 序列化对齐后端 ChatRequest）
 public struct ChatRequestDTO: Encodable {
     public let question: String
@@ -379,14 +424,16 @@ public struct ChatRequestDTO: Encodable {
     public let quotedContext: String?
     public let agentId: String?
     public let regenerate: Bool
+    public let contextScope: ChatContextScopeDTO
 
-    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false) {
+    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO()) {
         self.question = question
         self.requestId = requestId
         self.sessionId = sessionId
         self.quotedContext = quotedContext
         self.agentId = agentId
         self.regenerate = regenerate
+        self.contextScope = contextScope
     }
 
     enum CodingKeys: String, CodingKey {
@@ -396,6 +443,7 @@ public struct ChatRequestDTO: Encodable {
         case quotedContext = "quoted_context"
         case agentId = "agent_id"
         case regenerate
+        case contextScope = "context_scope"
     }
 }
 
@@ -1858,6 +1906,35 @@ public final class APIClient: ObservableObject {
 
     // MARK: - 对话 / 思维链
 
+    public func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date) async throws {
+        struct Body: Encodable {
+            let markdown: String
+            let contentHash: String
+            let updatedAt: String
+            enum CodingKeys: String, CodingKey {
+                case markdown
+                case contentHash = "content_hash"
+                case updatedAt = "updated_at"
+            }
+        }
+        struct Response: Decodable { let syncStatus: String }
+        let digest = SHA256.hash(data: Data(markdown.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let _: Response = try await request(
+            Response.self,
+            path: "me/knowledge-notes/\(encodedPath(id))",
+            method: "PUT",
+            body: Body(
+                markdown: markdown,
+                contentHash: digest,
+                updatedAt: formatter.string(from: updatedAt)
+            )
+        )
+    }
+
     /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
     /// Task.cancel 传播中断客户端等待；404 可区分（清 session_id 幂等重发一次），超时单独抛 `.timeout`）。
     public func chat(
@@ -1865,7 +1942,8 @@ public final class APIClient: ObservableObject {
         requestId: String? = nil,
         sessionId: String? = nil,
         quotedContext: String? = nil,
-        agentId: String? = nil
+        agentId: String? = nil,
+        contextScope: ChatContextScopeDTO = ChatContextScopeDTO()
     ) async throws -> ChatResponseDTO {
         let url = baseURL.appendingPathComponent("api/chat")
         var request = URLRequest(url: url)
@@ -1882,7 +1960,8 @@ public final class APIClient: ObservableObject {
                 requestId: requestId,
                 sessionId: sessionId,
                 quotedContext: quotedContext,
-                agentId: agentId
+                agentId: agentId,
+                contextScope: contextScope
             )
         )
 
@@ -2007,7 +2086,8 @@ public final class APIClient: ObservableObject {
         sessionId: String? = nil,
         quotedContext: String? = nil,
         regenerate: Bool = false,
-        agentId: String? = nil
+        agentId: String? = nil,
+        contextScope: ChatContextScopeDTO = ChatContextScopeDTO()
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let url = baseURL.appendingPathComponent("api/chat/stream")
@@ -2026,7 +2106,8 @@ public final class APIClient: ObservableObject {
                     sessionId: sessionId,
                     quotedContext: quotedContext,
                     agentId: agentId,
-                    regenerate: regenerate
+                    regenerate: regenerate,
+                    contextScope: contextScope
                 )
             )
 

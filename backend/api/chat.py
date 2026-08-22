@@ -14,7 +14,8 @@ import time
 import uuid
 import hashlib
 from contextvars import ContextVar
-from typing import Any, AsyncIterator, Dict, Iterator, List, Optional
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Dict, Iterator, List, Literal, Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -32,6 +33,11 @@ from backend.models.agent_registry import (
 from backend.services.reasoning_extractor import ReasoningStep
 from backend.services.knowledge_policy import KnowledgePolicy, mint_capability, resolve_policy
 from backend.services.llm_usage import record_llm_usage
+from backend.services.user_note_context import (
+    normalize_inline_notes,
+    render_local_note_context,
+    search_user_notes,
+)
 from backend.services.agent_capabilities import (
     BASELINE_AGENT_IDS,
     AgentInvocationMatch,
@@ -128,6 +134,19 @@ def extract_citations(text: str) -> List[str]:
     return citations
 
 
+class LocalNoteContext(BaseModel):
+    id: str = Field(..., min_length=1, max_length=128)
+    title: str = Field(..., min_length=1, max_length=200)
+    markdown: str = Field(..., min_length=1, max_length=20_000)
+    updated_at: Optional[str] = Field(None, max_length=64)
+    content_hash: Optional[str] = Field(None, max_length=64)
+
+
+class ChatContextScope(BaseModel):
+    mode: Literal["auto", "local_only", "platform_only", "combined"] = "auto"
+    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=12)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
     request_id: Optional[str] = Field(None, min_length=8, max_length=100)
@@ -139,6 +158,7 @@ class ChatRequest(BaseModel):
     agent_id: Optional[str] = Field(None, max_length=50)
     # 指定展厅对话使用的Hermes技能；只允许服务端白名单，禁止任意路径读取。
     skill_id: Optional[str] = Field(None, max_length=80)
+    context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
 
 
 def validate_chat_skill(skill_id: Optional[str]) -> Optional[str]:
@@ -415,6 +435,71 @@ async def _knowledge_context(
     return capability, policy.policy_version, "", docs
 
 
+@dataclass(frozen=True)
+class ResolvedSourceContext:
+    evidence: str
+    capability: str | None
+    policy_version: str
+    knowledge_query: str | None
+    sources: List[Dict[str, Any]]
+
+
+async def _resolve_source_context(
+    *,
+    scope: ChatContextScope,
+    payload: Dict[str, Any],
+    subject_id: str,
+    question: str,
+    policy: KnowledgePolicy,
+) -> ResolvedSourceContext:
+    """Resolve private notes and governed Wiki without mixing semantics."""
+    mode = scope.mode
+    local_notes: list[dict[str, Any]] = []
+    if mode in {"auto", "local_only", "combined"}:
+        local_notes = normalize_inline_notes(scope.local_notes)
+        if not local_notes:
+            local_notes = search_user_notes(
+                tenant_key=str(payload.get("tenant_key") or "public"),
+                user_id=str(payload.get("user_id") or payload.get("sub") or ""),
+                query=question,
+            )
+
+    use_wiki = mode in {"platform_only", "combined"} or (
+        mode == "auto" and not local_notes
+    )
+    evidence = ""
+    sources: List[Dict[str, Any]] = []
+    if mode == "local_only" or local_notes:
+        evidence = render_local_note_context(
+            local_notes, exclusive=mode != "combined"
+        )
+        sources.extend({
+            "id": note["id"],
+            "title": note["title"],
+            "source": "user_note",
+            "updated_at": note.get("updated_at"),
+        } for note in local_notes)
+
+    capability: str | None = None
+    knowledge_query: str | None = None
+    policy_version = policy.policy_version
+    if use_wiki:
+        capability, policy_version, wiki_evidence, wiki_sources = await _knowledge_context(
+            payload, subject_id, question, policy=policy
+        )
+        evidence += wiki_evidence
+        knowledge_query = question
+        sources.extend(wiki_sources)
+
+    return ResolvedSourceContext(
+        evidence=evidence,
+        capability=capability,
+        policy_version=policy_version,
+        knowledge_query=knowledge_query,
+        sources=sources,
+    )
+
+
 async def _resolve_agent_route(
     *, question: str, requested_agent_id: str | None, payload: Dict[str, Any]
 ) -> tuple[EffectiveAgent, AgentInvocationMatch]:
@@ -512,10 +597,14 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         derive_isolated_session_id(req.agent_id, req.session_id),
         str(payload.get("tenant_key") or "public"), policy.policy_version
     )
-    capability, policy_version, evidence, sources = await _knowledge_context(
-        payload, isolated_session_id, req.question, policy=policy
+    source_context = await _resolve_source_context(
+        scope=req.context_scope,
+        payload=payload,
+        subject_id=isolated_session_id,
+        question=req.question,
+        policy=policy,
     )
-    goal += evidence
+    goal += source_context.evidence
 
     # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
     cached = await _check_cached_answer(req.question, isolated_session_id)
@@ -533,16 +622,20 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 str(payload.get("tenant_key") or "public"),
                 policy.policy_version,
             )
-            child_capability, child_policy_version, child_evidence, _ = await _knowledge_context(
-                payload, child_session_id, req.question, policy=policy
+            child_context = await _resolve_source_context(
+                scope=req.context_scope,
+                payload=payload,
+                subject_id=child_session_id,
+                question=req.question,
+                policy=policy,
             )
             child_reply, _ = await _call_hermes_recorded(
-                req.question + child_evidence,
+                req.question + child_context.evidence,
                 auth_payload=payload,
                 session_id=child_session_id,
-                knowledge_capability=child_capability,
-                policy_version=child_policy_version,
-                knowledge_query=req.question,
+                knowledge_capability=child_context.capability,
+                policy_version=child_context.policy_version,
+                knowledge_query=child_context.knowledge_query,
                 agent_config=delegated_target.bridge_config(),
             )
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
@@ -551,22 +644,24 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 user_question=req.question,
                 target=delegated_target,
                 child_reply=child_reply,
-            ) + evidence
+            ) + source_context.evidence
 
         if skill_id:
             reply, reasoning = await _call_hermes_recorded(
                 goal, session_id=isolated_session_id, skill_id=skill_id,
                 auth_payload=payload,
-                knowledge_capability=capability, policy_version=policy_version,
-                knowledge_query=req.question,
+                knowledge_capability=source_context.capability,
+                policy_version=source_context.policy_version,
+                knowledge_query=source_context.knowledge_query,
                 agent_config=agent.bridge_config(),
             )
         else:
             reply, reasoning = await _call_hermes_recorded(
                 goal, session_id=isolated_session_id,
                 auth_payload=payload,
-                knowledge_capability=capability, policy_version=policy_version,
-                knowledge_query=req.question,
+                knowledge_capability=source_context.capability,
+                policy_version=source_context.policy_version,
+                knowledge_query=source_context.knowledge_query,
                 agent_config=agent.bridge_config(),
             )
         answer = trim_boilerplate(reply)
@@ -575,7 +670,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         return ChatResponse(
             question=req.question,
             answer=answer,
-            sources=sources,
+            sources=source_context.sources,
             session_id=isolated_session_id,
             reasoning=reasoning,
             citations=citations,
@@ -652,6 +747,7 @@ class StreamRequest(BaseModel):
     quoted_context: Optional[str] = Field(None, max_length=2000)
     # 重新生成语义：true 时 bridge 作废旧 run（interrupt+discard）后启动全新尝试
     regenerate: bool = False
+    context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
 
 
 class ClarifySubmitRequest(BaseModel):
@@ -795,10 +891,14 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "表格内的关键差异与结论词请用 **加粗** 标注以突出重点。）"
         )
     skill_id = validate_chat_skill(req.skill_id)
-    capability, policy_version, evidence, _ = await _knowledge_context(
-        payload, isolated_session_id, req.question, policy=policy
+    source_context = await _resolve_source_context(
+        scope=req.context_scope,
+        payload=payload,
+        subject_id=isolated_session_id,
+        question=req.question,
+        policy=policy,
     )
-    goal += evidence
+    goal += source_context.evidence
 
     _streaming_sessions.add(isolated_session_id)
 
@@ -817,17 +917,21 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     str(payload.get("tenant_key") or "public"),
                     policy.policy_version,
                 )
-                child_capability, child_policy_version, child_evidence, _ = await _knowledge_context(
-                    payload, child_session_id, req.question, policy=policy
+                child_context = await _resolve_source_context(
+                    scope=req.context_scope,
+                    payload=payload,
+                    subject_id=child_session_id,
+                    question=req.question,
+                    policy=policy,
                 )
                 try:
                     child_reply, _ = await _call_hermes_recorded(
-                        req.question + child_evidence,
+                        req.question + child_context.evidence,
                         auth_payload=payload,
                         session_id=child_session_id,
-                        knowledge_capability=child_capability,
-                        policy_version=child_policy_version,
-                        knowledge_query=req.question,
+                        knowledge_capability=child_context.capability,
+                        policy_version=child_context.policy_version,
+                        knowledge_query=child_context.knowledge_query,
                         agent_config=delegated_target.bridge_config(),
                     )
                     if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
@@ -841,13 +945,13 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     user_question=req.question,
                     target=delegated_target,
                     child_reply=child_reply,
-                ) + evidence
+                ) + source_context.evidence
             kwargs = {
                 "regenerate": req.regenerate,
                 "skill_id": skill_id,
-                "knowledge_capability": capability,
-                "policy_version": policy_version,
-                "knowledge_query": req.question,
+                "knowledge_capability": source_context.capability,
+                "policy_version": source_context.policy_version,
+                "knowledge_query": source_context.knowledge_query,
                 "agent_config": agent.bridge_config(),
             }
             if req.request_id:

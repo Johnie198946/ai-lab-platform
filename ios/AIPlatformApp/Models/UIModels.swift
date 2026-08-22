@@ -1139,6 +1139,7 @@ public final class AppState: ObservableObject {
     @Published public var selectedAgentName: String = "Main 智能编排"
     @Published public var pendingChatAgent: ChatAgentSelection? = nil
     @Published public var pendingChatPrompt: String? = nil
+    @Published public var pendingChatContextScope: ChatContextScopeDTO? = nil
     @Published public var pendingWorkflowId: String? = nil
     /// 内存会话级 session_id（不持久化磁盘；404/401 清重发；账号切换清空）
     @Published public var chatSessionId: String? = nil
@@ -1174,11 +1175,13 @@ public final class AppState: ObservableObject {
         self.isLoggedIn = false
         self.isGuestMode = false
         self.chatSessionId = nil
+        self.pendingChatContextScope = nil
         self.isDevMode = false
     }
     
-    public func navigateToChatWithPrompt(_ prompt: String) {
+    public func navigateToChatWithPrompt(_ prompt: String, contextScope: ChatContextScopeDTO? = nil) {
         self.pendingChatPrompt = prompt
+        self.pendingChatContextScope = contextScope
         self.activeTab = 0 // Switch to Chat tab
     }
 

@@ -10,6 +10,27 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         return decoder
     }
 
+    func testChatRequestEncodesExplicitLocalOnlyNoteScope() throws {
+        let request = ChatRequestDTO(
+            question: "整理本地待办",
+            contextScope: ChatContextScopeDTO(
+                mode: .localOnly,
+                localNotes: [ChatLocalNoteDTO(
+                    id: "note-1",
+                    title: "本地会议",
+                    markdown: "# 本地会议\n- [ ] 回信"
+                )]
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        let scope = try XCTUnwrap(object["context_scope"] as? [String: Any])
+        XCTAssertEqual(scope["mode"] as? String, "local_only")
+        let notes = try XCTUnwrap(scope["local_notes"] as? [[String: Any]])
+        XCTAssertEqual(notes.first?["title"] as? String, "本地会议")
+    }
+
     func testMarkdownParserReusesBoundedMessageCache() {
         let key = "streaming-\(UUID().uuidString)"
         let first = MarkdownBlockParser.shared.parse("第一段", messageId: key)

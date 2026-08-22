@@ -43,6 +43,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// Agent 请求 ID -> 当前 UI 输出消息 ID。Clarify 后仍消费同一 SSE，但把续写放到用户选择之后。
     private var streamOutputMessageIds: [String: String] = [:]
     private var animationTasks: [String: Task<Void, Never>] = [:]
+    private var nextContextScope: ChatContextScopeDTO? = nil
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
         self.sessionManager = sessionManager ?? SessionManager.shared
@@ -302,7 +303,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func handlePendingPrompt() {
         if let prompt = appState?.pendingChatPrompt {
             self.inputText = prompt
+            self.nextContextScope = appState?.pendingChatContextScope
             appState?.pendingChatPrompt = nil
+            appState?.pendingChatContextScope = nil
         }
     }
 
@@ -343,6 +346,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         #endif
 
         let quote = quotedContext
+        let contextScope = nextContextScope ?? ChatContextScopeDTO()
+        nextContextScope = nil
         if isGenerating && pendingQueue.count >= 3 && !regenerate {
             showToast("最多排队 3 条，请等待")
             return
@@ -355,9 +360,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         commitSession()
 
         if isGenerating && !regenerate {
-            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote))
+            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote, contextScope: contextScope))
         } else {
-            startGeneration(text: text, quote: quote, regenerate: regenerate)
+            startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope)
         }
     }
 
@@ -369,7 +374,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false) {
+    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO()) {
         isGenerating = true
         waitingSeconds = 0
         thinkingPhase = nil
@@ -378,7 +383,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         let sid = sessionManager.activeSessionID()
         let req = InFlightRequest(
             id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
-            regenerate: regenerate, agentId: appState?.selectedAgentId
+            regenerate: regenerate, agentId: appState?.selectedAgentId,
+            contextScope: contextScope
         )
         inflight = req
         streamOutputMessageIds[req.id] = req.id
@@ -475,7 +481,8 @@ public final class TenantSessionCoordinator: ObservableObject {
             sessionId: req.sessionId,
             quotedContext: req.quote?.text,   // 引用历史消息上下文（若有），对齐后端 quoted_context 注入
             regenerate: req.regenerate,        // 重新生成：服务端作废旧 run 后全新执行
-            agentId: req.agentId
+            agentId: req.agentId,
+            contextScope: req.contextScope
         )
         do {
             for try await event in stream {
@@ -1615,7 +1622,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     private func advanceQueue() {
         guard !pendingQueue.isEmpty else { return }
         let next = pendingQueue.removeFirst()
-        startGeneration(text: next.text, quote: next.quote)
+        startGeneration(text: next.text, quote: next.quote, contextScope: next.contextScope)
     }
 
     public func showToast(_ text: String) {

@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
-from backend.api.knowledge import _vault
+from backend.services.user_note_context import namespace, note_paths, sync_root
 
 
 router = APIRouter(prefix="/api/v1/me/knowledge-notes", tags=["knowledge-sync"])
@@ -36,14 +36,11 @@ class NoteSyncRequest(BaseModel):
 
 
 def _sync_root() -> Path:
-    configured = os.environ.get("AI_LAB_USER_SYNC_ROOT", "").strip()
-    if configured:
-        return Path(configured)
-    return _vault() / "raw" / "dialogues" / "tenants"
+    return sync_root()
 
 
 def _tenant_namespace(tenant_key: str) -> str:
-    return hashlib.sha256(tenant_key.encode()).hexdigest()[:20]
+    return namespace(tenant_key)
 
 
 def _digest(content: bytes) -> str:
@@ -70,12 +67,10 @@ def _atomic_write(path: Path, content: bytes) -> None:
             pass
 
 
-def _paths(tenant_key: str, note_id: str) -> tuple[Path, Path]:
+def _paths(tenant_key: str, user_id: str, note_id: str) -> tuple[Path, Path]:
     if not _NOTE_ID.fullmatch(note_id):
         raise HTTPException(status_code=422, detail={"code": "invalid_note_id"})
-    directory = _sync_root() / _tenant_namespace(tenant_key)
-    note = directory / f"{note_id}.md"
-    return note, directory / f"{note_id}.sync.json"
+    return note_paths(tenant_key, user_id, note_id, _sync_root())
 
 
 @router.put("/{note_id}")
@@ -101,7 +96,7 @@ async def sync_note(
 
     tenant_key = str(payload.get("tenant_key") or "")
     user_id = str(payload.get("user_id") or payload.get("sub") or "")
-    note_path, metadata_path = _paths(tenant_key, note_id)
+    note_path, metadata_path = _paths(tenant_key, user_id, note_id)
     current_hash = _digest(note_path.read_bytes()) if note_path.is_file() else None
     if base_hash is not None and current_hash != base_hash:
         raise HTTPException(
@@ -120,6 +115,7 @@ async def sync_note(
         "version": 1,
         "note_id": note_id,
         "tenant_namespace": _tenant_namespace(tenant_key),
+        "user_namespace": namespace(user_id),
         "owner_user_id": user_id,
         "content_hash": actual_hash,
         "client_updated_at": (
@@ -148,7 +144,11 @@ async def note_sync_status(
     note_id: str,
     payload: dict[str, Any] = Depends(require_auth),
 ) -> dict[str, Any]:
-    note_path, _ = _paths(str(payload.get("tenant_key") or ""), note_id)
+    note_path, _ = _paths(
+        str(payload.get("tenant_key") or ""),
+        str(payload.get("user_id") or payload.get("sub") or ""),
+        note_id,
+    )
     if not note_path.is_file():
         raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
     return {
