@@ -41,8 +41,8 @@
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 未授权/未执行。
+- status: `COMMITTED`
+- commit SHA: `8af610c`（本地任务提交；最终交付 SHA 以 main 远端核验为准）。
 - GitHub remote/ref/SHA: 未授权 push，未执行 `git ls-remote` 交付核验。
 
 ## 部署记录
