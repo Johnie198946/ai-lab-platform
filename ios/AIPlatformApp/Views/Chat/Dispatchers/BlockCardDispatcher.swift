@@ -13,15 +13,18 @@ public struct BlockCardDispatcher: View {
     public let block: MessageBlock
     public var isStreaming: Bool = false
     public var onClarifySubmit: ((String) -> Void)? = nil
+    public var onNoteDraftAction: ((String, String) -> Void)? = nil
 
     public init(
         block: MessageBlock,
         isStreaming: Bool = false,
-        onClarifySubmit: ((String) -> Void)? = nil
+        onClarifySubmit: ((String) -> Void)? = nil,
+        onNoteDraftAction: ((String, String) -> Void)? = nil
     ) {
         self.block = block
         self.isStreaming = isStreaming
         self.onClarifySubmit = onClarifySubmit
+        self.onNoteDraftAction = onNoteDraftAction
     }
 
     public var body: some View {
@@ -54,6 +57,14 @@ public struct BlockCardDispatcher: View {
 
         case .clarify(let clarifyBlock):
             ClarifyCard(block: clarifyBlock, onSubmit: onClarifySubmit)
+
+        case .noteDraft(let draft):
+            NoteDraftCard(
+                draft: draft,
+                onSave: { onNoteDraftAction?(draft.id, "save") },
+                onEdit: { onNoteDraftAction?(draft.id, "edit") },
+                onDiscard: { onNoteDraftAction?(draft.id, "discard") }
+            )
         }
     }
 }

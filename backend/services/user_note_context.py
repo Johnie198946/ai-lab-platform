@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 
-_RECENT_INTENT = re.compile(r"最近|近期|这几天|本周|重点|待办|笔记|记录")
+_RECENT_INTENT = re.compile(r"最近|近期|这几天|本周|重点|待办")
 _STOP_PHRASES = (
     "请基于", "请帮我", "帮我", "请问", "我的", "本地", "笔记", "记录",
     "是什么", "是做什么的", "做什么的", "怎么样", "如何", "一下", "查询",

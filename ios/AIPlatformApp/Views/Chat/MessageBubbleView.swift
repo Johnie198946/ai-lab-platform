@@ -219,6 +219,9 @@ public struct MessageBubbleView: View {
             isStreaming: message.isStreaming,
             onClarifySubmit: { selection in
                 context?.onClarifySubmit?(selection)
+            },
+            onNoteDraftAction: { draftId, action in
+                context?.onNoteDraftAction?(draftId, action)
             }
         )
     }

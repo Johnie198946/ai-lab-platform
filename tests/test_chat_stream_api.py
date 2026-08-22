@@ -219,6 +219,50 @@ async def test_stream_expands_requested_skill(
 
 
 @pytest.mark.asyncio
+async def test_stream_signs_client_context_and_never_trusts_client_tenant(
+    app: FastAPI, transport: httpx.ASGITransport, monkeypatch
+):
+    import backend.api.chat as chat_mod
+    from backend.services.client_context_capability import (
+        context_digest,
+        verify_client_context_capability,
+    )
+
+    observed = {}
+
+    async def fake_bridge_stream(goal: str, session_id: str, **kwargs):
+        observed.update(kwargs)
+        observed["session_id"] = session_id
+        yield 'data: {"type":"done","answer":"ok"}\n\n'
+
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/chat/stream",
+            json={
+                "question": "总结并保存",
+                "request_id": "request-1234",
+                "session_id": "session-1",
+                "client_session_context": {
+                    "session_id": "session-1",
+                    "messages": [
+                        {"id": "m1", "role": "user", "content": "超聚变相关内容"}
+                    ],
+                    "truncated": False,
+                },
+            },
+            headers=auth_headers(),
+        )
+    assert response.status_code == 200
+    context = observed["client_session_context"]
+    claims = verify_client_context_capability(observed["client_context_capability"])
+    assert claims["tenant_key"] == "u-test"
+    assert claims["user_id"] == "1"
+    assert claims["session_id"] == observed["session_id"]
+    assert claims["context_hash"] == context_digest(context)
+
+
+@pytest.mark.asyncio
 async def test_stream_emits_agent_route_and_handoffs_child_result(
     app: FastAPI, transport: httpx.ASGITransport, monkeypatch
 ):

@@ -3,6 +3,20 @@ import XCTest
 
 @MainActor
 final class KnowledgeNoteStoreTests: XCTestCase {
+    func testNotesAreIsolatedByTenantAndUser() throws {
+        let store = KnowledgeNoteStore.shared
+        let tenantA = "tenant-a-\(UUID().uuidString)"
+        let tenantB = "tenant-b-\(UUID().uuidString)"
+        let user = "same-user"
+        store.activate(tenantKey: tenantA, userId: user)
+        let note = try XCTUnwrap(store.createNote(title: "租户隔离", body: "只属于 A"))
+        store.activate(tenantKey: tenantB, userId: user)
+        XCTAssertNil(store.note(id: note.id))
+        store.activate(tenantKey: tenantA, userId: user)
+        XCTAssertEqual(store.note(id: note.id)?.body, "只属于 A")
+        store.moveToTrash(id: note.id)
+    }
+
     func testCreateNoteWritesObsidianCompatibleMarkdown() throws {
         let store = KnowledgeNoteStore.shared
         let title = "双链测试-\(UUID().uuidString.prefix(8))"

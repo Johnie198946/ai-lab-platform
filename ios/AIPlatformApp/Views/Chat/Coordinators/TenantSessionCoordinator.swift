@@ -44,12 +44,33 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var streamOutputMessageIds: [String: String] = [:]
     private var animationTasks: [String: Task<Void, Never>] = [:]
     private var nextContextScope: ChatContextScopeDTO? = nil
+    private var accountCancellable: AnyCancellable?
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
         self.sessionManager = sessionManager ?? SessionManager.shared
         self.appState = appState
         restoreActiveSession()
         refreshQuickCommands()
+        accountCancellable = NotificationCenter.default.publisher(for: .localAccountDidChange)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.handleLocalAccountChange() }
+            }
+    }
+
+    private func handleLocalAccountChange() {
+        // Standalone coordinators used by previews and focused UI tests have no
+        // account lifecycle to follow. Ignore process-wide account notifications
+        // until ChatView binds the real AppState on appear.
+        guard appState != nil else { return }
+        tenantEpoch += 1
+        cancelAllTasksAndAnimations()
+        isGenerating = false
+        inflight = nil
+        pendingQueue.removeAll()
+        messages.removeAll()
+        if appState?.isLoggedIn == true {
+            restoreActiveSession()
+        }
     }
 
     // MARK: - 会话恢复与持久化
@@ -70,6 +91,9 @@ public final class TenantSessionCoordinator: ObservableObject {
             },
             onRegenerate: { [weak self] mid in
                 self?.retryMessage(mid)
+            },
+            onNoteDraftAction: { [weak self] draftId, action in
+                self?.handleNoteDraftAction(messageId: message?.id, draftId: draftId, action: action)
             }
         )
     }
@@ -354,15 +378,16 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         let sid = sessionManager.activeSessionID()
+        let clientSessionContext = sessionManager.clientSessionContext(for: sid)
         messages.append(ChatMessage(sessionId: sid, role: .user, content: text, quotedContext: quote))
         inputText = ""
         quotedContext = nil
         commitSession()
 
         if isGenerating && !regenerate {
-            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote, contextScope: contextScope))
+            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote, contextScope: contextScope, clientSessionContext: clientSessionContext))
         } else {
-            startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope)
+            startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope, clientSessionContext: clientSessionContext)
         }
     }
 
@@ -374,7 +399,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
-    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO()) {
+    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil) {
         isGenerating = true
         waitingSeconds = 0
         thinkingPhase = nil
@@ -384,7 +409,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         let req = InFlightRequest(
             id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
             regenerate: regenerate, agentId: appState?.selectedAgentId,
-            contextScope: contextScope
+            contextScope: contextScope, clientSessionContext: clientSessionContext
         )
         inflight = req
         streamOutputMessageIds[req.id] = req.id
@@ -482,7 +507,8 @@ public final class TenantSessionCoordinator: ObservableObject {
             quotedContext: req.quote?.text,   // 引用历史消息上下文（若有），对齐后端 quoted_context 注入
             regenerate: req.regenerate,        // 重新生成：服务端作废旧 run 后全新执行
             agentId: req.agentId,
-            contextScope: req.contextScope
+            contextScope: req.contextScope,
+            clientSessionContext: req.clientSessionContext
         )
         do {
             for try await event in stream {
@@ -622,6 +648,27 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].executingAgentId = id
                         messages[idx].executingAgentName = name
                         messages[idx].delegatedBy = delegatedBy
+                    }
+
+                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope):
+                    drainDeltaBuffer(messageId: outputId)
+                    guard sourceSessionId == nil || sourceSessionId == req.sessionId else { continue }
+                    let draft = NoteDraftBlock(
+                        id: id,
+                        title: title,
+                        markdown: markdown,
+                        tags: tags,
+                        sourceSessionId: sourceSessionId,
+                        sourceMessageIds: sourceMessageIds,
+                        accountScope: accountScope
+                    )
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }),
+                       !messages[idx].blocks.contains(where: {
+                           if case .noteDraft(let existing) = $0 { return existing.id == id }
+                           return false
+                       }) {
+                        messages[idx].blocks.append(.noteDraft(draft))
+                        messages[idx].pending = false
                     }
 
                 case .done(_, let answer):
@@ -1622,7 +1669,69 @@ public final class TenantSessionCoordinator: ObservableObject {
     private func advanceQueue() {
         guard !pendingQueue.isEmpty else { return }
         let next = pendingQueue.removeFirst()
-        startGeneration(text: next.text, quote: next.quote, contextScope: next.contextScope)
+        startGeneration(
+            text: next.text,
+            quote: next.quote,
+            contextScope: next.contextScope,
+            clientSessionContext: next.clientSessionContext
+        )
+    }
+
+    public func handleNoteDraftAction(
+        messageId: String?, draftId: String, action: String
+    ) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
+              let blockIndex = messages[messageIndex].blocks.firstIndex(where: {
+                  if case .noteDraft(let draft) = $0 { return draft.id == draftId }
+                  return false
+              }), case .noteDraft(var draft) = messages[messageIndex].blocks[blockIndex],
+              draft.state == .awaitingConfirmation else { return }
+        if action == "discard" {
+            draft.state = .discarded
+            messages[messageIndex].blocks[blockIndex] = .noteDraft(draft)
+            commitSession()
+            return
+        }
+        guard draft.accountScope == nil || draft.accountScope == KnowledgeNoteStore.shared.accountFingerprint else {
+            showToast("账号已切换，不能保存其他账号的笔记草稿")
+            return
+        }
+        guard appState?.isLoggedIn == true,
+              let note = KnowledgeNoteStore.shared.createNote(
+                  title: draft.title, body: draft.markdown, tags: draft.tags
+              ) else {
+            showToast("无法保存笔记，请检查本地存储")
+            return
+        }
+        draft.state = .savedLocally
+        draft.savedNoteId = note.id
+        messages[messageIndex].blocks[blockIndex] = .noteDraft(draft)
+        commitSession()
+        if action == "edit" {
+            appState?.activeTab = 2
+            showToast("已保存到本地，可在笔记页继续编辑")
+        }
+        let expectedEpoch = tenantEpoch
+        Task { [weak self] in
+            do {
+                try await APIClient.shared.syncKnowledgeNote(
+                    id: note.id,
+                    markdown: KnowledgeNoteStore.shared.markdown(for: note),
+                    updatedAt: note.updatedAt
+                )
+                guard let self, self.tenantEpoch == expectedEpoch,
+                      let currentMessageIndex = self.messages.firstIndex(where: { $0.id == messageId }),
+                      let currentBlockIndex = self.messages[currentMessageIndex].blocks.firstIndex(where: {
+                          if case .noteDraft(let value) = $0 { return value.id == draftId }
+                          return false
+                      }), case .noteDraft(var currentDraft) = self.messages[currentMessageIndex].blocks[currentBlockIndex] else { return }
+                currentDraft.state = .saved
+                self.messages[currentMessageIndex].blocks[currentBlockIndex] = .noteDraft(currentDraft)
+                self.commitSession()
+            } catch {
+                self?.showToast("笔记已保存到本地，稍后可重试同步")
+            }
+        }
     }
 
     public func showToast(_ text: String) {

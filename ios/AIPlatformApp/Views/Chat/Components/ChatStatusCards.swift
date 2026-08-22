@@ -15,12 +15,14 @@ public struct PendingItem: Identifiable, Sendable {
     public let text: String
     public let quote: QuotedContext?
     public let contextScope: ChatContextScopeDTO
+    public let clientSessionContext: ClientSessionContextDTO?
 
-    public init(id: String = UUID().uuidString, text: String, quote: QuotedContext? = nil, contextScope: ChatContextScopeDTO = ChatContextScopeDTO()) {
+    public init(id: String = UUID().uuidString, text: String, quote: QuotedContext? = nil, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil) {
         self.id = id
         self.text = text
         self.quote = quote
         self.contextScope = contextScope
+        self.clientSessionContext = clientSessionContext
     }
 }
 
@@ -32,6 +34,7 @@ public struct InFlightRequest: Identifiable, Sendable {
     public let regenerate: Bool
     public let agentId: String?
     public let contextScope: ChatContextScopeDTO
+    public let clientSessionContext: ClientSessionContextDTO?
     public var didRetry404: Bool = false
     public var phase: InFlightPhase = .thinking
 
@@ -43,6 +46,7 @@ public struct InFlightRequest: Identifiable, Sendable {
         regenerate: Bool = false,
         agentId: String? = nil,
         contextScope: ChatContextScopeDTO = ChatContextScopeDTO(),
+        clientSessionContext: ClientSessionContextDTO? = nil,
         didRetry404: Bool = false,
         phase: InFlightPhase = .thinking
     ) {
@@ -53,6 +57,7 @@ public struct InFlightRequest: Identifiable, Sendable {
         self.regenerate = regenerate
         self.agentId = agentId
         self.contextScope = contextScope
+        self.clientSessionContext = clientSessionContext
         self.didRetry404 = didRetry404
         self.phase = phase
     }
@@ -63,6 +68,54 @@ public enum InFlightPhase: Equatable, Sendable {
     case timeout
     case networkError
     case serverError(String)
+}
+
+public struct NoteDraftCard: View {
+    public let draft: NoteDraftBlock
+    public let onSave: () -> Void
+    public let onEdit: () -> Void
+    public let onDiscard: () -> Void
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Label("笔记草稿", systemImage: "note.text.badge.plus")
+                .font(.headline)
+                .foregroundStyle(AppTheme.Colors.quantumViolet)
+            Text(draft.title).font(.subheadline.weight(.semibold))
+            Text(draft.markdown)
+                .font(.footnote)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .lineLimit(8)
+            if draft.state == .awaitingConfirmation {
+                HStack {
+                    Button("保存到笔记", action: onSave).buttonStyle(.borderedProminent)
+                    Button("编辑后保存", action: onEdit).buttonStyle(.bordered)
+                    Button("放弃", role: .destructive, action: onDiscard).buttonStyle(.plain)
+                }
+            } else {
+                Label(statusText, systemImage: statusIcon)
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(draft.state == .discarded ? AppTheme.Colors.textSecondary : Color.green)
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: AppTheme.Radius.lg).stroke(AppTheme.Colors.border, lineWidth: 0.5))
+    }
+
+    private var statusText: String {
+        switch draft.state {
+        case .saved: return "已保存并同步"
+        case .savedLocally: return "已保存到本地，等待同步"
+        case .discarded: return "已放弃"
+        case .awaitingConfirmation: return "等待确认"
+        }
+    }
+
+    private var statusIcon: String {
+        draft.state == .discarded ? "xmark.circle" : "checkmark.circle.fill"
+    }
 }
 
 // MARK: - Placeholder Views

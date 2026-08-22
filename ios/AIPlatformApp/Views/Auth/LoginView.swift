@@ -368,11 +368,22 @@ public struct LoginView: View {
             // 2. 探测 /me 判定开发态（dev 载荷 tenant_key=demo）或连接失败
             do {
                 let profile = try await APIClient.shared.fetchMe()
+                appState.currentTenantKey = profile.tenantKey
+                appState.currentUserId = profile.userId
+                KnowledgeNoteStore.shared.activate(
+                    tenantKey: profile.tenantKey, userId: profile.userId
+                )
                 if profile.tenantKey == "demo" || profile.username == "dev" {
                     isDev = true
                 }
             } catch {
                 isDev = true
+                appState.currentUserId = "demo-user"
+                appState.currentTenantKey = appState.currentProfile.tenantId
+                KnowledgeNoteStore.shared.activate(
+                    tenantKey: appState.currentProfile.tenantId,
+                    userId: appState.currentUserId
+                )
             }
 
             isLoading = false
@@ -393,6 +404,12 @@ public struct LoginView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         withAnimation(.spring()) {
+            appState.currentUserId = "third-party-\(provider.lowercased())"
+            appState.currentTenantKey = appState.currentProfile.tenantId
+            KnowledgeNoteStore.shared.activate(
+                tenantKey: appState.currentProfile.tenantId,
+                userId: appState.currentUserId
+            )
             appState.isLoggedIn = true
             appState.isGuestMode = false
             appState.currentProfile = MockData.tenantProfile

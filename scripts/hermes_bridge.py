@@ -62,6 +62,11 @@ from backend.services.knowledge_policy import (  # noqa: E402
     KnowledgeScopeDenied,
     verify_capability,
 )
+from backend.services.client_context_capability import (  # noqa: E402
+    ClientContextDenied,
+    context_digest,
+    verify_client_context_capability,
+)
 
 app = FastAPI(title="Hermes Bridge v6.0")
 
@@ -330,6 +335,8 @@ class GoalRequest(BaseModel):
     # text used for the request-scoped Wiki lookup.
     knowledge_query: str | None = Field(None, max_length=200)
     agent_config: dict[str, Any] = Field(default_factory=dict)
+    client_session_context: dict[str, Any] | None = None
+    client_context_capability: str | None = None
 
 
 class WorkflowPlanRequest(BaseModel):
@@ -826,6 +833,37 @@ def _validated_knowledge_claims(
     return claims
 
 
+def _validated_client_context_claims(
+    token: str | None,
+    context: dict[str, Any] | None,
+    *,
+    subject_id: str,
+    request_id: str | None,
+    policy_version: str | None,
+) -> dict[str, Any] | None:
+    """Accept client conversation data only with a matching platform signature."""
+    if not token and context is None:
+        return None
+    if not token or not isinstance(context, dict):
+        raise HTTPException(status_code=403, detail="client_context_denied")
+    try:
+        claims = verify_client_context_capability(token)
+    except ClientContextDenied as exc:
+        raise HTTPException(status_code=403, detail="client_context_denied") from exc
+    expected = {
+        "session_id": subject_id,
+        "request_id": str(request_id or ""),
+        "policy_version": str(policy_version or ""),
+        "context_hash": context_digest(context),
+    }
+    if any(str(claims.get(key) or "") != value for key, value in expected.items()):
+        raise HTTPException(status_code=403, detail="client_context_denied")
+    if str(context.get("session_id") or "") not in subject_id:
+        # The platform namespaces the raw client id inside subject_id.
+        raise HTTPException(status_code=403, detail="client_context_denied")
+    return claims
+
+
 def _knowledge_gateway_search(
     token: str,
     *,
@@ -898,6 +936,9 @@ async def _request_scoped_wiki_evidence(
 _knowledge_tool_context = threading.local()
 _knowledge_tool_registration_lock = threading.Lock()
 _knowledge_tool_registered = False
+_client_context_tool_context = threading.local()
+_client_context_tool_registration_lock = threading.Lock()
+_client_context_tools_registered = False
 
 
 def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
@@ -1002,6 +1043,119 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
             handler=lambda args, **kwargs: _knowledge_search_tool(args, **kwargs),
         )
         _knowledge_tool_registered = True
+
+
+def _session_context_read_tool(args: dict[str, Any], **_kwargs) -> str:
+    context = getattr(_client_context_tool_context, "value", None)
+    if not isinstance(context, dict) or not isinstance(context.get("transcript"), dict):
+        return json.dumps({"success": False, "error": "client_context_unavailable"})
+    transcript = context["transcript"]
+    context["read"] = True
+    messages = transcript.get("messages") if isinstance(transcript.get("messages"), list) else []
+    return json.dumps(
+        {
+            "success": True,
+            "session_id": transcript.get("session_id"),
+            "truncated": bool(transcript.get("truncated")),
+            "messages": messages,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _note_draft_tool(args: dict[str, Any], **_kwargs) -> str:
+    context = getattr(_client_context_tool_context, "value", None)
+    if not isinstance(context, dict) or not context.get("read"):
+        return json.dumps(
+            {"success": False, "error": "session_context_read_required"},
+            ensure_ascii=False,
+        )
+    title = str((args or {}).get("title") or "").strip()[:200]
+    markdown = str((args or {}).get("markdown") or "").strip()[:100_000]
+    if not title or not markdown:
+        return json.dumps(
+            {"success": False, "error": "title_and_markdown_required"},
+            ensure_ascii=False,
+        )
+    tags = [str(item).strip()[:50] for item in (args or {}).get("tags") or []]
+    tags = [item for item in tags if item][:12]
+    source_ids = [
+        str(item)[:100] for item in (args or {}).get("source_message_ids") or []
+    ][:200]
+    seed = f"{context.get('request_id')}\0{title}\0{markdown}".encode()
+    draft_id = "draft-" + hashlib.sha256(seed).hexdigest()[:24]
+    event = {
+        "type": "note_draft",
+        "draft_id": draft_id,
+        "title": title,
+        "markdown": markdown,
+        "tags": tags,
+        "source_session_id": context.get("client_session_id"),
+        "source_message_ids": source_ids,
+        "account_scope": context.get("account_scope"),
+    }
+    emitter = context.get("emit")
+    if callable(emitter):
+        emitter(event)
+    return json.dumps(
+        {
+            "success": True,
+            "draft_id": draft_id,
+            "status": "awaiting_user_confirmation",
+            "saved": False,
+        },
+        ensure_ascii=False,
+    )
+
+
+def _ensure_client_context_tools_registered() -> None:
+    global _client_context_tools_registered
+    if _client_context_tools_registered:
+        return
+    with _client_context_tool_registration_lock:
+        if _client_context_tools_registered:
+            return
+        from tools.registry import registry
+
+        registry.register(
+            name="session_context_read",
+            toolset="client_context",
+            schema={
+                "name": "session_context_read",
+                "description": (
+                    "Read the authenticated current iOS conversation transcript. "
+                    "Call this before summarizing what was discussed in this chat."
+                ),
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda args, **kwargs: _session_context_read_tool(args, **kwargs),
+        )
+        registry.register(
+            name="note_draft",
+            toolset="client_context",
+            schema={
+                "name": "note_draft",
+                "description": (
+                    "Create a Markdown note draft for the iOS client to confirm. "
+                    "This does not save the note."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "markdown": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                        "source_message_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["title", "markdown", "source_message_ids"],
+                },
+            },
+            handler=lambda args, **kwargs: _note_draft_tool(args, **kwargs),
+        )
+        _client_context_tools_registered = True
 
 
 def _extract_json_object(text: str) -> dict[str, Any]:
@@ -2108,6 +2262,13 @@ async def chat_stream(body: GoalRequest):
         subject_id=user_id,
         policy_version=body.knowledge_policy_version,
     )
+    client_context_claims = _validated_client_context_claims(
+        body.client_context_capability,
+        body.client_session_context,
+        subject_id=user_id,
+        request_id=body.request_id,
+        policy_version=body.knowledge_policy_version,
+    )
     goal = _expand_requested_skill(body.goal, body.skill_id)
     _mark_in_flight(user_id)
 
@@ -2150,6 +2311,8 @@ async def chat_stream(body: GoalRequest):
                     agent_config=body.agent_config,
                     knowledge_capability=body.knowledge_capability,
                     knowledge_claims=knowledge_claims,
+                    client_session_context=body.client_session_context,
+                    client_context_claims=client_context_claims,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -2670,6 +2833,7 @@ def _build_in_process_agent(
     allow_local_files: bool = False,
     agent_config: dict[str, Any] | None = None,
     knowledge_capability: str | None = None,
+    client_context_enabled: bool = False,
 ) -> object:
     """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
 
@@ -2704,6 +2868,10 @@ def _build_in_process_agent(
         _ensure_knowledge_gateway_tool_registered()
         if "knowledge_gateway" not in toolsets_list:
             toolsets_list.append("knowledge_gateway")
+    if client_context_enabled:
+        _ensure_client_context_tools_registered()
+        if "client_context" not in toolsets_list:
+            toolsets_list.append("client_context")
     if allowed_tools:
         requested_toolsets = {"clarify", "memory", "session_search"}
         if allowed_tools & {"web_search", "web_extract", "browser_navigate"}:
@@ -2714,6 +2882,8 @@ def _build_in_process_agent(
             requested_toolsets.add("delegation")
         if knowledge_tool_enabled:
             requested_toolsets.add("knowledge_gateway")
+        if client_context_enabled:
+            requested_toolsets.add("client_context")
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
@@ -2837,6 +3007,14 @@ def _build_in_process_agent(
               "应把当前回合已授权的 Wiki 素材作为 context 明确传给子 Agent；"
               "子 Agent 不继承父会话上下文，不得让它自行读取本地 Vault。"
               "父 Agent 负责汇总子 Agent 结论并保留原始 [[path]] 引用。"
+            + (
+                "\n当前请求提供了经过平台签名的 iOS 会话快照。若用户要求总结当前对话、"
+                "把我们聊过的内容整理或保存为笔记，必须先调用 session_context_read，"
+                "只依据返回的会话事实生成 Markdown，再调用 note_draft。note_draft 仅生成"
+                "待用户确认的草稿，绝不能声称已经保存或入库。除非用户明确要求，不要为"
+                "这种任务调用 knowledge_search，也不要混入旧笔记或平台 Wiki。"
+                if client_context_enabled else ""
+            )
         ),
         clarify_callback=_clarify_cb,
         stream_delta_callback=_delta_cb,
@@ -2871,6 +3049,8 @@ def _run_agent_sync(
     agent_config: dict[str, Any] | None = None,
     knowledge_capability: str | None = None,
     knowledge_claims: dict[str, Any] | None = None,
+    client_session_context: dict[str, Any] | None = None,
+    client_context_claims: dict[str, Any] | None = None,
 ) -> None:
     """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
     agent = None
@@ -2880,11 +3060,27 @@ def _run_agent_sync(
             "capability": knowledge_capability,
             "scopes": list((knowledge_claims or {}).get("scopes") or []),
         }
+        if client_session_context is not None and client_context_claims is not None:
+            _client_context_tool_context.value = {
+                "transcript": client_session_context,
+                "request_id": client_context_claims.get("request_id"),
+                "client_session_id": client_session_context.get("session_id"),
+                "account_scope": (
+                    hashlib.sha256(str(client_context_claims.get("tenant_key") or "").encode()).hexdigest()[:20]
+                    + ":"
+                    + hashlib.sha256(str(client_context_claims.get("user_id") or "").encode()).hexdigest()[:20]
+                ),
+                "read": False,
+                "emit": lambda event: _qput(stream_q, event),
+            }
         agent, session_db = _build_in_process_agent(
             goal, user_id, hermes_sid, stream_q,
             allow_local_files=allow_local_files,
             agent_config=agent_config,
             knowledge_capability=knowledge_capability,
+            client_context_enabled=(
+                client_session_context is not None and client_context_claims is not None
+            ),
         )
         # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
         # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
@@ -2920,6 +3116,7 @@ def _run_agent_sync(
         _qput(stream_q, {"type": "error", "code": "internal", "message": str(e)[:200]})
     finally:
         _knowledge_tool_context.value = None
+        _client_context_tool_context.value = None
         # 显式回收：agent.close + session_db.close（防内存泄漏）
         try:
             if agent is not None:
@@ -2950,6 +3147,8 @@ def _sse_from_in_process(
     agent_config: dict[str, Any] | None = None,
     knowledge_capability: str | None = None,
     knowledge_claims: dict[str, Any] | None = None,
+    client_session_context: dict[str, Any] | None = None,
+    client_context_claims: dict[str, Any] | None = None,
 ):
     """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。
 
@@ -2978,6 +3177,7 @@ def _sse_from_in_process(
         args=(
             goal, user_id, hermes_sid, stream_q, agent_holder,
             allow_local_files, agent_config, knowledge_capability, knowledge_claims,
+            client_session_context, client_context_claims,
         ),
         daemon=True,
         name=f"agent-stream-{user_id[:12]}",

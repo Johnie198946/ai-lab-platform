@@ -95,6 +95,27 @@ public final class ChatHistoryStore: @unchecked Sendable {
         return try query("SELECT payload FROM messages WHERE session_id=? AND sequence<? AND role=? ORDER BY sequence DESC LIMIT 1", { s in bind(sessionId,s,1); sqlite3_bind_int64(s,2,n); bind(MessageRole.user.rawValue,s,3) }) { decode($0,0,sessionId) }.first
     }
 
+    public func contextMessages(
+        sessionId: String, maxMessages: Int = 200, maxCharacters: Int = 120_000
+    ) throws -> (messages: [ChatMessage], truncated: Bool) {
+        var rows = try query(
+            "SELECT payload FROM messages WHERE session_id=? ORDER BY sequence DESC LIMIT ?",
+            { s in bind(sessionId, s, 1); sqlite3_bind_int(s, 2, Int32(maxMessages + 1)) }
+        ) { decode($0, 0, sessionId) }
+        let exceededCount = rows.count > maxMessages
+        if exceededCount { rows = Array(rows.prefix(maxMessages)) }
+        var kept: [ChatMessage] = []
+        var characters = 0
+        for message in rows {
+            let cost = message.content.count
+            if !kept.isEmpty && characters + cost > maxCharacters { break }
+            kept.append(message)
+            characters += cost
+        }
+        let truncated = exceededCount || kept.count < rows.count
+        return (Array(kept.reversed()), truncated)
+    }
+
     public func truncate(sessionId: String, from messageId: String) throws {
         guard let n = try sequence(sessionId,messageId) else { return }
         try transaction { try run("DELETE FROM messages WHERE session_id=? AND sequence>=?") { s in bind(sessionId,s,1); sqlite3_bind_int64(s,2,n) }; try refreshCount(sessionId) }

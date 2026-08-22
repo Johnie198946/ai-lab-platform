@@ -7,6 +7,7 @@
 //
 
 import Combine
+import CryptoKit
 import Foundation
 
 public struct KnowledgeNote: Identifiable, Hashable, Sendable {
@@ -57,6 +58,9 @@ public final class KnowledgeNoteStore: ObservableObject {
     @Published public private(set) var lastError: String?
 
     private let fileManager = FileManager.default
+    private var tenantNamespace = "unconfigured"
+    private var userNamespace = "unconfigured"
+    @Published public private(set) var accountFingerprint = "unconfigured"
     private let isoFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -66,15 +70,40 @@ public final class KnowledgeNoteStore: ObservableObject {
     public var vaultDirectory: URL {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? fileManager.temporaryDirectory
-        return documents.appendingPathComponent("KnowledgeVault", isDirectory: true)
+        return documents
+            .appendingPathComponent("KnowledgeVault/accounts", isDirectory: true)
+            .appendingPathComponent(tenantNamespace, isDirectory: true)
+            .appendingPathComponent(userNamespace, isDirectory: true)
     }
 
     public var allTags: [String] {
         Array(Set(notes.flatMap(\.tags))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
     }
 
-    private init() {
+    private init() {}
+
+    public func activate(tenantKey: String, userId: String) {
+        let tenant = Self.namespace(tenantKey)
+        let user = Self.namespace(userId)
+        guard tenant != tenantNamespace || user != userNamespace else { return }
+        notes.removeAll()
+        tenantNamespace = tenant
+        userNamespace = user
+        accountFingerprint = "\(tenant):\(user)"
         reload()
+    }
+
+    public func deactivate() {
+        notes.removeAll()
+        tenantNamespace = "unconfigured"
+        userNamespace = "unconfigured"
+        accountFingerprint = "unconfigured"
+        lastError = nil
+    }
+
+    private static func namespace(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).prefix(10)
+            .map { String(format: "%02x", $0) }.joined()
     }
 
     public func reload() {
@@ -95,12 +124,6 @@ public final class KnowledgeNoteStore: ObservableObject {
                         loaded.append(note)
                     }
                 }
-            }
-
-            if loaded.isEmpty {
-                try seedStarterNotes()
-                reload()
-                return
             }
 
             notes = sorted(loaded)

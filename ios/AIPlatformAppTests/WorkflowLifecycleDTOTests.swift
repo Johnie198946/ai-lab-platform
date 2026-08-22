@@ -31,6 +31,28 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(notes.first?["title"] as? String, "本地会议")
     }
 
+    func testChatRequestEncodesClientSessionContextWithoutTenantClaims() throws {
+        let request = ChatRequestDTO(
+            question: "总结并保存",
+            requestId: "request-1234",
+            sessionId: "session-1",
+            clientSessionContext: ClientSessionContextDTO(
+                sessionId: "session-1",
+                messages: [ClientSessionMessageDTO(
+                    id: "m1", role: "user", content: "超聚变是一家公司"
+                )],
+                truncated: false
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        let context = try XCTUnwrap(object["client_session_context"] as? [String: Any])
+        XCTAssertEqual(context["session_id"] as? String, "session-1")
+        XCTAssertNil(object["tenant_key"])
+        XCTAssertNil(object["user_id"])
+    }
+
     func testMarkdownParserReusesBoundedMessageCache() {
         let key = "streaming-\(UUID().uuidString)"
         let first = MarkdownBlockParser.shared.parse("第一段", messageId: key)
@@ -362,6 +384,28 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(name, "小学生英语评估 · 专属 Agent")
         XCTAssertTrue(delegated)
         XCTAssertEqual(delegatedBy, "main_agent")
+    }
+
+    func testNoteDraftSSEEventDecodesForConfirmation() throws {
+        let event = try XCTUnwrap(APIClient.StreamEvent.parse([
+            "type": "note_draft",
+            "draft_id": "draft-1",
+            "title": "超聚变",
+            "markdown": "# 超聚变\n\n正文",
+            "tags": ["企业"],
+            "source_session_id": "session-1",
+            "source_message_ids": ["m1"],
+            "account_scope": "tenant:user",
+        ]))
+        guard case let .noteDraft(id, title, markdown, _, sessionId, messageIds, accountScope) = event else {
+            return XCTFail("expected noteDraft event")
+        }
+        XCTAssertEqual(id, "draft-1")
+        XCTAssertEqual(title, "超聚变")
+        XCTAssertTrue(markdown.contains("正文"))
+        XCTAssertEqual(sessionId, "session-1")
+        XCTAssertEqual(messageIds, ["m1"])
+        XCTAssertEqual(accountScope, "tenant:user")
     }
 
     func testClarifyStateSurvivesSessionPersistenceRoundTrip() throws {

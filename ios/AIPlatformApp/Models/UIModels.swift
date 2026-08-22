@@ -8,6 +8,7 @@
 
 import SwiftUI
 import Combine
+import CryptoKit
 
 // MARK: - User & Tenant Profile
 public enum UserRole: String, Codable, Sendable, CaseIterable {
@@ -305,6 +306,37 @@ public struct QuotedContext: Sendable, Hashable {
 /// 设置页「我创建的智能体」本地持久化模型（已废弃：设置页仅消费云端真实数据）
 
 /// 统一消息块（7 case），彻底收敛扁平 codeBlocks/formulaBlocks
+public enum NoteDraftState: String, Codable, Sendable, Hashable {
+    case awaitingConfirmation
+    case saved
+    case savedLocally
+    case discarded
+}
+
+public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
+    public let id: String
+    public var title: String
+    public var markdown: String
+    public var tags: [String]
+    public let sourceSessionId: String?
+    public let sourceMessageIds: [String]
+    public let accountScope: String?
+    public var state: NoteDraftState
+    public var savedNoteId: String?
+
+    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil) {
+        self.id = id
+        self.title = title
+        self.markdown = markdown
+        self.tags = tags
+        self.sourceSessionId = sourceSessionId
+        self.sourceMessageIds = sourceMessageIds
+        self.accountScope = accountScope
+        self.state = state
+        self.savedNoteId = savedNoteId
+    }
+}
+
 public enum MessageBlock: Identifiable, Sendable, Hashable {
     case code(CodeSnippet)
     case formula(String)
@@ -314,6 +346,7 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
     case attachment(AttachmentBlock)
     case reasoning([ReasoningStep])
     case clarify(ClarifyBlock)
+    case noteDraft(NoteDraftBlock)
 
     public var id: String {
         switch self {
@@ -325,6 +358,7 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
         case .attachment(let a): return "attachment_\(a.id)"
         case .reasoning(let steps): return "reasoning_" + steps.map(\.id).joined(separator: "_")
         case .clarify(let c): return "clarify_\(c.id)"
+        case .noteDraft(let draft): return "note_draft_\(draft.id)"
         }
     }
 }
@@ -352,6 +386,7 @@ public extension ChatMessage {
             case .attachment(let a): return "[附件·\(a.fileName)]"
             case .reasoning: return nil   // 显式剔除 reasoning
             case .clarify(let c): return "[澄清·\(c.question)]"
+            case .noteDraft(let draft): return "[笔记草稿·\(draft.title)]"
             }
         }
         let blockSummary = summaries.isEmpty ? nil : summaries.joined(separator: " ")
@@ -432,6 +467,7 @@ public struct PersistedMessage: Codable, Sendable {
     public let executingAgentName: String?
     public let delegatedBy: String?
     public let clarify: PersistedClarify?
+    public let noteDraft: NoteDraftBlock?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -446,6 +482,10 @@ public struct PersistedMessage: Codable, Sendable {
         self.executingAgentName = m.executingAgentName
         self.delegatedBy = m.delegatedBy
         self.clarify = m.clarifyBlock.map(PersistedClarify.init)
+        self.noteDraft = m.blocks.compactMap {
+            if case .noteDraft(let draft) = $0 { return draft }
+            return nil
+        }.first
     }
 
     public func toChatMessage(sessionId: String) -> ChatMessage {
@@ -465,6 +505,9 @@ public struct PersistedMessage: Codable, Sendable {
         )
         if let clarify {
             message.blocks = [.clarify(clarify.toClarifyBlock(defaultSessionId: sessionId))]
+        }
+        if let noteDraft {
+            message.blocks.append(.noteDraft(noteDraft))
         }
         return message
     }
@@ -559,26 +602,72 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var sessionAgentNames: [String: String] = [:]
     @Published public private(set) var sessionMessageCounts: [String: Int] = [:]
 
-    private let store: ChatHistoryStore
+    private var store: ChatHistoryStore
+    private var accountFingerprint = "unconfigured"
     private var persistedFingerprints: [String: [String: Int]] = [:]
     /// All SQLite writes share one background tail so rapid SSE/UI updates stay ordered
     /// without blocking the MainActor before the network request starts.
     private var persistenceTail: Task<Void, Never>? = nil
 
     private init() {
-        do { store = try ChatHistoryStore(performLegacyMigration: false) }
+        do { store = try ChatHistoryStore(databaseURL: Self.historyURL(fingerprint: accountFingerprint), performLegacyMigration: false) }
         catch { fatalError("Chat history database unavailable: \(error)") }
         loadMetadata()
-        Task.detached(priority: .utility) { [weak self] in
-            // A separate WAL connection avoids sharing a transaction with foreground page writes.
-            _ = try? ChatHistoryStore()
-            await self?.reloadMetadata()
-        }
     }
 
     public init(store: ChatHistoryStore) {
         self.store = store
         loadMetadata()
+    }
+
+    public func activateAccount(tenantKey: String, userId: String) {
+        let fingerprint = "\(Self.namespace(tenantKey))-\(Self.namespace(userId))"
+        guard fingerprint != accountFingerprint else { return }
+        persistenceTail?.cancel()
+        persistenceTail = nil
+        guard let nextStore = try? ChatHistoryStore(
+            databaseURL: Self.historyURL(fingerprint: fingerprint),
+            performLegacyMigration: false
+        ) else { return }
+        store = nextStore
+        accountFingerprint = fingerprint
+        sessions.removeAll()
+        sessionTitles.removeAll()
+        sessionUpdatedAt.removeAll()
+        sessionAgentIds.removeAll()
+        sessionAgentNames.removeAll()
+        sessionMessageCounts.removeAll()
+        persistedFingerprints.removeAll()
+        activeSessionId = nil
+        loadMetadata()
+    }
+
+    public func deactivateAccount() {
+        persistenceTail?.cancel()
+        persistenceTail = nil
+        sessions.removeAll()
+        sessionTitles.removeAll()
+        sessionUpdatedAt.removeAll()
+        sessionAgentIds.removeAll()
+        sessionAgentNames.removeAll()
+        sessionMessageCounts.removeAll()
+        persistedFingerprints.removeAll()
+        activeSessionId = nil
+        accountFingerprint = "unconfigured"
+    }
+
+    private static func namespace(_ value: String) -> String {
+        SHA256.hash(data: Data(value.utf8)).prefix(10)
+            .map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func historyURL(fingerprint: String) -> URL {
+        let fm = FileManager.default
+        let docs = fm.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? fm.temporaryDirectory
+        return docs.appendingPathComponent(
+            "ChatHistory/accounts/\(fingerprint)/history.sqlite"
+        )
     }
 
     private func loadMetadata() {
@@ -688,6 +777,46 @@ public final class SessionManager: ObservableObject {
         let page = (try? store.after(sessionId: sessionId, messageId: messageId)) ?? latestPage(for: sessionId)
         cacheVisibleMessages(page.messages, for: sessionId)
         return page
+    }
+
+    public func clientSessionContext(for sessionId: String) -> ClientSessionContextDTO {
+        let result = (try? store.contextMessages(sessionId: sessionId)) ?? ([], false)
+        var byId = Dictionary(uniqueKeysWithValues: result.0.map { ($0.id, $0) })
+        for message in sessions[sessionId] ?? [] { byId[message.id] = message }
+        var source = byId.values.sorted { $0.createdAt < $1.createdAt }
+        var truncated = result.1
+        if source.count > 200 {
+            source = Array(source.suffix(200))
+            truncated = true
+        }
+        var characters = 0
+        var bounded: [ChatMessage] = []
+        for message in source.reversed() {
+            if !bounded.isEmpty && characters + message.content.count > 120_000 {
+                truncated = true
+                break
+            }
+            bounded.append(message)
+            characters += message.content.count
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let messages = bounded.reversed().compactMap { message -> ClientSessionMessageDTO? in
+            guard !message.pending, !message.degraded, !message.isDemoSample,
+                  !message.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  message.role == .user || message.role == .assistant else { return nil }
+            return ClientSessionMessageDTO(
+                id: message.id,
+                role: message.role == .user ? "user" : "assistant",
+                content: String(message.content.prefix(12_000)),
+                createdAt: formatter.string(from: message.createdAt)
+            )
+        }
+        return ClientSessionContextDTO(
+            sessionId: sessionId,
+            messages: Array(messages),
+            truncated: truncated
+        )
     }
 
     public func setMessages(_ messages: [ChatMessage], for id: String) {
@@ -1113,6 +1242,7 @@ public extension Notification.Name {
     static let tenantAgentsDidUpdate = Notification.Name("tenantAgentsDidUpdate")
     /// 服务端租户知识权益/策略版本变化，要求刷新权限并重新建立会话。
     static let knowledgeAccessDidChange = Notification.Name("knowledgeAccessDidChange")
+    static let localAccountDidChange = Notification.Name("localAccountDidChange")
 }
 
 public struct ChatAgentSelection: Identifiable, Equatable, Sendable {
@@ -1134,6 +1264,16 @@ public final class AppState: ObservableObject {
     @Published public var isLoggedIn: Bool = false
     @Published public var isGuestMode: Bool = false
     @Published public var currentProfile: TenantProfile
+    @Published public var currentTenantKey: String = "demo" {
+        didSet {
+            activateLocalAccount()
+        }
+    }
+    @Published public var currentUserId: String = "demo-user" {
+        didSet {
+            activateLocalAccount()
+        }
+    }
     @Published public var activeTab: Int = 0
     @Published public var selectedAgentId: String = "main_agent"
     @Published public var selectedAgentName: String = "Main 智能编排"
@@ -1155,7 +1295,21 @@ public final class AppState: ObservableObject {
         self.isLoggedIn = isLoggedIn
         self.isGuestMode = isGuestMode
         self.currentProfile = currentProfile
+        self.currentTenantKey = currentProfile.tenantId
         self.activeTab = activeTab
+        activateLocalAccount(notify: false)
+    }
+
+    private func activateLocalAccount(notify: Bool = true) {
+        KnowledgeNoteStore.shared.activate(
+            tenantKey: currentTenantKey, userId: currentUserId
+        )
+        SessionManager.shared.activateAccount(
+            tenantKey: currentTenantKey, userId: currentUserId
+        )
+        if notify {
+            NotificationCenter.default.post(name: .localAccountDidChange, object: nil)
+        }
     }
     
     public func loginAsGuest() {
@@ -1169,6 +1323,9 @@ public final class AppState: ObservableObject {
             tokenQuotaUsage: 0.15,
             isVipLane: false
         )
+        self.currentTenantKey = "guest_tenant"
+        self.currentUserId = "guest"
+        KnowledgeNoteStore.shared.activate(tenantKey: "guest_tenant", userId: "guest")
     }
     
     public func logout() {
@@ -1177,6 +1334,9 @@ public final class AppState: ObservableObject {
         self.chatSessionId = nil
         self.pendingChatContextScope = nil
         self.isDevMode = false
+        KnowledgeNoteStore.shared.deactivate()
+        SessionManager.shared.deactivateAccount()
+        NotificationCenter.default.post(name: .localAccountDidChange, object: nil)
     }
     
     public func navigateToChatWithPrompt(_ prompt: String, contextScope: ChatContextScopeDTO? = nil) {

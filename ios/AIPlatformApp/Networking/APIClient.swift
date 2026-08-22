@@ -416,6 +416,42 @@ public struct ChatContextScopeDTO: Codable, Hashable, Sendable {
     }
 }
 
+public struct ClientSessionMessageDTO: Codable, Hashable, Sendable {
+    public let id: String
+    public let role: String
+    public let content: String
+    public let createdAt: String?
+
+    public init(id: String, role: String, content: String, createdAt: String? = nil) {
+        self.id = id
+        self.role = role
+        self.content = content
+        self.createdAt = createdAt
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, role, content
+        case createdAt = "created_at"
+    }
+}
+
+public struct ClientSessionContextDTO: Codable, Hashable, Sendable {
+    public let sessionId: String
+    public let messages: [ClientSessionMessageDTO]
+    public let truncated: Bool
+
+    public init(sessionId: String, messages: [ClientSessionMessageDTO], truncated: Bool) {
+        self.sessionId = sessionId
+        self.messages = messages
+        self.truncated = truncated
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case messages, truncated
+    }
+}
+
 /// POST /api/chat 请求体（snake_case 序列化对齐后端 ChatRequest）
 public struct ChatRequestDTO: Encodable {
     public let question: String
@@ -425,8 +461,9 @@ public struct ChatRequestDTO: Encodable {
     public let agentId: String?
     public let regenerate: Bool
     public let contextScope: ChatContextScopeDTO
+    public let clientSessionContext: ClientSessionContextDTO?
 
-    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO()) {
+    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil) {
         self.question = question
         self.requestId = requestId
         self.sessionId = sessionId
@@ -434,6 +471,7 @@ public struct ChatRequestDTO: Encodable {
         self.agentId = agentId
         self.regenerate = regenerate
         self.contextScope = contextScope
+        self.clientSessionContext = clientSessionContext
     }
 
     enum CodingKeys: String, CodingKey {
@@ -444,6 +482,7 @@ public struct ChatRequestDTO: Encodable {
         case agentId = "agent_id"
         case regenerate
         case contextScope = "context_scope"
+        case clientSessionContext = "client_session_context"
     }
 }
 
@@ -2008,6 +2047,7 @@ public final class APIClient: ObservableObject {
         case clarifyRejected
         case status(phase: String, detail: String)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
+        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?)
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -2061,6 +2101,16 @@ public final class APIClient: ObservableObject {
                     delegated: agent["delegated"] as? Bool ?? false,
                     delegatedBy: json["delegated_by"] as? String
                 )
+            case "note_draft":
+                return .noteDraft(
+                    id: json["draft_id"] as? String ?? "",
+                    title: json["title"] as? String ?? "无标题",
+                    markdown: json["markdown"] as? String ?? "",
+                    tags: json["tags"] as? [String] ?? [],
+                    sourceSessionId: json["source_session_id"] as? String,
+                    sourceMessageIds: json["source_message_ids"] as? [String] ?? [],
+                    accountScope: json["account_scope"] as? String
+                )
             case "done":
                 return .done(
                     sessionId: json["session_id"] as? String,
@@ -2087,7 +2137,8 @@ public final class APIClient: ObservableObject {
         quotedContext: String? = nil,
         regenerate: Bool = false,
         agentId: String? = nil,
-        contextScope: ChatContextScopeDTO = ChatContextScopeDTO()
+        contextScope: ChatContextScopeDTO = ChatContextScopeDTO(),
+        clientSessionContext: ClientSessionContextDTO? = nil
     ) -> AsyncThrowingStream<StreamEvent, Error> {
         AsyncThrowingStream { continuation in
             let url = baseURL.appendingPathComponent("api/chat/stream")
@@ -2107,7 +2158,8 @@ public final class APIClient: ObservableObject {
                     quotedContext: quotedContext,
                     agentId: agentId,
                     regenerate: regenerate,
-                    contextScope: contextScope
+                    contextScope: contextScope,
+                    clientSessionContext: clientSessionContext
                 )
             )
 

@@ -33,6 +33,10 @@ from backend.models.agent_registry import (
 )
 from backend.services.reasoning_extractor import ReasoningStep
 from backend.services.knowledge_policy import KnowledgePolicy, mint_capability, resolve_policy
+from backend.services.client_context_capability import (
+    context_digest,
+    mint_client_context_capability,
+)
 from backend.services.llm_usage import record_llm_usage
 from backend.services.user_note_context import (
     normalize_inline_notes,
@@ -157,6 +161,32 @@ class ChatContextScope(BaseModel):
     local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=12)
 
 
+class ClientSessionMessage(BaseModel):
+    id: str = Field(..., min_length=1, max_length=100)
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=12_000)
+    created_at: Optional[str] = Field(None, max_length=64)
+
+
+class ClientSessionContext(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=100)
+    messages: List[ClientSessionMessage] = Field(default_factory=list, max_length=200)
+    truncated: bool = False
+
+
+def _validated_client_session_context(
+    context: ClientSessionContext | None, client_session_id: str | None
+) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    if not client_session_id or context.session_id != client_session_id:
+        raise HTTPException(status_code=422, detail="client_session_context_mismatch")
+    payload = context.model_dump()
+    if sum(len(item["content"]) for item in payload["messages"]) > 120_000:
+        raise HTTPException(status_code=413, detail="client_session_context_too_large")
+    return payload
+
+
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1)
     request_id: Optional[str] = Field(None, min_length=8, max_length=100)
@@ -169,6 +199,7 @@ class ChatRequest(BaseModel):
     # 指定展厅对话使用的Hermes技能；只允许服务端白名单，禁止任意路径读取。
     skill_id: Optional[str] = Field(None, max_length=80)
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
+    client_session_context: Optional[ClientSessionContext] = None
 
 
 def validate_chat_skill(skill_id: Optional[str]) -> Optional[str]:
@@ -407,11 +438,19 @@ def derive_isolated_session_id(
     return prefix + base
 
 
-def _tenant_namespaced_session(base: str, tenant_key: str, policy_version: str) -> str:
+def _tenant_namespaced_session(
+    base: str, tenant_key: str, policy_version: str, user_id: str = "anonymous"
+) -> str:
+    base = re.sub(
+        r"^t[0-9a-f]{12}-u[0-9a-f]{12}-p[0-9a-z]{1,24}-", "", base, count=1
+    )
+    # Do not reuse legacy tenant-only session keys: users inside one tenant must
+    # never be able to collide by supplying the same client session UUID.
     base = re.sub(r"^t[0-9a-f]{12}-p[0-9a-z]{1,24}-", "", base, count=1)
     tenant_namespace = hashlib.sha256(tenant_key.encode()).hexdigest()[:12]
+    user_namespace = hashlib.sha256(user_id.encode()).hexdigest()[:12]
     safe_policy = re.sub(r"[^0-9a-z]", "", policy_version.lower())[:12] or "legacy"
-    return f"t{tenant_namespace}-p{safe_policy}-{base}"[:100]
+    return f"t{tenant_namespace}-u{user_namespace}-p{safe_policy}-{base}"[:100]
 
 
 async def _resolve_chat_policy(payload: Dict[str, Any]) -> KnowledgePolicy:
@@ -611,7 +650,8 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
 
     isolated_session_id = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version
+        str(payload.get("tenant_key") or "public"), policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
     source_context = await _resolve_source_context(
         scope=req.context_scope,
@@ -637,6 +677,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 derive_isolated_session_id(delegated_target.id, req.session_id),
                 str(payload.get("tenant_key") or "public"),
                 policy.policy_version,
+                str(payload.get("user_id") or payload.get("sub") or "anonymous"),
             )
             child_context = await _resolve_source_context(
                 scope=req.context_scope,
@@ -741,7 +782,8 @@ async def chat_status(
     policy = await _resolve_chat_policy(payload)
     isolated = _tenant_namespaced_session(
         derive_isolated_session_id(agent_id, session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version
+        str(payload.get("tenant_key") or "public"), policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
     data = await _call_hermes_status(isolated, consume=consume, offset=offset)
     if data is None:
@@ -764,6 +806,7 @@ class StreamRequest(BaseModel):
     # 重新生成语义：true 时 bridge 作废旧 run（interrupt+discard）后启动全新尝试
     regenerate: bool = False
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
+    client_session_context: Optional[ClientSessionContext] = None
 
 
 class ClarifySubmitRequest(BaseModel):
@@ -799,6 +842,8 @@ async def _call_bridge_stream(
     policy_version: Optional[str] = None,
     knowledge_query: Optional[str] = None,
     agent_config: Optional[Dict[str, Any]] = None,
+    client_session_context: Optional[Dict[str, Any]] = None,
+    client_context_capability: Optional[str] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
@@ -815,6 +860,8 @@ async def _call_bridge_stream(
                 "knowledge_policy_version": policy_version,
                 "knowledge_query": knowledge_query,
                 "agent_config": agent_config or {},
+                "client_session_context": client_session_context,
+                "client_context_capability": client_context_capability,
             },
         ) as resp:
             if resp.status_code != 200:
@@ -876,8 +923,23 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
     policy_ready_ms = (time.monotonic() - request_started) * 1000.0
     isolated_session_id = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version
+        str(payload.get("tenant_key") or "public"), policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
+    client_context = _validated_client_session_context(
+        req.client_session_context, req.session_id
+    )
+    effective_request_id = req.request_id or uuid.uuid4().hex
+    client_context_capability: str | None = None
+    if client_context is not None:
+        client_context_capability = mint_client_context_capability(
+            tenant_key=str(payload.get("tenant_key") or "public"),
+            user_id=str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+            session_id=isolated_session_id,
+            request_id=effective_request_id,
+            policy_version=policy.policy_version,
+            context_hash=context_digest(client_context),
+        )
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
     goal = req.question
@@ -957,6 +1019,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     derive_isolated_session_id(delegated_target.id, req.session_id),
                     str(payload.get("tenant_key") or "public"),
                     policy.policy_version,
+                    str(payload.get("user_id") or payload.get("sub") or "anonymous"),
                 )
                 child_capability = mint_capability(
                     policy, subject_id=child_session_id, entry_point="chat"
@@ -991,9 +1054,10 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 "policy_version": source_context.policy_version,
                 "knowledge_query": source_context.knowledge_query,
                 "agent_config": agent.bridge_config(),
+                "client_session_context": client_context,
+                "client_context_capability": client_context_capability,
             }
-            if req.request_id:
-                kwargs["request_id"] = req.request_id
+            kwargs["request_id"] = effective_request_id
             async for frame in _call_bridge_stream(routed_goal, isolated_session_id, **kwargs):
                 event = _stream_event(frame)
                 if event and event.get("type") in {"done", "error"}:
@@ -1045,7 +1109,8 @@ async def chat_clarify_submit(
     policy = await _resolve_chat_policy(payload)
     isolated = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version
+        str(payload.get("tenant_key") or "public"), policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
@@ -1069,7 +1134,8 @@ async def chat_stream_cancel(
     policy = await _resolve_chat_policy(payload)
     isolated = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version
+        str(payload.get("tenant_key") or "public"), policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
