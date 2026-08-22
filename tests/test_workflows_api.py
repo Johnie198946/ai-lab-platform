@@ -440,7 +440,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(second.status_code, 201, second.text)
         self.assertEqual(first.json()["agent"]["id"], second.json()["agent"]["id"])
 
-    def test_ready_workflow_can_start_same_frozen_plan_twice(self):
+    def test_active_workflow_rejects_second_start(self):
         body = self.create_ready()
         approved = self.request(
             "POST", f"/api/v1/workflows/{body['id']}/approve-plan",
@@ -463,10 +463,37 @@ class TestWorkflowsAPI(unittest.TestCase):
             json={"request_id": "ios-rerun-second-0002"},
         )
         self.assertEqual(first.status_code, 201, first.text)
-        self.assertEqual(rerun.status_code, 201, rerun.text)
-        self.assertNotEqual(first.json()["id"], rerun.json()["id"])
-        self.assertEqual(rerun.json()["id"], duplicate.json()["id"])
-        self.assertEqual(first.json()["plan_id"], rerun.json()["plan_id"])
+        self.assertEqual(rerun.status_code, 409, rerun.text)
+        self.assertEqual(duplicate.status_code, 409, duplicate.text)
+        self.assertIn("已有活动执行", rerun.json()["detail"])
+
+    def test_dynamic_create_ready_enters_requirement_confirmation(self):
+        with patch(
+            "backend.api.workflows.request_bridge_clarification",
+            new=AsyncMock(return_value={
+                "status": "READY",
+                "source": "hermes",
+                "truth": "LIVE",
+                "simulation": False,
+                "usage": {},
+            }),
+        ):
+            created = self.request(
+                "POST",
+                "/api/v1/workflows",
+                json={
+                    "title": "Dynamic ready",
+                    "description": "Build an IPD workspace for our team.",
+                    "desired_output": "Decision record",
+                    "clarification_mode": "dynamic",
+                },
+            )
+        self.assertEqual(created.status_code, 201, created.text)
+        workflow_id = created.json()["workflow"]["id"]
+        clarification = self.request("GET", f"/api/v1/workflows/{workflow_id}/clarification")
+        self.assertEqual(clarification.status_code, 200, clarification.text)
+        self.assertEqual(clarification.json()["session"]["phase"], "awaiting_requirement_confirmation")
+        self.assertTrue(clarification.json()["messages"][-1]["content"])
 
     def test_cross_tenant_workflow_is_invisible(self):
         body = self.create_ready()

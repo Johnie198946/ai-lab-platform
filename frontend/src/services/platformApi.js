@@ -198,4 +198,46 @@ export const platformApi = {
       method: "POST",
     });
   },
+  listWorkflows() {
+    return request("/api/v1/workflows");
+  },
+  createWorkflow(payload) {
+    return request("/api/v1/workflows", { method: "POST", body: payload });
+  },
+  getWorkflow(workflowId) {
+    return request(`/api/v1/workflows/${workflowId}`);
+  },
+  getClarification(workflowId) {
+    return request(`/api/v1/workflows/${workflowId}/clarification`);
+  },
+  answerClarification(workflowId, response) {
+    return request(`/api/v1/workflows/${workflowId}/clarification/respond`, { method: "POST", body: { response } });
+  },
+  reopenClarification(workflowId) {
+    return request(`/api/v1/workflows/${workflowId}/clarification/reopen`, { method: "POST", body: {} });
+  },
+  getWorkflowPlan(workflowId) {
+    return request(`/api/v1/workflows/${workflowId}/plan`);
+  },
+  reviseWorkflow(workflowId, instruction) {
+    return request(`/api/v1/workflows/${workflowId}/replan`, { method: "POST", body: { instruction } });
+  },
+  getLifecycleEvents(workflowId, after = 0) {
+    return request(`/api/v1/workflows/${workflowId}/lifecycle-events?after=${after}&format=json`);
+  },
+  approveWorkflowPlan(workflowId, comment = "") {
+    return request(`/api/v1/workflows/${workflowId}/approve-plan`, { method: "POST", body: { comment } });
+  },
+  startWorkflow(workflowId) {
+    return request(`/api/v1/workflows/${workflowId}/start`, { method: "POST", body: {} });
+  },
+  getExecution(executionId) {
+    return request(`/api/v1/workflow-executions/${executionId}`);
+  },
+  getExecutionEvents(executionId, after = 0) {
+    return request(`/api/v1/workflow-executions/${executionId}/events?after=${after}&format=json`);
+  },
+  getExecutionArtifacts(executionId) {
+    return request(`/api/v1/workflow-executions/${executionId}/artifacts`);
+  },
 };

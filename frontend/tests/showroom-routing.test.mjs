@@ -5,7 +5,7 @@ import { isShowroomAccount, SHOWROOM_CONTROLLER_PATH } from "../src/auth/entryRo
 
 test("showroom demo account always resolves as a showroom identity", () => {
   assert.equal(isShowroomAccount({ username: "showroom_demo" }), true);
-  assert.equal(SHOWROOM_CONTROLLER_PATH, "/showroom/?view=controller");
+  assert.equal(SHOWROOM_CONTROLLER_PATH, "/architect");
 });
 
 test("showroom roles are accepted without coupling routing to one username", () => {

@@ -6,7 +6,11 @@ import { isShowroomAccount, SHOWROOM_CONTROLLER_PATH } from "../auth/entryRoute"
 export function ProtectedRoute() {
   const { authSession, isAuthenticated, isReady } = useAuth();
   const location = useLocation();
-  const shouldEnterShowroom = isReady && isAuthenticated && isShowroomAccount(authSession?.user);
+  const shouldEnterShowroom =
+    isReady &&
+    isAuthenticated &&
+    isShowroomAccount(authSession?.user) &&
+    location.pathname !== SHOWROOM_CONTROLLER_PATH;
 
   useEffect(() => {
     if (shouldEnterShowroom) {

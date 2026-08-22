@@ -45,9 +45,10 @@ from backend.services.workflow_planning import (
     enqueue_planning_job,
     event_payload as planning_event_payload,
 )
+from backend.services.clarification_planner import request_bridge_clarification
+from backend.services.capability_projection import project_plan_capability
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
-
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
@@ -65,6 +66,7 @@ class WorkflowCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=160)
     description: str = Field(..., min_length=3, max_length=12000)
     desired_output: str = Field("研究报告（Markdown）", min_length=1, max_length=300)
+    clarification_mode: str = Field("compatibility", pattern="^(compatibility|dynamic)$")
 
 
 class ClarificationResponse(BaseModel):
@@ -108,6 +110,18 @@ def plan_out(plan: WorkflowPlanVersion) -> dict[str, Any]:
     dsl["version"] = str(dsl.get("version") or "1.0.0")
     dsl["nodes"] = dsl.get("nodes") if isinstance(dsl.get("nodes"), list) else []
     dsl["edges"] = dsl.get("edges") if isinstance(dsl.get("edges"), list) else []
+    checked_at = now()
+    try:
+        DSLSafetyCompiler.compile_and_validate(dsl)
+        compiler_status = "compiled"
+    except Exception:
+        compiler_status = "invalid"
+    capability = project_plan_capability(
+        compiler_status=compiler_status,
+        checked_at=checked_at,
+        ttl_seconds=300,
+        now=checked_at,
+    )
     return {
         "id": plan.id,
         "workflow_id": plan.workflow_id,
@@ -122,6 +136,7 @@ def plan_out(plan: WorkflowPlanVersion) -> dict[str, Any]:
         "dsl": dsl,
         "frozen_at": plan.frozen_at.isoformat() if plan.frozen_at else None,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
+        "capability": capability,
     }
 
 
@@ -242,6 +257,7 @@ def execution_out(
         "workflow_id": row.workflow_id,
         "plan_id": row.plan_id,
         "status": row.status,
+        "truth": "LIVE",
         "progress": row.progress,
         "token_budget": row.token_budget,
         "token_used": row.token_used,
@@ -354,6 +370,36 @@ def clarification_payload(index: int) -> dict[str, Any]:
         "multi_select": False,
         "dimension": step["dimension"],
         "submit_label": "确认并继续",
+        "source": "fallback",
+        "truth": "UNCONNECTED",
+        "simulation": True,
+    }
+
+
+async def dynamic_clarification_payload(
+    goal: str,
+    transcript: list[dict[str, Any]],
+    *,
+    tenant_id: str,
+    workflow_id: str,
+) -> dict[str, Any]:
+    result = await request_bridge_clarification(
+        goal,
+        transcript,
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+    )
+    return {
+        "question": result.get("question", ""),
+        "choices": [],
+        "multi_select": False,
+        "dimension": result.get("dimension", "missing requirement"),
+        "submit_label": "确认并继续",
+        "source": result.get("source", "fallback"),
+        "truth": result.get("truth", "UNCONNECTED"),
+        "simulation": bool(result.get("simulation", False)),
+        "status": result.get("status", "question"),
+        "usage": result.get("usage", {}),
     }
 
 
@@ -433,6 +479,7 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
         desired_output=body.desired_output.strip(),
         status="clarifying",
         clarification_session_id=session_id,
+        requirements_snapshot={"clarification_mode": body.clarification_mode},
     )
     clarification = WorkflowClarificationSession(
         id=session_id,
@@ -461,17 +508,48 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
             content=body.description.strip(),
         )
         explicit = requirement_is_explicit(body.description)
-        first = (
-            requirement_confirmation_payload(row, [])
-            if explicit
-            else clarification_payload(0)
-        )
+        if not explicit and body.clarification_mode == "dynamic":
+            clarification.phase = "clarifying_pending"
+            row.status = "clarifying_pending"
+            await db.commit()
+            first = await dynamic_clarification_payload(
+                body.description,
+                [{"role": "user", "content": body.description}],
+                tenant_id=row.tenant_key,
+                workflow_id=row.id,
+            )
+            await db.refresh(row)
+            await db.refresh(clarification)
+            if first["status"] == "READY":
+                first = requirement_confirmation_payload(row, [])
+                first.update({"source": "hermes", "truth": "LIVE", "status": "READY", "simulation": False})
+                clarification.phase = "awaiting_requirement_confirmation"
+                row.status = "clarifying"
+                first_message_type = "requirement_confirmation"
+                first_event_type = "requirement_summary_ready"
+            elif first["status"] == "ERROR":
+                clarification.phase = "needs_attention"
+                row.status = "needs_attention"
+                first_message_type = "status"
+                first_event_type = "clarification_unavailable"
+            else:
+                clarification.phase = "clarifying"
+                first_message_type = "clarify"
+                first_event_type = "clarify_requested"
+        else:
+            first = (
+                requirement_confirmation_payload(row, [])
+                if explicit
+                else clarification_payload(0)
+            )
+            first_message_type = "requirement_confirmation" if explicit else "clarify"
+            first_event_type = "requirement_summary_ready" if explicit else "clarify_requested"
         await append_session_message(
             db,
             clarification,
             role="assistant",
             content=first["question"],
-            message_type="requirement_confirmation" if explicit else "clarify",
+            message_type=first_message_type,
             payload=first,
         )
         await append_lifecycle_event(
@@ -485,7 +563,7 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
             db,
             row,
             clarification,
-            "requirement_summary_ready" if explicit else "clarify_requested",
+            first_event_type,
             "需求描述已足够明确，请确认需求单" if explicit else first["question"],
             first,
         )
@@ -540,10 +618,60 @@ async def respond_to_clarification(
     async with SessionLocal() as db:
         workflow = await owned_workflow(db, workflow_id, payload)
         session = await owned_clarification(db, workflow, payload)
+        session = (
+            await db.execute(
+                select(WorkflowClarificationSession)
+                .where(WorkflowClarificationSession.id == session.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one()
         response = body.response.strip()
         if session.phase not in {"clarifying", "awaiting_requirement_confirmation"}:
             raise HTTPException(status_code=409, detail="当前阶段不接受澄清回复")
         await append_session_message(db, session, role="user", content=response)
+
+        dynamic_mode = (workflow.requirements_snapshot or {}).get("clarification_mode") == "dynamic"
+        if dynamic_mode and session.phase == "clarifying":
+            session.phase = "clarifying_pending"
+            workflow.status = "clarifying_pending"
+            await db.commit()
+            transcript_rows = list((await db.execute(
+                select(WorkflowSessionMessage)
+                .where(WorkflowSessionMessage.session_id == session.id)
+                .order_by(WorkflowSessionMessage.seq)
+            )).scalars().all())
+            decision = await dynamic_clarification_payload(
+                workflow.description,
+                [{"role": item.role, "content": item.content} for item in transcript_rows],
+                tenant_id=workflow.tenant_key,
+                workflow_id=workflow.id,
+            )
+            await db.refresh(workflow)
+            await db.refresh(session)
+            if decision["status"] == "READY":
+                session.phase = "awaiting_requirement_confirmation"
+                workflow.status = "clarifying"
+                decision = requirement_confirmation_payload(workflow, [item.content for item in transcript_rows if item.role == "user"][1:])
+                decision.update({"source": "hermes", "truth": "LIVE", "status": "READY", "simulation": False})
+                message_type = "requirement_confirmation"
+                event_type = "requirement_summary_ready"
+            elif decision["status"] == "ERROR":
+                session.phase = "needs_attention"
+                workflow.status = "needs_attention"
+                message_type = "status"
+                event_type = "clarification_unavailable"
+            else:
+                session.phase = "clarifying"
+                workflow.status = "clarifying"
+                session.round_number += 1
+                message_type = "clarify"
+                event_type = "clarify_requested"
+            await append_session_message(db, session, role="assistant", content=decision["question"], message_type=message_type, payload=decision)
+            await append_lifecycle_event(db, workflow, session, event_type, decision["question"], decision)
+            await db.commit()
+            await db.refresh(session)
+            return clarification_out(session)
 
         if session.phase == "awaiting_requirement_confirmation":
             if response.startswith("确认") or "进入方案" in response:
@@ -700,6 +828,7 @@ async def respond_to_clarification(
 async def workflow_lifecycle_events(
     workflow_id: str,
     after: int = Query(0, ge=0),
+    format: str = Query("sse", pattern="^(sse|json)$"),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
     payload: dict = Depends(require_auth),
 ):
@@ -707,6 +836,11 @@ async def workflow_lifecycle_events(
         workflow = await owned_workflow(db, workflow_id, payload)
         await owned_clarification(db, workflow, payload)
     cursor = max(after, int(last_event_id or 0) if str(last_event_id or "").isdigit() else 0)
+
+    if format == "json":
+        async with SessionLocal() as db:
+            rows = list((await db.execute(select(WorkflowLifecycleEvent).where(WorkflowLifecycleEvent.workflow_id == workflow_id, WorkflowLifecycleEvent.seq > max(after, int(last_event_id or 0) if str(last_event_id or "").isdigit() else 0)).order_by(WorkflowLifecycleEvent.seq))).scalars().all())
+            return [lifecycle_event_out(row) for row in rows]
 
     async def stream():
         nonlocal cursor
@@ -1082,7 +1216,7 @@ async def reopen_clarification(workflow_id: str, payload: dict = Depends(require
     async with SessionLocal() as db:
         workflow = await owned_workflow(db, workflow_id, payload)
         session = await owned_clarification(db, workflow, payload)
-        if session.phase != "needs_attention":
+        if session.phase not in {"needs_attention", "clarifying_pending"}:
             raise HTTPException(status_code=409, detail="当前阶段不能继续澄清")
         session.phase = "clarifying"
         session.round_number = len(CLARIFICATION_STEPS)
@@ -1336,6 +1470,17 @@ async def start_workflow(
                 ).scalars().all()
             )
             return execution_out(existing, nodes)
+        active = (
+            await db.execute(
+                select(WorkflowExecution).where(
+                    WorkflowExecution.workflow_id == workflow.id,
+                    WorkflowExecution.tenant_key == tenant(),
+                    WorkflowExecution.status.in_(["queued", "running", "awaiting_review"]),
+                ).limit(1)
+            )
+        ).scalar_one_or_none()
+        if active:
+            raise HTTPException(status_code=409, detail="该工作流已有活动执行，请先恢复或完成现有任务")
         compiled = DSLSafetyCompiler.compile_and_validate(plan.dsl)
         execution = WorkflowExecution(
             id=uid("wfr"), workflow_id=workflow.id, plan_id=plan.id,
@@ -1426,6 +1571,7 @@ async def get_execution(execution_id: str, payload: dict = Depends(require_auth)
 async def stream_events(
     execution_id: str,
     after: int = Query(0, ge=0),
+    format: str = Query("sse", pattern="^(sse|json)$"),
     last_event_id: str | None = Header(None, alias="Last-Event-ID"),
     payload: dict = Depends(require_auth),
 ):
@@ -1433,8 +1579,14 @@ async def stream_events(
     async with SessionLocal() as db:
         await owned_execution(db, execution_id, payload)
 
+    cursor = max(after, int(last_event_id or 0) if str(last_event_id or "").isdigit() else 0)
+    if format == "json":
+        async with SessionLocal() as db:
+            rows = list((await db.execute(select(WorkflowEvent).where(WorkflowEvent.execution_id == execution_id, WorkflowEvent.id > cursor).order_by(WorkflowEvent.id))).scalars().all())
+            return [{"id": row.id, "type": row.event_type, "message": row.message, "payload": row.payload, "created_at": row.created_at.isoformat() if row.created_at else None} for row in rows]
+
     async def generate():
-        cursor = max(after, int(last_event_id or 0) if str(last_event_id or "").isdigit() else 0)
+        nonlocal cursor
         while True:
             async with SessionLocal() as db:
                 execution = (
