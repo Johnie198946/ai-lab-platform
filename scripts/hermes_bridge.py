@@ -939,6 +939,23 @@ _knowledge_tool_registered = False
 _client_context_tool_context = threading.local()
 _client_context_tool_registration_lock = threading.Lock()
 _client_context_tools_registered = False
+_NOTE_DRAFT_REQUEST_RE = re.compile(
+    r"(?:总结|整理|保存|入库|记录|生成).{0,20}(?:笔记|note)"
+    r"|(?:笔记|note).{0,20}(?:保存|入库|总结|整理)",
+    re.IGNORECASE,
+)
+
+
+def _is_note_draft_request(goal: str) -> bool:
+    return bool(_NOTE_DRAFT_REQUEST_RE.search(str(goal or "")))
+
+
+def _fallback_note_title(markdown: str) -> str:
+    for line in str(markdown or "").splitlines():
+        title = re.sub(r"^#{1,6}\s*", "", line.strip()).strip()
+        if title:
+            return title[:200]
+    return "会话笔记"
 
 
 def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
@@ -1094,6 +1111,7 @@ def _note_draft_tool(args: dict[str, Any], **_kwargs) -> str:
         "source_message_ids": source_ids,
         "account_scope": context.get("account_scope"),
     }
+    context["draft_emitted"] = True
     emitter = context.get("emit")
     if callable(emitter):
         emitter(event)
@@ -3102,8 +3120,20 @@ def _run_agent_sync(
                     + hashlib.sha256(str(client_context_claims.get("user_id") or "").encode()).hexdigest()[:20]
                 ),
                 "read": False,
+                "draft_emitted": False,
                 "emit": lambda event: _qput(stream_q, event),
             }
+            if _is_note_draft_request(goal):
+                # Protocol orchestration pre-reads the signed snapshot and places
+                # the exact tool result in this isolated turn. The model still
+                # performs the summary; this guarantees it cannot fall back to
+                # stale Hermes history when it misses the tool call.
+                transcript_result = _session_context_read_tool({})
+                goal += (
+                    "\n\n【session_context_read 已验证返回；这是本轮唯一权威会话事实】\n"
+                    + transcript_result
+                    + "\n请据此生成 Markdown，并必须调用 note_draft。不要澄清，不要声称无法写入。"
+                )
         agent, session_db = _build_in_process_agent(
             goal, user_id, hermes_sid, stream_q,
             allow_local_files=allow_local_files,
@@ -3128,6 +3158,27 @@ def _run_agent_sync(
             result_dict.get("final_response") or ""
             if result_dict else str(result or "")
         )
+        client_tool_context = getattr(_client_context_tool_context, "value", None)
+        if (
+            isinstance(client_tool_context, dict)
+            and _is_note_draft_request(goal)
+            and not client_tool_context.get("draft_emitted")
+            and str(final or "").strip()
+        ):
+            transcript = client_tool_context.get("transcript") or {}
+            source_ids = [
+                str(item.get("id") or "")
+                for item in transcript.get("messages") or []
+                if isinstance(item, dict) and item.get("id")
+            ]
+            _note_draft_tool(
+                {
+                    "title": _fallback_note_title(str(final)),
+                    "markdown": str(final),
+                    "tags": ["会话笔记"],
+                    "source_message_ids": source_ids,
+                }
+            )
         raw_usage = (
             result_dict.get("usage")
             if isinstance(result_dict.get("usage"), dict)

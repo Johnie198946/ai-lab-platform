@@ -30,6 +30,15 @@ def test_snapshot_request_never_resumes_mapped_hermes_history(monkeypatch):
     ) is None
 
 
+def test_note_draft_request_detection_and_title_fallback():
+    import scripts.hermes_bridge as bridge
+
+    assert bridge._is_note_draft_request("总结为笔记")
+    assert bridge._is_note_draft_request("把我们聊的内容保存入库成为笔记")
+    assert not bridge._is_note_draft_request("笔记功能怎么使用？")
+    assert bridge._fallback_note_title("# 超聚变会话总结\n\n正文") == "超聚变会话总结"
+
+
 def test_client_context_capability_binds_context_and_rejects_tamper():
     context = {
         "session_id": "session-a",
@@ -85,5 +94,6 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         assert result["status"] == "awaiting_user_confirmation"
         assert events[0]["type"] == "note_draft"
         assert events[0]["account_scope"] == "tenant:user"
+        assert bridge._client_context_tool_context.value["draft_emitted"] is True
     finally:
         bridge._client_context_tool_context.value = None
