@@ -1226,6 +1226,18 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     try:
         value = json.loads(candidate)
     except json.JSONDecodeError as json_error:
+        # Some Hermes routes emit strict JSON with a trailing comma. Remove
+        # only commas immediately before a closing object/array delimiter.
+        repaired = re.sub(r",\s*([}\]])", r"\1", candidate)
+        if repaired != candidate:
+            try:
+                value = json.loads(repaired)
+            except json.JSONDecodeError:
+                pass
+            else:
+                candidate = repaired
+        if "value" in locals() and isinstance(value, dict):
+            return value
         # Hermes occasionally emits a Python-dict-shaped object (single quotes
         # or a trailing comma). literal_eval is data-only; never use eval here.
         try:

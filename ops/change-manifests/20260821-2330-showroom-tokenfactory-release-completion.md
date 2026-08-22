@@ -115,3 +115,12 @@
 - rollback_point: `49571d24e2a796da0f413a93da00edf18750e8dd` (cache-busting deploy script + verified source)
 - accepted_risks: Bridge durable record/AIAgent acceptance crash window; externally mutable model/tool/data references may not be reproducible despite equal digest. Both fail closed and require manual reconciliation where state is ambiguous.
 - asynchronous_audit_followup: Skill加载开始/完成统一投影为同一`skill_load`事件类型；相同`idempotency_key + type + status`的Bridge回调复用原事件，不递增序号。Artifact现行生产合同只含`kind/title/content/source_kind`，未虚构尚不存在的`source_url/evidence_refs`透传。
+
+## Planning 404 incident follow-up (2026-08-22)
+
+- symptom: frontend polling the plan endpoint received HTTP 404 because no plan existed after planning failure; the 404 was a downstream symptom, not a missing API route.
+- root_cause: Hermes planning output was not always strict JSON; the Bridge parser rejected model-shaped trailing-comma/Python-dict output. Manual retry also initially reused the failed `bridge_run_id`; the host-managed `hermes-bridge.service` required an explicit restart after container deployment.
+- fix: strict JSON first, safe trailing-comma repair, `ast.literal_eval` data-only fallback, regression coverage; restart host Bridge; clear stale run/cursor before manual reconciliation.
+- production_replay: same workflow `wf_1a40ce5c2e0b4ec0920f99a1847fc75d` completed planning; status `awaiting_approval`; plan `wfp_dce6c40affdb408abe83962408ecfd6c`; `plans=1`; error empty.
+- release_commit: `ab230571a41c9d3247ab86938af44fdb7b882c0a`
+- backend_verification_after_fix: targeted `30 passed`; prior full suite `548 passed, 2 skipped, 31 warnings` before the final parser-only patch.

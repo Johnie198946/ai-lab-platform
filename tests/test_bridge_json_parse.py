@@ -15,6 +15,15 @@ def test_extract_json_object_accepts_python_literal_fallback_for_model_output():
     assert _extract_json_object(raw) == {"nodes": [], "edges": []}
 
 
+def test_extract_json_object_accepts_json_trailing_comma_with_json_literals():
+    raw = '{"nodes": [], "enabled": true, "value": null,}'
+    assert _extract_json_object(raw) == {
+        "nodes": [],
+        "enabled": True,
+        "value": None,
+    }
+
+
 def test_extract_json_object_rejects_non_object_literal():
     with pytest.raises(ValueError, match="JSON 计划"):
         _extract_json_object("['not', 'an', 'object']")
