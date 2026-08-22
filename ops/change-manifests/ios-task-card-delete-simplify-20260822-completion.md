@@ -38,16 +38,16 @@
 
 ## 交付记录
 
-- 当前交付状态：`TESTED`。
-- commit SHA：未授权提交，未执行。
-- GitHub remote/ref/SHA：未授权 push，未执行。
+- 当前交付状态：`VERIFIED`。
+- commit SHA：`1d06cd3bfd243ec2f80063b58021b4a590d7569d`。
+- GitHub remote/ref/SHA：`https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/main` / `1d06cd3bfd243ec2f80063b58021b4a590d7569d`，已核验；最终 manifest 元数据提交 SHA 记录在标准完成通报。
 - `server_before`: 当前生产应用 release 为 `/opt/releases/ai-lab-platform-9384189`，应用 commit `9384189002912f755f7514ed418f3cdfb5b242a4`。
-- `server_after`: 未授权部署，与 server_before 相同。
-- `health_check`: 本任务未部署，未执行部署后健康检查。
-- `functional_check`: 本地接口测试与 iOS 构建通过；尚未在生产 App 验证长按交互。
-- `rollback_point`: 不适用；本任务尚未部署。若后续部署，以部署前生产 release 为回滚点。
+- `server_after`: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-1d06cd3`；`.deploy-commit=1d06cd3bfd243ec2f80063b58021b4a590d7569d`；API、三个 Worker 和 frontend 均已更新/重启。
+- `health_check`: 公网与内网 `GET /health` 均 HTTP 200；API healthy；部署后 3 分钟 API/frontend 日志中 5xx 或 Traceback 计数为 0。
+- `functional_check`: 公网删除路由未认证请求返回 HTTP 401，确认路由受认证保护；本地所有者/跨用户删除测试通过；iOS Simulator 构建成功。生产 iOS 新二进制需由客户端安装后验证长按交互。
+- `rollback_point`: `/opt/releases/ai-lab-platform-9384189`，部署前 release 未覆盖。
 
 ## 风险与未完成项
 
-- 代码尚未 commit、push 或部署，需要用户在当前任务中明确授权后执行。
 - 软删除保留数据库记录与成果文件，当前版本不提供恢复入口；如需“最近删除”，可后续增加归档列表。
+- 生产服务器只更新了后端删除接口；iOS 端需要安装本次构建产物后才能看到长按菜单和精简后的卡片。
