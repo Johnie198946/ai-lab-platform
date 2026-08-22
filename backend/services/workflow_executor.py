@@ -190,12 +190,20 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
     return response.json()
 
 
-async def read_bridge_run(execution: WorkflowExecution) -> dict[str, Any]:
+async def read_bridge_run(
+    execution: WorkflowExecution,
+    *,
+    after_seq: int | None = None,
+) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(
             f"{bridge_base_url()}/v1/workflow-runs/{execution.id}",
             headers=bridge_headers(),
-            params={"after_seq": execution.bridge_event_seq},
+            params={
+                "after_seq": (
+                    execution.bridge_event_seq if after_seq is None else after_seq
+                )
+            },
         )
     response.raise_for_status()
     return response.json()

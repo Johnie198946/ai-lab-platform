@@ -599,6 +599,7 @@ class TestWorkflowsAPI(unittest.TestCase):
     def test_worker_executes_nodes_and_persists_artifacts(self):
         from backend.db import SessionLocal
         from backend.models.workflow import WorkflowArtifact, WorkflowExecution
+        from backend.services.workflow_artifacts import run_root
         import backend.services.workflow_executor as executor
 
         body = self.create_ready()
@@ -713,6 +714,43 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertTrue(all(item.content_hash for item in artifacts))
         self.assertEqual(execution.token_used, 750)
         self.assertEqual(execution.cache_read_tokens, 125)
+
+        artifact = artifacts[0]
+        content_path = run_root(execution) / artifact.relative_path
+        content_path.unlink()
+
+        async def full_snapshot(execution, *, after_seq=None):
+            self.assertEqual(after_seq, 0)
+            return {"events": events}
+
+        with patch("backend.api.workflows.read_bridge_run", full_snapshot):
+            recovered = self.request(
+                "GET",
+                f"/api/v1/workflow-executions/{execution.id}/artifacts/{artifact.id}/content",
+            )
+        self.assertEqual(recovered.status_code, 200, recovered.text)
+        self.assertEqual(recovered.json()["content"], "# 节点成果\n\n证据与结论已整理。")
+        self.assertTrue(content_path.is_file())
+
+        content_path.unlink()
+        artifact.content_hash = "0" * 64
+
+        async def corrupt_hash():
+            from backend.db import SessionLocal
+
+            async with SessionLocal() as db:
+                row = await db.get(WorkflowArtifact, artifact.id)
+                row.content_hash = artifact.content_hash
+                await db.commit()
+
+        asyncio.run(corrupt_hash())
+        with patch("backend.api.workflows.read_bridge_run", full_snapshot):
+            rejected = self.request(
+                "GET",
+                f"/api/v1/workflow-executions/{execution.id}/artifacts/{artifact.id}/content",
+            )
+        self.assertEqual(rejected.status_code, 404, rejected.text)
+        self.assertFalse(content_path.exists())
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -37,7 +38,7 @@ from backend.models.workflow import (
 )
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.workflow_artifacts import run_root, vault_root
-from backend.services.workflow_executor import cancel_remote, retry_remote
+from backend.services.workflow_executor import cancel_remote, read_bridge_run, retry_remote
 from backend.services.workflow_planner import validate_plan_policy
 from backend.services.workflow_planning import (
     backfill_orphaned_planning_jobs,
@@ -1474,14 +1475,48 @@ async def get_artifact_content(
             raise HTTPException(status_code=404, detail="工作流素材不存在")
         root = run_root(execution)
         path = (root / artifact.relative_path).resolve()
-        if not path.is_file() or root not in path.parents:
+        if root not in path.parents:
             raise HTTPException(status_code=404, detail="工作流素材文件不存在")
+        if not path.is_file():
+            content = await _recover_artifact_content(execution, artifact)
+            if content is None:
+                raise HTTPException(status_code=404, detail="工作流素材文件不存在")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+            try:
+                temporary.write_text(content, encoding="utf-8")
+                os.replace(temporary, path)
+            finally:
+                temporary.unlink(missing_ok=True)
         return {
             "id": artifact.id,
             "title": artifact.title,
             "kind": artifact.kind,
             "content": path.read_text(encoding="utf-8", errors="replace"),
         }
+
+
+async def _recover_artifact_content(
+    execution: WorkflowExecution,
+    artifact: WorkflowArtifact,
+) -> str | None:
+    """Recover a missing file from the append-only Hermes run projection."""
+    bridge_event_id = str((artifact.metadata_json or {}).get("bridge_event_id") or "")
+    if not bridge_event_id:
+        return None
+    try:
+        snapshot = await read_bridge_run(execution, after_seq=0)
+    except Exception:
+        return None
+    for event in snapshot.get("events") or []:
+        if str(event.get("event_id") or "") != bridge_event_id:
+            continue
+        content = str((event.get("artifact") or {}).get("content") or "")
+        if not content:
+            return None
+        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        return content if digest == artifact.content_hash else None
+    return None
 
 
 @router.post("/workflow-executions/{execution_id}/cancel")
