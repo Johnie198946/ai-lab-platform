@@ -143,6 +143,9 @@ public struct KnowledgeView: View {
             } message: {
                 Text(store.lastError ?? "请稍后重试")
             }
+            .task {
+                await syncLocalNotes()
+            }
         }
     }
 
@@ -168,7 +171,10 @@ public struct KnowledgeView: View {
             }
 
             Button {
-                appState.navigateToChatWithPrompt("请基于我的本地笔记，帮我整理最近记录的重点和待办。")
+                appState.navigateToChatWithPrompt(
+                    "请基于我的本地笔记，帮我整理最近记录的重点和待办。",
+                    contextScope: localOnlyContext()
+                )
             } label: {
                 HStack(spacing: AppTheme.Spacing.md) {
                     Image(systemName: "sparkles")
@@ -372,12 +378,47 @@ public struct KnowledgeView: View {
 
     private func createNote() {
         guard let note = store.createNote() else { return }
+        syncInBackground(note)
         path.append(note.id)
     }
 
     private func openDailyNote() {
         guard let note = store.dailyNote() else { return }
+        syncInBackground(note)
         path.append(note.id)
+    }
+
+    private func localOnlyContext() -> ChatContextScopeDTO {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let notes = store.notes.prefix(8).map { note in
+            ChatLocalNoteDTO(
+                id: note.id,
+                title: note.title,
+                markdown: store.markdown(for: note),
+                updatedAt: formatter.string(from: note.updatedAt)
+            )
+        }
+        return ChatContextScopeDTO(mode: .localOnly, localNotes: Array(notes))
+    }
+
+    private func syncInBackground(_ note: KnowledgeNote) {
+        let markdown = store.markdown(for: note)
+        Task {
+            try? await APIClient.shared.syncKnowledgeNote(
+                id: note.id, markdown: markdown, updatedAt: note.updatedAt
+            )
+        }
+    }
+
+    private func syncLocalNotes() async {
+        for note in store.notes {
+            try? await APIClient.shared.syncKnowledgeNote(
+                id: note.id,
+                markdown: store.markdown(for: note),
+                updatedAt: note.updatedAt
+            )
+        }
     }
 }
 
@@ -771,8 +812,14 @@ private struct KnowledgeNoteEditor: View {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }
             .filter { !$0.isEmpty }
-        if store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) != nil {
+        if let saved = store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) {
             saveStatus = "已保存到本地"
+            let markdown = store.markdown(for: saved)
+            Task {
+                try? await APIClient.shared.syncKnowledgeNote(
+                    id: saved.id, markdown: markdown, updatedAt: saved.updatedAt
+                )
+            }
         } else {
             saveStatus = "保存失败"
         }

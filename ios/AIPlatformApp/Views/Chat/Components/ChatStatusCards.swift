@@ -14,11 +14,13 @@ public struct PendingItem: Identifiable, Sendable {
     public let id: String
     public let text: String
     public let quote: QuotedContext?
+    public let contextScope: ChatContextScopeDTO
 
-    public init(id: String = UUID().uuidString, text: String, quote: QuotedContext? = nil) {
+    public init(id: String = UUID().uuidString, text: String, quote: QuotedContext? = nil, contextScope: ChatContextScopeDTO = ChatContextScopeDTO()) {
         self.id = id
         self.text = text
         self.quote = quote
+        self.contextScope = contextScope
     }
 }
 
@@ -29,6 +31,7 @@ public struct InFlightRequest: Identifiable, Sendable {
     public let quote: QuotedContext?
     public let regenerate: Bool
     public let agentId: String?
+    public let contextScope: ChatContextScopeDTO
     public var didRetry404: Bool = false
     public var phase: InFlightPhase = .thinking
 
@@ -39,6 +42,7 @@ public struct InFlightRequest: Identifiable, Sendable {
         quote: QuotedContext? = nil,
         regenerate: Bool = false,
         agentId: String? = nil,
+        contextScope: ChatContextScopeDTO = ChatContextScopeDTO(),
         didRetry404: Bool = false,
         phase: InFlightPhase = .thinking
     ) {
@@ -48,6 +52,7 @@ public struct InFlightRequest: Identifiable, Sendable {
         self.quote = quote
         self.regenerate = regenerate
         self.agentId = agentId
+        self.contextScope = contextScope
         self.didRetry404 = didRetry404
         self.phase = phase
     }
@@ -178,9 +183,11 @@ public struct StatusCardView: View {
 }
 
 public struct DegradedCardView: View {
+    public let message: String
     public let onRetry: () -> Void
 
-    public init(onRetry: @escaping () -> Void) {
+    public init(message: String, onRetry: @escaping () -> Void) {
+        self.message = message
         self.onRetry = onRetry
     }
 
@@ -196,7 +203,7 @@ public struct DegradedCardView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(AppTheme.Colors.textPrimary)
                 }
-                Text("服务暂时不可用，请稍后重试")
+                Text(message.isEmpty ? "服务暂时不可用，请稍后重试" : message)
                     .font(.system(size: 12))
                     .foregroundColor(AppTheme.Colors.textSecondary)
                 retryChip

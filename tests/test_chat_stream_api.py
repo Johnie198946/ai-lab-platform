@@ -86,6 +86,13 @@ def test_stream_request_model():
     assert req.skill_id == "solution-consultant-persona"
 
 
+def test_api_goal_budget_respects_hermes_bridge_contract():
+    import backend.api.chat as chat_mod
+    from scripts import hermes_bridge
+
+    assert chat_mod.BRIDGE_GOAL_MAX_CHARS <= hermes_bridge.MAX_INPUT
+
+
 def test_clarify_submit_model():
     req = ClarifySubmitRequest(session_id="s1", response="B2C 单商户")
     assert req.session_id == "s1"
@@ -351,6 +358,48 @@ async def test_bridge_knowledge_denial_is_preserved_in_sse(monkeypatch):
     body = "".join(frames)
     assert '"code": "knowledge_scope_denied"' in body
     assert "套餐或知识权限已变化" in body
+
+
+@pytest.mark.asyncio
+async def test_bridge_stream_bounds_oversized_goal_before_request(monkeypatch):
+    import backend.api.chat as chat_mod
+
+    observed: dict = {}
+
+    class AcceptedResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"type":"done","answer":"ok"}'
+
+    class StreamContext:
+        async def __aenter__(self):
+            return AcceptedResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            observed.update(kwargs["json"])
+            return StreamContext()
+
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    frames = [
+        frame async for frame in chat_mod._call_bridge_stream(
+            "用户问题\n" + "超长资料" * 10_000, "session-1"
+        )
+    ]
+    assert len(observed["goal"]) <= chat_mod.BRIDGE_GOAL_MAX_CHARS
+    assert observed["goal"].startswith("用户问题")
+    assert "输入预算自动精简" in observed["goal"]
+    assert '"type":"done"' in "".join(frames)
 
 
 @pytest.mark.asyncio
