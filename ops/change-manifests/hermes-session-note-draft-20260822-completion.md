@@ -76,7 +76,7 @@
 
 - current_status: `VERIFIED`
 - commit_sha: `b2a6a5f5e5bcd6b5dedbea2501997107ae6c04cc`（已快进推送到 `main`）。
-- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/main` / `b2a6a5f5e5bcd6b5dedbea2501997107ae6c04cc`；已使用 `git ls-remote` 核对。
+- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/main` / `1055060da4c793ff8671ecf1289b8d7b4c93fdc`（运行时代码 SHA 为 `b2a6a5f5e5bcd6b5dedbea2501997107ae6c04cc`；其后仅增加交付文档）。
 - server_before: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-1d06cd3`，`.deployed-sha=749ca2f93a09c75b14cb1ec592ed328dae3b3bfc`。
 - server_after: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-1d06cd3`，`.deployed-sha=b2a6a5f5e5bcd6b5dedbea2501997107ae6c04cc`；API 与 Bridge 健康，Hermes Bridge systemd active。
 - health_check: update script runtime contract audit passed；API `/health` 与 Bridge `/health` 均通过；Bridge 继承 `HTTP_PROXY=http://127.0.0.1:7890`。
