@@ -21,9 +21,9 @@
   - xcodebuild simulator tests: passed, 25 tests, 0 failures
   - simulator install/launch: passed with -autoLogin -knowledgeTab
   - functional screenshot: /private/tmp/ai-lab-knowledge-notion.png shows “笔记” local Markdown workspace, not legacy catalog
-- status: TESTED
-- commit_sha: pending
-- remote_sha: pending
+- status: PUSHED
+- commit_sha: cc57be58690b5d67ab0f57fcb020479abcc98930
+- remote_sha: cc57be58690b5d67ab0f57fcb020479abcc98930 (origin/main and origin/codex/ios-chat-freeze, verified with git ls-remote)
 - server_before: not applicable (iOS-only)
 - server_after: not applicable (iOS-only)
 - health_check: not applicable
