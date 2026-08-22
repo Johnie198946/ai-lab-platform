@@ -58,6 +58,26 @@ test("ArchitectPage uses real React Flow with server-only nodes and edges", () =
   assert.match(source, /projectPlanToCanvas\(plan\)/);
 });
 
+test("requirement confirmation actions send structured confirm and revise intents", () => {
+  const page = fs.readFileSync(new URL("../src/pages/ArchitectPage.jsx", import.meta.url), "utf8");
+  const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  assert.match(page, /确认并生成流程/);
+  assert.match(page, /继续修改/);
+  assert.match(page, /submitClarification\(["']confirm["']\)/);
+  assert.match(page, /submitClarification\(["']revise["']\)/);
+  assert.match(api, /body:\s*\{\s*response,\s*intent\s*\}/);
+});
+
+test("UNCONNECTED server nodes remain honestly labelled and never become LIVE locally", () => {
+  const result = projectPlanToReactFlow({ dsl: { nodes: [{
+    id: "gate",
+    name: "TR2决策门",
+    parameters: { capability_status: "UNCONNECTED", execution_enabled: false },
+  }], edges: [] } });
+  assert.match(result.nodes[0].data.label, /UNCONNECTED/);
+  assert.doesNotMatch(result.nodes[0].data.label, /LIVE/);
+});
+
 test("showroom static entry redirects without changing legacy journey", () => {
   const index = fs.readFileSync(new URL("../public/showroom/index.html", import.meta.url), "utf8");
   const legacy = fs.readFileSync(new URL("../public/showroom/legacy.html", import.meta.url), "utf8");

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import os
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
@@ -116,6 +119,14 @@ class TestWorkflowsAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()["workflow"]
+
+    def advance_to_confirmation(self):
+        workflow = self.create()
+        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
+        for answer in ("学生个人使用", "先完成核心闭环", "交付物可直接使用"):
+            response = self.request("POST", path, json={"response": answer})
+            self.assertEqual(response.status_code, 200, response.text)
+        return workflow, path
 
     def create_ready(self):
         from backend.services.workflow_planning import process_next_once
@@ -282,12 +293,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         from backend.db import SessionLocal
         from backend.models.workflow import WorkflowPlanningJob
 
-        workflow = self.create()
-        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
-        for answer in ("学生个人使用", "先完成核心闭环", "交付物可直接使用"):
-            self.assertEqual(
-                self.request("POST", path, json={"response": answer}).status_code, 200
-            )
+        workflow, path = self.advance_to_confirmation()
         confirmed = self.request(
             "POST", path, json={"response": "确认，进入方案设计"}
         )
@@ -295,7 +301,7 @@ class TestWorkflowsAPI(unittest.TestCase):
         duplicate = self.request(
             "POST", path, json={"response": "确认，进入方案设计"}
         )
-        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(duplicate.status_code, 200)
 
         async def jobs():
             async with SessionLocal() as db:
@@ -310,6 +316,93 @@ class TestWorkflowsAPI(unittest.TestCase):
         ).json()
         self.assertEqual([item["workflow"]["id"] for item in own], [workflow["id"]])
         self.assertEqual(same_tenant_other_user, [])
+
+    def test_natural_confirmation_enters_planning_for_supported_phrases(self):
+        for phrase in ("是的", "可以", "开始", "没有了，开始后面流程"):
+            workflow, path = self.advance_to_confirmation()
+            response = self.request("POST", path, json={"response": phrase})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["phase"], "planning")
+
+    def test_explicit_confirm_intent_enters_planning_without_keyword_text(self):
+        workflow, path = self.advance_to_confirmation()
+        response = self.request(
+            "POST", path, json={"response": "按按钮提交", "intent": "confirm"}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["phase"], "planning")
+
+    def test_explicit_revise_intent_never_queues_planning(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowPlanningJob
+
+        workflow, path = self.advance_to_confirmation()
+        response = self.request(
+            "POST", path, json={"response": "", "intent": "revise"}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["phase"], "clarifying")
+
+        async def count_jobs():
+            async with SessionLocal() as db:
+                return int((await db.execute(select(func.count(WorkflowPlanningJob.id)))).scalar_one())
+
+        self.assertEqual(asyncio.run(count_jobs()), 0)
+
+    def test_negative_or_modification_confirmation_text_never_queues_planning(self):
+        for phrase in (
+            "确认，但需要修改配送范围",
+            "不进入方案",
+            "确认但不进入方案",
+            "不要开始后面流程",
+        ):
+            workflow, path = self.advance_to_confirmation()
+            response = self.request("POST", path, json={"response": phrase})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["phase"], "clarifying", phrase)
+
+    def test_confirmation_is_atomic_and_enqueues_exactly_one_job(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import (
+            WorkflowClarificationSession,
+            WorkflowDefinition,
+            WorkflowLifecycleEvent,
+            WorkflowPlanningJob,
+        )
+
+        workflow, path = self.advance_to_confirmation()
+        first = self.request("POST", path, json={"response": "go", "intent": "confirm"})
+        second = self.request("POST", path, json={"response": "again", "intent": "confirm"})
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(second.status_code, 200, second.text)
+
+        async def state():
+            async with SessionLocal() as db:
+                workflow_row = await db.get(WorkflowDefinition, workflow["id"])
+                session = (
+                    await db.execute(
+                        select(WorkflowClarificationSession).where(
+                            WorkflowClarificationSession.workflow_id == workflow["id"]
+                        )
+                    )
+                ).scalar_one()
+                jobs = int((await db.execute(select(func.count(WorkflowPlanningJob.id)))).scalar_one())
+                queued_events = int(
+                    (
+                        await db.execute(
+                            select(func.count(WorkflowLifecycleEvent.id)).where(
+                                WorkflowLifecycleEvent.workflow_id == workflow["id"],
+                                WorkflowLifecycleEvent.event_type == "planning_queued",
+                            )
+                        )
+                    ).scalar_one()
+                )
+                return workflow_row.status, session.phase, session.confirmed_spec, jobs, queued_events
+
+        status, phase, confirmed_spec, jobs, queued_events = asyncio.run(state())
+        self.assertEqual((status, phase), ("planning", "planning"))
+        self.assertTrue(confirmed_spec.get("goal"))
+        self.assertEqual((jobs, queued_events), (1, 1))
 
     def test_expired_planning_lease_is_reclaimed_without_duplicate_plan(self):
         from backend.db import SessionLocal
@@ -401,6 +494,170 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(snapshot["session"]["phase"], "awaiting_requirement_confirmation")
         self.assertEqual(snapshot["messages"][-1]["message_type"], "requirement_confirmation")
         self.assertIn("验收标准", snapshot["messages"][-1]["payload"]["question"])
+
+    def test_confirmed_food_delivery_ipd_request_persists_registered_server_plan(self):
+        from backend.services.workflow_planning import process_next_once
+
+        created = self.request(
+            "POST",
+            "/api/v1/workflows",
+            json={
+                "title": "外卖平台IPD",
+                "description": "从零开发一个外卖平台，借鉴超聚变IPD。",
+                "desired_output": "IPD计划",
+            },
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        workflow_id = created.json()["workflow"]["id"]
+        path = f"/api/v1/workflows/{workflow_id}/clarification/respond"
+        for answer in ("消费者与商家", "核心交易闭环", "通过人工决策门"):
+            self.assertEqual(self.request("POST", path, json={"response": answer}).status_code, 200)
+        self.assertEqual(
+            self.request("POST", path, json={"intent": "confirm"}).status_code,
+            200,
+        )
+        self.assertTrue(asyncio.run(process_next_once()))
+
+        plan = self.request("GET", f"/api/v1/workflows/{workflow_id}/plan").json()["dsl"]
+        self.assertEqual(len(plan["nodes"]), 7)
+        self.assertEqual(
+            [node["parameters"]["execution_enabled"] for node in plan["nodes"]].count(True),
+            2,
+        )
+        self.assertTrue(all("decision_gate" in node["parameters"] for node in plan["nodes"]))
+
+        approved = self.request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/approve-plan",
+            json={"request_id": "ipd-approve-0001"},
+        )
+        self.assertEqual(approved.status_code, 201, approved.text)
+        started = self.request(
+            "POST",
+            f"/api/v1/workflows/{workflow_id}/start",
+            json={"request_id": "ipd-start-0001"},
+        )
+        self.assertEqual(started.status_code, 201, started.text)
+        self.assertEqual(
+            [node["node_id"] for node in started.json()["nodes"]],
+            ["market_requirement_evidence", "product_concept_ipd_mapping"],
+        )
+
+    def test_registered_ipd_plan_rejects_runtime_contract_patch_and_reuses_projection(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowExecution, WorkflowPlanVersion
+        from backend.services.workflow_artifacts import run_root
+        from backend.services.workflow_planning import process_next_once
+        import backend.services.workflow_executor as executor
+
+        created = self.request(
+            "POST",
+            "/api/v1/workflows",
+            json={
+                "title": "外卖平台IPD硬门",
+                "description": "从零开发外卖平台，借鉴超聚变IPD",
+                "desired_output": "IPD计划",
+            },
+        )
+        workflow_id = created.json()["workflow"]["id"]
+        path = f"/api/v1/workflows/{workflow_id}/clarification/respond"
+        for answer in ("消费者与商家", "核心交易闭环", "通过人工决策门"):
+            self.assertEqual(self.request("POST", path, json={"response": answer}).status_code, 200)
+        self.assertEqual(self.request("POST", path, json={"intent": "confirm"}).status_code, 200)
+        self.assertTrue(asyncio.run(process_next_once()))
+        plan_response = self.request("GET", f"/api/v1/workflows/{workflow_id}/plan").json()
+
+        variants = []
+        enabled_third = copy.deepcopy(plan_response["dsl"])
+        enabled_third["nodes"][2]["parameters"]["execution_enabled"] = True
+        variants.append(enabled_third)
+        replaced_first = copy.deepcopy(plan_response["dsl"])
+        replaced_first["nodes"][0]["parameters"]["execution_enabled"] = False
+        replaced_first["nodes"][2]["parameters"]["execution_enabled"] = True
+        variants.append(replaced_first)
+        reordered = copy.deepcopy(plan_response["dsl"])
+        reordered["nodes"][0], reordered["nodes"][1] = reordered["nodes"][1], reordered["nodes"][0]
+        variants.append(reordered)
+        for dsl in variants:
+            rejected = self.request(
+                "PATCH",
+                f"/api/v1/workflows/{workflow_id}/plan",
+                json={
+                    "dsl": dsl,
+                    "deliverable": plan_response["deliverable"],
+                    "allow_network": plan_response["allow_network"],
+                    "max_tokens": plan_response["max_tokens"],
+                    "knowledge_scope": plan_response["knowledge_scope"],
+                },
+            )
+            self.assertIn(rejected.status_code, (409, 422), rejected.text)
+
+        approved = self.request(
+            "POST", f"/api/v1/workflows/{workflow_id}/approve-plan", json={"request_id": "hard-approve"}
+        )
+        self.assertEqual(approved.status_code, 201, approved.text)
+        started = self.request(
+            "POST", f"/api/v1/workflows/{workflow_id}/start", json={"request_id": "hard-start"}
+        )
+        self.assertEqual(started.status_code, 201, started.text)
+        execution_id = started.json()["id"]
+        expected_ids = ["market_requirement_evidence", "product_concept_ipd_mapping"]
+        self.assertEqual([node["node_id"] for node in started.json()["nodes"]], expected_ids)
+
+        async def rows():
+            async with SessionLocal() as db:
+                return await db.get(WorkflowExecution, execution_id), await db.get(
+                    WorkflowPlanVersion, plan_response["id"]
+                )
+
+        execution, plan = asyncio.run(rows())
+        captured = {}
+
+        class Response:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"status": "running", "hermes_session_id": "hard-session"}
+
+        class Client:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return None
+
+            async def post(self, url, **kwargs):
+                captured.update(kwargs["json"])
+                return Response()
+
+        with patch.object(executor.httpx, "AsyncClient", lambda **kwargs: Client()):
+            asyncio.run(executor.dispatch(execution, plan))
+        self.assertEqual([node["id"] for node in captured["plan"]["nodes"]], expected_ids)
+        self.assertEqual(captured["plan"]["edges"], [
+            {"source": expected_ids[0], "target": expected_ids[1]}
+        ])
+
+        async def fake_dispatch(execution, plan):
+            return {"status": "running", "hermes_session_id": "hard-session"}
+
+        async def fake_snapshot(execution):
+            return {"status": "running", "events": []}
+
+        async def sync():
+            async with SessionLocal() as db:
+                await executor.sync_execution(execution_id, db)
+
+        with tempfile.TemporaryDirectory() as home, patch.dict(os.environ, {"AI_LAB_HOME": home}):
+            with patch.object(executor, "dispatch", fake_dispatch), patch.object(
+                executor, "read_bridge_run", fake_snapshot
+            ):
+                asyncio.run(sync())
+            runtime_plan = json.loads((run_root(execution) / "plan.json").read_text())
+        self.assertEqual([node["id"] for node in runtime_plan["nodes"]], expected_ids)
+        self.assertEqual(runtime_plan["edges"], [
+            {"source": expected_ids[0], "target": expected_ids[1]}
+        ])
 
     def test_approve_builds_agent_and_start_creates_execution(self):
         body = self.create_ready()

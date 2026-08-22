@@ -36,6 +36,12 @@ from backend.services.workflow_artifacts import (
 )
 from backend.services.knowledge_policy import mint_capability, resolve_policy
 from backend.services.llm_usage import build_llm_usage_record
+from backend.services.ipd_scenario_registry import (
+    EXECUTABLE_EDGE,
+    EXECUTABLE_NODE_IDS,
+    SCENARIO_ID,
+    is_registered_ipd_plan,
+)
 
 HERMES_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -135,6 +141,41 @@ async def _nodes(db: AsyncSession, execution_id: str) -> dict[str, WorkflowNodeR
     return {row.node_id: row for row in rows}
 
 
+def executable_plan_projection(plan: dict[str, Any]) -> dict[str, Any]:
+    """Project a registered display plan to only server-approved runtime nodes."""
+    nodes = list(plan.get("nodes") or [])
+    has_registered_identity = any(
+        (node.get("parameters") or {}).get("scenario_id") == SCENARIO_ID
+        for node in nodes
+    )
+    if has_registered_identity:
+        if not is_registered_ipd_plan(plan):
+            raise ValueError("注册IPD计划场景合同无效")
+        node_map = {str(node.get("id") or ""): node for node in nodes}
+        if any(node_id not in node_map for node_id in EXECUTABLE_NODE_IDS):
+            raise ValueError("注册IPD计划缺少服务端批准节点")
+        return {
+            **plan,
+            "nodes": [node_map[node_id] for node_id in EXECUTABLE_NODE_IDS],
+            "edges": [dict(EXECUTABLE_EDGE)],
+        }
+    if not any("execution_enabled" in (node.get("parameters") or {}) for node in nodes):
+        return plan
+    runtime_nodes = [
+        node for node in nodes if (node.get("parameters") or {}).get("execution_enabled") is True
+    ]
+    runtime_ids = {str(node.get("id")) for node in runtime_nodes}
+    return {
+        **plan,
+        "nodes": runtime_nodes,
+        "edges": [
+            edge
+            for edge in (plan.get("edges") or [])
+            if str(edge.get("source")) in runtime_ids and str(edge.get("target")) in runtime_ids
+        ],
+    }
+
+
 async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> dict[str, Any]:
     async with SessionLocal() as policy_db:
         mapping = (
@@ -168,7 +209,7 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
         "idempotency_key": execution.idempotency_key,
         "goal": plan.goal,
         "deliverable": plan.deliverable,
-        "plan": plan.dsl,
+        "plan": executable_plan_projection(plan.dsl),
         "allow_network": plan.allow_network,
         "knowledge_scope": sorted(allowed_scope),
         "knowledge_capability": capability,
@@ -398,7 +439,7 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
         )
     ).scalar_one()
     plan = await _plan(db, execution)
-    initialize_run(execution, plan.dsl)
+    initialize_run(execution, executable_plan_projection(plan.dsl))
     try:
         dispatched = await dispatch(execution, plan)
         execution.hermes_session_id = dispatched.get("hermes_session_id")

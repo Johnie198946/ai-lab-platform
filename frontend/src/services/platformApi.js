@@ -210,8 +210,8 @@ export const platformApi = {
   getClarification(workflowId) {
     return request(`/api/v1/workflows/${workflowId}/clarification`);
   },
-  answerClarification(workflowId, response) {
-    return request(`/api/v1/workflows/${workflowId}/clarification/respond`, { method: "POST", body: { response } });
+  answerClarification(workflowId, response, intent = null) {
+    return request(`/api/v1/workflows/${workflowId}/clarification/respond`, { method: "POST", body: { response, intent } });
   },
   reopenClarification(workflowId) {
     return request(`/api/v1/workflows/${workflowId}/clarification/reopen`, { method: "POST", body: {} });

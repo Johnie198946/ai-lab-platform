@@ -17,7 +17,10 @@ export function projectPlanToReactFlow(plan) {
       ...node,
       id: String(node.id),
       position: node.position || { x: 80, y: index * 120 },
-      data: node.data || { label: node.name || node.label || node.id, serverNode: node },
+      data: node.data || {
+        label: `${node.name || node.label || node.id}${node.parameters?.capability_status ? ` · ${node.parameters.capability_status}` : ""}`,
+        serverNode: node,
+      },
     })),
     edges: edges.map((edge) => ({
       ...edge,
