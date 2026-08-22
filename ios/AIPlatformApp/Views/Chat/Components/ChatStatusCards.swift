@@ -71,6 +71,8 @@ public enum InFlightPhase: Equatable, Sendable {
 }
 
 public struct NoteDraftCard: View {
+    @Environment(\.colorScheme) private var colorScheme
+
     public let draft: NoteDraftBlock
     public let onSave: () -> Void
     public let onMerge: () -> Void
@@ -78,57 +80,201 @@ public struct NoteDraftCard: View {
     public let onDiscard: () -> Void
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            Label("笔记草稿", systemImage: "note.text.badge.plus")
-                .font(.headline)
-                .foregroundStyle(AppTheme.Colors.quantumViolet)
-            Text(draft.title).font(.subheadline.weight(.semibold))
-            Text(draft.markdown)
-                .font(.footnote)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .lineLimit(8)
-            if let candidates = draft.mergeCandidates, !candidates.isEmpty {
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                    Label("发现 \(candidates.count) 篇同类笔记", systemImage: "arrow.triangle.merge")
-                        .font(.footnote.weight(.semibold))
-                    ForEach(candidates.prefix(3)) { candidate in
-                        Text("• \(candidate.title)")
-                            .font(.caption)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                            .lineLimit(1)
-                    }
-                    Text("合并后会重新整理内容，旧笔记将移入归档并可恢复。")
-                        .font(.caption)
-                        .foregroundStyle(AppTheme.Colors.textTertiary)
-                }
-                .padding(AppTheme.Spacing.sm)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(AppTheme.Colors.surfaceTint)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm))
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            headerView
+            previewView
+            if hasMergeCandidates {
+                mergeNoticeView
             }
             if draft.state == .awaitingConfirmation {
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                    if draft.mergeCandidates?.isEmpty == false {
-                        Button("合并整理并归档旧笔记", action: onMerge)
-                            .buttonStyle(.borderedProminent)
-                            .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-                        Button("仍保存为新笔记", action: onSave).buttonStyle(.bordered)
-                    } else {
-                        Button("保存到笔记", action: onSave).buttonStyle(.borderedProminent)
-                    }
-                    Button("编辑后保存", action: onEdit).buttonStyle(.bordered)
-                    Button("放弃", role: .destructive, action: onDiscard).buttonStyle(.plain)
-                }
+                actionView
             } else {
-                Label(statusText, systemImage: statusIcon)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(draft.state == .discarded ? AppTheme.Colors.textSecondary : Color.green)
+                statusView
+            }
+        }
+        .padding(AppTheme.Spacing.xl)
+        .quantumCard()
+        .accessibilityElement(children: .contain)
+    }
+
+    private var hasMergeCandidates: Bool {
+        !(draft.mergeCandidates ?? []).isEmpty
+    }
+
+    private var headerView: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+            ZStack {
+                Circle()
+                    .fill(AppTheme.Colors.quantumViolet.opacity(colorScheme == .dark ? 0.24 : 0.12))
+                Image(systemName: hasMergeCandidates ? "arrow.triangle.merge" : "note.text.badge.plus")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(AppTheme.Icons.intelligence)
+            }
+            .frame(width: 40, height: 40)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                HStack(spacing: AppTheme.Spacing.sm) {
+                    Text(hasMergeCandidates ? "笔记整理建议" : "笔记草稿")
+                        .font(AppTheme.Typography.cardTitle)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text("待确认")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Icons.intelligence)
+                        .padding(.horizontal, AppTheme.Spacing.sm)
+                        .padding(.vertical, 5)
+                        .background(AppTheme.Colors.surfaceTint)
+                        .clipShape(Capsule())
+                }
+                Text(draft.title)
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var previewView: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            HStack {
+                Text("内容预览")
+                    .font(AppTheme.Typography.label)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                Spacer()
+                if !draft.tags.isEmpty {
+                    Text("\(draft.tags.count) 个标签")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+            }
+
+            Text(previewText)
+                .font(AppTheme.Typography.supporting)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .lineSpacing(3)
+                .lineLimit(5)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !draft.tags.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: AppTheme.Spacing.xs) {
+                        ForEach(draft.tags.prefix(4), id: \.self) { tag in
+                            Text("#\(tag)")
+                                .font(AppTheme.Typography.micro)
+                                .foregroundStyle(AppTheme.Icons.intelligence)
+                                .padding(.horizontal, AppTheme.Spacing.sm)
+                                .padding(.vertical, 6)
+                                .background(AppTheme.Colors.cardBackground)
+                                .clipShape(Capsule())
+                        }
+                    }
+                }
             }
         }
         .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: AppTheme.Radius.lg).stroke(AppTheme.Colors.border, lineWidth: 0.5))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.surfaceTint)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+    }
+
+    private var mergeNoticeView: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(AppTheme.Colors.emberOrange)
+                Text("发现 \(draft.mergeCandidates?.count ?? 0) 篇相关笔记")
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: AppTheme.Spacing.xs) {
+                ForEach((draft.mergeCandidates ?? []).prefix(2)) { candidate in
+                    Text(candidate.title)
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, AppTheme.Spacing.sm)
+                        .padding(.vertical, 6)
+                        .background(AppTheme.Colors.cardBackground.opacity(0.82))
+                        .clipShape(Capsule())
+                }
+                if let count = draft.mergeCandidates?.count, count > 2 {
+                    Text("+\(count - 2)")
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+            }
+
+            Text("合并会重新编排内容，旧笔记会移入可恢复的归档。")
+                .font(AppTheme.Typography.micro)
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+        }
+        .padding(AppTheme.Spacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppTheme.Colors.warningSurface)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+    }
+
+    private var actionView: some View {
+        VStack(spacing: AppTheme.Spacing.sm) {
+            if hasMergeCandidates {
+                Button(action: onMerge) {
+                    Label("合并整理并归档旧笔记", systemImage: "arrow.triangle.merge")
+                }
+                .buttonStyle(QuantumPrimaryButtonStyle())
+
+                Button(action: onSave) {
+                    Label("保存为新笔记", systemImage: "plus.circle")
+                        .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
+                }
+                .buttonStyle(.bordered)
+                .tint(AppTheme.Colors.primary)
+            } else {
+                Button(action: onSave) {
+                    Label("保存到笔记", systemImage: "checkmark.circle")
+                }
+                .buttonStyle(QuantumPrimaryButtonStyle())
+            }
+
+            HStack(spacing: AppTheme.Spacing.md) {
+                Button(action: onEdit) {
+                    Label("编辑后保存", systemImage: "pencil")
+                        .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                Button("放弃", role: .destructive, action: onDiscard)
+                    .frame(minWidth: AppTheme.Metrics.minimumTouchTarget, minHeight: AppTheme.Metrics.minimumTouchTarget)
+                    .buttonStyle(.borderless)
+            }
+            .font(AppTheme.Typography.supporting.weight(.medium))
+        }
+    }
+
+    private var statusView: some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: statusIcon)
+                .foregroundStyle(draft.state == .discarded ? AppTheme.Colors.textTertiary : AppTheme.Icons.success)
+            Text(statusText)
+                .font(AppTheme.Typography.supporting.weight(.medium))
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            Spacer(minLength: 0)
+        }
+        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .background(draft.state == .discarded ? AppTheme.Colors.surfaceTint : AppTheme.Colors.successSurface)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+    }
+
+    private var previewText: String {
+        var value = draft.markdown
+        value = value.replacingOccurrences(of: "(?m)^#{1,6}\\s*", with: "", options: .regularExpression)
+        value = value.replacingOccurrences(of: "(?m)^\\s*[-*]\\s+", with: "• ", options: .regularExpression)
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var statusText: String {
