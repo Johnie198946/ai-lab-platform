@@ -262,6 +262,7 @@ async def _call_hermes_recorded(
     skill_id: Optional[str] = None,
     knowledge_capability: Optional[str] = None,
     policy_version: Optional[str] = None,
+    knowledge_query: Optional[str] = None,
     agent_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[str, List[ReasoningStep]]:
     started = time.perf_counter()
@@ -272,6 +273,7 @@ async def _call_hermes_recorded(
             skill_id=skill_id,
             knowledge_capability=knowledge_capability,
             policy_version=policy_version,
+            knowledge_query=knowledge_query,
             agent_config=agent_config,
         )
         success = bool(reply) and not reply.lstrip().startswith("⚠️")
@@ -540,6 +542,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 session_id=child_session_id,
                 knowledge_capability=child_capability,
                 policy_version=child_policy_version,
+                knowledge_query=req.question,
                 agent_config=delegated_target.bridge_config(),
             )
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
@@ -824,6 +827,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                         session_id=child_session_id,
                         knowledge_capability=child_capability,
                         policy_version=child_policy_version,
+                        knowledge_query=req.question,
                         agent_config=delegated_target.bridge_config(),
                     )
                     if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
