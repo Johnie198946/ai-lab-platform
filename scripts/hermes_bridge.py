@@ -354,6 +354,11 @@ class WorkflowRunRequest(BaseModel):
     tenant_id: str = Field(..., min_length=1, max_length=64)
     execution_id: str = Field(..., min_length=1, max_length=64)
     idempotency_key: str = Field(..., min_length=8, max_length=160)
+    command_id: str | None = Field(None, min_length=8, max_length=160)
+    execution_request_id: str | None = Field(None, min_length=8, max_length=160)
+    process_contract_digest: str | None = Field(None, min_length=64, max_length=64)
+    dependency_lock_digest: str | None = Field(None, min_length=64, max_length=64)
+    activation_revision: int | None = Field(None, ge=1)
     goal: str = Field(..., min_length=1, max_length=12000)
     deliverable: str = Field(..., min_length=1, max_length=300)
     plan: dict[str, Any]
@@ -420,6 +425,28 @@ def _expand_requested_skill(goal: str, skill_id: str | None) -> str:
     if not expanded:
         raise HTTPException(status_code=503, detail=f"skill load failed: {skill_id}")
     return expanded
+
+
+def _verify_workflow_skill_binding(binding: dict[str, Any]) -> dict[str, str]:
+    """Resolve one Skill through Hermes' registry and verify its frozen bytes."""
+    skill_id = str(binding.get("skill_id") or "")
+    expected = str(binding.get("sha256") or "")
+    if not skill_id or len(expected) != 64:
+        raise ValueError("invalid workflow Skill binding")
+    from agent.skill_commands import get_skill_commands, scan_skill_commands
+
+    command_key = f"/{skill_id.replace('_', '-')}"
+    commands = get_skill_commands()
+    info = commands.get(command_key)
+    if not info:
+        info = scan_skill_commands().get(command_key)
+    path = Path(str((info or {}).get("skill_md_path") or ""))
+    if not path.is_file():
+        raise ValueError(f"workflow Skill not installed: {skill_id}")
+    actual = hashlib.sha256(path.read_bytes()).hexdigest()
+    if actual != expected:
+        raise ValueError(f"workflow Skill hash mismatch: {skill_id}")
+    return {"skill_id": skill_id, "sha256": actual, "command_key": command_key}
 
 
 # ---------- 映射持久化 ----------
@@ -655,6 +682,16 @@ def _planning_event(
 
 
 def _workflow_event(run: dict[str, Any], event_type: str, **payload: Any) -> dict[str, Any]:
+    idempotency_key = str(payload.get("idempotency_key") or "")
+    status = str(payload.get("status") or "")
+    if idempotency_key:
+        for existing in reversed(run.get("events") or []):
+            if (
+                existing.get("type") == event_type
+                and str(existing.get("idempotency_key") or "") == idempotency_key
+                and str(existing.get("status") or "") == status
+            ):
+                return existing
     seq = int(run.get("next_seq", 1))
     event = {
         "seq": seq,
@@ -1135,6 +1172,14 @@ def _workflow_turn_token_cap(node: dict[str, Any]) -> int:
     return max(384, min(2048, node_budget // expected_turns))
 
 
+def _workflow_tool_event_type(function_name: str) -> str:
+    if function_name == "delegate_task":
+        return "agent_spawn"
+    if function_name in {"skill_view", "skill_load"}:
+        return "skill_load"
+    return "tool_start"
+
+
 def _run_workflow_node_in_process(
     goal: str,
     node: dict[str, Any],
@@ -1167,10 +1212,10 @@ def _run_workflow_node_in_process(
         def _tool_start(tool_call_id, function_name, function_args) -> None:
             if event_callback and function_name and not str(function_name).startswith("_"):
                 event_callback(
-                    "agent_spawn" if function_name == "delegate_task" else (
-                        "skill_load" if function_name in {"skill_view", "skill_load"} else "tool_start"
-                    ),
+                    _workflow_tool_event_type(str(function_name)),
                     tool=str(function_name),
+                    tool_call_id=str(tool_call_id or ""),
+                    idempotency_key=str(tool_call_id or ""),
                     status="running",
                     message=(
                         "已委派子 Agent" if function_name == "delegate_task"
@@ -1181,8 +1226,14 @@ def _run_workflow_node_in_process(
         def _tool_complete(tool_call_id, function_name, function_args, result) -> None:
             if event_callback and function_name and not str(function_name).startswith("_"):
                 event_callback(
-                    "tool_complete",
+                    (
+                        "skill_load"
+                        if function_name in {"skill_view", "skill_load"}
+                        else "tool_complete"
+                    ),
                     tool=str(function_name),
+                    tool_call_id=str(tool_call_id or ""),
+                    idempotency_key=str(tool_call_id or ""),
                     status="done",
                     message=f"{function_name} 调用完成",
                 )
@@ -1372,7 +1423,13 @@ def _workflow_run_sync(execution_id: str) -> None:
             return
         run["status"] = "running"
         run["error"] = None
-        _workflow_event(run, "run_started", message="Hermes 工作流开始执行")
+        _workflow_event(
+            run,
+            "run_started",
+            process_contract_digest=(run.get("plan") or {}).get("process_contract_digest"),
+            resolved_manifest=run.get("resolved_manifest") or {},
+            message="Hermes 工作流开始执行",
+        )
     try:
         plan = run["plan"]
         node_map = {str(node["id"]): node for node in plan.get("nodes") or []}
@@ -1395,11 +1452,25 @@ def _workflow_run_sync(execution_id: str) -> None:
                     run,
                     "node_started",
                     node_id=node_id,
+                    node_attempt_id=f"{execution_id}:{node_id}:{state['attempt']}",
                     node_type=node.get("node_type"),
                     agent_id=(node.get("parameters") or {}).get("agent_id") or "main_agent",
                     message=f"开始：{node.get('name') or node_id}",
                 )
             node_prompt = _workflow_node_prompt(run, node)
+            binding = (node.get("parameters") or {}).get("skill_binding") or {}
+            if binding:
+                receipt = _verify_workflow_skill_binding(binding)
+                node_prompt = _expand_requested_skill(node_prompt, receipt["skill_id"])
+                with _workflow_runs_lock:
+                    _workflow_event(
+                        run,
+                        "skill_load",
+                        node_id=node_id,
+                        status="verified",
+                        receipt=receipt,
+                        message=f"已核验并加载 Skill：{receipt['skill_id']}",
+                    )
             node_usage: dict[str, Any] = {}
             reply = ""
             gateway_completed = False
@@ -3705,12 +3776,23 @@ async def start_workflow_run(
     allowed = set(str(item) for item in (claims or {}).get("scopes") or [])
     if not set(body.knowledge_scope).issubset(allowed):
         raise HTTPException(status_code=403, detail="knowledge_scope_denied")
+    if body.plan.get("process_contract_id"):
+        from backend.services.process_contract_registry import dependency_lock_digest
+
+        if body.process_contract_digest != body.plan.get("process_contract_digest"):
+            raise HTTPException(status_code=409, detail="process contract digest mismatch")
+        if body.activation_revision != body.plan.get("activation_revision"):
+            raise HTTPException(status_code=409, detail="activation revision mismatch")
+        if body.dependency_lock_digest != dependency_lock_digest(body.plan):
+            raise HTTPException(status_code=409, detail="dependency lock digest mismatch")
     _workflow_order(body.plan)
     with _workflow_runs_lock:
         current = _workflow_runs.get(body.execution_id)
         if current:
             if current.get("idempotency_key") != body.idempotency_key:
                 raise HTTPException(status_code=409, detail="execution idempotency conflict")
+            if body.command_id and current.get("command_id") != body.command_id:
+                raise HTTPException(status_code=409, detail="command idempotency conflict")
             if current.get("status") in {"interrupted", "queued", "running"}:
                 current["cancel_requested"] = False
                 _start_workflow_thread(body.execution_id)
@@ -3719,7 +3801,25 @@ async def start_workflow_run(
                 "status": current.get("status"),
                 "hermes_session_id": current.get("hermes_session_id"),
             }
+        skill_receipts = []
+        try:
+            for node in body.plan.get("nodes") or []:
+                binding = (node.get("parameters") or {}).get("skill_binding") or {}
+                if binding:
+                    skill_receipts.append(_verify_workflow_skill_binding(binding))
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         run = body.model_dump(mode="json")
+        run["command_id"] = body.command_id or f"command:{body.execution_id}"
+        run["execution_request_id"] = (
+            body.execution_request_id or f"request:{body.execution_id}"
+        )
+        run["resolved_manifest"] = {
+            "process_contract_digest": body.process_contract_digest,
+            "dependency_lock_digest": body.dependency_lock_digest,
+            "activation_revision": body.activation_revision,
+            "skill_receipts": skill_receipts,
+        }
         run.update(
             {
                 "status": "queued",

@@ -163,3 +163,12 @@ class WorkflowDSLPlan(BaseModel):
     nodes: List[WorkflowDSLNode] = Field(default_factory=list, description="工作流节点列表")
     edges: List[WorkflowDSLEdge] = Field(default_factory=list, description="工作流有向依赖边列表")
     version: str = Field(default="1.0.0", description="DSL 格式版本")
+    process_contract_id: Optional[str] = Field(
+        default=None, description="已激活流程合同标识"
+    )
+    process_contract_digest: Optional[str] = Field(
+        default=None, description="不可变流程合同 SHA-256"
+    )
+    activation_revision: Optional[int] = Field(
+        default=None, description="流程合同激活修订号"
+    )

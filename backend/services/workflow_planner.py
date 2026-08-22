@@ -22,6 +22,7 @@ from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.knowledge_policy import resolve_policy
 from backend.services.llm_usage import record_llm_usage
 from backend.services.ipd_scenario_registry import build_registered_ipd_plan
+from backend.services.process_contract_registry import build_routed_process_plan
 
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
@@ -514,6 +515,20 @@ async def build_plan(
             db,
             workflow,
             registered,
+            scopes=scopes,
+            analysis_agent=analysis_agent,
+            revision_note=revision_note,
+        )
+    process_plan = build_routed_process_plan(
+        workflow.description,
+        plan_id="pending",
+        knowledge_scope=scopes,
+    )
+    if process_plan is not None:
+        return await persist_raw_plan(
+            db,
+            workflow,
+            process_plan,
             scopes=scopes,
             analysis_agent=analysis_agent,
             revision_note=revision_note,

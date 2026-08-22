@@ -3090,4 +3090,11 @@ window.showroomApi?.on('message', (message) => {
     window.showroomApi.init({ force: true });
   }
 });
+document.getElementById('continue-architect')?.addEventListener('click', () => {
+  const sessionId = window.sessionStorage.getItem('ai-lab-showroom.session') || '';
+  const query = sessionId
+    ? `?showroom_session_id=${encodeURIComponent(sessionId)}`
+    : '';
+  window.location.assign(`/architect${query}`);
+});
 window.showroomApi?.init();

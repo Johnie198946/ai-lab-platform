@@ -6,7 +6,7 @@
 - branch: `main`
 - base: `4865dcb7bd1b6422b2d4f7123a11b1e7812ee534`
 - change_type: `CODE_RELEASE`
-- status: `READY_TO_PUSH`
+- status: `TESTED`
 - scope: CustomerDemand后端、默认S0-S10 Showroom入口、legacy回滚入口、精确SHA部署脚本及相关测试
 - rollback: GitHub回退本提交；服务器部署前另存代码快照；页面级回滚入口为`/showroom/legacy.html`
 
@@ -90,3 +90,28 @@
 - Regression coverage: concurrent same-prefix first resolution asserts one legacy key, one v2 key, and distinct persisted mappings; lock registry is cleared by the fixture for deterministic isolation.
 - Validation: `ruff check backend/api/auth.py tests/test_tenant_key_derivation.py`, Python compilation, and `git diff --check` passed. Pytest was attempted but blocked by the sandbox's incompatible/missing Python dependencies (details in task handoff).
 - Delivery state: `LOCAL_ONLY`; no commit, push, or deployment performed.
+
+## Continuous P0-P7 workbench slice (2026-08-22)
+
+- local_base: `1aa4e9317d2a456829573d4d94fa1d88b95c2196`
+- status: `TESTED`
+- source continuity: confirmed `CustomerDemand` or authorized legacy `ShowroomSession` → Architect clarification.
+- process truth: approved `xfusion.ipd` compiled snapshot with Wiki source hashes, activation revision and immutable contract digest.
+- runtime truth: ScenarioPlan remains the only plan source; Hermes Bridge remains the only execution runtime.
+- deterministic execution: server-side executable-node projection; Skill SHA verification before run and before node execution; command/request IDs; dependency lock digest; resolved manifest receipt.
+- event reliability: stable `event_id`, monotonic sequence, cursor replay, duplicate collapse and gap rejection.
+- customer UI: one restrained workbench showing goal, current stage, AI employee, current output and next action; evidence, tools/Skills, artifacts, Evidence-bound report, Token and resource usage are collapsed drawers; React Flow is read-only and on demand.
+- P6: server-generated `ExplainContextSnapshot` is available only after the immutable `run_started` version receipt and excludes hidden Chain-of-Thought.
+- P7: deterministic Claim–Evidence report; missing evidence becomes `UNSUPPORTED`; without benchmark data, Token Factory recommendation remains `NEEDS_BENCHMARK` and emits no equipment quantity.
+- backend_verification: `539 passed, 2 skipped, 31 warnings`.
+- frontend_verification: `67 passed`; production Vite/Gateway build passed; existing large-chunk warning remains.
+- static_verification: `git diff --check` passed.
+- commit_sha: `PENDING`
+- remote_sha: `1aa4e9317d2a456829573d4d94fa1d88b95c2196` (unchanged; local changes not pushed)
+- server_before: `NOT_CHECKED`
+- server_after: `NOT_DEPLOYED`
+- health_check: `NOT_RUN`
+- functional_check: local API/unit contracts and production build only; authenticated production P0→P7 run not performed.
+- rollback_point: local base `1aa4e9317d2a456829573d4d94fa1d88b95c2196`; no server rollback point created.
+- accepted_risks: Bridge durable record/AIAgent acceptance crash window; externally mutable model/tool/data references may not be reproducible despite equal digest. Both fail closed and require manual reconciliation where state is ambiguous.
+- asynchronous_audit_followup: Skill加载开始/完成统一投影为同一`skill_load`事件类型；相同`idempotency_key + type + status`的Bridge回调复用原事件，不递增序号。Artifact现行生产合同只含`kind/title/content/source_kind`，未虚构尚不存在的`source_url/evidence_refs`透传。

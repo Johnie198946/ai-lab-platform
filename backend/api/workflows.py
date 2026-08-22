@@ -21,6 +21,8 @@ from sqlalchemy import func, select
 from backend.api.auth import require_auth
 from backend.api.tenant import current_tenant
 from backend.db import SessionLocal
+from backend.models.customer_demand import CustomerDemand
+from backend.models.showroom import ShowroomSession
 from backend.models.tenant_agent import AgentInvocationRelation, TenantAgentModel
 from backend.models.tenant_agent_schema import WorkflowDSLPlan
 from backend.models.workflow import (
@@ -56,6 +58,16 @@ from backend.services.ipd_scenario_registry import (
     is_registered_ipd_plan,
     validate_registered_ipd_execution_contract,
 )
+from backend.services.showroom_workflow_bridge import (
+    build_customer_demand_seed,
+    build_showroom_context_snapshot,
+    seed_customer_demand_description,
+    seed_workflow_description,
+)
+from backend.services.workflow_insights import (
+    build_explain_context_snapshot,
+    compile_evidence_bound_report,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
 
@@ -76,6 +88,8 @@ class WorkflowCreate(BaseModel):
     description: str = Field(..., min_length=3, max_length=12000)
     desired_output: str = Field("研究报告（Markdown）", min_length=1, max_length=300)
     clarification_mode: str = Field("compatibility", pattern="^(compatibility|dynamic)$")
+    showroom_session_id: str | None = Field(None, min_length=1, max_length=120)
+    customer_demand_id: str | None = Field(None, min_length=1, max_length=48)
 
 
 class ClarificationResponse(BaseModel):
@@ -497,30 +511,71 @@ async def owned_execution(
 async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_auth)):
     workflow_id = uid("wf")
     session_id = uid("wfs")
-    row = WorkflowDefinition(
-        id=workflow_id,
-        tenant_key=tenant(),
-        created_by=current_user(payload),
-        title=body.title.strip(),
-        description=body.description.strip(),
-        desired_output=body.desired_output.strip(),
-        status="clarifying",
-        clarification_session_id=session_id,
-        requirements_snapshot={"clarification_mode": body.clarification_mode},
-    )
-    clarification = WorkflowClarificationSession(
-        id=session_id,
-        workflow_id=workflow_id,
-        tenant_key=tenant(),
-        owner_user_id=current_user(payload),
-        phase=(
-            "awaiting_requirement_confirmation"
-            if requirement_is_explicit(body.description)
-            else "clarifying"
-        ),
-        round_number=3 if requirement_is_explicit(body.description) else 1,
-    )
     async with SessionLocal() as db:
+        description = body.description.strip()
+        requirements_snapshot: dict[str, Any] = {
+            "clarification_mode": body.clarification_mode
+        }
+        if body.showroom_session_id and body.customer_demand_id:
+            raise HTTPException(status_code=422, detail="只能续接一个客户上下文")
+        if body.showroom_session_id:
+            showroom = (
+                await db.execute(
+                    select(ShowroomSession).where(
+                        ShowroomSession.session_id == body.showroom_session_id,
+                        ShowroomSession.tenant_key == tenant(),
+                        ShowroomSession.slot == "main",
+                    )
+                )
+            ).scalar_one_or_none()
+            if showroom is None:
+                raise HTTPException(status_code=404, detail="体验会话不存在")
+            showroom_context = build_showroom_context_snapshot(
+                showroom.session_id, showroom.data or {}
+            )
+            requirements_snapshot["showroom_context"] = showroom_context
+            description = seed_workflow_description(
+                description, showroom_context
+            )[:12_000]
+        elif body.customer_demand_id:
+            demand = (
+                await db.execute(
+                    select(CustomerDemand).where(
+                        CustomerDemand.demand_id == body.customer_demand_id,
+                        CustomerDemand.tenant_key == tenant(),
+                    )
+                )
+            ).scalar_one_or_none()
+            if demand is None:
+                raise HTTPException(status_code=404, detail="客户需求不存在")
+            if demand.status != "confirmed":
+                raise HTTPException(status_code=409, detail="客户需求尚未人工确认")
+            demand_context = build_customer_demand_seed(demand)
+            requirements_snapshot["customer_demand"] = demand_context
+            description = seed_customer_demand_description(
+                description, demand_context
+            )[:12_000]
+
+        explicit = requirement_is_explicit(description)
+        row = WorkflowDefinition(
+            id=workflow_id,
+            tenant_key=tenant(),
+            created_by=current_user(payload),
+            title=body.title.strip(),
+            description=description,
+            desired_output=body.desired_output.strip(),
+            status="clarifying",
+            clarification_session_id=session_id,
+            requirements_snapshot=requirements_snapshot,
+        )
+        clarification = WorkflowClarificationSession(
+            id=session_id,
+            workflow_id=workflow_id,
+            tenant_key=tenant(),
+            owner_user_id=current_user(payload),
+            phase="awaiting_requirement_confirmation" if explicit else "clarifying",
+            round_number=3 if explicit else 1,
+        )
         db.add(row)
         # The session references workflows.id but there is no ORM relationship
         # between these two independently constructed rows.  Flush the parent
@@ -532,16 +587,15 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
             db,
             clarification,
             role="user",
-            content=body.description.strip(),
+            content=description,
         )
-        explicit = requirement_is_explicit(body.description)
         if not explicit and body.clarification_mode == "dynamic":
             clarification.phase = "clarifying_pending"
             row.status = "clarifying_pending"
             await db.commit()
             first = await dynamic_clarification_payload(
-                body.description,
-                [{"role": "user", "content": body.description}],
+                description,
+                [{"role": "user", "content": description}],
                 tenant_id=row.tenant_key,
                 workflow_id=row.id,
             )
@@ -1713,6 +1767,106 @@ async def list_artifacts(execution_id: str, payload: dict = Depends(require_auth
             }
             for row in rows
         ]
+
+
+@router.get("/workflow-executions/{execution_id}/explain-context")
+async def get_explain_context(execution_id: str, payload: dict = Depends(require_auth)):
+    async with SessionLocal() as db:
+        execution = await owned_execution(db, execution_id, payload)
+        workflow = await db.get(WorkflowDefinition, execution.workflow_id)
+        plan = await db.get(WorkflowPlanVersion, execution.plan_id)
+        run_started = (
+            await db.execute(
+                select(WorkflowEvent)
+                .where(
+                    WorkflowEvent.execution_id == execution_id,
+                    WorkflowEvent.event_type == "run_started",
+                )
+                .order_by(WorkflowEvent.id)
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if run_started is None:
+            raise HTTPException(status_code=409, detail="Hermes Run尚未返回版本回执")
+        nodes = list(
+            (
+                await db.execute(
+                    select(WorkflowNodeRun)
+                    .where(WorkflowNodeRun.execution_id == execution_id)
+                    .order_by(WorkflowNodeRun.position)
+                )
+            ).scalars().all()
+        )
+        current = nodes[0] if nodes else None
+        dsl = dict(plan.dsl or {}) if plan else {}
+        manifest = (run_started.payload or {}).get("resolved_manifest") or {}
+        return build_explain_context_snapshot({
+            "workflow_id": execution.workflow_id,
+            "execution_id": execution.id,
+            "customer_goal": workflow.description if workflow else "",
+            "current_stage": current.name if current else execution.status,
+            "next_action": "按批准计划执行，并由人工复核成果与证据",
+            "process_contract_id": dsl.get("process_contract_id"),
+            "process_contract_digest": dsl.get("process_contract_digest"),
+            "activation_revision": dsl.get("activation_revision"),
+            "resolved_manifest": manifest or {},
+        })
+
+
+@router.get("/workflow-executions/{execution_id}/evidence-report")
+async def get_evidence_report(execution_id: str, payload: dict = Depends(require_auth)):
+    async with SessionLocal() as db:
+        execution = await owned_execution(db, execution_id, payload)
+        workflow = await db.get(WorkflowDefinition, execution.workflow_id)
+        plan = await db.get(WorkflowPlanVersion, execution.plan_id)
+        events = list((await db.execute(
+            select(WorkflowEvent)
+            .where(WorkflowEvent.execution_id == execution_id)
+            .order_by(WorkflowEvent.id)
+        )).scalars().all())
+        artifacts = list((await db.execute(
+            select(WorkflowArtifact)
+            .where(WorkflowArtifact.execution_id == execution_id)
+            .order_by(WorkflowArtifact.created_at)
+        )).scalars().all())
+        root = run_root(execution).resolve()
+        evidence: list[dict[str, Any]] = []
+        claims: list[dict[str, Any]] = []
+        for event in events:
+            bridge_id = str((event.payload or {}).get("bridge_event_id") or f"event:{event.id}")
+            evidence.append({
+                "evidence_id": bridge_id,
+                "kind": "event",
+                "title": event.event_type,
+                "content": event.message,
+            })
+        for artifact in artifacts:
+            path = (root / artifact.relative_path).resolve()
+            content = path.read_text(encoding="utf-8") if path.is_relative_to(root) and path.exists() else ""
+            evidence.append({
+                "evidence_id": artifact.id,
+                "kind": artifact.kind,
+                "title": artifact.title,
+                "content": content,
+            })
+            claims.append({
+                "statement": f"已生成工件：{artifact.title}",
+                "evidence_ids": [artifact.id],
+            })
+        dsl = dict(plan.dsl or {}) if plan else {}
+        return compile_evidence_bound_report(
+            execution_id=execution.id,
+            customer_goal=workflow.description if workflow else "",
+            process_contract_digest=dsl.get("process_contract_digest"),
+            evidence=evidence,
+            claims=claims,
+            usage={
+                "input_tokens": execution.input_tokens,
+                "output_tokens": execution.output_tokens,
+                "reasoning_tokens": execution.reasoning_tokens,
+                "estimated_cost_usd": float(execution.estimated_cost_usd or 0),
+            },
+        )
 
 
 @router.get("/workflow-executions/{execution_id}/artifacts/{artifact_id}/content")

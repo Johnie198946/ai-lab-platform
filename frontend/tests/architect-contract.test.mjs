@@ -15,6 +15,8 @@ import {
   hasResultData,
   PLAN_POLL_ATTEMPTS,
   EXECUTION_POLL_ATTEMPTS,
+  showroomSessionIdFromSearch,
+  customerDemandIdFromSearch,
 } from "../src/architectContract.js";
 
 test("plan-to-canvas projection uses only server nodes and edges", () => {
@@ -49,7 +51,7 @@ test("result area exposes exactly four server-backed view types and honest empti
 });
 
 test("ArchitectPage uses real React Flow with server-only nodes and edges", () => {
-  const source = fs.readFileSync(new URL("../src/pages/ArchitectPage.jsx", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
   assert.match(source, /import\s+\{\s*ReactFlow\s*\}\s+from\s+["']@xyflow\/react["']/);
   assert.match(source, /<ReactFlow[\s\S]*nodes=\{nodes\}[\s\S]*edges=\{edges\}/);
   assert.match(source, /nodesDraggable=\{false\}/);
@@ -59,7 +61,7 @@ test("ArchitectPage uses real React Flow with server-only nodes and edges", () =
 });
 
 test("requirement confirmation actions send structured confirm and revise intents", () => {
-  const page = fs.readFileSync(new URL("../src/pages/ArchitectPage.jsx", import.meta.url), "utf8");
+  const page = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
   const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
   assert.match(page, /确认并生成流程/);
   assert.match(page, /继续修改/);
@@ -78,11 +80,13 @@ test("UNCONNECTED server nodes remain honestly labelled and never become LIVE lo
   assert.doesNotMatch(result.nodes[0].data.label, /LIVE/);
 });
 
-test("showroom static entry redirects without changing legacy journey", () => {
+test("showroom journey hands a confirmed CustomerDemand to Architect", () => {
   const index = fs.readFileSync(new URL("../public/showroom/index.html", import.meta.url), "utf8");
-  const legacy = fs.readFileSync(new URL("../public/showroom/legacy.html", import.meta.url), "utf8");
-  assert.match(index, /\/login\?next=\/architect|location\.(?:replace|href)\s*=\s*["']\/architect/);
-  assert.equal(legacy.length > 0, true);
+  const journey = fs.readFileSync(new URL("../public/showroom/showroom-journey.js", import.meta.url), "utf8");
+  assert.match(index, /showroom-journey\.js/);
+  assert.doesNotMatch(index, /legacy\.html/);
+  assert.match(journey, /state\.demand\?\.status === ['"]confirmed['"]/);
+  assert.match(journey, /\/architect\?customer_demand_id=/);
 });
 
 test("App root route uses the destructured authSession", () => {
@@ -91,7 +95,7 @@ test("App root route uses the destructured authSession", () => {
 });
 
 test("an empty workbench can submit the first requirement", () => {
-  const source = fs.readFileSync(new URL("../src/pages/ArchitectPage.jsx", import.meta.url), "utf8");
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
   assert.match(source, /onSubmit=\{workflow\s*\?\s*send\s*:\s*create\}/);
   assert.match(source, /rows\.filter\(\(item\)\s*=>\s*item\.clarification_session_id\)/);
   assert.match(source, /workflow\s*\?\s*["']提交回复["']\s*:\s*["']开始澄清["']/);
@@ -181,4 +185,18 @@ test("empty evidence arrays render as an honest empty state", () => {
   assert.equal(hasResultData([]), false);
   assert.equal(hasResultData({}), false);
   assert.equal(hasResultData([{ id: "e1" }]), true);
+});
+
+test("architect only accepts an explicit showroom business session from the URL", () => {
+  assert.equal(
+    showroomSessionIdFromSearch("?showroom_session_id=visit-001"),
+    "visit-001",
+  );
+  assert.equal(showroomSessionIdFromSearch("?showroom_session_id="), "");
+  assert.equal(showroomSessionIdFromSearch("?session_id=private-hermes"), "");
+});
+
+test("architect accepts an explicit customer demand id from the URL", () => {
+  assert.equal(customerDemandIdFromSearch("?customer_demand_id=dmd_abc123"), "dmd_abc123");
+  assert.equal(customerDemandIdFromSearch("?customer_demand_id=../../bad"), "");
 });
