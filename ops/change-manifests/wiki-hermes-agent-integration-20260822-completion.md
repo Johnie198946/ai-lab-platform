@@ -51,8 +51,8 @@
 ## Delivery state
 
 - status: `VERIFIED`
-- commit_sha: `f064dbf3e81682a7228430952d04feafa6039a69` (before this manifest-only evidence commit)
-- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git`; refs `main` and `codex/wiki-agent-integration`; verified with `git ls-remote` at `f064dbf3e81682a7228430952d04feafa6039a69`
+- commit_sha: `6540ffbd3dba3ced82ed6be1146b35912e2e6b41`
+- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git`; refs `main` and `codex/wiki-agent-integration`; verified with `git ls-remote` at `6540ffbd3dba3ced82ed6be1146b35912e2e6b41`
 - server_before: `/opt/ai-lab-platform/.deployed-sha` was `a3e12a5ccfecd595fe86bcb0b41afcff1c7262db`; health `{"status":"ok","version":"0.8.0"}`
 - server_after: `/opt/ai-lab-platform/.deployed-sha` is `f064dbf3e81682a7228430952d04feafa6039a69`; Docker Compose services rebuilt; `hermes-bridge` systemd service active
 - health_check: `bash scripts/update.sh f064dbf3e81682a7228430952d04feafa6039a69` passed runtime contract audit; `curl http://127.0.0.1:8000/health` returned `{"status":"ok","version":"0.8.0"}`
@@ -64,4 +64,4 @@
 - The current chat loop performs one request-scoped Wiki retrieval before Hermes reasoning. Full iterative `wiki_search/wiki_read/wiki_neighbors` requires a request-context-aware MCP tool server in the next phase.
 - Production validation requires the mounted Vault and real `knowledge_catalog.json`/`knowledge_matrix.json`; repository data intentionally does not include them.
 - The iOS local note store exists on the separate `codex/knowledge-notion-ui` task branch. Its client-side uploader must be integrated after these branches are reconciled; this task provides the server sync contract only.
-- Manifest evidence is being finalized in a follow-up commit; the server will be refreshed to that final SHA so the deployment marker remains exact.
+- Final manifest and server marker refer to the same verified SHA.
