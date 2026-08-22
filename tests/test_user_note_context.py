@@ -5,6 +5,10 @@ import pytest
 from backend.api.chat import ChatContextScope, LocalNoteContext, _resolve_source_context
 from backend.services.knowledge_policy import KnowledgePolicy
 from backend.services.user_note_context import note_paths, search_user_notes
+from backend.services.user_note_context import (
+    LOCAL_NOTE_CONTEXT_MAX_CHARS,
+    render_local_note_context,
+)
 
 
 def policy() -> KnowledgePolicy:
@@ -36,6 +40,18 @@ def test_search_user_notes_isolates_tenant_and_user(tmp_path: Path):
     )
     assert [item["title"] for item in results] == ["我的会议"]
     assert "他人机密" not in str(results)
+
+
+def test_render_local_context_compacts_long_note_and_preserves_tasks():
+    context = render_local_note_context([{
+        "id": "large-note",
+        "title": "超长本地笔记",
+        "markdown": "普通正文" * 12_000 + "\n## 最后待办\n- [ ] 给客户发送复盘",
+    }])
+    assert len(context) <= LOCAL_NOTE_CONTEXT_MAX_CHARS
+    assert "## 最后待办" in context
+    assert "- [ ] 给客户发送复盘" in context
+    assert context.endswith("</local_notes>")
 
 
 @pytest.mark.asyncio

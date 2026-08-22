@@ -76,8 +76,17 @@ HERMES_BRIDGE_CANCEL_URL = os.environ.get(
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
+BRIDGE_GOAL_MAX_CHARS = 12_000
 
 CHAT_SKILLS = {"solution-consultant-persona"}
+
+
+def _bounded_bridge_goal(goal: str) -> str:
+    """Final contract guard for every Hermes chat path."""
+    if len(goal) <= BRIDGE_GOAL_MAX_CHARS:
+        return goal
+    suffix = "\n\n[部分资料已按模型输入预算自动精简]"
+    return goal[: BRIDGE_GOAL_MAX_CHARS - len(suffix)] + suffix
 
 # ---------------------------------------------------------------------------
 # 首屏滑动窗口熔断器与 Citation 提取器（2026-08-16 增强：多层嵌套前缀 + 破折号变体）
@@ -243,7 +252,7 @@ async def _call_hermes(
 ) -> tuple[str, List[ReasoningStep]]:
     """透传 Hermes bridge，返回 (reply, reasoning)。"""
     _last_hermes_usage.set({})
-    payload: Dict[str, Any] = {"goal": goal}
+    payload: Dict[str, Any] = {"goal": _bounded_bridge_goal(goal)}
     if session_id:
         payload["session_id"] = session_id
     if skill_id:
@@ -790,7 +799,7 @@ async def _call_bridge_stream(
             "POST",
             HERMES_BRIDGE_STREAM_URL,
             json={
-                "goal": goal,
+                "goal": _bounded_bridge_goal(goal),
                 "session_id": session_id,
                 "regenerate": regenerate,
                 "skill_id": skill_id,

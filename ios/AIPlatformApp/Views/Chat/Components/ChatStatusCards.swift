@@ -183,9 +183,11 @@ public struct StatusCardView: View {
 }
 
 public struct DegradedCardView: View {
+    public let message: String
     public let onRetry: () -> Void
 
-    public init(onRetry: @escaping () -> Void) {
+    public init(message: String, onRetry: @escaping () -> Void) {
+        self.message = message
         self.onRetry = onRetry
     }
 
@@ -201,7 +203,7 @@ public struct DegradedCardView: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(AppTheme.Colors.textPrimary)
                 }
-                Text("服务暂时不可用，请稍后重试")
+                Text(message.isEmpty ? "服务暂时不可用，请稍后重试" : message)
                     .font(.system(size: 12))
                     .foregroundColor(AppTheme.Colors.textSecondary)
                 retryChip

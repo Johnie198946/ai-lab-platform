@@ -91,7 +91,10 @@ public struct ChatMessageStreamView: View {
         if message.role == .interrupted {
             InterruptedCardView(onRetry: { coordinator.retryMessage(message.id) })
         } else if message.degraded {
-            DegradedCardView(onRetry: { coordinator.retryMessage(message.id) })
+            DegradedCardView(
+                message: message.content,
+                onRetry: { coordinator.retryMessage(message.id) }
+            )
         } else if message.pending && message.role == .assistant {
             if let req = coordinator.inflight, req.id == message.id {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
