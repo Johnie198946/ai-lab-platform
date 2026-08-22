@@ -28,18 +28,19 @@
 ## 测试与校验
 
 - `python3 -m pytest tests/test_workflows_api.py -q`: `21 passed`。
-- `python3 -m pytest -q`: `477 passed, 2 skipped`。
+- 合入并发 main 更新前 `python3 -m pytest -q`: `477 passed, 2 skipped`。
+- rebase 到远端 `3af71fe68b61e0401726e794396f1838db33ced4` 后再次执行全量测试：`491 passed, 2 skipped`。
 - 新增覆盖：缺失文件可从 Hermes 投影恢复并回写；哈希不一致时拒绝恢复且保持 404。
 
 ## 交付记录
 
-- 当前交付状态：部署完成后更新；部署前为 `TESTED`。
-- commit SHA：提交后记录在标准完成通报。
-- GitHub remote/ref/SHA：push 后以 `git ls-remote` 核验并记录。
+- 当前交付状态：`VERIFIED`。
+- commit SHA：`9384189002912f755f7514ed418f3cdfb5b242a4`。
+- GitHub remote/ref/SHA：`https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/main` / `9384189002912f755f7514ed418f3cdfb5b242a4`，已由 `git ls-remote` 核验；后续 manifest 元数据提交 SHA 记录在标准完成通报。
 - `server_before`: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-817b81c`；`.deploy-commit=817b81c1653f46e2f6a1caff2f2621f33ce18257`；目标执行的成果列表 200、内容接口 404；8 条数据库索引存在但文件缺失。
-- `server_after`: 部署与验证后记录。
-- `health_check`: 部署与验证后记录。
-- `functional_check`: 部署与验证后记录。
+- `server_after`: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-9384189`；`.deploy-commit=9384189002912f755f7514ed418f3cdfb5b242a4`；API 与三个 Worker 已重建，frontend 已同步重启；新 release 的 `data` 指向回滚 release 的持久数据目录。
+- `health_check`: API 容器 healthy；内网与公网 `GET /health` 均为 HTTP 200，响应 `{"status":"ok","version":"0.8.0"}`。
+- `functional_check`: 从 Hermes 投影按哈希恢复目标执行的 8/8 份成果；再次执行恢复为 0 且 8/8 文件仍存在；使用工作流真实创建者身份请求 final 成果内容接口返回 HTTP 200，artifact ID 匹配，正文字符数 1205。
 - `rollback_point`: `/opt/releases/ai-lab-platform-817b81c`；部署前版本与数据库均不覆盖。
 
 ## 风险与回滚说明
