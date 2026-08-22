@@ -495,6 +495,33 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(clarification.json()["session"]["phase"], "awaiting_requirement_confirmation")
         self.assertTrue(clarification.json()["messages"][-1]["content"])
 
+    def test_dynamic_create_question_clears_pending_status(self):
+        with patch(
+            "backend.api.workflows.request_bridge_clarification",
+            new=AsyncMock(return_value={
+                "status": "question",
+                "question": "Who is the primary user?",
+                "dimension": "target user",
+                "source": "hermes",
+                "truth": "LIVE",
+                "simulation": False,
+                "usage": {},
+            }),
+        ):
+            created = self.request(
+                "POST",
+                "/api/v1/workflows",
+                json={
+                    "title": "Dynamic question",
+                    "description": "Build an IPD workspace for our team.",
+                    "desired_output": "Decision record",
+                    "clarification_mode": "dynamic",
+                },
+            )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["workflow"]["status"], "clarifying")
+        self.assertEqual(created.json()["clarification_session"]["phase"], "clarifying")
+
     def test_cross_tenant_workflow_is_invisible(self):
         body = self.create_ready()
         response = self.request("GET", f"/api/v1/workflows/{body['id']}", sub="beta")

@@ -97,7 +97,9 @@ export function canStartWorkflow(status, execution = null) {
 }
 
 export function hasResultData(value) {
-  return Array.isArray(value) ? value.length > 0 : value !== null && value !== undefined;
+  if (Array.isArray(value)) return value.length > 0;
+  if (value && typeof value === "object") return Object.keys(value).length > 0;
+  return value !== null && value !== undefined;
 }
 
 export const RESULT_VIEW_TYPES = ["requirement", "evidence", "gate", "artifact"];

@@ -534,6 +534,7 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
                 first_event_type = "clarification_unavailable"
             else:
                 clarification.phase = "clarifying"
+                row.status = "clarifying"
                 first_message_type = "clarify"
                 first_event_type = "clarify_requested"
         else:

@@ -159,5 +159,6 @@ test("the real post-approval agent_ready state can start a workflow", () => {
 
 test("empty evidence arrays render as an honest empty state", () => {
   assert.equal(hasResultData([]), false);
+  assert.equal(hasResultData({}), false);
   assert.equal(hasResultData([{ id: "e1" }]), true);
 });
