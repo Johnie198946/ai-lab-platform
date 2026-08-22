@@ -561,6 +561,9 @@ public final class SessionManager: ObservableObject {
 
     private let store: ChatHistoryStore
     private var persistedFingerprints: [String: [String: Int]] = [:]
+    /// All SQLite writes share one background tail so rapid SSE/UI updates stay ordered
+    /// without blocking the MainActor before the network request starts.
+    private var persistenceTail: Task<Void, Never>? = nil
 
     private init() {
         do { store = try ChatHistoryStore(performLegacyMigration: false) }
@@ -691,13 +694,51 @@ public final class SessionManager: ObservableObject {
         sessions[id] = messages
         let known = persistedFingerprints[id] ?? [:]
         let dirty = messages.filter { known[$0.id] != fingerprint($0) }
-        if let count = try? store.upsert(dirty, sessionId: id) {
-            sessionMessageCounts[id] = count
-            var updated = known
-            for message in dirty { updated[message.id] = fingerprint(message) }
-            persistedFingerprints[id] = updated
+        guard !dirty.isEmpty else { return }
+
+        let fingerprints = Dictionary(
+            uniqueKeysWithValues: dirty.map { ($0.id, fingerprint($0)) }
+        )
+        let previous = persistenceTail
+        let store = self.store
+        persistenceTail = Task.detached(priority: .utility) { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            guard let count = try? store.upsert(dirty, sessionId: id) else { return }
+            let summary = try? store.summary(sessionId: id)
+            await self?.finishPersistence(
+                sessionId: id,
+                fingerprints: fingerprints,
+                messageCount: count,
+                summary: summary
+            )
         }
-        refreshMetadata(for: id)
+    }
+
+    private func finishPersistence(
+        sessionId: String,
+        fingerprints: [String: Int],
+        messageCount: Int,
+        summary: StoredSessionSummary?
+    ) {
+        var known = persistedFingerprints[sessionId] ?? [:]
+        for (messageId, storedFingerprint) in fingerprints {
+            guard let current = sessions[sessionId]?.first(where: { $0.id == messageId }),
+                  fingerprint(current) == storedFingerprint else { continue }
+            known[messageId] = storedFingerprint
+        }
+        persistedFingerprints[sessionId] = known
+        sessionMessageCounts[sessionId] = messageCount
+        guard let summary else { return }
+        sessionTitles[sessionId] = summary.title
+        sessionUpdatedAt[sessionId] = summary.updatedAt
+        sessionAgentIds[sessionId] = summary.agentId
+        sessionAgentNames[sessionId] = summary.agentName
+    }
+
+    /// Test/lifecycle barrier for callers that need durable completion explicitly.
+    public func flushPendingPersistence() async {
+        await persistenceTail?.value
     }
 
     public func previousUserMessage(before messageId: String, sessionId: String) -> ChatMessage? {
@@ -819,6 +860,7 @@ public final class SessionManager: ObservableObject {
         hasher.combine(message.pending); hasher.combine(message.degraded); hasher.combine(message.isDemoSample)
         hasher.combine(message.reasoningDuration); hasher.combine(message.executingAgentId)
         hasher.combine(message.executingAgentName); hasher.combine(message.delegatedBy)
+        hasher.combine(message.blocks); hasher.combine(message.quotedContext)
         return hasher.finalize()
     }
 }

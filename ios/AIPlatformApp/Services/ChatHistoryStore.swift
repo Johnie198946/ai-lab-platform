@@ -47,6 +47,20 @@ public final class ChatHistoryStore: @unchecked Sendable {
         }
     }
 
+    public func summary(sessionId: String) throws -> StoredSessionSummary? {
+        try query(
+            "SELECT id,title,updated_at,message_count,agent_id,agent_name FROM sessions WHERE id=? LIMIT 1",
+            { bind(sessionId, $0, 1) }
+        ) { s in
+            StoredSessionSummary(
+                id: text(s, 0), title: text(s, 1),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
+                messageCount: Int(sqlite3_column_int64(s, 3)),
+                agentId: text(s, 4), agentName: text(s, 5)
+            )
+        }.first
+    }
+
     public func createSession(id: String, agentId: String, agentName: String) throws {
         try run("INSERT OR IGNORE INTO sessions(id,title,updated_at,message_count,next_sequence,agent_id,agent_name) VALUES(?,?,?,?,?,?,?)") { s in
             bind(id,s,1); bind("新会话",s,2); sqlite3_bind_double(s,3,Date().timeIntervalSince1970)

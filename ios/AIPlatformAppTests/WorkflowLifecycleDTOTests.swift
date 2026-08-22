@@ -1,5 +1,6 @@
 import XCTest
 import SwiftUI
+import SQLite3
 @testable import AIPlatformApp
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
@@ -557,5 +558,65 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         coordinator.returnToLatestMessages()
         XCTAssertEqual(coordinator.messages.last?.id, "page-59")
         XCTAssertTrue(coordinator.isLatestPage)
+    }
+
+    @MainActor
+    func testSessionManagerPersistsMessagesOffMainActorInOrder() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+        let first = ChatMessage(
+            id: "assistant", sessionId: sessionId, role: .assistant,
+            content: "第一版", blocks: [.reasoning([
+                ReasoningStep(type: .thought, title: "思考", detail: "第一步")
+            ])]
+        )
+        var second = first
+        second.content = "第二版"
+        second.blocks = [.reasoning([
+            ReasoningStep(type: .toolCall, title: "检索 Wiki", detail: "已完成")
+        ])]
+
+        manager.setMessages([first], for: sessionId)
+        manager.setMessages([second], for: sessionId)
+
+        XCTAssertEqual(manager.messages(for: sessionId).first?.content, "第二版")
+        await manager.flushPendingPersistence()
+        XCTAssertEqual(try store.message(sessionId: sessionId, id: "assistant")?.content, "第二版")
+    }
+
+    @MainActor
+    func testSessionManagerDoesNotBlockMainActorWhenSQLiteWriterIsBusy() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+
+        let startedAt = CFAbsoluteTimeGetCurrent()
+        manager.setMessages([
+            ChatMessage(id: "queued", sessionId: sessionId, role: .user, content: "立即发送")
+        ], for: sessionId)
+        let elapsed = CFAbsoluteTimeGetCurrent() - startedAt
+
+        XCTAssertLessThan(elapsed, 0.2)
+        XCTAssertEqual(manager.messages(for: sessionId).first?.content, "立即发送")
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+        XCTAssertEqual(try store.message(sessionId: sessionId, id: "queued")?.content, "立即发送")
     }
 }
