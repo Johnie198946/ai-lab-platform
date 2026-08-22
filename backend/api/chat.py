@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -411,7 +412,9 @@ async def _knowledge_context(
     """
     policy = policy or await _resolve_chat_policy(payload)
     capability = mint_capability(policy, subject_id=subject_id, entry_point=entry_point)
-    docs = knowledge._search_docs(knowledge._vault(), question, 5)
+    docs = await asyncio.to_thread(
+        knowledge._search_docs, knowledge._vault(), question, 5
+    )
     return capability, policy.policy_version, "", docs
 
 
@@ -759,22 +762,9 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             },
         )
 
+    request_started = time.monotonic()
     policy = await _resolve_chat_policy(payload)
-    agent, invocation = await _resolve_agent_route(
-        question=req.question, requested_agent_id=req.agent_id, payload=payload
-    )
-    if invocation.status == "not_found":
-        answer = "未找到当前账号可调用的同名专属 Agent，请从 Agent 选择器确认名称或状态。"
-        return StreamingResponse(
-            _message_sse(answer), media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-    if invocation.status == "ambiguous":
-        clarify = _invocation_clarify(invocation)
-        return StreamingResponse(
-            _message_sse(clarify.question, clarify=clarify), media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
+    policy_ready_ms = (time.monotonic() - request_started) * 1000.0
     isolated_session_id = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
         str(payload.get("tenant_key") or "public"), policy.policy_version
@@ -795,20 +785,52 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "表格内的关键差异与结论词请用 **加粗** 标注以突出重点。）"
         )
     skill_id = validate_chat_skill(req.skill_id)
-    capability, policy_version, evidence, _ = await _knowledge_context(
-        payload, isolated_session_id, req.question, policy=policy
-    )
-    goal += evidence
-
     _streaming_sessions.add(isolated_session_id)
-
-    delegated_target = invocation.agent if invocation.status == "matched" else None
 
     async def _gen():
         started = time.perf_counter()
         try:
+            # 建立 SSE 后再解析 Agent 路由；客户端不再等待数据库查询才收到首帧。
+            yield "data: " + json.dumps(
+                {
+                    "type": "status",
+                    "phase": "context",
+                    "detail": "正在准备 Agent 与权限上下文…",
+                },
+                ensure_ascii=False,
+            ) + "\n\n"
+
+            setup_started = time.monotonic()
+            agent, invocation = await _resolve_agent_route(
+                question=req.question,
+                requested_agent_id=req.agent_id,
+                payload=payload,
+            )
+            if invocation.status == "not_found":
+                for frame in _message_sse(
+                    "未找到当前账号可调用的同名专属 Agent，请从 Agent 选择器确认名称或状态。"
+                ):
+                    yield frame
+                return
+            if invocation.status == "ambiguous":
+                clarify = _invocation_clarify(invocation)
+                for frame in _message_sse(clarify.question, clarify=clarify):
+                    yield frame
+                return
+
+            delegated_target = invocation.agent if invocation.status == "matched" else None
             routed_agent = delegated_target or agent
             yield _route_frame(routed_agent, delegated=delegated_target is not None)
+            capability = mint_capability(
+                policy, subject_id=isolated_session_id, entry_point="chat"
+            )
+            policy_version = policy.policy_version
+            setup_ms = (time.monotonic() - setup_started) * 1000.0
+            print(
+                f"[chat-stream] policy_ms={policy_ready_ms:.1f} "
+                f"agent_setup_ms={setup_ms:.1f} session={isolated_session_id[:32]}"
+            )
+
             routed_goal = goal
             if delegated_target is not None:
                 yield f"data: {json.dumps({'type': 'status', 'phase': 'delegate', 'detail': f'正在调用「{delegated_target.name}」…'}, ensure_ascii=False)}\n\n"
@@ -817,12 +839,13 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     str(payload.get("tenant_key") or "public"),
                     policy.policy_version,
                 )
-                child_capability, child_policy_version, child_evidence, _ = await _knowledge_context(
-                    payload, child_session_id, req.question, policy=policy
+                child_capability = mint_capability(
+                    policy, subject_id=child_session_id, entry_point="chat"
                 )
+                child_policy_version = policy.policy_version
                 try:
                     child_reply, _ = await _call_hermes_recorded(
-                        req.question + child_evidence,
+                        req.question,
                         auth_payload=payload,
                         session_id=child_session_id,
                         knowledge_capability=child_capability,
@@ -841,7 +864,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     user_question=req.question,
                     target=delegated_target,
                     child_reply=child_reply,
-                ) + evidence
+                )
             kwargs = {
                 "regenerate": req.regenerate,
                 "skill_id": skill_id,
@@ -866,6 +889,15 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                         success=event.get("type") == "done",
                     )
                 yield frame
+        except Exception as exc:
+            yield "data: " + json.dumps(
+                {
+                    "type": "error",
+                    "code": "gateway_setup",
+                    "message": str(exc)[:200],
+                },
+                ensure_ascii=False,
+            ) + "\n\n"
         finally:
             _streaming_sessions.discard(isolated_session_id)
 

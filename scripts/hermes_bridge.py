@@ -892,6 +892,118 @@ async def _request_scoped_wiki_evidence(
     return _format_authorized_wiki_evidence(docs)
 
 
+# Hermes tool registry is process-global while chat authorization is request-local.
+# The AIAgent executes tools on its worker thread, so a thread-local capability keeps
+# signed tenant scope out of the model-visible schema and prevents cross-run leakage.
+_knowledge_tool_context = threading.local()
+_knowledge_tool_registration_lock = threading.Lock()
+_knowledge_tool_registered = False
+
+
+def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
+    """Hermes-facing knowledge_search handler backed by the platform Gateway."""
+    context = getattr(_knowledge_tool_context, "value", None)
+    if not isinstance(context, dict) or not context.get("capability"):
+        return json.dumps(
+            {"success": False, "error": "knowledge_scope_unavailable"},
+            ensure_ascii=False,
+        )
+    query = str((args or {}).get("query") or "").strip()
+    if not query:
+        return json.dumps(
+            {"success": False, "error": "query_required"}, ensure_ascii=False
+        )
+    allowed_scope = set(str(item) for item in context.get("scopes") or [])
+    requested_scope = set(
+        str(item) for item in (args or {}).get("category_scope") or allowed_scope
+    )
+    if not requested_scope.issubset(allowed_scope):
+        return json.dumps(
+            {"success": False, "error": "knowledge_scope_denied"},
+            ensure_ascii=False,
+        )
+    try:
+        docs = _knowledge_gateway_search(
+            str(context["capability"]),
+            query=query,
+            category_scope=sorted(requested_scope),
+            limit=max(1, min(10, int((args or {}).get("limit") or 5))),
+        )
+    except PermissionError:
+        return json.dumps(
+            {"success": False, "error": "knowledge_scope_denied"},
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return json.dumps(
+            {"success": False, "error": "knowledge_gateway_unavailable", "detail": str(exc)[:160]},
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "success": True,
+            "query": query,
+            "docs": [
+                {
+                    "path": item.get("path", ""),
+                    "title": item.get("title", ""),
+                    "snippet": str(item.get("snippet") or "")[:500],
+                    "category": item.get("category", ""),
+                    "freshness": item.get("freshness", "unknown"),
+                }
+                for item in docs
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def _ensure_knowledge_gateway_tool_registered() -> None:
+    """Register the platform-owned tool once in Hermes' process-global registry."""
+    global _knowledge_tool_registered
+    if _knowledge_tool_registered:
+        return
+    with _knowledge_tool_registration_lock:
+        if _knowledge_tool_registered:
+            return
+        from tools.registry import registry
+
+        registry.register(
+            name="knowledge_search",
+            toolset="knowledge_gateway",
+            schema={
+                "name": "knowledge_search",
+                "description": (
+                    "Search tenant-authorized AI Lab knowledge through the platform "
+                    "Knowledge Gateway. Use only when the answer needs internal evidence."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "A concise semantic search query.",
+                        },
+                        "category_scope": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Optional subset of the authorized categories.",
+                        },
+                        "limit": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 10,
+                            "default": 5,
+                        },
+                    },
+                    "required": ["query"],
+                },
+            },
+            handler=lambda args, **kwargs: _knowledge_search_tool(args, **kwargs),
+        )
+        _knowledge_tool_registered = True
+
+
 def _extract_json_object(text: str) -> dict[str, Any]:
     raw = (text or "").strip()
     if raw.startswith("```"):
@@ -1991,13 +2103,12 @@ async def chat_stream(body: GoalRequest):
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
     user_id = body.session_id or "anonymous"
-    claims = _validated_knowledge_claims(
+    knowledge_claims = _validated_knowledge_claims(
         body.knowledge_capability,
         subject_id=user_id,
         policy_version=body.knowledge_policy_version,
     )
-    evidence = await _request_scoped_wiki_evidence(body, claims)
-    goal = _expand_requested_skill(body.goal, body.skill_id) + evidence
+    goal = _expand_requested_skill(body.goal, body.skill_id)
     _mark_in_flight(user_id)
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
@@ -2037,6 +2148,8 @@ async def chat_stream(body: GoalRequest):
                     request_id=body.request_id,
                     allow_local_files=False,
                     agent_config=body.agent_config,
+                    knowledge_capability=body.knowledge_capability,
+                    knowledge_claims=knowledge_claims,
                 ),
                 media_type="text/event-stream",
                 headers={
@@ -2314,10 +2427,12 @@ def _cache_request_overrides(
 # 技能已警告但模型仍常踩坑）→ 必须在目标注入层强制约束。
 KB_RETRIEVAL_DISCIPLINE = (
     "【租户知识隔离纪律·必须严格遵守】\n"
-    "1. 平台已通过 Knowledge Gateway 注入当前租户可见的证据摘要，只能使用该摘要。\n"
-    "2. 禁止使用 file、bash、search_files、read_file 或任何本机路径读取知识 Vault。\n"
-    "3. 未提供证据时应明确说明证据缺口；不得猜测其他租户、过期套餐或历史 Session 中的知识。\n"
-    "4. 引用必须保留平台提供的 [[path]]，不得伪造来源。"
+    "1. 仅当回答需要平台内部事实、产品、客户、业务或租户知识时，调用 knowledge_search；"
+    "润色、翻译、闲聊、纯创作和无需内部证据的问题不要调用。\n"
+    "2. knowledge_search 是唯一允许的租户知识入口；禁止使用 file、bash、search_files、"
+    "read_file 或任何本机路径读取知识 Vault。\n"
+    "3. 工具零命中时明确说明证据缺口；不得猜测其他租户、过期套餐或历史 Session 中的知识。\n"
+    "4. 使用工具结果时必须保留 [[path]] 引用，不得伪造来源。"
 )
 
 CLARIFY_GATE_PROMPT = f"""【AI Lab 全局交互与对话规范】
@@ -2554,6 +2669,7 @@ def _build_in_process_agent(
     stream_q: queue.Queue,
     allow_local_files: bool = False,
     agent_config: dict[str, Any] | None = None,
+    knowledge_capability: str | None = None,
 ) -> object:
     """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
 
@@ -2581,6 +2697,13 @@ def _build_in_process_agent(
     agent_config = dict(agent_config or {})
     allowed_tools = set(str(item) for item in agent_config.get("allowed_tools") or [])
     toolsets_list = _resolve_dynamic_toolsets(goal, cfg)
+    knowledge_tool_enabled = bool(
+        knowledge_capability and "knowledge_search" in allowed_tools
+    )
+    if knowledge_tool_enabled:
+        _ensure_knowledge_gateway_tool_registered()
+        if "knowledge_gateway" not in toolsets_list:
+            toolsets_list.append("knowledge_gateway")
     if allowed_tools:
         requested_toolsets = {"clarify", "memory", "session_search"}
         if allowed_tools & {"web_search", "web_extract", "browser_navigate"}:
@@ -2589,6 +2712,8 @@ def _build_in_process_agent(
             requested_toolsets.add("skills")
         if "delegate_task" in allowed_tools:
             requested_toolsets.add("delegation")
+        if knowledge_tool_enabled:
+            requested_toolsets.add("knowledge_gateway")
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
@@ -2744,15 +2869,22 @@ def _run_agent_sync(
     agent_holder: list,
     allow_local_files: bool = False,
     agent_config: dict[str, Any] | None = None,
+    knowledge_capability: str | None = None,
+    knowledge_claims: dict[str, Any] | None = None,
 ) -> None:
     """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
     agent = None
     session_db = None
     try:
+        _knowledge_tool_context.value = {
+            "capability": knowledge_capability,
+            "scopes": list((knowledge_claims or {}).get("scopes") or []),
+        }
         agent, session_db = _build_in_process_agent(
             goal, user_id, hermes_sid, stream_q,
             allow_local_files=allow_local_files,
             agent_config=agent_config,
+            knowledge_capability=knowledge_capability,
         )
         # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
         # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
@@ -2787,6 +2919,7 @@ def _run_agent_sync(
         print(f"[bridge] ⚠️ 进程内 agent 执行失败: {e}")
         _qput(stream_q, {"type": "error", "code": "internal", "message": str(e)[:200]})
     finally:
+        _knowledge_tool_context.value = None
         # 显式回收：agent.close + session_db.close（防内存泄漏）
         try:
             if agent is not None:
@@ -2815,6 +2948,8 @@ def _sse_from_in_process(
     request_id: str | None = None,
     allow_local_files: bool = False,
     agent_config: dict[str, Any] | None = None,
+    knowledge_capability: str | None = None,
+    knowledge_claims: dict[str, Any] | None = None,
 ):
     """SSE 事件生成器：agent 线程事件 → queue → asyncio 逐帧输出（thread-safe）。
 
@@ -2842,7 +2977,7 @@ def _sse_from_in_process(
         target=_run_agent_sync,
         args=(
             goal, user_id, hermes_sid, stream_q, agent_holder,
-            allow_local_files, agent_config,
+            allow_local_files, agent_config, knowledge_capability, knowledge_claims,
         ),
         daemon=True,
         name=f"agent-stream-{user_id[:12]}",
@@ -2859,7 +2994,7 @@ def _sse_from_in_process(
 
     finished = False
     try:
-        first_thought_recorded = False
+        first_delta_recorded = False
         while True:
             now = time.monotonic()
 
@@ -2879,11 +3014,12 @@ def _sse_from_in_process(
             if item is None:
                 print(f"[bridge] SSE-BREAK item_none user={user_id}")
                 break
-            # 延迟打点：start_ts 至首个 thought 出队差（真实思维链首帧延迟）
-            if not first_thought_recorded and item.get("type") == "thought":
-                first_thought_recorded = True
+            # reasoning_callback 按治理要求不外发；首字指标必须记录真正的正文
+            # delta，否则旧 first_thought_ms 永远不会产生，无法诊断用户体感。
+            if not first_delta_recorded and item.get("type") == "delta":
+                first_delta_recorded = True
                 print(
-                    f"[bridge] first_thought_ms={(time.monotonic() - start_ts) * 1000.0:.1f} user={user_id}"
+                    f"[bridge] first_delta_ms={(time.monotonic() - start_ts) * 1000.0:.1f} user={user_id}"
                 )
             if item.get("type") in ("done", "error", "clarify", "status"):
                 print(f"[bridge] SSE-YIELD type={item.get('type')} user={user_id} worker_alive={worker.is_alive()} qsize={stream_q.qsize()}")

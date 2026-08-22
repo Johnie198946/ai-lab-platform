@@ -1,6 +1,7 @@
 """测试 v7 真实流式端点（/api/chat/stream）与配套控制端点。"""
 import asyncio
 import os
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -91,6 +92,34 @@ def test_clarify_submit_model():
     assert req.response == "B2C 单商户"
 
 
+@pytest.mark.asyncio
+async def test_stream_yields_context_before_agent_and_knowledge_setup(monkeypatch):
+    """首个 SSE 状态帧不应再等待 Agent 查询或 Vault 检索。"""
+    import backend.api.chat as chat_mod
+
+    setup_started = False
+
+    async def fake_policy(payload):
+        return SimpleNamespace(policy_version="v1")
+
+    async def unexpected_agent_setup(*args, **kwargs):
+        nonlocal setup_started
+        setup_started = True
+        raise AssertionError("首帧前不应启动 Agent 配置查询")
+
+    monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
+    monkeypatch.setattr(chat_mod, "resolve_agent", unexpected_agent_setup)
+
+    response = await chat_mod.chat_stream(
+        StreamRequest(question="分析行业", session_id="s1"),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+    )
+    first_frame = await anext(response.body_iterator)
+    assert '"phase": "context"' in first_frame
+    assert setup_started is False
+    await response.body_iterator.aclose()
+
+
 # ---------------------------------------------------------------------------
 # 流式端点行为（mock bridge：构造 SSE 事件流）
 # ---------------------------------------------------------------------------
@@ -136,6 +165,7 @@ async def test_stream_sets_and_clears_streaming_flag(app: FastAPI, transport: ht
     assert observed_during_stream
     assert any(value.endswith("-main_agent-x") for value in observed_during_stream[0])
     # 事件流透传完整（delta 分帧 + done 帧）
+    assert '"phase": "context"' in body
     assert '"content":"你"' in body
     assert '"content":"好"' in body
     assert '"type":"done"' in body
@@ -148,16 +178,20 @@ async def test_stream_expands_requested_skill(
 ):
     import backend.api.chat as chat_mod
 
-    observed: list[str] = []
+    observed: list[tuple[str, str, bool]] = []
 
     async def fake_bridge_stream(
         goal: str, session_id: str, regenerate: bool = False, skill_id: str | None = None,
         **kwargs,
     ):
-        observed.append(f"{skill_id}::{goal}")
+        observed.append((skill_id or "", goal, bool(kwargs.get("knowledge_capability"))))
         yield 'data: {"type":"done","answer":"ok"}\n\n'
 
+    async def unexpected_prefetch(*args, **kwargs):
+        raise AssertionError("流式聊天不应无条件预检索知识")
+
     monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+    monkeypatch.setattr(chat_mod, "_knowledge_context", unexpected_prefetch)
     monkeypatch.setattr(
         chat_mod, "derive_isolated_session_id", lambda agent_id, sid: "main_agent-x"
     )
@@ -174,7 +208,7 @@ async def test_stream_expands_requested_skill(
         )
 
     assert response.status_code == 200
-    assert observed == ["solution-consultant-persona::我们要缩短换模时间"]
+    assert observed == [("solution-consultant-persona", "我们要缩短换模时间", True)]
 
 
 @pytest.mark.asyncio

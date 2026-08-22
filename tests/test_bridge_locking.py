@@ -109,6 +109,46 @@ class TestWatermark(unittest.TestCase):
             self.assertEqual(_readback_delta("sess_a", 0), [])
 
 
+class TestKnowledgeGatewayTool(unittest.TestCase):
+    def tearDown(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._knowledge_tool_context.value = None
+
+    def test_search_uses_thread_local_capability_and_authorized_scope(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._knowledge_tool_context.value = {
+            "capability": "signed-capability",
+            "scopes": ["pack-a", "pack-b"],
+        }
+        docs = [{"path": "wiki/a.md", "title": "A", "snippet": "evidence"}]
+        with patch.object(bridge, "_knowledge_gateway_search", return_value=docs) as search:
+            payload = json.loads(bridge._knowledge_search_tool({"query": "产品 A", "limit": 3}))
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["docs"][0]["path"], "wiki/a.md")
+        search.assert_called_once_with(
+            "signed-capability",
+            query="产品 A",
+            category_scope=["pack-a", "pack-b"],
+            limit=3,
+        )
+
+    def test_search_rejects_scope_escalation_before_gateway_call(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._knowledge_tool_context.value = {
+            "capability": "signed-capability",
+            "scopes": ["pack-a"],
+        }
+        with patch.object(bridge, "_knowledge_gateway_search") as search:
+            payload = json.loads(bridge._knowledge_search_tool({
+                "query": "产品 A", "category_scope": ["pack-secret"]
+            }))
+        self.assertEqual(payload["error"], "knowledge_scope_denied")
+        search.assert_not_called()
+
+
 class TestChatReasoningIntegration(unittest.TestCase):
     def setUp(self):
         import scripts.hermes_bridge as bridge

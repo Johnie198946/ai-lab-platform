@@ -2030,9 +2030,13 @@ public final class APIClient: ObservableObject {
                 )
             )
 
-            let consumeTask = Task {
+            // APIClient 作为 ObservableObject 受 MainActor 隔离，但 SSE 解码是持续的
+            // 网络/JSON 工作，不应继承主线程执行器。快照 URLSession 后放到 detached
+            // task，避免长回答期间与 SwiftUI 渲染、滚动及输入竞争主线程。
+            let activeStreamSession = streamSession
+            let consumeTask = Task.detached(priority: .userInitiated) {
                 do {
-                    let (bytes, response) = try await streamSession.bytes(for: request)
+                    let (bytes, response) = try await activeStreamSession.bytes(for: request)
                     guard let http = response as? HTTPURLResponse else {
                         continuation.finish(throwing: APIError.network("无效响应"))
                         return
@@ -2078,7 +2082,7 @@ public final class APIClient: ObservableObject {
                 // 仅用户主动取消时 interrupt；网络异常采用 detach + status 回读，避免误杀
                 // 已经生成到最终确认单的 Agent。
                 if case .cancelled = termination {
-                    Task {
+                    Task { @MainActor in
                         try? await self.cancelStream(sessionId: sessionId, agentId: agentId)
                     }
                 }
