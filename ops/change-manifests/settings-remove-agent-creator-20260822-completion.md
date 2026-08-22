@@ -29,16 +29,15 @@
 
 ## 交付记录
 
-- 当前交付状态：`TESTED`。
-- commit SHA：未提交。
-- GitHub remote/ref/SHA：未 push。
+- 当前交付状态：`VERIFIED`。
+- commit SHA：`58722eaad6b4512ce73df068b72918cfe48e55ab`。
+- GitHub remote/ref/SHA：`https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/main` / `58722eaad6b4512ce73df068b72918cfe48e55ab`，已核验；最终 manifest 元数据提交 SHA 记录在标准完成通报。
 - `server_before`: `/opt/releases/ai-lab-platform-1d06cd3`，生产后端正常。
-- `server_after`: 未部署；本次仅涉及 iOS 设置页。
-- `health_check`: 未部署，未执行。
-- `functional_check`: iOS 模拟器构建通过；尚未安装发布到真实设备或 TestFlight。
-- `rollback_point`: 不适用；本次未部署。
+- `server_after`: 不适用；本次仅涉及 iOS 设置页，服务端保持 `/opt/releases/ai-lab-platform-1d06cd3` 不变。
+- `health_check`: 不适用；没有服务端变更。
+- `functional_check`: 已对推送后的 main 重新构建，`BUILD SUCCEEDED`；构建产物已安装并启动于 `AIPlatform Preview` 模拟器，进程 PID `66505`。
+- `rollback_point`: 不适用；服务端未部署。代码回滚点为 push 前的 `417977c128f43678288a663551a390f952690e12`。
 
 ## 风险与未完成项
 
-- 本次未提交、推送或部署，需当前任务明确授权后再发布。
 - `AgentCreatorView.swift` 仍作为未使用组件保留；如确认彻底废弃，可另行删除文件并清理相关预览。
