@@ -21,14 +21,18 @@
   - 部署时检查 Hermes 专用 venv 的 `ddgs` provider，缺失则从阿里云 PyPI 镜像安装 `ddgs>=9.0`。
 - `tests/test_client_session_notes.py`
   - 增加快照请求不恢复旧 Hermes session 的回归测试。
+  - 增加笔记保存意图识别、标题回退与草稿事件状态测试。
+- `scripts/hermes_bridge.py`（笔记草稿协议兜底）
+  - 明确“总结/保存为笔记”时先预读签名 `session_context_read` 结果，并注入为本轮唯一权威事实。
+  - Hermes 漏调 `note_draft` 时，将其生成的 Markdown 包装为结构化 `note_draft` SSE，确保 iOS 出现确认保存卡。
 
 ## Verification
 
 - 本地 Python/Bridge 定向回归：87 passed，0 failed。
 - Python 语法检查及 `git diff --check`：passed。
 - 生产只读诊断证据：`platform_has_web=True`，但 `web_defs=[]`；`ddgs=False`，`backend=` 空；因此联网 provider 缺失结论可复现。
-- 运行时代码 commit：`91c940f57d020ed917d9d99b5544b1e20ea2cb94`。
-- GitHub remote/ref/SHA：`https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/codex/hermes-session-note-draft` / `91c940f57d020ed917d9d99b5544b1e20ea2cb94`，已使用 `git ls-remote` 核对。
+- 运行时代码 commit：`ec694d20ba4ab6235da95486bac9bb0009cd1c55`。
+- GitHub remote/ref/SHA：`https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/codex/hermes-session-note-draft` / `ec694d20ba4ab6235da95486bac9bb0009cd1c55`，已使用 `git ls-remote` 核对。
 
 ## Delivery
 
@@ -44,7 +48,7 @@
 请明确授权部署本次新修复后，执行：
 
 ```text
-bash scripts/update.sh 91c940f57d020ed917d9d99b5544b1e20ea2cb94
+bash scripts/update.sh ec694d20ba4ab6235da95486bac9bb0009cd1c55
 ```
 
 该命令会安装 Hermes venv 的 DDGS provider、重建服务、运行契约审计，并重启 Hermes Bridge；完成后再进行真实双账号/快照与联网功能验收。
