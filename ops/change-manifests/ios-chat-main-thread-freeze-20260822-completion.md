@@ -35,16 +35,16 @@
 
 ## Delivery state
 
-- status: `TESTED`
-- commit_sha: not created; current task has not been authorized for commit/push
-- GitHub remote/ref/SHA: not pushed; not authorized in this task
+- status: `PUSHED`
+- commit_sha: `970ea4f1cd70e8c138bfa67bd2918e7c33f8ecd5`
+- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git`; refs `main` and `codex/ios-chat-freeze` verified with `git ls-remote` at `970ea4f1cd70e8c138bfa67bd2918e7c33f8ecd5`
 - server_before: production API healthy at version `0.8.0`; Hermes Bridge active; no chat request observed for the reported freeze
-- server_after: unchanged; this is an iOS client fix
+- server_after: unchanged; this is an iOS client fix and no server deployment was required
 - health_check: production `/health` returned `{"status":"ok","version":"0.8.0"}`
-- functional_check: simulator build/test succeeded; busy-database regression passed
+- functional_check: simulator build/test succeeded; busy-database regression passed; pushed build installed and launched on `AIPlatform Preview` simulator
 - rollback_point: `450c924e31342484d618d7a0580a4b5d8ca1f290`
 
 ## Remaining risks
 
 - The authenticated physical-device path was not directly observable from the simulator because its current state is the login screen.
-- This fix is local and tested only until the user authorizes commit, GitHub push, and an updated iOS build delivery.
+- No physical iPhone was connected (`xcrun devicectl list devices` returned `No devices found`); the pushed simulator build is ready for device installation when one is connected.
