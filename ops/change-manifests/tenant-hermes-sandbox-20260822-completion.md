@@ -2,7 +2,7 @@
 
 - task_id: `tenant-hermes-sandbox-20260822`
 - objective: 将平台鉴权后的聊天、工作流、Agent/Skill 目录与知识访问改造成 Hermes 驱动的租户/用户隔离沙箱；平台只负责鉴权、能力签发、策略与传输，知识来源由 Hermes 按意图调用。
-- status: `TESTED`
+- status: `VERIFIED`
 
 ## Changed files
 
@@ -34,19 +34,25 @@
 - result: `560 passed, 2 skipped, 347 warnings in 9.29s`
 - skipped: 既有条件跳过项；无新增失败。
 - warnings: 既有 Pydantic/FastAPI/JWT datetime deprecation warnings。
+- production_acceptance:
+  - 平台生成的三个 Session namespace 全部不同。
+  - 同一租户不同用户使用同一原始 Session ID，未读取到对方标记。
+  - 不同租户同一用户使用同一原始 Session ID，未读取到对方标记。
+  - 生产实际创建 4 个互不相同的哈希 `state.db`，文件均存在，路径不含原始 tenant/user。
+  - Hermes 实际触发 `web_search`；Bridge 日志记录工具完成耗时 `3.49s`，回答包含 HTTPS URL。
 
 ## Delivery state
 
-- local_commit: 未执行（用户本轮未要求 commit）
-- github_remote_ref_sha: 未授权、未执行 push；未声称 `PUSHED`
-- server_before: 未授权部署，本轮未读取或修改服务器版本
-- server_after: 未授权部署，不适用
-- health_check: 未部署，未执行远端健康检查
-- functional_check: 本地全量回归通过；未执行生产双账号功能验收
-- rollback_point: `origin/main@c86327df7f6cf1a026c673ae76564d81ce1062aa`（本地变更尚未提交，回滚可按本任务文件逐项撤销；禁止使用破坏性 reset）
+- implementation_commit: `7fbb1e43bf1a18185ed7108ca59322d4e423624f`
+- github_remote_ref_sha: `refs/heads/codex/tenant-hermes-sandbox` = `7fbb1e43bf1a18185ed7108ca59322d4e423624f`，已用 `git ls-remote` 核验。
+- server_before: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-1d06cd3`；`.deployed-sha=b2a6a5f5e5bcd6b5dedbea2501997107ae6c04cc`；API image `sha256:6d9fb47171a9db6b90b4ce50d503765576a294b95102870508390cfaa2496346`；API healthy，Bridge active，DDGS `9.15.0`。
+- server_after: `/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-7fbb1e4`；实现部署标记 `7fbb1e43bf1a18185ed7108ca59322d4e423624f`；API image `sha256:818ed5feb849833dbb973c869d0658498f4f42ab134e2da3e925674b8d04a2f0`；planning/workflow/evaluation Worker images 分别为 `fe3b470a` / `3c95c66f` / `97f6ae04`。
+- health_check: 服务器内网 API、Hermes Bridge 和公网 API 均返回健康；Compose 的 API、frontend、三个 Worker、Postgres、Redis 均运行，API/Postgres/Redis healthy；runtime contract audit passed。
+- functional_check: 本地 `560 passed, 2 skipped`；生产双租户/双账号/同 Session ID 隔离通过；4 个独立 SessionDB 验证通过；真实 Hermes `web_search` 调用和 HTTPS 结果通过；本地与服务器 5 个关键运行文件 SHA-256 完全一致。
+- rollback_point: `/opt/releases/ai-lab-platform-1d06cd3` 保持不变；部署记录 `/opt/ai-lab-rollbacks/tenant-hermes-sandbox-20260822-7fbb1e4` 保存部署前 release、标记、镜像和 Bridge 状态。回滚时原子切回旧 release，重建 Compose 并重启 Hermes Bridge。
 
 ## Risks and remaining work
 
-- 尚未在实际 Hermes 生产镜像中执行双租户/双账号运行态验收，尤其需验证部署目录权限、模板根目录和 `hermes_state.SessionDB(db_path=...)` 的镜像版本兼容性。
+- 用户要求解决的生产镜像、双租户、双账号、SessionDB 和真实联网验收风险已经关闭。
 - 旧的无 capability Bridge 非流式入口为兼容保留共享 Hermes 行为；平台认证流始终签发 capability 并进入新沙箱，旧入口不能加载租户 Skill。后续可在所有内部调用升级后移除。
-- 本任务未 commit、未 push、未部署；生产环境没有变化。
+- SSH 客户端提示当前服务器连接未使用 post-quantum KEX；不影响本次部署正确性，但属于基础设施加固项。
