@@ -11,7 +11,7 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
@@ -38,7 +38,12 @@ from backend.models.workflow import (
 )
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.workflow_artifacts import run_root, vault_root
-from backend.services.workflow_executor import cancel_remote, read_bridge_run, retry_remote
+from backend.services.workflow_executor import (
+    cancel_remote,
+    executable_plan_projection,
+    read_bridge_run,
+    retry_remote,
+)
 from backend.services.workflow_planner import validate_plan_policy
 from backend.services.workflow_planning import (
     backfill_orphaned_planning_jobs,
@@ -47,6 +52,10 @@ from backend.services.workflow_planning import (
 )
 from backend.services.clarification_planner import request_bridge_clarification
 from backend.services.capability_projection import project_plan_capability
+from backend.services.ipd_scenario_registry import (
+    is_registered_ipd_plan,
+    validate_registered_ipd_execution_contract,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
 
@@ -70,7 +79,8 @@ class WorkflowCreate(BaseModel):
 
 
 class ClarificationResponse(BaseModel):
-    response: str = Field(..., min_length=1, max_length=4000)
+    response: str = Field("", max_length=4000)
+    intent: Literal["confirm", "revise"] | None = None
 
 
 class PlanEdit(BaseModel):
@@ -440,6 +450,23 @@ def requirement_confirmation_payload(
     }
 
 
+def confirmation_intent(response: str, explicit: str | None = None) -> str:
+    """Resolve the two-value confirmation gate; explicit UI intent always wins."""
+    if explicit:
+        return explicit
+    normalized = re.sub(r"[\s，。！!？?、]", "", response.lower())
+    if any(term in normalized for term in (
+        "修改", "需要改", "不确认", "不可以", "不要", "不能", "先别", "暂不",
+        "不进入", "不开始", "暂停", "拒绝",
+    )):
+        return "revise"
+    if normalized in {"是的", "可以", "开始", "没有了开始后面流程"}:
+        return "confirm"
+    if response.startswith("确认") or "进入方案" in response:
+        return "confirm"
+    return "revise"
+
+
 async def resume_pending_planning() -> None:
     """Backfill a durable job for pre-queue deployments; workers own execution."""
     async with SessionLocal() as db:
@@ -628,8 +655,13 @@ async def respond_to_clarification(
             )
         ).scalar_one()
         response = body.response.strip()
+        resolved_intent = confirmation_intent(response, body.intent)
+        if session.phase == "planning" and resolved_intent == "confirm":
+            return clarification_out(session)
         if session.phase not in {"clarifying", "awaiting_requirement_confirmation"}:
             raise HTTPException(status_code=409, detail="当前阶段不接受澄清回复")
+        if not response and body.intent is None:
+            raise HTTPException(status_code=422, detail="澄清回复不能为空")
         await append_session_message(db, session, role="user", content=response)
 
         dynamic_mode = (workflow.requirements_snapshot or {}).get("clarification_mode") == "dynamic"
@@ -675,7 +707,7 @@ async def respond_to_clarification(
             return clarification_out(session)
 
         if session.phase == "awaiting_requirement_confirmation":
-            if response.startswith("确认") or "进入方案" in response:
+            if resolved_intent == "confirm":
                 answer_rows = list(
                     (
                         await db.execute(
@@ -754,6 +786,7 @@ async def respond_to_clarification(
             else:
                 session.phase = "clarifying"
                 session.round_number = 3
+                workflow.status = "clarifying"
                 payload_out = {
                     "question": "请说明需要修改的具体内容。",
                     "choices": [],
@@ -1092,6 +1125,9 @@ async def edit_plan(
             )
         try:
             compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(body.dsl)
+            current_plan = await db.get(WorkflowPlanVersion, workflow.active_plan_id)
+            if current_plan is not None and is_registered_ipd_plan(current_plan.dsl or {}):
+                validate_registered_ipd_execution_contract(compiled.model_dump(mode="json"))
             await validate_plan_policy(
                 db,
                 tenant(),
@@ -1482,7 +1518,9 @@ async def start_workflow(
         ).scalar_one_or_none()
         if active:
             raise HTTPException(status_code=409, detail="该工作流已有活动执行，请先恢复或完成现有任务")
-        compiled = DSLSafetyCompiler.compile_and_validate(plan.dsl)
+        compiled = DSLSafetyCompiler.compile_and_validate(
+            executable_plan_projection(plan.dsl)
+        )
         execution = WorkflowExecution(
             id=uid("wfr"), workflow_id=workflow.id, plan_id=plan.id,
             tenant_key=tenant(), status="queued", token_budget=plan.max_tokens,
