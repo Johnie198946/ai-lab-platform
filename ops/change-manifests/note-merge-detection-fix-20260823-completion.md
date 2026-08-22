@@ -42,7 +42,7 @@ task_id: note-merge-detection-fix-20260823
 
 DEPLOYED
 
-commit SHA: 应用合并提交 `365650c1c284454300fdf4b745e548cd47d9ac43`；本清单最终提交待生成
+commit SHA: 应用合并提交 `365650c1c284454300fdf4b745e548cd47d9ac43`；最终清单提交 `c5cb23bde5549544c642f9d654bcaa80a55a84e9`
 GitHub remote/ref/SHA: `origin refs/heads/main 365650c1c284454300fdf4b745e548cd47d9ac43`（已用 `git ls-remote` 核对）
 server_before: `.deployed-sha=95fd5e598330cd2ee8262f86c3853fe2d7da6daa`；release `/opt/releases/ai-lab-platform-7fbb1e4`；API healthy；Hermes Bridge active
 server_after: `.deployed-sha=365650c1c284454300fdf4b745e548cd47d9ac43`；release `/opt/releases/ai-lab-platform-7fbb1e4`；API、三个 Worker、frontend、Postgres、Redis 均运行
