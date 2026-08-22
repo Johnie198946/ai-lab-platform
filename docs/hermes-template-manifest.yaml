@@ -1,0 +1,20 @@
+# Hermes Linux template contract
+
+template_id: hermes-main
+version: v1
+agent_ids:
+  - main_agent
+skill_roots:
+  - skills
+config_allowlist:
+  - config.yaml
+excluded_paths:
+  - .env
+  - auth.json
+  - state.db
+  - sessions
+  - memory
+  - workspace
+integrity:
+  algorithm: sha256
+  files: {}
