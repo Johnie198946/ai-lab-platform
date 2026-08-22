@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from ..auth import AuthContext
 from ..domain import RunManifest
+from ..knowledge import policy_for
 
 
 class ChatRequest(BaseModel):
@@ -21,25 +22,31 @@ class ChatRequest(BaseModel):
 
 
 class ChatRuntime:
-    def __init__(self, settings, repository, sandboxes, runner):
+    def __init__(self, settings, repository, sandboxes, runner, templates):
         self.settings = settings
         self.repository = repository
         self.sandboxes = sandboxes
         self.runner = runner
+        self.templates = templates
 
     def create(self, request: ChatRequest, auth: AuthContext) -> tuple[RunManifest, object]:
-        version = "v1"
-        sandbox = self.sandboxes.provision(auth.tenant_id, self.settings.hermes_template, "hermes-main", version)
+        template = self.templates.load()
+        if request.agent_id and request.agent_id not in template.agent_ids:
+            raise HTTPException(status_code=400, detail="agent is not approved by template")
+        if request.skill_id and request.skill_id not in template.allowed_skills:
+            raise HTTPException(status_code=400, detail="skill is not approved by template")
+        policy = policy_for(auth.tenant_id)
+        sandbox = self.sandboxes.provision(auth.tenant_id, template.root, template.template_id, template.version)
         manifest = RunManifest.now(
             run_id=f"run_{uuid4().hex}",
             tenant_id=auth.tenant_id,
             sandbox_id=sandbox.sandbox_id,
-            template_id="hermes-main",
-            template_version=version,
+            template_id=template.template_id,
+            template_version=template.version,
             session_id=request.session_id or f"sess_{uuid4().hex}",
-            agent_id=request.agent_id or "main_agent",
+            agent_id=request.agent_id or (template.agent_ids[0] if template.agent_ids else "main_agent"),
             allowed_skills=(request.skill_id,) if request.skill_id else (),
-            knowledge_scope=("public", auth.tenant_id),
+            knowledge_scope=tuple(sorted(policy.allowed_scopes)),
             allow_network=False,
             allow_local_files=False,
         )
@@ -49,6 +56,16 @@ class ChatRuntime:
 
 def build_router(runtime: ChatRuntime, auth_dependency) -> APIRouter:
     router = APIRouter(prefix="/api/chat", tags=["chat"])
+
+    @router.get("/skills")
+    async def skills(auth: AuthContext = Depends(auth_dependency)):
+        template = runtime.templates.load()
+        return {"tenant_id": auth.tenant_id, "skills": sorted(template.allowed_skills)}
+
+    @router.get("/agents")
+    async def agents(auth: AuthContext = Depends(auth_dependency)):
+        template = runtime.templates.load()
+        return {"tenant_id": auth.tenant_id, "agents": list(template.agent_ids)}
 
     @router.post("/stream")
     async def stream(request: ChatRequest, auth: AuthContext = Depends(auth_dependency)):

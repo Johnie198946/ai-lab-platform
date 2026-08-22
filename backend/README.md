@@ -46,6 +46,9 @@ POST /api/chat/stream/cancel
 ## Current state
 
 The new backend is an initial runnable core, not a production deployment. The
-remaining rewrite slices are knowledge governance, catalog/subscription APIs,
-workflow APIs, durable cancellation/reconnect semantics, JWKS verification,
-and the server rollout migration. No server has been modified by this commit.
+remaining rewrite slices are knowledge document ingestion/search, catalog and
+subscription APIs, full workflow APIs, durable process recovery, JWKS
+signature verification, and the server rollout migration. Template/Agent/Skill
+allow-listing, RYG scope policy, RunManifest binding, approvals, event replay,
+and cancellation routes are now part of the rewritten core. No server has been
+modified by this commit.

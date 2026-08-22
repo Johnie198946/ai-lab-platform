@@ -6,22 +6,28 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api.chat import ChatRuntime, build_router
+from .api.runs import build_router as build_runs_router
 from .auth import auth_dependency
 from .config import Settings
+from .governance import RunGovernance
 from .hermes_linux import HermesLinuxRunner
 from .persistence import RunRepository
 from .sandbox import SandboxManager
+from .template import TemplateRegistry
 
 settings = Settings.from_env()
 repository = RunRepository(settings.state_db)
 sandbox_manager = SandboxManager(settings.sandbox_root)
 runner = HermesLinuxRunner(settings, repository, sandbox_manager)
-runtime = ChatRuntime(settings, repository, sandbox_manager, runner)
+templates = TemplateRegistry(settings.hermes_template)
+governance = RunGovernance(repository)
+runtime = ChatRuntime(settings, repository, sandbox_manager, runner, templates)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     repository.init()
+    governance.init()
     yield
 
 
@@ -41,6 +47,7 @@ if settings.cors_origins:
     )
 
 app.include_router(build_router(runtime, auth_dependency(settings)))
+app.include_router(build_runs_router(governance, repository, runner, auth_dependency(settings)))
 
 
 @app.get("/health")
