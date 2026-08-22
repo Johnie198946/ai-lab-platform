@@ -2,7 +2,7 @@
 
 - task_id: `hermes-session-note-draft-20260822`
 - objective: 实现 Hermes 驱动的当前会话总结与确认后入库流程，并在聊天、Hermes 会话、草稿、本地笔记及同步边界实现 tenant/user 隔离。
-- status: `TESTED`
+- status: `VERIFIED`
 
 ## Preflight
 
@@ -74,22 +74,22 @@
 
 ## Delivery and Operations
 
-- current_status: `TESTED`
-- commit_sha: 未提交；用户未要求本地 commit。
-- GitHub remote/ref/SHA: 未授权、未 push；未执行 `git ls-remote` 交付核验。
-- server_before: 未授权部署，未读取或改变服务器版本。
-- server_after: 未授权部署，不适用。
-- health_check: 未部署，不适用。
-- functional_check: 本地定向回归与 iOS 模拟器测试通过；未执行生产双账号验收。
-- rollback_point: 未部署；代码回滚基点为任务起始 SHA `ee72960f4d8d79b2b48531896665177ae0327418`，所有变更仍仅存在于独立 Worktree。
+- current_status: `VERIFIED`
+- commit_sha: `53a99cdc82ef927529c77b581cbd0b02019492e2`（运行时代码提交）；部署核验文档随后单独提交。
+- GitHub remote/ref/SHA: `https://github.com/Johnie198946/ai-lab-platform.git` / `refs/heads/codex/hermes-session-note-draft` / `53a99cdc82ef927529c77b581cbd0b02019492e2`；已使用 `git ls-remote` 核对。
+- server_before: `/opt/releases/ai-lab-platform-1d06cd3`，`.deployed-sha=cd004cadab777306aea2a64a6c1910638f82396e`（并发 main 部署覆盖前的当前版本）；API 旧镜像 `sha256:899187752e384d360391c53b8c4973905c523d58ba30ab5e0bd360042c85c669`。
+- server_after: `/opt/releases/ai-lab-platform-1d06cd3`，`.deployed-sha=53a99cdc82ef927529c77b581cbd0b02019492e2`；API `sha256:859ec22e50395eaec9531195332762d660637cc372e9d1e20a38d5c0f43afbab`；frontend `sha256:aca9e44824898e33b54fbce056286fb8aff0022a2671f2ccb86156180c85815e`；workflow `sha256:b8717fb420734460e698a1830fa4e8d0be957c917f93875bc6021173504dcb29`；planning `sha256:d76378adbd0a14bfae67170a813854bca1fdb0342e364c3fd8975f1cc4435c3e`；evaluation `sha256:16b3ce93a91c877680fd9be650b71b138ebfab3a53d6ce3381384a30bd2f531b`；Hermes Bridge systemd `active`。
+- health_check: 部署脚本契约审计通过；服务器内网 `GET http://127.0.0.1:8000/health` 与公网 `GET http://120.24.248.58:8000/health` 均返回 `{"status":"ok","version":"0.8.0"}`；API 容器 healthy，Postgres/Redis healthy，全部 Worker running；Bridge 重启后 active。
+- functional_check: 生产 API 容器 capability 签发/验签检查输出 `capability_ok`；Bridge 源码语法检查输出 `bridge_source_ok`；部署源码包含 `session_context_read` 与 `note_draft`；本地后端/Bridge 86 项和 iOS 29 项回归均通过。未执行真实双账号 Token 消耗型总结。
+- rollback_point: `/opt/releases/ai-lab-platform-cd004cad`，部署前并发 main 版本 SHA `cd004cadab777306aea2a64a6c1910638f82396e`，已在重新部署前复制保留；另有历史稳定 release `/opt/releases/ai-lab-platform-59755d1`。
 
 ## Remaining Risks
 
-- 尚未连接真实生产 Hermes 模型执行端到端“超聚变”会话总结；当前验证覆盖 API、capability、Bridge 工具协议和 iOS 消费/保存链路。
+- 尚未执行真实生产 Hermes 模型端到端“超聚变”会话总结；当前验证覆盖 API、capability、Bridge 工具协议、部署源码加载和 iOS 消费/保存链路。
 - 生产环境应显式配置独立的 capability HMAC secret；代码保留受控的现有服务 secret 回退以兼容部署。
-- 未执行真实双账号设备验收、远端同步故障注入或生产健康检查，因为本任务没有 push/部署授权。
+- 未执行真实双账号设备验收、远端同步故障注入或真实 Token 消耗型生产请求。
 - FastAPI `on_event`、python-jose UTC 和 Pydantic class config 的既有弃用警告未纳入本任务修复范围。
 
 ## Rollback
 
-本任务没有 commit 或部署。需要放弃时，仅删除本任务独立 Worktree/分支中的未提交改动即可；不得影响其他 Worktree。生产环境无须回滚。
+运行时代码已部署。需要回滚时，将 `/opt/ai-lab-platform` 恢复到 `/opt/releases/ai-lab-platform-cd004cad`，然后按既有 Compose 流程重建 API/Workers/frontend，并重启 `hermes-bridge.service`；本任务独立分支可通过 GitHub SHA `53a99cdc82ef927529c77b581cbd0b02019492e2` 追溯。
