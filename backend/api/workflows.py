@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
@@ -298,6 +298,7 @@ async def owned_workflow(
             select(WorkflowDefinition).where(
                 WorkflowDefinition.id == workflow_id,
                 WorkflowDefinition.tenant_key == tenant(),
+                WorkflowDefinition.archived_at.is_(None),
             )
         )
     ).scalar_one_or_none()
@@ -858,6 +859,74 @@ async def get_workflow(workflow_id: str, payload: dict = Depends(require_auth)):
             ):
                 result["agent"] = task_agent_out(agent)
         return result
+
+
+@router.delete("/workflows/{workflow_id}", status_code=204)
+async def delete_workflow(
+    workflow_id: str,
+    payload: dict = Depends(require_auth),
+) -> Response:
+    """Soft-delete a user-owned workflow while retaining its audit trail."""
+    async with SessionLocal() as db:
+        workflow = await owned_workflow(db, workflow_id, payload)
+        if workflow.created_by != current_user(payload):
+            raise HTTPException(status_code=404, detail="工作流不存在")
+        executions = list(
+            (
+                await db.execute(
+                    select(WorkflowExecution).where(
+                        WorkflowExecution.workflow_id == workflow.id,
+                        WorkflowExecution.status.in_(
+                            ["queued", "running", "awaiting_review"]
+                        ),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for execution in executions:
+            if execution.status == "running":
+                try:
+                    await cancel_remote(execution.id)
+                except Exception:
+                    pass
+            execution.status = "cancelled"
+            execution.finished_at = now()
+            execution.lease_owner = None
+            execution.lease_until = None
+
+        planning_jobs = list(
+            (
+                await db.execute(
+                    select(WorkflowPlanningJob).where(
+                        WorkflowPlanningJob.workflow_id == workflow.id,
+                        WorkflowPlanningJob.status.in_(["queued", "running"]),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for job in planning_jobs:
+            job.status = "cancelled"
+            job.lease_owner = None
+            job.lease_until = None
+
+        session = (
+            await db.execute(
+                select(WorkflowClarificationSession).where(
+                    WorkflowClarificationSession.workflow_id == workflow.id
+                )
+            )
+        ).scalar_one_or_none()
+        if session is not None:
+            session.phase = "archived"
+
+        workflow.status = "archived"
+        workflow.archived_at = now()
+        await db.commit()
+    return Response(status_code=204)
 
 
 @router.get("/workflows/{workflow_id}/plan")

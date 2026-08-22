@@ -11,6 +11,7 @@ public struct WorkflowDashboardView: View {
     @State private var showingTopology = false
     @State private var clarificationWorkflow: WorkflowDTO?
     @State private var navigationPath: [WorkflowDTO] = []
+    @State private var pendingDeletion: WorkflowDTO?
 
     public init() {}
 
@@ -32,6 +33,14 @@ public struct WorkflowDashboardView: View {
                                         WorkflowSummaryCard(workflow: workflow)
                                     }
                                     .buttonStyle(SoftButtonStyle())
+                                    .accessibilityHint("轻点查看详情，长按可删除任务")
+                                    .contextMenu {
+                                        Button(role: .destructive) {
+                                            pendingDeletion = workflow
+                                        } label: {
+                                            Label("删除任务", systemImage: "trash")
+                                        }
+                                    }
                                 }
                             }
                             .padding(AppTheme.Metrics.contentGutter)
@@ -80,6 +89,24 @@ public struct WorkflowDashboardView: View {
             }
             .sheet(isPresented: $showingTopology) {
                 NavigationStack { TopologyCanvasView() }
+            }
+            .confirmationDialog(
+                "删除任务？",
+                isPresented: Binding(
+                    get: { pendingDeletion != nil },
+                    set: { if !$0 { pendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let workflow = pendingDeletion {
+                    Button("删除“\(workflow.title)”", role: .destructive) {
+                        pendingDeletion = nil
+                        Task { await model.delete(workflow) }
+                    }
+                }
+                Button("取消", role: .cancel) { pendingDeletion = nil }
+            } message: {
+                Text("任务将从列表中移除，正在执行的工作也会停止。")
             }
             .task { await model.load() }
             .onChange(of: appState.pendingWorkflowId) { _, workflowId in
@@ -171,6 +198,16 @@ private final class WorkflowDashboardModel: ObservableObject {
             errorMessage = error.localizedDescription
         }
     }
+
+    func delete(_ workflow: WorkflowDTO) async {
+        do {
+            try await APIClient.shared.deleteWorkflow(id: workflow.id)
+            workflows.removeAll { $0.id == workflow.id }
+            errorMessage = nil
+        } catch {
+            errorMessage = "删除失败：\(error.localizedDescription)"
+        }
+    }
 }
 
 private struct WorkflowSummaryCard: View {
@@ -197,13 +234,6 @@ private struct WorkflowSummaryCard: View {
 
             ProgressView(value: Double(workflow.latestExecution?.progress ?? planningProgress))
                 .tint(AppTheme.Colors.quantumBlue)
-
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: AppTheme.Spacing.sm) {
-                WorkflowStageChip(icon: "list.clipboard", title: "需求与计划", state: planningState)
-                WorkflowStageChip(icon: "doc.text.magnifyingglass", title: "知识与证据", state: executionState(0))
-                WorkflowStageChip(icon: "person.3.sequence", title: "Agent 协作", state: executionState(1))
-                WorkflowStageChip(icon: "checkmark.shield", title: "复核与归档", state: reviewState)
-            }
 
             if let agent = workflow.agent {
                 HStack(spacing: AppTheme.Spacing.md) {
@@ -255,54 +285,6 @@ private struct WorkflowSummaryCard: View {
         case "agent_ready", "ready": return 20
         default: return 0
         }
-    }
-    private var planningState: String {
-        switch workflow.status {
-        case "clarifying": return "澄清中"
-        case "planning": return "生成中"
-        case "needs_attention": return "需处理"
-        case "awaiting_approval": return "待确认"
-        case "building_agent": return "构建中"
-        case "agent_ready", "ready": return "已确认"
-        default: return "未开始"
-        }
-    }
-    private func executionState(_ offset: Int) -> String {
-        guard let execution = workflow.latestExecution else { return "未开始" }
-        if execution.status == "failed" { return "需处理" }
-        if execution.progress > (offset == 0 ? 15 : 45) { return "进行中" }
-        return "等待中"
-    }
-    private var reviewState: String {
-        switch workflow.latestExecution?.status {
-        case "awaiting_review": return "待复核"
-        case "completed": return "已归档"
-        default: return "未开始"
-        }
-    }
-}
-
-private struct WorkflowStageChip: View {
-    let icon: String
-    let title: String
-    let state: String
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            Image(systemName: icon)
-                .font(.body.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.quantumBlue)
-                .frame(width: 32, height: 32)
-                .background(AppTheme.Colors.quantumBlue.opacity(0.12), in: Circle())
-            Text(title).font(AppTheme.Typography.cardTitle)
-            Text(state)
-                .font(AppTheme.Typography.micro)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.secondaryBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
     }
 }
 

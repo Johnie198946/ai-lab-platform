@@ -1538,6 +1538,19 @@ public final class APIClient: ObservableObject {
         try await request(WorkflowDTO.self, path: "workflows/\(encodedPath(id))")
     }
 
+    public func deleteWorkflow(id: String) async throws {
+        let url = baseURL
+            .appendingPathComponent("api/v1/workflows")
+            .appendingPathComponent(id)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        _ = try await perform(request, session: session, canRetry: false)
+    }
+
     public func createWorkflow(
         title: String,
         description: String,

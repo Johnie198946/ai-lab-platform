@@ -165,6 +165,47 @@ class TestWorkflowsAPI(unittest.TestCase):
 
         self.assertEqual(asyncio.run(count()), 0)
 
+    def test_delete_archives_owned_workflow_and_hides_it(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import (
+            WorkflowClarificationSession,
+            WorkflowDefinition,
+        )
+
+        workflow = self.create()
+        denied = self.request(
+            "DELETE", f"/api/v1/workflows/{workflow['id']}", sub="gamma"
+        )
+        self.assertEqual(denied.status_code, 404, denied.text)
+
+        deleted = self.request("DELETE", f"/api/v1/workflows/{workflow['id']}")
+        self.assertEqual(deleted.status_code, 204, deleted.text)
+        self.assertNotIn(
+            workflow["id"],
+            [item["id"] for item in self.request("GET", "/api/v1/workflows").json()],
+        )
+        self.assertEqual(
+            self.request("GET", f"/api/v1/workflows/{workflow['id']}").status_code,
+            404,
+        )
+
+        async def archived_state():
+            async with SessionLocal() as db:
+                row = await db.get(WorkflowDefinition, workflow["id"])
+                session = (
+                    await db.execute(
+                        select(WorkflowClarificationSession).where(
+                            WorkflowClarificationSession.workflow_id == workflow["id"]
+                        )
+                    )
+                ).scalar_one()
+                return row.status, row.archived_at, session.phase
+
+        status, archived_at, phase = asyncio.run(archived_state())
+        self.assertEqual(status, "archived")
+        self.assertIsNotNone(archived_at)
+        self.assertEqual(phase, "archived")
+
     def test_clarification_phase_column_fits_confirmation_state(self):
         from backend.models.workflow import WorkflowClarificationSession
 
