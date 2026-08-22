@@ -79,7 +79,8 @@ def _scan_approved_color_documents(vault: Path) -> list[dict[str, Any]]:
         relative = path.relative_to(vault).as_posix()
         parts = path.relative_to(wiki).parts
         parent_name = parts[0] if parts else "general"
-        type_slug = str(metadata.get("type") or TYPE_SLUGS.get(parent_name) or "general")
+        raw_type = str(metadata.get("type") or "").strip()
+        type_slug = TYPE_SLUGS.get(raw_type) or TYPE_SLUGS.get(parent_name) or raw_type or "general"
         category = (
             f"knowledge/{type_slug}/public" if security == "green"
             else f"knowledge/{type_slug}/entitlement/{entitlement}" if security == "yellow"

@@ -15,6 +15,7 @@ def _write_note(vault: Path, relative: str, *, security: str) -> str:
     body = (
         "---\n"
         f"title: {path.stem}\n"
+        "type: 产品\n"
         f"security_level: {security}\n"
         "classification_status: approved\n"
         "owner_tenant: ''\n"

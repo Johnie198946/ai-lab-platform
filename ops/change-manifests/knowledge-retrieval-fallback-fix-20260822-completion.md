@@ -15,6 +15,7 @@
 ## 变更文件
 
 - `scripts/hermes_bridge.py`
+- `backend/services/knowledge_color_projection.py`
 - `scripts/repair_xfusion_tokenfactory_public_knowledge.py`
 - `tests/test_bridge_locking.py`
 - `tests/test_isolation.py`
@@ -28,6 +29,7 @@
 - 本地知识零命中、scope/source 不可用或 Gateway 故障时，tool result 返回结构化 `fallback_recommended`；Hermes 强制在已获联网权限时继续调用 `web_search`，必要时使用 `web_extract`。
 - 网络补充必须标注“公开网络资料”及 URL；不得冒充租户知识，不得推测或重构 red/yellow 受限内容。无网络授权时不挂载 web toolset。
 - Green 修复使用精确 allowlist，仅包含 `wiki/产品/超聚变TokenFactory算力产品体系.md` 与 `wiki/产品/TokenFactory.md`；不批量公开其他含“超聚变”的内部文档。
+- 治理投影将中文 frontmatter 类型（如 `产品`）规范化为 Gateway slug（如 `product`），避免 Green 文档被投影到不可匹配的 `knowledge/产品/public` 路径。
 - 治理修复脚本默认为 dry-run；`--apply` 前为每个目标创建可恢复备份，批次中任一失败会恢复原文。
 
 ## 测试与校验
