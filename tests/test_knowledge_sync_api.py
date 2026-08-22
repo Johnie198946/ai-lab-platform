@@ -83,6 +83,10 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
         assert conflict.status_code == 409
         assert conflict.json()["detail"]["code"] == "sync_conflict"
 
-        tenant_dir = Path(directory) / sync._tenant_namespace("tenant-a")
-        assert (tenant_dir / "note-1.md").read_text() == markdown
-        assert (tenant_dir / "note-1.sync.json").is_file()
+        user_dir = (
+            Path(directory)
+            / sync._tenant_namespace("tenant-a")
+            / sync.namespace("sync-user")
+        )
+        assert (user_dir / "note-1.md").read_text() == markdown
+        assert (user_dir / "note-1.sync.json").is_file()

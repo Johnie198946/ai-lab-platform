@@ -114,6 +114,10 @@ public final class KnowledgeNoteStore: ObservableObject {
         lastError = nil
     }
 
+    public func markdown(for note: KnowledgeNote) -> String {
+        encode(note)
+    }
+
     @discardableResult
     public func createNote(title: String = "无标题", body: String = "", tags: [String] = []) -> KnowledgeNote? {
         let now = Date()
