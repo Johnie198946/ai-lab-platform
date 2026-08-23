@@ -33,12 +33,12 @@ task_id: settings-user-agents-only-20260823
 status: DEPLOYED
 branch: `codex/settings-user-agents-only`
 worktree: `/private/tmp/ai-lab-settings-user-agents-only`
-head/local_commit: `26fb4f539df5550a7b4c28a058eb2b496e221c7f`
-remote_sha: `26fb4f539df5550a7b4c28a058eb2b496e221c7f`（`git ls-remote origin refs/heads/main`）
+head/local_commit: `9676369379bbd3ac7cd1b05d5e69008693df0b8b`
+remote_sha: `9676369379bbd3ac7cd1b05d5e69008693df0b8b`（`git ls-remote origin refs/heads/main`）
 
 server_before: `/opt/ai-lab-platform/.deployed-sha=0cb89e5275771f2df6e3e4a192ebd51601e2dc02`；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；Compose 服务运行
-server_after: `/opt/ai-lab-platform/.deployed-sha=26fb4f539df5550a7b4c28a058eb2b496e221c7f`；API image `sha256:4ec8cba4382b10743abb2c553004eb80fe157a583b04eba33e943e4e6efddddd`；API、前端、三个 Worker、Postgres、Redis 均运行
-health_check: `scripts/update.sh 26fb4f539df5550a7b4c28a058eb2b496e221c7f` runtime contract audit passed；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；`GET /api/v1/tenant-agents?owned_only=true` 未认证返回 401
+server_after: `/opt/ai-lab-platform/.deployed-sha=9676369379bbd3ac7cd1b05d5e69008693df0b8b`；API image `sha256:4ec8cba4382b10743abb2c553004eb80fe157a583b04eba33e943e4e6efddddd`；API、前端、三个 Worker、Postgres、Redis 均运行
+health_check: `scripts/update.sh 9676369379bbd3ac7cd1b05d5e69008693df0b8b` runtime contract audit passed；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；`GET /api/v1/tenant-agents?owned_only=true` 未认证返回 401
 functional_check: 本地后端 7 项定向测试通过、iOS Simulator Debug build `BUILD SUCCEEDED`；生产 owned-only 路由可达并执行认证保护；尚未完成真实账号列表验收
 rollback_point: `/opt/ai-lab-platform/.deployed-sha=0cb89e5275771f2df6e3e4a192ebd51601e2dc02`（部署前版本）
 
