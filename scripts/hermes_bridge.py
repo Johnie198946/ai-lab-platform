@@ -3611,7 +3611,7 @@ def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, functio
 def _tenantize_created_skill(
     function_args, sandbox: TenantHermesSandbox | None
 ) -> None:
-    """Copy a newly-created Skill into the authenticated tenant overlay."""
+    """Copy a newly-created Skill into the authenticated user's private overlay."""
     try:
         args = function_args or {}
         if args.get("action") != "create" or not args.get("name"):
@@ -3627,13 +3627,13 @@ def _tenantize_created_skill(
         candidates = list(skills_root.glob(f"*/{name}")) + list(skills_root.glob(name))
         for src in candidates:
             if src.is_dir() and (src / "SKILL.md").exists() and "tenants" not in src.parts:
-                dst = sandbox.tenant_skills / name
+                dst = sandbox.user_skills / name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if not dst.exists():
                     shutil.copytree(str(src), str(dst), symlinks=False)
                 print(
-                    f"[bridge] 技能租户化副本: {name} → "
-                    f"tenant={sandbox.tenant_namespace}"
+                    f"[bridge] 技能用户私有副本: {name} → "
+                    f"tenant={sandbox.tenant_namespace} user={sandbox.user_namespace}"
                 )
                 return
     except Exception as e:
@@ -5158,6 +5158,7 @@ async def retry_workflow_run(
 @app.get("/v1/skills")
 async def list_skills(
     x_knowledge_capability: str = Header(default=""),
+    scope: str | None = Query(default=None, pattern="^(user|tenant|all)$"),
 ):
     """List only Skill copies selected by a signed tenant/user capability."""
     try:
@@ -5171,12 +5172,13 @@ async def list_skills(
         knowledge_claims=claims,
         client_claims=None,
     )
+    scopes = ("user",) if scope == "user" else (("tenant",) if scope == "tenant" else None)
     return {
-        "skills": list_sandbox_skills(sandbox),
+        "skills": list_sandbox_skills(sandbox, scopes=scopes),
         "tenant_namespace": sandbox.tenant_namespace,
         "template_version": sandbox.template_version,
         "agent_template_version": sandbox.agent_template_version,
-        "skill_scope_model": "tenant_shared",
+        "skill_scope_model": "user_private+tenant_shared+platform_template",
     }
 
 

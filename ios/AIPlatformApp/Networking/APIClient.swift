@@ -1627,12 +1627,12 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    /// GET /api/v1/skills：当前租户真实技能库（挂载目录扫描·非演示数据）
-    public func fetchTenantSkills(tenantOnly: Bool = false) async throws -> [TenantSkillDTO] {
+    /// GET /api/v1/skills：当前账号私有 Skill（不包含租户共享或平台模板）
+    public func fetchTenantSkills(privateOnly: Bool = false) async throws -> [TenantSkillDTO] {
         let dto: TenantSkillsDTO = try await request(
             TenantSkillsDTO.self,
             path: "skills",
-            queryItems: tenantOnly ? [URLQueryItem(name: "scope", value: "tenant")] : []
+            queryItems: privateOnly ? [URLQueryItem(name: "scope", value: "user")] : []
         )
         return dto.skills
     }

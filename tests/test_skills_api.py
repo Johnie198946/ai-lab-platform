@@ -36,7 +36,7 @@ class TestTenantSkillsAPI(unittest.TestCase):
         self._old_bridge_entries = skills._bridge_skill_entries
         self._fake_skills = []
 
-        async def fake_entries(_payload):
+        async def fake_entries(_payload, _scope=None):
             return list(self._fake_skills)
 
         skills._bridge_skill_entries = fake_entries
@@ -108,7 +108,7 @@ class TestTenantSkillsAPI(unittest.TestCase):
         from backend.api.skills import TenantSkillOut
 
         self._fake_skills = [
-            TenantSkillOut(name="my-skill", description="用户配置", category="tenant"),
+            TenantSkillOut(name="my-skill", description="用户配置", category="user"),
             TenantSkillOut(name="platform-skill", description="系统模板", category="template"),
         ]
 
@@ -125,8 +125,20 @@ class TestTenantSkillsAPI(unittest.TestCase):
         ]
         r = self._get("/api/v1/skills?scope=tenant")
         self.assertEqual(r.status_code, 200, r.text)
-        self.assertEqual(r.json()["scope_model"], "tenant_shared")
+        self.assertEqual(r.json()["scope_model"], "user_private+tenant_shared+platform_template")
         self.assertEqual([item["name"] for item in r.json()["skills"]], ["tenant-skill"])
+
+    def test_user_scope_returns_only_current_user_skills(self):
+        from backend.api.skills import TenantSkillOut
+
+        self._fake_skills = [
+            TenantSkillOut(name="my-private-skill", category="user"),
+            TenantSkillOut(name="tenant-skill", category="tenant"),
+            TenantSkillOut(name="platform-template", category="template"),
+        ]
+        r = self._get("/api/v1/skills?scope=user")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([item["name"] for item in r.json()["skills"]], ["my-private-skill"])
 
 
 if __name__ == "__main__":
