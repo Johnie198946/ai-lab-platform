@@ -47,7 +47,7 @@
 
 `DEPLOYED`
 
-- commit：功能提交 `c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`；本清单收尾提交待生成。
+- commit：功能提交 `c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`；收尾提交 `ba33d2a395808332065220636697ed8ffc295ce7`。
 - push：已执行，远端分支 `codex/login-klarna-splash-motion` 已核对。
 - deploy：已执行，生产 `.deployed-sha` 与 Bridge `loaded_sha` 已核对。
 - simulator install：已执行。
