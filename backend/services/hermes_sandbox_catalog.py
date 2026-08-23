@@ -19,7 +19,7 @@ def _bridge_base() -> str:
 
 
 async def fetch_skill_catalog(
-    policy: KnowledgePolicy, *, user_id: str
+    policy: KnowledgePolicy, *, user_id: str, scope: str | None = None
 ) -> list[dict[str, Any]]:
     identity = f"{policy.tenant_key}\0{user_id}\0{policy.policy_version}".encode()
     subject = "skills-" + hashlib.sha256(identity).hexdigest()[:32]
@@ -28,9 +28,11 @@ async def fetch_skill_catalog(
         sources=("tenant_knowledge", "user_notes"),
     )
     async with httpx.AsyncClient(timeout=httpx.Timeout(10)) as client:
+        params = {"scope": scope} if scope in {"user", "tenant", "all"} else None
         response = await client.get(
             _bridge_base() + "/v1/skills",
             headers={"X-Knowledge-Capability": capability},
+            params=params,
         )
     response.raise_for_status()
     payload = response.json()

@@ -10,6 +10,147 @@ import Combine
 import CryptoKit
 import Foundation
 
+public enum WikiLinkAnchor: Hashable, Sendable {
+    case heading(String)
+    case block(String)
+
+    public var rawValue: String {
+        switch self {
+        case .heading(let value): return value
+        case .block(let value): return "^\(value)"
+        }
+    }
+}
+
+public struct WikiLinkReference: Identifiable, Hashable, Sendable {
+    public let target: String
+    public let displayText: String?
+    public let anchor: WikiLinkAnchor?
+    public let isEmbed: Bool
+    public let location: Int
+    public let length: Int
+    public let rawText: String
+
+    public var id: String { "\(location):\(length):\(rawText)" }
+    public var range: NSRange { NSRange(location: location, length: length) }
+    public var visibleText: String {
+        if let displayText, !displayText.isEmpty { return displayText }
+        if !target.isEmpty { return target }
+        return anchor?.rawValue ?? rawText
+    }
+}
+
+public enum WikiLinkParser {
+    public static func hasMalformedTripleBrackets(_ source: String) -> Bool {
+        source.range(of: #"\[\[\[[^\n]*\]\]\]"#, options: .regularExpression) != nil
+    }
+
+    /// Parse Obsidian-style wikilinks while ignoring frontmatter, fenced/inline
+    /// code and Obsidian comments. Malformed triple brackets are deliberately
+    /// ignored so the editor can surface them as syntax errors instead.
+    public static func parse(_ source: String) -> [WikiLinkReference] {
+        let string = source as NSString
+        let fullRange = NSRange(location: 0, length: string.length)
+        var excluded: [NSRange] = excludedLineRanges(in: source)
+        for pattern in [#"`+[^`\n]*`+"#, #"(?s)%%.*?%%"#] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            excluded.append(contentsOf: regex.matches(in: source, range: fullRange).map(\.range))
+        }
+
+        guard let regex = try? NSRegularExpression(pattern: #"(!)?\[\[([^\]\r\n]+)\]\]"#) else {
+            return []
+        }
+        return regex.matches(in: source, range: fullRange).compactMap { match in
+            let matchRange = match.range
+            guard !excluded.contains(where: { NSIntersectionRange($0, matchRange).length > 0 }) else { return nil }
+            if matchRange.location > 0, string.substring(with: NSRange(location: matchRange.location - 1, length: 1)) == "[" {
+                return nil
+            }
+            if NSMaxRange(matchRange) < string.length,
+               string.substring(with: NSRange(location: NSMaxRange(matchRange), length: 1)) == "]" {
+                return nil
+            }
+            guard match.numberOfRanges >= 3,
+                  let innerRange = Range(match.range(at: 2), in: source) else { return nil }
+            let inner = String(source[innerRange])
+            let pipeParts = inner.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+            let destination = String(pipeParts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let display = pipeParts.count == 2
+                ? String(pipeParts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil
+            let hashParts = destination.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+            let target = String(hashParts[0]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let anchor: WikiLinkAnchor?
+            if hashParts.count == 2 {
+                let value = String(hashParts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if value.hasPrefix("^") {
+                    anchor = .block(String(value.dropFirst()))
+                } else if !value.isEmpty {
+                    anchor = .heading(value)
+                } else {
+                    anchor = nil
+                }
+            } else {
+                anchor = nil
+            }
+            guard !target.isEmpty || anchor != nil else { return nil }
+            return WikiLinkReference(
+                target: target,
+                displayText: display?.isEmpty == false ? display : nil,
+                anchor: anchor,
+                isEmbed: match.range(at: 1).location != NSNotFound,
+                location: matchRange.location,
+                length: matchRange.length,
+                rawText: string.substring(with: matchRange)
+            )
+        }
+    }
+
+    private static func excludedLineRanges(in source: String) -> [NSRange] {
+        let lines = source.components(separatedBy: "\n")
+        var offset = 0
+        var inFrontmatter = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines) == "---"
+        var frontmatterClosed = !inFrontmatter
+        var fenceMarker: String?
+        var ranges: [NSRange] = []
+
+        for (index, line) in lines.enumerated() {
+            let lineLength = (line as NSString).length + (index < lines.count - 1 ? 1 : 0)
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            var exclude = false
+            if inFrontmatter {
+                exclude = true
+                if index > 0, trimmed == "---" {
+                    inFrontmatter = false
+                    frontmatterClosed = true
+                }
+            } else if frontmatterClosed {
+                if let marker = fenceMarker {
+                    exclude = true
+                    if trimmed.hasPrefix(marker) { fenceMarker = nil }
+                } else if trimmed.hasPrefix("```") {
+                    fenceMarker = "```"
+                    exclude = true
+                } else if trimmed.hasPrefix("~~~") {
+                    fenceMarker = "~~~"
+                    exclude = true
+                }
+            }
+            if exclude { ranges.append(NSRange(location: offset, length: lineLength)) }
+            offset += lineLength
+        }
+        return ranges
+    }
+}
+
+public struct WikiLinkBacklink: Identifiable, Hashable {
+    public let sourceNote: KnowledgeNote
+    public let reference: WikiLinkReference
+    public let context: String
+
+    public var id: String { "\(sourceNote.id):\(reference.id)" }
+}
+
 public struct KnowledgeNote: Identifiable, Hashable, Sendable {
     public let id: String
     public var title: String
@@ -47,15 +188,8 @@ public struct KnowledgeNote: Identifiable, Hashable, Sendable {
     public var preview: String {
         var text = body
             .replacingOccurrences(of: #"!\[\[[^\]]+\]\]"#, with: "附件", options: .regularExpression)
-        if let expression = try? NSRegularExpression(pattern: #"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]"#) {
-            let matches = expression.matches(in: text, range: NSRange(text.startIndex..., in: text))
-            for match in matches.reversed() {
-                guard let fullRange = Range(match.range(at: 0), in: text),
-                      let titleRange = Range(match.range(at: 1), in: text) else { continue }
-                let aliasRange = Range(match.range(at: 2), in: text)
-                let replacement = aliasRange.map { String(text[$0]) } ?? String(text[titleRange])
-                text.replaceSubrange(fullRange, with: replacement)
-            }
+        for link in WikiLinkParser.parse(text).reversed() {
+            text = (text as NSString).replacingCharacters(in: link.range, with: link.isEmbed ? "附件" : link.visibleText)
         }
         return text
             .replacingOccurrences(of: #"[#>*_`=\-\[\]]"#, with: "", options: .regularExpression)
@@ -79,6 +213,7 @@ public final class KnowledgeNoteStore: ObservableObject {
     @Published public private(set) var archivedNotes: [KnowledgeNote] = []
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
+    @Published public private(set) var pendingSyncNoteIDs: Set<String> = []
 
     private let fileManager = FileManager.default
     private var tenantNamespace = "unconfigured"
@@ -115,6 +250,7 @@ public final class KnowledgeNoteStore: ObservableObject {
         guard tenant != tenantNamespace || user != userNamespace else { return }
         notes.removeAll()
         archivedNotes.removeAll()
+        pendingSyncNoteIDs.removeAll()
         tenantNamespace = tenant
         userNamespace = user
         accountFingerprint = "\(tenant):\(user)"
@@ -124,6 +260,7 @@ public final class KnowledgeNoteStore: ObservableObject {
     public func deactivate() {
         notes.removeAll()
         archivedNotes.removeAll()
+        pendingSyncNoteIDs.removeAll()
         tenantNamespace = "unconfigured"
         userNamespace = "unconfigured"
         accountFingerprint = "unconfigured"
@@ -195,6 +332,7 @@ public final class KnowledgeNoteStore: ObservableObject {
             try write(note)
             notes.insert(note, at: 0)
             notes = sorted(notes)
+            pendingSyncNoteIDs.insert(note.id)
             lastError = nil
             return note
         } catch {
@@ -255,8 +393,11 @@ public final class KnowledgeNoteStore: ObservableObject {
                 try fileManager.removeItem(at: notes[index].fileURL)
             }
             notes[index] = note
+            pendingSyncNoteIDs.insert(note.id)
             if oldTitle != note.title {
-                try updateIncomingLinks(from: oldTitle, to: note.title, excluding: note.id)
+                pendingSyncNoteIDs.formUnion(
+                    try updateIncomingLinks(from: oldTitle, to: note.title, excluding: note.id)
+                )
             }
             notes = sorted(notes)
             lastError = nil
@@ -344,7 +485,8 @@ public final class KnowledgeNoteStore: ObservableObject {
     }
 
     public func note(matchingLink link: String) -> KnowledgeNote? {
-        let target = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        var target = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        if target.lowercased().hasSuffix(".md") { target = String(target.dropLast(3)) }
         return notes.first { note in
             note.title.caseInsensitiveCompare(target) == .orderedSame
                 || note.fileURL.deletingPathExtension().lastPathComponent.caseInsensitiveCompare(target) == .orderedSame
@@ -353,12 +495,25 @@ public final class KnowledgeNoteStore: ObservableObject {
     }
 
     public func backlinks(to note: KnowledgeNote) -> [KnowledgeNote] {
-        notes.filter { candidate in
-            candidate.id != note.id && candidate.outgoingLinks.contains { link in
-                link.caseInsensitiveCompare(note.title) == .orderedSame
-                    || note.aliases.contains(where: { $0.caseInsensitiveCompare(link) == .orderedSame })
-            }
+        Array(Set(backlinkReferences(to: note).map(\.sourceNote))).sorted {
+            $0.updatedAt > $1.updatedAt
         }
+    }
+
+    public func backlinkReferences(to note: KnowledgeNote) -> [WikiLinkBacklink] {
+        notes.flatMap { candidate -> [WikiLinkBacklink] in
+            guard candidate.id != note.id else { return [] }
+            return WikiLinkParser.parse(candidate.body).compactMap { reference in
+                guard reference.target.caseInsensitiveCompare(note.title) == .orderedSame
+                        || note.aliases.contains(where: { $0.caseInsensitiveCompare(reference.target) == .orderedSame })
+                else { return nil }
+                return WikiLinkBacklink(
+                    sourceNote: candidate,
+                    reference: reference,
+                    context: linkContext(in: candidate.body, around: reference.range)
+                )
+            }
+        }.sorted { $0.sourceNote.updatedAt > $1.sourceNote.updatedAt }
     }
 
     public func unresolvedLinks(in note: KnowledgeNote) -> [String] {
@@ -375,6 +530,33 @@ public final class KnowledgeNoteStore: ObservableObject {
                 || note.tags.contains(where: { $0.localizedCaseInsensitiveContains(trimmed) })
             return tagMatches && queryMatches
         }
+    }
+
+    public func wikiLinkSuggestions(_ query: String, excluding noteID: String? = nil, limit: Int = 8) -> [KnowledgeNote] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return notes
+            .filter { $0.id != noteID }
+            .filter { note in
+                trimmed.isEmpty
+                    || note.title.localizedCaseInsensitiveContains(trimmed)
+                    || note.aliases.contains(where: { $0.localizedCaseInsensitiveContains(trimmed) })
+            }
+            .sorted { lhs, rhs in
+                let lhsExact = lhs.title.caseInsensitiveCompare(trimmed) == .orderedSame
+                let rhsExact = rhs.title.caseInsensitiveCompare(trimmed) == .orderedSame
+                if lhsExact != rhsExact { return lhsExact }
+                return lhs.updatedAt > rhs.updatedAt
+            }
+            .prefix(max(1, limit))
+            .map { $0 }
+    }
+
+    public func pendingSyncNotes() -> [KnowledgeNote] {
+        notes.filter { pendingSyncNoteIDs.contains($0.id) }
+    }
+
+    public func markSynced(noteID: String) {
+        pendingSyncNoteIDs.remove(noteID)
     }
 
     private func parseNote(at url: URL) throws -> KnowledgeNote? {
@@ -464,31 +646,43 @@ public final class KnowledgeNoteStore: ObservableObject {
         return lines.joined(separator: "\n")
     }
 
-    private func updateIncomingLinks(from oldTitle: String, to newTitle: String, excluding id: String) throws {
-        guard !oldTitle.isEmpty, oldTitle != newTitle else { return }
-        let escaped = NSRegularExpression.escapedPattern(for: oldTitle)
-        let pattern = #"\[\[("# + escaped + #")((?:#[^\]|]+)?(?:\|[^\]]+)?)\]\]"#
-        let regex = try NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-
+    private func updateIncomingLinks(from oldTitle: String, to newTitle: String, excluding id: String) throws -> [String] {
+        guard !oldTitle.isEmpty, oldTitle != newTitle else { return [] }
+        var updatedIDs: [String] = []
         for index in notes.indices where notes[index].id != id {
+            var replaced = notes[index].body
+            let matches = WikiLinkParser.parse(replaced).filter {
+                $0.target.caseInsensitiveCompare(oldTitle) == .orderedSame
+            }
+            for link in matches.reversed() {
+                var destination = newTitle
+                if let anchor = link.anchor { destination += "#\(anchor.rawValue)" }
+                if let displayText = link.displayText { destination += "|\(displayText)" }
+                let replacement = "\(link.isEmbed ? "!" : "")[[\(destination)]]"
+                replaced = (replaced as NSString).replacingCharacters(in: link.range, with: replacement)
+            }
             let body = notes[index].body
-            let range = NSRange(body.startIndex..., in: body)
-            let replaced = regex.stringByReplacingMatches(in: body, range: range, withTemplate: "[[\(newTitle)$2]]")
             guard replaced != body else { continue }
             notes[index].body = replaced
             notes[index].outgoingLinks = extractWikiLinks(from: replaced)
             notes[index].updatedAt = Date()
             try write(notes[index])
+            updatedIDs.append(notes[index].id)
         }
+        return updatedIDs
     }
 
     private func extractWikiLinks(from text: String) -> [String] {
-        guard let regex = try? NSRegularExpression(pattern: #"!?\[\[([^\]|#]+)"#) else { return [] }
-        let range = NSRange(text.startIndex..., in: text)
-        return normalized(regex.matches(in: text, range: range).compactMap { match in
-            guard let swiftRange = Range(match.range(at: 1), in: text) else { return nil }
-            return String(text[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
-        })
+        normalized(WikiLinkParser.parse(text).map(\.target).filter { !$0.isEmpty })
+    }
+
+    private func linkContext(in text: String, around range: NSRange) -> String {
+        let source = text as NSString
+        let start = max(0, range.location - 70)
+        let end = min(source.length, NSMaxRange(range) + 70)
+        return source.substring(with: NSRange(location: start, length: end - start))
+            .replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func extractInlineTags(from text: String) -> [String] {

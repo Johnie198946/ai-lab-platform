@@ -1,0 +1,23 @@
+# Completion Manifest
+
+- task_id: note-draft-status-label-20260823
+- goal: Only show the note-draft “待确认” badge while a draft is awaiting user confirmation.
+- changed_files:
+  - ios/AIPlatformApp/Views/Chat/Components/ChatStatusCards.swift
+- preflight:
+  - status: clean before change
+  - branch: codex/obsidian-wikilinks-ios
+  - head: 12128c720ab07bd93edf2374e569725dd7f8d635
+  - remote: origin https://github.com/Johnie198946/ai-lab-platform.git
+  - worktree: /private/tmp/ai-lab-obsidian-wikilinks-ios
+- validation:
+  - `xcodebuild -project ios/AIPlatformApp.xcodeproj -scheme AIPlatformApp -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`: passed (`BUILD SUCCEEDED`)
+- status: DEPLOYED
+- commit_sha: ec6631fc5613787d57a34034f8bde629000c57d8
+- remote_sha: origin/codex/obsidian-wikilinks-ios = ec6631fc5613787d57a34034f8bde629000c57d8 (verified with `git ls-remote`)
+- server_before: `.deployed-sha=57aa89fca19565f3b26cef89603e6b453db19704`; API health was HTTP 200; Hermes Bridge service active.
+- server_after: `/opt/ai-lab-platform/.deployed-sha=ec6631fc5613787d57a34034f8bde629000c57d8`; API, frontend, planning-worker, workflow-worker, agent-evaluation-worker, Postgres and Redis running; API container healthy.
+- health_check: `bash scripts/update.sh ec6631fc5613787d57a34034f8bde629000c57d8` completed; API `/health` returned `{"status":"ok","version":"0.8.0"}`; Hermes Bridge service active and endpoint returned HTTP 200. Bridge endpoint is an older health schema and does not expose `loaded_sha`, so Bridge SHA equality is not claimed.
+- functional_check: iOS simulator Debug build passed; note draft card now hides “待确认” after save/sync. Runtime contract audit passed during deployment.
+- rollback_point: `.deployed-sha=57aa89fca19565f3b26cef89603e6b453db19704`; rerun `scripts/update.sh 57aa89fca19565f3b26cef89603e6b453db19704` to roll back server code.
+- remaining_risks: Production Hermes Bridge does not expose `loaded_sha`; a separate Bridge health-schema upgrade is required before full SHA-consistency verification.

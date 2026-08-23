@@ -18,6 +18,9 @@ import tempfile
 import threading
 from typing import Any
 
+from backend.models.agent_registry import AGENT_EDGES, AGENT_NODES, system_prompt_for
+from backend.services.agent_capabilities import SAFE_GLOBAL_TOOLS
+
 
 _SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _LOCKS: dict[str, threading.Lock] = {}
@@ -56,10 +59,19 @@ class TenantHermesSandbox:
     hermes_home: Path
     skills_root: Path
     template_skills: Path
-    custom_skills: Path
+    tenant_skills: Path
+    user_skills: Path
     agents_root: Path
+    agent_templates: Path
+    agent_template_manifest: Path
     state_db: Path
     template_version: str
+    agent_template_version: str
+
+    @property
+    def custom_skills(self) -> Path:
+        """Compatibility alias for the tenant-shared Skill overlay."""
+        return self.tenant_skills
 
 
 def _path_lock(path: Path) -> threading.Lock:
@@ -131,6 +143,111 @@ def _copy_legacy_custom_skills(source_root: Path, tenant_key: str, target: Path)
             shutil.copy2(source_file, copied, follow_symlinks=False)
 
 
+def _copy_existing_tenant_skills(source: Path, target: Path) -> None:
+    """Copy the previous ``skills/custom`` layout into ``skills/tenant`` once."""
+    if not source.is_dir() or source.is_symlink():
+        return
+    for skill_md in sorted(source.glob("*/SKILL.md")):
+        name = skill_md.parent.name
+        if not _SAFE_SKILL_NAME.fullmatch(name) or (target / name).exists():
+            continue
+        destination = target / name
+        destination.mkdir(parents=True, exist_ok=False)
+        for source_file in sorted(skill_md.parent.rglob("*")):
+            if not source_file.is_file() or source_file.is_symlink():
+                continue
+            relative = source_file.relative_to(skill_md.parent)
+            copied = destination / relative
+            copied.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source_file, copied, follow_symlinks=False)
+
+
+def _platform_agent_template_payload() -> dict[str, Any]:
+    """Materialize the finite baseline graph plus Hermes' dynamic child factory.
+
+    ``delegate_task`` children are task-defined runtime instances, so pretending
+    they have stable names would create a false catalog.  The template records
+    their actual factory contract instead: isolated context, inherited tools,
+    child blocklist and server policy limits.
+    """
+    outgoing: dict[str, list[dict[str, str]]] = {}
+    for edge in AGENT_EDGES:
+        outgoing.setdefault(str(edge["source"]), []).append({
+            "id": str(edge["target"]),
+            "kind": "baseline",
+            "label": str(edge.get("label") or ""),
+        })
+    baselines: list[dict[str, Any]] = []
+    for node in AGENT_NODES:
+        agent_id = str(node["id"])
+        children = list(outgoing.get(agent_id, []))
+        if "delegate_task" in SAFE_GLOBAL_TOOLS:
+            children.append({
+                "id": "delegate_task:*",
+                "kind": "dynamic",
+                "label": "按任务生成隔离上下文子 Agent",
+            })
+        baselines.append({
+            "id": agent_id,
+            "name": str(node["name"]),
+            "description": str(node["role_desc"]),
+            "system_prompt": system_prompt_for(agent_id),
+            "declared_tools": [str(item) for item in node.get("tools") or []],
+            "effective_tools": list(SAFE_GLOBAL_TOOLS),
+            "subagents": children,
+        })
+    return {
+        "schema_version": 1,
+        "baselines": baselines,
+        "dynamic_subagent_factory": {
+            "id": "delegate_task:*",
+            "implementation": "hermes.delegate_task",
+            "naming": "runtime-generated",
+            "isolated_context": True,
+            "inherits_parent_toolsets": True,
+            "blocked_tools": [
+                "delegate_task", "clarify", "memory", "send_message", "cronjob"
+            ],
+            "default_max_concurrent_children": 3,
+            "default_max_spawn_depth": 1,
+        },
+    }
+
+
+def _agent_template_version(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode()
+    return hashlib.sha256(encoded).hexdigest()[:20]
+
+
+def _write_agent_template_version(destination: Path, payload: dict[str, Any]) -> None:
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "manifest.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8"
+    )
+    factory = payload["dynamic_subagent_factory"]
+    for baseline in payload["baselines"]:
+        agent_dir = destination / baseline["id"]
+        child_dir = agent_dir / "subagents"
+        child_dir.mkdir(parents=True, exist_ok=True)
+        agent_data = {key: value for key, value in baseline.items() if key != "subagents"}
+        (agent_dir / "agent.json").write_text(
+            json.dumps(agent_data, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        for child in baseline["subagents"]:
+            child_id = str(child["id"])
+            filename = "dynamic-delegate-task.json" if child["kind"] == "dynamic" else f"{child_id}.json"
+            child_data = {**child, **({"factory": factory} if child["kind"] == "dynamic" else {})}
+            (child_dir / filename).write_text(
+                json.dumps(child_data, ensure_ascii=False, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+
+
+def list_sandbox_agent_templates(sandbox: TenantHermesSandbox) -> dict[str, Any]:
+    return json.loads(sandbox.agent_template_manifest.read_text(encoding="utf-8"))
+
+
 def ensure_tenant_sandbox(
     *,
     tenant_key: str,
@@ -146,9 +263,15 @@ def ensure_tenant_sandbox(
     hermes_home = base / "hermes-home"
     skills_root = hermes_home / "skills"
     templates_root = skills_root / "templates"
-    custom_root = skills_root / "custom"
-    agents_root = hermes_home / "agents"
+    tenant_skills = skills_root / "tenant"
+    legacy_custom_skills = skills_root / "custom"
+    agents_home = hermes_home / "agents"
+    agents_root = agents_home / "custom"
+    agent_template_payload = _platform_agent_template_payload()
+    agent_version = _agent_template_version(agent_template_payload)
+    active_agent_template = agents_home / "templates" / agent_version
     state_db = base / "users" / user_ns / "state.db"
+    user_skills = state_db.parent / "skills"
     source = template_root or template_skills_root()
     version = _template_version(source)
     active_template = templates_root / (version or "empty")
@@ -156,8 +279,10 @@ def ensure_tenant_sandbox(
     with _path_lock(base):
         for directory in (
             active_template.parent,
-            custom_root,
+            tenant_skills,
+            user_skills,
             agents_root,
+            active_agent_template.parent,
             state_db.parent,
         ):
             directory.mkdir(parents=True, exist_ok=True)
@@ -176,11 +301,22 @@ def ensure_tenant_sandbox(
                 os.replace(payload, active_template)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
-        _copy_legacy_custom_skills(source, tenant_key, custom_root)
+        if not active_agent_template.exists():
+            staging = Path(tempfile.mkdtemp(prefix=".agent-template-", dir=active_agent_template.parent))
+            try:
+                payload = staging / "payload"
+                _write_agent_template_version(payload, agent_template_payload)
+                os.replace(payload, active_agent_template)
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+        _copy_existing_tenant_skills(legacy_custom_skills, tenant_skills)
+        _copy_legacy_custom_skills(source, tenant_key, tenant_skills)
         manifest = {
-            "version": 1,
+            "version": 2,
             "tenant_namespace": tenant_ns,
-            "active_template_version": version or "empty",
+            "skill_scope_model": "tenant_shared",
+            "active_skill_template_version": version or "empty",
+            "active_agent_template_version": agent_version,
         }
         manifest_path = base / "sandbox.json"
         temporary = manifest_path.with_suffix(".tmp")
@@ -196,19 +332,26 @@ def ensure_tenant_sandbox(
         hermes_home=hermes_home,
         skills_root=skills_root,
         template_skills=active_template,
-        custom_skills=custom_root,
+        tenant_skills=tenant_skills,
+        user_skills=user_skills,
         agents_root=agents_root,
+        agent_templates=active_agent_template,
+        agent_template_manifest=active_agent_template / "manifest.json",
         state_db=state_db,
         template_version=version or "empty",
+        agent_template_version=agent_version,
     )
 
 
 def _skill_file(sandbox: TenantHermesSandbox, name: str) -> Path | None:
     if not _SAFE_SKILL_NAME.fullmatch(name):
         return None
-    custom = sandbox.custom_skills / name / "SKILL.md"
-    if custom.is_file() and not custom.is_symlink():
-        return custom
+    # User-private Skills override tenant-shared Skills, which override the
+    # immutable platform template with the same name.
+    for root in (sandbox.user_skills, sandbox.tenant_skills, sandbox.template_skills):
+        candidate = root / name / "SKILL.md"
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
     matches = [
         item for item in sandbox.template_skills.rglob("SKILL.md")
         if item.parent.name == name and item.is_file() and not item.is_symlink()
@@ -225,15 +368,36 @@ def read_sandbox_skill(
     return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
 
 
-def list_sandbox_skills(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
+def list_sandbox_skills(
+    sandbox: TenantHermesSandbox,
+    scopes: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """List effective Skills, or only the requested sandbox layers.
+
+    The default is the runtime view (user-private + tenant-shared + template).
+    Settings passes ``("user",)`` so it cannot display shared or platform
+    Skills.  Duplicate names are collapsed by precedence: user > tenant >
+    template.
+    """
     items: list[dict[str, Any]] = []
-    for scope, root in (
-        ("tenant", sandbox.custom_skills),
-        ("template", sandbox.template_skills),
-    ):
+    roots = {
+        "user": sandbox.user_skills,
+        "tenant": sandbox.tenant_skills,
+        "template": sandbox.template_skills,
+    }
+    selected = tuple(scopes or ("user", "tenant", "template"))
+    seen: set[str] = set()
+    for scope in selected:
+        root = roots.get(scope)
+        if root is None:
+            continue
         for skill_md in sorted(root.rglob("SKILL.md")):
             if skill_md.is_symlink():
                 continue
+            name = skill_md.parent.name
+            if name in seen:
+                continue
+            seen.add(name)
             raw = skill_md.read_bytes()
             head = raw.decode("utf-8", errors="replace")[:4000]
             metadata: dict[str, str] = {}
@@ -244,7 +408,7 @@ def list_sandbox_skills(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
                 }:
                     metadata[key.strip()] = value.strip().strip("'\"")
             items.append({
-                "name": skill_md.parent.name,
+                "name": name,
                 "scope": scope,
                 "template_version": sandbox.template_version,
                 "description": metadata.get("description", "")[:200],

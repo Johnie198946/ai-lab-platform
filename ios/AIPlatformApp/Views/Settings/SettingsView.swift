@@ -67,7 +67,7 @@ public struct SettingsView: View {
                 if let list = try? await APIClient.shared.fetchTenantAgents(ownedOnly: true) {
                     cloudAgents = list
                 }
-                if let skills = try? await APIClient.shared.fetchTenantSkills(ownedOnly: true) {
+                if let skills = try? await APIClient.shared.fetchTenantSkills(privateOnly: true) {
                     cloudSkills = skills
                 }
                 subscriptionSummary = try? await api.fetchSubscriptionCenter()
@@ -278,7 +278,7 @@ public struct SettingsView: View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             artifactHeader(icon: "bolt.fill", title: "我制作的技能", accent: AppTheme.Colors.quantumCyan)
             if cloudSkills.isEmpty {
-                emptyArtifactHint("尚未制作技能——在对话中提出「创建一个…的agent」将自动生成租户专属技能")
+                emptyArtifactHint("尚未制作技能；租户共享和平台模板技能不会显示在这里")
             } else {
                 ForEach(cloudSkills) { skill in
                     artifactRow(

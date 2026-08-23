@@ -23,14 +23,17 @@ class TenantSkillOut(BaseModel):
 
 class TenantSkillsOut(BaseModel):
     tenant_id: str
+    scope_model: str = "user_private+tenant_shared+platform_template"
     skills: List[TenantSkillOut]
 
 
-async def _bridge_skill_entries(payload: Dict[str, Any]) -> List[TenantSkillOut]:
+async def _bridge_skill_entries(
+    payload: Dict[str, Any], scope: Optional[str] = None
+) -> List[TenantSkillOut]:
     policy = await _resolve_chat_policy(payload)
     user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
     try:
-        items = await fetch_skill_catalog(policy, user_id=user_id)
+        items = await fetch_skill_catalog(policy, user_id=user_id, scope=scope)
     except Exception:
         raise HTTPException(status_code=502, detail="Hermes sandbox catalog unavailable")
     return [TenantSkillOut(
@@ -45,18 +48,20 @@ async def _bridge_skill_entries(payload: Dict[str, Any]) -> List[TenantSkillOut]
 async def list_tenant_skills(
     payload: Dict[str, Any] = Depends(require_auth),
     owned_only: bool = Query(False),
+    scope: Optional[str] = Query(None, pattern="^(user|tenant|all)$"),
 ) -> TenantSkillsOut:
     """List the authenticated Hermes skill catalog.
 
     The default keeps the existing catalog contract for chat/planner callers.
-    Settings uses ``owned_only=true`` so template/platform skills are not
-    presented as user-configured skills; only the sandbox's tenant scope is
-    user-managed.
+    Settings uses ``scope=user``. The default remains the effective runtime
+    catalog; ``owned_only=true`` is retained as a compatibility alias.
     """
     tenant_id = str(payload.get("tenant_key") or "public")
-    skills = await _bridge_skill_entries(payload)
-    if owned_only:
-        skills = [skill for skill in skills if skill.category == "tenant"]
+    requested_scope = "user" if owned_only or scope == "user" else scope
+    skills = await _bridge_skill_entries(payload, requested_scope)
+    if requested_scope in {"user", "tenant"}:
+        # Keep a server-side guard even if an older Bridge ignores the query.
+        skills = [skill for skill in skills if skill.category == requested_scope]
     return TenantSkillsOut(
         tenant_id=tenant_id, skills=skills
     )
