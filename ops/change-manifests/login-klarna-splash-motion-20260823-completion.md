@@ -55,8 +55,8 @@
 ## Server and rollback
 
 - server_before：`/opt/ai-lab-platform/.deployed-sha=c0b64e03420bd4c4f83018f959883f062d467a78`；API 与 Bridge 健康，Bridge `active_runs=0`。
-- server_after：`/opt/ai-lab-platform/.deployed-sha=c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`；`.bridge-target-sha` 和 Bridge `loaded_sha` 同值；全部 Compose 服务 running。
-- health_check：API `{"status":"ok","version":"0.8.0"}`；Bridge `loaded_sha=c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`、`active_runs=0`；runtime contract audit passed。
+- server_after：`/opt/ai-lab-platform/.deployed-sha=65969111a6690ccee307da7d684ef922b32c777b`；`.bridge-target-sha` 和 Bridge `loaded_sha` 同值；全部 Compose 服务 running。
+- health_check：API `{"status":"ok","version":"0.8.0"}`；Bridge `loaded_sha=65969111a6690ccee307da7d684ef922b32c777b`、`active_runs=0`；runtime contract audit passed。
 - functional_check：本地 iOS clean build `BUILD SUCCEEDED`；模拟器安装并启动成功；生产 API/Bridge/Workers/frontend/Postgres/Redis 健康。
 - rollback_point：`c0b64e03420bd4c4f83018f959883f062d467a78`，可重新执行 `scripts/update.sh` 回滚。
 
