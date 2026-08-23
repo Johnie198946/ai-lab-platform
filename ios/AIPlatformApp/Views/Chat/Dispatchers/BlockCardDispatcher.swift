@@ -14,17 +14,20 @@ public struct BlockCardDispatcher: View {
     public var isStreaming: Bool = false
     public var onClarifySubmit: ((String) -> Void)? = nil
     public var onNoteDraftAction: ((String, String) -> Void)? = nil
+    public var onKnowledgeAction: ((String, String) -> Void)? = nil
 
     public init(
         block: MessageBlock,
         isStreaming: Bool = false,
         onClarifySubmit: ((String) -> Void)? = nil,
-        onNoteDraftAction: ((String, String) -> Void)? = nil
+        onNoteDraftAction: ((String, String) -> Void)? = nil,
+        onKnowledgeAction: ((String, String) -> Void)? = nil
     ) {
         self.block = block
         self.isStreaming = isStreaming
         self.onClarifySubmit = onClarifySubmit
         self.onNoteDraftAction = onNoteDraftAction
+        self.onKnowledgeAction = onKnowledgeAction
     }
 
     public var body: some View {
@@ -65,6 +68,13 @@ public struct BlockCardDispatcher: View {
                 onMerge: { onNoteDraftAction?(draft.id, "merge") },
                 onEdit: { onNoteDraftAction?(draft.id, "edit") },
                 onDiscard: { onNoteDraftAction?(draft.id, "discard") }
+            )
+        case .knowledgeAction(let action):
+            KnowledgeActionCard(
+                action: action,
+                onApply: { onKnowledgeAction?(action.id, "apply") },
+                onDiscard: { onKnowledgeAction?(action.id, "discard") },
+                onOpenResult: { onKnowledgeAction?(action.id, "open") }
             )
         }
     }

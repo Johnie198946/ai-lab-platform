@@ -15,6 +15,7 @@ public struct PluginRenderContext {
     public var onQuoteFollowUp: ((QuotedContext) -> Void)? = nil
     public var onRegenerate: ((String) -> Void)? = nil
     public var onNoteDraftAction: ((String, String) -> Void)? = nil
+    public var onKnowledgeAction: ((String, String) -> Void)? = nil
 
     public init(
         messageId: String,
@@ -22,7 +23,8 @@ public struct PluginRenderContext {
         onClarifySubmit: ((String) -> Void)? = nil,
         onQuoteFollowUp: ((QuotedContext) -> Void)? = nil,
         onRegenerate: ((String) -> Void)? = nil,
-        onNoteDraftAction: ((String, String) -> Void)? = nil
+        onNoteDraftAction: ((String, String) -> Void)? = nil,
+        onKnowledgeAction: ((String, String) -> Void)? = nil
     ) {
         self.messageId = messageId
         self.isStreaming = isStreaming
@@ -30,6 +32,7 @@ public struct PluginRenderContext {
         self.onQuoteFollowUp = onQuoteFollowUp
         self.onRegenerate = onRegenerate
         self.onNoteDraftAction = onNoteDraftAction
+        self.onKnowledgeAction = onKnowledgeAction
     }
 
     /// 静态预览上下文（无交互事件回调）

@@ -71,12 +71,19 @@ public struct KnowledgeNote: Identifiable, Hashable, Sendable {
     }
 }
 
+public struct KnowledgeNoteIndex: Sendable {
+    public var tags: [String] = []
+    public var previewsByNoteID: [String: String] = [:]
+    public var backlinkCountsByNoteID: [String: Int] = [:]
+}
+
 @MainActor
 public final class KnowledgeNoteStore: ObservableObject {
     public static let shared = KnowledgeNoteStore()
 
     @Published public private(set) var notes: [KnowledgeNote] = []
     @Published public private(set) var archivedNotes: [KnowledgeNote] = []
+    @Published public private(set) var index = KnowledgeNoteIndex()
     @Published public private(set) var isLoading = false
     @Published public private(set) var lastError: String?
 
@@ -99,12 +106,18 @@ public final class KnowledgeNoteStore: ObservableObject {
             .appendingPathComponent(userNamespace, isDirectory: true)
     }
 
-    public var allTags: [String] {
-        Array(Set(notes.flatMap(\.tags))).sorted { $0.localizedStandardCompare($1) == .orderedAscending }
-    }
+    public var allTags: [String] { index.tags }
 
     public var archiveDirectory: URL {
         vaultDirectory.appendingPathComponent(".archive", isDirectory: true)
+    }
+
+    public var actionDirectory: URL {
+        vaultDirectory.appendingPathComponent(".actions", isDirectory: true)
+    }
+
+    public var authorizationScope: String {
+        "\(tenantNamespace.prefix(16)):\(userNamespace.prefix(16))"
     }
 
     private init() {}
@@ -115,6 +128,7 @@ public final class KnowledgeNoteStore: ObservableObject {
         guard tenant != tenantNamespace || user != userNamespace else { return }
         notes.removeAll()
         archivedNotes.removeAll()
+        index = KnowledgeNoteIndex()
         tenantNamespace = tenant
         userNamespace = user
         accountFingerprint = "\(tenant):\(user)"
@@ -124,6 +138,7 @@ public final class KnowledgeNoteStore: ObservableObject {
     public func deactivate() {
         notes.removeAll()
         archivedNotes.removeAll()
+        index = KnowledgeNoteIndex()
         tenantNamespace = "unconfigured"
         userNamespace = "unconfigured"
         accountFingerprint = "unconfigured"
@@ -162,6 +177,7 @@ public final class KnowledgeNoteStore: ObservableObject {
 
             notes = sorted(loaded)
             archivedNotes = sorted(archived)
+            rebuildIndex()
             lastError = nil
         } catch {
             lastError = "无法读取本地笔记：\(error.localizedDescription)"
@@ -176,11 +192,18 @@ public final class KnowledgeNoteStore: ObservableObject {
         encode(note)
     }
 
+    public func contentHash(for note: KnowledgeNote) -> String {
+        SHA256.hash(data: Data(encode(note).utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+    }
+
     @discardableResult
-    public func createNote(title: String = "无标题", body: String = "", tags: [String] = []) -> KnowledgeNote? {
+    public func createNote(id: String = UUID().uuidString.lowercased(), title: String = "无标题", body: String = "", tags: [String] = []) -> KnowledgeNote? {
+        if let existing = note(id: id) { return existing }
         let now = Date()
         let note = KnowledgeNote(
-            id: UUID().uuidString.lowercased(),
+            id: id,
             title: title,
             body: body,
             tags: normalized(tags + extractInlineTags(from: body)),
@@ -195,6 +218,7 @@ public final class KnowledgeNoteStore: ObservableObject {
             try write(note)
             notes.insert(note, at: 0)
             notes = sorted(notes)
+            rebuildIndex()
             lastError = nil
             return note
         } catch {
@@ -259,6 +283,7 @@ public final class KnowledgeNoteStore: ObservableObject {
                 try updateIncomingLinks(from: oldTitle, to: note.title, excluding: note.id)
             }
             notes = sorted(notes)
+            rebuildIndex()
             lastError = nil
             return notes.first(where: { $0.id == id })
         } catch {
@@ -284,6 +309,7 @@ public final class KnowledgeNoteStore: ObservableObject {
             }
             try fileManager.moveItem(at: note.fileURL, to: destination)
             notes.removeAll { $0.id == id }
+            rebuildIndex()
             lastError = nil
         } catch {
             lastError = "无法移到废纸篓：\(error.localizedDescription)"
@@ -310,6 +336,7 @@ public final class KnowledgeNoteStore: ObservableObject {
             try write(note)
             notes.remove(at: index)
             archivedNotes = sorted(archivedNotes + [note])
+            rebuildIndex()
             lastError = nil
             return note
         } catch {
@@ -331,6 +358,7 @@ public final class KnowledgeNoteStore: ObservableObject {
             try write(note)
             archivedNotes.remove(at: index)
             notes = sorted(notes + [note])
+            rebuildIndex()
             lastError = nil
             return note
         } catch {
@@ -341,6 +369,14 @@ public final class KnowledgeNoteStore: ObservableObject {
 
     public func note(id: String) -> KnowledgeNote? {
         notes.first { $0.id == id }
+    }
+
+    public func archivedNote(id: String) -> KnowledgeNote? {
+        archivedNotes.first { $0.id == id }
+    }
+
+    public func anyNote(id: String) -> KnowledgeNote? {
+        note(id: id) ?? archivedNote(id: id)
     }
 
     public func note(matchingLink link: String) -> KnowledgeNote? {
@@ -375,6 +411,38 @@ public final class KnowledgeNoteStore: ObservableObject {
                 || note.tags.contains(where: { $0.localizedCaseInsensitiveContains(trimmed) })
             return tagMatches && queryMatches
         }
+    }
+
+    private func rebuildIndex() {
+        var previews: [String: String] = [:]
+        var titleOwners: [String: String] = [:]
+        var backlinks = Dictionary(uniqueKeysWithValues: notes.map { ($0.id, 0) })
+
+        for note in notes {
+            previews[note.id] = note.preview
+            for title in [note.title] + note.aliases {
+                titleOwners[normalizedLinkKey(title)] = note.id
+            }
+        }
+        for source in notes {
+            for link in source.outgoingLinks {
+                guard let targetID = titleOwners[normalizedLinkKey(link)], targetID != source.id else { continue }
+                backlinks[targetID, default: 0] += 1
+            }
+        }
+
+        index = KnowledgeNoteIndex(
+            tags: Array(Set(notes.flatMap(\.tags))).sorted {
+                $0.localizedStandardCompare($1) == .orderedAscending
+            },
+            previewsByNoteID: previews,
+            backlinkCountsByNoteID: backlinks
+        )
+    }
+
+    private func normalizedLinkKey(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 
     private func parseNote(at url: URL) throws -> KnowledgeNote? {
@@ -602,5 +670,334 @@ public final class KnowledgeNoteStore: ObservableObject {
         )
         try write(welcome)
         try write(ideas)
+    }
+}
+
+public struct KnowledgeActionExecutionResult: Sendable {
+    public let state: KnowledgeActionState
+    public let noteIds: [String]
+    public let message: String?
+}
+
+private struct KnowledgeActionReceipt: Codable {
+    let actionId: String
+    let actionDigest: String
+    let accountFingerprint: String
+    var status: KnowledgeActionState
+    var resultNoteIds: [String]
+    var updatedAt: Date
+}
+
+/// The only client component allowed to mutate the personal knowledge vault.
+/// Hermes proposes typed steps; this executor validates, journals and applies them locally.
+@MainActor
+public final class KnowledgeActionExecutor {
+    public static let shared = KnowledgeActionExecutor()
+    private let store = KnowledgeNoteStore.shared
+    private let fileManager = FileManager.default
+
+    private init() {}
+
+    public func execute(_ action: KnowledgeActionBlock) async -> KnowledgeActionExecutionResult {
+        guard action.accountScope == nil || action.accountScope == store.authorizationScope else {
+            return .init(state: .stale, noteIds: [], message: "账号已切换，请重新生成操作")
+        }
+        let expectedFingerprint = store.accountFingerprint
+        if let receipt = loadReceipt(action.id), receipt.actionDigest == action.actionDigest,
+           [.localApplied, .syncPending, .synced].contains(receipt.status) {
+            if receipt.status != .synced {
+                return await synchronize(
+                    action,
+                    capability: validCapability(for: action),
+                    noteIds: receipt.resultNoteIds,
+                    expectedFingerprint: expectedFingerprint
+                )
+            }
+            return .init(state: .synced, noteIds: receipt.resultNoteIds, message: nil)
+        }
+        guard let capability = validCapability(for: action) else {
+            return .init(state: .stale, noteIds: [], message: "确认凭证已失效，请重新生成操作")
+        }
+        guard validateTargets(action.steps) else {
+            return .init(state: .stale, noteIds: [], message: "笔记已变化，请重新生成修改方案")
+        }
+
+        let backup = backupDirectory(action.id)
+        do {
+            try prepareBackup(at: backup)
+            saveReceipt(.init(
+                actionId: action.id, actionDigest: action.actionDigest,
+                accountFingerprint: store.accountFingerprint, status: .applying,
+                resultNoteIds: [], updatedAt: Date()
+            ))
+            let ids = try applySteps(action.steps, actionId: action.id)
+            saveReceipt(.init(
+                actionId: action.id, actionDigest: action.actionDigest,
+                accountFingerprint: store.accountFingerprint, status: .localApplied,
+                resultNoteIds: ids, updatedAt: Date()
+            ))
+            try? fileManager.removeItem(at: backup)
+            return await synchronize(action, capability: capability, noteIds: ids, expectedFingerprint: expectedFingerprint)
+        } catch {
+            try? restoreBackup(from: backup)
+            store.reload()
+            saveReceipt(.init(
+                actionId: action.id, actionDigest: action.actionDigest,
+                accountFingerprint: store.accountFingerprint, status: .failed,
+                resultNoteIds: [], updatedAt: Date()
+            ))
+            return .init(state: .failed, noteIds: [], message: error.localizedDescription)
+        }
+    }
+
+    public func discard(_ action: KnowledgeActionBlock) async -> KnowledgeActionExecutionResult {
+        guard let capability = action.transientCapability else {
+            return .init(state: .stale, noteIds: [], message: "确认凭证已失效")
+        }
+        do {
+            try await APIClient.shared.discardKnowledgeAction(
+                id: action.id, capability: capability, actionDigest: action.actionDigest
+            )
+            saveReceipt(.init(
+                actionId: action.id, actionDigest: action.actionDigest,
+                accountFingerprint: store.accountFingerprint, status: .discarded,
+                resultNoteIds: [], updatedAt: Date()
+            ))
+            return .init(state: .discarded, noteIds: [], message: nil)
+        } catch {
+            return .init(state: .failed, noteIds: [], message: error.localizedDescription)
+        }
+    }
+
+    private func validateTargets(_ steps: [KnowledgeActionStep]) -> Bool {
+        for step in steps {
+            let ids = ([step.targetNoteId].compactMap { $0 } + step.sourceNoteIds)
+            for id in ids {
+                guard let note = store.anyNote(id: id) else { return false }
+                if id == step.targetNoteId, let expected = step.originalContentHash,
+                   !expected.isEmpty, store.contentHash(for: note) != expected { return false }
+                if let expected = step.sourceContentHashes?[id] ?? nil,
+                   !expected.isEmpty, store.contentHash(for: note) != expected { return false }
+            }
+        }
+        return true
+    }
+
+    private func applySteps(_ steps: [KnowledgeActionStep], actionId: String) throws -> [String] {
+        var changed: [String] = []
+        for (index, step) in steps.enumerated() {
+            let stableID = stableNoteID(actionId: actionId, index: index)
+            switch step.kind {
+            case "create_note", "create_daily_note":
+                let body = markdownBody(step.markdown ?? "")
+                let tags = step.kind == "create_daily_note" ? step.tags + ["daily"] : step.tags
+                guard let note = store.createNote(id: stableID, title: step.title ?? inferredTitle(step.markdown), body: body, tags: tags) else { throw ActionError.writeFailed }
+                changed.append(note.id)
+            case "update_note", "rename_note", "set_tags", "set_pinned", "add_wikilink", "remove_wikilink":
+                guard let id = step.targetNoteId, let note = store.note(id: id) else { throw ActionError.targetMissing }
+                var body = step.markdown.map(markdownBody) ?? note.body
+                if step.kind == "add_wikilink", let link = step.linkTitle, !body.contains("[[\(link)]]") {
+                    body += "\n\n[[\(link)]]"
+                } else if step.kind == "remove_wikilink", let link = step.linkTitle {
+                    body = body.replacingOccurrences(of: "[[\(link)]]", with: link)
+                }
+                guard store.save(
+                    id: id, title: step.title ?? note.title, body: body,
+                    tags: step.kind == "set_tags" ? step.tags : (step.tags.isEmpty ? note.tags : step.tags),
+                    isPinned: step.pinned ?? note.isPinned
+                ) != nil else { throw ActionError.writeFailed }
+                changed.append(id)
+            case "merge_notes":
+                let body = markdownBody(step.markdown ?? "")
+                let merged: KnowledgeNote?
+                if let target = step.targetNoteId, let note = store.note(id: target) {
+                    merged = store.save(id: target, title: step.title ?? note.title, body: body, tags: step.tags.isEmpty ? note.tags : step.tags, isPinned: note.isPinned)
+                } else {
+                    merged = store.createNote(id: stableID, title: step.title ?? inferredTitle(step.markdown), body: body, tags: step.tags)
+                }
+                guard let merged else { throw ActionError.writeFailed }
+                changed.append(merged.id)
+                for sourceID in step.sourceNoteIds where sourceID != merged.id {
+                    guard store.archive(id: sourceID, mergedInto: merged.id) != nil else { throw ActionError.writeFailed }
+                    changed.append(sourceID)
+                }
+            case "archive_note":
+                guard let id = step.targetNoteId, store.archive(id: id, mergedInto: id) != nil else { throw ActionError.writeFailed }
+                changed.append(id)
+            case "restore_note":
+                guard let id = step.targetNoteId, store.restoreArchivedNote(id: id) != nil else { throw ActionError.writeFailed }
+                changed.append(id)
+            case "move_to_trash":
+                guard let id = step.targetNoteId, store.note(id: id) != nil else { throw ActionError.targetMissing }
+                store.moveToTrash(id: id)
+                changed.append(id)
+            default:
+                throw ActionError.unsupported
+            }
+        }
+        var seen = Set<String>()
+        return changed.filter { seen.insert($0).inserted }
+    }
+
+    private func validCapability(for action: KnowledgeActionBlock) -> String? {
+        guard action.expiresAt > Int(Date().timeIntervalSince1970),
+              let capability = action.transientCapability,
+              !capability.isEmpty else { return nil }
+        return capability
+    }
+
+    private func synchronize(_ action: KnowledgeActionBlock, capability: String?, noteIds: [String], expectedFingerprint: String) async -> KnowledgeActionExecutionResult {
+        do {
+            for step in action.steps {
+                guard store.accountFingerprint == expectedFingerprint else { throw ActionError.accountChanged }
+                if step.kind == "move_to_trash", let id = step.targetNoteId {
+                    try await APIClient.shared.trashKnowledgeNote(id: id)
+                } else if step.kind == "archive_note", let id = step.targetNoteId {
+                    if let archived = store.archivedNote(id: id) {
+                        try await APIClient.shared.syncKnowledgeNote(id: id, markdown: store.markdown(for: archived), updatedAt: archived.updatedAt)
+                    }
+                    try await APIClient.shared.archiveKnowledgeNote(id: id, mergedIntoNoteId: id)
+                } else if step.kind == "restore_note", let id = step.targetNoteId {
+                    try await APIClient.shared.restoreKnowledgeNote(id: id)
+                }
+                if step.kind == "merge_notes" {
+                    for id in step.sourceNoteIds {
+                        if let archived = store.archivedNote(id: id) {
+                            try await APIClient.shared.syncKnowledgeNote(id: id, markdown: store.markdown(for: archived), updatedAt: archived.updatedAt)
+                        }
+                        try await APIClient.shared.archiveKnowledgeNote(id: id, mergedIntoNoteId: noteIds.first ?? id)
+                    }
+                }
+            }
+            for id in noteIds {
+                guard store.accountFingerprint == expectedFingerprint else { throw ActionError.accountChanged }
+                if let note = store.note(id: id) {
+                    try await APIClient.shared.syncKnowledgeNote(id: id, markdown: store.markdown(for: note), updatedAt: note.updatedAt)
+                }
+            }
+            try await finalizeLedger(
+                action, capability: capability, status: "synced", noteIds: noteIds
+            )
+            updateReceipt(action, state: .synced, ids: noteIds)
+            return .init(state: .synced, noteIds: noteIds, message: nil)
+        } catch {
+            guard store.accountFingerprint == expectedFingerprint else {
+                return .init(state: .stale, noteIds: noteIds, message: "账号已切换，旧账号同步已取消")
+            }
+            try? await finalizeLedger(
+                action, capability: capability, status: "sync_pending",
+                noteIds: noteIds, errorCode: "sync_failed"
+            )
+            updateReceipt(action, state: .syncPending, ids: noteIds)
+            return .init(state: .syncPending, noteIds: noteIds, message: "已应用到本地，等待同步")
+        }
+    }
+
+    private func finalizeLedger(
+        _ action: KnowledgeActionBlock,
+        capability: String?,
+        status: String,
+        noteIds: [String],
+        errorCode: String? = nil
+    ) async throws {
+        if let capability {
+            do {
+                _ = try await APIClient.shared.commitKnowledgeAction(
+                    id: action.id, capability: capability, actionDigest: action.actionDigest,
+                    status: status, resultNoteIds: noteIds, errorCode: errorCode
+                )
+                return
+            } catch {
+                // The local transaction is already durable. A token may expire while
+                // the app is syncing, so fall through to the JWT-owned ledger resume.
+            }
+        }
+        _ = try await APIClient.shared.resumeKnowledgeActionSync(
+            id: action.id, actionDigest: action.actionDigest,
+            status: status, resultNoteIds: noteIds, errorCode: errorCode
+        )
+    }
+
+    private func stableNoteID(actionId: String, index: Int) -> String {
+        let digest = SHA256.hash(data: Data("\(actionId):\(index)".utf8)).map { String(format: "%02x", $0) }.joined()
+        return "ka-\(digest.prefix(32))"
+    }
+
+    private func inferredTitle(_ markdown: String?) -> String {
+        markdown?.split(separator: "\n").first.map { String($0).replacingOccurrences(of: #"^#{1,6}\s*"#, with: "", options: .regularExpression) } ?? "无标题"
+    }
+
+    private func markdownBody(_ markdown: String) -> String {
+        var lines = markdown.components(separatedBy: .newlines)
+        if lines.first?.trimmingCharacters(in: .whitespaces) == "---",
+           let closing = lines.dropFirst().firstIndex(where: { $0.trimmingCharacters(in: .whitespaces) == "---" }) {
+            lines.removeSubrange(0...closing)
+        }
+        return lines.joined(separator: "\n").trimmingCharacters(in: .newlines)
+    }
+
+    private func receiptURL(_ actionId: String) -> URL {
+        store.actionDirectory.appendingPathComponent("\(actionId).json")
+    }
+
+    private func loadReceipt(_ actionId: String) -> KnowledgeActionReceipt? {
+        guard let data = try? Data(contentsOf: receiptURL(actionId)) else { return nil }
+        return try? JSONDecoder().decode(KnowledgeActionReceipt.self, from: data)
+    }
+
+    private func saveReceipt(_ receipt: KnowledgeActionReceipt) {
+        try? fileManager.createDirectory(at: store.actionDirectory, withIntermediateDirectories: true)
+        if let data = try? JSONEncoder().encode(receipt) {
+            try? data.write(to: receiptURL(receipt.actionId), options: .atomic)
+        }
+    }
+
+    private func updateReceipt(_ action: KnowledgeActionBlock, state: KnowledgeActionState, ids: [String]) {
+        saveReceipt(.init(actionId: action.id, actionDigest: action.actionDigest, accountFingerprint: store.accountFingerprint, status: state, resultNoteIds: ids, updatedAt: Date()))
+    }
+
+    private func backupDirectory(_ actionId: String) -> URL {
+        store.actionDirectory.appendingPathComponent("rollback-\(actionId)", isDirectory: true)
+    }
+
+    private func markdownFiles(at root: URL, excludingActions: Bool = false) -> [URL] {
+        guard let enumerator = fileManager.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey], options: []) else { return [] }
+        return enumerator.compactMap { $0 as? URL }.filter {
+            $0.pathExtension == "md" && (!excludingActions || !$0.path.contains("/.actions/"))
+        }
+    }
+
+    private func prepareBackup(at backup: URL) throws {
+        try? fileManager.removeItem(at: backup)
+        try fileManager.createDirectory(at: backup, withIntermediateDirectories: true)
+        for source in markdownFiles(at: store.vaultDirectory, excludingActions: true) {
+            let relative = source.path.replacingOccurrences(of: store.vaultDirectory.path + "/", with: "")
+            let destination = backup.appendingPathComponent(relative)
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.copyItem(at: source, to: destination)
+        }
+    }
+
+    private func restoreBackup(from backup: URL) throws {
+        for current in markdownFiles(at: store.vaultDirectory, excludingActions: true) { try fileManager.removeItem(at: current) }
+        for source in markdownFiles(at: backup) {
+            let relative = source.path.replacingOccurrences(of: backup.path + "/", with: "")
+            let destination = store.vaultDirectory.appendingPathComponent(relative)
+            try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fileManager.copyItem(at: source, to: destination)
+        }
+        try? fileManager.removeItem(at: backup)
+    }
+
+    private enum ActionError: LocalizedError {
+        case targetMissing, writeFailed, unsupported, accountChanged
+        var errorDescription: String? {
+            switch self {
+            case .targetMissing: return "目标笔记不存在"
+            case .writeFailed: return "本地笔记写入失败"
+            case .unsupported: return "暂不支持该知识操作"
+            case .accountChanged: return "账号已切换，旧账号同步已取消"
+            }
+        }
     }
 }

@@ -31,6 +31,7 @@ from backend.api.customer_demands import router as customer_demands_router
 from backend.api.workflows import router as workflows_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
 from backend.api.knowledge_sync import router as knowledge_sync_router
+from backend.api.knowledge_actions import router as knowledge_actions_router
 from backend.api.subscriptions import router as subscriptions_router
 from backend.api.knowledge_publication import router as knowledge_publication_router
 from backend.db import init_db
@@ -119,6 +120,7 @@ app.include_router(tasks_router, dependencies=[Depends(require_auth)])
 app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
 # 用户笔记只同步到 raw/dialogues；编译、治理和正式存储继续由平台既有链路负责。
 app.include_router(knowledge_sync_router, dependencies=[Depends(require_auth)])
+app.include_router(knowledge_actions_router, dependencies=[Depends(require_auth)])
 # 问答: 基于知识库的回答（订阅过滤 + 会话记录）
 app.include_router(chat_router, dependencies=[Depends(require_auth)])
 # 前端原型编排: 角色生成与编辑回写

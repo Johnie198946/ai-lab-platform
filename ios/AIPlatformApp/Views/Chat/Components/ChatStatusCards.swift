@@ -72,6 +72,7 @@ public enum InFlightPhase: Equatable, Sendable {
 
 public struct NoteDraftCard: View {
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showingDetails = false
 
     public let draft: NoteDraftBlock
     public let onSave: () -> Void
@@ -81,11 +82,17 @@ public struct NoteDraftCard: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
-            headerView
-            previewView
-            if hasMergeCandidates {
-                mergeNoticeView
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+                headerView
+                previewView
+                if hasMergeCandidates {
+                    mergeNoticeView
+                }
             }
+            .contentShape(Rectangle())
+            .onTapGesture { showingDetails = true }
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("打开完整笔记草稿")
             if draft.state == .awaitingConfirmation {
                 actionView
             } else {
@@ -95,6 +102,11 @@ public struct NoteDraftCard: View {
         .padding(AppTheme.Spacing.xl)
         .quantumCard()
         .accessibilityElement(children: .contain)
+        .sheet(isPresented: $showingDetails) {
+            NoteDraftDetailSheet(draft: draft)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
+        }
     }
 
     private var hasMergeCandidates: Bool {
@@ -118,7 +130,7 @@ public struct NoteDraftCard: View {
                     Text(hasMergeCandidates ? "笔记整理建议" : "笔记草稿")
                         .font(AppTheme.Typography.cardTitle)
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("待确认")
+                    Text(badgeText)
                         .font(AppTheme.Typography.micro)
                         .foregroundStyle(AppTheme.Icons.intelligence)
                         .padding(.horizontal, AppTheme.Spacing.sm)
@@ -133,6 +145,10 @@ public struct NoteDraftCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 0)
+            Image(systemName: "chevron.up.chevron.down")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+                .accessibilityHidden(true)
         }
     }
 
@@ -235,7 +251,7 @@ public struct NoteDraftCard: View {
                 .tint(AppTheme.Colors.primary)
             } else {
                 Button(action: onSave) {
-                    Label("保存到笔记", systemImage: "checkmark.circle")
+                    Label(draft.isUpdate ? "应用到原笔记" : "保存到笔记", systemImage: "checkmark.circle")
                 }
                 .buttonStyle(QuantumPrimaryButtonStyle())
             }
@@ -282,15 +298,84 @@ public struct NoteDraftCard: View {
 
     private var statusText: String {
         switch draft.state {
-        case .saved: return "已保存并同步"
-        case .savedLocally: return "已保存到本地，等待同步"
+        case .saved: return draft.isUpdate ? "已更新并同步" : "已保存并同步"
+        case .savedLocally: return draft.isUpdate ? "已更新到本地，等待同步" : "已保存到本地，等待同步"
         case .discarded: return "已放弃"
         case .awaitingConfirmation: return "等待确认"
         }
     }
 
+    private var badgeText: String {
+        switch draft.state {
+        case .awaitingConfirmation: return draft.isUpdate ? "待应用" : "待确认"
+        case .saved, .savedLocally: return draft.isUpdate ? "已更新" : "已保存"
+        case .discarded: return "已放弃"
+        }
+    }
+
     private var statusIcon: String {
         draft.state == .discarded ? "xmark.circle" : "checkmark.circle.fill"
+    }
+}
+
+private struct NoteDraftDetailSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let draft: NoteDraftBlock
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+                    if draft.isUpdate {
+                        Label(
+                            "将更新：\(draft.targetNoteTitle ?? draft.title)",
+                            systemImage: "arrow.triangle.2.circlepath"
+                        )
+                        .font(AppTheme.Typography.supporting.weight(.semibold))
+                        .foregroundStyle(AppTheme.Icons.intelligence)
+                        .padding(AppTheme.Spacing.md)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(AppTheme.Colors.surfaceTint)
+                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                    }
+
+                    Text(draft.title)
+                        .font(AppTheme.Typography.sectionTitle)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+
+                    Text(.init(draft.markdown))
+                        .font(AppTheme.Typography.body)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .lineSpacing(4)
+                        .textSelection(.enabled)
+
+                    if !draft.tags.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: AppTheme.Spacing.xs) {
+                            ForEach(draft.tags, id: \.self) { tag in
+                                Text("#\(tag)")
+                                    .font(AppTheme.Typography.micro)
+                                    .foregroundStyle(AppTheme.Icons.intelligence)
+                                    .padding(.horizontal, AppTheme.Spacing.sm)
+                                    .padding(.vertical, 6)
+                                    .background(AppTheme.Colors.surfaceTint)
+                                    .clipShape(Capsule())
+                            }
+                            }
+                        }
+                    }
+                }
+                .padding(AppTheme.Spacing.xl)
+            }
+            .background(AppTheme.Colors.background)
+            .navigationTitle(draft.isUpdate ? "完善方案详情" : "笔记草稿详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
     }
 }
 
@@ -576,5 +661,146 @@ public struct OrphanPendingCardView: View {
             .clipShape(Capsule())
         }
         .buttonStyle(SoftButtonStyle())
+    }
+}
+
+public struct KnowledgeActionCard: View {
+    public let action: KnowledgeActionBlock
+    public let onApply: () -> Void
+    public let onDiscard: () -> Void
+    public let onOpenResult: () -> Void
+    @State private var showsDetail = false
+
+    public var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button { showsDetail = true } label: {
+                VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 10) {
+                    Image(systemName: "wand.and.stars")
+                        .foregroundColor(AppTheme.Icons.intelligence)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("知识操作")
+                            .font(.system(size: 13, weight: .semibold))
+                        Text(action.summary)
+                            .font(.system(size: 16, weight: .semibold))
+                            .lineLimit(2)
+                    }
+                    Spacer()
+                    stateBadge
+                }
+                HStack(spacing: 8) {
+                    Label("\(action.steps.count) 项修改", systemImage: "list.bullet.clipboard")
+                    if action.riskLevel != "low" {
+                        Label("需仔细确认", systemImage: "exclamationmark.shield")
+                    }
+                }
+                .font(.system(size: 12))
+                .foregroundColor(AppTheme.Colors.textSecondary)
+                }
+            }
+            .buttonStyle(.plain)
+            if action.state == .proposed {
+                HStack(spacing: 10) {
+                    cardButton("查看并确认", filled: true) { showsDetail = true }
+                    cardButton("放弃", filled: false, action: onDiscard)
+                }
+            } else if [.localApplied, .syncPending].contains(action.state) {
+                HStack(spacing: 10) {
+                    cardButton("继续同步", filled: true, action: onApply)
+                    cardButton("打开结果", filled: false, action: onOpenResult)
+                }
+            } else if action.state == .synced {
+                cardButton("打开结果", filled: false, action: onOpenResult)
+            }
+        }
+        .foregroundColor(AppTheme.Colors.textPrimary)
+        .padding(18)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 24).stroke(AppTheme.Colors.primary.opacity(0.16), lineWidth: 1))
+        .pressBorderGlow(cornerRadius: 24)
+        .sheet(isPresented: $showsDetail) { detailSheet }
+    }
+
+    private var stateBadge: some View {
+        Text(stateLabel)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(action.state == .synced ? AppTheme.Icons.success : AppTheme.Colors.primary)
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            .background((action.state == .synced ? AppTheme.Icons.success : AppTheme.Colors.primary).opacity(0.1))
+            .clipShape(Capsule())
+    }
+
+    private var stateLabel: String {
+        switch action.state {
+        case .proposed: return "待确认"
+        case .applying: return "应用中"
+        case .localApplied: return "已应用到本地"
+        case .synced: return "已同步"
+        case .syncPending: return "等待同步"
+        case .discarded: return "已放弃"
+        case .stale: return "需重新生成"
+        case .failed: return "失败"
+        }
+    }
+
+    private func cardButton(_ title: String, filled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title).font(.system(size: 14, weight: .semibold)).frame(minHeight: 44)
+                .frame(maxWidth: .infinity)
+                .foregroundColor(filled ? .white : AppTheme.Colors.primary)
+                .background(filled ? AppTheme.Colors.primary : AppTheme.Colors.primary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }.buttonStyle(.plain)
+    }
+
+    private var detailSheet: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    Text(action.summary).font(.title3.bold())
+                    ForEach(Array(action.steps.enumerated()), id: \.offset) { index, step in
+                        HStack(alignment: .top, spacing: 12) {
+                            Text("\(index + 1)").font(.caption.bold()).frame(width: 28, height: 28)
+                                .background(AppTheme.Colors.primary.opacity(0.1)).clipShape(Circle())
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(stepLabel(step.kind)).font(.body.bold())
+                                if let title = step.title { Text(title).foregroundColor(AppTheme.Colors.textSecondary) }
+                                if let id = step.targetNoteId { Text("目标：\(id)").font(.caption).foregroundColor(AppTheme.Colors.textSecondary) }
+                            }
+                        }
+                    }
+                    if !action.beforePreview.isEmpty || !action.afterPreview.isEmpty {
+                        previewSection("修改前", action.beforePreview)
+                        previewSection("修改后", action.afterPreview)
+                    }
+                    if !action.markdownDiff.isEmpty { previewSection("Markdown 差异", action.markdownDiff) }
+                    if action.state == .proposed {
+                        cardButton("确认并应用到本地", filled: true) { showsDetail = false; onApply() }
+                        cardButton("放弃操作", filled: false) { showsDetail = false; onDiscard() }
+                    }
+                }.padding(20)
+            }
+            .navigationTitle("确认知识操作")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("关闭") { showsDetail = false } } }
+            .presentationDetents([.medium, .large])
+        }
+    }
+
+    private func previewSection(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title).font(.caption.bold()).foregroundColor(AppTheme.Colors.textSecondary)
+            Text(text.isEmpty ? "无" : text).font(.system(size: 13, design: .monospaced)).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                .background(AppTheme.Colors.secondaryBackground).clipShape(RoundedRectangle(cornerRadius: 14))
+        }
+    }
+
+    private func stepLabel(_ kind: String) -> String {
+        ["create_note":"创建笔记", "create_daily_note":"创建日记", "update_note":"修改正文",
+         "rename_note":"重命名", "set_tags":"修改标签", "set_pinned":"置顶状态",
+         "add_wikilink":"增加双链", "remove_wikilink":"移除双链", "merge_notes":"合并笔记",
+         "archive_note":"归档", "restore_note":"恢复", "move_to_trash":"移入废纸篓"][kind] ?? kind
     }
 }

@@ -77,4 +77,25 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         XCTAssertTrue(updatedLinker.body.contains("[[\(renamedTitle)|详情]]"))
         XCTAssertEqual(store.backlinks(to: try XCTUnwrap(store.note(id: source.id))).map(\.id), [linker.id])
     }
+
+    func testReloadAndIndexedSearchScaleToOneThousandNotes() throws {
+        let store = KnowledgeNoteStore.shared
+        store.activate(tenantKey: "scale-tenant-\(UUID())", userId: "scale-user")
+        let fm = FileManager.default
+        let root = store.vaultDirectory
+        for index in 0..<1_000 {
+            let url = root.appendingPathComponent("scale-\(index).md")
+            try "---\ntitle: Scale \(index)\ntags:\n  - scale\n---\n\n内容 \(index) [[Scale 0]]".write(to: url, atomically: true, encoding: .utf8)
+        }
+        defer {
+            try? fm.removeItem(at: root)
+            store.reload()
+        }
+        measure {
+            store.reload()
+            _ = store.search("内容 999")
+            if let first = store.notes.first { _ = store.backlinks(to: first) }
+        }
+        XCTAssertEqual(store.notes.count, 1_000)
+    }
 }

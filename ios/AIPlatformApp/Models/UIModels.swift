@@ -341,8 +341,14 @@ public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
     public var mergedTitle: String?
     public var mergedMarkdown: String?
     public var mergedTags: [String]?
+    /// `update` means this draft replaces one authenticated existing note after confirmation.
+    /// Optional for backwards-compatible decoding of persisted chat history.
+    public var operation: String?
+    public var targetNoteId: String?
+    public var targetNoteTitle: String?
+    public var targetContentHash: String?
 
-    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil, mergeCandidates: [NoteMergeCandidate]? = nil, mergedTitle: String? = nil, mergedMarkdown: String? = nil, mergedTags: [String]? = nil) {
+    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil, mergeCandidates: [NoteMergeCandidate]? = nil, mergedTitle: String? = nil, mergedMarkdown: String? = nil, mergedTags: [String]? = nil, operation: String? = nil, targetNoteId: String? = nil, targetNoteTitle: String? = nil, targetContentHash: String? = nil) {
         self.id = id
         self.title = title
         self.markdown = markdown
@@ -356,6 +362,100 @@ public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
         self.mergedTitle = mergedTitle
         self.mergedMarkdown = mergedMarkdown
         self.mergedTags = mergedTags
+        self.operation = operation
+        self.targetNoteId = targetNoteId
+        self.targetNoteTitle = targetNoteTitle
+        self.targetContentHash = targetContentHash
+    }
+
+    public var isUpdate: Bool { operation == "update" && targetNoteId != nil }
+}
+
+public enum KnowledgeActionState: String, Codable, Sendable, Hashable {
+    case proposed, applying, synced, discarded, stale, failed
+    case localApplied = "local_applied"
+    case syncPending = "sync_pending"
+}
+
+public struct KnowledgeActionStep: Codable, Sendable, Hashable, Identifiable {
+    public var id: String { "\(kind):\(targetNoteId ?? title ?? "new")" }
+    public let kind: String
+    public let targetNoteId: String?
+    public let sourceNoteIds: [String]
+    public let title: String?
+    public let markdown: String?
+    public let tags: [String]
+    public let pinned: Bool?
+    public let linkTitle: String?
+    public let originalContentHash: String?
+    public let sourceContentHashes: [String: String?]?
+
+    public init(kind: String, targetNoteId: String? = nil, sourceNoteIds: [String] = [], title: String? = nil, markdown: String? = nil, tags: [String] = [], pinned: Bool? = nil, linkTitle: String? = nil, originalContentHash: String? = nil, sourceContentHashes: [String: String?]? = nil) {
+        self.kind = kind; self.targetNoteId = targetNoteId; self.sourceNoteIds = sourceNoteIds
+        self.title = title; self.markdown = markdown; self.tags = tags; self.pinned = pinned
+        self.linkTitle = linkTitle; self.originalContentHash = originalContentHash
+        self.sourceContentHashes = sourceContentHashes
+    }
+}
+
+public struct KnowledgeNavigationTarget: Codable, Sendable, Hashable {
+    public let destination: String
+    public let noteId: String?
+    public let query: String?
+}
+
+public struct KnowledgeActionBlock: Identifiable, Codable, Sendable, Hashable {
+    public let id: String
+    public let summary: String
+    public let steps: [KnowledgeActionStep]
+    public let beforePreview: String
+    public let afterPreview: String
+    public let markdownDiff: String
+    public let riskLevel: String
+    public let actionDigest: String
+    /// Short-lived bearer is intentionally excluded from Codable persistence.
+    public var transientCapability: String?
+    public let expiresAt: Int
+    public let accountScope: String?
+    public let suggestedNavigation: KnowledgeNavigationTarget?
+    public var state: KnowledgeActionState
+    public var resultNoteIds: [String]
+    public var errorMessage: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id, summary, steps, beforePreview, afterPreview, markdownDiff, riskLevel
+        case actionDigest, expiresAt, accountScope, suggestedNavigation, state
+        case resultNoteIds, errorMessage
+    }
+
+    public init(id: String, summary: String, steps: [KnowledgeActionStep], beforePreview: String = "", afterPreview: String = "", markdownDiff: String = "", riskLevel: String = "low", actionDigest: String, transientCapability: String?, expiresAt: Int, accountScope: String? = nil, suggestedNavigation: KnowledgeNavigationTarget? = nil, state: KnowledgeActionState = .proposed, resultNoteIds: [String] = [], errorMessage: String? = nil) {
+        self.id = id; self.summary = summary; self.steps = steps
+        self.beforePreview = beforePreview; self.afterPreview = afterPreview
+        self.markdownDiff = markdownDiff; self.riskLevel = riskLevel
+        self.actionDigest = actionDigest; self.transientCapability = transientCapability
+        self.expiresAt = expiresAt; self.accountScope = accountScope
+        self.suggestedNavigation = suggestedNavigation; self.state = state
+        self.resultNoteIds = resultNoteIds; self.errorMessage = errorMessage
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        summary = try c.decode(String.self, forKey: .summary)
+        steps = try c.decode([KnowledgeActionStep].self, forKey: .steps)
+        beforePreview = try c.decodeIfPresent(String.self, forKey: .beforePreview) ?? ""
+        afterPreview = try c.decodeIfPresent(String.self, forKey: .afterPreview) ?? ""
+        markdownDiff = try c.decodeIfPresent(String.self, forKey: .markdownDiff) ?? ""
+        riskLevel = try c.decodeIfPresent(String.self, forKey: .riskLevel) ?? "low"
+        actionDigest = try c.decode(String.self, forKey: .actionDigest)
+        transientCapability = nil
+        expiresAt = try c.decodeIfPresent(Int.self, forKey: .expiresAt) ?? 0
+        accountScope = try c.decodeIfPresent(String.self, forKey: .accountScope)
+        suggestedNavigation = try c.decodeIfPresent(KnowledgeNavigationTarget.self, forKey: .suggestedNavigation)
+        state = try c.decodeIfPresent(KnowledgeActionState.self, forKey: .state) ?? .stale
+        resultNoteIds = try c.decodeIfPresent([String].self, forKey: .resultNoteIds) ?? []
+        errorMessage = try c.decodeIfPresent(String.self, forKey: .errorMessage)
+        if state == .proposed || state == .applying { state = .stale }
     }
 }
 
@@ -369,6 +469,7 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
     case reasoning([ReasoningStep])
     case clarify(ClarifyBlock)
     case noteDraft(NoteDraftBlock)
+    case knowledgeAction(KnowledgeActionBlock)
 
     public var id: String {
         switch self {
@@ -381,6 +482,7 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
         case .reasoning(let steps): return "reasoning_" + steps.map(\.id).joined(separator: "_")
         case .clarify(let c): return "clarify_\(c.id)"
         case .noteDraft(let draft): return "note_draft_\(draft.id)"
+        case .knowledgeAction(let action): return "knowledge_action_\(action.id)"
         }
     }
 }
@@ -409,6 +511,7 @@ public extension ChatMessage {
             case .reasoning: return nil   // 显式剔除 reasoning
             case .clarify(let c): return "[澄清·\(c.question)]"
             case .noteDraft(let draft): return "[笔记草稿·\(draft.title)]"
+            case .knowledgeAction(let action): return "[知识操作·\(action.summary)]"
             }
         }
         let blockSummary = summaries.isEmpty ? nil : summaries.joined(separator: " ")
@@ -490,6 +593,7 @@ public struct PersistedMessage: Codable, Sendable {
     public let delegatedBy: String?
     public let clarify: PersistedClarify?
     public let noteDraft: NoteDraftBlock?
+    public let knowledgeAction: KnowledgeActionBlock?
 
     public init(_ m: ChatMessage) {
         self.id = m.id
@@ -506,6 +610,10 @@ public struct PersistedMessage: Codable, Sendable {
         self.clarify = m.clarifyBlock.map(PersistedClarify.init)
         self.noteDraft = m.blocks.compactMap {
             if case .noteDraft(let draft) = $0 { return draft }
+            return nil
+        }.first
+        self.knowledgeAction = m.blocks.compactMap {
+            if case .knowledgeAction(let action) = $0 { return action }
             return nil
         }.first
     }
@@ -530,6 +638,9 @@ public struct PersistedMessage: Codable, Sendable {
         }
         if let noteDraft {
             message.blocks.append(.noteDraft(noteDraft))
+        }
+        if let knowledgeAction {
+            message.blocks.append(.knowledgeAction(knowledgeAction))
         }
         return message
     }
@@ -1303,6 +1414,7 @@ public final class AppState: ObservableObject {
     @Published public var pendingChatPrompt: String? = nil
     @Published public var pendingChatContextScope: ChatContextScopeDTO? = nil
     @Published public var pendingWorkflowId: String? = nil
+    @Published public var pendingKnowledgeNavigation: KnowledgeNavigationTarget? = nil
     /// 内存会话级 session_id（不持久化磁盘；404/401 清重发；账号切换清空）
     @Published public var chatSessionId: String? = nil
     /// 开发态（后端 dev 载荷 / 连接失败）→ 顶部导航栏下「开发模式·免鉴权」蓝 banner
@@ -1323,6 +1435,7 @@ public final class AppState: ObservableObject {
     }
 
     private func activateLocalAccount(notify: Bool = true) {
+        pendingKnowledgeNavigation = nil
         KnowledgeNoteStore.shared.activate(
             tenantKey: currentTenantKey, userId: currentUserId
         )
@@ -1355,6 +1468,7 @@ public final class AppState: ObservableObject {
         self.isGuestMode = false
         self.chatSessionId = nil
         self.pendingChatContextScope = nil
+        self.pendingKnowledgeNavigation = nil
         self.isDevMode = false
         KnowledgeNoteStore.shared.deactivate()
         SessionManager.shared.deactivateAccount()

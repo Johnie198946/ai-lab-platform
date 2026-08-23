@@ -447,67 +447,14 @@ private struct PressBorderGlow: View {
 
     var body: some View {
         if isActive {
-            TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
-                let progress: CGFloat = reduceMotion
-                    ? 0.08
-                    : CGFloat(
-                        timeline.date.timeIntervalSinceReferenceDate
-                            .truncatingRemainder(dividingBy: 1.25) / 1.25
-                    )
-
-                ZStack {
-                    RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                        .stroke(AppTheme.Colors.quantumGradient, lineWidth: reduceMotion ? 2 : 1)
-                        .opacity(reduceMotion ? 0.86 : 0.30)
-
-                    MovingGlowStroke(
-                        progress: progress,
-                        cornerRadius: cornerRadius,
-                        lineWidth: 3.2
-                    )
-                    .blur(radius: 4.5)
-                    .opacity(reduceMotion ? 0.72 : 0.94)
-
-                    MovingGlowStroke(
-                        progress: progress,
-                        cornerRadius: cornerRadius,
-                        lineWidth: 1.7
-                    )
-                }
-            }
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .stroke(AppTheme.Colors.quantumGradient, lineWidth: 2)
+                .shadow(color: AppTheme.Colors.quantumViolet.opacity(0.30), radius: reduceMotion ? 0 : 2)
             .padding(-2)
             .transition(.opacity)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
         }
-    }
-}
-
-private struct MovingGlowStroke: View {
-    let progress: CGFloat
-    let cornerRadius: CGFloat
-    let lineWidth: CGFloat
-
-    private let segmentLength: CGFloat = 0.24
-
-    var body: some View {
-        ZStack {
-            if progress + segmentLength <= 1 {
-                stroke(from: progress, to: progress + segmentLength)
-            } else {
-                stroke(from: progress, to: 1)
-                stroke(from: 0, to: progress + segmentLength - 1)
-            }
-        }
-    }
-
-    private func stroke(from: CGFloat, to: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-            .trim(from: from, to: to)
-            .stroke(
-                AppTheme.Colors.quantumGradient,
-                style: StrokeStyle(lineWidth: lineWidth, lineCap: .round, lineJoin: .round)
-            )
     }
 }
 

@@ -385,19 +385,26 @@ public struct ChatLocalNoteDTO: Codable, Hashable, Sendable {
     public let markdown: String
     public let updatedAt: String?
     public let contentHash: String?
+    public let tags: [String]
+    public let aliases: [String]
+    public let isPinned: Bool
+    public let archived: Bool
 
-    public init(id: String, title: String, markdown: String, updatedAt: String? = nil, contentHash: String? = nil) {
+    public init(id: String, title: String, markdown: String, updatedAt: String? = nil, contentHash: String? = nil, tags: [String] = [], aliases: [String] = [], isPinned: Bool = false, archived: Bool = false) {
         self.id = id
         self.title = title
         self.markdown = markdown
         self.updatedAt = updatedAt
         self.contentHash = contentHash
+        self.tags = tags; self.aliases = aliases; self.isPinned = isPinned; self.archived = archived
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, markdown
         case updatedAt = "updated_at"
         case contentHash = "content_hash"
+        case tags, aliases, archived
+        case isPinned = "is_pinned"
     }
 }
 
@@ -475,8 +482,9 @@ public struct ChatRequestDTO: Encodable {
     public let regenerate: Bool
     public let contextScope: ChatContextScopeDTO
     public let clientSessionContext: ClientSessionContextDTO?
+    public let clientCapabilities: [String]
 
-    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil) {
+    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil, clientCapabilities: [String] = ["knowledge_action_v1"]) {
         self.question = question
         self.requestId = requestId
         self.sessionId = sessionId
@@ -485,6 +493,7 @@ public struct ChatRequestDTO: Encodable {
         self.regenerate = regenerate
         self.contextScope = contextScope
         self.clientSessionContext = clientSessionContext
+        self.clientCapabilities = clientCapabilities
     }
 
     enum CodingKeys: String, CodingKey {
@@ -496,6 +505,7 @@ public struct ChatRequestDTO: Encodable {
         case regenerate
         case contextScope = "context_scope"
         case clientSessionContext = "client_session_context"
+        case clientCapabilities = "client_capabilities"
     }
 }
 
@@ -2030,6 +2040,119 @@ public final class APIClient: ObservableObject {
         )
     }
 
+    public func trashKnowledgeNote(id: String) async throws {
+        struct Body: Encodable {}
+        struct Response: Decodable { let trashStatus: String }
+        let _: Response = try await request(
+            Response.self,
+            path: "me/knowledge-notes/\(encodedPath(id))/trash",
+            method: "POST",
+            body: Body()
+        )
+    }
+
+    public struct KnowledgeActionCommitResponse: Decodable, Sendable {
+        public let actionId: String
+        public let status: String
+        public let resultNoteIds: [String]
+    }
+
+    public func commitKnowledgeAction(
+        id: String,
+        capability: String,
+        actionDigest: String,
+        status: String,
+        resultNoteIds: [String],
+        errorCode: String? = nil
+    ) async throws -> KnowledgeActionCommitResponse {
+        struct Body: Encodable {
+            let capability: String
+            let actionDigest: String
+            let resultDigest: String
+            let resultNoteIds: [String]
+            let status: String
+            let errorCode: String?
+            enum CodingKeys: String, CodingKey {
+                case capability, status
+                case actionDigest = "action_digest"
+                case resultDigest = "result_digest"
+                case resultNoteIds = "result_note_ids"
+                case errorCode = "error_code"
+            }
+        }
+        let resultObject: [String: Any] = ["result_note_ids": resultNoteIds]
+        let data = try JSONSerialization.data(withJSONObject: resultObject, options: [.sortedKeys, .withoutEscapingSlashes])
+        let resultDigest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return try await request(
+            KnowledgeActionCommitResponse.self,
+            path: "me/knowledge-actions/\(encodedPath(id))/commit",
+            method: "POST",
+            body: Body(
+                capability: capability,
+                actionDigest: actionDigest,
+                resultDigest: resultDigest,
+                resultNoteIds: resultNoteIds,
+                status: status,
+                errorCode: errorCode
+            )
+        )
+    }
+
+    public func resumeKnowledgeActionSync(
+        id: String,
+        actionDigest: String,
+        status: String,
+        resultNoteIds: [String],
+        errorCode: String? = nil
+    ) async throws -> KnowledgeActionCommitResponse {
+        struct Body: Encodable {
+            let actionDigest: String
+            let resultDigest: String
+            let resultNoteIds: [String]
+            let status: String
+            let errorCode: String?
+            enum CodingKeys: String, CodingKey {
+                case status
+                case actionDigest = "action_digest"
+                case resultDigest = "result_digest"
+                case resultNoteIds = "result_note_ids"
+                case errorCode = "error_code"
+            }
+        }
+        let resultObject: [String: Any] = ["result_note_ids": resultNoteIds]
+        let data = try JSONSerialization.data(withJSONObject: resultObject, options: [.sortedKeys, .withoutEscapingSlashes])
+        let resultDigest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        return try await request(
+            KnowledgeActionCommitResponse.self,
+            path: "me/knowledge-actions/\(encodedPath(id))/resume-sync",
+            method: "POST",
+            body: Body(
+                actionDigest: actionDigest,
+                resultDigest: resultDigest,
+                resultNoteIds: resultNoteIds,
+                status: status,
+                errorCode: errorCode
+            )
+        )
+    }
+
+    public func discardKnowledgeAction(id: String, capability: String, actionDigest: String) async throws {
+        struct Body: Encodable {
+            let capability: String
+            let actionDigest: String
+            enum CodingKeys: String, CodingKey {
+                case capability
+                case actionDigest = "action_digest"
+            }
+        }
+        let _: KnowledgeActionCommitResponse = try await request(
+            KnowledgeActionCommitResponse.self,
+            path: "me/knowledge-actions/\(encodedPath(id))/discard",
+            method: "POST",
+            body: Body(capability: capability, actionDigest: actionDigest)
+        )
+    }
+
     /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
     /// Task.cancel 传播中断客户端等待；404 可区分（清 session_id 幂等重发一次），超时单独抛 `.timeout`）。
     public func chat(
@@ -2103,7 +2226,9 @@ public final class APIClient: ObservableObject {
         case clarifyRejected
         case status(phase: String, detail: String)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
-        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String])
+        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String], operation: String?, targetNoteId: String?, targetNoteTitle: String?, targetContentHash: String?)
+        case knowledgeActionDraft(KnowledgeActionBlock)
+        case knowledgeNavigation(KnowledgeNavigationTarget)
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -2178,8 +2303,63 @@ public final class APIClient: ObservableObject {
                     mergeCandidates: mergeCandidates,
                     mergedTitle: json["merged_title"] as? String,
                     mergedMarkdown: json["merged_markdown"] as? String,
-                    mergedTags: json["merged_tags"] as? [String] ?? []
+                    mergedTags: json["merged_tags"] as? [String] ?? [],
+                    operation: json["operation"] as? String,
+                    targetNoteId: json["target_note_id"] as? String,
+                    targetNoteTitle: json["target_note_title"] as? String,
+                    targetContentHash: json["target_content_hash"] as? String
                 )
+            case "knowledge_action_draft":
+                let steps = (json["steps"] as? [[String: Any]] ?? []).compactMap { item -> KnowledgeActionStep? in
+                    guard let kind = item["kind"] as? String, !kind.isEmpty else { return nil }
+                    return KnowledgeActionStep(
+                        kind: kind,
+                        targetNoteId: item["target_note_id"] as? String,
+                        sourceNoteIds: item["source_note_ids"] as? [String] ?? [],
+                        title: item["title"] as? String,
+                        markdown: item["markdown"] as? String,
+                        tags: item["tags"] as? [String] ?? [],
+                        pinned: item["pinned"] as? Bool,
+                        linkTitle: item["link_title"] as? String,
+                        originalContentHash: item["original_content_hash"] as? String,
+                        sourceContentHashes: (item["source_content_hashes"] as? [String: Any] ?? [:])
+                            .mapValues { $0 as? String }
+                    )
+                }
+                let navigationJSON = json["suggested_navigation"] as? [String: Any]
+                let navigation = navigationJSON.flatMap { value -> KnowledgeNavigationTarget? in
+                    guard let destination = value["destination"] as? String else { return nil }
+                    return KnowledgeNavigationTarget(
+                        destination: destination,
+                        noteId: value["note_id"] as? String,
+                        query: value["query"] as? String
+                    )
+                }
+                let scopeJSON = json["account_scope"] as? [String: Any]
+                let accountScope = scopeJSON.map {
+                    "\($0["tenant_namespace"] as? String ?? ""):\($0["user_namespace"] as? String ?? "")"
+                }
+                return .knowledgeActionDraft(KnowledgeActionBlock(
+                    id: json["action_id"] as? String ?? "",
+                    summary: json["summary"] as? String ?? "知识库修改",
+                    steps: steps,
+                    beforePreview: json["before_preview"] as? String ?? "",
+                    afterPreview: json["after_preview"] as? String ?? "",
+                    markdownDiff: json["markdown_diff"] as? String ?? "",
+                    riskLevel: json["risk_level"] as? String ?? "low",
+                    actionDigest: json["action_digest"] as? String ?? "",
+                    transientCapability: json["knowledge_action_capability"] as? String,
+                    expiresAt: json["expires_at"] as? Int ?? 0,
+                    accountScope: accountScope,
+                    suggestedNavigation: navigation
+                ))
+            case "knowledge_navigation":
+                guard let destination = json["destination"] as? String else { return nil }
+                return .knowledgeNavigation(KnowledgeNavigationTarget(
+                    destination: destination,
+                    noteId: json["note_id"] as? String,
+                    query: json["query"] as? String
+                ))
             case "done":
                 return .done(
                     sessionId: json["session_id"] as? String,

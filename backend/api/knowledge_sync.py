@@ -23,6 +23,7 @@ from backend.api.auth import require_auth
 from backend.services.user_note_context import (
     archived_note_paths,
     namespace,
+    note_directory,
     note_paths,
     sync_root,
 )
@@ -262,3 +263,50 @@ async def restore_note(
     except FileNotFoundError:
         pass
     return {"note_id": note_id, "archive_status": "active", "changed": True}
+
+
+@router.post("/{note_id}/trash")
+async def trash_note(
+    note_id: str,
+    payload: dict[str, Any] = Depends(require_auth),
+) -> dict[str, Any]:
+    """Recoverable delete: move only the authenticated user's note to .trash."""
+    tenant_key = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    note_path, metadata_path = _paths(tenant_key, user_id, note_id)
+    archived_note, archived_metadata = _archived_paths(tenant_key, user_id, note_id)
+    source_note = note_path if note_path.is_file() else archived_note
+    source_metadata = metadata_path if note_path.is_file() else archived_metadata
+    directory = note_directory(tenant_key, user_id, _sync_root()) / ".trash"
+    destination = directory / f"{note_id}.md"
+    destination_metadata = directory / f"{note_id}.sync.json"
+    if destination.is_file():
+        for path in (note_path, metadata_path, archived_note, archived_metadata):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+        return {"note_id": note_id, "trash_status": "trashed", "changed": False}
+    if not source_note.is_file():
+        raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
+    directory.mkdir(parents=True, exist_ok=True)
+    os.replace(source_note, destination)
+    metadata: dict[str, Any] = {}
+    if source_metadata.is_file():
+        try:
+            metadata = json.loads(source_metadata.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+    metadata.update({
+        "trash_status": "trashed",
+        "trashed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    _atomic_write(
+        destination_metadata,
+        json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+    )
+    try:
+        source_metadata.unlink()
+    except FileNotFoundError:
+        pass
+    return {"note_id": note_id, "trash_status": "trashed", "changed": True}

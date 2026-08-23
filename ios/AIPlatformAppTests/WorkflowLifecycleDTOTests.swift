@@ -403,7 +403,7 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
             "merged_markdown": "# 合并内容",
             "merged_tags": ["企业"],
         ]))
-        guard case let .noteDraft(id, title, markdown, _, sessionId, messageIds, accountScope, candidates, mergedTitle, mergedMarkdown, _) = event else {
+        guard case let .noteDraft(id, title, markdown, _, sessionId, messageIds, accountScope, candidates, mergedTitle, mergedMarkdown, _, _, _, _, _) = event else {
             return XCTFail("expected noteDraft event")
         }
         XCTAssertEqual(id, "draft-1")
@@ -415,6 +415,40 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(candidates.map(\.id), ["old-1"])
         XCTAssertEqual(mergedTitle, "超聚变整理")
         XCTAssertEqual(mergedMarkdown, "# 合并内容")
+    }
+
+    func testKnowledgeActionSSEDecodesAndCapabilityIsNeverPersisted() throws {
+        let event = try XCTUnwrap(APIClient.StreamEvent.parse([
+            "type": "knowledge_action_draft",
+            "action_id": "ka-1",
+            "summary": "完善 TokenBox",
+            "steps": [[
+                "kind": "update_note", "target_note_id": "n1",
+                "title": "TokenBox", "markdown": "# TokenBox\n\n新内容",
+                "original_content_hash": "old-hash",
+            ]],
+            "action_digest": String(repeating: "a", count: 64),
+            "knowledge_action_capability": "secret-short-lived-token",
+            "expires_at": 4_000_000_000,
+            "risk_level": "low",
+            "suggested_navigation": ["destination": "note", "note_id": "n1"],
+            "account_scope": ["tenant_namespace": "tenant", "user_namespace": "user"],
+        ]))
+        guard case let .knowledgeActionDraft(action) = event else {
+            return XCTFail("expected knowledge action")
+        }
+        XCTAssertEqual(action.steps.first?.targetNoteId, "n1")
+        XCTAssertEqual(action.transientCapability, "secret-short-lived-token")
+        let message = ChatMessage(sessionId: "s1", role: .assistant, content: "", blocks: [.knowledgeAction(action)])
+        let data = try JSONEncoder().encode(PersistedMessage(message))
+        XCTAssertFalse(String(decoding: data, as: UTF8.self).contains("secret-short-lived-token"))
+        let decoded = try JSONDecoder().decode(PersistedMessage.self, from: data)
+        let restored = decoded.toChatMessage(sessionId: "s1")
+        guard case let .knowledgeAction(restoredAction) = try XCTUnwrap(restored.blocks.first) else {
+            return XCTFail("expected restored knowledge action")
+        }
+        XCTAssertNil(restoredAction.transientCapability)
+        XCTAssertEqual(restoredAction.state, .stale)
     }
 
     func testClarifyStateSurvivesSessionPersistenceRoundTrip() throws {

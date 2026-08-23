@@ -141,3 +141,8 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
         restored = _request("POST", "/api/v1/me/knowledge-notes/old-note/restore", json={})
         assert restored.status_code == 200
         assert (owner_dir / "old-note.md").is_file()
+        trashed = _request("POST", "/api/v1/me/knowledge-notes/old-note/trash", json={})
+        assert trashed.status_code == 200
+        assert trashed.json()["trash_status"] == "trashed"
+        assert not (owner_dir / "old-note.md").exists()
+        assert (owner_dir / ".trash" / "old-note.md").is_file()

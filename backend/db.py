@@ -45,6 +45,7 @@ async def init_db() -> None:
     import backend.models.showroom  # noqa: F401  (注册共创体验中心会话模型)
     import backend.models.customer_demand  # noqa: F401  (注册独立客户需求模型)
     import backend.models.workflow  # noqa: F401  (注册持久工作流模型)
+    import backend.models.knowledge_action  # noqa: F401  (注册知识动作幂等记录)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

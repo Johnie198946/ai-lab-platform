@@ -11,7 +11,7 @@ import UIKit
 private enum NoteScope: String, CaseIterable, Identifiable {
     case all = "全部"
     case pinned = "已置顶"
-    case daily = "每日笔记"
+    case daily = "日记"
 
     var id: String { rawValue }
 }
@@ -37,26 +37,18 @@ public struct KnowledgeView: View {
 
     public init() {}
 
-    private var visibleNotes: [KnowledgeNote] {
-        store.search(searchText, tag: selectedTag).filter { note in
+    public var body: some View {
+        let visibleNotes = store.search(searchText, tag: selectedTag).filter { note in
             switch scope {
             case .all: return true
             case .pinned: return note.isPinned
             case .daily: return note.isDailyNote
             }
         }
-    }
+        let pinnedNotes = visibleNotes.filter(\.isPinned)
+        let recentNotes = visibleNotes.filter { !$0.isPinned || scope != .all }
 
-    private var pinnedNotes: [KnowledgeNote] {
-        visibleNotes.filter(\.isPinned)
-    }
-
-    private var recentNotes: [KnowledgeNote] {
-        visibleNotes.filter { !$0.isPinned || scope != .all }
-    }
-
-    public var body: some View {
-        NavigationStack(path: $path) {
+        return NavigationStack(path: $path) {
             List {
                 workspaceHeader
                 quickActions
@@ -107,7 +99,7 @@ public struct KnowledgeView: View {
                         Button {
                             openDailyNote()
                         } label: {
-                            Label("打开每日笔记", systemImage: "calendar")
+                            Label("打开日记", systemImage: "calendar")
                         }
                     } label: {
                         Image(systemName: "plus")
@@ -154,6 +146,28 @@ public struct KnowledgeView: View {
             .sheet(isPresented: $showingArchive) {
                 KnowledgeArchiveView()
             }
+            .onChange(of: appState.pendingKnowledgeNavigation) { _, target in
+                guard let target else { return }
+                applyNavigation(target)
+                appState.pendingKnowledgeNavigation = nil
+            }
+        }
+    }
+
+    private func applyNavigation(_ target: KnowledgeNavigationTarget) {
+        switch target.destination {
+        case "knowledge_home":
+            path.removeAll(); showingArchive = false
+        case "note":
+            if let id = target.noteId, store.note(id: id) != nil { path.append(id) }
+        case "daily_note":
+            openDailyNote()
+        case "search":
+            path.removeAll(); showingArchive = false; searchText = target.query ?? ""
+        case "archive":
+            path.removeAll(); showingArchive = true
+        default:
+            break
         }
     }
 
@@ -338,7 +352,11 @@ public struct KnowledgeView: View {
         Section {
             ForEach(notes) { note in
                 NavigationLink(value: note.id) {
-                    KnowledgeNoteRow(note: note, backlinkCount: store.backlinks(to: note).count)
+                    KnowledgeNoteRow(
+                        note: note,
+                        preview: store.index.previewsByNoteID[note.id] ?? "",
+                        backlinkCount: store.index.backlinkCountsByNoteID[note.id] ?? 0
+                    )
                 }
                 .buttonStyle(SoftButtonStyle())
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
@@ -534,6 +552,7 @@ private struct KnowledgeArchiveView: View {
 
 private struct KnowledgeNoteRow: View {
     let note: KnowledgeNote
+    let preview: String
     let backlinkCount: Int
 
     var body: some View {
@@ -560,8 +579,8 @@ private struct KnowledgeNoteRow: View {
                     }
                 }
 
-                if !note.preview.isEmpty {
-                    Text(note.preview)
+                if !preview.isEmpty {
+                    Text(preview)
                         .font(.subheadline)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
                         .lineLimit(2)
@@ -1014,9 +1033,11 @@ private struct MarkdownTextEditor: UIViewRepresentable {
 
 private struct NoteReadingView: View {
     let content: String
+    @State private var blocks: [NoteReadingBlock]
 
-    private var blocks: [NoteReadingBlock] {
-        NoteReadingBlock.parse(content)
+    init(content: String) {
+        self.content = content
+        _blocks = State(initialValue: NoteReadingBlock.parse(content))
     }
 
     var body: some View {
@@ -1033,6 +1054,9 @@ private struct NoteReadingView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
+        .onChange(of: content) { _, updatedContent in
+            blocks = NoteReadingBlock.parse(updatedContent)
+        }
     }
 }
 

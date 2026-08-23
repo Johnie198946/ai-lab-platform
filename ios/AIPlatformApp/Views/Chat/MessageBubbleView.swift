@@ -225,6 +225,9 @@ public struct MessageBubbleView: View {
             },
             onNoteDraftAction: { draftId, action in
                 context?.onNoteDraftAction?(draftId, action)
+            },
+            onKnowledgeAction: { actionId, action in
+                context?.onKnowledgeAction?(actionId, action)
             }
         )
     }

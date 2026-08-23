@@ -36,6 +36,12 @@ from backend.services.client_context_capability import (
     context_digest,
     mint_client_context_capability,
 )
+from backend.services.knowledge_action_capability import (
+    action_digest as knowledge_action_digest,
+    canonical_digest,
+    mint_knowledge_action_capability,
+)
+from backend.api.knowledge_actions import persist_knowledge_action_proposal
 from backend.services.llm_usage import record_llm_usage
 from backend.services.user_note_context import (
     normalize_inline_notes,
@@ -152,6 +158,10 @@ class LocalNoteContext(BaseModel):
     markdown: str = Field(..., min_length=1, max_length=20_000)
     updated_at: Optional[str] = Field(None, max_length=64)
     content_hash: Optional[str] = Field(None, max_length=64)
+    tags: List[str] = Field(default_factory=list, max_length=64)
+    aliases: List[str] = Field(default_factory=list, max_length=64)
+    is_pinned: bool = False
+    archived: bool = False
 
 
 class ChatContextScope(BaseModel):
@@ -173,7 +183,7 @@ class ClientSessionContext(BaseModel):
     # Local-first note snapshot used only for current-user similarity checks.
     # It is covered by the signed client-context capability and never becomes
     # a tenant Wiki source.
-    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=12)
+    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=50)
 
 
 def _validated_client_session_context(
@@ -204,6 +214,7 @@ class ChatRequest(BaseModel):
     skill_id: Optional[str] = Field(None, max_length=80)
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
     client_session_context: Optional[ClientSessionContext] = None
+    client_capabilities: List[str] = Field(default_factory=list, max_length=20)
 
 
 def validate_chat_skill(skill_id: Optional[str]) -> Optional[str]:
@@ -815,6 +826,7 @@ class StreamRequest(BaseModel):
     regenerate: bool = False
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
     client_session_context: Optional[ClientSessionContext] = None
+    client_capabilities: List[str] = Field(default_factory=list, max_length=20)
 
 
 class ClarifySubmitRequest(BaseModel):
@@ -852,6 +864,7 @@ async def _call_bridge_stream(
     agent_config: Optional[Dict[str, Any]] = None,
     client_session_context: Optional[Dict[str, Any]] = None,
     client_context_capability: Optional[str] = None,
+    client_capabilities: Optional[List[str]] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
     async with httpx.AsyncClient(timeout=httpx.Timeout(STREAM_IDLE_TIMEOUT)) as client:
@@ -870,6 +883,7 @@ async def _call_bridge_stream(
                 "agent_config": agent_config or {},
                 "client_session_context": client_session_context,
                 "client_context_capability": client_context_capability,
+                "client_capabilities": client_capabilities or [],
             },
         ) as resp:
             if resp.status_code != 200:
@@ -904,6 +918,96 @@ def _stream_event(frame: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, TypeError):
         return None
     return event if isinstance(event, dict) else None
+
+
+def _knowledge_action_vault_revision(context: dict[str, Any] | None) -> str:
+    notes = (context or {}).get("local_notes") or []
+    compact = [
+        {
+            "id": item.get("id"),
+            "content_hash": item.get("content_hash"),
+            "updated_at": item.get("updated_at"),
+            "archived": bool(item.get("archived")),
+        }
+        for item in notes
+        if isinstance(item, dict)
+    ]
+    return canonical_digest(compact)
+
+
+async def _authorize_knowledge_action_event(
+    event: dict[str, Any],
+    *,
+    payload: dict[str, Any],
+    session_id: str,
+    request_id: str,
+    policy_version: str,
+    client_context: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Replace an unsigned Bridge proposal with an API-signed, persisted proposal."""
+    action_id = str(event.get("action_id") or "")
+    if not action_id:
+        raise ValueError("knowledge_action_draft missing action_id")
+    known_hashes = {
+        str(note.get("id")): note.get("content_hash")
+        for note in (client_context or {}).get("local_notes") or []
+        if isinstance(note, dict) and note.get("id")
+    }
+    target_hashes: dict[str, str | None] = {}
+    for step in event.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        note_id = step.get("target_note_id")
+        if note_id:
+            target_hashes[str(note_id)] = (
+                step.get("original_content_hash") or known_hashes.get(str(note_id))
+            )
+        source_hashes = step.get("source_content_hashes")
+        for source_id in step.get("source_note_ids") or []:
+            source_id = str(source_id)
+            target_hashes[source_id] = (
+                source_hashes.get(source_id) if isinstance(source_hashes, dict) else None
+            ) or known_hashes.get(source_id)
+    action_hash = knowledge_action_digest(event)
+    vault_revision = _knowledge_action_vault_revision(client_context)
+    tenant_key = str(payload.get("tenant_key") or "public")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
+    capability, expiry = mint_knowledge_action_capability(
+        tenant_key=tenant_key,
+        user_id=user_id,
+        session_id=session_id,
+        request_id=request_id,
+        policy_version=policy_version,
+        action_id=action_id,
+        action_hash=action_hash,
+        target_hashes=target_hashes,
+        vault_revision=vault_revision,
+    )
+    authorized = dict(event)
+    authorized.update(
+        {
+            "action_digest": action_hash,
+            "knowledge_action_capability": capability,
+            "expires_at": expiry,
+            "confirmation_status": "proposed",
+            "account_scope": {
+                "tenant_namespace": hashlib.sha256(tenant_key.encode()).hexdigest()[:16],
+                "user_namespace": hashlib.sha256(user_id.encode()).hexdigest()[:16],
+            },
+        }
+    )
+    await persist_knowledge_action_proposal(
+        tenant_key=tenant_key,
+        user_id=user_id,
+        session_id=session_id,
+        request_id=request_id,
+        policy_version=policy_version,
+        event=authorized,
+        capability=capability,
+        action_hash=action_hash,
+        vault_revision=vault_revision,
+    )
+    return authorized
 
 
 @router.post("/stream")
@@ -1067,10 +1171,21 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 "agent_config": agent.bridge_config(),
                 "client_session_context": client_context,
                 "client_context_capability": client_context_capability,
+                "client_capabilities": req.client_capabilities,
             }
             kwargs["request_id"] = effective_request_id
             async for frame in _call_bridge_stream(routed_goal, isolated_session_id, **kwargs):
                 event = _stream_event(frame)
+                if event and event.get("type") == "knowledge_action_draft":
+                    event = await _authorize_knowledge_action_event(
+                        event,
+                        payload=payload,
+                        session_id=isolated_session_id,
+                        request_id=effective_request_id,
+                        policy_version=policy_version,
+                        client_context=client_context,
+                    )
+                    frame = f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 if event and event.get("type") in {"done", "error"}:
                     await record_llm_usage(
                         auth_payload=payload,

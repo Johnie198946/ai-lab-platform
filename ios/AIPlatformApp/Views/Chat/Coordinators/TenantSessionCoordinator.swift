@@ -94,6 +94,9 @@ public final class TenantSessionCoordinator: ObservableObject {
             },
             onNoteDraftAction: { [weak self] draftId, action in
                 self?.handleNoteDraftAction(messageId: message?.id, draftId: draftId, action: action)
+            },
+            onKnowledgeAction: { [weak self] actionId, verb in
+                self?.handleKnowledgeAction(messageId: message?.id, actionId: actionId, verb: verb)
             }
         )
     }
@@ -379,13 +382,23 @@ public final class TenantSessionCoordinator: ObservableObject {
 
         let sid = sessionManager.activeSessionID()
         let clientSessionContext = sessionManager.clientSessionContext(for: sid)
-        let localNoteSnapshot = KnowledgeNoteStore.shared.notes.prefix(12).map { note in
-            ChatLocalNoteDTO(
+        var localNoteSnapshot: [ChatLocalNoteDTO] = []
+        var localNoteCharacters = 0
+        for note in (KnowledgeNoteStore.shared.notes + KnowledgeNoteStore.shared.archivedNotes).prefix(50) {
+            let markdown = String(KnowledgeNoteStore.shared.markdown(for: note).prefix(20_000))
+            guard localNoteCharacters + markdown.count <= 100_000 else { break }
+            localNoteSnapshot.append(ChatLocalNoteDTO(
                 id: note.id,
                 title: note.title,
-                markdown: String(KnowledgeNoteStore.shared.markdown(for: note).prefix(20_000)),
-                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt)
-            )
+                markdown: markdown,
+                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt),
+                contentHash: KnowledgeNoteStore.shared.contentHash(for: note),
+                tags: note.tags,
+                aliases: note.aliases,
+                isPinned: note.isPinned,
+                archived: note.archivedAt != nil
+            ))
+            localNoteCharacters += markdown.count
         }
         let enrichedClientSessionContext = ClientSessionContextDTO(
             sessionId: clientSessionContext.sessionId,
@@ -664,7 +677,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].delegatedBy = delegatedBy
                     }
 
-                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope, let mergeCandidates, let mergedTitle, let mergedMarkdown, let mergedTags):
+                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope, let mergeCandidates, let mergedTitle, let mergedMarkdown, let mergedTags, let operation, let targetNoteId, let targetNoteTitle, let targetContentHash):
                     drainDeltaBuffer(messageId: outputId)
                     guard sourceSessionId == nil || sourceSessionId == req.sessionId else { continue }
                     let draft = NoteDraftBlock(
@@ -678,7 +691,11 @@ public final class TenantSessionCoordinator: ObservableObject {
                         mergeCandidates: mergeCandidates.isEmpty ? nil : mergeCandidates,
                         mergedTitle: mergedTitle,
                         mergedMarkdown: mergedMarkdown,
-                        mergedTags: mergedTags.isEmpty ? nil : mergedTags
+                        mergedTags: mergedTags.isEmpty ? nil : mergedTags,
+                        operation: operation,
+                        targetNoteId: targetNoteId,
+                        targetNoteTitle: targetNoteTitle,
+                        targetContentHash: targetContentHash
                     )
                     if let idx = messages.firstIndex(where: { $0.id == outputId }),
                        !messages[idx].blocks.contains(where: {
@@ -688,6 +705,21 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].blocks.append(.noteDraft(draft))
                         messages[idx].pending = false
                     }
+
+                case .knowledgeActionDraft(let action):
+                    drainDeltaBuffer(messageId: outputId)
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }),
+                       !messages[idx].blocks.contains(where: {
+                           if case .knowledgeAction(let existing) = $0 { return existing.id == action.id }
+                           return false
+                       }) {
+                        messages[idx].blocks.append(.knowledgeAction(action))
+                        messages[idx].pending = false
+                    }
+
+                case .knowledgeNavigation(let target):
+                    appState?.pendingKnowledgeNavigation = target
+                    appState?.activeTab = 2
 
                 case .done(_, let answer):
                     drainDeltaBuffer(messageId: outputId)
@@ -1722,10 +1754,34 @@ public final class TenantSessionCoordinator: ObservableObject {
             showToast("合并稿不可用，请保存为新笔记")
             return
         }
-        guard appState?.isLoggedIn == true,
-              let note = KnowledgeNoteStore.shared.createNote(
-                  title: noteTitle, body: noteMarkdown, tags: noteTags
-              ) else {
+        guard appState?.isLoggedIn == true else {
+            showToast("请先登录后再保存笔记")
+            return
+        }
+        let note: KnowledgeNote?
+        if draft.isUpdate, let targetId = draft.targetNoteId {
+            guard let existing = KnowledgeNoteStore.shared.note(id: targetId) else {
+                showToast("目标笔记已不存在，无法应用修改")
+                return
+            }
+            if let expectedHash = draft.targetContentHash,
+               KnowledgeNoteStore.shared.contentHash(for: existing) != expectedHash {
+                showToast("笔记内容已变化，请重新生成完善方案")
+                return
+            }
+            note = KnowledgeNoteStore.shared.save(
+                id: targetId,
+                title: noteTitle,
+                body: noteMarkdown,
+                tags: noteTags,
+                isPinned: existing.isPinned
+            )
+        } else {
+            note = KnowledgeNoteStore.shared.createNote(
+                title: noteTitle, body: noteMarkdown, tags: noteTags
+            )
+        }
+        guard let note else {
             showToast("无法保存笔记，请检查本地存储")
             return
         }
@@ -1742,7 +1798,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         } else {
             archivedNotes = []
         }
-        if action == "edit" {
+        if draft.isUpdate {
+            showToast("已更新原笔记")
+        } else if action == "edit" {
             appState?.activeTab = 2
             showToast("已保存到本地，可在笔记页继续编辑")
         }
@@ -1776,6 +1834,55 @@ public final class TenantSessionCoordinator: ObservableObject {
             } catch {
                 self?.showToast("笔记已保存到本地，稍后可重试同步")
             }
+        }
+    }
+
+    public func handleKnowledgeAction(messageId: String?, actionId: String, verb: String) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
+              let blockIndex = messages[messageIndex].blocks.firstIndex(where: {
+                  if case .knowledgeAction(let item) = $0 { return item.id == actionId }
+                  return false
+              }), case .knowledgeAction(var action) = messages[messageIndex].blocks[blockIndex]
+        else { return }
+        if verb == "open" {
+            if var target = action.suggestedNavigation, target.noteId == nil {
+                target = KnowledgeNavigationTarget(
+                    destination: target.destination,
+                    noteId: action.resultNoteIds.first,
+                    query: target.query
+                )
+                appState?.pendingKnowledgeNavigation = target
+            } else {
+                appState?.pendingKnowledgeNavigation = action.suggestedNavigation
+            }
+            appState?.activeTab = 2
+            return
+        }
+        let retryableStates: Set<KnowledgeActionState> = [.proposed, .localApplied, .syncPending]
+        guard retryableStates.contains(action.state) else { return }
+        if verb == "discard", action.state != .proposed { return }
+        action.state = verb == "discard" ? .proposed : .applying
+        messages[messageIndex].blocks[blockIndex] = .knowledgeAction(action)
+        commitSession()
+        let expectedEpoch = tenantEpoch
+        Task { [weak self] in
+            let result = verb == "discard"
+                ? await KnowledgeActionExecutor.shared.discard(action)
+                : await KnowledgeActionExecutor.shared.execute(action)
+            guard let self, self.tenantEpoch == expectedEpoch,
+                  let currentMessageIndex = self.messages.firstIndex(where: { $0.id == messageId }),
+                  let currentBlockIndex = self.messages[currentMessageIndex].blocks.firstIndex(where: {
+                      if case .knowledgeAction(let item) = $0 { return item.id == actionId }
+                      return false
+                  }), case .knowledgeAction(var current) = self.messages[currentMessageIndex].blocks[currentBlockIndex]
+            else { return }
+            current.state = result.state
+            current.resultNoteIds = result.noteIds
+            current.errorMessage = result.message
+            self.messages[currentMessageIndex].blocks[currentBlockIndex] = .knowledgeAction(current)
+            self.commitSession()
+            if let message = result.message { self.showToast(message) }
+            else if result.state == .synced { self.showToast("知识操作已应用并同步") }
         }
     }
 
