@@ -843,6 +843,43 @@ class TestWorkflowsAPI(unittest.TestCase):
         )
         self.assertEqual(execution["nodes"][0]["node_type"], "KNOWLEDGE_RETRIEVAL")
 
+    def test_approve_ignores_skill_references_when_persisting_agent_relations(self):
+        from backend.db import SessionLocal
+        from backend.models.tenant_agent import AgentInvocationRelation
+        from backend.models.workflow import WorkflowPlanVersion
+
+        body = self.create_ready()
+
+        async def add_skill_reference():
+            async with SessionLocal() as db:
+                plan = await db.get(WorkflowPlanVersion, body["active_plan_id"])
+                dsl = dict(plan.dsl)
+                dsl["nodes"] = [
+                    *dsl.get("nodes", []),
+                    {
+                        "id": "skill-backed-review",
+                        "node_type": "LLM_INFERENCE",
+                        "parameters": {"agent_id": "skill_ai-lab-competitive-intelligence"},
+                    },
+                ]
+                plan.dsl = dsl
+                await db.commit()
+
+        asyncio.run(add_skill_reference())
+        with patch("backend.api.workflows.validate_plan_policy", new=AsyncMock()):
+            response = self.request(
+                "POST",
+                f"/api/v1/workflows/{body['id']}/approve-plan",
+                json={"comment": "确认执行"},
+            )
+        self.assertEqual(response.status_code, 201, response.text)
+
+        async def relation_targets():
+            async with SessionLocal() as db:
+                return list((await db.execute(select(AgentInvocationRelation.target_agent_id))).scalars())
+
+        self.assertNotIn("skill_ai-lab-competitive-intelligence", asyncio.run(relation_targets()))
+
     def test_approve_request_id_is_idempotent(self):
         body = self.create_ready()
         request_body = {"comment": "确认执行", "request_id": "ios-request-0001"}

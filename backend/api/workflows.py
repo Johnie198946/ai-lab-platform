@@ -1401,6 +1401,7 @@ def compose_task_agent(workflow: WorkflowDefinition, plan: WorkflowPlanVersion) 
         referenced
         - baseline
         - {""}
+        - {agent_id for agent_id in referenced if agent_id.startswith("skill_")}
     )
     max_concurrent_children = bounded_platform_int(
         "WORKFLOW_DELEGATION_MAX_CONCURRENT", 3, 1, 8
@@ -1500,7 +1501,7 @@ async def approve_plan(
         for node in plan_nodes:
             params = node.get("parameters") or {}
             target = str(params.get("agent_id") or "")
-            if not target or target in baseline or target == agent.id:
+            if not target or target in baseline or target == agent.id or target.startswith("skill_"):
                 continue
             db.add(
                 AgentInvocationRelation(
