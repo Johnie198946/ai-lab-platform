@@ -32,11 +32,11 @@ task_id: settings-user-skills-only-20260823
 
 status: DEPLOYED
 commit/push/deploy: 已执行
-head/local_commit: `def6a7d1f637cf1d126798260006321f9f1490bf`
-remote_sha: `def6a7d1f637cf1d126798260006321f9f1490bf`（`git ls-remote origin refs/heads/main`）
+head/local_commit: `9365dbf26281735c6a8ac2ce1bb3cde1bebf2c72`
+remote_sha: `9365dbf26281735c6a8ac2ce1bb3cde1bebf2c72`（`git ls-remote origin refs/heads/main`）
 server_before: `/opt/ai-lab-platform/.deployed-sha=9280caa1f199c93a222392c63621c9adadc8957d`；API `/health` 正常
-server_after: `/opt/ai-lab-platform/.deployed-sha=def6a7d1f637cf1d126798260006321f9f1490bf`；API、前端、三个 Worker、Postgres、Redis 均运行
-health_check: `scripts/update.sh def6a7d1f637cf1d126798260006321f9f1490bf` runtime contract audit passed；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；技能 owned-only 路由未认证返回 401
+server_after: `/opt/ai-lab-platform/.deployed-sha=9365dbf26281735c6a8ac2ce1bb3cde1bebf2c72`；API、前端、三个 Worker、Postgres、Redis 均运行
+health_check: `scripts/update.sh 9365dbf26281735c6a8ac2ce1bb3cde1bebf2c72` runtime contract audit passed；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；技能 owned-only 路由未认证返回 401
 functional_check: 本地 11 项后端测试及 iOS Simulator Debug build 通过；生产路由可达并受认证保护；真实账号下的技能内容验收待执行
 rollback_point: `/opt/ai-lab-platform/.deployed-sha=9280caa1f199c93a222392c63621c9adadc8957d`
 remaining_risks: 尚需用真实账号确认设置页只显示 tenant 技能，不显示 template 技能。
