@@ -30,16 +30,16 @@ task_id: settings-user-agents-only-20260823
 
 ## 交付状态
 
-status: TESTED
+status: DEPLOYED
 branch: `codex/settings-user-agents-only`
 worktree: `/private/tmp/ai-lab-settings-user-agents-only`
-head/local_commit: `0cb89e5275771f2df6e3e4a192ebd51601e2dc02`（尚未提交）
-remote_sha: 未执行（本任务未授权 push）
+head/local_commit: `26fb4f539df5550a7b4c28a058eb2b496e221c7f`
+remote_sha: `26fb4f539df5550a7b4c28a058eb2b496e221c7f`（`git ls-remote origin refs/heads/main`）
 
-server_before: 未执行部署，生产服务器状态不变
-server_after: 未执行部署
-health_check: 未执行部署
-functional_check: 本地后端定向测试及 iOS 模拟器构建通过；未执行生产验收
-rollback_point: 未创建服务器回滚点；本地可直接丢弃本任务 worktree，未改变 main
+server_before: `/opt/ai-lab-platform/.deployed-sha=0cb89e5275771f2df6e3e4a192ebd51601e2dc02`；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；Compose 服务运行
+server_after: `/opt/ai-lab-platform/.deployed-sha=26fb4f539df5550a7b4c28a058eb2b496e221c7f`；API image `sha256:4ec8cba4382b10743abb2c553004eb80fe157a583b04eba33e943e4e6efddddd`；API、前端、三个 Worker、Postgres、Redis 均运行
+health_check: `scripts/update.sh 26fb4f539df5550a7b4c28a058eb2b496e221c7f` runtime contract audit passed；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；`GET /api/v1/tenant-agents?owned_only=true` 未认证返回 401
+functional_check: 本地后端 7 项定向测试通过、iOS Simulator Debug build `BUILD SUCCEEDED`；生产 owned-only 路由可达并执行认证保护；尚未完成真实账号列表验收
+rollback_point: `/opt/ai-lab-platform/.deployed-sha=0cb89e5275771f2df6e3e4a192ebd51601e2dc02`（部署前版本）
 
-remaining_risks: 尚未提交、推送或部署；需在合并后进行真实设置页账号过滤验收，并确认其他调用方继续使用默认全租户列表语义。
+remaining_risks: 已完成提交、推送和部署；仍需在真实双账号下确认设置页只显示各自创建的 Agent，且聊天页默认列表语义不受影响。
