@@ -104,6 +104,18 @@ class TestTenantSkillsAPI(unittest.TestCase):
         body = r.json()
         self.assertEqual(body["skills"], [])
 
+    def test_owned_only_excludes_template_skills(self):
+        from backend.api.skills import TenantSkillOut
+
+        self._fake_skills = [
+            TenantSkillOut(name="my-skill", description="用户配置", category="tenant"),
+            TenantSkillOut(name="platform-skill", description="系统模板", category="template"),
+        ]
+
+        r = self._get("/api/v1/skills?owned_only=true")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual([skill["name"] for skill in r.json()["skills"]], ["my-skill"])
+
 
 if __name__ == "__main__":
     unittest.main()
