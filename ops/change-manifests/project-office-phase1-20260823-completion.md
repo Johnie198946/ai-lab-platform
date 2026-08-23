@@ -2,7 +2,7 @@
 
 - task_id: `20260823-project-office-phase1`
 - objective: 在现有 `/architect` React应用中加入共享同一workflow、plan、execution、events与artifacts状态的只读Office View，同时保持Workbench及全部受控操作不变。
-- status: `VERIFIED / COMMITTED / PUSHED / NOT_DEPLOYED`
+- status: `VERIFIED / DEPLOYED`
 - branch: `main`
 - isolated_checkout: `/Users/dengzhaoyu/Desktop/AI Lab/wt-project-office-phase1`
 - base: `0cb89e5275771f2df6e3e4a192ebd51601e2dc02`
@@ -27,11 +27,12 @@
 10. 后端需求确认时保留已授权的`customer_demand/showroom_context`来源快照，避免确认动作覆盖任务绑定关系；不新增API字段或数据库状态机。
 11. Office组件无任何API调用或写操作；所有创建、澄清、批准、启动能力仍仅在Workbench。
 12. 1280×633单屏布局：六席位、工件带、员工详情均首屏可见；事件气泡与对象真相标签遮挡已实测修复。
+13. 需求仍处于`clarifying`或`awaiting_requirement_confirmation`时不请求尚未生成的Plan；仅在规划及其后状态或已有`active_plan_id`时读取Plan，消除误导性的404轮询。
 
 ## Main Verification
 
 - `node --test tests/project-office.test.mjs`: `10 passed / 0 failed`
-- `npm test`: `77 passed / 0 failed`
+- `npm test`: `78 passed / 0 failed`
 - `npm run build`: PASS
 - backend workflow/event suites: `36 passed / 0 failed`（含2条来源上下文确认后保持回归）
 - `git diff --check`: PASS
@@ -54,7 +55,7 @@
 - no second workflow engine
 - no backend/API schema mutation
 - no server/Vault synchronization
-- no deployment
+- follow-up frontend-only deployment completed
 - no credential persisted
 - temporary fixture located outside repository and stopped after verification
 
@@ -66,4 +67,12 @@
 
 ## Remaining
 
-- 未部署；生产LIVE开放仍需单独部署授权、真实生产execution验收与连续演示彩排。
+- Plan 404修复已部署并完成健康检查；生产LIVE开放仍需真实生产execution验收与连续演示彩排。
+
+## Follow-up Delivery
+
+- fix_commit: `44c6c2434f82ac011babed1fc9f9cf6b928f1765`
+- server_before: `4a37471754d49593b6f8274ab629e0444fef21fd`
+- server_after: `44c6c2434f82ac011babed1fc9f9cf6b928f1765`
+- deployment: `scripts/update.sh <full SHA>` completed; frontend rebuilt; runtime contract audit passed.
+- health_check: API returned `{"status":"ok","version":"0.8.0"}`.

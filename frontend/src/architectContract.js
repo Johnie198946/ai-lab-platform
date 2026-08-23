@@ -99,6 +99,26 @@ export function canStartWorkflow(status, execution = null) {
   return ["agent_ready", "ready"].includes(status);
 }
 
+const PLAN_ELIGIBLE_STATES = new Set([
+  "planning",
+  "awaiting_approval",
+  "agent_ready",
+  "ready",
+  "queued",
+  "running",
+  "awaiting_review",
+  "completed",
+  "failed",
+]);
+
+export function shouldFetchWorkflowPlan(workflow, clarification = null) {
+  const workflowStatus = textValue(workflow?.status).toLowerCase();
+  const clarificationPhase = textValue(clarification?.session?.phase).toLowerCase();
+  return Boolean(textValue(workflow?.active_plan_id))
+    || PLAN_ELIGIBLE_STATES.has(workflowStatus)
+    || PLAN_ELIGIBLE_STATES.has(clarificationPhase);
+}
+
 export function hasResultData(value) {
   if (Array.isArray(value)) return value.length > 0;
   if (value && typeof value === "object") return Object.keys(value).length > 0;
