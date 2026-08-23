@@ -62,7 +62,14 @@ public struct BlockCardDispatcher: View {
             NoteDraftCard(
                 draft: draft,
                 onSave: { onNoteDraftAction?(draft.id, "save") },
-                onMerge: { onNoteDraftAction?(draft.id, "merge") },
+                onMerge: { selectedIds in
+                    if draft.selectedMergeCandidateIds != nil,
+                       draft.mergedMarkdown?.isEmpty == false {
+                        onNoteDraftAction?(draft.id, "confirm_merge")
+                    } else {
+                        onNoteDraftAction?(draft.id, "merge:" + selectedIds.joined(separator: ","))
+                    }
+                },
                 onEdit: { onNoteDraftAction?(draft.id, "edit") },
                 onDiscard: { onNoteDraftAction?(draft.id, "discard") }
             )

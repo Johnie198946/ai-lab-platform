@@ -15,6 +15,8 @@ if [ "$#" -ne 1 ] || [[ ! "$1" =~ ^[0-9a-fA-F]{40}$ ]]; then
 fi
 EXPECTED_SHA="$1"
 SOURCE_REF="$EXPECTED_SHA"
+PREVIOUS_SHA=$(cat .deployed-sha 2>/dev/null || true)
+ROLLBACK_SHA="$PREVIOUS_SHA"
 
 echo "==> [1/4] 从 GitHub 拉取最新代码 (codeload)"
 TARBALL=$(mktemp /tmp/ailab-src.XXXXXX.tgz)
@@ -35,6 +37,22 @@ if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
 fi
 docker compose up -d --build
 
+echo "    等待 Bridge 在途请求安全结束"
+for i in $(seq 1 60); do
+  bridge_status=$(curl -sf http://127.0.0.1:9118/health || true)
+  active_runs=$(printf '%s' "$bridge_status" | sed -n 's/.*"active_runs":\([0-9][0-9]*\).*/\1/p')
+  if [ -z "$bridge_status" ] || [ "${active_runs:-0}" = "0" ]; then
+    break
+  fi
+  sleep 2
+done
+printf '%s\n' "$EXPECTED_SHA" > .bridge-target-sha
+if ! systemctl restart hermes-bridge.service; then
+  if [ -n "$ROLLBACK_SHA" ]; then printf '%s\n' "$ROLLBACK_SHA" > .bridge-target-sha; fi
+  echo "ERROR: Hermes Bridge 重启失败；.deployed-sha 保持原回滚点" >&2
+  exit 1
+fi
+
 echo "==> [3/4] 健康检查"
 status=""
 for i in $(seq 1 30); do
@@ -49,6 +67,25 @@ if [ -z "${status:-}" ]; then
   echo "WARN: 30 秒内未就绪，请查看: docker compose logs api"
   exit 1
 fi
+bridge_status=""
+for i in $(seq 1 30); do
+  bridge_status=$(curl -sf http://127.0.0.1:9118/health || true)
+  case "$bridge_status" in
+    *"\"loaded_sha\":\"$EXPECTED_SHA\""*) break ;;
+  esac
+  sleep 2
+done
+case "$bridge_status" in
+  *"\"loaded_sha\":\"$EXPECTED_SHA\""*) echo "    Bridge 已加载目标 SHA: $EXPECTED_SHA" ;;
+  *)
+    if [ -n "$ROLLBACK_SHA" ]; then
+      printf '%s\n' "$ROLLBACK_SHA" > .bridge-target-sha
+      systemctl restart hermes-bridge.service || true
+    fi
+    echo "ERROR: Bridge loaded_sha 与目标 SHA 不一致；.deployed-sha 未更新" >&2
+    exit 1
+    ;;
+esac
 echo "==> [4/4] 运行平台契约审计（容器内 Python 3.12，宿主机 3.6 兼容问题规避）"
 mkdir -p data/manifests data/runtime
 if [ ! -e data/knowledge_matrix.json ]; then

@@ -75,9 +75,20 @@ public struct NoteDraftCard: View {
 
     public let draft: NoteDraftBlock
     public let onSave: () -> Void
-    public let onMerge: () -> Void
+    public let onMerge: ([String]) -> Void
     public let onEdit: () -> Void
     public let onDiscard: () -> Void
+    @State private var selectedCandidateIds: Set<String>
+
+    public init(draft: NoteDraftBlock, onSave: @escaping () -> Void, onMerge: @escaping ([String]) -> Void, onEdit: @escaping () -> Void, onDiscard: @escaping () -> Void) {
+        self.draft = draft
+        self.onSave = onSave
+        self.onMerge = onMerge
+        self.onEdit = onEdit
+        self.onDiscard = onDiscard
+        let preferred = (draft.mergeCandidates ?? []).filter { $0.confidence >= 0.7 }.map(\.id)
+        _selectedCandidateIds = State(initialValue: Set(preferred.isEmpty ? (draft.mergeCandidates ?? []).map(\.id) : preferred))
+    }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
@@ -99,6 +110,10 @@ public struct NoteDraftCard: View {
 
     private var hasMergeCandidates: Bool {
         !(draft.mergeCandidates ?? []).isEmpty
+    }
+
+    private var hasMergePreview: Bool {
+        draft.selectedMergeCandidateIds != nil && draft.mergedMarkdown?.isEmpty == false
     }
 
     private var headerView: some View {
@@ -131,6 +146,11 @@ public struct NoteDraftCard: View {
                     .foregroundStyle(AppTheme.Colors.textPrimary)
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                if let count = draft.sourceMessageCount {
+                    Text("已归纳 \(count) 条来源\(draft.snapshotComplete == true ? " · 完整会话" : " · 会话不完整")")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
             }
             Spacer(minLength: 0)
         }
@@ -150,7 +170,7 @@ public struct NoteDraftCard: View {
                 }
             }
 
-            Text(previewText)
+            Text(hasMergePreview ? String((draft.mergedMarkdown ?? "").prefix(700)) : previewText)
                 .font(AppTheme.Typography.supporting)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
                 .lineSpacing(3)
@@ -190,21 +210,28 @@ public struct NoteDraftCard: View {
                 Spacer(minLength: 0)
             }
 
-            HStack(spacing: AppTheme.Spacing.xs) {
-                ForEach((draft.mergeCandidates ?? []).prefix(2)) { candidate in
-                    Text(candidate.title)
-                        .font(AppTheme.Typography.micro)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .lineLimit(1)
-                        .padding(.horizontal, AppTheme.Spacing.sm)
-                        .padding(.vertical, 6)
-                        .background(AppTheme.Colors.cardBackground.opacity(0.82))
-                        .clipShape(Capsule())
-                }
-                if let count = draft.mergeCandidates?.count, count > 2 {
-                    Text("+\(count - 2)")
-                        .font(AppTheme.Typography.micro.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textTertiary)
+            VStack(spacing: AppTheme.Spacing.xs) {
+                ForEach(draft.mergeCandidates ?? []) { candidate in
+                    Button {
+                        if selectedCandidateIds.contains(candidate.id) {
+                            selectedCandidateIds.remove(candidate.id)
+                        } else {
+                            selectedCandidateIds.insert(candidate.id)
+                        }
+                    } label: {
+                        HStack(spacing: AppTheme.Spacing.sm) {
+                            Image(systemName: selectedCandidateIds.contains(candidate.id) ? "checkmark.circle.fill" : "circle")
+                                .foregroundStyle(selectedCandidateIds.contains(candidate.id) ? AppTheme.Icons.intelligence : AppTheme.Colors.textTertiary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(candidate.title).font(AppTheme.Typography.micro.weight(.semibold)).lineLimit(1)
+                                if let reason = candidate.matchReason, !reason.isEmpty {
+                                    Text(reason).font(AppTheme.Typography.micro).foregroundStyle(AppTheme.Colors.textTertiary).lineLimit(1)
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
 
@@ -221,10 +248,11 @@ public struct NoteDraftCard: View {
     private var actionView: some View {
         VStack(spacing: AppTheme.Spacing.sm) {
             if hasMergeCandidates {
-                Button(action: onMerge) {
-                    Label("合并整理并归档旧笔记", systemImage: "arrow.triangle.merge")
+                Button { onMerge(Array(selectedCandidateIds)) } label: {
+                    Label(hasMergePreview ? "确认合并并归档" : "预览合并稿（\(selectedCandidateIds.count)）", systemImage: "arrow.triangle.merge")
                 }
                 .buttonStyle(QuantumPrimaryButtonStyle())
+                .disabled(selectedCandidateIds.isEmpty)
 
                 Button(action: onSave) {
                     Label("保存为新笔记", systemImage: "plus.circle")
