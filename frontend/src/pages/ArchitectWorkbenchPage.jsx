@@ -17,6 +17,7 @@ import {
   projectPlanToReactFlow,
   projectOfficeProjection,
   showroomSessionIdFromSearch,
+  shouldFetchWorkflowPlan,
 } from "../architectContract";
 import ProjectOfficeView from "../features/project-office/ProjectOfficeView";
 import "./ArchitectWorkbenchPage.css";
@@ -147,13 +148,16 @@ export default function ArchitectPage() {
     setConnectionState("SYNCING");
     setBusy(true);
     try {
-      const [workflowData, clarificationData, planData] = await Promise.all([
+      const [workflowData, clarificationData] = await Promise.all([
         platformApi.getWorkflow(id),
         platformApi.getClarification(id),
-        platformApi.getWorkflowPlan(id).catch((nextError) => nextError?.status === 404 ? null : Promise.reject(nextError)),
       ]);
       if (activeWorkflowIdRef.current !== id) return;
       const loaded = workflowData.workflow || workflowData;
+      let planData = null;
+      if (shouldFetchWorkflowPlan(loaded, clarificationData)) {
+        planData = await platformApi.getWorkflowPlan(id).catch((nextError) => nextError?.status === 404 ? null : Promise.reject(nextError));
+      }
       setConnectionState("CONNECTED");
       setWorkflow(loaded);
       setClarification(clarificationData);

@@ -17,6 +17,7 @@ import {
   EXECUTION_POLL_ATTEMPTS,
   showroomSessionIdFromSearch,
   customerDemandIdFromSearch,
+  shouldFetchWorkflowPlan,
 } from "../src/architectContract.js";
 
 test("plan-to-canvas projection uses only server nodes and edges", () => {
@@ -179,6 +180,13 @@ test("the real post-approval agent_ready state can start a workflow", () => {
   assert.equal(canStartWorkflow("ready", { status: "running" }), false);
   assert.equal(canStartWorkflow("ready", { status: "awaiting_review" }), false);
   assert.equal(canStartWorkflow("awaiting_approval"), false);
+});
+
+test("plan is not requested while a workflow is still clarifying", () => {
+  assert.equal(shouldFetchWorkflowPlan({ status: "clarifying" }, { session: { phase: "clarifying" } }), false);
+  assert.equal(shouldFetchWorkflowPlan({ status: "awaiting_requirement_confirmation" }, { session: { phase: "awaiting_requirement_confirmation" } }), false);
+  assert.equal(shouldFetchWorkflowPlan({ status: "planning" }, { session: { phase: "planning" } }), true);
+  assert.equal(shouldFetchWorkflowPlan({ status: "clarifying", active_plan_id: "plan-1" }), true);
 });
 
 test("empty evidence arrays render as an honest empty state", () => {
