@@ -2,7 +2,7 @@
 
 - task_id: `global-press-border-glow-20260823`
 - task_goal: 为 iOS 全局按钮、交互组件和主要卡片增加 React Bits BorderGlow 风格的按压边缘流光。
-- current_status: `TESTED`
+- current_status: `DEPLOYED`
 
 ## Changed Files
 
@@ -52,17 +52,18 @@
 
 ## Delivery
 
-- commit SHA: 未授权，未提交。
-- GitHub remote/ref/SHA: 未授权，未推送；未执行 `git ls-remote`。
-- server_before: 不适用，本任务未授权部署。
-- server_after: 未部署。
-- health_check: 不适用。
-- functional_check: clean build、增量 build、30 项测试和按压样式覆盖审计通过；未安装到用户当前模拟器，避免覆盖上一项尚未提交的页面内语音构建。
-- rollback_point: `4d65aa6683aef8943ac59bde808054c0f996fd04`。
+- commit SHA: `34d45c7c55a842927b1a5741ee7652dbb81d05a9`（实现提交；交付证据清单将作为后续提交推送）。
+- GitHub remote/ref/SHA: `origin/main` 已推送；`git ls-remote` 已核对为 `34d45c7c55a842927b1a5741ee7652dbb81d05a9`。
+- server_before: `/opt/ai-lab-platform/.deployed-sha=a7292eb40e32e71aaed7c5a0fd36c37475ad1153`；API `{"status":"ok","version":"0.8.0"}`；Bridge service active。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=34d45c7c55a842927b1a5741ee7652dbb81d05a9`；API、frontend、workers、postgres、redis running。
+- health_check: API `http://127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.8.0"}`；Bridge `http://127.0.0.1:9118/health` 返回 `status=ok, version=v6.0`；`hermes-bridge.service=active`；runtime contract audit passed。
+- functional_check: iOS clean/incremental build、30 项测试和按压样式覆盖审计通过；模拟器安装将在交付证据提交后完成。生产 Bridge v6 健康协议不提供 `loaded_sha`，因此不虚报该字段。
+- rollback_point: `/opt/ai-lab-platform/.deployed-sha` 原值 `a7292eb40e32e71aaed7c5a0fd36c37475ad1153`；可按该 SHA 重新执行 `scripts/update.sh`。
 
 ## Remaining Risks
 
 - Mac 当前锁屏，无法进行真实手指按压、滚动并发和动效截图验收。
 - 尚需在小屏、横屏、暗色、最大 Dynamic Type 与 Reduce Motion 环境完成视觉验收。
 - 本任务与上一项尚未提交的页面内语音任务位于不同隔离分支；合并前需在集成分支同时纳入两项变更。
-- 未执行 commit、push、部署、重新打包或模拟器安装。
+- 生产 Bridge v6 未暴露 `loaded_sha`，无法进行进程内 SHA 字段比对；已保留旧 marker 作为回滚点。
+- 尚未完成本次交付证据 manifest 的最终提交、重新打包和模拟器安装。
