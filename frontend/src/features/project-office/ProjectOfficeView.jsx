@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, BriefcaseBusiness, FileText, Monitor, UserRound } from "lucide-react";
 import "./ProjectOfficeView.css";
+import ReferenceOfficeView from "./ReferenceOfficeView";
 
 const listText = (values) => values.length ? values.map(String).join(" · ") : "未提供";
 
@@ -52,7 +53,7 @@ function EmployeeConsole({ seat, truthOverride = "" }) {
   );
 }
 
-export default function ProjectOfficeView({ projection, onSwitchToWorkbench, error = "", busy = false }) {
+function LegacyProjectOfficeView({ projection, onSwitchToWorkbench, error = "", busy = false }) {
   const [selectedId, setSelectedId] = useState(projection.seats[0]?.id || "");
   const selectedSeat = projection.seats.find((seat) => seat.id === selectedId) || projection.seats[0] || null;
   const disconnected = Boolean(error) || projection.connectionState === "UNCONNECTED";
@@ -109,4 +110,8 @@ export default function ProjectOfficeView({ projection, onSwitchToWorkbench, err
       </div>
     </section>
   );
+}
+
+export default function ProjectOfficeView(props) {
+  return <ReferenceOfficeView {...props} />;
 }

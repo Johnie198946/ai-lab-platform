@@ -1,0 +1,26 @@
+# AI Office reference frontend replica — completion record
+
+- task_id: `ai-office-reference-replica-20260823`
+- scope: replace the `/architect?view=office` visual renderer with a replica of the supplied `AI项目组前端UI设计.zip`, while retaining the server-backed OfficeProjection as the only data source.
+- changed:
+  - added the supplied 2.5D `CharacterDesk` component and its animation stylesheet;
+  - added `ReferenceOfficeView` with the reference layout: dark project header, phase bar, dotted office floor, dynamic seats, status pills, event bubbles, artifact strip, and employee bottom sheet;
+  - mapped seats, status, events, artifacts, connection truth, and node IDs from the existing projection;
+  - kept the Workbench switch and read-only boundary.
+- verification:
+  - `frontend npm test`: `78 passed / 0 failed`;
+  - `frontend npm run build`: passed;
+  - `git diff --check`: passed;
+  - removed reference-only Tailwind v4 directives after build caught incompatibility with this repository's PostCSS/Tailwind setup.
+- commit: `pending`
+- remote_sha: `not pushed`
+- server_before: `be77b7be1313ca37b870ac27358612ef8510ec64`
+- server_after: `not deployed`
+- health_check: `not applicable; local-only`
+- functional_check: `local build and contract tests passed; browser visual acceptance pending`
+- rollback_point: `be77b7be1313ca37b870ac27358612ef8510ec64`
+- status: `LOCAL_ONLY`
+- remaining_risks:
+  - supplied reference interactions are adapted to real server projection; fabricated stage choreography is intentionally not copied;
+  - browser screenshot acceptance is still pending;
+  - no GitHub push or server deployment was performed.
