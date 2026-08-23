@@ -12,12 +12,12 @@
   - worktree: /private/tmp/ai-lab-obsidian-wikilinks-ios
 - validation:
   - `xcodebuild -project ios/AIPlatformApp.xcodeproj -scheme AIPlatformApp -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`: passed (`BUILD SUCCEEDED`)
-- status: TESTED
-- commit_sha: not created (not requested)
-- remote_sha: not pushed (not requested)
-- server_before: not applicable
-- server_after: not applicable
-- health_check: not applicable
-- functional_check: compile validation passed; UI state condition now matches `NoteDraftState.awaitingConfirmation`
-- rollback_point: 12128c720ab07bd93edf2374e569725dd7f8d635
-- remaining_risks: Simulator visual confirmation and UI automation for each draft state remain optional follow-up validation.
+- status: DEPLOYED
+- commit_sha: ec6631fc5613787d57a34034f8bde629000c57d8
+- remote_sha: origin/codex/obsidian-wikilinks-ios = ec6631fc5613787d57a34034f8bde629000c57d8 (verified with `git ls-remote`)
+- server_before: `.deployed-sha=57aa89fca19565f3b26cef89603e6b453db19704`; API health was HTTP 200; Hermes Bridge service active.
+- server_after: `/opt/ai-lab-platform/.deployed-sha=ec6631fc5613787d57a34034f8bde629000c57d8`; API, frontend, planning-worker, workflow-worker, agent-evaluation-worker, Postgres and Redis running; API container healthy.
+- health_check: `bash scripts/update.sh ec6631fc5613787d57a34034f8bde629000c57d8` completed; API `/health` returned `{"status":"ok","version":"0.8.0"}`; Hermes Bridge service active and endpoint returned HTTP 200. Bridge endpoint is an older health schema and does not expose `loaded_sha`, so Bridge SHA equality is not claimed.
+- functional_check: iOS simulator Debug build passed; note draft card now hides “待确认” after save/sync. Runtime contract audit passed during deployment.
+- rollback_point: `.deployed-sha=57aa89fca19565f3b26cef89603e6b453db19704`; rerun `scripts/update.sh 57aa89fca19565f3b26cef89603e6b453db19704` to roll back server code.
+- remaining_risks: Production Hermes Bridge does not expose `loaded_sha`; a separate Bridge health-schema upgrade is required before full SHA-consistency verification.
