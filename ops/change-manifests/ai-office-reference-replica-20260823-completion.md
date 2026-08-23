@@ -17,9 +17,9 @@
 - fix: detail sheet now starts closed and close/backdrop actions keep it closed; regression test added.
 - approval_fix_commit: `4b7adc193835d238d39cdd4bfbec70591424a77b`
 - approval_fix: retain approved `skill_*` references in the execution composition, but filter them only when persisting `AgentInvocationRelation`; added a regression test for the production varchar(32) failure.
-- remote_sha: `c270d4af8eaafbcaad5b15e0cb9a5e139b00b1cd`
+- remote_sha: `4b9a038dc62cc54e646cbc74e6022161be25f025`
 - server_before: `57aa89fca19565f3b26cef89603e6b453db19704`
-- server_after: `c270d4af8eaafbcaad5b15e0cb9a5e139b00b1cd`
+- server_after: `4b9a038dc62cc54e646cbc74e6022161be25f025`
 - health_check: `API 200; all compose services running; runtime contract audit passed; public Architect 200; protected workflows 401`
 - functional_check: `frontend source SHA256 matched server; production static bundle contains AI LAB PROJECT OFFICE and PROJECT FLOOR; frontend and backend tests passed`
 - rollback_point: `be77b7be1313ca37b870ac27358612ef8510ec64`
