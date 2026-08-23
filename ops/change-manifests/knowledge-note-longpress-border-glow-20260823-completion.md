@@ -26,26 +26,27 @@
 
 - `git diff --check`：通过。
 - `xcodebuild -project ios/AIPlatformApp.xcodeproj -scheme AIPlatformApp -configuration Debug -destination 'platform=iOS Simulator,id=8386FBF2-321F-4F52-BF4C-337EF3780649' CODE_SIGNING_ALLOWED=NO build`：通过，`** BUILD SUCCEEDED **`。
-- 尚未在模拟器上重新安装并进行手指长按视觉验收。
+- `xcrun simctl install 8386FBF2-321F-4F52-BF4C-337EF3780649 /private/tmp/ai-platform-derived-c0b64e0/Build/Products/Debug-iphonesimulator/AIPlatformApp.app`：通过。
+- `xcrun simctl launch 8386FBF2-321F-4F52-BF4C-337EF3780649 com.ailab.AIPlatformApp`：通过，进程启动。
 
 ## Delivery status
 
-`TESTED`
+`DEPLOYED`
 
-- commit：未执行。
-- push：未执行。
-- deploy：未执行。
-- 重新打包/安装：本任务未执行。
+- commit：`c0b64e03420bd4c4f83018f959883f062d467a78`。
+- push：已推送到 `origin/codex/obsidian-wikilinks-ios`，远端 SHA 与本地一致。
+- deploy：服务器已执行 `bash scripts/update.sh c0b64e03420bd4c4f83018f959883f062d467a78`。
+- 重新打包/安装：已完成，目标为 `AIPlatform Preview` 模拟器。
 
 ## Server and rollback
 
-- server_before：不适用，本任务未触及服务器。
-- server_after：不适用。
-- health_check：不适用。
-- functional_check：不适用；仅完成本地编译校验。
-- rollback_point：`d75abe10b60f59532364fe42e36b6c3990b9a819`（本地基线）。
+- server_before：`.deployed-sha=d75abe10b60f59532364fe42e36b6c3990b9a819`；API、Bridge 健康，Bridge `active_runs=0`。
+- server_after：`.deployed-sha=c0b64e03420bd4c4f83018f959883f062d467a78`；API、前端、三个 Worker、Postgres、Redis 均运行；Bridge `loaded_sha` 同值。
+- health_check：API `http://127.0.0.1:8000/health` 返回 `200 {"status":"ok","version":"0.8.0"}`；Bridge `http://127.0.0.1:9118/health` 返回 200 且 `loaded_sha=c0b64e03420bd4c4f83018f959883f062d467a78`；`hermes-bridge.service=active`；runtime contract audit passed。
+- functional_check：模拟器应用安装并启动成功；服务器服务全部 running。
+- rollback_point：`.deployed-sha=d75abe10b60f59532364fe42e36b6c3990b9a819`，可执行 `scripts/update.sh d75abe10b60f59532364fe42e36b6c3990b9a819` 回滚。
 
 ## Remaining risks
 
-- 需要在目标模拟器上重新安装后验证长按触发时长、边框视觉效果、减少动态效果和动态字体下的布局。
-- 本任务仍有其他既有未提交修改，未与本功能提交或推送。
+- 仍需人工在模拟器上验证长按触发时长、边框视觉效果、减少动态效果和动态字体下的布局。
+- 工作区仍有其他既有未提交修改，未与本功能混入本次提交。
