@@ -13,14 +13,14 @@
   - `git diff --check`: passed;
   - removed reference-only Tailwind v4 directives after build caught incompatibility with this repository's PostCSS/Tailwind setup.
 - commit: `860ce5aabb260d76b2c4ad5ecdc8eb7cccb83518`
-- remote_sha: `not pushed`
+- remote_sha: `21fe6aca3f36157b89e13800ea1be4c624b6a26d`
 - server_before: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- server_after: `not deployed`
-- health_check: `not applicable; local-only`
-- functional_check: `local build and contract tests passed; browser visual acceptance pending`
+- server_after: `21fe6aca3f36157b89e13800ea1be4c624b6a26d`
+- health_check: `API 200; all compose services running; runtime contract audit passed; public Architect 200; protected workflows 401`
+- functional_check: `frontend source SHA256 matched server; production static bundle contains AI LAB PROJECT OFFICE and PROJECT FLOOR; frontend and backend tests passed`
 - rollback_point: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- status: `COMMITTED`
+- status: `DEPLOYED`
 - remaining_risks:
   - supplied reference interactions are adapted to real server projection; fabricated stage choreography is intentionally not copied;
-  - browser screenshot acceptance is still pending;
-  - no GitHub push or server deployment was performed.
+  - browser screenshot acceptance remains a follow-up visual check;
+  - this manifest update itself must be deployed as the final record SHA.
