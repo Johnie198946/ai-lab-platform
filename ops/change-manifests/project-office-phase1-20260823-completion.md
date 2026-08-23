@@ -72,9 +72,9 @@
 
 ## Follow-up Delivery
 
-- fix_commit: `5654ca7d7372112912634bb2882b81266347c6fd`
-- server_before: `635ae348828d664780acc7bf1099109400002458`
-- server_after: `5654ca7d7372112912634bb2882b81266347c6fd`
+- fix_commit: `592355ca5657eb06ffea9688e8953c8666a5333a`
+- server_before: `dca7e318f3af57c35cefa1db3e2445df5a3d0a79`
+- server_after: `592355ca5657eb06ffea9688e8953c8666a5333a`
 - data_recovery: workflow `wf_35e4fec1f08e4e6bb54f5925ea4f9ec0` restored from `clarifying_pending` to `clarifying` after the failed 500 transaction.
 - plan_polling_follow_up: retry a transient 404 when the server already exposes `active_plan_id`, including `awaiting_approval` workflows.
 - deployment: `scripts/update.sh <full SHA>` completed; frontend rebuilt; runtime contract audit passed.
