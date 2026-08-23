@@ -15,14 +15,14 @@
     "ops/change-manifests/project-office-phase1-20260823-completion.md"
   ],
   "base": "0cb89e5275771f2df6e3e4a192ebd51601e2dc02",
-  "change_type": "PUSHED",
+  "change_type": "DEPLOYED",
   "status": "completed",
   "rollback": "git revert <task_commit_sha>",
   "constraints": [
     "main branch only",
     "read-only OfficeProjection phase 1",
     "no backend changes",
-    "no deployment",
+    "frontend-only follow-up deployment",
     "no fabricated agent, event, tool, artifact, or LIVE state"
   ]
 }

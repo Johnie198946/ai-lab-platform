@@ -2,7 +2,7 @@
 
 - task_id: `20260823-project-office-phase1`
 - objective: 在现有 `/architect` React应用中加入共享同一workflow、plan、execution、events与artifacts状态的只读Office View，同时保持Workbench及全部受控操作不变。
-- status: `TESTED / NOT_DEPLOYED`
+- status: `VERIFIED / DEPLOYED`
 - branch: `main`
 - isolated_checkout: `/Users/dengzhaoyu/Desktop/AI Lab/wt-project-office-phase1`
 - base: `0cb89e5275771f2df6e3e4a192ebd51601e2dc02`
@@ -55,7 +55,7 @@
 - no second workflow engine
 - no backend/API schema mutation
 - no server/Vault synchronization
-- follow-up deployment pending
+- follow-up frontend-only deployment completed
 - no credential persisted
 - temporary fixture located outside repository and stopped after verification
 
@@ -67,4 +67,12 @@
 
 ## Remaining
 
-- 本次Plan 404修复尚未部署；生产LIVE开放仍需真实生产execution验收与连续演示彩排。
+- Plan 404修复已部署并完成健康检查；生产LIVE开放仍需真实生产execution验收与连续演示彩排。
+
+## Follow-up Delivery
+
+- fix_commit: `44c6c2434f82ac011babed1fc9f9cf6b928f1765`
+- server_before: `4a37471754d49593b6f8274ab629e0444fef21fd`
+- server_after: `44c6c2434f82ac011babed1fc9f9cf6b928f1765`
+- deployment: `scripts/update.sh <full SHA>` completed; frontend rebuilt; runtime contract audit passed.
+- health_check: API returned `{"status":"ok","version":"0.8.0"}`.
