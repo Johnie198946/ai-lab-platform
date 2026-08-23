@@ -12,6 +12,7 @@ import SwiftUI
 public struct LoginView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     
     @State private var phoneNumber: String = ""
     @State private var smsCode: String = ""
@@ -19,74 +20,89 @@ public struct LoginView: View {
     @State private var countdownSeconds: Int = 60
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
+    @State private var isLoginContentVisible = false
+    @State private var isBrandRevealVisible = true
+    @State private var brandRevealScale = 0.55
+    @State private var brandRevealOpacity = 0.94
+    @State private var hasPlayedBrandReveal = false
     
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
     public init() {}
     
     public var body: some View {
-        NavigationStack {
-            ZStack {
-                QuantumMistBackground()
+        ZStack {
+            NavigationStack {
+                ZStack {
+                    QuantumMistBackground()
 
-                GeometryReader { geometry in
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: AppTheme.Spacing.xl) {
-                            brandHeaderSection
-
-                            PearlLoginArtwork()
-                                .frame(height: min(260, geometry.size.height * 0.30))
-
-                            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                                Text("让想法成为\n可执行的智能工作流")
-                                    .font(.system(size: 36, weight: .semibold, design: .rounded))
-                                    .foregroundColor(AppTheme.Colors.textPrimary)
-                                    .minimumScaleFactor(0.82)
-
-                                Text("连接 Agent、知识与工具，在一个工作空间里完成从需求确认到交付。")
-                                    .font(AppTheme.Typography.body)
-                                    .foregroundColor(AppTheme.Colors.textSecondary)
-                                    .lineSpacing(4)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
+                    GeometryReader { geometry in
+                        ScrollView(showsIndicators: false) {
                             VStack(spacing: AppTheme.Spacing.xl) {
-                                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                                    Text("欢迎回来")
-                                        .font(AppTheme.Typography.sectionTitle)
-                                        .foregroundColor(AppTheme.Colors.textPrimary)
-                                    Text("使用手机号进入你的 Quantum 工作空间")
-                                        .font(AppTheme.Typography.supporting)
-                                        .foregroundColor(AppTheme.Colors.textSecondary)
+                                brandHeaderSection
+
+                                PearlLoginArtwork()
+                                    .frame(height: min(260, geometry.size.height * 0.30))
+
+                                VStack(spacing: AppTheme.Spacing.xl) {
+                                    VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                                        Text("欢迎回来")
+                                            .font(AppTheme.Typography.sectionTitle)
+                                            .foregroundColor(AppTheme.Colors.textPrimary)
+                                        Text("使用手机号进入你的 Quantum 工作空间")
+                                            .font(AppTheme.Typography.supporting)
+                                            .foregroundColor(AppTheme.Colors.textSecondary)
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                                    phoneLoginSection
+                                    thirdPartyChannelsSection
                                 }
-                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(AppTheme.Spacing.xxl)
+                                .background(AppTheme.Colors.cardBackground)
+                                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
+                                        .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+                                }
+                                .shadow(
+                                    color: Color(hex: "6B5A8A").opacity(0.12),
+                                    radius: 26,
+                                    y: 10
+                                )
 
-                                phoneLoginSection
-                                thirdPartyChannelsSection
+                                guestModeSection
+                                footerTermsSection
                             }
-                            .padding(AppTheme.Spacing.xxl)
-                            .background(AppTheme.Colors.cardBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
-                                    .stroke(AppTheme.Colors.border, lineWidth: 0.75)
-                            }
-                            .shadow(
-                                color: Color(hex: "6B5A8A").opacity(0.12),
-                                radius: 26,
-                                y: 10
-                            )
-
-                            guestModeSection
-                            footerTermsSection
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                            .padding(.top, max(18, geometry.safeAreaInsets.top + 8))
+                            .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
                         }
-                        .padding(.horizontal, AppTheme.Metrics.contentGutter)
-                        .padding(.top, max(18, geometry.safeAreaInsets.top + 8))
-                        .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
                     }
                 }
+                .toolbar(.hidden, for: .navigationBar)
             }
-            .toolbar(.hidden, for: .navigationBar)
+            .opacity(isLoginContentVisible ? 1 : 0)
+            .scaleEffect(isLoginContentVisible ? 1 : 0.985)
+            .allowsHitTesting(isLoginContentVisible)
+            .accessibilityHidden(!isLoginContentVisible)
+
+            if isBrandRevealVisible {
+                QuantumLoginBrandReveal(
+                    scale: brandRevealScale,
+                    opacity: brandRevealOpacity
+                )
+                .transition(.opacity)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    finishBrandReveal()
+                }
+                .zIndex(1)
+            }
+        }
+        .background(AppTheme.Colors.background)
+        .task {
+            await playBrandRevealIfNeeded()
         }
         .onReceive(timer) { _ in
             if isCountdownActive && countdownSeconds > 0 {
@@ -95,6 +111,40 @@ public struct LoginView: View {
                 isCountdownActive = false
                 countdownSeconds = 60
             }
+        }
+    }
+
+    @MainActor
+    private func playBrandRevealIfNeeded() async {
+        guard !hasPlayedBrandReveal else { return }
+        hasPlayedBrandReveal = true
+
+        if reduceMotion {
+            brandRevealScale = 1
+            brandRevealOpacity = 1
+            try? await Task.sleep(for: .milliseconds(350))
+        } else {
+            await Task.yield()
+            withAnimation(.spring(response: 0.58, dampingFraction: 0.80, blendDuration: 0.08)) {
+                brandRevealScale = 1
+                brandRevealOpacity = 1
+            }
+            // Keep the reveal on screen long enough to be perceived as the
+            // entry transition, while preserving the compact Mobbin-style
+            // splash rhythm.
+            try? await Task.sleep(for: .milliseconds(1_250))
+        }
+
+        guard !Task.isCancelled else { return }
+        finishBrandReveal()
+    }
+
+    @MainActor
+    private func finishBrandReveal() {
+        guard isBrandRevealVisible else { return }
+        withAnimation(.easeOut(duration: reduceMotion ? 0.14 : 0.25)) {
+            isBrandRevealVisible = false
+            isLoginContentVisible = true
         }
     }
     
@@ -107,13 +157,6 @@ public struct LoginView: View {
                 .font(.system(size: 20, weight: .semibold, design: .rounded))
                 .foregroundColor(AppTheme.Colors.textPrimary)
             Spacer()
-            Label("本地优先", systemImage: "lock.shield")
-                .font(AppTheme.Typography.micro)
-                .foregroundColor(AppTheme.Icons.interactive)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(AppTheme.Colors.surfaceTint)
-                .clipShape(Capsule())
         }
     }
     
@@ -414,6 +457,43 @@ public struct LoginView: View {
             appState.isGuestMode = false
             appState.currentProfile = MockData.tenantProfile
         }
+    }
+}
+
+private struct QuantumLoginBrandReveal: View {
+    let scale: CGFloat
+    let opacity: Double
+
+    var body: some View {
+        ZStack {
+            AppTheme.Colors.background
+                .ignoresSafeArea()
+
+            HStack(spacing: AppTheme.Spacing.md) {
+                QuantumAvatarView(size: 52)
+
+                Text("Quantum")
+                    .font(.system(size: 38, weight: .bold, design: .rounded))
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+                    .minimumScaleFactor(0.8)
+            }
+            .padding(.horizontal, AppTheme.Spacing.xxl)
+            .padding(.vertical, AppTheme.Spacing.lg)
+            .background(AppTheme.Colors.surfaceTint)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .stroke(AppTheme.Colors.border.opacity(0.7), lineWidth: 0.75)
+            }
+            .shadow(
+                color: AppTheme.Colors.quantumViolet.opacity(0.14),
+                radius: 24,
+                y: 10
+            )
+            .scaleEffect(scale)
+            .opacity(opacity)
+        }
+        .accessibilityHidden(true)
     }
 }
 
