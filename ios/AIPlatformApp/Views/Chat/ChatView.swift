@@ -39,9 +39,7 @@ public struct ChatView: View {
                     ChatTopBarView(
                         isGenerating: coordinator.isGenerating,
                         title: coordinator.sessionManager.title(for: coordinator.sessionManager.activeSessionID()),
-                        agentName: appState.selectedAgentName,
                         onTitleTap: { showingSessionDrawer = true },
-                        onAgentTap: { showingAgentPicker = true },
                         onNewSession: { coordinator.newSession() },
                         onHistoryTap: { showingSessionDrawer = true },
                         onClearTap: { isShowingClearAlert = true }
