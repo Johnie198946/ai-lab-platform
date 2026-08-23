@@ -42,10 +42,10 @@
 ## Delivery status
 
 - status: `DEPLOYED`
-- commit_sha: `885c5b5b48e49618282b061d3adc327aacb40eb9`（功能提交；收尾证据提交见最终远端 SHA）
-- github_remote_ref_sha: `origin/codex/tenant-agent-subagent-skill-model` 已核对为功能提交 SHA；收尾证据提交部署后会再次核对
+- commit_sha: `885c5b5b48e49618282b061d3adc327aacb40eb9`（功能提交）与 `1f1e498af6a45daa3ce934fb90db02422d2ed296`（部署证据提交）
+- github_remote_ref_sha: `origin/codex/tenant-agent-subagent-skill-model=1f1e498af6a45daa3ce934fb90db02422d2ed296`
 - server_before: `/opt/ai-lab-platform/.deployed-sha=4d65aa6683aef8943ac59bde808054c0f996fd04`；API `/health` 为 `200 {"status":"ok","version":"0.8.0"}`；Compose API/Postgres/Redis healthy，Hermes Bridge active
-- server_after: `/opt/ai-lab-platform/.deployed-sha=885c5b5b48e49618282b061d3adc327aacb40eb9`；API、frontend、planning-worker、workflow-worker、agent-evaluation-worker、Postgres、Redis 均运行
+- server_after: `/opt/ai-lab-platform/.deployed-sha=1f1e498af6a45daa3ce934fb90db02422d2ed296`；API、frontend、planning-worker、workflow-worker、agent-evaluation-worker、Postgres、Redis 均运行
 - health_check: 部署后内网 `http://127.0.0.1:8000/health` 与公网 `http://120.24.248.58:8000/health` 均返回 `200 {"status":"ok","version":"0.8.0"}`；runtime contract audit passed；`hermes-bridge.service` active
 - functional_check: 生产 release 中已检出 `list_sandbox_agent_templates`、`scope_model=tenant_shared` 等新代码标记；本地后端 16 项定向测试通过；iOS 模拟器构建 `BUILD SUCCEEDED`
 - rollback_point: `/opt/ai-lab-platform/.deployed-sha=4d65aa6683aef8943ac59bde808054c0f996fd04`（部署前版本）
@@ -54,4 +54,4 @@
 
 - 尚未在生产 Hermes 容器验证租户 Skill 的创建、跨同租户用户读取与动态子 Agent 实际委派。
 - 动态 `delegate_task` 实例名称和任务内容只在运行时产生；目录清单有意记录工厂契约，不预生成运行时实例。
-- 收尾 manifest 提交后会重新部署一次，以使服务器 `.deployed-sha` 与最终远端 SHA 保持一致。
+- 已完成收尾提交部署，服务器 `.deployed-sha` 与最终远端 SHA 一致。
