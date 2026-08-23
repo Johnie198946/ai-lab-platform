@@ -873,6 +873,10 @@ class TestWorkflowsAPI(unittest.TestCase):
                 json={"comment": "确认执行"},
             )
         self.assertEqual(response.status_code, 201, response.text)
+        self.assertIn(
+            "skill_ai-lab-competitive-intelligence",
+            response.json()["agent"]["composition_manifest"]["invoked_agent_ids"],
+        )
 
         async def relation_targets():
             async with SessionLocal() as db:

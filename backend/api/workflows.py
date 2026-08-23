@@ -1401,7 +1401,6 @@ def compose_task_agent(workflow: WorkflowDefinition, plan: WorkflowPlanVersion) 
         referenced
         - baseline
         - {""}
-        - {agent_id for agent_id in referenced if agent_id.startswith("skill_")}
     )
     max_concurrent_children = bounded_platform_int(
         "WORKFLOW_DELEGATION_MAX_CONCURRENT", 3, 1, 8
