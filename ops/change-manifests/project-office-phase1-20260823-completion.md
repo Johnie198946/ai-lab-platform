@@ -76,5 +76,6 @@
 - server_before: `635ae348828d664780acc7bf1099109400002458`
 - server_after: `5654ca7d7372112912634bb2882b81266347c6fd`
 - data_recovery: workflow `wf_35e4fec1f08e4e6bb54f5925ea4f9ec0` restored from `clarifying_pending` to `clarifying` after the failed 500 transaction.
+- plan_polling_follow_up: retry a transient 404 when the server already exposes `active_plan_id`, including `awaiting_approval` workflows.
 - deployment: `scripts/update.sh <full SHA>` completed; frontend rebuilt; runtime contract audit passed.
 - health_check: API returned `{"status":"ok","version":"0.8.0"}`.

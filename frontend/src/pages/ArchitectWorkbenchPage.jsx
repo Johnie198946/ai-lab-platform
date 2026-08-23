@@ -162,7 +162,7 @@ export default function ArchitectPage() {
       setWorkflow(loaded);
       setClarification(clarificationData);
       setPlan(planData);
-      if (loaded.status === "planning" && !planData) {
+      if (!planData && (loaded.status === "planning" || loaded.active_plan_id)) {
         const nextPlan = await pollForNewPlan(id, null, {
           getPlan: platformApi.getWorkflowPlan,
           getLifecycleEvents: platformApi.getLifecycleEvents,
