@@ -76,6 +76,10 @@ HERMES_BRIDGE_CANCEL_URL = os.environ.get(
     "HERMES_BRIDGE_CANCEL_URL",
     "http://host.docker.internal:9118/v1/chat/stream/cancel",
 )
+HERMES_BRIDGE_NOTE_MERGE_URL = os.environ.get(
+    "HERMES_BRIDGE_NOTE_MERGE_URL",
+    "http://host.docker.internal:9118/v1/note-merge-preview",
+)
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
@@ -152,11 +156,13 @@ class LocalNoteContext(BaseModel):
     markdown: str = Field(..., min_length=1, max_length=20_000)
     updated_at: Optional[str] = Field(None, max_length=64)
     content_hash: Optional[str] = Field(None, max_length=64)
+    tags: List[str] = Field(default_factory=list, max_length=20)
+    preview: Optional[str] = Field(None, max_length=2_000)
 
 
 class ChatContextScope(BaseModel):
     mode: Literal["auto", "local_only", "platform_only", "combined"] = "auto"
-    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=12)
+    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=500)
 
 
 class ClientSessionMessage(BaseModel):
@@ -168,12 +174,26 @@ class ClientSessionMessage(BaseModel):
 
 class ClientSessionContext(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=100)
-    messages: List[ClientSessionMessage] = Field(default_factory=list, max_length=200)
+    messages: List[ClientSessionMessage] = Field(default_factory=list, max_length=2_000)
     truncated: bool = False
     # Local-first note snapshot used only for current-user similarity checks.
     # It is covered by the signed client-context capability and never becomes
     # a tenant Wiki source.
-    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=12)
+    local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=500)
+
+
+class NoteMergePreviewRequest(BaseModel):
+    request_id: Optional[str] = Field(None, min_length=8, max_length=100)
+    session_id: str = Field(..., min_length=1, max_length=100)
+    agent_id: Optional[str] = Field(None, max_length=128)
+    draft_id: str = Field(..., min_length=1, max_length=100)
+    draft_request_id: str = Field(..., min_length=8, max_length=100)
+    draft_title: str = Field(..., min_length=1, max_length=200)
+    draft_markdown: str = Field(..., min_length=1, max_length=100_000)
+    draft_tags: List[str] = Field(default_factory=list, max_length=12)
+    selected_candidate_ids: List[str] = Field(..., min_length=1, max_length=8)
+    client_session_context: ClientSessionContext
+    draft_capability: str = Field(..., min_length=40, max_length=20_000)
 
 
 def _validated_client_session_context(
@@ -184,9 +204,9 @@ def _validated_client_session_context(
     if not client_session_id or context.session_id != client_session_id:
         raise HTTPException(status_code=422, detail="client_session_context_mismatch")
     payload = context.model_dump()
-    if sum(len(item["content"]) for item in payload["messages"]) > 120_000:
+    if sum(len(item["content"]) for item in payload["messages"]) > 1_500_000:
         raise HTTPException(status_code=413, detail="client_session_context_too_large")
-    if sum(len(item["markdown"]) for item in payload.get("local_notes") or []) > 120_000:
+    if sum(len(item["markdown"]) for item in payload.get("local_notes") or []) > 1_000_000:
         raise HTTPException(status_code=413, detail="client_session_context_too_large")
     return payload
 
@@ -1105,6 +1125,60 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "X-Session-ID": isolated_session_id,
         },
     )
+
+
+@router.post("/note-merge-preview")
+async def note_merge_preview(
+    req: NoteMergePreviewRequest, payload=Depends(require_auth)
+) -> Dict[str, Any]:
+    """Sign the exact current-account snapshot; Hermes performs the merge."""
+    policy = await _resolve_chat_policy(payload)
+    isolated_session_id = _tenant_namespaced_session(
+        derive_isolated_session_id(req.agent_id, req.session_id),
+        str(payload.get("tenant_key") or "public"),
+        policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+    )
+    context = _validated_client_session_context(req.client_session_context, req.session_id)
+    if context is None:
+        raise HTTPException(status_code=422, detail="client_session_context_required")
+    request_id = req.request_id or uuid.uuid4().hex
+    capability = mint_client_context_capability(
+        tenant_key=str(payload.get("tenant_key") or "public"),
+        user_id=str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+        session_id=isolated_session_id,
+        request_id=request_id,
+        policy_version=policy.policy_version,
+        context_hash=context_digest(context),
+    )
+    bridge_payload = {
+        "request_id": request_id,
+        "session_id": isolated_session_id,
+        "knowledge_policy_version": policy.policy_version,
+        "draft_id": req.draft_id,
+        "draft_request_id": req.draft_request_id,
+        "draft_title": req.draft_title,
+        "draft_markdown": req.draft_markdown,
+        "draft_tags": req.draft_tags,
+        "selected_candidate_ids": list(dict.fromkeys(req.selected_candidate_ids)),
+        "client_session_context": context,
+        "client_context_capability": capability,
+        "draft_capability": req.draft_capability,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            response = await client.post(HERMES_BRIDGE_NOTE_MERGE_URL, json=bridge_payload)
+        response.raise_for_status()
+        return response.json()
+    except httpx.HTTPStatusError as exc:
+        detail = "note_merge_preview_failed"
+        try:
+            detail = str(exc.response.json().get("detail") or detail)
+        except Exception:
+            pass
+        raise HTTPException(status_code=exc.response.status_code, detail=detail) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="note_merge_preview_unavailable") from exc
 
 
 @router.post("/stream/clarify")

@@ -59,6 +59,7 @@ public struct KnowledgeView: View {
         NavigationStack(path: $path) {
             List {
                 workspaceHeader
+                archiveEntry
                 quickActions
 
                 if !store.allTags.isEmpty {
@@ -82,9 +83,6 @@ public struct KnowledgeView: View {
                     )
                 }
 
-                // Keep the archive affordance visible even before the first
-                // merge, so users can discover where archived notes will live.
-                archiveEntry
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)

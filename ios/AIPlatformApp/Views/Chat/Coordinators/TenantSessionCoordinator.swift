@@ -9,6 +9,7 @@
 
 import SwiftUI
 import Combine
+import CryptoKit
 
 @MainActor
 public final class TenantSessionCoordinator: ObservableObject {
@@ -378,21 +379,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         let sid = sessionManager.activeSessionID()
-        let clientSessionContext = sessionManager.clientSessionContext(for: sid)
-        let localNoteSnapshot = KnowledgeNoteStore.shared.notes.prefix(12).map { note in
-            ChatLocalNoteDTO(
-                id: note.id,
-                title: note.title,
-                markdown: String(KnowledgeNoteStore.shared.markdown(for: note).prefix(20_000)),
-                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt)
-            )
-        }
-        let enrichedClientSessionContext = ClientSessionContextDTO(
-            sessionId: clientSessionContext.sessionId,
-            messages: clientSessionContext.messages,
-            truncated: clientSessionContext.truncated,
-            localNotes: localNoteSnapshot
-        )
+        let enrichedClientSessionContext = makeClientSessionContext(sessionId: sid)
         messages.append(ChatMessage(sessionId: sid, role: .user, content: text, quotedContext: quote))
         inputText = ""
         quotedContext = nil
@@ -403,6 +390,34 @@ public final class TenantSessionCoordinator: ObservableObject {
         } else {
             startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope, clientSessionContext: enrichedClientSessionContext)
         }
+    }
+
+    private func makeClientSessionContext(
+        sessionId sid: String, fullNoteIds: Set<String> = []
+    ) -> ClientSessionContextDTO {
+        let clientSessionContext = sessionManager.clientSessionContext(for: sid)
+        let localNoteSnapshot = KnowledgeNoteStore.shared.notes.map { note in
+            let fullMarkdown = String(KnowledgeNoteStore.shared.markdown(for: note).prefix(20_000))
+            let contentHash = SHA256.hash(data: Data(fullMarkdown.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            let compactMarkdown = note.preview.isEmpty ? note.title : note.preview
+            return ChatLocalNoteDTO(
+                id: note.id,
+                title: note.title,
+                markdown: fullNoteIds.contains(note.id) ? fullMarkdown : String(compactMarkdown.prefix(800)),
+                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt),
+                contentHash: contentHash,
+                tags: note.tags,
+                preview: String(note.preview.prefix(800))
+            )
+        }
+        let enrichedClientSessionContext = ClientSessionContextDTO(
+            sessionId: clientSessionContext.sessionId,
+            messages: clientSessionContext.messages,
+            truncated: clientSessionContext.truncated,
+            localNotes: localNoteSnapshot
+        )
+        return enrichedClientSessionContext
     }
 
     public func dispatchAssistantReply(to text: String, quote: QuotedContext? = nil) {
@@ -420,10 +435,11 @@ public final class TenantSessionCoordinator: ObservableObject {
         thinkingDetail = nil
         generationStartDate = Date()
         let sid = sessionManager.activeSessionID()
+        let effectiveClientSessionContext = clientSessionContext ?? makeClientSessionContext(sessionId: sid)
         let req = InFlightRequest(
             id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
             regenerate: regenerate, agentId: appState?.selectedAgentId,
-            contextScope: contextScope, clientSessionContext: clientSessionContext
+            contextScope: contextScope, clientSessionContext: effectiveClientSessionContext
         )
         inflight = req
         streamOutputMessageIds[req.id] = req.id
@@ -664,7 +680,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].delegatedBy = delegatedBy
                     }
 
-                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope, let mergeCandidates, let mergedTitle, let mergedMarkdown, let mergedTags):
+                case .noteDraft(let id, let title, let markdown, let tags, let sourceSessionId, let sourceMessageIds, let accountScope, let mergeCandidates, let mergedTitle, let mergedMarkdown, let mergedTags, let draftCapability, let draftRequestId, let topic, let aliases, let selectionMode, let sourceMessageCount, let snapshotComplete):
                     drainDeltaBuffer(messageId: outputId)
                     guard sourceSessionId == nil || sourceSessionId == req.sessionId else { continue }
                     let draft = NoteDraftBlock(
@@ -678,7 +694,14 @@ public final class TenantSessionCoordinator: ObservableObject {
                         mergeCandidates: mergeCandidates.isEmpty ? nil : mergeCandidates,
                         mergedTitle: mergedTitle,
                         mergedMarkdown: mergedMarkdown,
-                        mergedTags: mergedTags.isEmpty ? nil : mergedTags
+                        mergedTags: mergedTags.isEmpty ? nil : mergedTags,
+                        draftCapability: draftCapability,
+                        draftRequestId: draftRequestId,
+                        topic: topic,
+                        aliases: aliases,
+                        selectionMode: selectionMode,
+                        sourceMessageCount: sourceMessageCount,
+                        snapshotComplete: snapshotComplete
                     )
                     if let idx = messages.firstIndex(where: { $0.id == outputId }),
                        !messages[idx].blocks.contains(where: {
@@ -1714,7 +1737,47 @@ public final class TenantSessionCoordinator: ObservableObject {
             showToast("账号已切换，不能保存其他账号的笔记草稿")
             return
         }
-        let shouldMerge = action == "merge"
+        if action.hasPrefix("merge:") {
+            let selectedIds = action.dropFirst("merge:".count).split(separator: ",").map(String.init)
+            guard !selectedIds.isEmpty else {
+                showToast("请至少选择一篇要合并的笔记")
+                return
+            }
+            let activeSessionId = sessionManager.activeSessionID()
+            let selectedAgentId = appState?.selectedAgentId
+            let sessionContext = makeClientSessionContext(
+                sessionId: activeSessionId, fullNoteIds: Set(selectedIds)
+            )
+            let expectedEpoch = tenantEpoch
+            Task { [weak self] in
+                do {
+                    let preview = try await APIClient.shared.previewNoteMerge(
+                        sessionId: activeSessionId,
+                        agentId: selectedAgentId,
+                        draft: draft,
+                        selectedCandidateIds: selectedIds,
+                        clientSessionContext: sessionContext
+                    )
+                    guard let self, self.tenantEpoch == expectedEpoch,
+                          let currentMessageIndex = self.messages.firstIndex(where: { $0.id == messageId }),
+                          let currentBlockIndex = self.messages[currentMessageIndex].blocks.firstIndex(where: {
+                              if case .noteDraft(let value) = $0 { return value.id == draftId }
+                              return false
+                          }), case .noteDraft(var currentDraft) = self.messages[currentMessageIndex].blocks[currentBlockIndex] else { return }
+                    currentDraft.mergedTitle = preview.title
+                    currentDraft.mergedMarkdown = preview.markdown
+                    currentDraft.mergedTags = preview.tags
+                    currentDraft.selectedMergeCandidateIds = preview.selectedCandidateIds
+                    self.messages[currentMessageIndex].blocks[currentBlockIndex] = .noteDraft(currentDraft)
+                    self.commitSession()
+                    self.showToast("合并预览已生成，请确认后保存并归档")
+                } catch {
+                    self?.showToast("生成合并预览失败：\(error.localizedDescription)")
+                }
+            }
+            return
+        }
+        let shouldMerge = action == "confirm_merge"
         let noteTitle = shouldMerge ? (draft.mergedTitle ?? draft.title) : draft.title
         let noteMarkdown = shouldMerge ? (draft.mergedMarkdown ?? draft.markdown) : draft.markdown
         let noteTags = shouldMerge ? (draft.mergedTags ?? draft.tags) : draft.tags
@@ -1735,7 +1798,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         commitSession()
         let archivedNotes: [KnowledgeNote]
         if shouldMerge {
-            archivedNotes = (draft.mergeCandidates ?? []).compactMap { candidate in
+            let selected = Set(draft.selectedMergeCandidateIds ?? [])
+            archivedNotes = (draft.mergeCandidates ?? []).filter { selected.contains($0.id) }.compactMap { candidate in
                 KnowledgeNoteStore.shared.archive(id: candidate.id, mergedInto: note.id)
             }
             showToast("已合并，并将 \(archivedNotes.count) 篇旧笔记归档")
