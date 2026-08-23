@@ -1380,11 +1380,21 @@ public final class APIClient: ObservableObject {
         _ type: T.Type,
         path: String,
         method: String = "GET",
-        body: Encodable? = nil
+        body: Encodable? = nil,
+        queryItems: [URLQueryItem] = []
     ) async throws -> T {
-        let url = baseURL
+        var components = URLComponents(
+            url: baseURL
             .appendingPathComponent("api/v1")
-            .appendingPathComponent(path)
+            .appendingPathComponent(path),
+            resolvingAgainstBaseURL: false
+        )
+        if !queryItems.isEmpty {
+            components?.queryItems = queryItems
+        }
+        guard let url = components?.url else {
+            throw APIError.network("无效的请求地址")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -1581,8 +1591,12 @@ public final class APIClient: ObservableObject {
 
     // MARK: - 租户 Agent 切片（与后端 /api/v1/tenant-agents 同源，需求3/4）
 
-    public func fetchTenantAgents() async throws -> [TenantAgentDTO] {
-        try await request([TenantAgentDTO].self, path: "tenant-agents")
+    public func fetchTenantAgents(ownedOnly: Bool = false) async throws -> [TenantAgentDTO] {
+        try await request(
+            [TenantAgentDTO].self,
+            path: "tenant-agents",
+            queryItems: ownedOnly ? [URLQueryItem(name: "owned_only", value: "true")] : []
+        )
     }
 
     /// GET /api/v1/skills：当前租户真实技能库（挂载目录扫描·非演示数据）

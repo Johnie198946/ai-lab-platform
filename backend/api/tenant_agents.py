@@ -297,32 +297,37 @@ async def stream_agent_evaluation_events(
 @router.get("/tenant-agents", response_model=List[TenantAgentOut])
 async def list_tenant_agents(
     payload: Dict[str, Any] = Depends(require_auth),
+    owned_only: bool = Query(False),
 ) -> List[TenantAgentOut]:
     """列出当前租户的切片列表（多租户隔离，双源合并）：
 
-    1. DB 切片（设置页 POST /tenant-agents 创建）
-    2. Hermes Bridge 返回的 capability 保护租户 Skill 沙箱目录。
+    默认返回当前租户可见的 DB 切片和 Hermes Skill 沙箱投影。
+    `owned_only=true` 是设置页专用语义：只返回当前认证用户创建的 DB 切片，
+    不混入租户共享切片或平台 Skill 投影。
     """
     tenant_id = _tenant_id()
     combined: List[TenantAgentOut] = []
     seen: set[str] = set()
 
     async with SessionLocal() as db:
-        rows = (
-            await db.execute(
-                select(TenantAgentModel)
-                .where(TenantAgentModel.tenant_id == tenant_id)
-                .order_by(TenantAgentModel.created_at)
-            )
-        ).scalars().all()
-    owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
+        owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
+        statement = select(TenantAgentModel).where(TenantAgentModel.tenant_id == tenant_id)
+        if owned_only:
+            # 缺少认证主体时不能退化为返回全租户数据。
+            if not owner_user_id:
+                return []
+            statement = statement.where(TenantAgentModel.owner_user_id == owner_user_id)
+        rows = (await db.execute(statement.order_by(TenantAgentModel.created_at))).scalars().all()
     for m in rows:
-        if m.visibility == "private" and m.owner_user_id != owner_user_id:
+        if not owned_only and m.visibility == "private" and m.owner_user_id != owner_user_id:
             continue
         combined.append(_to_out(m))
         seen.add(m.id)
 
     # 租户 Skill → 租户 Agent（只消费 Bridge 的签名沙箱目录）
+    if owned_only:
+        return combined
+
     try:
         catalog = await fetch_skill_catalog(
             await _resolve_chat_policy(payload), user_id=owner_user_id or "anonymous"

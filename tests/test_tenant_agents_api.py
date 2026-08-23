@@ -188,6 +188,42 @@ class TestTenantAgentsAPI(unittest.TestCase):
         r = self._request("DELETE", f"/api/v1/tenant-agents/{aid}", sub="user-a")
         self.assertEqual(r.status_code, 204)
 
+    def test_owned_only_excludes_shared_and_skill_projection(self):
+        # 当前用户创建的私有切片
+        created = self._request(
+            "POST", "/api/v1/tenant-agents", sub="user-a",
+            json={"base_agent_id": "coder", "custom_name": "我的 Agent"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        owned_id = created.json()["id"]
+
+        # 同租户的共享/其他用户切片模拟历史数据，不能出现在设置页。
+        from backend.db import SessionLocal
+        from backend.models.tenant_agent import TenantAgentModel
+
+        async def _insert_shared():
+            async with SessionLocal() as db:
+                db.add(TenantAgentModel(
+                    id="shared-agent", tenant_id="tenant_A", base_agent_id="knowledge",
+                    custom_name="平台共享 Agent", private_prompt_delta="",
+                    subscribed_knowledge_packs=[], owner_user_id=None, visibility="tenant",
+                    is_active=True,
+                ))
+                db.add(TenantAgentModel(
+                    id="other-user-agent", tenant_id="tenant_A", base_agent_id="main_agent",
+                    custom_name="其他用户 Agent", private_prompt_delta="",
+                    subscribed_knowledge_packs=[], owner_user_id="user-other", visibility="private",
+                    is_active=True,
+                ))
+                await db.commit()
+
+        asyncio.run(_insert_shared())
+        self._tenant_agents_module.fetch_skill_catalog = lambda *_args, **_kwargs: asyncio.sleep(0, result=[{"name": "platform_skill"}])
+
+        response = self._request("GET", "/api/v1/tenant-agents?owned_only=true", sub="user-a")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual([item["id"] for item in response.json()], [owned_id])
+
     def test_safe_capabilities_and_durable_evaluation_are_tenant_scoped(self):
         catalog = self._request("GET", "/api/v1/agent-capabilities")
         self.assertEqual(catalog.status_code, 200, catalog.text)

@@ -64,7 +64,7 @@ public struct SettingsView: View {
             }
             .task {
                 // 云端真实数据（非演示）：智能体 + 技能，拓扑/设置同源消费
-                if let list = try? await APIClient.shared.fetchTenantAgents() {
+                if let list = try? await APIClient.shared.fetchTenantAgents(ownedOnly: true) {
                     cloudAgents = list
                 }
                 if let skills = try? await APIClient.shared.fetchTenantSkills() {
