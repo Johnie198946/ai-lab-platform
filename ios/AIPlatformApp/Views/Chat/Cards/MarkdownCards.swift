@@ -106,5 +106,6 @@ public struct SourceCitationsCard: View {
         .padding(AppTheme.Spacing.sm).frame(maxWidth: .infinity, alignment: .leading)
         .background(AppTheme.Colors.quantumCyan.opacity(0.06)).clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous).stroke(AppTheme.Colors.quantumCyan.opacity(0.25), lineWidth: 0.5))
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 }

@@ -105,6 +105,7 @@ public struct ReasoningCard: View {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(AppTheme.Colors.border.opacity(0.5), lineWidth: 0.5)
             )
+            .pressBorderGlow(cornerRadius: 10)
             .onChange(of: isStreaming) { wasStreaming, streaming in
                 guard wasStreaming && !streaming else { return }
                 if reduceMotion {

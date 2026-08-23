@@ -445,6 +445,7 @@ public struct NodeCardView: View {
                     lineWidth: isSelected ? 2 : 1
                 )
         )
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 }
 
@@ -573,6 +574,7 @@ public struct AgentNodeDetailSheet: View {
                             .frame(minHeight: 48)
                     }
                     .buttonStyle(.bordered)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
 
                     // 切片删除（仅租户切片可删除；乐观更新 + 失败回滚）
                     if isDeletable {
@@ -676,7 +678,9 @@ private struct AgentEvaluationView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(AppTheme.Colors.statusError.opacity(0.1))
                             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
-                        Button("重试") { Task { await startAndMonitor() } }.buttonStyle(.borderedProminent)
+                        Button("重试") { Task { await startAndMonitor() } }
+                            .buttonStyle(.borderedProminent)
+                            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                     } else {
                         ProgressView("正在创建可恢复的正式评估…")
                             .frame(maxWidth: .infinity, minHeight: 220)

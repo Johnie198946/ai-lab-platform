@@ -174,7 +174,7 @@ public struct KnowledgeView: View {
             .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
         .accessibilityLabel("归档笔记，\(store.archivedNotes.count) 篇")
         .listRowInsets(pageInsets(vertical: AppTheme.Spacing.xs))
         .listRowSeparator(.hidden)
@@ -228,7 +228,7 @@ public struct KnowledgeView: View {
                 .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(SoftButtonStyle())
             .accessibilityHint("切换到对话页")
         }
         .padding(.vertical, AppTheme.Spacing.lg)
@@ -283,7 +283,7 @@ public struct KnowledgeView: View {
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
     }
 
     private var tagFilter: some View {
@@ -317,7 +317,7 @@ public struct KnowledgeView: View {
                 .background(selected ? AppTheme.Colors.primary : AppTheme.Colors.surfaceTint)
                 .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
@@ -340,7 +340,7 @@ public struct KnowledgeView: View {
                 NavigationLink(value: note.id) {
                     KnowledgeNoteRow(note: note, backlinkCount: store.backlinks(to: note).count)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(SoftButtonStyle())
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button {
                         store.togglePin(id: note.id)
@@ -393,6 +393,7 @@ public struct KnowledgeView: View {
         } actions: {
             Button("新建笔记") { createNote() }
                 .buttonStyle(.borderedProminent)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
         }
         .frame(minHeight: 260)
         .listRowSeparator(.hidden)
@@ -495,6 +496,7 @@ private struct KnowledgeArchiveView: View {
                                 Spacer(minLength: AppTheme.Spacing.sm)
                                 Button("恢复") { restore(note) }
                                     .buttonStyle(.bordered)
+                                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                                     .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                             }
                             .swipeActions(edge: .leading, allowsFullSwipe: false) {
@@ -770,7 +772,7 @@ private struct KnowledgeNoteEditor: View {
                 .background(AppTheme.Colors.surfaceTint)
                 .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
     }
 
     private var editorBody: some View {
@@ -809,7 +811,7 @@ private struct KnowledgeNoteEditor: View {
                             NavigationLink(value: linked.id) {
                                 relationRow(title: linked.title, detail: linked.preview)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(SoftButtonStyle())
                         }
                     }
                 }
@@ -820,7 +822,7 @@ private struct KnowledgeNoteEditor: View {
                             NavigationLink(value: linked.id) {
                                 relationRow(title: linked.title, detail: linked.preview)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(SoftButtonStyle())
                         }
                     }
                 }
@@ -842,7 +844,7 @@ private struct KnowledgeNoteEditor: View {
                                 .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                                 .contentShape(Rectangle())
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(SoftButtonStyle())
                             .foregroundStyle(AppTheme.Icons.interactive)
                         }
                     }

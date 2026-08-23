@@ -53,6 +53,8 @@ public struct AppRootCoordinatorView: View {
                     .transition(.opacity)
             }
         }
+        // 统一覆盖未声明局部样式的 Button / NavigationLink / Toolbar 入口。
+        .buttonStyle(SoftButtonStyle())
         .animation(.easeInOut(duration: 0.3), value: appState.isLoggedIn)
         .onChange(of: apiClient.needsReauth) { _, needs in
             if needs {

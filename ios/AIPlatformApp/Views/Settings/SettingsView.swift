@@ -630,6 +630,7 @@ public struct SubscriptionCenterView: View {
                                 busyLabel(id: request.id, title: "撤销申请", systemImage: "xmark")
                             }
                             .buttonStyle(.bordered)
+                            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                             .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                             .disabled(busyID != nil)
                         }
@@ -736,6 +737,7 @@ public struct SubscriptionCenterView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)
+            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
             .tint(AppTheme.Colors.primary)
             .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
             .disabled(isCurrent || isBuilding || isCustom || pending != nil || busyID != nil)
@@ -1029,7 +1031,7 @@ public struct SubscriptionCenterView: View {
             }
             .shadow(color: Color.black.opacity(0.07), radius: 10, y: 5)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
         .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
         .accessibilityLabel("\(pack.name)，\(active ? "已开通" : (governanceReady ? "可申请" : "建设中"))")
         .accessibilityHint("点按查看知识包范围和治理详情")
@@ -1063,7 +1065,7 @@ public struct SubscriptionCenterView: View {
             .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
         .accessibilityLabel("\(pack.name)，等待内容批准")
         .accessibilityHint("点按查看治理详情")
     }
@@ -1126,6 +1128,7 @@ public struct SubscriptionCenterView: View {
                             .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
                     }
                     .buttonStyle(.borderedProminent)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                     .tint(AppTheme.Colors.primary)
                     .disabled(!canToggle)
                 }
@@ -1184,6 +1187,7 @@ public struct SubscriptionCenterView: View {
                         .frame(minWidth: 112, minHeight: AppTheme.Metrics.minimumTouchTarget)
                 }
                 .buttonStyle(.borderedProminent)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 .tint(AppTheme.Colors.primary)
                 .disabled(selectedPackIDs.count > allowance || busyID != nil)
             }
@@ -1257,6 +1261,7 @@ public struct SubscriptionCenterView: View {
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.bordered)
+                            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                             .tint(AppTheme.Colors.statusError)
 
                             Button { review(request, approve: true) } label: {
@@ -1264,6 +1269,7 @@ public struct SubscriptionCenterView: View {
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
+                            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                             .tint(AppTheme.Colors.statusCompleted)
                         }
                         .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
@@ -1292,6 +1298,7 @@ public struct SubscriptionCenterView: View {
                     .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
             }
             .buttonStyle(.bordered)
+            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
         }
         .padding(AppTheme.Spacing.xl)
         .background(AppTheme.Colors.dangerSurface)
