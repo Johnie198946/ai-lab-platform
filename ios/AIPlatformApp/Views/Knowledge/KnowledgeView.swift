@@ -560,6 +560,9 @@ private struct KnowledgeArchiveView: View {
 private struct KnowledgeNoteRow: View {
     let note: KnowledgeNote
     let backlinkCount: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isLongPressing = false
+    @State private var glowPhase = 0.0
 
     var body: some View {
         HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
@@ -609,6 +612,42 @@ private struct KnowledgeNoteRow: View {
             }
         }
         .padding(.vertical, AppTheme.Spacing.sm)
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
+                .strokeBorder(
+                    AngularGradient(
+                        colors: [
+                            AppTheme.Colors.quantumViolet,
+                            AppTheme.Colors.auroraBlue,
+                            AppTheme.Colors.quantumCyan,
+                            AppTheme.Colors.emberOrange,
+                            AppTheme.Colors.quantumViolet
+                        ],
+                        center: .center,
+                        angle: .degrees(glowPhase)
+                    ),
+                    lineWidth: isLongPressing ? 2 : 0
+                )
+                .blur(radius: isLongPressing ? 1.5 : 0)
+                .opacity(isLongPressing ? 0.95 : 0)
+                .allowsHitTesting(false)
+        }
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.45)
+                .onChanged { _ in
+                    guard !isLongPressing else { return }
+                    isLongPressing = true
+                    guard !reduceMotion else { return }
+                    withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                        glowPhase += 360
+                    }
+                }
+                .onEnded { _ in
+                    withAnimation(.easeOut(duration: 0.18)) {
+                        isLongPressing = false
+                    }
+                }
+        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(note.title)，\(note.tags.map { "标签 \($0)" }.joined(separator: "，"))")
         .accessibilityHint("打开笔记")
