@@ -13,7 +13,9 @@
   - `git diff --check`: passed;
   - removed reference-only Tailwind v4 directives after build caught incompatibility with this repository's PostCSS/Tailwind setup.
 - commit: `860ce5aabb260d76b2c4ad5ecdc8eb7cccb83518`
-- remote_sha: `5e0cb426203e74b3a3881bd936705f4a194e411d`
+- fix_commit: `773f44f6a7af441a9f99f4c506143993bc888b66`
+- fix: detail sheet now starts closed and close/backdrop actions keep it closed; regression test added.
+- remote_sha: `not pushed`
 - server_before: `be77b7be1313ca37b870ac27358612ef8510ec64`
 - server_after: `5e0cb426203e74b3a3881bd936705f4a194e411d`
 - health_check: `API 200; all compose services running; runtime contract audit passed; public Architect 200; protected workflows 401`
