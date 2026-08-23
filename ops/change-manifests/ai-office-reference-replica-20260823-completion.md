@@ -15,13 +15,13 @@
 - commit: `860ce5aabb260d76b2c4ad5ecdc8eb7cccb83518`
 - fix_commit: `773f44f6a7af441a9f99f4c506143993bc888b66`
 - fix: detail sheet now starts closed and close/backdrop actions keep it closed; regression test added.
-- remote_sha: `82f7c98e8d78956bb40d6fd3a4d410c975f449cf`
+- remote_sha: `73bf3c2fd3edaadafee93c15e0af5c7b6adeeaad`
 - server_before: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- server_after: `82f7c98e8d78956bb40d6fd3a4d410c975f449cf`
+- server_after: `73bf3c2fd3edaadafee93c15e0af5c7b6adeeaad`
 - health_check: `API 200; all compose services running; runtime contract audit passed; public Architect 200; protected workflows 401`
 - functional_check: `frontend source SHA256 matched server; production static bundle contains AI LAB PROJECT OFFICE and PROJECT FLOOR; frontend and backend tests passed`
 - rollback_point: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- status: `DEPLOYED`
+- status: `VERIFIED`
 - remaining_risks:
   - supplied reference interactions are adapted to real server projection; fabricated stage choreography is intentionally not copied;
   - browser screenshot acceptance remains a follow-up visual check; this close-action fix was validated by regression test and production bundle rebuild.
