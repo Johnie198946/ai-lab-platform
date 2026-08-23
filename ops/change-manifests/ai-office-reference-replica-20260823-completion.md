@@ -15,13 +15,15 @@
 - commit: `860ce5aabb260d76b2c4ad5ecdc8eb7cccb83518`
 - fix_commit: `773f44f6a7af441a9f99f4c506143993bc888b66`
 - fix: detail sheet now starts closed and close/backdrop actions keep it closed; regression test added.
-- remote_sha: `73bf3c2fd3edaadafee93c15e0af5c7b6adeeaad`
-- server_before: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- server_after: `73bf3c2fd3edaadafee93c15e0af5c7b6adeeaad`
+- approval_fix_commit: `4a299f1fe7b0212a0e174ef06c7481fefe417e1b`
+- approval_fix: filter `skill_*` references before composing or persisting `AgentInvocationRelation`; added a regression test for the production varchar(32) failure.
+- remote_sha: `not pushed`
+- server_before: `ef27b4a943b2028351d8efa258167c2f1593f482`
+- server_after: `pending`
 - health_check: `API 200; all compose services running; runtime contract audit passed; public Architect 200; protected workflows 401`
 - functional_check: `frontend source SHA256 matched server; production static bundle contains AI LAB PROJECT OFFICE and PROJECT FLOOR; frontend and backend tests passed`
 - rollback_point: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- status: `VERIFIED`
+- status: `TESTED`
 - remaining_risks:
   - supplied reference interactions are adapted to real server projection; fabricated stage choreography is intentionally not copied;
   - browser screenshot acceptance remains a follow-up visual check; this close-action fix was validated by regression test and production bundle rebuild.
