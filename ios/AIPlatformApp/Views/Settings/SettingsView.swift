@@ -67,7 +67,7 @@ public struct SettingsView: View {
                 if let list = try? await APIClient.shared.fetchTenantAgents(ownedOnly: true) {
                     cloudAgents = list
                 }
-                if let skills = try? await APIClient.shared.fetchTenantSkills() {
+                if let skills = try? await APIClient.shared.fetchTenantSkills(ownedOnly: true) {
                     cloudSkills = skills
                 }
                 subscriptionSummary = try? await api.fetchSubscriptionCenter()

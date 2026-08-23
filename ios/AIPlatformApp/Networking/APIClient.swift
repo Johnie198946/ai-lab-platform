@@ -1600,8 +1600,12 @@ public final class APIClient: ObservableObject {
     }
 
     /// GET /api/v1/skills：当前租户真实技能库（挂载目录扫描·非演示数据）
-    public func fetchTenantSkills() async throws -> [TenantSkillDTO] {
-        let dto: TenantSkillsDTO = try await request(TenantSkillsDTO.self, path: "skills")
+    public func fetchTenantSkills(ownedOnly: Bool = false) async throws -> [TenantSkillDTO] {
+        let dto: TenantSkillsDTO = try await request(
+            TenantSkillsDTO.self,
+            path: "skills",
+            queryItems: ownedOnly ? [URLQueryItem(name: "owned_only", value: "true")] : []
+        )
         return dto.skills
     }
 
