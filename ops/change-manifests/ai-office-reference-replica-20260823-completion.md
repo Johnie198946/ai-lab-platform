@@ -17,6 +17,8 @@
 - fix: detail sheet now starts closed and close/backdrop actions keep it closed; regression test added.
 - approval_fix_commit: `4b7adc193835d238d39cdd4bfbec70591424a77b`
 - approval_fix: retain approved `skill_*` references in the execution composition, but filter them only when persisting `AgentInvocationRelation`; added a regression test for the production varchar(32) failure.
+- clarification_fix_commit: `c3a4340b4533dc0e73a008d609307c9c1b150779`
+- clarification_fix: dynamic clarification stops after three rounds or immediately when the user says to stop questioning/use defaults; regression coverage added.
 - remote_sha: `4b9a038dc62cc54e646cbc74e6022161be25f025`
 - server_before: `57aa89fca19565f3b26cef89603e6b453db19704`
 - server_after: `4b9a038dc62cc54e646cbc74e6022161be25f025`
