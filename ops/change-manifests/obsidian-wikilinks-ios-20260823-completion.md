@@ -2,7 +2,7 @@
 
 - task_id: `obsidian-wikilinks-ios-20260823`
 - objective: 在 iOS 知识笔记中实现 Obsidian 风格 WikiLink 解析、输入补全、阅读态跳转、反向链接上下文、锚点定位与重命名连带同步。
-- status: `TESTED`
+- status: `PUSHED`
 - branch: `codex/obsidian-wikilinks-ios`
 - worktree: `/private/tmp/ai-lab-obsidian-wikilinks-ios`
 - base/head: `a1435e263289b96b051ff7945e1d50e368e8714c`
@@ -44,12 +44,12 @@
 
 ## Delivery evidence
 
-- commit SHA: 未授权/未执行。
-- GitHub remote/ref/SHA: 未授权/未执行；不得标记 PUSHED。
+- commit SHA: `d17010d07f27fd0636e01e28764f697a5fa69f37`
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/obsidian-wikilinks-ios` / `d17010d07f27fd0636e01e28764f697a5fa69f37`; `git ls-remote` 已核对一致。
 - server_before: 不适用，本任务未改生产服务器。
-- server_after: 不适用，本任务未部署。
+- server_after: 不适用；iOS 部署目标为 AIPlatform Preview 模拟器。
 - health_check: iOS 构建与测试通过；服务器未变更。
-- functional_check: 解析、隔离、重命名与同步队列定向测试通过；模拟器安装启动通过。
+- functional_check: 解析、嵌入渲染、键盘候选、隔离、重命名与同步队列测试通过；模拟器安装启动通过。
 - rollback_point: 本地任务基线 `a1435e263289b96b051ff7945e1d50e368e8714c`。
 
 ## Remaining risks
