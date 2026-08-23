@@ -1,0 +1,23 @@
+# Completion Manifest
+
+- task_id: note-draft-status-label-20260823
+- goal: Only show the note-draft “待确认” badge while a draft is awaiting user confirmation.
+- changed_files:
+  - ios/AIPlatformApp/Views/Chat/Components/ChatStatusCards.swift
+- preflight:
+  - status: clean before change
+  - branch: codex/obsidian-wikilinks-ios
+  - head: 12128c720ab07bd93edf2374e569725dd7f8d635
+  - remote: origin https://github.com/Johnie198946/ai-lab-platform.git
+  - worktree: /private/tmp/ai-lab-obsidian-wikilinks-ios
+- validation:
+  - `xcodebuild -project ios/AIPlatformApp.xcodeproj -scheme AIPlatformApp -sdk iphonesimulator -configuration Debug CODE_SIGNING_ALLOWED=NO build`: passed (`BUILD SUCCEEDED`)
+- status: TESTED
+- commit_sha: not created (not requested)
+- remote_sha: not pushed (not requested)
+- server_before: not applicable
+- server_after: not applicable
+- health_check: not applicable
+- functional_check: compile validation passed; UI state condition now matches `NoteDraftState.awaitingConfirmation`
+- rollback_point: 12128c720ab07bd93edf2374e569725dd7f8d635
+- remaining_risks: Simulator visual confirmation and UI automation for each draft state remain optional follow-up validation.

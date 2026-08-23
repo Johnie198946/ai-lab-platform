@@ -133,13 +133,15 @@ public struct NoteDraftCard: View {
                     Text(hasMergeCandidates ? "笔记整理建议" : "笔记草稿")
                         .font(AppTheme.Typography.cardTitle)
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("待确认")
-                        .font(AppTheme.Typography.micro)
-                        .foregroundStyle(AppTheme.Icons.intelligence)
-                        .padding(.horizontal, AppTheme.Spacing.sm)
-                        .padding(.vertical, 5)
-                        .background(AppTheme.Colors.surfaceTint)
-                        .clipShape(Capsule())
+                    if draft.state == .awaitingConfirmation {
+                        Text("待确认")
+                            .font(AppTheme.Typography.micro)
+                            .foregroundStyle(AppTheme.Icons.intelligence)
+                            .padding(.horizontal, AppTheme.Spacing.sm)
+                            .padding(.vertical, 5)
+                            .background(AppTheme.Colors.surfaceTint)
+                            .clipShape(Capsule())
+                    }
                 }
                 Text(draft.title)
                     .font(AppTheme.Typography.supporting.weight(.semibold))
