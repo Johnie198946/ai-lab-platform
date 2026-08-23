@@ -80,7 +80,7 @@ public struct ChatMessageStreamView: View {
                 .padding(.vertical, AppTheme.Spacing.sm)
                 .background(.thinMaterial, in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SoftButtonStyle())
         .foregroundStyle(Color.accentColor)
         .disabled(coordinator.isGenerating)
         .opacity(coordinator.isGenerating ? 0.45 : 1)

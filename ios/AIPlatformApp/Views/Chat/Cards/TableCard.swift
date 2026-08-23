@@ -70,6 +70,7 @@ public struct TableCard: View {
             x: 0,
             y: 6
         )
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
     }
 
     private var requirementHeader: some View {
@@ -215,6 +216,7 @@ public struct TableCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                 .stroke(AppTheme.Colors.border, lineWidth: 0.5)
         )
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 
     private var headerRow: some View {

@@ -136,6 +136,7 @@ private struct WorkflowExecutionMiniBar: View {
         .padding(.horizontal, AppTheme.Spacing.sm)
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
     }
 }
 
@@ -213,6 +214,7 @@ private struct WorkflowActivityMiniBar: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                 .stroke(AppTheme.Colors.border.opacity(0.9), lineWidth: 0.75)
         }
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
         .shadow(color: Color.black.opacity(0.08), radius: 14, y: 6)
         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
     }

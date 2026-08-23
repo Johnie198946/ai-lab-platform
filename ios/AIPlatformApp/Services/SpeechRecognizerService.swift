@@ -37,6 +37,7 @@ public final class SpeechRecognizerService: ObservableObject {
     private var tickTimer: Timer?
     private var lastSpeechAt = Date()
     private let silenceThreshold: TimeInterval = 3.5
+    private var shouldAutoStopOnSilence = true
 
     public init() {
         #if targetEnvironment(simulator)
@@ -69,7 +70,9 @@ public final class SpeechRecognizerService: ObservableObject {
         }
     }
 
-    public func start() async {
+    public func start(autoStopOnSilence: Bool = true) async {
+        guard state == .idle else { return }
+        shouldAutoStopOnSilence = autoStopOnSilence
         if isMockMode {
             startMockRecording()
             return
@@ -261,12 +264,14 @@ public final class SpeechRecognizerService: ObservableObject {
         }
         startTimers()
 
-        // 模拟 3.5s 后静音自动结束
-        silenceTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
-            guard let self else { return }
-            DispatchQueue.main.async {
-                if self.state == .recording {
-                    self.finishRecording(cancelled: false)
+        if shouldAutoStopOnSilence {
+            // 独立语音页兼容：静音 3.5s 自动结束；按住说话模式关闭此逻辑。
+            silenceTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    if self.state == .recording {
+                        self.finishRecording(cancelled: false)
+                    }
                 }
             }
         }
@@ -281,7 +286,8 @@ public final class SpeechRecognizerService: ObservableObject {
             DispatchQueue.main.async {
                 self.elapsedSeconds += 1
                 // 真实模式静音 3.5s 自动结束
-                if !self.isMockMode,
+                if self.shouldAutoStopOnSilence,
+                   !self.isMockMode,
                    self.state == .recording,
                    Date().timeIntervalSince(self.lastSpeechAt) >= self.silenceThreshold {
                     self.finishRecording(cancelled: false)

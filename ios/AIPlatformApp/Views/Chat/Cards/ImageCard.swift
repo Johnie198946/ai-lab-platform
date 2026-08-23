@@ -49,6 +49,7 @@ public struct ImageCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                 .stroke(AppTheme.Colors.border, lineWidth: 0.5)
         )
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 
     /// 资源缺失优雅占位框（灰底 + 占位图标 + 文件名）

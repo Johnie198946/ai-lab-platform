@@ -15,7 +15,8 @@ public struct ChatView: View {
     @StateObject private var speechService = SpeechRecognizerService()
 
     @State private var isShowingClearAlert: Bool = false
-    @State private var showingVoiceInput: Bool = false
+    @State private var isVoicePressing: Bool = false
+    @State private var voiceInputPrefix: String = ""
     @State private var showingPlusMenu: Bool = false
     @State private var showingSessionDrawer: Bool = false
     @State private var showingAgentPicker: Bool = false
@@ -38,9 +39,7 @@ public struct ChatView: View {
                     ChatTopBarView(
                         isGenerating: coordinator.isGenerating,
                         title: coordinator.sessionManager.title(for: coordinator.sessionManager.activeSessionID()),
-                        agentName: appState.selectedAgentName,
                         onTitleTap: { showingSessionDrawer = true },
-                        onAgentTap: { showingAgentPicker = true },
                         onNewSession: { coordinator.newSession() },
                         onHistoryTap: { showingSessionDrawer = true },
                         onClearTap: { isShowingClearAlert = true }
@@ -49,9 +48,11 @@ public struct ChatView: View {
                     ChatInputBar(
                         inputText: $coordinator.inputText,
                         quotedContext: $coordinator.quotedContext,
+                        isVoicePressing: $isVoicePressing,
+                        speechService: speechService,
                         isGenerating: coordinator.isGenerating,
                         onSend: { coordinator.sendMessage() },
-                        onVoiceTap: { showingVoiceInput = true },
+                        onVoicePressChanged: handleVoicePressChanged,
                         onPlusTap: { showingPlusMenu = true }
                     )
                 }
@@ -67,13 +68,6 @@ public struct ChatView: View {
             }
             .overlay(alignment: .bottom) { toastOverlay }
             .animation(.easeInOut(duration: 0.2), value: coordinator.toastMessage)
-            .sheet(isPresented: $showingVoiceInput) {
-                VoiceInputView(
-                    service: speechService,
-                    onTranscript: { text in coordinator.inputText = text },
-                    onDismiss: { showingVoiceInput = false }
-                )
-            }
             .sheet(isPresented: $showingPlusMenu) {
                 PlusMenuSheet(
                     onPhotoPicked: { data in coordinator.attachPhoto(data) },
@@ -123,6 +117,13 @@ public struct ChatView: View {
                 coordinator.handlePendingAgent()
             }
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
+            .onChange(of: speechService.state) { oldState, newState in
+                guard newState == .idle, oldState != .idle else { return }
+                let recognized = speechService.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !recognized.isEmpty else { return }
+                coordinator.inputText = joinedVoiceInput(prefix: voiceInputPrefix, transcript: recognized)
+                isVoicePressing = false
+            }
             .onReceive(waitingTimer) { _ in coordinator.tickWaitingTimer() }
             .onChange(of: scenePhase) { _, phase in
                 if phase == .active {
@@ -130,7 +131,35 @@ public struct ChatView: View {
                     coordinator.reconcileRestoredClarify()
                 }
             }
+            .onDisappear {
+                isVoicePressing = false
+                if speechService.state != .idle {
+                    speechService.cancel()
+                }
+            }
         }
+    }
+
+    @MainActor
+    private func handleVoicePressChanged(_ isPressing: Bool) {
+        if isPressing {
+            guard speechService.state == .idle else { return }
+            voiceInputPrefix = coordinator.inputText
+            Task { @MainActor in
+                await speechService.start(autoStopOnSilence: false)
+                if !isVoicePressing, speechService.state == .recording {
+                    speechService.stop()
+                }
+            }
+        } else if speechService.state == .recording {
+            speechService.stop()
+        }
+    }
+
+    private func joinedVoiceInput(prefix: String, transcript: String) -> String {
+        let trimmedPrefix = prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedPrefix.isEmpty else { return transcript }
+        return "\(trimmedPrefix) \(transcript)"
     }
 
     @MainActor

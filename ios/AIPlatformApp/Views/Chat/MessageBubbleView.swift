@@ -60,6 +60,7 @@ public struct MessageBubbleView: View {
                 .clipShape(
                     RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                 )
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
                 .shadow(color: Color.black.opacity(0.06), radius: 5, x: 0, y: 2)
                 .contextMenu {
                     contextMenuActions
@@ -127,6 +128,7 @@ public struct MessageBubbleView: View {
                     RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                         .stroke(AppTheme.Colors.assistantBubbleBorder.opacity(0.18), lineWidth: 0.5)
                 )
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
             }
 
             // 3. 其他富媒体块（非 reasoning，如表格、图表、代码、澄清卡等）
@@ -171,6 +173,7 @@ public struct MessageBubbleView: View {
                     RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                         .stroke(AppTheme.Colors.border, lineWidth: 0.5)
                 )
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
             }
 
             // 5. ChatGPT 风格气泡操作条（仅在正文非空且已完成时展示，绝不单独裸露）
@@ -363,6 +366,7 @@ public struct CodeBlockCard: View {
             .background(AppTheme.Colors.codeBlockBackground)
         }
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 
     private func copyCode() {
@@ -405,5 +409,6 @@ public struct FormulaCard: View {
                 .stroke(AppTheme.Colors.accent.opacity(0.2), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 }

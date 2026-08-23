@@ -147,6 +147,7 @@ public struct WorkflowDashboardView: View {
 
             Button("创建第一个工作流", systemImage: "plus") { showingCreate = true }
                 .buttonStyle(.borderedProminent)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 .controlSize(.large)
         }
         .padding(AppTheme.Spacing.xxl)
@@ -272,6 +273,7 @@ private struct WorkflowSummaryCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.xl)
                 .stroke(AppTheme.Colors.border, lineWidth: 1)
         }
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.xl)
         .cardShadow(colorScheme: colorScheme)
         .accessibilityElement(children: .combine)
     }
@@ -749,6 +751,7 @@ private struct WorkflowClarificationView: View {
                                     }
                                 }
                                 .buttonStyle(.bordered)
+                                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                                 .frame(minHeight: 44)
                             }
                         }
@@ -761,10 +764,12 @@ private struct WorkflowClarificationView: View {
                                     Task { await model.reopenClarification() }
                                 }
                                 .buttonStyle(.bordered)
+                                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                                 Button("重试规划", systemImage: "arrow.clockwise") {
                                     Task { await model.retryPlanning() }
                                 }
                                 .buttonStyle(.borderedProminent)
+                                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                             }
                             .frame(minHeight: 44)
                             .disabled(model.isSubmitting)
@@ -788,6 +793,7 @@ private struct WorkflowClarificationView: View {
                     Task { await onFinished() }
                 }
                 .buttonStyle(.borderedProminent)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 .controlSize(.large)
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .padding(AppTheme.Metrics.contentGutter)
@@ -878,6 +884,7 @@ private struct WorkflowPlanningPendingCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                 .stroke(AppTheme.Colors.border.opacity(0.8), lineWidth: 0.75)
         }
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
         .accessibilityElement(children: .combine)
     }
 }
@@ -970,11 +977,13 @@ private struct WorkflowAgentReadyView: View {
                     )
                 }
                 .buttonStyle(.borderedProminent)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 .controlSize(.large)
                 .frame(maxWidth: .infinity, minHeight: 44)
 
                 Button(isStarting ? "正在启动…" : "启动任务", systemImage: "play.fill") { start() }
                     .buttonStyle(.bordered)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                     .controlSize(.large)
                     .disabled(isStarting)
                     .frame(maxWidth: .infinity, minHeight: 44)
@@ -1054,9 +1063,11 @@ private struct WorkflowPlanReviewView: View {
                     HStack(spacing: AppTheme.Spacing.md) {
                         Button("保存修改") { save() }
                             .buttonStyle(.bordered)
+                            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                             .frame(maxWidth: .infinity)
                         Button(isSaving ? "正在处理…" : "确认并构建 Agent") { approve() }
                             .buttonStyle(.borderedProminent)
+                            .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                             .frame(maxWidth: .infinity)
                             .disabled(!draft.validationErrors.isEmpty)
                     }
@@ -1073,6 +1084,7 @@ private struct WorkflowPlanReviewView: View {
                             Task { await load() }
                         }
                         .buttonStyle(.borderedProminent)
+                        .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                         .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                     } else {
                         ProgressView("正在读取执行计划…")
@@ -1738,7 +1750,7 @@ private struct WorkflowExecutionView: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(SoftButtonStyle())
                     Image(systemName: "chevron.right").foregroundStyle(AppTheme.Colors.textTertiary)
                 }
                 .padding(AppTheme.Spacing.sm)
@@ -1754,14 +1766,18 @@ private struct WorkflowExecutionView: View {
             if execution.status == "queued" || execution.status == "running" {
                 Button("取消执行", role: .destructive) { cancel() }
                     .buttonStyle(.bordered)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
             } else if execution.status == "failed" || execution.status == "cancelled" {
                 Button("从失败处重试", systemImage: "arrow.clockwise") { retry() }
                     .buttonStyle(.borderedProminent)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
             } else if execution.status == "awaiting_review" {
                 Button("退回修改") { requestRevision() }
                     .buttonStyle(.bordered)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 Button("批准并入库", systemImage: "checkmark.shield") { approveOutput() }
                     .buttonStyle(.borderedProminent)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                     .disabled(selectedArtifacts.isEmpty)
             } else {
                 Label("已完成并归档", systemImage: "checkmark.seal.fill")

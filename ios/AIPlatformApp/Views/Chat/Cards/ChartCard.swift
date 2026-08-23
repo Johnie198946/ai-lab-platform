@@ -49,6 +49,7 @@ public struct ChartCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
                 .stroke(AppTheme.Colors.border, lineWidth: 0.5)
         )
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 
     @ViewBuilder

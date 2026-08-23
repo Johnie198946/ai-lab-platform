@@ -231,6 +231,7 @@ public struct NoteDraftCard: View {
                         .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
                 }
                 .buttonStyle(.bordered)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 .tint(AppTheme.Colors.primary)
             } else {
                 Button(action: onSave) {
@@ -245,11 +246,13 @@ public struct NoteDraftCard: View {
                         .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
                 }
                 .buttonStyle(.borderless)
+                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
 
                 Button("放弃", role: .destructive, action: onDiscard)
                     .frame(minWidth: AppTheme.Metrics.minimumTouchTarget, minHeight: AppTheme.Metrics.minimumTouchTarget)
                     .buttonStyle(.borderless)
+                    .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
             }
             .font(AppTheme.Typography.supporting.weight(.medium))
         }
@@ -388,6 +391,7 @@ public struct StatusCardView: View {
                 RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                     .stroke(iconColor.opacity(0.25), lineWidth: 0.5)
             )
+            .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
             Spacer(minLength: 44)
         }
         .padding(.horizontal, AppTheme.Spacing.md)
@@ -441,6 +445,7 @@ public struct DegradedCardView: View {
                 RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                     .stroke(AppTheme.Colors.securityYellow.opacity(0.25), lineWidth: 0.5)
             )
+            .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
             Spacer(minLength: 44)
         }
         .padding(.horizontal, AppTheme.Spacing.md)
@@ -495,6 +500,7 @@ public struct InterruptedCardView: View {
                 RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                     .stroke(AppTheme.Colors.securityYellow.opacity(0.25), lineWidth: 0.5)
             )
+            .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
             Spacer(minLength: 44)
         }
         .padding(.horizontal, AppTheme.Spacing.md)
@@ -549,6 +555,7 @@ public struct OrphanPendingCardView: View {
                 RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
                     .stroke(AppTheme.Colors.border, lineWidth: 0.5)
             )
+            .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
             Spacer(minLength: 44)
         }
         .padding(.horizontal, AppTheme.Spacing.md)

@@ -75,6 +75,7 @@ public struct TokenSummaryCard: View {
             RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
                 .stroke(AppTheme.Colors.border, lineWidth: 0.75)
         }
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.xl)
         .task(id: selectedDays) {
             await loadUsage()
         }

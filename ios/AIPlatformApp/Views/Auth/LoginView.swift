@@ -2,8 +2,8 @@
 //  LoginView.swift
 //  AIPlatformApp
 //
-//  Authentication & Guest Experience Entry Point
-//  Quantum 品牌纯粹化：官方主标 + 手机验证码直登 + 第三方通道 + Guest Mode
+//  Authentication Entry Point
+//  Quantum 渐进式登录：Magic Rings 品牌图案 + 点击后登录卡片刹停入场
 //  （2026-08-16 拍板：移除 Apple 登录与手写品牌文字，仅保留官方集成 Logo）
 //
 
@@ -12,6 +12,7 @@ import SwiftUI
 public struct LoginView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     
     @State private var phoneNumber: String = ""
     @State private var smsCode: String = ""
@@ -19,6 +20,7 @@ public struct LoginView: View {
     @State private var countdownSeconds: Int = 60
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
+    @State private var isLoginCardVisible = false
     
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
@@ -30,64 +32,49 @@ public struct LoginView: View {
                 QuantumMistBackground()
 
                 GeometryReader { geometry in
-                    ScrollView(showsIndicators: false) {
-                        VStack(spacing: AppTheme.Spacing.xl) {
-                            brandHeaderSection
+                    VStack(spacing: isLoginCardVisible ? 10 : 0) {
+                        Spacer(minLength: isLoginCardVisible ? 6 : 0)
 
-                            PearlLoginArtwork()
-                                .frame(height: min(260, geometry.size.height * 0.30))
-
-                            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                                Text("让想法成为\n可执行的智能工作流")
-                                    .font(.system(size: 36, weight: .semibold, design: .rounded))
-                                    .foregroundColor(AppTheme.Colors.textPrimary)
-                                    .minimumScaleFactor(0.82)
-
-                                Text("连接 Agent、知识与工具，在一个工作空间里完成从需求确认到交付。")
-                                    .font(AppTheme.Typography.body)
-                                    .foregroundColor(AppTheme.Colors.textSecondary)
-                                    .lineSpacing(4)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            VStack(spacing: AppTheme.Spacing.xl) {
-                                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                                    Text("欢迎回来")
-                                        .font(AppTheme.Typography.sectionTitle)
-                                        .foregroundColor(AppTheme.Colors.textPrimary)
-                                    Text("使用手机号进入你的 Quantum 工作空间")
-                                        .font(AppTheme.Typography.supporting)
-                                        .foregroundColor(AppTheme.Colors.textSecondary)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-
-                                phoneLoginSection
-                                thirdPartyChannelsSection
-                            }
-                            .padding(AppTheme.Spacing.xxl)
-                            .background(AppTheme.Colors.cardBackground)
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
-                                    .stroke(AppTheme.Colors.border, lineWidth: 0.75)
-                            }
-                            .shadow(
-                                color: Color(hex: "6B5A8A").opacity(0.12),
-                                radius: 26,
-                                y: 10
+                        Button(action: revealLoginCard) {
+                            QuantumMagicRingsHero(
+                                isCompact: isLoginCardVisible,
+                                reduceMotion: reduceMotion || isLoginCardVisible
                             )
-
-                            guestModeSection
-                            footerTermsSection
+                            .frame(
+                                height: isLoginCardVisible
+                                    ? min(176, geometry.size.height * 0.23)
+                                    : min(390, geometry.size.height * 0.52)
+                            )
                         }
-                        .padding(.horizontal, AppTheme.Metrics.contentGutter)
-                        .padding(.top, max(18, geometry.safeAreaInsets.top + 8))
-                        .padding(.bottom, max(24, geometry.safeAreaInsets.bottom + 12))
+                        .buttonStyle(.plain)
+                        .disabled(isLoginCardVisible)
+                        .accessibilityLabel("打开登录")
+                        .accessibilityHint("显示手机号登录卡片")
+
+                        if isLoginCardVisible {
+                            loginCard
+                                .transition(
+                                    .asymmetric(
+                                        insertion: .offset(y: geometry.size.height * 0.78)
+                                            .combined(with: .opacity),
+                                        removal: .offset(y: geometry.size.height * 0.24)
+                                            .combined(with: .opacity)
+                                    )
+                                )
+                        }
+
+                        Spacer(minLength: isLoginCardVisible ? 6 : 0)
                     }
+                    .padding(.horizontal, max(20, AppTheme.Metrics.contentGutter))
+                    .padding(.top, max(8, geometry.safeAreaInsets.top))
+                    .padding(.bottom, max(8, geometry.safeAreaInsets.bottom))
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
         }
+        .background(AppTheme.Colors.background)
         .onReceive(timer) { _ in
             if isCountdownActive && countdownSeconds > 0 {
                 countdownSeconds -= 1
@@ -100,21 +87,32 @@ public struct LoginView: View {
     
     // MARK: - Subviews
     
-    private var brandHeaderSection: some View {
-        HStack(spacing: AppTheme.Spacing.sm) {
-            QuantumAvatarView(size: 38)
-            Text("Quantum")
-                .font(.system(size: 20, weight: .semibold, design: .rounded))
-                .foregroundColor(AppTheme.Colors.textPrimary)
-            Spacer()
-            Label("本地优先", systemImage: "lock.shield")
-                .font(AppTheme.Typography.micro)
-                .foregroundColor(AppTheme.Icons.interactive)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(AppTheme.Colors.surfaceTint)
-                .clipShape(Capsule())
+    private var loginCard: some View {
+        VStack(spacing: AppTheme.Spacing.lg) {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                Text("欢迎回来")
+                    .font(AppTheme.Typography.sectionTitle)
+                    .foregroundColor(AppTheme.Colors.textPrimary)
+                Text("使用手机号进入你的 Quantum 工作空间")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            phoneLoginSection
+            thirdPartyChannelsSection
+            footerTermsSection
         }
+        .padding(AppTheme.Spacing.xl)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
+                .stroke(AppTheme.Colors.border, lineWidth: 0.75)
+        }
+        .shadow(color: Color(hex: "6B5A8A").opacity(0.16), radius: 28, y: 12)
+        .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .contain)
     }
     
     private var phoneLoginSection: some View {
@@ -215,7 +213,7 @@ public struct LoginView: View {
     
     private var thirdPartyChannelsSection: some View {
         VStack(spacing: AppTheme.Spacing.sm) {
-            Text("其他企业与协同登录方式")
+            Text("其他登录方式")
                 .font(.caption)
                 .foregroundColor(AppTheme.Colors.textTertiary)
             
@@ -255,54 +253,8 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                
-                // Enterprise SSO Button
-                Button(action: { handleThirdPartyAuth(provider: "Enterprise SSO") }) {
-                    VStack(spacing: AppTheme.Spacing.xs) {
-                        Circle()
-                            .fill(AppTheme.Colors.accent.opacity(0.12))
-                            .frame(width: 48, height: 48)
-                            .overlay(
-                                Image(systemName: "building.2.fill")
-                            .foregroundColor(AppTheme.Icons.intelligence)
-                                    .font(.system(size: 20))
-                            )
-                        Text("企业 SSO")
-                            .font(.system(size: 11))
-                            .foregroundColor(AppTheme.Colors.textSecondary)
-                    }
-                }
-                .buttonStyle(SoftButtonStyle())
             }
         }
-    }
-    
-    private var guestModeSection: some View {
-        Button(action: {
-            #if os(iOS)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-            #endif
-            withAnimation(.spring()) {
-                appState.loginAsGuest()
-            }
-        }) {
-            HStack(spacing: AppTheme.Spacing.xs) {
-                Image(systemName: "person.crop.circle.badge.questionmark")
-                    .font(.system(size: 15))
-                Text("暂不登录，以游客身份体验")
-                    .font(AppTheme.Typography.supporting.weight(.semibold))
-                Image(systemName: "arrow.right")
-                    .font(.caption.weight(.bold))
-            }
-            .foregroundColor(AppTheme.Icons.interactive)
-            .padding(.vertical, AppTheme.Spacing.sm)
-            .padding(.horizontal, AppTheme.Spacing.lg)
-            .background(AppTheme.Colors.primary.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-        }
-        .buttonStyle(SoftButtonStyle())
-        .minimumTouchTarget()
-        .accessibilityHint("进入演示工作台，不会创建账号")
     }
     
     private var footerTermsSection: some View {
@@ -322,6 +274,30 @@ public struct LoginView: View {
     }
     
     // MARK: - Actions
+
+    private func revealLoginCard() {
+        guard !isLoginCardVisible else { return }
+        #if os(iOS)
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        #endif
+
+        if reduceMotion {
+            withAnimation(.easeOut(duration: 0.18)) {
+                isLoginCardVisible = true
+            }
+        } else {
+            withAnimation(
+                .interpolatingSpring(
+                    mass: 0.92,
+                    stiffness: 235,
+                    damping: 25,
+                    initialVelocity: 9
+                )
+            ) {
+                isLoginCardVisible = true
+            }
+        }
+    }
     
     private func sendSmsCode() {
         guard phoneNumber.count >= 11 else { return }
@@ -414,6 +390,106 @@ public struct LoginView: View {
             appState.isGuestMode = false
             appState.currentProfile = MockData.tenantProfile
         }
+    }
+}
+
+private struct QuantumMagicRingsHero: View {
+    let isCompact: Bool
+    let reduceMotion: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let side = min(proxy.size.width, proxy.size.height)
+            let artworkSide = side * (isCompact ? 0.72 : 0.78)
+
+            ZStack {
+                MagicRingsView(reduceMotion: reduceMotion)
+                    .frame(width: side, height: side)
+
+                PearlLoginArtwork()
+                    .frame(width: artworkSide, height: artworkSide * 0.72)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .contentShape(Circle())
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+private struct MagicRingsView: View {
+    let reduceMotion: Bool
+
+    private let ringColors = [
+        AppTheme.Colors.auroraPink,
+        AppTheme.Colors.quantumViolet,
+        AppTheme.Colors.quantumCyan,
+        AppTheme.Colors.quantumBlue,
+        AppTheme.Colors.auroraPink
+    ]
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion)) { timeline in
+            let elapsed = timeline.date.timeIntervalSinceReferenceDate
+
+            GeometryReader { proxy in
+                let side = min(proxy.size.width, proxy.size.height)
+
+                ZStack {
+                    ForEach(0..<5, id: \.self) { index in
+                        let progress = Double(index) / 4.0
+                        let diameter = side * (0.45 + progress * 0.48)
+                        let direction = index.isMultiple(of: 2) ? 1.0 : -1.0
+                        let rotation = reduceMotion
+                            ? Double(index * 24)
+                            : elapsed * (11 + Double(index) * 2.4) * direction
+                        let pulse = reduceMotion
+                            ? 1.0
+                            : 1.0 + sin(elapsed * 1.8 + Double(index) * 0.72) * 0.025
+
+                        Circle()
+                            .trim(from: 0.04 + progress * 0.03, to: 0.72 + progress * 0.05)
+                            .stroke(
+                                AngularGradient(
+                                    colors: [
+                                        ringColors[index],
+                                        ringColors[(index + 2) % ringColors.count],
+                                        ringColors[index].opacity(0.10),
+                                        ringColors[index]
+                                    ],
+                                    center: .center
+                                ),
+                                style: StrokeStyle(
+                                    lineWidth: max(2, side * (0.012 - progress * 0.003)),
+                                    lineCap: .round
+                                )
+                            )
+                            .frame(width: diameter, height: diameter)
+                            .rotationEffect(.degrees(rotation))
+                            .scaleEffect(pulse)
+                            .opacity(0.78 - progress * 0.34)
+                            .blur(radius: index == 4 ? 1.2 : 0)
+                    }
+
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [
+                                    AppTheme.Colors.quantumViolet.opacity(0.20),
+                                    AppTheme.Colors.quantumCyan.opacity(0.08),
+                                    .clear
+                                ],
+                                center: .center,
+                                startRadius: 2,
+                                endRadius: side * 0.48
+                            )
+                        )
+                        .blur(radius: 14)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
