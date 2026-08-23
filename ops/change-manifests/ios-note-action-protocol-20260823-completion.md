@@ -47,17 +47,17 @@
 
 ## Delivery
 
-- status: `TESTED`
-- commit_sha: 未授权/未执行；当前 HEAD 仍为任务基线 `0e9ae8f4b4177622672ab91314aecb94eec96f07`。
-- github_remote_ref_sha: 未授权 push，未执行 `git ls-remote`。
-- server_before: 未授权部署/未检查。
-- server_after: 未授权部署/未执行。
-- health_check: 不适用；未部署。
-- functional_check: 本地协议测试、后端定向回归、1,000 篇 Vault 负载测试、生产真实 Hermes 长文 SSE 烟测及 iOS 模拟器 XCTest 通过；生产双账号真实 UI 操作和 Instruments Time Profiler 尚未执行。
-- rollback_point: 未部署；可放弃独立 Worktree 的未提交改动，基线为 `0e9ae8f4b4177622672ab91314aecb94eec96f07`。
+- status: `DEPLOYED`
+- commit_sha: `ac3c82507b0f6ed34d3a08e0ddcb096cdd1ced61`
+- github_remote_ref_sha: `origin/codex/ios-note-action-protocol=ac3c82507b0f6ed34d3a08e0ddcb096cdd1ced61`，已用 `git ls-remote` 核对。
+- server_before: `.deployed-sha=d1653169853e0dc1b69ac6196df3a0b2ffa9381e`；API/Bridge 健康；回滚点 `/opt/ai-lab-rollbacks/ios-note-action-protocol-20260823-20260823T145638Z`。
+- server_after: `.deployed-sha=ac3c82507b0f6ed34d3a08e0ddcb096cdd1ced61`；API、frontend、planning/workflow/agent-evaluation workers、Postgres、Redis running；Bridge restarted and active。
+- health_check: API `http://127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.8.0"}`；Bridge `http://127.0.0.1:9118/health` 返回 `status=ok`；runtime contract audit passed；生产磁盘 `chat.py` 与 `hermes_bridge.py` SHA 与本地一致；生产 DDGS 9.15.0。
+- functional_check: 生产真实 Hermes 80 段长文 SSE `done=1/error=0` 且覆盖第 1–80 段；生产 API 容器双租户同 session capability 隔离通过；后端 61 项、iOS 31 项及 1,000 篇 Vault XCTest 通过；模拟器 `AIPlatform Preview`（UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`）已覆盖安装并启动；包 `/private/tmp/AIPlatformApp-knowledge-action-ac3c825-iphonesimulator.zip`，SHA-256 `851124c15e8fd34d926cc18e7bdbc4e6f3122a23d5d3b02c211f3ad834914d61`。
+- rollback_point: `/opt/ai-lab-rollbacks/ios-note-action-protocol-20260823-20260823T145638Z`，可执行 `scripts/update.sh d1653169853e0dc1b69ac6196df3a0b2ffa9381e` 回滚。
 
 ## Remaining risks and rollback
 
 - 尚未在真实 Hermes 模型上逐项验收 14 类操作的意图选择与长 Markdown 生成质量；长文通路已完成真实模型烟测。
-- 生产双租户、双账号、断网恢复的真实设备端到端验收仍需补充；协议级隔离、幂等和 resume-sync 已通过自动化测试。
+- 生产双租户 capability 已通过；真实双账号 UI 操作、断网恢复的物理设备端到端验收仍需补充，协议级隔离、幂等和 resume-sync 已通过自动化测试。
 - 1,000 篇 Vault 负载 XCTest 已通过，但尚未用 Instruments 采集滚动单帧耗时。
