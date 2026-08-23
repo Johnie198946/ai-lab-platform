@@ -12,14 +12,14 @@
   - `frontend npm run build`: passed;
   - `git diff --check`: passed;
   - removed reference-only Tailwind v4 directives after build caught incompatibility with this repository's PostCSS/Tailwind setup.
-- commit: `pending`
+- commit: `860ce5aabb260d76b2c4ad5ecdc8eb7cccb83518`
 - remote_sha: `not pushed`
 - server_before: `be77b7be1313ca37b870ac27358612ef8510ec64`
 - server_after: `not deployed`
 - health_check: `not applicable; local-only`
 - functional_check: `local build and contract tests passed; browser visual acceptance pending`
 - rollback_point: `be77b7be1313ca37b870ac27358612ef8510ec64`
-- status: `LOCAL_ONLY`
+- status: `COMMITTED`
 - remaining_risks:
   - supplied reference interactions are adapted to real server projection; fabricated stage choreography is intentionally not copied;
   - browser screenshot acceptance is still pending;
