@@ -241,6 +241,15 @@ test("Office UI is server-dynamic, read-only, accessible, and free of a fixed-he
   assert.doesNotMatch(styles, /linear-gradient|radial-gradient|backdrop-filter/);
 });
 
+test("Office detail sheet starts closed and remains closed after the close action", () => {
+  const source = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
+
+  assert.match(source, /useState\(\"\"\)/);
+  assert.match(source, /const selected = seats\.find\(\(seat\) => seat\.id === selectedId\) \|\| null/);
+  assert.match(source, /if \(selectedId && !seats\.some\(\(seat\) => seat\.id === selectedId\)\) setSelectedId\(""\)/);
+  assert.match(source, /onClose=\{\(\) => setSelectedId\(""\)\}/);
+});
+
 test("Architect integrates the view toggle without replacing Workbench actions", () => {
   const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
   assert.match(source, /isShowroomAccount\(authSession\?\.user\)/);

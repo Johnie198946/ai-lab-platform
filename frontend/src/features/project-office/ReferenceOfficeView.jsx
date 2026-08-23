@@ -51,13 +51,13 @@ function Seat({ seat, index, selected, onClick, visible }) {
 }
 
 export default function ReferenceOfficeView({ projection, onSwitchToWorkbench, error = "", busy = false }) {
-  const [selectedId, setSelectedId] = useState(projection.seats[0]?.id || "");
+  const [selectedId, setSelectedId] = useState("");
   const [visibleCount, setVisibleCount] = useState(0);
   const seats = projection.seats || [];
-  const selected = seats.find((seat) => seat.id === selectedId) || seats[0] || null;
+  const selected = seats.find((seat) => seat.id === selectedId) || null;
   const disconnected = Boolean(error) || projection.connectionState === "UNCONNECTED";
   useEffect(() => { setVisibleCount(0); const timer = setInterval(() => setVisibleCount((count) => Math.min(count + 1, seats.length)), 180); return () => clearInterval(timer); }, [seats.length]);
-  useEffect(() => { if (!seats.some((seat) => seat.id === selectedId)) setSelectedId(seats[0]?.id || ""); }, [seats, selectedId]);
+  useEffect(() => { if (selectedId && !seats.some((seat) => seat.id === selectedId)) setSelectedId(""); }, [seats, selectedId]);
   const truth = disconnected ? "UNCONNECTED" : ((busy || projection.connectionState === "SYNCING") ? "SYNCING" : projection.truthMode);
   return <div className="reference-office-shell">
     <header className="reference-office-header"><div className="reference-brand"><i /> <span>AI LAB PROJECT OFFICE</span></div><div className="reference-header-meta"><span>{projection.title || "服务端项目办公室"}</span><b>{truth}</b><em>{seats.length} nodes</em></div></header>
