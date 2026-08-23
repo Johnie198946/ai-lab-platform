@@ -6,7 +6,7 @@ import "./ReferenceOfficeView.css";
 const COLORS = ["#5dbe6e", "#e85555", "#9b7fea", "#4a9eed", "#f5c842", "#3dbbab"];
 const SCREEN_TYPES = ["dashboard", "browsing", "typing", "code", "checklist", "analytics"];
 const STATUS = {
-  planned: ["waiting", "待命中"], waiting: ["waiting", "待命中"], running: ["working", "进行中"],
+  planned: ["planned", "已规划"], waiting: ["waiting", "待命中"], running: ["working", "进行中"],
   blocked: ["blocked", "已阻断"], failed: ["blocked", "失败"], done: ["done", "已完成"],
   succeeded: ["done", "已完成"], awaiting_review: ["tbd", "待复核"], reference: ["waiting", "参考节点"],
 };

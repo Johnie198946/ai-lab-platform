@@ -78,6 +78,16 @@ test("Office projection creates seats only from server plan nodes and keeps role
   assert.deepEqual(projection.seats.map((seat) => seat.truthState.status), ["LIVE", "UNCONNECTED", "LIVE"]);
 });
 
+test("plan-only seats show the real workflow goal when a node has no explicit input", () => {
+  const projection = projectOfficeProjection({
+    workflow: { id: "wf-goal", description: "为客户形成可审阅的业务方案", status: "planning" },
+    plan: { dsl: { nodes: [{ id: "n1", name: "方案节点", parameters: {} }] } },
+  });
+
+  assert.deepEqual(projection.seats[0].input, ["为客户形成可审阅的业务方案"]);
+  assert.equal(projection.seats[0].status, "planned");
+});
+
 test("truth badges remain conservative for plan-only, replay, simulation, and malformed execution data", () => {
   assert.deepEqual(
     projectOfficeProjection({ plan, execution: null }).seats.map((seat) => seat.truthState.status),

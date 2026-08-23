@@ -175,6 +175,14 @@ export function architectWorkflowForContext(workflows = [], { customerDemandId =
 
 const arrayValue = (value) => (Array.isArray(value) ? value : []);
 const textValue = (value) => value === null || value === undefined ? "" : String(value).trim();
+const nodeValueList = (...values) => {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) return value.map(textValue).filter(Boolean);
+    const text = textValue(value);
+    if (text) return [text];
+  }
+  return [];
+};
 
 function explicitNodeId(value) {
   if (!value || typeof value !== "object") return "";
@@ -296,8 +304,25 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
       businessRole: textValue(node.business_role || parameters.business_role || parameters.role) || roleIds.join(" · "),
       roleIds,
       runtimeAgentId: explicitAgentId(runtimeNode) || null,
-      input: arrayValue(node.inputs || parameters.inputs || parameters.input_artifacts),
-      expectedOutput: arrayValue(node.outputs || parameters.outputs || parameters.output_deliverables),
+      input: nodeValueList(
+        node.inputs,
+        parameters.inputs,
+        parameters.input_artifacts,
+        node.input,
+        parameters.input,
+        node.task,
+        parameters.task,
+        node.goal,
+        parameters.goal,
+        workflow?.description,
+      ),
+      expectedOutput: nodeValueList(
+        node.outputs,
+        parameters.outputs,
+        parameters.output_deliverables,
+        node.output,
+        parameters.output,
+      ),
       status: officeNodeStatus(node, runtimeNode),
       truthState: officeTruthState(node, runtimeNode, executionTruth),
       lastEvent: latestEventByNodeId.get(id) || null,
