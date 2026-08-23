@@ -98,6 +98,34 @@ def test_baseline_and_dynamic_subagent_manifest_is_materialized(tmp_path: Path):
     ).is_file()
 
 
+def test_user_private_skills_are_isolated_and_override_shared_layers(tmp_path: Path):
+    template = _template(tmp_path / "template")
+    root = tmp_path / "sandboxes"
+    first = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-a", root=root, template_root=template
+    )
+    second = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-b", root=root, template_root=template
+    )
+    shared = first.tenant_skills / "shared-skill" / "SKILL.md"
+    shared.parent.mkdir(parents=True)
+    shared.write_text("shared", encoding="utf-8")
+    private = first.user_skills / "private-skill" / "SKILL.md"
+    private.parent.mkdir(parents=True)
+    private.write_text("private", encoding="utf-8")
+    shadow = first.user_skills / "research-template" / "SKILL.md"
+    shadow.parent.mkdir(parents=True)
+    shadow.write_text("private override", encoding="utf-8")
+
+    assert first.user_skills != second.user_skills
+    assert read_sandbox_skill(first, "research-template") == "private override"
+    assert read_sandbox_skill(second, "research-template") != "private override"
+    assert [item["scope"] for item in list_sandbox_skills(first, scopes=("user",))] == ["user", "user"]
+    assert {item["name"] for item in list_sandbox_skills(first)} >= {
+        "private-skill", "shared-skill", "research-template"
+    }
+
+
 def test_agent_snapshot_never_contains_raw_identity(tmp_path: Path):
     sandbox = ensure_tenant_sandbox(
         tenant_key="tenant-secret", user_id="user-secret",

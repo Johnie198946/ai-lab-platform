@@ -67,7 +67,7 @@ public struct SettingsView: View {
                 if let list = try? await APIClient.shared.fetchTenantAgents(ownedOnly: true) {
                     cloudAgents = list
                 }
-                if let skills = try? await APIClient.shared.fetchTenantSkills(tenantOnly: true) {
+                if let skills = try? await APIClient.shared.fetchTenantSkills(privateOnly: true) {
                     cloudSkills = skills
                 }
                 subscriptionSummary = try? await api.fetchSubscriptionCenter()
@@ -276,9 +276,9 @@ public struct SettingsView: View {
 
     private func createdSkillsSection() -> some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            artifactHeader(icon: "bolt.fill", title: "租户技能", accent: AppTheme.Colors.quantumCyan)
+            artifactHeader(icon: "bolt.fill", title: "我制作的技能", accent: AppTheme.Colors.quantumCyan)
             if cloudSkills.isEmpty {
-                emptyArtifactHint("当前租户尚未配置共享技能；平台模板技能不会显示在这里")
+                emptyArtifactHint("尚未制作技能；租户共享和平台模板技能不会显示在这里")
             } else {
                 ForEach(cloudSkills) { skill in
                     artifactRow(

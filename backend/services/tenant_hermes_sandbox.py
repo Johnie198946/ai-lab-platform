@@ -60,6 +60,7 @@ class TenantHermesSandbox:
     skills_root: Path
     template_skills: Path
     tenant_skills: Path
+    user_skills: Path
     agents_root: Path
     agent_templates: Path
     agent_template_manifest: Path
@@ -69,7 +70,7 @@ class TenantHermesSandbox:
 
     @property
     def custom_skills(self) -> Path:
-        """Compatibility alias; custom Skills are tenant-shared, not user-owned."""
+        """Compatibility alias for the tenant-shared Skill overlay."""
         return self.tenant_skills
 
 
@@ -270,6 +271,7 @@ def ensure_tenant_sandbox(
     agent_version = _agent_template_version(agent_template_payload)
     active_agent_template = agents_home / "templates" / agent_version
     state_db = base / "users" / user_ns / "state.db"
+    user_skills = state_db.parent / "skills"
     source = template_root or template_skills_root()
     version = _template_version(source)
     active_template = templates_root / (version or "empty")
@@ -278,6 +280,7 @@ def ensure_tenant_sandbox(
         for directory in (
             active_template.parent,
             tenant_skills,
+            user_skills,
             agents_root,
             active_agent_template.parent,
             state_db.parent,
@@ -330,6 +333,7 @@ def ensure_tenant_sandbox(
         skills_root=skills_root,
         template_skills=active_template,
         tenant_skills=tenant_skills,
+        user_skills=user_skills,
         agents_root=agents_root,
         agent_templates=active_agent_template,
         agent_template_manifest=active_agent_template / "manifest.json",
@@ -342,9 +346,12 @@ def ensure_tenant_sandbox(
 def _skill_file(sandbox: TenantHermesSandbox, name: str) -> Path | None:
     if not _SAFE_SKILL_NAME.fullmatch(name):
         return None
-    custom = sandbox.tenant_skills / name / "SKILL.md"
-    if custom.is_file() and not custom.is_symlink():
-        return custom
+    # User-private Skills override tenant-shared Skills, which override the
+    # immutable platform template with the same name.
+    for root in (sandbox.user_skills, sandbox.tenant_skills, sandbox.template_skills):
+        candidate = root / name / "SKILL.md"
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
     matches = [
         item for item in sandbox.template_skills.rglob("SKILL.md")
         if item.parent.name == name and item.is_file() and not item.is_symlink()
@@ -361,15 +368,36 @@ def read_sandbox_skill(
     return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
 
 
-def list_sandbox_skills(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
+def list_sandbox_skills(
+    sandbox: TenantHermesSandbox,
+    scopes: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """List effective Skills, or only the requested sandbox layers.
+
+    The default is the runtime view (user-private + tenant-shared + template).
+    Settings passes ``("user",)`` so it cannot display shared or platform
+    Skills.  Duplicate names are collapsed by precedence: user > tenant >
+    template.
+    """
     items: list[dict[str, Any]] = []
-    for scope, root in (
-        ("tenant", sandbox.tenant_skills),
-        ("template", sandbox.template_skills),
-    ):
+    roots = {
+        "user": sandbox.user_skills,
+        "tenant": sandbox.tenant_skills,
+        "template": sandbox.template_skills,
+    }
+    selected = tuple(scopes or ("user", "tenant", "template"))
+    seen: set[str] = set()
+    for scope in selected:
+        root = roots.get(scope)
+        if root is None:
+            continue
         for skill_md in sorted(root.rglob("SKILL.md")):
             if skill_md.is_symlink():
                 continue
+            name = skill_md.parent.name
+            if name in seen:
+                continue
+            seen.add(name)
             raw = skill_md.read_bytes()
             head = raw.decode("utf-8", errors="replace")[:4000]
             metadata: dict[str, str] = {}
@@ -380,7 +408,7 @@ def list_sandbox_skills(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
                 }:
                     metadata[key.strip()] = value.strip().strip("'\"")
             items.append({
-                "name": skill_md.parent.name,
+                "name": name,
                 "scope": scope,
                 "template_version": sandbox.template_version,
                 "description": metadata.get("description", "")[:200],
