@@ -235,7 +235,8 @@ async def append_lifecycle_event(
         session_id=session.id,
         seq=session.last_event_seq,
         event_type=event_type,
-        message=message,
+        # Keep the display column bounded; the complete detail remains in JSON.
+        message=str(message)[:500],
         payload=payload or {},
     )
     db.add(event)
@@ -756,7 +757,17 @@ async def respond_to_clarification(
                 event_type = "clarify_requested"
             await append_session_message(db, session, role="assistant", content=decision["question"], message_type=message_type, payload=decision)
             await append_lifecycle_event(db, workflow, session, event_type, decision["question"], decision)
-            await db.commit()
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                recovery_session = await db.get(WorkflowClarificationSession, session.id)
+                recovery_workflow = await db.get(WorkflowDefinition, workflow.id)
+                if recovery_session and recovery_workflow and recovery_session.phase == "clarifying_pending":
+                    recovery_session.phase = "clarifying"
+                    recovery_workflow.status = "clarifying"
+                    await db.commit()
+                raise
             await db.refresh(session)
             return clarification_out(session)
 

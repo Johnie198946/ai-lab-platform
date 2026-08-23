@@ -245,7 +245,7 @@ export default function ArchitectPage() {
       setDraft("");
       await loadWorkflow(workflow.id);
     } catch (nextError) {
-      setError(nextError.message || "需求回复失败");
+      setError(nextError.status === 409 ? "上一条回复正在处理，请稍候刷新状态。" : (nextError.message || "需求回复失败"));
     } finally {
       setBusy(false);
     }

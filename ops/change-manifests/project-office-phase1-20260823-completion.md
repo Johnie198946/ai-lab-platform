@@ -28,13 +28,14 @@
 11. Office组件无任何API调用或写操作；所有创建、澄清、批准、启动能力仍仅在Workbench。
 12. 1280×633单屏布局：六席位、工件带、员工详情均首屏可见；事件气泡与对象真相标签遮挡已实测修复。
 13. 需求仍处于`clarifying`或`awaiting_requirement_confirmation`时不请求尚未生成的Plan；仅在规划及其后状态或已有`active_plan_id`时读取Plan，消除误导性的404轮询。
+14. 澄清回复生命周期事件的展示消息限制为500字符，完整需求详情保留在JSON payload；提交事务异常时恢复`clarifying_pending`，避免500后workflow永久卡住；前端对重复提交409给出明确处理中提示。
 
 ## Main Verification
 
 - `node --test tests/project-office.test.mjs`: `10 passed / 0 failed`
 - `npm test`: `78 passed / 0 failed`
 - `npm run build`: PASS
-- backend workflow/event suites: `36 passed / 0 failed`（含2条来源上下文确认后保持回归）
+- backend full suite: `572 passed / 2 skipped / 0 failed`
 - `git diff --check`: PASS
 - production bundle: PASS；仅保留仓库既有`>500 kB` chunk warning。
 
@@ -71,8 +72,8 @@
 
 ## Follow-up Delivery
 
-- fix_commit: `44c6c2434f82ac011babed1fc9f9cf6b928f1765`
-- server_before: `4a37471754d49593b6f8274ab629e0444fef21fd`
-- server_after: `44c6c2434f82ac011babed1fc9f9cf6b928f1765`
+- fix_commit: `pending`
+- server_before: `9280caa1f199c93a222392c63621c9adadc8957d`
+- server_after: `pending`
 - deployment: `scripts/update.sh <full SHA>` completed; frontend rebuilt; runtime contract audit passed.
 - health_check: API returned `{"status":"ok","version":"0.8.0"}`.

@@ -1282,6 +1282,51 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(rejected.status_code, 404, rejected.text)
         self.assertFalse(content_path.exists())
 
+    def test_lifecycle_event_bounds_display_message_but_preserves_detail(self):
+        from backend.api.workflows import append_lifecycle_event
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowClarificationSession, WorkflowDefinition, WorkflowLifecycleEvent
+
+        async def write_and_read():
+            async with SessionLocal() as db:
+                workflow = WorkflowDefinition(
+                    id="wf_long_event",
+                    tenant_key="tenant-alpha",
+                    created_by="alpha",
+                    title="长事件",
+                    description="验证长生命周期事件",
+                )
+                session = WorkflowClarificationSession(
+                    id="wfs_long_event",
+                    workflow_id=workflow.id,
+                    tenant_key="tenant-alpha",
+                    owner_user_id="alpha",
+                )
+                db.add_all([workflow, session])
+                await db.flush()
+                detail = "需求摘要" * 300
+                await append_lifecycle_event(
+                    db,
+                    workflow,
+                    session,
+                    "requirement_summary_ready",
+                    detail,
+                    {"detail": detail},
+                )
+                await db.commit()
+                row = (
+                    await db.execute(
+                        select(WorkflowLifecycleEvent).where(
+                            WorkflowLifecycleEvent.workflow_id == workflow.id
+                        )
+                    )
+                ).scalar_one()
+                return row.message, row.payload["detail"]
+
+        message, detail = asyncio.run(write_and_read())
+        self.assertEqual(len(message), 500)
+        self.assertEqual(detail, "需求摘要" * 300)
+
 
 if __name__ == "__main__":
     unittest.main()
