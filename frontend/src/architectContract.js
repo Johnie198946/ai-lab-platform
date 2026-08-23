@@ -320,8 +320,12 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
         node.outputs,
         parameters.outputs,
         parameters.output_deliverables,
+        node.output_deliverables,
         node.output,
         parameters.output,
+        node.deliverable,
+        parameters.deliverable,
+        plan?.deliverable,
       ),
       status: officeNodeStatus(node, runtimeNode),
       truthState: officeTruthState(node, runtimeNode, executionTruth),
@@ -353,6 +357,25 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
     ...arrayValue(events).map((event) => event?.created_at),
   ].map(textValue).filter((value) => value && Number.isFinite(Date.parse(value)));
   const updatedAt = timestampCandidates.sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
+  const nodeIndexById = new Map(planNodes.map((node, index) => [textValue(node.id), index]));
+  const transfers = [];
+  for (const artifact of safeArtifacts) {
+    const sourceNodeId = explicitArtifactNodeId(artifact);
+    if (!planNodeIds.has(sourceNodeId)) continue;
+    for (const edge of arrayValue(dsl.edges)) {
+      const targetNodeId = textValue(edge?.target);
+      if (textValue(edge?.source) !== sourceNodeId || !planNodeIds.has(targetNodeId)) continue;
+      transfers.push({
+        id: `${textValue(artifact.id) || textValue(artifact.title)}:${targetNodeId}`,
+        artifactId: textValue(artifact.id) || null,
+        artifactTitle: textValue(artifact.title) || "输出物",
+        sourceNodeId,
+        targetNodeId,
+        sourceIndex: nodeIndexById.get(sourceNodeId),
+        targetIndex: nodeIndexById.get(targetNodeId),
+      });
+    }
+  }
 
   return {
     schemaVersion: "office-projection/v1",
@@ -373,5 +396,6 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
     stage: textValue(execution?.status || workflow?.status) || (seats.length ? "planned" : "draft"),
     seats,
     artifacts: safeArtifacts,
+    transfers,
   };
 }

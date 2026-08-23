@@ -88,6 +88,25 @@ test("plan-only seats show the real workflow goal when a node has no explicit in
   assert.equal(projection.seats[0].status, "planned");
 });
 
+test("real artifacts create an output card and a transfer only along a server edge", () => {
+  const projection = projectOfficeProjection({
+    plan: {
+      dsl: {
+        nodes: [
+          { id: "source", name: "检索", parameters: { output_deliverables: ["证据包"] } },
+          { id: "next", name: "分析", parameters: {} },
+        ],
+        edges: [{ source: "source", target: "next" }],
+      },
+    },
+    execution: { id: "exe-1", status: "completed", truth: "LIVE", started_at: "2026-08-23T00:00:00Z" },
+    artifacts: [{ id: "artifact-1", title: "证据包", metadata: { source_node_id: "source" } }],
+  });
+
+  assert.deepEqual(projection.seats[0].artifacts.map((item) => item.title), ["证据包"]);
+  assert.deepEqual(projection.transfers.map((item) => [item.sourceNodeId, item.targetNodeId]), [["source", "next"]]);
+});
+
 test("truth badges remain conservative for plan-only, replay, simulation, and malformed execution data", () => {
   assert.deepEqual(
     projectOfficeProjection({ plan, execution: null }).seats.map((seat) => seat.truthState.status),

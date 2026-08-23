@@ -20,6 +20,7 @@
 - clarification_fix_commit: `c3a4340b4533dc0e73a008d609307c9c1b150779`
 - clarification_fix: dynamic clarification stops after three rounds or immediately when the user says to stop questioning/use defaults; regression coverage added.
 - office_projection_fix: plan-only seats now show `已规划` instead of `待命中`, and employee input falls back to the server workflow goal or node task fields when explicit inputs are absent.
+- office_artifact_flow_fix: expected outputs read the server Plan deliverable contract; real artifacts render output chips and animate along explicit Plan edges to downstream nodes.
 - remote_sha: `4b9a038dc62cc54e646cbc74e6022161be25f025`
 - server_before: `57aa89fca19565f3b26cef89603e6b453db19704`
 - server_after: `4b9a038dc62cc54e646cbc74e6022161be25f025`
