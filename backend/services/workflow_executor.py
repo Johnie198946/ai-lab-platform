@@ -409,6 +409,7 @@ async def project_event(
                     source_kind=str(artifact.get("source_kind") or "hermes_output"),
                     metadata={
                         "bridge_event_id": event_id,
+                        "source_node_id": node.node_id,
                         "agent_id": node.agent_id,
                         "model": node.model_used,
                         "provider": node.provider_used,
