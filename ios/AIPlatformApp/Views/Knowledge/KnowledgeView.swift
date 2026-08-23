@@ -8,22 +8,6 @@
 import SwiftUI
 import UIKit
 
-private let knowledgeRouteSeparator = "\u{001F}"
-
-private func knowledgeRoute(noteID: String, anchor: String? = nil) -> String {
-    guard let anchor, !anchor.isEmpty else { return noteID }
-    return noteID + knowledgeRouteSeparator + anchor
-}
-
-private func knowledgeRouteParts(_ route: String) -> (noteID: String, anchor: String?) {
-    let parts = route.split(separator: Character(knowledgeRouteSeparator), maxSplits: 1, omittingEmptySubsequences: false)
-    return (String(parts[0]), parts.count == 2 ? String(parts[1]) : nil)
-}
-
-private func noteAnchorID(_ raw: String) -> String {
-    "note-anchor:" + raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-}
-
 private enum NoteScope: String, CaseIterable, Identifiable {
     case all = "全部"
     case pinned = "已置顶"
@@ -75,7 +59,6 @@ public struct KnowledgeView: View {
         NavigationStack(path: $path) {
             List {
                 workspaceHeader
-                archiveEntry
                 quickActions
 
                 if !store.allTags.isEmpty {
@@ -99,6 +82,9 @@ public struct KnowledgeView: View {
                     )
                 }
 
+                // Keep the archive affordance visible even before the first
+                // merge, so users can discover where archived notes will live.
+                archiveEntry
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -133,21 +119,8 @@ public struct KnowledgeView: View {
             .refreshable {
                 store.reload()
             }
-            .navigationDestination(for: String.self) { route in
-                let parts = knowledgeRouteParts(route)
-                KnowledgeNoteEditor(noteID: parts.noteID, initialAnchor: parts.anchor)
-            }
-            .onOpenURL { url in
-                guard url.scheme == "ailab-note", url.host == "open",
-                      let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return }
-                let values = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name, $0.value ?? "") })
-                let target = values["target"] ?? ""
-                let current = values["current"] ?? ""
-                let destination = target.isEmpty ? store.note(id: current) : store.note(matchingLink: target)
-                if let destination {
-                    let route = knowledgeRoute(noteID: destination.id, anchor: values["anchor"])
-                    if path.last != route { path.append(route) }
-                }
+            .navigationDestination(for: String.self) { noteID in
+                KnowledgeNoteEditor(noteID: noteID)
             }
             .confirmationDialog(
                 "将“\(notePendingTrash?.title ?? "这篇笔记")”移到废纸篓？",
@@ -562,9 +535,6 @@ private struct KnowledgeArchiveView: View {
 private struct KnowledgeNoteRow: View {
     let note: KnowledgeNote
     let backlinkCount: Int
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var isLongPressing = false
-    @State private var glowPhase = 0.0
 
     var body: some View {
         HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
@@ -614,42 +584,6 @@ private struct KnowledgeNoteRow: View {
             }
         }
         .padding(.vertical, AppTheme.Spacing.sm)
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous)
-                .strokeBorder(
-                    AngularGradient(
-                        colors: [
-                            AppTheme.Colors.quantumViolet,
-                            AppTheme.Colors.auroraBlue,
-                            AppTheme.Colors.quantumCyan,
-                            AppTheme.Colors.emberOrange,
-                            AppTheme.Colors.quantumViolet
-                        ],
-                        center: .center,
-                        angle: .degrees(glowPhase)
-                    ),
-                    lineWidth: isLongPressing ? 2 : 0
-                )
-                .blur(radius: isLongPressing ? 1.5 : 0)
-                .opacity(isLongPressing ? 0.95 : 0)
-                .allowsHitTesting(false)
-        }
-        .simultaneousGesture(
-            LongPressGesture(minimumDuration: 0.45)
-                .onChanged { _ in
-                    guard !isLongPressing else { return }
-                    isLongPressing = true
-                    guard !reduceMotion else { return }
-                    withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
-                        glowPhase += 360
-                    }
-                }
-                .onEnded { _ in
-                    withAnimation(.easeOut(duration: 0.18)) {
-                        isLongPressing = false
-                    }
-                }
-        )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(note.title)，\(note.tags.map { "标签 \($0)" }.joined(separator: "，"))")
         .accessibilityHint("打开笔记")
@@ -661,7 +595,6 @@ private struct KnowledgeNoteEditor: View {
     @ObservedObject private var store = KnowledgeNoteStore.shared
 
     let noteID: String
-    let initialAnchor: String?
 
     @State private var title = ""
     @State private var noteContent = ""
@@ -673,14 +606,43 @@ private struct KnowledgeNoteEditor: View {
     @State private var saveStatus = "已保存到本地"
     @State private var saveTask: Task<Void, Never>?
     @State private var showingTrashConfirmation = false
-    @State private var wikiLinkContext: WikiLinkCompletionContext?
-    @State private var wikiLinkSelectionIndex = 0
     @FocusState private var titleFocused: Bool
 
     private var note: KnowledgeNote? { store.note(id: noteID) }
 
     var body: some View {
-        editorPage
+        Group {
+            if let note {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
+                        editorHeader(note: note)
+                        Divider()
+                        modePicker
+
+                        if mode == .edit {
+                            formattingToolbar
+                            editorBody
+                        } else {
+                            NoteReadingView(content: noteContent)
+                        }
+
+                        relationSection(note: note)
+                    }
+                    .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
+                    .padding(.horizontal, AppTheme.Metrics.contentGutter)
+                    .padding(.top, AppTheme.Spacing.lg)
+                    .padding(.bottom, 120)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .background(AppTheme.Colors.cardBackground)
+            } else {
+                ContentUnavailableView(
+                    "笔记不存在",
+                    systemImage: "doc.questionmark",
+                    description: Text("文件可能已被移动或删除。")
+                )
+            }
+        }
         .navigationTitle(title.isEmpty ? "笔记" : title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -734,66 +696,6 @@ private struct KnowledgeNoteEditor: View {
             Button("取消", role: .cancel) {}
         } message: {
             Text("文件会保留在 KnowledgeVault/.trash 中。")
-        }
-    }
-
-    @ViewBuilder
-    private var editorPage: some View {
-        if let note {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    editorContents(note: note)
-                }
-                .background(AppTheme.Colors.cardBackground)
-                .task(id: initialAnchor) {
-                    guard let initialAnchor, !initialAnchor.isEmpty else { return }
-                    mode = .preview
-                    try? await Task.sleep(nanoseconds: 120_000_000)
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        proxy.scrollTo(noteAnchorID(initialAnchor), anchor: .top)
-                    }
-                }
-            }
-        } else {
-            ContentUnavailableView(
-                "笔记不存在",
-                systemImage: "doc.questionmark",
-                description: Text("文件可能已被移动或删除。")
-            )
-        }
-    }
-
-    private func editorContents(note: KnowledgeNote) -> some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
-            editorHeader(note: note)
-            Divider()
-            modePicker
-            editorModeContent
-            relationSection(note: note)
-        }
-        .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
-        .padding(.horizontal, AppTheme.Metrics.contentGutter)
-        .padding(.top, AppTheme.Spacing.lg)
-        .padding(.bottom, 120)
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    @ViewBuilder
-    private var editorModeContent: some View {
-        if mode == .edit {
-            formattingToolbar
-            if WikiLinkParser.hasMalformedTripleBrackets(noteContent) {
-                Label("发现三层方括号；双链应写成 [[笔记名称]]", systemImage: "exclamationmark.triangle")
-                    .font(.caption)
-                    .foregroundStyle(AppTheme.Icons.warning)
-                    .accessibilityLabel("双链格式错误，应使用两层方括号")
-            }
-            editorBody
-            if let wikiLinkContext {
-                wikiLinkSuggestions(for: wikiLinkContext)
-            }
-        } else {
-            NoteReadingView(noteID: noteID, content: noteContent)
         }
     }
 
@@ -851,7 +753,7 @@ private struct KnowledgeNoteEditor: View {
             HStack(spacing: AppTheme.Spacing.sm) {
                 formatButton("标题", systemImage: "textformat.size") { insertMarkdown("## 标题", selecting: "标题") }
                 formatButton("待办", systemImage: "checklist") { insertMarkdown("- [ ] 待办事项", selecting: "待办事项") }
-                formatButton("双链", systemImage: "link") { beginWikiLink() }
+                formatButton("双链", systemImage: "link") { insertMarkdown("[[页面名称]]", selecting: "页面名称") }
                 formatButton("标签", systemImage: "number") { insertMarkdown("#标签", selecting: "标签") }
                 formatButton("提示", systemImage: "lightbulb") { insertMarkdown("> [!tip] 提示\n> 内容", selecting: "内容") }
                 formatButton("代码", systemImage: "chevron.left.forwardslash.chevron.right") { insertMarkdown("```\n代码\n```", selecting: "代码") }
@@ -874,15 +776,7 @@ private struct KnowledgeNoteEditor: View {
     }
 
     private var editorBody: some View {
-        MarkdownTextEditor(
-            text: $noteContent,
-            selectedRange: $selectedRange,
-            onWikiLinkContextChange: { context in
-                if wikiLinkContext != context { wikiLinkSelectionIndex = 0 }
-                wikiLinkContext = context
-            },
-            onWikiLinkKey: handleWikiLinkKey
-        )
+        MarkdownTextEditor(text: $noteContent, selectedRange: $selectedRange)
             .frame(minHeight: 420, alignment: .topLeading)
             .accessibilityLabel("Markdown 正文")
             .overlay(alignment: .topLeading) {
@@ -899,51 +793,9 @@ private struct KnowledgeNoteEditor: View {
     }
 
     @ViewBuilder
-    private func wikiLinkSuggestions(for context: WikiLinkCompletionContext) -> some View {
-        let suggestions = store.wikiLinkSuggestions(context.query, excluding: noteID)
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-            HStack {
-                Label("链接到笔记", systemImage: "link")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                Spacer()
-                Text("输入 ]] 完成")
-                    .font(.caption2)
-                    .foregroundStyle(AppTheme.Colors.textTertiary)
-            }
-            ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, suggestion in
-                Button {
-                    completeWikiLink(with: suggestion.title, context: context)
-                } label: {
-                    relationRow(title: suggestion.title, detail: suggestion.aliases.first ?? suggestion.preview)
-                }
-                .buttonStyle(.plain)
-                .background(index == wikiLinkSelectionIndex ? AppTheme.Colors.selectionTint : .clear)
-            }
-            if suggestions.isEmpty, !context.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Button {
-                    if let created = store.createNote(title: context.query) {
-                        completeWikiLink(with: created.title, context: context)
-                        Task { await syncPendingNotes() }
-                    }
-                } label: {
-                    Label("创建《\(context.query)》", systemImage: "plus.circle")
-                        .font(.subheadline.weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget, alignment: .leading)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(AppTheme.Icons.interactive)
-            }
-        }
-        .padding(AppTheme.Spacing.md)
-        .background(AppTheme.Colors.surfaceTint)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-    }
-
-    @ViewBuilder
     private func relationSection(note: KnowledgeNote) -> some View {
         let resolvedLinks = note.outgoingLinks.compactMap { store.note(matchingLink: $0) }
-        let backlinks = store.backlinkReferences(to: note)
+        let backlinks = store.backlinks(to: note)
         let unresolved = store.unresolvedLinks(in: note)
 
         if !resolvedLinks.isEmpty || !backlinks.isEmpty || !unresolved.isEmpty {
@@ -967,8 +819,8 @@ private struct KnowledgeNoteEditor: View {
                 if !backlinks.isEmpty {
                     relationGroup(title: "反向链接", systemImage: "arrow.uturn.backward") {
                         ForEach(backlinks) { linked in
-                            NavigationLink(value: linked.sourceNote.id) {
-                                relationRow(title: linked.sourceNote.title, detail: linked.context)
+                            NavigationLink(value: linked.id) {
+                                relationRow(title: linked.title, detail: linked.preview)
                             }
                             .buttonStyle(SoftButtonStyle())
                         }
@@ -981,7 +833,6 @@ private struct KnowledgeNoteEditor: View {
                             Button {
                                 if let created = store.createNote(title: link) {
                                     noteContent = noteContent.replacingOccurrences(of: "[[\(link)]]", with: "[[\(created.title)]]")
-                                    Task { await syncPendingNotes() }
                                 }
                             } label: {
                                 HStack {
@@ -1071,72 +922,16 @@ private struct KnowledgeNoteEditor: View {
             .split(separator: ",")
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "#")) }
             .filter { !$0.isEmpty }
-        if store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) != nil {
+        if let saved = store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) {
             saveStatus = "已保存到本地"
-            Task { await syncPendingNotes() }
+            let markdown = store.markdown(for: saved)
+            Task {
+                try? await APIClient.shared.syncKnowledgeNote(
+                    id: saved.id, markdown: markdown, updatedAt: saved.updatedAt
+                )
+            }
         } else {
             saveStatus = "保存失败"
-        }
-    }
-
-    private func syncPendingNotes() async {
-        for pending in store.pendingSyncNotes() {
-            do {
-                try await APIClient.shared.syncKnowledgeNote(
-                    id: pending.id,
-                    markdown: store.markdown(for: pending),
-                    updatedAt: pending.updatedAt
-                )
-                store.markSynced(noteID: pending.id)
-            } catch {
-                // Local Markdown remains authoritative and the pending ID is
-                // retained for the next save/sync attempt.
-            }
-        }
-    }
-
-    private func beginWikiLink() {
-        let source = noteContent as NSString
-        let safeLocation = min(max(selectedRange.location, 0), source.length)
-        let safeLength = min(max(selectedRange.length, 0), source.length - safeLocation)
-        let selected = source.substring(with: NSRange(location: safeLocation, length: safeLength))
-        let replacement = selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? "[["
-            : "[[\(selected)]]"
-        noteContent = source.replacingCharacters(
-            in: NSRange(location: safeLocation, length: safeLength),
-            with: replacement
-        )
-        selectedRange = NSRange(location: safeLocation + (replacement as NSString).length, length: 0)
-        wikiLinkContext = WikiLinkCompletionContext.detect(in: noteContent, selectedRange: selectedRange)
-    }
-
-    private func completeWikiLink(with title: String, context: WikiLinkCompletionContext) {
-        let source = noteContent as NSString
-        guard NSMaxRange(context.replacementRange) <= source.length else { return }
-        let replacement = "[[\(title)]]"
-        noteContent = source.replacingCharacters(in: context.replacementRange, with: replacement)
-        selectedRange = NSRange(location: context.replacementRange.location + (replacement as NSString).length, length: 0)
-        wikiLinkContext = nil
-        wikiLinkSelectionIndex = 0
-    }
-
-    private func handleWikiLinkKey(_ action: WikiLinkKeyAction) {
-        guard let context = wikiLinkContext else { return }
-        let suggestions = store.wikiLinkSuggestions(context.query, excluding: noteID)
-        switch action {
-        case .move(let delta):
-            guard !suggestions.isEmpty else { return }
-            wikiLinkSelectionIndex = min(
-                max(wikiLinkSelectionIndex + delta, 0),
-                suggestions.count - 1
-            )
-        case .commit:
-            guard !suggestions.isEmpty else { return }
-            completeWikiLink(with: suggestions[wikiLinkSelectionIndex].title, context: context)
-        case .dismiss:
-            wikiLinkContext = nil
-            wikiLinkSelectionIndex = 0
         }
     }
 
@@ -1172,70 +967,14 @@ private struct KnowledgeNoteEditor: View {
     }
 }
 
-private struct WikiLinkCompletionContext: Equatable {
-    let query: String
-    let replacementRange: NSRange
-
-    static func detect(in text: String, selectedRange: NSRange) -> WikiLinkCompletionContext? {
-        guard selectedRange.length == 0 else { return nil }
-        let source = text as NSString
-        let cursor = min(max(selectedRange.location, 0), source.length)
-        let prefix = source.substring(to: cursor) as NSString
-        let opener = prefix.range(of: "[[", options: .backwards)
-        guard opener.location != NSNotFound else { return nil }
-        if opener.location > 0,
-           prefix.substring(with: NSRange(location: opener.location - 1, length: 1)) == "[" { return nil }
-        let fragmentRange = NSRange(location: NSMaxRange(opener), length: cursor - NSMaxRange(opener))
-        let fragment = prefix.substring(with: fragmentRange)
-        guard !fragment.contains("]]"), !fragment.contains("\n"), !fragment.contains("]") else { return nil }
-        let query = fragment
-            .split(whereSeparator: { $0 == "|" || $0 == "#" })
-            .first
-            .map(String.init) ?? ""
-        return WikiLinkCompletionContext(
-            query: query.trimmingCharacters(in: .whitespacesAndNewlines),
-            replacementRange: NSRange(location: opener.location, length: cursor - opener.location)
-        )
-    }
-}
-
-private enum WikiLinkKeyAction {
-    case move(Int)
-    case commit
-    case dismiss
-}
-
-private final class WikiLinkTextView: UITextView {
-    var onWikiLinkKey: ((WikiLinkKeyAction) -> Void)?
-    var wikiCompletionIsActive = false
-
-    override var keyCommands: [UIKeyCommand]? {
-        guard wikiCompletionIsActive else { return super.keyCommands }
-        return [
-            UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(moveUp)),
-            UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(moveDown)),
-            UIKeyCommand(input: "\r", modifierFlags: [], action: #selector(commitLink)),
-            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(dismissLink))
-        ]
-    }
-
-    @objc private func moveUp() { onWikiLinkKey?(.move(-1)) }
-    @objc private func moveDown() { onWikiLinkKey?(.move(1)) }
-    @objc private func commitLink() { onWikiLinkKey?(.commit) }
-    @objc private func dismissLink() { onWikiLinkKey?(.dismiss) }
-}
-
 private struct MarkdownTextEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var selectedRange: NSRange
-    let onWikiLinkContextChange: (WikiLinkCompletionContext?) -> Void
-    let onWikiLinkKey: (WikiLinkKeyAction) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeUIView(context: Context) -> UITextView {
-        let textView = WikiLinkTextView()
-        textView.onWikiLinkKey = onWikiLinkKey
+        let textView = UITextView()
         textView.delegate = context.coordinator
         textView.font = UIFont.preferredFont(forTextStyle: .body)
         textView.adjustsFontForContentSizeCategory = true
@@ -1265,26 +1004,16 @@ private struct MarkdownTextEditor: UIViewRepresentable {
         func textViewDidChange(_ textView: UITextView) {
             parent.text = textView.text
             parent.selectedRange = textView.selectedRange
-            updateWikiContext(for: textView)
         }
 
         func textViewDidChangeSelection(_ textView: UITextView) {
             parent.selectedRange = textView.selectedRange
-            updateWikiContext(for: textView)
-        }
-
-        func updateWikiContext(for textView: UITextView) {
-            let context = WikiLinkCompletionContext.detect(in: textView.text, selectedRange: textView.selectedRange)
-            (textView as? WikiLinkTextView)?.wikiCompletionIsActive = context != nil
-            parent.onWikiLinkContextChange(context)
         }
     }
 }
 
 private struct NoteReadingView: View {
-    let noteID: String
     let content: String
-    var depth: Int = 0
 
     private var blocks: [NoteReadingBlock] {
         NoteReadingBlock.parse(content)
@@ -1298,170 +1027,12 @@ private struct NoteReadingView: View {
                     .foregroundStyle(AppTheme.Colors.textTertiary)
             } else {
                 ForEach(blocks) { block in
-                    block.view(currentNoteID: noteID, depth: depth)
-                        .id(block.navigationID)
+                    block.view
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .textSelection(.enabled)
-    }
-}
-
-private struct WikiInlineView: View {
-    let text: String
-    let currentNoteID: String
-    let depth: Int
-
-    private struct Segment: Identifiable {
-        let id: String
-        let text: String
-        let link: WikiLinkReference?
-    }
-
-    private var segments: [Segment] {
-        let source = text as NSString
-        let links = WikiLinkParser.parse(text)
-        guard links.contains(where: \.isEmbed) else {
-            return [Segment(id: "plain", text: text, link: nil)]
-        }
-        var result: [Segment] = []
-        var cursor = 0
-        for link in links {
-            if link.location > cursor {
-                result.append(Segment(
-                    id: "text-\(cursor)",
-                    text: source.substring(with: NSRange(location: cursor, length: link.location - cursor)),
-                    link: nil
-                ))
-            }
-            result.append(Segment(id: link.id, text: link.rawText, link: link))
-            cursor = NSMaxRange(link.range)
-        }
-        if cursor < source.length {
-            result.append(Segment(id: "text-\(cursor)", text: source.substring(from: cursor), link: nil))
-        }
-        return result
-    }
-
-    var body: some View {
-        if segments.count == 1, segments[0].link == nil {
-            Text(attributedMarkdown(text))
-                .foregroundStyle(AppTheme.Colors.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-        } else {
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                ForEach(segments) { segment in
-                    if let link = segment.link, link.isEmbed {
-                        EmbeddedNoteView(reference: link, depth: depth)
-                    } else if !segment.text.isEmpty {
-                        Text(attributedMarkdown(segment.text))
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-            }
-        }
-    }
-
-    private func attributedMarkdown(_ value: String) -> AttributedString {
-        let displayText = value.replacingOccurrences(
-            of: #"(?:^|\s)\^[\p{L}\p{N}_-]+\s*$"#,
-            with: "",
-            options: .regularExpression
-        )
-        let source = displayText as NSString
-        var result = AttributedString()
-        var cursor = 0
-        func markdown(_ text: String) -> AttributedString {
-            (try? AttributedString(markdown: text)) ?? AttributedString(text)
-        }
-        for link in WikiLinkParser.parse(displayText) {
-            if link.location > cursor {
-                result.append(markdown(source.substring(with: NSRange(location: cursor, length: link.location - cursor))))
-            }
-            var linked = AttributedString(link.visibleText)
-            var components = URLComponents()
-            components.scheme = "ailab-note"
-            components.host = "open"
-            components.queryItems = [
-                URLQueryItem(name: "target", value: link.target),
-                URLQueryItem(name: "current", value: currentNoteID),
-                URLQueryItem(name: "anchor", value: link.anchor?.rawValue ?? "")
-            ]
-            linked.link = components.url
-            result.append(linked)
-            cursor = NSMaxRange(link.range)
-        }
-        if cursor < source.length {
-            result.append(markdown(source.substring(from: cursor)))
-        }
-        return result
-    }
-}
-
-private struct EmbeddedNoteView: View {
-    @ObservedObject private var store = KnowledgeNoteStore.shared
-    let reference: WikiLinkReference
-    let depth: Int
-
-    private var note: KnowledgeNote? { store.note(matchingLink: reference.target) }
-
-    var body: some View {
-        if let note {
-            NavigationLink(value: knowledgeRoute(noteID: note.id, anchor: reference.anchor?.rawValue)) {
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                    Label("嵌入 · \(note.title)", systemImage: "rectangle.inset.filled")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(AppTheme.Icons.interactive)
-                    if depth < 2 {
-                        NoteReadingView(
-                            noteID: note.id,
-                            content: embeddedContent(note: note, anchor: reference.anchor),
-                            depth: depth + 1
-                        )
-                        .allowsHitTesting(false)
-                    } else {
-                        Text(note.preview)
-                            .font(.subheadline)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                            .lineLimit(5)
-                    }
-                }
-                .padding(AppTheme.Spacing.md)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(AppTheme.Colors.surfaceTint)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-            }
-            .buttonStyle(.plain)
-        } else {
-            Label("未找到嵌入笔记：\(reference.target)", systemImage: "questionmark.diamond")
-                .font(.caption)
-                .foregroundStyle(AppTheme.Colors.textTertiary)
-        }
-    }
-
-    private func embeddedContent(note: KnowledgeNote, anchor: WikiLinkAnchor?) -> String {
-        guard let anchor else { return note.body }
-        let lines = note.body.components(separatedBy: .newlines)
-        switch anchor {
-        case .block(let blockID):
-            return lines.first(where: { $0.contains("^\(blockID)") }) ?? note.body
-        case .heading(let heading):
-            guard let start = lines.firstIndex(where: {
-                $0.trimmingCharacters(in: .whitespaces).replacingOccurrences(
-                    of: #"^#{1,6}\s*"#, with: "", options: .regularExpression
-                ).caseInsensitiveCompare(heading) == .orderedSame
-            }) else { return note.body }
-            let startLevel = lines[start].prefix(while: { $0 == "#" }).count
-            var end = lines.count
-            for index in (start + 1)..<lines.count {
-                let candidate = lines[index].trimmingCharacters(in: .whitespaces)
-                let level = candidate.prefix(while: { $0 == "#" }).count
-                if level > 0 && level <= startLevel { end = index; break }
-            }
-            return lines[start..<end].joined(separator: "\n")
-        }
     }
 }
 
@@ -1481,31 +1052,16 @@ private enum NoteReadingBlock: Identifiable {
         }
     }
 
-    var navigationID: String {
-        switch self {
-        case .heading(_, let text, _):
-            return noteAnchorID(text)
-        case .paragraph(let text, _), .quote(let text, _):
-            return blockAnchor(in: text).map(noteAnchorID) ?? id.uuidString
-        case .list(let items, _, _):
-            return blockAnchor(in: items.joined(separator: "\n")).map(noteAnchorID) ?? id.uuidString
-        case .callout(_, _, let text, _), .code(let text, _):
-            return blockAnchor(in: text).map(noteAnchorID) ?? id.uuidString
-        case .divider:
-            return id.uuidString
-        }
-    }
-
     @ViewBuilder
-    func view(currentNoteID: String, depth: Int) -> some View {
+    var view: some View {
         switch self {
         case .heading(let level, let text, _):
-            WikiInlineView(text: text, currentNoteID: currentNoteID, depth: depth)
+            Text(inlineMarkdown(text))
                 .font(level == 1 ? .title.weight(.bold) : level == 2 ? .title2.weight(.bold) : .title3.weight(.semibold))
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .padding(.top, level <= 2 ? AppTheme.Spacing.sm : 0)
         case .paragraph(let text, _):
-            WikiInlineView(text: text, currentNoteID: currentNoteID, depth: depth)
+            Text(inlineMarkdown(text))
                 .font(.body)
                 .foregroundStyle(AppTheme.Colors.textPrimary)
                 .lineSpacing(5)
@@ -1522,11 +1078,7 @@ private enum NoteReadingBlock: Identifiable {
                                 .foregroundStyle(AppTheme.Colors.textSecondary)
                                 .frame(width: 22, alignment: .trailing)
                         }
-                        WikiInlineView(
-                            text: item.replacingOccurrences(of: #"^\[[ xX]\]\s*"#, with: "", options: .regularExpression),
-                            currentNoteID: currentNoteID,
-                            depth: depth
-                        )
+                        Text(inlineMarkdown(item.replacingOccurrences(of: #"^\[[ xX]\]\s*"#, with: "", options: .regularExpression)))
                             .font(.body)
                             .foregroundStyle(AppTheme.Colors.textPrimary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1538,7 +1090,7 @@ private enum NoteReadingBlock: Identifiable {
                 Rectangle()
                     .fill(AppTheme.Colors.border)
                     .frame(width: 3)
-                WikiInlineView(text: text, currentNoteID: currentNoteID, depth: depth)
+                Text(inlineMarkdown(text))
                     .font(.body.italic())
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             }
@@ -1550,7 +1102,7 @@ private enum NoteReadingBlock: Identifiable {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
                     Text(title)
                         .font(.subheadline.weight(.semibold))
-                    WikiInlineView(text: text, currentNoteID: currentNoteID, depth: depth)
+                    Text(inlineMarkdown(text))
                         .font(.subheadline)
                         .lineSpacing(3)
                 }
@@ -1574,48 +1126,13 @@ private enum NoteReadingBlock: Identifiable {
         }
     }
 
-    private func inlineMarkdown(_ text: String, currentNoteID: String) -> AttributedString {
-        let displayText = text.replacingOccurrences(
-            of: #"(?:^|\s)\^[\p{L}\p{N}_-]+\s*$"#,
-            with: "",
+    private func inlineMarkdown(_ text: String) -> AttributedString {
+        let wikilinks = text.replacingOccurrences(
+            of: #"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]"#,
+            with: "$2$1",
             options: .regularExpression
         )
-        let source = displayText as NSString
-        var cursor = 0
-        var result = AttributedString()
-
-        func markdown(_ value: String) -> AttributedString {
-            (try? AttributedString(markdown: value)) ?? AttributedString(value)
-        }
-
-        for link in WikiLinkParser.parse(displayText) {
-            if link.location > cursor {
-                result.append(markdown(source.substring(with: NSRange(location: cursor, length: link.location - cursor))))
-            }
-            var linked = AttributedString(link.visibleText)
-            var components = URLComponents()
-            components.scheme = "ailab-note"
-            components.host = "open"
-            components.queryItems = [
-                URLQueryItem(name: "target", value: link.target),
-                URLQueryItem(name: "current", value: currentNoteID),
-                URLQueryItem(name: "anchor", value: link.anchor?.rawValue ?? "")
-            ]
-            linked.link = components.url
-            result.append(linked)
-            cursor = NSMaxRange(link.range)
-        }
-        if cursor < source.length {
-            result.append(markdown(source.substring(from: cursor)))
-        }
-        return result
-    }
-
-    private func blockAnchor(in text: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"(?:^|\s)\^([\p{L}\p{N}_-]+)\s*$"#),
-              let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
-              let range = Range(match.range(at: 1), in: text) else { return nil }
-        return "^" + String(text[range])
+        return (try? AttributedString(markdown: wikilinks)) ?? AttributedString(wikilinks)
     }
 
     static func parse(_ source: String) -> [NoteReadingBlock] {

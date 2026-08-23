@@ -385,24 +385,19 @@ public struct ChatLocalNoteDTO: Codable, Hashable, Sendable {
     public let markdown: String
     public let updatedAt: String?
     public let contentHash: String?
-    public let tags: [String]
-    public let preview: String?
 
-    public init(id: String, title: String, markdown: String, updatedAt: String? = nil, contentHash: String? = nil, tags: [String] = [], preview: String? = nil) {
+    public init(id: String, title: String, markdown: String, updatedAt: String? = nil, contentHash: String? = nil) {
         self.id = id
         self.title = title
         self.markdown = markdown
         self.updatedAt = updatedAt
         self.contentHash = contentHash
-        self.tags = tags
-        self.preview = preview
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, markdown
         case updatedAt = "updated_at"
         case contentHash = "content_hash"
-        case tags, preview
     }
 }
 
@@ -468,28 +463,6 @@ public struct ClientSessionContextDTO: Codable, Hashable, Sendable {
         truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
         localNotes = try container.decodeIfPresent([ChatLocalNoteDTO].self, forKey: .localNotes) ?? []
     }
-}
-
-public struct NoteMergePreviewDTO: Codable, Sendable {
-    public let draftId: String
-    public let title: String
-    public let markdown: String
-    public let tags: [String]
-    public let selectedCandidateIds: [String]
-}
-
-private struct NoteMergePreviewRequestDTO: Encodable {
-    let requestId: String
-    let sessionId: String
-    let agentId: String?
-    let draftId: String
-    let draftRequestId: String
-    let draftTitle: String
-    let draftMarkdown: String
-    let draftTags: [String]
-    let selectedCandidateIds: [String]
-    let clientSessionContext: ClientSessionContextDTO
-    let draftCapability: String
 }
 
 /// POST /api/chat 请求体（snake_case 序列化对齐后端 ChatRequest）
@@ -713,7 +686,6 @@ public struct AgentEvaluationEventPayloadDTO: Codable {
 /// GET /api/v1/skills 响应（租户真实技能库）
 public struct TenantSkillsDTO: Codable {
     public let tenantId: String
-    public let scopeModel: String?
     public let skills: [TenantSkillDTO]
 }
 
@@ -1627,12 +1599,12 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    /// GET /api/v1/skills：当前账号私有 Skill（不包含租户共享或平台模板）
-    public func fetchTenantSkills(privateOnly: Bool = false) async throws -> [TenantSkillDTO] {
+    /// GET /api/v1/skills：当前租户真实技能库（挂载目录扫描·非演示数据）
+    public func fetchTenantSkills(ownedOnly: Bool = false) async throws -> [TenantSkillDTO] {
         let dto: TenantSkillsDTO = try await request(
             TenantSkillsDTO.self,
             path: "skills",
-            queryItems: privateOnly ? [URLQueryItem(name: "scope", value: "user")] : []
+            queryItems: ownedOnly ? [URLQueryItem(name: "owned_only", value: "true")] : []
         )
         return dto.skills
     }
@@ -2058,47 +2030,6 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    public func previewNoteMerge(
-        sessionId: String,
-        agentId: String?,
-        draft: NoteDraftBlock,
-        selectedCandidateIds: [String],
-        clientSessionContext: ClientSessionContextDTO
-    ) async throws -> NoteMergePreviewDTO {
-        guard let capability = draft.draftCapability, !capability.isEmpty else {
-            throw APIError.server(409, "草稿授权已失效，请重新生成草稿")
-        }
-        guard let draftRequestId = draft.draftRequestId, !draftRequestId.isEmpty else {
-            throw APIError.server(409, "草稿请求已失效，请重新生成草稿")
-        }
-        let body = NoteMergePreviewRequestDTO(
-                requestId: UUID().uuidString,
-                sessionId: sessionId,
-                agentId: agentId,
-                draftId: draft.id,
-                draftRequestId: draftRequestId,
-                draftTitle: draft.title,
-                draftMarkdown: draft.markdown,
-                draftTags: draft.tags,
-                selectedCandidateIds: selectedCandidateIds,
-                clientSessionContext: clientSessionContext,
-                draftCapability: capability
-            )
-        let url = baseURL.appendingPathComponent("api/chat/note-merge-preview")
-        var urlRequest = URLRequest(url: url)
-        urlRequest.httpMethod = "POST"
-        urlRequest.timeoutInterval = 120
-        urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = currentToken(), !token.isEmpty {
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        urlRequest.httpBody = try encoder.encode(body)
-        let data = try await perform(urlRequest, session: chatSession, canRetry: false)
-        return try decoder.decode(NoteMergePreviewDTO.self, from: data)
-    }
-
     /// POST /api/chat：真实问答 + 真实思维链（异步 data(for:)，URLRequest.timeoutInterval=200，
     /// Task.cancel 传播中断客户端等待；404 可区分（清 session_id 幂等重发一次），超时单独抛 `.timeout`）。
     public func chat(
@@ -2172,7 +2103,7 @@ public final class APIClient: ObservableObject {
         case clarifyRejected
         case status(phase: String, detail: String)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
-        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String], draftCapability: String?, draftRequestId: String?, topic: String?, aliases: [String], selectionMode: String?, sourceMessageCount: Int?, snapshotComplete: Bool?)
+        case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String])
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -2233,9 +2164,7 @@ public final class APIClient: ObservableObject {
                         id: id,
                         title: item["title"] as? String ?? "无标题",
                         snippet: item["snippet"] as? String ?? "",
-                        updatedAt: item["updated_at"] as? String,
-                        matchReason: item["match_reason"] as? String,
-                        confidence: item["confidence"] as? Double ?? 0.65
+                        updatedAt: item["updated_at"] as? String
                     )
                 }
                 return .noteDraft(
@@ -2249,14 +2178,7 @@ public final class APIClient: ObservableObject {
                     mergeCandidates: mergeCandidates,
                     mergedTitle: json["merged_title"] as? String,
                     mergedMarkdown: json["merged_markdown"] as? String,
-                    mergedTags: json["merged_tags"] as? [String] ?? [],
-                    draftCapability: json["draft_capability"] as? String,
-                    draftRequestId: json["draft_request_id"] as? String,
-                    topic: json["topic"] as? String,
-                    aliases: json["aliases"] as? [String] ?? [],
-                    selectionMode: json["selection_mode"] as? String,
-                    sourceMessageCount: json["source_message_count"] as? Int,
-                    snapshotComplete: json["snapshot_complete"] as? Bool
+                    mergedTags: json["merged_tags"] as? [String] ?? []
                 )
             case "done":
                 return .done(

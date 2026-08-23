@@ -403,10 +403,7 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
             "merged_markdown": "# 合并内容",
             "merged_tags": ["企业"],
         ]))
-        guard case let .noteDraft(
-            id, title, markdown, _, sessionId, messageIds, accountScope, candidates,
-            mergedTitle, mergedMarkdown, _, _, _, _, _, _, _, _
-        ) = event else {
+        guard case let .noteDraft(id, title, markdown, _, sessionId, messageIds, accountScope, candidates, mergedTitle, mergedMarkdown, _) = event else {
             return XCTFail("expected noteDraft event")
         }
         XCTAssertEqual(id, "draft-1")

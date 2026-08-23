@@ -96,7 +96,7 @@ public final class ChatHistoryStore: @unchecked Sendable {
     }
 
     public func contextMessages(
-        sessionId: String, maxMessages: Int = 2_000, maxCharacters: Int = 1_500_000
+        sessionId: String, maxMessages: Int = 200, maxCharacters: Int = 120_000
     ) throws -> (messages: [ChatMessage], truncated: Bool) {
         var rows = try query(
             "SELECT payload FROM messages WHERE session_id=? ORDER BY sequence DESC LIMIT ?",

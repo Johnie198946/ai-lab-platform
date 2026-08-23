@@ -318,16 +318,12 @@ public struct NoteMergeCandidate: Identifiable, Codable, Sendable, Hashable {
     public let title: String
     public let snippet: String
     public let updatedAt: String?
-    public let matchReason: String?
-    public let confidence: Double
 
-    public init(id: String, title: String, snippet: String, updatedAt: String? = nil, matchReason: String? = nil, confidence: Double = 0.65) {
+    public init(id: String, title: String, snippet: String, updatedAt: String? = nil) {
         self.id = id
         self.title = title
         self.snippet = snippet
         self.updatedAt = updatedAt
-        self.matchReason = matchReason
-        self.confidence = confidence
     }
 }
 
@@ -345,16 +341,8 @@ public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
     public var mergedTitle: String?
     public var mergedMarkdown: String?
     public var mergedTags: [String]?
-    public var selectedMergeCandidateIds: [String]?
-    public let draftCapability: String?
-    public let draftRequestId: String?
-    public let topic: String?
-    public let aliases: [String]
-    public let selectionMode: String?
-    public let sourceMessageCount: Int?
-    public let snapshotComplete: Bool?
 
-    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil, mergeCandidates: [NoteMergeCandidate]? = nil, mergedTitle: String? = nil, mergedMarkdown: String? = nil, mergedTags: [String]? = nil, selectedMergeCandidateIds: [String]? = nil, draftCapability: String? = nil, draftRequestId: String? = nil, topic: String? = nil, aliases: [String] = [], selectionMode: String? = nil, sourceMessageCount: Int? = nil, snapshotComplete: Bool? = nil) {
+    public init(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String? = nil, state: NoteDraftState = .awaitingConfirmation, savedNoteId: String? = nil, mergeCandidates: [NoteMergeCandidate]? = nil, mergedTitle: String? = nil, mergedMarkdown: String? = nil, mergedTags: [String]? = nil) {
         self.id = id
         self.title = title
         self.markdown = markdown
@@ -368,14 +356,6 @@ public struct NoteDraftBlock: Identifiable, Codable, Sendable, Hashable {
         self.mergedTitle = mergedTitle
         self.mergedMarkdown = mergedMarkdown
         self.mergedTags = mergedTags
-        self.selectedMergeCandidateIds = selectedMergeCandidateIds
-        self.draftCapability = draftCapability
-        self.draftRequestId = draftRequestId
-        self.topic = topic
-        self.aliases = aliases
-        self.selectionMode = selectionMode
-        self.sourceMessageCount = sourceMessageCount
-        self.snapshotComplete = snapshotComplete
     }
 }
 
@@ -827,14 +807,14 @@ public final class SessionManager: ObservableObject {
         for message in sessions[sessionId] ?? [] { byId[message.id] = message }
         var source = byId.values.sorted { $0.createdAt < $1.createdAt }
         var truncated = result.1
-        if source.count > 2_000 {
-            source = Array(source.suffix(2_000))
+        if source.count > 200 {
+            source = Array(source.suffix(200))
             truncated = true
         }
         var characters = 0
         var bounded: [ChatMessage] = []
         for message in source.reversed() {
-            if !bounded.isEmpty && characters + message.content.count > 1_500_000 {
+            if !bounded.isEmpty && characters + message.content.count > 120_000 {
                 truncated = true
                 break
             }
