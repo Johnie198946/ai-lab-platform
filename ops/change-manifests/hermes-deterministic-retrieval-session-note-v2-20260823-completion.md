@@ -2,10 +2,10 @@
 
 - task_id: `hermes-deterministic-retrieval-session-note-v2-20260823`
 - objective: 将 iOS/Hermes 的知识失败回退、会话连续性、全会话笔记、同类笔记合并预览、归档与部署版本检查改为 Bridge 可校验协议。
-- status: `TESTED`
+- status: `DEPLOYED`
 - branch: `codex/hermes-deterministic-retrieval-session-note-v2`
 - worktree: `/private/tmp/ai-lab-hermes-deterministic-retrieval-session-note-v2`
-- base/head: `6ff062421e5e53a930159471e71344d54f226492`
+- base/head: `a580bc9b21f26076b1080df03ed2364e5a98a00c`
 
 ## Preflight
 
@@ -52,16 +52,16 @@
 
 ## Delivery evidence
 
-- commit SHA: 未授权/未执行。
-- GitHub remote/ref/SHA: 未授权/未执行；未运行 `git ls-remote`，不得标记 PUSHED。
-- server_before: 未授权/未执行；已知本地基线为 `6ff062421e5e53a930159471e71344d54f226492`，不将其伪装为本轮服务器盘点。
-- server_after: 未授权/未执行。
-- health_check: 本地协议测试通过；生产健康检查未授权/未执行。
-- functional_check: 本地定向协议测试与 iOS 模拟器构建通过；真实 Hermes、生产双租户双账号和公网 provider 验收未执行。
-- rollback_point: 本地改动可回退到任务基线 `6ff062421e5e53a930159471e71344d54f226492`；生产未变更。
+- commit SHA: `a580bc9b21f26076b1080df03ed2364e5a98a00c`
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/hermes-deterministic-retrieval-session-note-v2` / `a580bc9b21f26076b1080df03ed2364e5a98a00c`; `git ls-remote` 已核对一致。
+- server_before: `/opt/ai-lab-platform/.deployed-sha=6ff062421e5e53a930159471e71344d54f226492`; API 与 Bridge 在部署前均为 healthy。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=a580bc9b21f26076b1080df03ed2364e5a98a00c`; `/opt/ai-lab-platform/.bridge-target-sha` 同值；Bridge 手动重启后 `loaded_sha` 同值。
+- health_check: `GET http://127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.8.0"}`；Bridge 返回 `{"status":"ok","service":"hermes-bridge","loaded_sha":"a580bc9b21f26076b1080df03ed2364e5a98a00c","active_runs":0}`；`hermes-bridge.service=active`；runtime contract audit passed。
+- functional_check: 本地定向协议测试 `45 passed`、Python 编译、shell 语法和 iOS 模拟器构建通过；生产健康链路通过。真实双租户/双账号笔记合并与公网 provider 端到端验收尚未执行。
+- rollback_point: `6ff062421e5e53a930159471e71344d54f226492`（部署前 `.deployed-sha`，可重新执行 `scripts/update.sh` 回滚）。
 
 ## Remaining risks
 
 - 真实 Hermes 模型的长会话 map-reduce 质量、双租户双账号隔离、Gateway + 公网 provider 真实链路仍需在生产或等价环境验收。
 - 部署前必须在 Bridge systemd 环境配置至少 32 字符的 `HERMES_DRAFT_CAPABILITY_SECRET`（也可由现有 `KNOWLEDGE_CAPABILITY_SECRET` 提供）；缺失时笔记草稿能力按设计 fail closed。
-- 未 commit、未 push、未部署、未重新打包或安装模拟器。
+- 已 commit、push、部署、重新打包并安装到 `AIPlatform Preview`（UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`）。生产真实双租户/双账号与公网 provider 端到端验收仍需补做。
