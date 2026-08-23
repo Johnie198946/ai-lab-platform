@@ -23,6 +23,7 @@ class TenantSkillOut(BaseModel):
 
 class TenantSkillsOut(BaseModel):
     tenant_id: str
+    scope_model: str = "tenant_shared"
     skills: List[TenantSkillOut]
 
 
@@ -45,17 +46,17 @@ async def _bridge_skill_entries(payload: Dict[str, Any]) -> List[TenantSkillOut]
 async def list_tenant_skills(
     payload: Dict[str, Any] = Depends(require_auth),
     owned_only: bool = Query(False),
+    scope: Optional[str] = Query(None, pattern="^(tenant|all)$"),
 ) -> TenantSkillsOut:
     """List the authenticated Hermes skill catalog.
 
     The default keeps the existing catalog contract for chat/planner callers.
-    Settings uses ``owned_only=true`` so template/platform skills are not
-    presented as user-configured skills; only the sandbox's tenant scope is
-    user-managed.
+    Settings uses ``scope=tenant``. ``owned_only=true`` remains a compatibility
+    alias for older iOS builds; custom skills are tenant-shared, not user-owned.
     """
     tenant_id = str(payload.get("tenant_key") or "public")
     skills = await _bridge_skill_entries(payload)
-    if owned_only:
+    if owned_only or scope == "tenant":
         skills = [skill for skill in skills if skill.category == "tenant"]
     return TenantSkillsOut(
         tenant_id=tenant_id, skills=skills

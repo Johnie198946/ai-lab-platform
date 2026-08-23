@@ -71,6 +71,7 @@ from backend.services.client_context_capability import (  # noqa: E402
 from backend.services.tenant_hermes_sandbox import (  # noqa: E402
     TenantHermesSandbox,
     ensure_tenant_sandbox,
+    list_sandbox_agent_templates,
     list_sandbox_skills,
     persist_agent_snapshot,
     read_sandbox_skill,
@@ -3267,7 +3268,7 @@ def _tenantize_created_skill(
         candidates = list(skills_root.glob(f"*/{name}")) + list(skills_root.glob(name))
         for src in candidates:
             if src.is_dir() and (src / "SKILL.md").exists() and "tenants" not in src.parts:
-                dst = sandbox.custom_skills / name
+                dst = sandbox.tenant_skills / name
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 if not dst.exists():
                     shutil.copytree(str(src), str(dst), symlinks=False)
@@ -4672,6 +4673,31 @@ async def list_skills(
         "skills": list_sandbox_skills(sandbox),
         "tenant_namespace": sandbox.tenant_namespace,
         "template_version": sandbox.template_version,
+        "agent_template_version": sandbox.agent_template_version,
+        "skill_scope_model": "tenant_shared",
+    }
+
+
+@app.get("/v1/agent-templates")
+async def list_agent_templates(
+    x_knowledge_capability: str = Header(default=""),
+):
+    """Expose the versioned baseline/subagent manifest inside the tenant sandbox."""
+    try:
+        claims = verify_capability(x_knowledge_capability)
+    except KnowledgeScopeDenied as exc:
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied") from exc
+    if str(claims.get("entry_point") or "") not in {"skills", "agent_templates"}:
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    sandbox = _tenant_sandbox_from_claims(
+        subject_id=str(claims.get("subject_id") or "agent-templates"),
+        knowledge_claims=claims,
+        client_claims=None,
+    )
+    return {
+        "tenant_namespace": sandbox.tenant_namespace,
+        "agent_template_version": sandbox.agent_template_version,
+        "manifest": list_sandbox_agent_templates(sandbox),
     }
 
 
