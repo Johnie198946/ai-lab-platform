@@ -5,7 +5,7 @@
 - status: `DEPLOYED`
 - branch: `codex/hermes-deterministic-retrieval-session-note-v2`
 - worktree: `/private/tmp/ai-lab-hermes-deterministic-retrieval-session-note-v2`
-- base/head: `a580bc9b21f26076b1080df03ed2364e5a98a00c`
+- base/head: implementation `a580bc9b21f26076b1080df03ed2364e5a98a00c`; final deployed revision `635ae348828d664780acc7bf1099109400002458`.
 
 ## Preflight
 
@@ -52,10 +52,10 @@
 
 ## Delivery evidence
 
-- commit SHA: `a580bc9b21f26076b1080df03ed2364e5a98a00c`
-- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/hermes-deterministic-retrieval-session-note-v2` / `a580bc9b21f26076b1080df03ed2364e5a98a00c`; `git ls-remote` 已核对一致。
+- commit SHA: implementation `a580bc9b21f26076b1080df03ed2364e5a98a00c`; deployment revision `635ae348828d664780acc7bf1099109400002458`。
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/hermes-deterministic-retrieval-session-note-v2` / `635ae348828d664780acc7bf1099109400002458`; `git ls-remote` 已核对一致。
 - server_before: `/opt/ai-lab-platform/.deployed-sha=6ff062421e5e53a930159471e71344d54f226492`; API 与 Bridge 在部署前均为 healthy。
-- server_after: `/opt/ai-lab-platform/.deployed-sha=a580bc9b21f26076b1080df03ed2364e5a98a00c`; `/opt/ai-lab-platform/.bridge-target-sha` 同值；Bridge 手动重启后 `loaded_sha` 同值。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=635ae348828d664780acc7bf1099109400002458`; `/opt/ai-lab-platform/.bridge-target-sha` 同值；Bridge `loaded_sha` 同值。
 - health_check: `GET http://127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.8.0"}`；Bridge 返回 `{"status":"ok","service":"hermes-bridge","loaded_sha":"a580bc9b21f26076b1080df03ed2364e5a98a00c","active_runs":0}`；`hermes-bridge.service=active`；runtime contract audit passed。
 - functional_check: 本地定向协议测试 `45 passed`、Python 编译、shell 语法和 iOS 模拟器构建通过；生产健康链路通过。真实双租户/双账号笔记合并与公网 provider 端到端验收尚未执行。
 - rollback_point: `6ff062421e5e53a930159471e71344d54f226492`（部署前 `.deployed-sha`，可重新执行 `scripts/update.sh` 回滚）。
