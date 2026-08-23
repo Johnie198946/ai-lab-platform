@@ -5,6 +5,7 @@ from pathlib import Path
 
 from backend.services.tenant_hermes_sandbox import (
     ensure_tenant_sandbox,
+    list_sandbox_agent_templates,
     list_sandbox_skills,
     persist_agent_snapshot,
     read_sandbox_skill,
@@ -65,6 +66,36 @@ def test_template_copy_is_immutable_and_custom_skill_is_tenant_only(tmp_path: Pa
     assert {item["name"] for item in list_sandbox_skills(tenant_a)} == {
         "research-template", "private-skill"
     }
+    assert tenant_a.tenant_skills == ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="other-user", root=root, template_root=template
+    ).tenant_skills
+    assert tenant_a.tenant_skills != tenant_b.tenant_skills
+    assert json.loads((tenant_a.root / "sandbox.json").read_text())["skill_scope_model"] == "tenant_shared"
+
+
+def test_baseline_and_dynamic_subagent_manifest_is_materialized(tmp_path: Path):
+    sandbox = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-a",
+        root=tmp_path / "sandboxes", template_root=_template(tmp_path / "template"),
+    )
+    manifest = list_sandbox_agent_templates(sandbox)
+    baselines = {item["id"]: item for item in manifest["baselines"]}
+
+    assert set(baselines) == {"main_agent", "supervision", "coder", "knowledge"}
+    main_children = {item["id"] for item in baselines["main_agent"]["subagents"]}
+    assert {"supervision", "coder", "knowledge", "delegate_task:*"}.issubset(main_children)
+    assert all(
+        "delegate_task:*" in {item["id"] for item in baseline["subagents"]}
+        for baseline in baselines.values()
+    )
+    assert manifest["dynamic_subagent_factory"]["naming"] == "runtime-generated"
+    assert manifest["dynamic_subagent_factory"]["blocked_tools"] == [
+        "delegate_task", "clarify", "memory", "send_message", "cronjob"
+    ]
+    assert (sandbox.agent_templates / "main_agent" / "agent.json").is_file()
+    assert (
+        sandbox.agent_templates / "main_agent" / "subagents" / "dynamic-delegate-task.json"
+    ).is_file()
 
 
 def test_agent_snapshot_never_contains_raw_identity(tmp_path: Path):

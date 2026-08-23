@@ -116,6 +116,18 @@ class TestTenantSkillsAPI(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.text)
         self.assertEqual([skill["name"] for skill in r.json()["skills"]], ["my-skill"])
 
+    def test_tenant_scope_excludes_template_skills_and_declares_shared_model(self):
+        from backend.api.skills import TenantSkillOut
+
+        self._fake_skills = [
+            TenantSkillOut(name="tenant-skill", category="tenant"),
+            TenantSkillOut(name="platform-template", category="template"),
+        ]
+        r = self._get("/api/v1/skills?scope=tenant")
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["scope_model"], "tenant_shared")
+        self.assertEqual([item["name"] for item in r.json()["skills"]], ["tenant-skill"])
+
 
 if __name__ == "__main__":
     unittest.main()

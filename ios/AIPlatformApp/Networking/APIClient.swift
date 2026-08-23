@@ -686,6 +686,7 @@ public struct AgentEvaluationEventPayloadDTO: Codable {
 /// GET /api/v1/skills 响应（租户真实技能库）
 public struct TenantSkillsDTO: Codable {
     public let tenantId: String
+    public let scopeModel: String?
     public let skills: [TenantSkillDTO]
 }
 
@@ -1600,11 +1601,11 @@ public final class APIClient: ObservableObject {
     }
 
     /// GET /api/v1/skills：当前租户真实技能库（挂载目录扫描·非演示数据）
-    public func fetchTenantSkills(ownedOnly: Bool = false) async throws -> [TenantSkillDTO] {
+    public func fetchTenantSkills(tenantOnly: Bool = false) async throws -> [TenantSkillDTO] {
         let dto: TenantSkillsDTO = try await request(
             TenantSkillsDTO.self,
             path: "skills",
-            queryItems: ownedOnly ? [URLQueryItem(name: "owned_only", value: "true")] : []
+            queryItems: tenantOnly ? [URLQueryItem(name: "scope", value: "tenant")] : []
         )
         return dto.skills
     }
