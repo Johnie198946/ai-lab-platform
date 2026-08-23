@@ -39,29 +39,29 @@
 
 - `git diff --check`：通过。
 - iOS Debug 模拟器构建：`** BUILD SUCCEEDED **`（derived data：`/private/tmp/ai-platform-login-motion-rebuild-2`）。
-- 最新构建产物已覆盖安装到 `AIPlatform Preview`（UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`）。
+- 最新构建产物已覆盖安装到 `AIPlatform Preview`（UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`），启动 PID `40984`。
 - `com.ailab.AIPlatformApp` 启动成功。
 - 模拟器截图确认：品牌揭幕居中显示，结束后登录表单正常出现。
 
 ## Delivery status
 
-`TESTED`
+`DEPLOYED`
 
-- commit：未授权/未执行。
-- push：未授权/未执行。
-- deploy：未授权/未执行。
+- commit：功能提交 `c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`；本清单收尾提交待生成。
+- push：已执行，远端分支 `codex/login-klarna-splash-motion` 已核对。
+- deploy：已执行，生产 `.deployed-sha` 与 Bridge `loaded_sha` 已核对。
 - simulator install：已执行。
 
 ## Server and rollback
 
-- server_before：未授权/未读取。
-- server_after：未授权/未部署。
-- health_check：不适用。
-- functional_check：本地模拟器构建、安装、启动和视觉切换通过。
-- rollback_point：`db5ca12a76aa11237b5cd150c47deb84876262f8`。
+- server_before：`/opt/ai-lab-platform/.deployed-sha=c0b64e03420bd4c4f83018f959883f062d467a78`；API 与 Bridge 健康，Bridge `active_runs=0`。
+- server_after：`/opt/ai-lab-platform/.deployed-sha=c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`；`.bridge-target-sha` 和 Bridge `loaded_sha` 同值；全部 Compose 服务 running。
+- health_check：API `{"status":"ok","version":"0.8.0"}`；Bridge `loaded_sha=c2eb59fbc0f6faaf36e0eaa89d0bbe91b5688d5e`、`active_runs=0`；runtime contract audit passed。
+- functional_check：本地 iOS clean build `BUILD SUCCEEDED`；模拟器安装并启动成功；生产 API/Bridge/Workers/frontend/Postgres/Redis 健康。
+- rollback_point：`c0b64e03420bd4c4f83018f959883f062d467a78`，可重新执行 `scripts/update.sh` 回滚。
 
 ## Remaining risks
 
 - `accessibilityReduceMotion` 分支已由代码覆盖但尚未在模拟器设置中人工切换验收。
 - 尚需补充最大 Dynamic Type、深色模式、小屏横屏的视觉验收。
-- 本任务尚未 commit、push 或部署。
+- 真实账号登录和动效的减弱动态/大字体人工验收仍待补充；本任务已完成 commit、push、部署、重新打包和模拟器安装。
