@@ -219,6 +219,21 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertNotIn("hermes_sessions", context)
         self.assertIn("关注需求到验证协同", workflow["description"])
 
+        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
+        if response.json()["clarification_session"]["phase"] != "awaiting_requirement_confirmation":
+            for answer in ("研发负责人使用", "先完成需求到验证闭环", "交付可审阅方案"):
+                advanced = self.request("POST", path, json={"response": answer})
+                self.assertEqual(advanced.status_code, 200, advanced.text)
+        confirmation = self.request(
+            "POST", path, json={"response": "确认并规划", "intent": "confirm"}
+        )
+        self.assertEqual(confirmation.status_code, 200, confirmation.text)
+        refreshed = self.request("GET", f"/api/v1/workflows/{workflow['id']}").json()
+        self.assertEqual(
+            refreshed["requirements_snapshot"]["showroom_context"]["source"]["session_id"],
+            "visit-bridge-alpha",
+        )
+
         denied = self.request(
             "POST",
             "/api/v1/workflows",
@@ -271,6 +286,23 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(snapshot["source"]["type"], "customer_demand")
         self.assertEqual(snapshot["source"]["version"], 2)
         self.assertIn("新品需求评审周期太长", workflow["description"])
+
+        path = f"/api/v1/workflows/{workflow['id']}/clarification/respond"
+        if response.json()["clarification_session"]["phase"] != "awaiting_requirement_confirmation":
+            for answer in ("研发团队使用", "先做需求评审闭环", "交付带证据的方案"):
+                advanced = self.request("POST", path, json={"response": answer})
+                self.assertEqual(advanced.status_code, 200, advanced.text)
+        confirmation = self.request(
+            "POST",
+            path,
+            json={"response": "确认并进入方案", "intent": "confirm"},
+        )
+        self.assertEqual(confirmation.status_code, 200, confirmation.text)
+        self.assertEqual(confirmation.json()["phase"], "planning")
+        refreshed = self.request("GET", f"/api/v1/workflows/{workflow['id']}").json()
+        preserved = refreshed["requirements_snapshot"]["customer_demand"]
+        self.assertEqual(preserved["source"]["demand_id"], "dmd_workflow_001")
+        self.assertEqual(preserved["source"]["version"], 2)
 
     def test_delete_archives_owned_workflow_and_hides_it(self):
         from backend.db import SessionLocal

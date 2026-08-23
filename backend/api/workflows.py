@@ -794,7 +794,13 @@ async def respond_to_clarification(
                 }
                 session.confirmed_spec = spec
                 session.phase = "planning"
-                workflow.requirements_snapshot = spec
+                prior_snapshot = workflow.requirements_snapshot or {}
+                source_context = {
+                    key: prior_snapshot[key]
+                    for key in ("showroom_context", "customer_demand")
+                    if prior_snapshot.get(key)
+                }
+                workflow.requirements_snapshot = {**spec, **source_context}
                 workflow.description = workflow.description + "\n\n已确认需求：\n" + "\n".join(
                     f"- {item['name']}：{item['answer']}" for item in spec["dimensions"]
                 )

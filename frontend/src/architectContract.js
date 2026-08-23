@@ -125,3 +125,208 @@ export function customerDemandIdFromSearch(search = "") {
   const value = new URLSearchParams(search).get("customer_demand_id")?.trim() || "";
   return /^dmd_[A-Za-z0-9_-]{1,44}$/.test(value) ? value : "";
 }
+
+const ARCHITECT_VIEWS = new Set(["office", "workbench"]);
+
+export function architectViewFromSearch(search = "", defaultView = "workbench") {
+  const fallback = ARCHITECT_VIEWS.has(defaultView) ? defaultView : "workbench";
+  const requested = new URLSearchParams(search).get("view") || "";
+  return ARCHITECT_VIEWS.has(requested) ? requested : fallback;
+}
+
+export function architectSearchWithView(search = "", view = "workbench") {
+  const params = new URLSearchParams(search);
+  params.set("view", ARCHITECT_VIEWS.has(view) ? view : "workbench");
+  const next = params.toString();
+  return next ? `?${next}` : "";
+}
+
+export function architectWorkflowForContext(workflows = [], { customerDemandId = "", showroomSessionId = "" } = {}) {
+  const rows = Array.isArray(workflows) ? workflows : [];
+  if (customerDemandId && showroomSessionId) return null;
+  if (customerDemandId) {
+    return rows.find((row) => String(row?.requirements_snapshot?.customer_demand?.source?.demand_id || "") === customerDemandId) || null;
+  }
+  if (showroomSessionId) {
+    return rows.find((row) => String(row?.requirements_snapshot?.showroom_context?.source?.session_id || "") === showroomSessionId) || null;
+  }
+  return rows[0] || null;
+}
+
+const arrayValue = (value) => (Array.isArray(value) ? value : []);
+const textValue = (value) => value === null || value === undefined ? "" : String(value).trim();
+
+function explicitNodeId(value) {
+  if (!value || typeof value !== "object") return "";
+  for (const source of [value, value.metadata, value.payload]) {
+    if (!source || typeof source !== "object") continue;
+    for (const key of ["source_node_id", "node_id", "producer_node_id", "plan_node_id"]) {
+      const candidate = textValue(source[key]);
+      if (candidate) return candidate;
+    }
+  }
+  return "";
+}
+
+function explicitAgentId(value) {
+  if (!value || typeof value !== "object") return "";
+  return textValue(value.agent_id) || textValue(value.metadata?.agent_id);
+}
+
+function explicitArtifactNodeId(value) {
+  if (!value || typeof value !== "object") return "";
+  for (const source of [value, value.metadata]) {
+    if (!source || typeof source !== "object") continue;
+    for (const key of ["source_node_id", "node_id", "producer_node_id"]) {
+      const candidate = textValue(source[key]);
+      if (candidate) return candidate;
+    }
+  }
+  return "";
+}
+
+function officeNodeStatus(planNode, runtimeNode) {
+  const parameters = planNode?.parameters && typeof planNode.parameters === "object" ? planNode.parameters : {};
+  const capability = textValue(planNode?.capability_status || parameters.capability_status).toUpperCase();
+  if (capability === "UNCONNECTED") return "UNCONNECTED";
+  if (planNode?.execution_disabled === true || parameters.execution_disabled === true || planNode?.execution_enabled === false || parameters.execution_enabled === false || capability.includes("REFERENCE")) return "reference";
+
+  const status = textValue(runtimeNode?.status).toLowerCase();
+  if (["pending", "queued", "waiting"].includes(status)) return "waiting";
+  if (status === "planned") return "planned";
+  if (status === "running") return "running";
+  if (["blocked", "failed"].includes(status)) return status;
+  if (["completed", "done"].includes(status)) return "done";
+  if (status === "succeeded") return "succeeded";
+  if (["cancelled", "canceled"].includes(status)) return "cancelled";
+  if (status === "awaiting_review") return "awaiting_review";
+  return "planned";
+}
+
+function trustedExecutionTruth(execution) {
+  if (!textValue(execution?.id)) return "PLAN";
+  const truth = textValue(execution?.truth).toUpperCase();
+  if (["REPLAY", "SIMULATION"].includes(truth)) return truth;
+  if (truth !== "LIVE") return "PLAN";
+  const status = textValue(execution?.status).toLowerCase();
+  const hasRunReceipt = Boolean(textValue(execution?.started_at || execution?.hermes_session_id));
+  return hasRunReceipt && !["", "draft", "pending", "queued"].includes(status) ? "LIVE" : "PLAN";
+}
+
+function officeTruthState(planNode, runtimeNode, executionTruth) {
+  const parameters = planNode?.parameters && typeof planNode.parameters === "object" ? planNode.parameters : {};
+  const capability = textValue(planNode?.capability_status || parameters.capability_status).toUpperCase();
+  if (capability === "UNCONNECTED" || planNode?.execution_disabled === true || parameters.execution_disabled === true || planNode?.execution_enabled === false || parameters.execution_enabled === false) {
+    return { status: "UNCONNECTED" };
+  }
+  if (!runtimeNode) return { status: "PLAN" };
+  return { status: executionTruth };
+}
+
+export function projectOfficeProjection({ workflow, plan, execution, events, artifacts, connectionState } = {}) {
+  const dsl = plan?.dsl && typeof plan.dsl === "object" ? plan.dsl : plan && typeof plan === "object" ? plan : {};
+  const planNodes = arrayValue(dsl.nodes).filter((node) => node && typeof node === "object" && textValue(node.id));
+  const planNodeIds = new Set(planNodes.map((node) => textValue(node.id)));
+  const runtimeByNodeId = new Map();
+  for (const runtimeNode of arrayValue(execution?.nodes)) {
+    const nodeId = explicitNodeId(runtimeNode);
+    if (planNodeIds.has(nodeId) && !runtimeByNodeId.has(nodeId)) runtimeByNodeId.set(nodeId, runtimeNode);
+  }
+
+  const latestEventByNodeId = new Map();
+  let latestSeq = null;
+  for (const event of arrayValue(events)) {
+    const eventReceiptId = textValue(event?.event_id || event?.id);
+    if (!eventReceiptId) continue;
+    const numericSeq = Number(event?.seq ?? event?.id);
+    if (Number.isFinite(numericSeq)) latestSeq = Math.max(latestSeq ?? numericSeq, numericSeq);
+    const nodeId = explicitNodeId(event);
+    if (planNodeIds.has(nodeId)) latestEventByNodeId.set(nodeId, event);
+  }
+
+  const runtimeNodeIdsByAgent = new Map();
+  for (const [nodeId, runtimeNode] of runtimeByNodeId) {
+    const agentId = explicitAgentId(runtimeNode);
+    if (!agentId) continue;
+    if (!runtimeNodeIdsByAgent.has(agentId)) runtimeNodeIdsByAgent.set(agentId, new Set());
+    runtimeNodeIdsByAgent.get(agentId).add(nodeId);
+  }
+
+  const safeArtifacts = arrayValue(artifacts);
+  const executionTruth = trustedExecutionTruth(execution);
+  const artifactsByNodeId = new Map(planNodes.map((node) => [textValue(node.id), []]));
+  for (const artifact of safeArtifacts) {
+    if (!artifact || typeof artifact !== "object") continue;
+    let nodeId = explicitArtifactNodeId(artifact);
+    if (!planNodeIds.has(nodeId)) {
+      const agentNodes = runtimeNodeIdsByAgent.get(explicitAgentId(artifact));
+      nodeId = agentNodes?.size === 1 ? [...agentNodes][0] : "";
+    }
+    if (planNodeIds.has(nodeId)) artifactsByNodeId.get(nodeId).push(artifact);
+  }
+
+  const seats = planNodes.map((node) => {
+    const id = textValue(node.id);
+    const parameters = node.parameters && typeof node.parameters === "object" ? node.parameters : {};
+    const runtimeNode = runtimeByNodeId.get(id) || null;
+    const roleIds = arrayValue(parameters.role_ids).map(textValue).filter(Boolean);
+    return {
+      id,
+      name: textValue(node.name || node.label || node.id),
+      businessRole: textValue(node.business_role || parameters.business_role || parameters.role) || roleIds.join(" · "),
+      roleIds,
+      runtimeAgentId: explicitAgentId(runtimeNode) || null,
+      input: arrayValue(node.inputs || parameters.inputs || parameters.input_artifacts),
+      expectedOutput: arrayValue(node.outputs || parameters.outputs || parameters.output_deliverables),
+      status: officeNodeStatus(node, runtimeNode),
+      truthState: officeTruthState(node, runtimeNode, executionTruth),
+      lastEvent: latestEventByNodeId.get(id) || null,
+      artifacts: artifactsByNodeId.get(id),
+    };
+  });
+
+  const truthMode = executionTruth !== "PLAN" || textValue(plan?.id || dsl.plan_id) || seats.length
+    ? executionTruth
+    : "UNCONNECTED";
+  const normalizedConnection = textValue(connectionState).toUpperCase();
+  const projectedConnection = ["CONNECTED", "SYNCING", "UNCONNECTED"].includes(normalizedConnection) ? normalizedConnection : "UNCONNECTED";
+  const governance = textValue(plan?.capability?.status).toUpperCase();
+  const governanceState = ["CONNECTED", "UNCONNECTED"].includes(governance) ? governance : "UNCONNECTED";
+  const governanceTruth = textValue(plan?.capability?.truth).toUpperCase();
+  const governanceCheckedAt = textValue(plan?.capability?.checked_at) || null;
+  const approvalState = plan?.frozen_at
+    ? "APPROVED"
+    : (["awaiting_approval", "planning"].includes(textValue(workflow?.status).toLowerCase()) ? "PENDING" : "UNAPPROVED");
+  const timestampCandidates = [
+    workflow?.updated_at,
+    workflow?.created_at,
+    plan?.frozen_at,
+    plan?.created_at,
+    execution?.finished_at,
+    execution?.started_at,
+    execution?.created_at,
+    ...arrayValue(events).map((event) => event?.created_at),
+  ].map(textValue).filter((value) => value && Number.isFinite(Date.parse(value)));
+  const updatedAt = timestampCandidates.sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
+
+  return {
+    schemaVersion: "office-projection/v1",
+    workflowId: textValue(workflow?.id) || null,
+    planId: textValue(plan?.id || dsl.plan_id) || null,
+    executionId: textValue(execution?.id) || null,
+    snapshotVersion: textValue(execution?.snapshot_version || execution?.snapshotVersion || plan?.snapshot_version) || null,
+    cursor: latestSeq,
+    latestSeq,
+    truthMode,
+    connectionState: projectedConnection,
+    updatedAt,
+    approvalState,
+    governanceState,
+    governanceTruth: ["LIVE", "UNCONNECTED"].includes(governanceTruth) ? governanceTruth : "UNCONNECTED",
+    governanceCheckedAt,
+    title: textValue(workflow?.title || dsl.name) || "未命名任务",
+    stage: textValue(execution?.status || workflow?.status) || (seats.length ? "planned" : "draft"),
+    seats,
+    artifacts: safeArtifacts,
+  };
+}

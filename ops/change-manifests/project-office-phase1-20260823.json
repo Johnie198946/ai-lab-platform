@@ -1,0 +1,28 @@
+{
+  "task_id": "20260823-project-office-phase1",
+  "repo": "platform",
+  "owner": "hermes-main",
+  "scope": [
+    "frontend/src/architectContract.js",
+    "frontend/src/pages/ArchitectWorkbenchPage.jsx",
+    "frontend/src/pages/ArchitectWorkbenchPage.css",
+    "frontend/src/features/project-office/",
+    "frontend/tests/architect-contract.test.mjs",
+    "frontend/tests/project-office.test.mjs",
+    "backend/api/workflows.py",
+    "tests/test_workflows_api.py",
+    "ops/change-manifests/project-office-phase1-20260823.json",
+    "ops/change-manifests/project-office-phase1-20260823-completion.md"
+  ],
+  "base": "0cb89e5275771f2df6e3e4a192ebd51601e2dc02",
+  "change_type": "PUSHED",
+  "status": "completed",
+  "rollback": "git revert <task_commit_sha>",
+  "constraints": [
+    "main branch only",
+    "read-only OfficeProjection phase 1",
+    "no backend changes",
+    "no deployment",
+    "no fabricated agent, event, tool, artifact, or LIVE state"
+  ]
+}
