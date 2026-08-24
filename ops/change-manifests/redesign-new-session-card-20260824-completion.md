@@ -24,9 +24,9 @@
 
 - status: DEPLOYED
 - commit: `85b9c9ffb56cc61b0309ab26f02f5ced5aa559a0`
-- remote/ref/SHA: `origin refs/heads/main = 85b9c9ffb56cc61b0309ab26f02f5ced5aa559a0`（已用 `git ls-remote` 核对）
+- remote/ref/SHA: `origin refs/heads/main = eee80212a1211ee44e65d6992bc8234de68272fd`（已用 `git ls-remote` 核对）
 - server_before: `.deployed-sha=36a887c0d7dc0b959fe84fb8b636c4014e2cb4d2`
-- server_after: `.deployed-sha=85b9c9ffb56cc61b0309ab26f02f5ced5aa559a0`
+- server_after: `.deployed-sha=eee80212a1211ee44e65d6992bc8234de68272fd`
 - health_check: API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；Hermes Bridge `/health` 返回 `status=ok`
 - package: `/private/tmp/AIPlatformApp-85b9c9f-iphonesimulator.zip`；SHA-256 `18b93ada912eeb9117e8f1d14b3572e601ce50b876a782c5bc96ec51c1652cd2`
 - functional_check: iOS Simulator build `BUILD SUCCEEDED`；安装尝试被 CoreSimulator `Connection refused` 阻断
