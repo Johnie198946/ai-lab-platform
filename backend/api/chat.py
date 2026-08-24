@@ -693,7 +693,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 policy=policy,
             )
             child_reply, _ = await _call_hermes_recorded(
-                req.question + child_context.evidence,
+                goal + child_context.evidence,
                 auth_payload=payload,
                 session_id=child_session_id,
                 knowledge_capability=child_context.capability,
@@ -703,10 +703,13 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             )
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                 raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
-            goal = _delegation_handoff_goal(
-                user_question=req.question,
-                target=delegated_target,
-                child_reply=child_reply,
+            goal = _user_hot_memory_goal(
+                _delegation_handoff_goal(
+                    user_question=req.question,
+                    target=delegated_target,
+                    child_reply=child_reply,
+                ),
+                payload,
             ) + source_context.evidence
 
         if skill_id:
@@ -967,7 +970,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
         quote = req.quoted_context.strip()
         if quote:
             goal = f"（你正在回复用户引用的历史消息：{quote[:500]}）\n{goal}"
-    if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", goal, re.IGNORECASE):
+    if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", req.question, re.IGNORECASE):
         goal += (
             "\n\n（输出要求：本问题涉及两个及以上主体对比，请使用 Markdown 表格呈现，"
             "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。"
@@ -1048,7 +1051,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 child_policy_version = policy.policy_version
                 try:
                     child_reply, _ = await _call_hermes_recorded(
-                        req.question,
+                        goal,
                         auth_payload=payload,
                         session_id=child_session_id,
                         knowledge_capability=child_capability,
@@ -1063,10 +1066,13 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     for frame in _message_sse(message):
                         yield frame
                     return
-                routed_goal = _delegation_handoff_goal(
-                    user_question=req.question,
-                    target=delegated_target,
-                    child_reply=child_reply,
+                routed_goal = _user_hot_memory_goal(
+                    _delegation_handoff_goal(
+                        user_question=req.question,
+                        target=delegated_target,
+                        child_reply=child_reply,
+                    ),
+                    payload,
                 ) + source_context.evidence
             kwargs = {
                 "regenerate": req.regenerate,
