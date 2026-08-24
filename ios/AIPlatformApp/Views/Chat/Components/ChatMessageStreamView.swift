@@ -29,10 +29,7 @@ public struct ChatMessageStreamView: View {
                 }
 
                 if coordinator.messages.isEmpty && coordinator.pendingQueue.isEmpty {
-                    ChatWelcomeView(
-                        quickCommands: coordinator.quickCommands,
-                        onSelect: { coordinator.selectCommand($0) }
-                    )
+                    ChatWelcomeView()
                         .frame(minHeight: 420)
                         .transition(.opacity)
                 }
@@ -187,128 +184,170 @@ private extension View {
 }
 
 private struct ChatWelcomeView: View {
-    let quickCommands: [String]
-    let onSelect: (String) -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var appeared = false
+    @State private var interactionPoint = CGPoint(x: 0.5, y: 0.5)
+    @State private var isInteracting = false
+
+    private let cardCornerRadius: CGFloat = 30
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
-            HStack(alignment: .center, spacing: AppTheme.Spacing.md) {
-                QuantumAvatarView(size: 46)
+        GeometryReader { proxy in
+            let normalizedX = (interactionPoint.x - 0.5) * 2
+            let normalizedY = (interactionPoint.y - 0.5) * 2
+            let tiltAmount = reduceMotion ? 0 : sqrt(normalizedX * normalizedX + normalizedY * normalizedY) * 6
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("AI LAB · GENERATED WORKSPACE")
-                        .font(AppTheme.Typography.micro)
-                        .tracking(0.8)
-                        .foregroundColor(AppTheme.Icons.interactive)
+            ZStack {
+                RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                AppTheme.Colors.quantumBlue.opacity(0.18),
+                                AppTheme.Colors.cardBackground.opacity(0.98),
+                                AppTheme.Colors.quantumViolet.opacity(0.22)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
 
-                    Text("今天想推进什么？")
-                        .font(.system(size: 27, weight: .bold, design: .rounded))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
+                profileAtmosphere
 
-                    Text("先确认目标，再组织 Agent、知识与工具完成交付。")
-                        .font(AppTheme.Typography.supporting)
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 0)
-            }
+                VStack(spacing: 18) {
+                    Spacer(minLength: 18)
 
-            HStack(spacing: AppTheme.Spacing.sm) {
-                statusChip("实时编排", icon: "waveform.path", color: AppTheme.Colors.statusCompleted)
-                statusChip("本地隐私", icon: "lock.shield", color: AppTheme.Colors.interactiveBlue)
-            }
+                    Text("QUANTUM · AI WORKSPACE")
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .tracking(1.5)
+                        .foregroundStyle(AppTheme.Colors.quantumViolet)
 
-            if !quickCommands.isEmpty {
-                VStack(alignment: .leading, spacing: 0) {
-                    HStack {
-                        Text("推荐工作流")
-                            .font(AppTheme.Typography.label.weight(.semibold))
-                        Spacer()
-                        Text("选择一个开始")
-                            .font(AppTheme.Typography.micro)
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.62))
+                            .frame(width: 176, height: 176)
+                            .blur(radius: 1)
+                            .shadow(color: AppTheme.Colors.quantumBlue.opacity(0.20), radius: 28)
+
+                        QuantumAvatarView(size: 148)
                     }
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                        .padding(.bottom, AppTheme.Spacing.sm)
+                    .accessibilityHidden(true)
 
-                    ForEach(Array(quickCommands.prefix(3).enumerated()), id: \.element) { index, command in
-                        Button(action: { onSelect(command) }) {
-                            HStack(spacing: AppTheme.Spacing.md) {
-                                Image(systemName: suggestionIcon(index))
-                                    .font(.body.weight(.medium))
-                                    .foregroundColor(AppTheme.Icons.interactive)
-                                    .frame(width: 36, height: 36)
-                                    .background(AppTheme.Colors.selectionTint)
-                                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-                                Text(command)
-                                    .font(AppTheme.Typography.supporting)
-                                    .foregroundColor(AppTheme.Colors.textPrimary)
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.leading)
-                                Spacer(minLength: AppTheme.Spacing.sm)
-                                Image(systemName: "arrow.up.right")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(AppTheme.Icons.tertiary)
-                            }
-                            .padding(.horizontal, AppTheme.Spacing.md)
-                            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-                            .background(AppTheme.Colors.cardBackground.opacity(0.72))
-                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                            .contentShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                        }
-                        .buttonStyle(SoftButtonStyle())
+                    VStack(spacing: 7) {
+                        Text("Quantum")
+                            .font(.system(size: 30, weight: .bold, design: .rounded))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
 
-                        if index < min(quickCommands.count, 3) - 1 {
-                            Spacer().frame(height: AppTheme.Spacing.xs)
-                        }
+                        Text("你的智能工作空间")
+                            .font(AppTheme.Typography.supporting)
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
+
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(AppTheme.Colors.statusCompleted)
+                            .frame(width: 7, height: 7)
+                        Text("描述目标，开始协作")
+                            .font(AppTheme.Typography.micro.weight(.medium))
+                    }
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 36)
+                    .background(.ultraThinMaterial, in: Capsule())
+
+                    Spacer(minLength: 18)
+                }
+                .padding(.horizontal, 24)
+
+                if !reduceMotion {
+                    RadialGradient(
+                        colors: [Color.white.opacity(isInteracting ? 0.42 : 0.16), .clear],
+                        center: UnitPoint(x: interactionPoint.x, y: interactionPoint.y),
+                        startRadius: 0,
+                        endRadius: 190
+                    )
+                    .blendMode(.screen)
+                    .allowsHitTesting(false)
                 }
             }
-        }
-        .padding(AppTheme.Spacing.lg)
-        .background {
-            LinearGradient(
-                colors: [
-                    AppTheme.Colors.cardBackground.opacity(0.96),
-                    AppTheme.Colors.secondaryBackground.opacity(0.88)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            .frame(width: min(proxy.size.width, 318), height: 382)
+            .clipShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                    .stroke(AppTheme.Colors.quantumGradient, lineWidth: isInteracting ? 2 : 1)
+                    .opacity(isInteracting ? 0.88 : 0.34)
+                    .allowsHitTesting(false)
+            }
+            .shadow(
+                color: AppTheme.Colors.quantumViolet.opacity(isInteracting ? 0.22 : 0.12),
+                radius: isInteracting ? 26 : 18,
+                y: isInteracting ? 14 : 9
             )
+            .rotation3DEffect(
+                .degrees(tiltAmount),
+                axis: (x: -normalizedY, y: normalizedX, z: 0),
+                perspective: 0.72
+            )
+            .scaleEffect(isInteracting && !reduceMotion ? 0.985 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: isInteracting)
+            .animation(.spring(response: 0.34, dampingFraction: 0.82), value: interactionPoint)
+            .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
+            .simultaneousGesture(profileGesture(in: CGSize(width: min(proxy.size.width, 318), height: 382)))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
-                .stroke(AppTheme.Colors.quantumGradient.opacity(0.28), lineWidth: 1)
-        }
-        .shadow(color: AppTheme.Colors.quantumViolet.opacity(0.08), radius: 18, y: 8)
-        .padding(.horizontal, AppTheme.Metrics.contentGutter)
+        .frame(height: 392)
+        .padding(.horizontal, max(AppTheme.Metrics.contentGutter, 22))
         .opacity(appeared ? 1 : 0)
-        .offset(y: appeared ? 0 : (reduceMotion ? 0 : 10))
+        .offset(y: appeared ? 0 : (reduceMotion ? 0 : 12))
         .onAppear {
             withAnimation(reduceMotion ? nil : AppTheme.Motion.standard) {
                 appeared = true
             }
         }
-        .accessibilityElement(children: .contain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Quantum，你的智能工作空间")
+        .accessibilityHint("在下方输入框描述你想完成的任务")
     }
 
-    private func statusChip(_ title: String, icon: String, color: Color) -> some View {
-        Label(title, systemImage: icon)
-            .font(AppTheme.Typography.micro)
-            .foregroundColor(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(color.opacity(0.10))
-            .clipShape(Capsule())
-    }
+    private var profileAtmosphere: some View {
+        ZStack {
+            Circle()
+                .fill(AppTheme.Colors.quantumCyan.opacity(0.18))
+                .frame(width: 190, height: 190)
+                .blur(radius: 42)
+                .offset(x: -112, y: -146)
 
-    private func suggestionIcon(_ index: Int) -> String {
-        switch index {
-        case 0: return "scope"
-        case 1: return "doc.text.magnifyingglass"
-        default: return "point.3.connected.trianglepath.dotted"
+            Circle()
+                .fill(AppTheme.Colors.quantumViolet.opacity(0.20))
+                .frame(width: 210, height: 210)
+                .blur(radius: 50)
+                .offset(x: 118, y: 136)
+
+            RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color.white.opacity(0.18), .clear, Color.white.opacity(0.10)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
         }
+        .allowsHitTesting(false)
     }
+
+    private func profileGesture(in size: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 8, coordinateSpace: .local)
+            .onChanged { value in
+                guard !reduceMotion else { return }
+                isInteracting = true
+                interactionPoint = CGPoint(
+                    x: min(max(value.location.x / max(size.width, 1), 0), 1),
+                    y: min(max(value.location.y / max(size.height, 1), 0), 1)
+                )
+            }
+            .onEnded { _ in
+                guard !reduceMotion else { return }
+                isInteracting = false
+                interactionPoint = CGPoint(x: 0.5, y: 0.5)
+            }
+        }
 }
