@@ -20,6 +20,8 @@ _MAX_ENTRY_CHARS = 180
 class MemoryOverflowError(ValueError):
     """The proposed user memory cannot fit the Hermes USER.md contract."""
 
+    code = "MEMORY_OVERFLOW"
+
 
 @dataclass(frozen=True)
 class HotMemory:
@@ -96,7 +98,14 @@ def _write(tenant_key: str, user_id: str, items: list[HotMemory]) -> None:
         with open(fd, "w", encoding="utf-8") as handle:
             json.dump([asdict(item) for item in items], handle, ensure_ascii=False, indent=2)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(temporary, target)
+        directory_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -139,6 +148,41 @@ def delete_memory(tenant_key: str, user_id: str, memory_id: str) -> bool:
             return False
         _write(tenant_key, user_id, remaining)
         return True
+
+
+def replace_memory(tenant_key: str, user_id: str, memory_id: str, *, content: str) -> HotMemory:
+    content = content.strip()
+    if not content or len(content) > _MAX_ENTRY_CHARS:
+        raise MemoryOverflowError(f"memory entry exceeds {_MAX_ENTRY_CHARS} characters")
+    with _scope_lock(tenant_key, user_id):
+        current = _read(tenant_key, user_id)
+        target = next((item for item in current if item.memory_id == memory_id), None)
+        if target is None:
+            raise KeyError(memory_id)
+        replacement = HotMemory(
+            memory_id=target.memory_id, tenant_key=target.tenant_key, user_id=target.user_id,
+            kind=target.kind, content=content, status=target.status,
+            confidence=target.confidence, source_session_id=target.source_session_id,
+            created_at=target.created_at, updated_at=datetime.now(timezone.utc).isoformat(),
+            expires_at=target.expires_at,
+        )
+        eligible = [item for item in current if item.memory_id != memory_id and item.status == "confirmed" and not _expired(item.expires_at)]
+        rendered_items = [replacement, *eligible] if replacement.status == "confirmed" and not _expired(replacement.expires_at) else eligible
+        if len(_render(rendered_items)) > HERMES_USER_MEMORY_MAX_CHARS:
+            raise MemoryOverflowError(f"rendered user memory exceeds {HERMES_USER_MEMORY_MAX_CHARS} characters")
+        _write(tenant_key, user_id, [replacement if item.memory_id == memory_id else item for item in current])
+        return replacement
+
+
+def compact_memory(tenant_key: str, user_id: str) -> int:
+    """Make room without inventing content: remove candidates and expired entries."""
+    with _scope_lock(tenant_key, user_id):
+        current = _read(tenant_key, user_id)
+        remaining = [item for item in current if item.status == "confirmed" and not _expired(item.expires_at)]
+        removed = len(current) - len(remaining)
+        if removed:
+            _write(tenant_key, user_id, remaining)
+        return removed
 
 
 def _expired(value: str | None) -> bool:
