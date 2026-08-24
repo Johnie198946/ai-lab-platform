@@ -82,7 +82,9 @@
 
 ## Artifact Presentation Follow-up — 2026-08-24
 
-- status: `LOCAL_TESTED / NOT_YET_DEPLOYED`
+- status: `VERIFIED / DEPLOYED`
+- implementation_commit: `59b8c88349813843b1d4f2630024fefc05f1fcaf`
+- first_verified_marker: `59b8c88349813843b1d4f2630024fefc05f1fcaf`
 - objective: 将原“工作交接”标签升级为服务端真实 Artifact 画廊，并按真实类型展示 Markdown、Word 正文、图表、拓扑图和流程图。
 - truth contract:
   - 卡片只来自 execution Artifact API，不把 Plan 节点名称伪装成交付物。
