@@ -33,19 +33,19 @@
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 未授权/未执行。
-- GitHub remote/ref/SHA: 未授权/未执行。
+- status: `DEPLOYED`
+- commit SHA: `d034f1bd5bc13b0d74381a1f37647a1cd66df569`。
+- GitHub remote/ref/SHA: `origin refs/heads/main d034f1bd5bc13b0d74381a1f37647a1cd66df569`，已使用 `git ls-remote` 核对。
 
 ## 部署记录
 
-- server_before: 不适用，本任务未授权部署。
-- server_after: 不适用，本任务未授权部署。
-- health_check: 不适用，本任务未部署。
-- functional_check: 通用 iOS 设备构建通过；Simulator 已退出，未执行真机/模拟器视觉验收。
-- rollback_point: 基线 commit `a681540392de45d28bc06cfae69d1c29af63335e`；本任务修改尚未提交，可通过任务 Worktree 中的单文件差异回退。
+- server_before: `/opt/ai-lab-platform/.deployed-sha=a681540392de45d28bc06cfae69d1c29af63335e`；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；`hermes-bridge.service=active`。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=d034f1bd5bc13b0d74381a1f37647a1cd66df569`；API、frontend、workers、Postgres、Redis 均健康/运行。
+- health_check: `scripts/update.sh d034f1bd5bc13b0d74381a1f37647a1cd66df569` 通过 API 健康检查和 `runtime contract audit`。
+- functional_check: 通用 iOS 设备构建通过；Simulator 已退出，待重新启动后安装并进行视觉验收。
+- rollback_point: `/opt/ai-lab-rollbacks/profile-card-welcome-logo-20260824-before`，保存部署前 release 路径和 `.deployed-sha`，可执行 `scripts/update.sh a681540392de45d28bc06cfae69d1c29af63335e` 回滚。
 
 ## 风险与未完成项
 
 - 尚需在 Simulator 或真机上确认小屏、深色模式、动态字体及触摸倾斜手感。
-- 尚未 commit、push、部署、重新打包或安装；这些外部写入需用户明确授权。
+- iOS 已完成通用设备构建；仍需完成 Simulator 重新启动、安装和视觉验收。
