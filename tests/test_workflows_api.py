@@ -979,6 +979,65 @@ class TestWorkflowsAPI(unittest.TestCase):
         self.assertEqual(created.json()["workflow"]["status"], "clarifying")
         self.assertEqual(created.json()["clarification_session"]["phase"], "clarifying")
 
+    def test_dynamic_clarification_stops_after_three_rounds_or_explicit_stop(self):
+        question = {
+            "status": "question",
+            "question": "请补充一个关键条件。",
+            "dimension": "约束",
+            "source": "hermes",
+            "truth": "LIVE",
+            "simulation": False,
+            "usage": {},
+        }
+        with patch(
+            "backend.api.workflows.dynamic_clarification_payload",
+            new=AsyncMock(return_value=question),
+        ):
+            created = self.request(
+                "POST",
+                "/api/v1/workflows",
+                json={
+                    "title": "Dynamic capped clarification",
+                    "description": "Build a workspace with a clear deliverable.",
+                    "desired_output": "Decision record",
+                    "clarification_mode": "dynamic",
+                },
+            )
+            workflow_id = created.json()["workflow"]["id"]
+            for answer in ("第一轮答案", "第二轮答案"):
+                response = self.request(
+                    "POST",
+                    f"/api/v1/workflows/{workflow_id}/clarification/respond",
+                    json={"response": answer},
+                )
+                self.assertEqual(response.status_code, 200, response.text)
+            capped = self.request(
+                "POST",
+                f"/api/v1/workflows/{workflow_id}/clarification/respond",
+                json={"response": "第三轮答案"},
+            )
+            self.assertEqual(capped.status_code, 200, capped.text)
+            self.assertEqual(capped.json()["phase"], "awaiting_requirement_confirmation")
+
+            created_stop = self.request(
+                "POST",
+                "/api/v1/workflows",
+                json={
+                    "title": "Dynamic explicit stop",
+                    "description": "Build another workspace with a clear deliverable.",
+                    "desired_output": "Decision record",
+                    "clarification_mode": "dynamic",
+                },
+            )
+            stop_workflow_id = created_stop.json()["workflow"]["id"]
+            stopped = self.request(
+                "POST",
+                f"/api/v1/workflows/{stop_workflow_id}/clarification/respond",
+                json={"response": "不要再问了，按默认直接开始"},
+            )
+            self.assertEqual(stopped.status_code, 200, stopped.text)
+            self.assertEqual(stopped.json()["phase"], "awaiting_requirement_confirmation")
+
     def test_cross_tenant_workflow_is_invisible(self):
         body = self.create_ready()
         response = self.request("GET", f"/api/v1/workflows/{body['id']}", sub="beta")

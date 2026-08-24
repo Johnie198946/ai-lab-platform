@@ -175,6 +175,14 @@ export function architectWorkflowForContext(workflows = [], { customerDemandId =
 
 const arrayValue = (value) => (Array.isArray(value) ? value : []);
 const textValue = (value) => value === null || value === undefined ? "" : String(value).trim();
+const nodeValueList = (...values) => {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) return value.map(textValue).filter(Boolean);
+    const text = textValue(value);
+    if (text) return [text];
+  }
+  return [];
+};
 
 function explicitNodeId(value) {
   if (!value || typeof value !== "object") return "";
@@ -296,8 +304,29 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
       businessRole: textValue(node.business_role || parameters.business_role || parameters.role) || roleIds.join(" · "),
       roleIds,
       runtimeAgentId: explicitAgentId(runtimeNode) || null,
-      input: arrayValue(node.inputs || parameters.inputs || parameters.input_artifacts),
-      expectedOutput: arrayValue(node.outputs || parameters.outputs || parameters.output_deliverables),
+      input: nodeValueList(
+        node.inputs,
+        parameters.inputs,
+        parameters.input_artifacts,
+        node.input,
+        parameters.input,
+        node.task,
+        parameters.task,
+        node.goal,
+        parameters.goal,
+        workflow?.description,
+      ),
+      expectedOutput: nodeValueList(
+        node.outputs,
+        parameters.outputs,
+        parameters.output_deliverables,
+        node.output_deliverables,
+        node.output,
+        parameters.output,
+        node.deliverable,
+        parameters.deliverable,
+        plan?.deliverable,
+      ),
       status: officeNodeStatus(node, runtimeNode),
       truthState: officeTruthState(node, runtimeNode, executionTruth),
       lastEvent: latestEventByNodeId.get(id) || null,
@@ -328,6 +357,25 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
     ...arrayValue(events).map((event) => event?.created_at),
   ].map(textValue).filter((value) => value && Number.isFinite(Date.parse(value)));
   const updatedAt = timestampCandidates.sort((left, right) => Date.parse(right) - Date.parse(left))[0] || null;
+  const nodeIndexById = new Map(planNodes.map((node, index) => [textValue(node.id), index]));
+  const transfers = [];
+  for (const artifact of safeArtifacts) {
+    const sourceNodeId = explicitArtifactNodeId(artifact);
+    if (!planNodeIds.has(sourceNodeId)) continue;
+    for (const edge of arrayValue(dsl.edges)) {
+      const targetNodeId = textValue(edge?.target);
+      if (textValue(edge?.source) !== sourceNodeId || !planNodeIds.has(targetNodeId)) continue;
+      transfers.push({
+        id: `${textValue(artifact.id) || textValue(artifact.title)}:${targetNodeId}`,
+        artifactId: textValue(artifact.id) || null,
+        artifactTitle: textValue(artifact.title) || "输出物",
+        sourceNodeId,
+        targetNodeId,
+        sourceIndex: nodeIndexById.get(sourceNodeId),
+        targetIndex: nodeIndexById.get(targetNodeId),
+      });
+    }
+  }
 
   return {
     schemaVersion: "office-projection/v1",
@@ -348,5 +396,6 @@ export function projectOfficeProjection({ workflow, plan, execution, events, art
     stage: textValue(execution?.status || workflow?.status) || (seats.length ? "planned" : "draft"),
     seats,
     artifacts: safeArtifacts,
+    transfers,
   };
 }

@@ -47,6 +47,7 @@ from backend.services.user_note_context import (
     normalize_inline_notes,
     render_local_note_context,
 )
+from backend.services.user_hot_memory import snapshot as user_hot_memory_snapshot
 from backend.services.agent_capabilities import (
     BASELINE_AGENT_IDS,
     AgentInvocationMatch,
@@ -215,6 +216,15 @@ class ChatRequest(BaseModel):
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
     client_session_context: Optional[ClientSessionContext] = None
     client_capabilities: List[str] = Field(default_factory=list, max_length=20)
+
+
+def _user_hot_memory_goal(question: str, payload: dict) -> str:
+    tenant_key = str(payload.get("tenant_key") or "public")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
+    memory = user_hot_memory_snapshot(tenant_key, user_id)
+    if not memory:
+        return question
+    return f"{memory}\n\n用户当前请求：\n{question}"
 
 
 def validate_chat_skill(skill_id: Optional[str]) -> Optional[str]:
@@ -639,7 +649,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         )
 
     skill_id = validate_chat_skill(req.skill_id)
-    goal = req.question
+    goal = _user_hot_memory_goal(req.question, payload)
     policy = await _resolve_chat_policy(payload)
     agent, invocation = await _resolve_agent_route(
         question=req.question, requested_agent_id=req.agent_id, payload=payload
@@ -694,7 +704,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 policy=policy,
             )
             child_reply, _ = await _call_hermes_recorded(
-                req.question + child_context.evidence,
+                goal + child_context.evidence,
                 auth_payload=payload,
                 session_id=child_session_id,
                 knowledge_capability=child_context.capability,
@@ -704,10 +714,13 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             )
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                 raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
-            goal = _delegation_handoff_goal(
-                user_question=req.question,
-                target=delegated_target,
-                child_reply=child_reply,
+            goal = _user_hot_memory_goal(
+                _delegation_handoff_goal(
+                    user_question=req.question,
+                    target=delegated_target,
+                    child_reply=child_reply,
+                ),
+                payload,
             ) + source_context.evidence
 
         if skill_id:
@@ -1054,14 +1067,14 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
         )
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
-    goal = req.question
+    goal = _user_hot_memory_goal(req.question, payload)
     # 引用回复上下文注入（会话记忆关联）：用户从中间回复历史消息时，
     # quoted_context 携带被引用消息原文，让 agent 明确回复对象与上文关联
     if req.quoted_context:
         quote = req.quoted_context.strip()
         if quote:
             goal = f"（你正在回复用户引用的历史消息：{quote[:500]}）\n{goal}"
-    if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", goal, re.IGNORECASE):
+    if re.search(r"对比|比较|vs|区别|差异|哪个好|对比一下", req.question, re.IGNORECASE):
         goal += (
             "\n\n（输出要求：本问题涉及两个及以上主体对比，请使用 Markdown 表格呈现，"
             "每行一个对比维度、首列为维度名；表格前后各空一行。禁止用罗列式 bullet 代替表格。"
@@ -1142,7 +1155,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 child_policy_version = policy.policy_version
                 try:
                     child_reply, _ = await _call_hermes_recorded(
-                        req.question,
+                        goal,
                         auth_payload=payload,
                         session_id=child_session_id,
                         knowledge_capability=child_capability,
@@ -1157,10 +1170,13 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                     for frame in _message_sse(message):
                         yield frame
                     return
-                routed_goal = _delegation_handoff_goal(
-                    user_question=req.question,
-                    target=delegated_target,
-                    child_reply=child_reply,
+                routed_goal = _user_hot_memory_goal(
+                    _delegation_handoff_goal(
+                        user_question=req.question,
+                        target=delegated_target,
+                        child_reply=child_reply,
+                    ),
+                    payload,
                 ) + source_context.evidence
             kwargs = {
                 "regenerate": req.regenerate,

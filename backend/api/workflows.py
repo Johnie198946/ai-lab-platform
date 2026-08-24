@@ -482,6 +482,22 @@ def confirmation_intent(response: str, explicit: str | None = None) -> str:
     return "revise"
 
 
+def requested_clarification_stop(response: str) -> bool:
+    """Treat an explicit request to stop questioning as a default-accept signal."""
+    normalized = re.sub(r"[\s，。！!？?、]", "", response.lower())
+    return any(
+        term in normalized
+        for term in (
+            "不要再问",
+            "别再问",
+            "不要问了",
+            "不用再问",
+            "不必再问",
+            "停止提问",
+            "直接开始",
+            "按默认",
+        )
+    )
 async def resume_pending_planning() -> None:
     """Backfill a durable job for pre-queue deployments; workers own execution."""
     async with SessionLocal() as db:
@@ -737,10 +753,17 @@ async def respond_to_clarification(
             )
             await db.refresh(workflow)
             await db.refresh(session)
-            if decision["status"] == "READY":
+            stop_requested = requested_clarification_stop(response)
+            max_rounds_reached = session.round_number >= len(CLARIFICATION_STEPS)
+            if decision["status"] == "READY" or stop_requested or max_rounds_reached:
                 session.phase = "awaiting_requirement_confirmation"
                 workflow.status = "clarifying"
-                decision = requirement_confirmation_payload(workflow, [item.content for item in transcript_rows if item.role == "user"][1:])
+                answers = [
+                    item.content
+                    for item in transcript_rows
+                    if item.role == "user" and not requested_clarification_stop(item.content)
+                ][1:]
+                decision = requirement_confirmation_payload(workflow, answers)
                 decision.update({"source": "hermes", "truth": "LIVE", "status": "READY", "simulation": False})
                 message_type = "requirement_confirmation"
                 event_type = "requirement_summary_ready"

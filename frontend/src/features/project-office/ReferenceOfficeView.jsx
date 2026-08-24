@@ -6,7 +6,7 @@ import "./ReferenceOfficeView.css";
 const COLORS = ["#5dbe6e", "#e85555", "#9b7fea", "#4a9eed", "#f5c842", "#3dbbab"];
 const SCREEN_TYPES = ["dashboard", "browsing", "typing", "code", "checklist", "analytics"];
 const STATUS = {
-  planned: ["waiting", "待命中"], waiting: ["waiting", "待命中"], running: ["working", "进行中"],
+  planned: ["planned", "已规划"], waiting: ["waiting", "待命中"], running: ["working", "进行中"],
   blocked: ["blocked", "已阻断"], failed: ["blocked", "失败"], done: ["done", "已完成"],
   succeeded: ["done", "已完成"], awaiting_review: ["tbd", "待复核"], reference: ["waiting", "参考节点"],
 };
@@ -47,7 +47,24 @@ function Seat({ seat, index, selected, onClick, visible }) {
     <strong>{seat.name || `节点 ${index + 1}`}</strong>
     <small>{seat.businessRole || text(seat.roleIds, "服务端节点")}</small>
     <StatusPill tag={tag} label={label} />
+    {seat.artifacts?.length > 0 && <span className="reference-output-chip">输出物 · {seat.artifacts.length}</span>}
   </button>;
+}
+
+function TransferLayer({ transfers = [] }) {
+  if (!transfers.length) return null;
+  const point = (index) => ({ x: 16.7 + (index % 3) * 33.3, y: index < 3 ? 25 : 75 });
+  return <svg className="reference-transfer-layer" viewBox="0 0 100 100" preserveAspectRatio="none" aria-label="真实输出物流转">
+    {transfers.map((transfer) => {
+      const from = point(transfer.sourceIndex);
+      const to = point(transfer.targetIndex);
+      const path = `M ${from.x} ${from.y} L ${to.x} ${to.y}`;
+      return <g className="reference-transfer" key={transfer.id}>
+        <path d={path} />
+        <circle r="1.2"><title>{transfer.artifactTitle} → 下一个节点</title><animateMotion dur="1.8s" repeatCount="indefinite" path={path} /></circle>
+      </g>;
+    })}
+  </svg>;
 }
 
 export default function ReferenceOfficeView({ projection, onSwitchToWorkbench, error = "", busy = false }) {
@@ -63,7 +80,7 @@ export default function ReferenceOfficeView({ projection, onSwitchToWorkbench, e
     <header className="reference-office-header"><div className="reference-brand"><i /> <span>AI LAB PROJECT OFFICE</span></div><div className="reference-header-meta"><span>{projection.title || "服务端项目办公室"}</span><b>{truth}</b><em>{seats.length} nodes</em></div></header>
     <div className="reference-phasebar"><strong>{projection.stage || "项目席位"}</strong><span>{disconnected ? "UNCONNECTED · 已停止LIVE动效" : "服务端事实源 · 只读投影"}</span><button type="button" onClick={onSwitchToWorkbench}>回到工作台 →</button></div>
     {error && <div className="reference-error" role="alert">{error}</div>}
-    <main className="reference-floor"><div className="reference-floor-label"><span>PROJECT FLOOR</span><small>{seats.length} 个服务端节点 · {projection.artifacts?.length || 0} 个工件</small></div><div className="reference-grid">{seats.map((seat, index) => <Seat key={seat.id} seat={seat} index={index} visible={index < visibleCount} selected={selected?.id === seat.id} onClick={() => setSelectedId((current) => current === seat.id ? "" : seat.id)} />)}</div><div className="reference-artifacts"><strong>工件交接</strong>{projection.artifacts?.length ? projection.artifacts.map((item) => <span key={item.id || item.title}>{item.title || item.id}</span>) : <span>尚无服务端工件</span>}</div></main>
+    <main className="reference-floor"><div className="reference-floor-label"><span>PROJECT FLOOR</span><small>{seats.length} 个服务端节点 · {projection.artifacts?.length || 0} 个工件</small></div><div className="reference-grid"><TransferLayer transfers={projection.transfers} />{seats.map((seat, index) => <Seat key={seat.id} seat={seat} index={index} visible={index < visibleCount} selected={selected?.id === seat.id} onClick={() => setSelectedId((current) => current === seat.id ? "" : seat.id)} />)}</div><div className="reference-artifacts"><strong>工件交接</strong>{projection.artifacts?.length ? projection.artifacts.map((item) => <span key={item.id || item.title}>{item.title || item.id}</span>) : <span>尚无服务端工件</span>}</div></main>
     {selected && <DetailSheet seat={selected} onClose={() => setSelectedId("")} />}
   </div>;
 }
