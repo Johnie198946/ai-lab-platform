@@ -41,6 +41,7 @@ from backend.services.user_note_context import (
     normalize_inline_notes,
     render_local_note_context,
 )
+from backend.services.user_hot_memory import snapshot as user_hot_memory_snapshot
 from backend.services.agent_capabilities import (
     BASELINE_AGENT_IDS,
     AgentInvocationMatch,
@@ -204,6 +205,15 @@ class ChatRequest(BaseModel):
     skill_id: Optional[str] = Field(None, max_length=80)
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
     client_session_context: Optional[ClientSessionContext] = None
+
+
+def _user_hot_memory_goal(question: str, payload: dict) -> str:
+    tenant_key = str(payload.get("tenant_key") or "public")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
+    memory = user_hot_memory_snapshot(tenant_key, user_id)
+    if not memory:
+        return question
+    return f"{memory}\n\n用户当前请求：\n{question}"
 
 
 def validate_chat_skill(skill_id: Optional[str]) -> Optional[str]:
@@ -628,7 +638,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         )
 
     skill_id = validate_chat_skill(req.skill_id)
-    goal = req.question
+    goal = _user_hot_memory_goal(req.question, payload)
     policy = await _resolve_chat_policy(payload)
     agent, invocation = await _resolve_agent_route(
         question=req.question, requested_agent_id=req.agent_id, payload=payload
@@ -950,7 +960,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
         )
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
-    goal = req.question
+    goal = _user_hot_memory_goal(req.question, payload)
     # 引用回复上下文注入（会话记忆关联）：用户从中间回复历史消息时，
     # quoted_context 携带被引用消息原文，让 agent 明确回复对象与上文关联
     if req.quoted_context:
