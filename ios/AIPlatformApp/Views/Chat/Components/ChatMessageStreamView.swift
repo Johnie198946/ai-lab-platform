@@ -193,9 +193,9 @@ private struct ChatWelcomeView: View {
     @State private var appeared = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
-            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
-                QuantumAvatarView(size: 52)
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+            HStack(alignment: .center, spacing: AppTheme.Spacing.md) {
+                QuantumAvatarView(size: 46)
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("AI LAB · GENERATED WORKSPACE")
@@ -204,13 +204,13 @@ private struct ChatWelcomeView: View {
                         .foregroundColor(AppTheme.Icons.interactive)
 
                     Text("今天想推进什么？")
-                        .font(.system(.title, design: .rounded, weight: .bold))
+                        .font(.system(size: 27, weight: .bold, design: .rounded))
                         .foregroundColor(AppTheme.Colors.textPrimary)
 
                     Text("先确认目标，再组织 Agent、知识与工具完成交付。")
                         .font(AppTheme.Typography.supporting)
                         .foregroundColor(AppTheme.Colors.textSecondary)
-                        .lineSpacing(3)
+                        .lineLimit(2)
                 }
                 Spacer(minLength: 0)
             }
@@ -222,10 +222,14 @@ private struct ChatWelcomeView: View {
 
             if !quickCommands.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("推荐工作流")
-                        .font(AppTheme.Typography.label)
+                    HStack {
+                        Text("推荐工作流")
+                            .font(AppTheme.Typography.label.weight(.semibold))
+                        Spacer()
+                        Text("选择一个开始")
+                            .font(AppTheme.Typography.micro)
+                    }
                         .foregroundColor(AppTheme.Colors.textSecondary)
-                        .padding(.horizontal, AppTheme.Spacing.md)
                         .padding(.bottom, AppTheme.Spacing.sm)
 
                     ForEach(Array(quickCommands.prefix(3).enumerated()), id: \.element) { index, command in
@@ -233,8 +237,10 @@ private struct ChatWelcomeView: View {
                             HStack(spacing: AppTheme.Spacing.md) {
                                 Image(systemName: suggestionIcon(index))
                                     .font(.body.weight(.medium))
-                            .foregroundColor(AppTheme.Icons.interactive)
-                                    .frame(width: 24)
+                                    .foregroundColor(AppTheme.Icons.interactive)
+                                    .frame(width: 36, height: 36)
+                                    .background(AppTheme.Colors.selectionTint)
+                                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
                                 Text(command)
                                     .font(AppTheme.Typography.supporting)
                                     .foregroundColor(AppTheme.Colors.textPrimary)
@@ -243,30 +249,40 @@ private struct ChatWelcomeView: View {
                                 Spacer(minLength: AppTheme.Spacing.sm)
                                 Image(systemName: "arrow.up.right")
                                     .font(.caption.weight(.semibold))
-                            .foregroundColor(AppTheme.Icons.tertiary)
+                                    .foregroundColor(AppTheme.Icons.tertiary)
                             }
                             .padding(.horizontal, AppTheme.Spacing.md)
-                            .frame(minHeight: 52)
+                            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                            .background(AppTheme.Colors.cardBackground.opacity(0.72))
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+                            .contentShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
                         }
                         .buttonStyle(SoftButtonStyle())
 
                         if index < min(quickCommands.count, 3) - 1 {
-                            Divider()
-                                .padding(.leading, 52)
+                            Spacer().frame(height: AppTheme.Spacing.xs)
                         }
                     }
                 }
-                .quantumCard()
-                .frame(maxWidth: 420)
             }
         }
-        .padding(AppTheme.Spacing.xl)
-        .background(AppTheme.Colors.cardBackground.opacity(0.54))
+        .padding(AppTheme.Spacing.lg)
+        .background {
+            LinearGradient(
+                colors: [
+                    AppTheme.Colors.cardBackground.opacity(0.96),
+                    AppTheme.Colors.secondaryBackground.opacity(0.88)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: AppTheme.Radius.xl, style: .continuous)
-                .stroke(AppTheme.Colors.border.opacity(0.72), lineWidth: 0.75)
+                .stroke(AppTheme.Colors.quantumGradient.opacity(0.28), lineWidth: 1)
         }
+        .shadow(color: AppTheme.Colors.quantumViolet.opacity(0.08), radius: 18, y: 8)
         .padding(.horizontal, AppTheme.Metrics.contentGutter)
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : (reduceMotion ? 0 : 10))
@@ -275,8 +291,7 @@ private struct ChatWelcomeView: View {
                 appeared = true
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Quantum 助手已就绪。可以进行需求澄清、智能编排和知识增强。")
+        .accessibilityElement(children: .contain)
     }
 
     private func statusChip(_ title: String, icon: String, color: Color) -> some View {
