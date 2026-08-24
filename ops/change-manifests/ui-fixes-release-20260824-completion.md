@@ -9,14 +9,14 @@
 ## Git 与推送
 
 - server_before: `.deployed-sha=5db999b37e13488d18babb121224806e00c609bc`
-- commit: `512ab1b57e72e7b42d511028bebdc9bee6d700e2`
-- remote/ref/SHA: `origin refs/heads/main = 512ab1b57e72e7b42d511028bebdc9bee6d700e2`（`git ls-remote` 已核对）
+- commit: `6428f014f77e08b957f17a6d8d99b0a02182355a`
+- remote/ref/SHA: `origin refs/heads/main = 6428f014f77e08b957f17a6d8d99b0a02182355a`（`git ls-remote` 已核对）
 
 ## 验证
 
 - backend targeted tests: 17 passed (`test_knowledge_actions`, `test_knowledge_sync_api`, `test_client_session_notes`)
 - production `scripts/update.sh 512ab1b57e72e7b42d511028bebdc9bee6d700e2`: runtime contract audit passed
-- server_after: `.deployed-sha=512ab1b57e72e7b42d511028bebdc9bee6d700e2`; API、frontend、planning/workflow/agent-evaluation workers、Postgres、Redis running
+- server_after: `.deployed-sha=6428f014f77e08b957f17a6d8d99b0a02182355a`; API、frontend、planning/workflow/agent-evaluation workers、Postgres、Redis running
 - health_check: API `http://127.0.0.1:8000/health` = `{"status":"ok","version":"0.8.0"}`；Bridge `http://127.0.0.1:9118/health` = `status=ok`
 - iOS package: `/private/tmp/AIPlatformApp-512ab1b-iphonesimulator.zip`
 - package SHA-256: `ac6edc7cb4cbd46beee630d6c3b8a0844c2d025a0def28ea3297ad8cf1007ef6`
