@@ -46,6 +46,13 @@ export async function pollForNewPlan(workflowId, previous, { getPlan, getLifecyc
       String(event.event_type || event.type || "").includes("failed") || event.payload?.status === "failed",
     );
     if (failed) throw new Error(failed.message || "服务端规划失败");
+    const firstPlanReady = (events || []).some((event) =>
+      String(event.event_type || event.type || "") === "plan_ready",
+    );
+    if (!previous?.id && !firstPlanReady) {
+      await delay(POLL_INTERVAL_MS);
+      continue;
+    }
     let next = null;
     try {
       next = await getPlan(workflowId);
