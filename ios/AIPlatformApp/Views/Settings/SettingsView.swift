@@ -420,8 +420,6 @@ public struct SubscriptionCenterView: View {
 
             ScrollView {
                 LazyVStack(spacing: AppTheme.Spacing.lg) {
-                    header
-
                     if isLoading, center == nil {
                         ProgressView("正在同步组织套餐与知识权益…")
                             .frame(maxWidth: .infinity, minHeight: 180)
@@ -483,36 +481,6 @@ public struct SubscriptionCenterView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
-    }
-
-    private var header: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            HStack(spacing: AppTheme.Spacing.md) {
-                Image(systemName: "building.2.fill")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(AppTheme.Colors.onPrimary)
-                    .frame(width: 44, height: 44)
-                    .background(AppTheme.Colors.primary)
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("组织订阅中心")
-                        .font(AppTheme.Typography.sectionTitle)
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("公共知识自动包含，受限知识按包审批")
-                        .font(AppTheme.Typography.micro)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-            }
-
-            Text("绿色公共知识通过治理后自动开放；黄色知识包需随组织套餐申请；红色私有知识不会在这里出售。")
-                .font(AppTheme.Typography.supporting)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .padding(AppTheme.Spacing.lg)
-        .subscriptionSurface()
     }
 
     private func currentPlanCard(_ center: SubscriptionCenterResponse) -> some View {
