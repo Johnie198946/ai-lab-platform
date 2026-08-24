@@ -34,18 +34,18 @@
 ## 交付状态
 
 - status: `DEPLOYED`
-- commit SHA: `d034f1bd5bc13b0d74381a1f37647a1cd66df569`。
-- GitHub remote/ref/SHA: `origin refs/heads/main d034f1bd5bc13b0d74381a1f37647a1cd66df569`，已使用 `git ls-remote` 核对。
+- commit SHA: `938fc78f000b2f25de0072c353b07189286b5e0d`。
+- GitHub remote/ref/SHA: `origin refs/heads/main 938fc78f000b2f25de0072c353b07189286b5e0d`，已使用 `git ls-remote` 核对。
 
 ## 部署记录
 
 - server_before: `/opt/ai-lab-platform/.deployed-sha=a681540392de45d28bc06cfae69d1c29af63335e`；API `/health` 返回 `{"status":"ok","version":"0.8.0"}`；`hermes-bridge.service=active`。
-- server_after: `/opt/ai-lab-platform/.deployed-sha=d034f1bd5bc13b0d74381a1f37647a1cd66df569`；API、frontend、workers、Postgres、Redis 均健康/运行。
-- health_check: `scripts/update.sh d034f1bd5bc13b0d74381a1f37647a1cd66df569` 通过 API 健康检查和 `runtime contract audit`。
-- functional_check: 通用 iOS 设备构建通过；Simulator 已退出，待重新启动后安装并进行视觉验收。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=938fc78f000b2f25de0072c353b07189286b5e0d`；API、frontend、workers、Postgres、Redis 均健康/运行。
+- health_check: `scripts/update.sh 938fc78f000b2f25de0072c353b07189286b5e0d` 通过 API 健康检查和 `runtime contract audit`；部署后 API `/health` 返回 `{"status":"ok","version":"0.8.0"}`，Hermes Bridge active。
+- functional_check: `xcodebuild` Simulator 构建 `BUILD SUCCEEDED`；`xcrun simctl install` 成功；`xcrun simctl launch` 返回 PID `86067`；AIPlatform Preview UUID `8386FBF2-321F-4F52-BF4C-337EF3780649` 保持 Booted，并已截取启动画面。
 - rollback_point: `/opt/ai-lab-rollbacks/profile-card-welcome-logo-20260824-before`，保存部署前 release 路径和 `.deployed-sha`，可执行 `scripts/update.sh a681540392de45d28bc06cfae69d1c29af63335e` 回滚。
 
 ## 风险与未完成项
 
 - 尚需在 Simulator 或真机上确认小屏、深色模式、动态字体及触摸倾斜手感。
-- iOS 已完成通用设备构建；仍需完成 Simulator 重新启动、安装和视觉验收。
+- Simulator 当前显示应用启动画面；登录态/网络数据未进入聊天空状态，因此 ProfileCard 需登录后在新会话页验收。
