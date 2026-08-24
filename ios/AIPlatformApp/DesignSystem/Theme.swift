@@ -342,7 +342,7 @@ public struct QuantumCardModifier: ViewModifier {
                     .stroke(AppTheme.Colors.border.opacity(0.92), lineWidth: 0.75)
             }
             .contentShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .simultaneousGesture(pressGesture)
+            .simultaneousGesture(pressGesture, including: .gesture)
             .overlay {
                 PressBorderGlow(
                     isActive: isPressed,
@@ -427,7 +427,8 @@ private struct PressBorderGlowModifier: ViewModifier {
                 DragGesture(minimumDistance: 0)
                     .updating($isPressed) { _, state, _ in
                         state = true
-                    }
+                    },
+                including: .gesture
             )
             .overlay {
                 PressBorderGlow(
