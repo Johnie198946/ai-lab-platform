@@ -292,9 +292,9 @@ private struct ChatWelcomeView: View {
             .animation(.spring(response: 0.34, dampingFraction: 0.82), value: interactionPoint)
             .contentShape(RoundedRectangle(cornerRadius: cardCornerRadius, style: .continuous))
             .simultaneousGesture(profileGesture(in: CGSize(width: min(proxy.size.width, 318), height: 382)))
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         }
-        .frame(height: 392)
+        .frame(height: 420, alignment: .center)
         .padding(.horizontal, max(AppTheme.Metrics.contentGutter, 22))
         .opacity(appeared ? 1 : 0)
         .offset(y: appeared ? 0 : (reduceMotion ? 0 : 12))
