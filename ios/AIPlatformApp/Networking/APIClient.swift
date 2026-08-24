@@ -641,6 +641,32 @@ public struct RegisterResponseDTO: Codable {
     public let token: String?
 }
 
+public struct AuthCapabilityDTO: Codable {
+    public let enabled: Bool
+}
+
+public struct OAuthCapabilitiesDTO: Codable {
+    public let wechat: AuthCapabilityDTO
+    public let alipay: AuthCapabilityDTO
+}
+
+public struct AuthCapabilitiesDTO: Codable {
+    public let phone: AuthCapabilityDTO
+    public let oauth: OAuthCapabilitiesDTO
+}
+
+public struct LoginSessionDTO: Codable {
+    public let success: Bool
+    public let token: String
+    public let userId: String
+    public let tenantKey: String
+    public let isNewUser: Bool?
+}
+
+public struct OAuthStartDTO: Codable {
+    public let authorizationUrl: URL
+}
+
 /// GET /api/v1/topology 单节点（后端基线 Agent 注册表唯一真值来源）
 public struct TopologyNodeDTO: Codable, Identifiable, Hashable {
     public let id: String
@@ -1421,7 +1447,8 @@ public final class APIClient: ObservableObject {
         path: String,
         method: String = "GET",
         body: Encodable? = nil,
-        queryItems: [URLQueryItem] = []
+        queryItems: [URLQueryItem] = [],
+        reauthOn401: Bool = true
     ) async throws -> T {
         var components = URLComponents(
             url: baseURL
@@ -1447,7 +1474,12 @@ public final class APIClient: ObservableObject {
         }
 
         // 仅 GET 幂等请求自动重试；POST/PATCH/DELETE 由 UI 触发手动重试
-        let data = try await perform(request, session: session, canRetry: method == "GET")
+        let data = try await perform(
+            request,
+            session: session,
+            canRetry: method == "GET",
+            reauthOn401: reauthOn401
+        )
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
@@ -2698,6 +2730,57 @@ public final class APIClient: ObservableObject {
                 password: password,
                 verificationCode: verificationCode
             )
+        )
+    }
+
+    public func fetchAuthCapabilities() async throws -> AuthCapabilitiesDTO {
+        try await request(
+            AuthCapabilitiesDTO.self,
+            path: "auth/capabilities",
+            reauthOn401: false
+        )
+    }
+
+    public func sendPhoneCode(phone: String) async throws {
+        struct Body: Encodable { let phone: String }
+        struct Response: Decodable { let success: Bool }
+        let _: Response = try await request(
+            Response.self,
+            path: "auth/phone/send-code",
+            method: "POST",
+            body: Body(phone: phone),
+            reauthOn401: false
+        )
+    }
+
+    public func loginWithPhone(phone: String, code: String) async throws -> LoginSessionDTO {
+        struct Body: Encodable { let phone: String; let code: String }
+        return try await request(
+            LoginSessionDTO.self,
+            path: "auth/phone/login",
+            method: "POST",
+            body: Body(phone: phone, code: code),
+            reauthOn401: false
+        )
+    }
+
+    public func startOAuth(provider: String) async throws -> OAuthStartDTO {
+        try await request(
+            OAuthStartDTO.self,
+            path: "auth/oauth/\(provider)/start",
+            queryItems: [URLQueryItem(name: "client", value: "ios")],
+            reauthOn401: false
+        )
+    }
+
+    public func completeOAuth(ticket: String) async throws -> LoginSessionDTO {
+        struct Body: Encodable { let ticket: String }
+        return try await request(
+            LoginSessionDTO.self,
+            path: "auth/oauth/complete",
+            method: "POST",
+            body: Body(ticket: ticket),
+            reauthOn401: false
         )
     }
 }

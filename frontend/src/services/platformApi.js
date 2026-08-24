@@ -100,6 +100,52 @@ export const platformApi = {
     }
     return accessToken;
   },
+  getAuthCapabilities() {
+    return request("/api/v1/auth/capabilities", {
+      skipAuth: true,
+      skipSessionAuth: true,
+    });
+  },
+  sendPhoneCode({ phone }) {
+    return request("/api/v1/auth/phone/send-code", {
+      method: "POST",
+      body: { phone },
+      skipAuth: true,
+      skipSessionAuth: true,
+    });
+  },
+  async authenticatePhone({ phone, code }) {
+    const payload = await request("/api/v1/auth/phone/login", {
+      method: "POST",
+      body: { phone, code },
+      skipAuth: true,
+      skipSessionAuth: true,
+    });
+    const accessToken = extractAccessToken(payload);
+    if (!accessToken) {
+      throw new PlatformApiError("手机登录成功，但未返回 access token。");
+    }
+    return accessToken;
+  },
+  startOAuth({ provider, client = "web" }) {
+    return request(`/api/v1/auth/oauth/${encodeURIComponent(provider)}/start?client=${encodeURIComponent(client)}`, {
+      skipAuth: true,
+      skipSessionAuth: true,
+    });
+  },
+  async completeOAuth({ ticket }) {
+    const payload = await request("/api/v1/auth/oauth/complete", {
+      method: "POST",
+      body: { ticket },
+      skipAuth: true,
+      skipSessionAuth: true,
+    });
+    const accessToken = extractAccessToken(payload);
+    if (!accessToken) {
+      throw new PlatformApiError("第三方登录成功，但未返回 access token。");
+    }
+    return accessToken;
+  },
   getMe(options = {}) {
     return request("/api/v1/me", {
       accessToken: options.accessToken,

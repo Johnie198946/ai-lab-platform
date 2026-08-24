@@ -78,6 +78,34 @@ export function AuthProvider({ children }) {
     return session;
   };
 
+  const loginWithPhone = async ({ phone, code }) => {
+    const accessToken = await platformApi.authenticatePhone({ phone, code });
+    const user = await platformApi.getMe({ accessToken, skipSessionAuth: true });
+    const session = buildAuthSession({
+      accessToken,
+      identifier: phone,
+      mode: "phone",
+      user,
+    });
+    saveAuthSession(session);
+    setAuthSession(session);
+    return session;
+  };
+
+  const loginWithOAuthTicket = async ({ ticket }) => {
+    const accessToken = await platformApi.completeOAuth({ ticket });
+    const user = await platformApi.getMe({ accessToken, skipSessionAuth: true });
+    const session = buildAuthSession({
+      accessToken,
+      identifier: user?.username || "oauth-user",
+      mode: "oauth",
+      user,
+    });
+    saveAuthSession(session);
+    setAuthSession(session);
+    return session;
+  };
+
   const loginWithToken = async ({ accessToken, identifier = "token-user" }) => {
     const user = await platformApi.getMe({
       accessToken,
@@ -122,6 +150,8 @@ export function AuthProvider({ children }) {
       isAuthenticated: Boolean(authSession),
       isReady,
       login,
+      loginWithPhone,
+      loginWithOAuthTicket,
       loginWithToken,
       loginDev,
       logout,

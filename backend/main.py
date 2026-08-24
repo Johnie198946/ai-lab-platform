@@ -35,6 +35,7 @@ from backend.api.knowledge_actions import router as knowledge_actions_router
 from backend.api.subscriptions import router as subscriptions_router
 from backend.api.knowledge_publication import router as knowledge_publication_router
 from backend.api.hot_memory import router as hot_memory_router
+from backend.api.external_auth import router as external_auth_router
 from backend.db import init_db
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,8 @@ app.include_router(chat_router, dependencies=[Depends(require_auth)])
 app.include_router(orchestration_router, dependencies=[Depends(require_auth)])
 # 注册（/register 公开；/admin/users 端点自带超管校验）
 app.include_router(register_router)
+# 手机号与第三方登录（端点内部执行验证码、state 与一次性票据校验）
+app.include_router(external_auth_router)
 # 目录 / 订阅管理 / 当前用户
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
 app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
