@@ -3,15 +3,15 @@
 - task_id: `profile-card-center-20260824`
 - 任务目标: 将对话空状态中的 ProfileCard 在可用欢迎区域内垂直居中，修复卡片偏上的视觉问题。
 - 变更文件: `ios/AIPlatformApp/Views/Chat/Components/ChatMessageStreamView.swift`
-- 开工前 Git 盘点: branch `main` @ `221072cdf21f9afb3203085ca079bb3d96fa3bd6`，远端 `origin https://github.com/Johnie198946/ai-lab-platform.git`；新 Worktree `/private/tmp/ai-lab-profile-card-center`。
+- 开工前 Git 盘点: branch `codex/profile-card-center` @ `221072cdf21f9afb3203085ca079bb3d96fa3bd6`，远端 `origin https://github.com/Johnie198946/ai-lab-platform.git`；Worktree `/private/tmp/ai-lab-profile-card-center`；`main` 快进合并后部署。
 - 实现: 将卡片容器从 `.top` 对齐改为 `.center`，欢迎区域固定为 420pt，使 382pt 卡片上下保留均衡空间，不改变滚动内容或输入栏布局。
-- 测试: `git diff --check` 通过；通用 iOS 设备 `xcodebuild ... build` 结果 `BUILD SUCCEEDED`。
-- status: `TESTED`
-- commit SHA: 未提交。
-- GitHub remote/ref/SHA: 未推送。
-- server_before: 不适用，本任务未授权部署。
-- server_after: 不适用，本任务未授权部署。
-- health_check: 不适用。
-- functional_check: 编译通过；尚未重新安装到 Simulator 做视觉截图验收。
-- rollback_point: 基线 `221072cdf21f9afb3203085ca079bb3d96fa3bd6`；本 Worktree 内修改可单独回退。
-- remaining_risks: 需在 Simulator/真机登录进入新会话页后确认不同屏幕尺寸的视觉中心位置。
+- 测试: `git diff --check` 通过；通用 iOS 设备和 `AIPlatform Preview` Simulator 构建均 `BUILD SUCCEEDED`。
+- status: `DEPLOYED`
+- commit SHA: `d86b1e5153bd0984c63f0389e41181a8844a7663`
+- GitHub remote/ref/SHA: `origin/main` 与 `origin/codex/profile-card-center` 均为 `d86b1e5153bd0984c63f0389e41181a8844a7663`（`git ls-remote` 已核对）。
+- server_before: `/opt/ai-lab-platform/.deployed-sha=221072cdf21f9afb3203085ca079bb3d96fa3bd6`；release `/opt/releases/ai-lab-platform-7fbb1e4`；API、Bridge 健康，`hermes-bridge.service=active`。
+- server_after: `/opt/ai-lab-platform/.deployed-sha=d86b1e5153bd0984c63f0389e41181a8844a7663`；API、frontend、planning/workflow/agent-evaluation workers、Postgres、Redis 均运行。
+- health_check: `scripts/update.sh d86b1e5153bd0984c63f0389e41181a8844a7663` 完成；API `http://127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.8.0"}`；Bridge `http://127.0.0.1:9118/health` 返回 `status=ok, version=v6.0`；runtime contract audit passed。
+- functional_check: Simulator UUID `8386FBF2-321F-4F52-BF4C-337EF3780649` 已安装 `com.ailab.AIPlatformApp`，`simctl launch` 返回 PID `93625`；截图 `/private/tmp/ai-lab-profile-card-center-installed.png` 已保存，但未完成登录后 ProfileCard 视觉验收。
+- rollback_point: `/opt/ai-lab-rollbacks/profile-card-center-20260824-20260824-220317`，保存部署前 `.deployed-sha`、release 路径和 Compose 状态；可执行 `scripts/update.sh 221072cdf21f9afb3203085ca079bb3d96fa3bd6` 回滚。
+- remaining_risks: 尚未在所有屏幕尺寸和真机上完成视觉验收；Simulator 已完成覆盖安装与启动。
