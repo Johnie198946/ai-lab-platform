@@ -240,6 +240,9 @@ export const platformApi = {
   getExecutionArtifacts(executionId) {
     return request(`/api/v1/workflow-executions/${executionId}/artifacts`);
   },
+  getArtifactContent(executionId, artifactId) {
+    return request(`/api/v1/workflow-executions/${executionId}/artifacts/${artifactId}/content`);
+  },
   getExecutionExplainContext(executionId) {
     return request(`/api/v1/workflow-executions/${executionId}/explain-context`);
   },

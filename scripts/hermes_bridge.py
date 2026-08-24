@@ -2134,8 +2134,49 @@ def _run_workflow_node_in_process(
         _sandbox_tool_context.value = None
 
 
+def _workflow_artifact_contract(node: dict[str, Any]) -> dict[str, str]:
+    params = node.get("parameters") or {}
+    declared_raw = params.get("artifact")
+    declared: dict[str, Any] = declared_raw if isinstance(declared_raw, dict) else {}
+    raw_type = str(declared.get("render_type") or declared.get("artifact_type") or params.get("output_format") or "markdown").strip().lower()
+    aliases = {
+        "md": "markdown", "markdown 文档": "markdown", "结构化 markdown": "markdown",
+        "word": "word", "word 文档": "word", "word文档": "word", "docx": "word",
+        "图表": "chart", "数据图表": "chart", "chart": "chart",
+        "拓扑图": "topology", "topology": "topology",
+        "流程图": "flowchart", "flow": "flowchart", "flowchart": "flowchart",
+        "csv": "data", "json": "data",
+    }
+    render_type = aliases.get(raw_type, raw_type if raw_type in {"markdown", "word", "chart", "topology", "flowchart", "data"} else "markdown")
+    extension, mime_type = {
+        "markdown": ("md", "text/markdown"),
+        "word": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "chart": ("json", "application/json"),
+        "topology": ("json", "application/json"),
+        "flowchart": ("json", "application/json"),
+        "data": ("json", "application/json"),
+    }[render_type]
+    if render_type == "data" and raw_type == "csv":
+        extension, mime_type = "csv", "text/csv"
+    return {"render_type": render_type, "extension": extension, "mime_type": mime_type}
+
+
+def _workflow_artifact_instruction(contract: dict[str, str]) -> str:
+    render_type = contract["render_type"]
+    if render_type == "chart":
+        return '只输出合法 JSON 对象：{"labels":["维度"],"values":[1]}；values 仅使用非负数字。'
+    if render_type in {"topology", "flowchart"}:
+        return '只输出合法 JSON 对象：{"nodes":[{"id":"n1","label":"节点"}],"edges":[{"from":"n1","to":"n2","label":"关系"}]}。'
+    if render_type == "data":
+        return "只输出 CSV 表头与数据行，不要添加 Markdown 围栏。" if contract["extension"] == "csv" else "只输出合法 JSON 对象或数组；不要添加 Markdown 围栏或解释文字。"
+    if render_type == "word":
+        return "只输出 Word 正文纯文本，用空行分段；平台将生成真实 DOCX，不要使用 Markdown 标记。"
+    return "输出可直接渲染的 Markdown 正文。"
+
+
 def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
     params = node.get("parameters") or {}
+    artifact_contract = _workflow_artifact_contract(node)
     completed = []
     current_id = str(node.get("id") or "")
     dependency_ids = {
@@ -2189,7 +2230,8 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         f"当前节点：{node.get('name') or node.get('id')} ({node.get('node_type')})\n"
         f"指定 Agent：{requested_agent}\n"
         f"节点要求：{params.get('instruction') or params.get('query') or ''}\n"
-        f"输出格式：{params.get('output_format') or '结构化 Markdown'}\n"
+        f"输出格式：{artifact_contract['render_type']} / {artifact_contract['extension']}\n"
+        f"格式契约：{_workflow_artifact_instruction(artifact_contract)}\n"
         f"篇幅约束：最终可落盘正文不超过 {output_char_limit} 个中文字符，优先保留事实、引用与未解决缺口。\n"
         f"知识范围：{json.dumps(params.get('knowledge_scope') or run.get('knowledge_scope') or [], ensure_ascii=False)}\n"
         f"联网权限：{'允许，但仅在证据缺口明确时使用' if run.get('allow_network') else '禁止'}\n"
@@ -2376,6 +2418,7 @@ def _workflow_run_sync(execution_id: str) -> None:
                     else "source" if node.get("node_type") == "KNOWLEDGE_RETRIEVAL"
                     else "draft"
                 )
+                artifact_contract = _workflow_artifact_contract(node)
                 _workflow_event(
                     run,
                     "node_succeeded",
@@ -2392,6 +2435,7 @@ def _workflow_run_sync(execution_id: str) -> None:
                         "title": str(node.get("name") or node_id),
                         "content": reply,
                         "source_kind": "hermes_output",
+                        **artifact_contract,
                     },
                     message=f"完成：{node.get('name') or node_id}",
                 )

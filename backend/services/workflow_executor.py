@@ -360,6 +360,38 @@ async def _artifact_exists(db: AsyncSession, execution_id: str, event_id: str) -
     return any((item or {}).get("bridge_event_id") == event_id for item in rows)
 
 
+def artifact_storage_contract(
+    artifact: dict[str, Any], *, event_id: str, node: WorkflowNodeRun
+) -> tuple[str, dict[str, Any]]:
+    contracts = {
+        "markdown": ("md", "text/markdown"),
+        "word": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        "chart": ("json", "application/json"),
+        "topology": ("json", "application/json"),
+        "flowchart": ("json", "application/json"),
+        "data": ("json", "application/json"),
+    }
+    aliases = {"md": "markdown", "docx": "word", "flow": "flowchart", "process": "flowchart"}
+    declared = str(artifact.get("render_type") or artifact.get("artifact_type") or "").strip().lower()
+    render_type = aliases.get(declared, declared)
+    extension_hint = str(artifact.get("extension") or "").strip().lower().lstrip(".")
+    if render_type not in contracts:
+        render_type = {"md": "markdown", "docx": "word", "csv": "data", "json": "data"}.get(extension_hint, "markdown")
+    extension, mime_type = contracts[render_type]
+    if render_type == "data" and extension_hint == "csv":
+        extension, mime_type = "csv", "text/csv"
+    metadata = {
+        "bridge_event_id": event_id,
+        "source_node_id": node.node_id,
+        "agent_id": node.agent_id,
+        "model": node.model_used,
+        "provider": node.provider_used,
+        "render_type": render_type,
+        "mime_type": mime_type,
+    }
+    return extension, metadata
+
+
 async def project_event(
     db: AsyncSession,
     execution: WorkflowExecution,
@@ -399,6 +431,9 @@ async def project_event(
         artifact = event.get("artifact") or {}
         event_id = str(event.get("event_id") or "")
         if artifact.get("content") and not await _artifact_exists(db, execution.id, event_id):
+            extension, artifact_metadata = artifact_storage_contract(
+                artifact, event_id=event_id, node=node
+            )
             db.add(
                 store_artifact(
                     execution,
@@ -407,13 +442,8 @@ async def project_event(
                     title=str(artifact.get("title") or node.name),
                     content=str(artifact["content"]),
                     source_kind=str(artifact.get("source_kind") or "hermes_output"),
-                    metadata={
-                        "bridge_event_id": event_id,
-                        "source_node_id": node.node_id,
-                        "agent_id": node.agent_id,
-                        "model": node.model_used,
-                        "provider": node.provider_used,
-                    },
+                    metadata=artifact_metadata,
+                    extension=extension,
                 )
             )
         if route.get("reason"):

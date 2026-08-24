@@ -8,6 +8,10 @@ import {
   architectWorkflowForContext,
   projectOfficeProjection,
 } from "../src/architectContract.js";
+import {
+  artifactPresentation,
+  parseStructuredArtifact,
+} from "../src/features/project-office/artifactPresentation.js";
 
 const plan = {
   dsl: {
@@ -105,6 +109,25 @@ test("real artifacts create an output card and a transfer only along a server ed
 
   assert.deepEqual(projection.seats[0].artifacts.map((item) => item.title), ["证据包"]);
   assert.deepEqual(projection.transfers.map((item) => [item.sourceNodeId, item.targetNodeId]), [["source", "next"]]);
+});
+
+test("artifact presentation recognizes markdown, Word, charts, topology, and flowcharts from real metadata", () => {
+  assert.equal(artifactPresentation({ relative_path: "outputs/report.md" }).type, "markdown");
+  assert.equal(artifactPresentation({ relative_path: "outputs/review.docx" }).type, "word");
+  assert.equal(artifactPresentation({ metadata: { render_type: "chart" }, relative_path: "outputs/data.json" }).type, "chart");
+  assert.equal(artifactPresentation({ metadata: { render_type: "topology" }, title: "园区网络拓扑图", relative_path: "outputs/model.json" }).type, "topology");
+  assert.equal(artifactPresentation({ metadata: { render_type: "flowchart" }, title: "需求审批流程图", relative_path: "outputs/model.json" }).type, "flowchart");
+  assert.equal(artifactPresentation({ mime_type: "text/csv", extension: "csv", relative_path: "outputs/table.csv" }).type, "data");
+  assert.equal(artifactPresentation({ source_kind: "word", relative_path: "outputs/facts.md" }).type, "markdown");
+  assert.equal(artifactPresentation({ title: "Word 报告", extension: "md", relative_path: "outputs/facts" }).type, "markdown");
+  assert.equal(artifactPresentation({ relative_path: "outputs/final" }).type, "file");
+});
+
+test("structured artifact parsing accepts real JSON objects and rejects prose", () => {
+  assert.deepEqual(parseStructuredArtifact('{"labels":["A"],"values":[3]}'), { labels: ["A"], values: [3] });
+  assert.equal(parseStructuredArtifact("# 普通 Markdown"), null);
+  assert.equal(parseStructuredArtifact("[]"), null);
+  assert.equal(parseStructuredArtifact(`{"padding":"${"x".repeat(600_000)}"}`), null);
 });
 
 test("truth badges remain conservative for plan-only, replay, simulation, and malformed execution data", () => {
@@ -277,6 +300,26 @@ test("Office detail sheet starts closed and remains closed after the close actio
   assert.match(source, /const selected = seats\.find\(\(seat\) => seat\.id === selectedId\) \|\| null/);
   assert.match(source, /if \(selectedId && !seats\.some\(\(seat\) => seat\.id === selectedId\)\) setSelectedId\(""\)/);
   assert.match(source, /onClose=\{\(\) => setSelectedId\(""\)\}/);
+});
+
+test("Office artifact gallery opens real content with dedicated accessible previews", () => {
+  const source = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
+  const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.css", import.meta.url), "utf8");
+
+  assert.match(source, /ArtifactGallery/);
+  assert.match(source, /ArtifactPreview/);
+  assert.match(source, /ReactMarkdown/);
+  assert.match(source, /platformApi\.getArtifactContent/);
+  assert.match(source, /role="dialog"/);
+  assert.doesNotMatch(source, /dangerouslySetInnerHTML|<iframe/);
+  assert.match(api, /getArtifactContent\(executionId, artifactId\)/);
+  assert.match(styles, /reference-artifact-gallery/);
+  assert.match(styles, /reference-artifact-preview--word/);
+  assert.match(styles, /reference-structured-preview/);
+  assert.match(source, /typeof value === "number"/);
+  assert.match(source, /node && typeof node === "object"/);
+  assert.match(source, /edge && typeof edge === "object"/);
 });
 
 test("Architect integrates the view toggle without replacing Workbench actions", () => {
