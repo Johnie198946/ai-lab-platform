@@ -79,3 +79,38 @@
 - plan_polling_follow_up: retry a transient 404 when the server already exposes `active_plan_id`, including `awaiting_approval` workflows.
 - deployment: `scripts/update.sh <full SHA>` completed; frontend rebuilt; runtime contract audit passed.
 - health_check: API returned `{"status":"ok","version":"0.8.0"}`.
+
+## Artifact Presentation Follow-up — 2026-08-24
+
+- status: `LOCAL_TESTED / NOT_YET_DEPLOYED`
+- objective: 将原“工作交接”标签升级为服务端真实 Artifact 画廊，并按真实类型展示 Markdown、Word 正文、图表、拓扑图和流程图。
+- truth contract:
+  - 卡片只来自 execution Artifact API，不把 Plan 节点名称伪装成交付物。
+  - 类型只接受显式 Artifact metadata/API MIME/扩展名；不按标题猜测。
+  - Markdown 不执行 raw HTML；DOCX 服务端安全抽取正文；SVG 不注入；远程 Markdown 图片不自动加载。
+  - 内容读取前复核完整 SHA-256；哈希漂移拒绝预览。
+  - 图表、拓扑与流程图只消费受限 JSON；缺结构展示诚实空态，不生成伪图。
+- production contract:
+  - Plan 节点通过 `parameters.artifact.render_type` 或显式 `output_format` 声明 `markdown / word / chart / topology / flowchart / data`。
+  - Hermes Bridge 将 `render_type / extension / mime_type` 写入真实 `node_succeeded.artifact` 事件。
+  - Executor 仅透传白名单类型并持久化；未声明类型诚实降级为 Markdown。
+  - Word 正文生成确定性真实 DOCX ZIP 包，恢复路径使用同一编码器复算 SHA-256；不是把文本改后缀冒充 Word。
+- renderer coverage:
+  - `Markdown`: 受控 `ReactMarkdown` 文档视图。
+  - `Word`: `.docx` 正文抽取后纯文本纸张视图，不冒充浏览器原生 Word 编辑器。
+  - `数据图表`: 最多 24 个非负有限数值的 React SVG 柱图。
+  - `拓扑图 / 流程图`: 最多 12 节点、80 边的 React SVG 视图。
+  - `PNG / JPEG`: 校验文件签名、尺寸与 8 MB 总量后使用 data URI；GIF/SVG/WebP 不内嵌。
+- API extension:
+  - Artifact list 新增 `extension / mime_type / node_run_id / created_at`。
+  - 新增 execution-scoped Artifact content endpoint 调用，保留租户与 execution 所有权校验。
+- verification:
+  - backend full suite: `595 passed / 2 skipped / 0 failed`。
+  - frontend full suite: `84 passed / 0 failed`。
+  - frontend production build: PASS；仅保留既有 `>500 kB` chunk warning。
+  - `git diff --check`: PASS。
+  - Puppeteer 真实 React 视觉夹具：1440×1100 与 390×844 均通过；五类卡片可审阅，弹窗焦点/关闭/滚动行为通过。
+  - 视觉夹具明确为 `SIMULATION` 且位于仓库外；不作为线上真实工件证据。
+- governance:
+  - 未修改任何带“ 2”后缀的并发副本。
+  - 无第二工作流引擎，无 Vault 同步，无凭据落盘。

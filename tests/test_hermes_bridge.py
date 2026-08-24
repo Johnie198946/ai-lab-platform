@@ -357,6 +357,26 @@ class TestWorkflowHermesRuntime(unittest.TestCase):
             ["tenant_skills"],
         )
 
+    def test_artifact_contract_is_explicit_and_typed(self):
+        from scripts.hermes_bridge import _workflow_artifact_contract, _workflow_artifact_instruction
+
+        topology = _workflow_artifact_contract({"parameters": {"artifact": {"render_type": "topology"}}})
+        self.assertEqual(
+            topology,
+            {"render_type": "topology", "extension": "json", "mime_type": "application/json"},
+        )
+        self.assertIn("合法 JSON", _workflow_artifact_instruction(topology))
+        data = _workflow_artifact_contract({"parameters": {"output_format": "json"}})
+        self.assertEqual(data["render_type"], "data")
+        self.assertIn("合法 JSON", _workflow_artifact_instruction(data))
+        csv = _workflow_artifact_contract({"parameters": {"output_format": "csv"}})
+        self.assertEqual(csv["extension"], "csv")
+        self.assertIn("CSV", _workflow_artifact_instruction(csv))
+        self.assertEqual(
+            _workflow_artifact_contract({"parameters": {}}),
+            {"render_type": "markdown", "extension": "md", "mime_type": "text/markdown"},
+        )
+
     def test_dsl_node_budget_is_converted_to_per_turn_cap(self):
         from scripts.hermes_bridge import _workflow_turn_token_cap
 

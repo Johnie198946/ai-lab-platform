@@ -39,7 +39,14 @@ from backend.models.workflow import (
     WorkflowSessionMessage,
 )
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
-from backend.services.workflow_artifacts import run_root, vault_root
+from backend.services.workflow_artifacts import (
+    artifact_extension,
+    artifact_mime_type,
+    encode_artifact_content,
+    read_verified_artifact,
+    run_root,
+    vault_root,
+)
 from backend.services.workflow_executor import (
     cancel_remote,
     executable_plan_projection,
@@ -1798,6 +1805,10 @@ async def list_artifacts(execution_id: str, payload: dict = Depends(require_auth
                 "kind": row.kind,
                 "title": row.title,
                 "relative_path": row.relative_path,
+                "extension": artifact_extension(row),
+                "mime_type": artifact_mime_type(row),
+                "node_run_id": row.node_run_id,
+                "created_at": row.created_at,
                 "content_hash": row.content_hash,
                 "source_url": row.source_url,
                 "source_kind": row.source_kind,
@@ -1882,7 +1893,12 @@ async def get_evidence_report(execution_id: str, payload: dict = Depends(require
             })
         for artifact in artifacts:
             path = (root / artifact.relative_path).resolve()
-            content = path.read_text(encoding="utf-8") if path.is_relative_to(root) and path.exists() else ""
+            content = ""
+            if path.is_relative_to(root) and path.is_file():
+                try:
+                    content = read_verified_artifact(path, artifact.content_hash)
+                except ValueError:
+                    content = ""
             evidence.append({
                 "evidence_id": artifact.id,
                 "kind": artifact.kind,
@@ -1938,15 +1954,21 @@ async def get_artifact_content(
             path.parent.mkdir(parents=True, exist_ok=True)
             temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
             try:
-                temporary.write_text(content, encoding="utf-8")
+                temporary.write_bytes(encode_artifact_content(content, artifact_extension(artifact)))
                 os.replace(temporary, path)
             finally:
                 temporary.unlink(missing_ok=True)
+        try:
+            content = read_verified_artifact(path, artifact.content_hash)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         return {
             "id": artifact.id,
             "title": artifact.title,
             "kind": artifact.kind,
-            "content": path.read_text(encoding="utf-8", errors="replace"),
+            "extension": artifact_extension(artifact),
+            "mime_type": artifact_mime_type(artifact),
+            "content": content,
         }
 
 
@@ -1968,7 +1990,9 @@ async def _recover_artifact_content(
         content = str((event.get("artifact") or {}).get("content") or "")
         if not content:
             return None
-        digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        digest = hashlib.sha256(
+            encode_artifact_content(content, artifact_extension(artifact))
+        ).hexdigest()
         return content if digest == artifact.content_hash else None
     return None
 
