@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .capability_router import install as install_capability_router
+
 
 CAPABILITIES = {
     "knowledge_search": {
@@ -34,6 +36,10 @@ def _json(payload: dict[str, Any]) -> str:
 
 
 def register(ctx):
+    # Reuse Hermes' existing progressive disclosure and lifecycle hooks.  This
+    # does not add another model-facing navigation tool.
+    install_capability_router(ctx)
+
     def list_capabilities(args: dict[str, Any], **kwargs) -> str:
         del args, kwargs
         return _json({

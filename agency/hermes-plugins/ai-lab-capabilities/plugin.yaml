@@ -1,6 +1,6 @@
 name: ai-lab-capabilities
-version: 1.0.0
-description: Server-owned AI Lab capability catalog and execution router for Agency runbooks.
+version: 1.1.0
+description: Adaptive extension for Hermes tool search plus the server-owned AI Lab capability surface.
 provides_tools:
   - ai_lab_capabilities
   - ai_lab_execute
