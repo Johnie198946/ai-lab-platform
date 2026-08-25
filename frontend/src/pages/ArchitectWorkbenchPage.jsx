@@ -68,6 +68,7 @@ export default function ArchitectPage() {
   const [architectView, setArchitectView] = useState(() => architectViewFromSearch(window.location.search, defaultArchitectView));
   const showroomSessionId = useMemo(() => showroomSessionIdFromSearch(window.location.search), []);
   const customerDemandId = useMemo(() => customerDemandIdFromSearch(window.location.search), []);
+  const initialWorkflowId = useMemo(() => new URLSearchParams(window.location.search).get("workflow") || "", []);
   const [workflows, setWorkflows] = useState([]);
   const [workflow, setWorkflow] = useState(null);
   const [clarification, setClarification] = useState(null);
@@ -202,8 +203,11 @@ export default function ArchitectPage() {
       const architectRows = rows.filter((item) => item.clarification_session_id);
       setWorkflows(architectRows);
       setConnectionState("CONNECTED");
-      const selected = architectWorkflowForContext(architectRows, { customerDemandId, showroomSessionId });
+      const selected = initialWorkflowId
+        ? architectRows.find((item) => item.id === initialWorkflowId)
+        : architectWorkflowForContext(architectRows, { customerDemandId, showroomSessionId });
       if (selected) loadWorkflow(selected.id);
+      else if (initialWorkflowId) loadWorkflow(initialWorkflowId);
     }).catch((nextError) => {
       setWorkflows([]);
       setConnectionState("UNCONNECTED");
