@@ -11,11 +11,12 @@ import RoleMarketing from "../pages/RoleMarketing";
 import RoleSales from "../pages/RoleSales";
 import RoleProduct from "../pages/RoleProduct";
 import ArchitectPage from "../pages/ArchitectWorkbenchPage";
+import AgencyPortalPage from "../pages/AgencyPortalPage";
 import { isShowroomAccount } from "../auth/entryRoute";
 
 function ShowroomRedirect() {
   const { isAuthenticated, authSession } = useAuth();
-  return <Navigate to={isAuthenticated ? "/architect" : "/login?next=/architect"} replace />;
+  return <Navigate to={isAuthenticated ? "/agency" : "/login?next=/agency"} replace />;
 }
 
 export default function App() {
@@ -25,11 +26,12 @@ export default function App() {
     <Routes>
       <Route
         path="/"
-        element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/architect" : "/orchestration") : "/login"} replace />}
+        element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/agency" : "/orchestration") : "/login"} replace />}
       />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/showroom/*" element={<ShowroomRedirect />} />
       <Route element={<ProtectedRoute />}>
+        <Route path="/agency" element={<AgencyPortalPage />} />
         <Route path="/architect" element={<ArchitectPage />} />
         <Route path="/orchestration" element={<OrchestrationPage />} />
         <Route path="/agents" element={<AgentPage />} />

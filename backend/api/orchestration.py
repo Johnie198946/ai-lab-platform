@@ -12,7 +12,7 @@ import json
 import time
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 from uuid import uuid4
 
 import httpx
@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from backend.api.identity import match_identity_rule
 from backend.api.auth import require_auth
+from backend.api.chat import _knowledge_context, _resolve_chat_policy
 from backend.services.llm_usage import record_llm_usage
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
@@ -42,6 +43,7 @@ class SessionCreateRequest(BaseModel):
     goal: str = Field(..., min_length=1)
     session_id: Optional[str] = Field(None, max_length=100)
     stream: bool = Field(False, description="是否启用 SSE 流式输出")
+    surface: Literal["default", "agency"] = "default"
 
 
 class Message(BaseModel):
@@ -63,10 +65,40 @@ class OrchestrationSession(BaseModel):
 _sessions: Dict[str, OrchestrationSession] = {}
 
 
-async def _call_hermes(goal: str, session_id: Optional[str] = None) -> str:
+def _agency_agent_config() -> Dict[str, object]:
+    """Server-owned capability envelope for the Agency business surface."""
+    return {
+        "id": "agency-business-orchestrator",
+        "name": "Agency Business Orchestrator",
+        "prompt": (
+            "You are running an Agency business runbook. Use the "
+            "agency-agents-router lazily for specialist selection and use the "
+            "AI Lab capability router for execution. Return evidence and artifacts, "
+            "not unsupported completion claims."
+        ),
+        "allowed_tools": [
+            "web_search",
+            "web_extract",
+            "knowledge_search",
+            "skill_load",
+            "delegate_task",
+        ],
+        "allow_network": True,
+        "composition": {"business_surface": "agency"},
+    }
+
+
+async def _call_hermes(
+    goal: str,
+    session_id: Optional[str] = None,
+    *,
+    agency_context: Optional[Dict[str, object]] = None,
+) -> str:
     """透传 Hermes bridge（非流式）。"""
     _last_usage.set({})
     payload: Dict[str, object] = {"goal": goal}
+    if agency_context:
+        payload.update(agency_context)
     if session_id:
         payload["session_id"] = session_id
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
@@ -80,13 +112,20 @@ async def _call_hermes(goal: str, session_id: Optional[str] = None) -> str:
         return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）"
 
 
-async def _stream_hermes(goal: str, session_id: Optional[str] = None):
+async def _stream_hermes(
+    goal: str,
+    session_id: Optional[str] = None,
+    *,
+    agency_context: Optional[Dict[str, object]] = None,
+):
     """透传 Hermes bridge SSE 流式。
 
     返回异步生成器·产出 SSE 格式字符串。
     失败时抛出异常·由调用方降级处理。
     """
     payload: Dict[str, object] = {"goal": goal}
+    if agency_context:
+        payload.update(agency_context)
     if session_id:
         payload["session_id"] = session_id
 
@@ -119,6 +158,22 @@ async def create_session(
     """
     # 统一 client_sid：复用前端传入 or 首轮生成
     client_sid = body.session_id or uuid4().hex
+    agency_context: Dict[str, object] | None = None
+    if body.surface == "agency":
+        policy = await _resolve_chat_policy(payload)
+        knowledge_capability, policy_version, _, _ = await _knowledge_context(
+            payload,
+            subject_id=client_sid,
+            question=body.goal,
+            entry_point="agency_orchestration",
+            policy=policy,
+        )
+        agency_context = {
+            "knowledge_query": body.goal[:200],
+            "knowledge_capability": knowledge_capability,
+            "knowledge_policy_version": policy_version,
+            "agent_config": _agency_agent_config(),
+        }
 
     # 身份话术规则优先：命中即返回固定回答，不调 Hermes
     fixed = match_identity_rule(body.goal)
@@ -140,7 +195,16 @@ async def create_session(
         try:
             async def recorded_stream():
                 started = time.perf_counter()
-                async for frame in _stream_hermes(body.goal, session_id=client_sid):
+                stream = (
+                    _stream_hermes(
+                        body.goal,
+                        session_id=client_sid,
+                        agency_context=agency_context,
+                    )
+                    if agency_context
+                    else _stream_hermes(body.goal, session_id=client_sid)
+                )
+                async for frame in stream:
                     line = frame.strip()
                     if line.startswith("data:"):
                         try:
@@ -177,7 +241,15 @@ async def create_session(
     # 非流式模式（默认）
     started = time.perf_counter()
     try:
-        reply = await _call_hermes(body.goal, session_id=client_sid)
+        reply = await (
+            _call_hermes(
+                body.goal,
+                session_id=client_sid,
+                agency_context=agency_context,
+            )
+            if agency_context
+            else _call_hermes(body.goal, session_id=client_sid)
+        )
         await record_llm_usage(
             auth_payload=payload,
             usage_payload=_last_usage.get(),

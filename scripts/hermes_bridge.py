@@ -3695,6 +3695,8 @@ def _build_in_process_agent(
 
     runtime = _get_cached_runtime(cfg)  # 常驻单例：0ms 解析
     agent_config = dict(agent_config or {})
+    composition = agent_config.get("composition") or {}
+    agency_business_surface = composition.get("business_surface") == "agency"
     if sandbox is None:
         raise RuntimeError("tenant_sandbox_unavailable")
     persist_agent_snapshot(sandbox, agent_config)
@@ -3744,6 +3746,10 @@ def _build_in_process_agent(
             requested_toolsets.add("client_context")
         if knowledge_action_enabled:
             requested_toolsets.add("knowledge_workspace")
+        if agency_business_surface:
+            requested_toolsets.update(
+                {"agency_agents", "ai_lab"} & platform_tools
+            )
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
     if client_context_enabled:
         # The signed iOS snapshot is authoritative for this request. Do not let

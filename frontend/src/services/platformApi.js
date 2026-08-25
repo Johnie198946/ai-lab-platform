@@ -118,6 +118,48 @@ export const platformApi = {
       body: sessionId ? { goal, session_id: sessionId, stream: true } : { goal, stream: true },
     });
   },
+  async streamOrchestrationSession(goal, sessionId = null, onEvent = () => {}) {
+    const accessToken = getAuthAccessToken() || API_TOKEN;
+    const headers = new Headers({
+      Accept: "text/event-stream",
+      "Content-Type": "application/json",
+    });
+    if (accessToken) {
+      headers.set("Authorization", `Bearer ${accessToken}`);
+    }
+    const response = await fetch(buildApiUrl("/api/orchestration/sessions"), {
+      method: "POST",
+      headers,
+      body: JSON.stringify(sessionId
+        ? { goal, session_id: sessionId, stream: true, surface: "agency" }
+        : { goal, stream: true, surface: "agency" }),
+    });
+    if (!response.ok || !response.body) {
+      throw new PlatformApiError(await parseErrorMessage(response), {
+        status: response.status,
+      });
+    }
+    const resolvedSessionId = response.headers.get("X-Session-ID") || sessionId;
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        try {
+          onEvent(JSON.parse(line.slice(5).trim()));
+        } catch {
+          onEvent({ type: "status", detail: line.slice(5).trim() });
+        }
+      }
+      if (done) break;
+    }
+    return resolvedSessionId;
+  },
   chat(question) {
     return request("/api/chat", {
       method: "POST",
