@@ -7,6 +7,8 @@ cd "$(dirname "$0")/.."
 AGENCY_AGENTS_SHA="${AGENCY_AGENTS_SHA:-ebe9c99acb5c96f9468de368d8bead775387d1a7}"
 HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
 HERMES_PYTHON="${HERMES_PYTHON:-/opt/hermes/venv/bin/python3}"
+config="$HERMES_HOME/config.yaml"
+original_config=""
 
 if [[ ! "$AGENCY_AGENTS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "ERROR: AGENCY_AGENTS_SHA must be a full 40-character commit SHA" >&2
@@ -20,6 +22,14 @@ fi
 tmp_dir="$(mktemp -d /tmp/agency-agents-install.XXXXXX)"
 cleanup() { rm -rf "$tmp_dir"; }
 trap cleanup EXIT
+
+# Preserve the pre-install plugin list. The upstream installer supports simple
+# YAML lists, but Hermes commonly writes this field in flow style; restoring
+# from the structured pre-install document avoids collapsing existing entries.
+if [[ -f "$config" ]]; then
+  original_config="$tmp_dir/config.before-agency.yaml"
+  cp "$config" "$original_config"
+fi
 
 echo "==> Fetch Agency Agents @ $AGENCY_AGENTS_SHA"
 curl -fsSL --retry 3 \
@@ -45,66 +55,43 @@ mkdir -p "$plugin_root"
 rm -rf "$plugin_dest"
 cp -R agency/hermes-plugins/ai-lab-capabilities "$plugin_dest"
 
-config="$HERMES_HOME/config.yaml"
 backup="$config.bak.ai-lab-agency.$(date +%Y%m%d%H%M%S)"
 [[ -f "$config" ]] && cp "$config" "$backup"
-"$HERMES_PYTHON" - "$config" "ai-lab-capabilities" <<'PY'
+"$HERMES_PYTHON" - "$config" "$original_config" <<'PY'
 from pathlib import Path
+import os
 import sys
+import tempfile
+
+import yaml
 
 path = Path(sys.argv[1])
-plugin = sys.argv[2]
-lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+original = Path(sys.argv[2]) if sys.argv[2] else None
+source = original if original and original.exists() else path
+document = yaml.safe_load(source.read_text(encoding="utf-8")) if source.exists() else {}
+if not isinstance(document, dict):
+    raise SystemExit("ERROR: Hermes config root must be a mapping")
+plugins = document.setdefault("plugins", {})
+if not isinstance(plugins, dict):
+    raise SystemExit("ERROR: Hermes plugins config must be a mapping")
+enabled = plugins.get("enabled") or []
+if not isinstance(enabled, list) or not all(isinstance(item, str) for item in enabled):
+    raise SystemExit("ERROR: Hermes plugins.enabled must be a string list")
+for plugin in ("agency-agents-router", "ai-lab-capabilities"):
+    if plugin not in enabled:
+        enabled.append(plugin)
+plugins["enabled"] = enabled
 
-in_plugins = False
-in_enabled = False
-for line in lines:
-    if line.startswith("plugins:"):
-        in_plugins, in_enabled = True, False
-        continue
-    if in_plugins and line and not line.startswith((" ", "\t")):
-        in_plugins, in_enabled = False, False
-    if in_plugins and line.strip() == "enabled:":
-        in_enabled = True
-        continue
-    if in_enabled and line.strip().startswith("-"):
-        if line.strip()[1:].strip().strip("\"'") == plugin:
-            raise SystemExit(0)
-
-if not lines:
-    lines = ["plugins:", "  enabled:", f"  - {plugin}"]
-elif not any(line.startswith("plugins:") for line in lines):
-    lines.extend(["", "plugins:", "  enabled:", f"  - {plugin}"])
-else:
-    output = []
-    in_plugins = False
-    inserted = False
-    saw_enabled = False
-    for line in lines:
-        if line.startswith("plugins:"):
-            in_plugins = True
-            output.append(line)
-            continue
-        if in_plugins and line and not line.startswith((" ", "\t")):
-            if not saw_enabled and not inserted:
-                output.extend(["  enabled:", f"  - {plugin}"])
-                inserted = True
-            in_plugins = False
-        if in_plugins and line.strip().startswith("enabled:") and "[]" in line:
-            saw_enabled = True
-            output.extend(["  enabled:", f"  - {plugin}"])
-            inserted = True
-            continue
-        if in_plugins and line.strip() == "enabled:":
-            saw_enabled = True
-            output.extend([line, f"  - {plugin}"])
-            inserted = True
-            continue
-        output.append(line)
-    if in_plugins and not saw_enabled and not inserted:
-        output.extend(["  enabled:", f"  - {plugin}"])
-    lines = output
-path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+path.parent.mkdir(parents=True, exist_ok=True)
+fd, temporary = tempfile.mkstemp(prefix="config.yaml.", dir=path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(document, handle, allow_unicode=True, sort_keys=False)
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
 PY
 
 echo "==> Agency/Hermes integration installed"

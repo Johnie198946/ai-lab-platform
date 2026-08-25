@@ -68,3 +68,11 @@ def test_ai_lab_capability_plugin_routes_only_supported_tools():
         "error": "unsupported_capability",
         "capability": "terminal",
     }
+
+
+def test_installer_preserves_pre_install_plugin_config_and_adds_both_routers():
+    installer = (ROOT / "scripts/install_agency_hermes.sh").read_text()
+    assert 'original_config="$tmp_dir/config.before-agency.yaml"' in installer
+    assert 'source = original if original and original.exists() else path' in installer
+    assert '("agency-agents-router", "ai-lab-capabilities")' in installer
+    assert "yaml.safe_load" in installer
