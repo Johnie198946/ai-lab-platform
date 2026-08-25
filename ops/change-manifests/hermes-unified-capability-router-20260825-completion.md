@@ -45,7 +45,7 @@
 - status: `VERIFIED`
 - deployed implementation SHA: `1441bda6d4a06238ac79ac3b7e1f97835678666b`
 - supporting commits: `467c97527720850cac0ffb79aa04801119b4d18f`（主体实现）；`e7bd9377be37ac168dad423770c4311a6334d47a`（合并服务器当前 `origin/main` 基线）；`1441bda6d4a06238ac79ac3b7e1f97835678666b`（延迟工具桥接修正）。
-- GitHub remote/ref/SHA: `origin refs/heads/codex/hermes-unified-capability-router = 1441bda6d4a06238ac79ac3b7e1f97835678666b`，已通过 `git ls-remote` 核验。
+- GitHub remote/ref/SHA: 部署时实现 ref 为 `1441bda6d4a06238ac79ac3b7e1f97835678666b`，已通过 `git ls-remote` 核验；最终 manifest-only 分支头在标准完成通报中再次核验并与服务器 `.deployed-sha` 对齐。
 
 ## 部署与验证
 
@@ -53,7 +53,7 @@
 - local_after: 插件文件已安装为 `1.1.0`；独立进程验证 hooks、tool_search 扩展和 `569` 字符 Skills 提示通过；真实本地 Hermes CLI 盲测实际加载 `business-strategist`。常驻 Gateway 有其他长任务在执行，未强制重启，避免中断该任务；它将在下一次正常重启时加载同一插件版本。
 - local_rollback_point: `/private/tmp/hermes-unified-capability-router-local-rollback-20260825`。
 - server_before: `.deployed-sha = 9c9066839a134ba08bc30bc68f1e706ceeaa19bc`；`/opt/ai-lab-platform -> /opt/releases/ai-lab-platform-2703827`；API `0.8.0` 健康；`hermes-bridge.service` active；插件 `1.0.0`。
-- server_after: `.deployed-sha = 1441bda6d4a06238ac79ac3b7e1f97835678666b`；平台路径保持 `/opt/releases/ai-lab-platform-2703827`，以精确 GitHub SHA 原地更新；插件 `1.1.0`；270 个 Agency Agents 重新生成并通过上游 checker；3 个插件文件本地/服务器 SHA256 逐项一致；7 个 Compose 容器 running。
+- server_after: runtime implementation SHA 为 `1441bda6d4a06238ac79ac3b7e1f97835678666b`；最终仅含 completion manifest 的文档提交同步后，`.deployed-sha` 原子推进到任务分支头，不改变运行代码；平台路径保持 `/opt/releases/ai-lab-platform-2703827`；插件 `1.1.0`；270 个 Agency Agents 重新生成并通过上游 checker；3 个插件文件本地/服务器 SHA256 逐项一致；7 个 Compose 容器 running。
 - health_check: PASS — API `http://127.0.0.1:8000/health` 返回 `status=ok, version=0.8.0`；Bridge `http://127.0.0.1:9118/health` 返回 `status=ok, service=hermes-bridge, version=v6.0`；`hermes-bridge.service` active；平台运行契约审计 PASS。
 - functional_check: PASS — 服务器独立 Hermes 进程显示 `tool_search_extended=True`、Skills 常驻提示 `580` 字符、专业请求候选上下文 `2291` 字符且 JSON 完整；真实盲测未点名 Agency，`business-strategist` 调用统计由空变为 `calls=1, successes=1`。
 - rollback_point: 本地 `/private/tmp/hermes-unified-capability-router-local-rollback-20260825`；服务器 `/opt/ai-lab-rollbacks/hermes-unified-capability-router-20260825-before-e7bd937`，包含部署前插件、Hermes config、部署 SHA 与平台链接。
