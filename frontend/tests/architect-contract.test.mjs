@@ -118,25 +118,33 @@ test("revision polling waits for a strictly newer server plan", async () => {
   assert.equal(isStrictlyNewerPlan(result, { id: "v1", version: 1 }), true);
 });
 
-test("initial plan polling tolerates a missing plan before the first server version", async () => {
-  let calls = 0;
+test("initial plan polling waits for plan_ready before reading the first server plan", async () => {
+  let lifecycleCalls = 0;
+  let planCalls = 0;
+  let ready = false;
   const result = await pollForNewPlan("wf-1", null, {
     getPlan: async () => {
-      calls += 1;
-      if (calls === 1) throw Object.assign(new Error("404"), { status: 404 });
+      planCalls += 1;
+      assert.equal(ready, true, "the first plan must not be read while planning is still running");
       return { id: "v1", version: 1 };
     },
-    getLifecycleEvents: async () => [],
+    getLifecycleEvents: async () => {
+      lifecycleCalls += 1;
+      if (lifecycleCalls === 1) return [{ event_type: "planning_queued" }];
+      ready = true;
+      return [{ event_type: "plan_ready" }];
+    },
     delay: async () => {},
     attempts: 3,
   });
   assert.equal(result.id, "v1");
+  assert.equal(planCalls, 1);
   assert.equal(isStrictlyNewerPlan(result, null), true);
 });
 
-test("plan polling does not disguise server failures as an empty plan", async () => {
+test("revision plan polling does not disguise server failures as an empty plan", async () => {
   await assert.rejects(
-    pollForNewPlan("wf-1", null, {
+    pollForNewPlan("wf-1", { id: "v1", version: 1 }, {
       getPlan: async () => { throw Object.assign(new Error("server failed"), { status: 500 }); },
       getLifecycleEvents: async () => [],
       delay: async () => {},
