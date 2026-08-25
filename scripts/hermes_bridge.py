@@ -3286,6 +3286,19 @@ def _resolve_dynamic_toolsets(goal: str, cfg: dict) -> list:
     return sorted(list(core_tools & platform_tools))
 
 
+def _include_available_toolsets(
+    selected: list[str],
+    platform_tools: set[str],
+    requested: set[str],
+) -> list[str]:
+    """Add explicitly requested plugin toolsets after lightweight selection."""
+    result = list(selected)
+    for toolset in sorted(requested & platform_tools):
+        if toolset not in result:
+            result.append(toolset)
+    return result
+
+
 def _hermes_session_for_request(
     user_id: str, client_session_context: dict[str, Any] | None
 ) -> str | None:
@@ -3712,6 +3725,12 @@ def _build_in_process_agent(
         and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
     )
     platform_tools = set(_get_cached_tools(cfg))
+    if agency_business_surface:
+        toolsets_list = _include_available_toolsets(
+            toolsets_list,
+            platform_tools,
+            {"agency_agents", "ai_lab"},
+        )
     if network_tool_requested and "web" not in platform_tools:
         raise RuntimeError(
             "web_toolset_unavailable: Hermes sandbox has no usable web provider"

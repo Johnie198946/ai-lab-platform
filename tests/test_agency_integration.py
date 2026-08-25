@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from backend.api.orchestration import _agency_agent_config
+from scripts.hermes_bridge import _include_available_toolsets
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -76,3 +77,13 @@ def test_installer_preserves_pre_install_plugin_config_and_adds_both_routers():
     assert 'source = original if original and original.exists() else path' in installer
     assert '("agency-agents-router", "ai-lab-capabilities")' in installer
     assert "yaml.safe_load" in installer
+
+
+def test_agency_plugins_are_added_after_lightweight_tool_selection():
+    selected = _include_available_toolsets(
+        ["clarify", "delegation"],
+        {"clarify", "delegation", "agency_agents", "ai_lab", "terminal"},
+        {"agency_agents", "ai_lab"},
+    )
+    assert selected == ["clarify", "delegation", "agency_agents", "ai_lab"]
+    assert "terminal" not in selected
