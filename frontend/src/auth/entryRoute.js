@@ -1,4 +1,4 @@
-export const SHOWROOM_CONTROLLER_PATH = "/architect";
+export const SHOWROOM_CONTROLLER_PATH = "/scenarios";
 
 const SHOWROOM_IDENTITIES = new Set([
   "showroom",
