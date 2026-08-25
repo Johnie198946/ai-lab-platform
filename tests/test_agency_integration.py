@@ -114,8 +114,11 @@ def test_capability_router_understands_chinese_and_prefers_professional_depth():
                 "go-to-market strategy, business models and strategic decisions."
             ),
             "domain": "marketing strategy",
-            "invoke_tool": "agency_agents_load",
-            "invoke_args": {"agent": "business-strategist"},
+            "invoke_tool": "tool_call",
+            "invoke_args": {
+                "name": "agency_agents_load",
+                "arguments": {"agent": "business-strategist"},
+            },
             "depth": 0.86,
             "cost": 0.10,
         },
@@ -127,8 +130,11 @@ def test_capability_router_understands_chinese_and_prefers_professional_depth():
     cards = router.recommend(prompt, capabilities=inventory, stats={})
     assert cards[0]["id"] == "agency:business-strategist"
     assert cards[0]["invoke"] == {
-        "tool": "agency_agents_load",
-        "arguments": {"agent": "business-strategist"},
+        "tool": "tool_call",
+        "arguments": {
+            "name": "agency_agents_load",
+            "arguments": {"agent": "business-strategist"},
+        },
     }
     assert cards[0]["fit"] > cards[1]["fit"]
     assert "marketing" in router._tokens("市场营销方案")

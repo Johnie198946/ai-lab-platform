@@ -166,8 +166,14 @@ def _agency_capabilities() -> list[dict[str, Any]]:
             # only the short description is ever emitted in a candidate card.
             "_search_text": str(agent.get("body") or "")[:5000],
             "domain": str(agent.get("division") or "specialized"),
-            "invoke_tool": "agency_agents_load",
-            "invoke_args": {"agent": slug},
+            # Plugin tools are deferred by Hermes.  Keep the native bridge
+            # contract instead of suggesting a function absent from the
+            # model-visible schema.
+            "invoke_tool": "tool_call",
+            "invoke_args": {
+                "name": "agency_agents_load",
+                "arguments": {"agent": slug},
+            },
             "depth": 0.82,
             "cost": 0.10,
         })
