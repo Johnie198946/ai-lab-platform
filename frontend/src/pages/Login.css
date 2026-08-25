@@ -219,7 +219,7 @@
     .login-tabs {
       margin-top: 22px;
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 8px;
       padding: 6px;
       border-radius: 18px;
@@ -258,6 +258,50 @@
 
     .login-form.is-active {
       display: grid;
+    }
+
+    .phone-code-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 112px;
+      gap: 10px;
+    }
+
+    .code-button {
+      min-height: 68px;
+      border-radius: 18px;
+      border: 1px solid rgba(20, 24, 31, 0.1);
+      background: rgba(255, 255, 255, 0.9);
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .login-error,
+    .channel-note {
+      margin: 12px 0 0;
+      color: #b42318;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .channel-note {
+      margin: 0;
+      color: var(--text-3);
+    }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: 0.48;
+      transform: none !important;
+    }
+
+    .dev-login-link {
+      display: block;
+      margin: 14px auto 0;
+      color: var(--text-3);
+      font-size: 12px;
+      text-decoration: underline;
+      text-underline-offset: 3px;
     }
 
     .field {
@@ -717,4 +761,3 @@
         display: none;
       }
     }
-  

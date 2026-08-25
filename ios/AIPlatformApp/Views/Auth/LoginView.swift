@@ -8,12 +8,13 @@
 //
 
 import SwiftUI
+import AuthenticationServices
 
 public struct LoginView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    
+
     @State private var phoneNumber: String = ""
     @State private var smsCode: String = ""
     @State private var isCountdownActive: Bool = false
@@ -21,6 +22,10 @@ public struct LoginView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
     @State private var isLoginCardVisible = false
+    @State private var phoneLoginEnabled = false
+    @State private var wechatLoginEnabled = false
+    @State private var alipayLoginEnabled = false
+    @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
     
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
@@ -82,6 +87,9 @@ public struct LoginView: View {
                 isCountdownActive = false
                 countdownSeconds = 60
             }
+        }
+        .task {
+            await loadAuthCapabilities()
         }
     }
     
@@ -174,7 +182,10 @@ public struct LoginView: View {
                         }
                     }
                     .minimumTouchTarget()
-                    .disabled(isCountdownActive || phoneNumber.count < 11)
+                    .disabled(
+                        !phoneLoginEnabled || isLoading || isCountdownActive
+                            || phoneNumber.count < 11
+                    )
                 }
                 .frame(minHeight: AppTheme.Metrics.inputHeight)
                 .padding(.horizontal, AppTheme.Spacing.md)
@@ -206,8 +217,11 @@ public struct LoginView: View {
                 }
             }
             .buttonStyle(QuantumPrimaryButtonStyle())
-            .disabled(isLoading || phoneNumber.isEmpty || smsCode.isEmpty)
-            .opacity((phoneNumber.isEmpty || smsCode.isEmpty) ? 0.6 : 1.0)
+            .disabled(
+                !phoneLoginEnabled || isLoading || phoneNumber.isEmpty
+                    || smsCode.count != 6
+            )
+            .opacity((!phoneLoginEnabled || phoneNumber.isEmpty || smsCode.count != 6) ? 0.6 : 1.0)
         }
     }
     
@@ -219,7 +233,7 @@ public struct LoginView: View {
             
             HStack(spacing: AppTheme.Spacing.xl) {
                 // WeChat Button
-                Button(action: { handleThirdPartyAuth(provider: "WeChat") }) {
+                Button(action: { handleThirdPartyAuth(provider: "wechat") }) {
                     VStack(spacing: AppTheme.Spacing.xs) {
                         Circle()
                             .fill(AppTheme.Colors.thirdPartyWeChat.opacity(0.12))
@@ -235,9 +249,11 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
+                .disabled(!wechatLoginEnabled || isLoading)
+                .opacity(wechatLoginEnabled ? 1 : 0.45)
                 
                 // Alipay Button
-                Button(action: { handleThirdPartyAuth(provider: "Alipay") }) {
+                Button(action: { handleThirdPartyAuth(provider: "alipay") }) {
                     VStack(spacing: AppTheme.Spacing.xs) {
                         Circle()
                             .fill(AppTheme.Colors.thirdPartyAlipay.opacity(0.12))
@@ -253,6 +269,8 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
+                .disabled(!alipayLoginEnabled || isLoading)
+                .opacity(alipayLoginEnabled ? 1 : 0.45)
             }
         }
     }
@@ -300,11 +318,22 @@ public struct LoginView: View {
     }
     
     private func sendSmsCode() {
-        guard phoneNumber.count >= 11 else { return }
-        isCountdownActive = true
-        #if os(iOS)
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        #endif
+        guard phoneNumber.count >= 11, phoneLoginEnabled, !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                try await APIClient.shared.sendPhoneCode(phone: phoneNumber)
+                isCountdownActive = true
+                countdownSeconds = 60
+                #if os(iOS)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                #endif
+            } catch {
+                errorMessage = "验证码发送失败：\(error.localizedDescription)"
+            }
+            isLoading = false
+        }
     }
     
     private func performPhoneLogin() {
@@ -312,84 +341,130 @@ public struct LoginView: View {
         isLoading = true
         errorMessage = nil
 
-        // 手机号表单 → register 契约桥接（开发态占位；生产需真实邮箱/密码表单，见开发总结）
-        let username = phoneNumber
-        let email = "\(phoneNumber)@ailab.quantum"
-        let password = smsCode
-        let code = smsCode
-
         Task { @MainActor in
-            var isDev = false
-            // 1. 真实注册（后端内建兜底：注册失败自动回退登录，返回平台 JWT）
             do {
-                let resp = try await APIClient.shared.register(
-                    email: email,
-                    username: username,
-                    password: password,
-                    verificationCode: code
+                let response = try await APIClient.shared.loginWithPhone(
+                    phone: phoneNumber,
+                    code: smsCode
                 )
-                guard let token = resp.token, !token.isEmpty else {
-                    // 顶设铁律：未拿到凭证绝不进入主界面（避免"假装登录成功"后被 401 踢回）
-                    isLoading = false
-                    errorMessage = "登录失败：未获取到访问凭证，请稍后重试"
-                    return
-                }
-                APIClient.shared.saveToken(token)
+                try await completeLogin(response)
             } catch {
                 isLoading = false
                 errorMessage = "登录失败：\(error.localizedDescription)"
-                return
-            }
-
-            // 2. 探测 /me 判定开发态（dev 载荷 tenant_key=demo）或连接失败
-            do {
-                let profile = try await APIClient.shared.fetchMe()
-                appState.currentTenantKey = profile.tenantKey
-                appState.currentUserId = profile.userId
-                KnowledgeNoteStore.shared.activate(
-                    tenantKey: profile.tenantKey, userId: profile.userId
-                )
-                if profile.tenantKey == "demo" || profile.username == "dev" {
-                    isDev = true
-                }
-            } catch {
-                isDev = true
-                appState.currentUserId = "demo-user"
-                appState.currentTenantKey = appState.currentProfile.tenantId
-                KnowledgeNoteStore.shared.activate(
-                    tenantKey: appState.currentProfile.tenantId,
-                    userId: appState.currentUserId
-                )
-            }
-
-            isLoading = false
-            #if os(iOS)
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
-            #endif
-            appState.isDevMode = isDev
-            withAnimation(.spring()) {
-                appState.isLoggedIn = true
-                appState.isGuestMode = false
-                appState.currentProfile = MockData.tenantProfile
             }
         }
     }
-    
+
     private func handleThirdPartyAuth(provider: String) {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
+        guard !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                let start = try await APIClient.shared.startOAuth(provider: provider)
+                let ticket = try await oauthCoordinator.authenticate(url: start.authorizationUrl)
+                let response = try await APIClient.shared.completeOAuth(ticket: ticket)
+                try await completeLogin(response)
+            } catch OAuthSessionCoordinatorError.cancelled {
+                isLoading = false
+            } catch {
+                isLoading = false
+                errorMessage = "第三方登录失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    @MainActor
+    private func loadAuthCapabilities() async {
+        do {
+            let capabilities = try await APIClient.shared.fetchAuthCapabilities()
+            phoneLoginEnabled = capabilities.phone.enabled
+            wechatLoginEnabled = capabilities.oauth.wechat.enabled
+            alipayLoginEnabled = capabilities.oauth.alipay.enabled
+        } catch {
+            phoneLoginEnabled = false
+            wechatLoginEnabled = false
+            alipayLoginEnabled = false
+        }
+    }
+
+    @MainActor
+    private func completeLogin(_ response: LoginSessionDTO) async throws {
+        APIClient.shared.saveToken(response.token)
+        let profile = try await APIClient.shared.fetchMe()
+        appState.currentTenantKey = profile.tenantKey
+        appState.currentUserId = profile.userId
+        KnowledgeNoteStore.shared.activate(
+            tenantKey: profile.tenantKey,
+            userId: profile.userId
+        )
+        appState.isDevMode = false
+        isLoading = false
+        #if os(iOS)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #endif
         withAnimation(.spring()) {
-            appState.currentUserId = "third-party-\(provider.lowercased())"
-            appState.currentTenantKey = appState.currentProfile.tenantId
-            KnowledgeNoteStore.shared.activate(
-                tenantKey: appState.currentProfile.tenantId,
-                userId: appState.currentUserId
-            )
             appState.isLoggedIn = true
             appState.isGuestMode = false
             appState.currentProfile = MockData.tenantProfile
         }
+    }
+}
+
+private enum OAuthSessionCoordinatorError: LocalizedError {
+    case cancelled
+    case invalidCallback
+
+    var errorDescription: String? {
+        switch self {
+        case .cancelled: return "已取消授权"
+        case .invalidCallback: return "登录回调无效"
+        }
+    }
+}
+
+@MainActor
+private final class OAuthSessionCoordinator: NSObject, ObservableObject,
+    ASWebAuthenticationPresentationContextProviding
+{
+    private var session: ASWebAuthenticationSession?
+
+    func authenticate(url: URL) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            let session = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "quantum"
+            ) { callbackURL, error in
+                if let authError = error as? ASWebAuthenticationSessionError,
+                   authError.code == .canceledLogin {
+                    continuation.resume(throwing: OAuthSessionCoordinatorError.cancelled)
+                    return
+                }
+                guard let callbackURL,
+                      let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+                      let ticket = components.queryItems?.first(where: { $0.name == "oauth_ticket" })?.value,
+                      !ticket.isEmpty
+                else {
+                    continuation.resume(throwing: error ?? OAuthSessionCoordinatorError.invalidCallback)
+                    return
+                }
+                continuation.resume(returning: ticket)
+            }
+            session.presentationContextProvider = self
+            session.prefersEphemeralWebBrowserSession = true
+            self.session = session
+            if !session.start() {
+                continuation.resume(throwing: OAuthSessionCoordinatorError.invalidCallback)
+            }
+        }
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        return scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? ASPresentationAnchor()
     }
 }
 
