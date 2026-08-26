@@ -58,8 +58,9 @@ test("result area exposes exactly four server-backed view types and honest empti
 
 test("ArchitectPage uses real React Flow with server-only nodes and edges", () => {
   const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  assert.match(source, /import\s+\{\s*ReactFlow(?:,\s*applyNodeChanges)?\s*\}\s+from\s+["']@xyflow\/react["']/);
+  assert.match(source, /import\s+\{[^}]*\bReactFlow\b[^}]*\}\s+from\s+["']@xyflow\/react["']/);
   assert.match(source, /<ReactFlow[\s\S]*nodes=\{nodes\}[\s\S]*edges=\{edges\}/);
+  assert.match(source, /nodeTypes=\{simNodeTypes\}/);
   assert.match(source, /nodesDraggable=\{simulation\}/);
   assert.match(source, /nodesConnectable=\{false\}/);
   assert.match(source, /SIMULATION/);
@@ -336,9 +337,22 @@ test("Gate-2 platform API exposes CAS-safe plan save and rollback helpers", () =
 test("Gate-2 PlanCanvas exposes explicit save and keeps execution actions out of the canvas", () => {
   const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
   const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
-  assert.match(canvas, /保存 SIMULATION 编辑/);
+  assert.match(canvas, /SIMULATION · 本地编辑/);
+  assert.match(canvas, /onClick=\{saveSimulation\}/);
   assert.match(canvas, /request_id/);
   assert.doesNotMatch(canvas, /approveWorkflowPlan|startWorkflow|Runtime|Realtime/);
+});
+
+test("Workbench presents the plan as a Sim-style full canvas instead of a confirmation list", () => {
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+  const css = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.css", import.meta.url), "utf8");
+  const planStage = source.slice(source.indexOf("{plan && !execution"), source.indexOf("{execution &&"));
+  assert.match(planStage, /className="sim-workflow-stage"/);
+  assert.match(planStage, /<PlanCanvas/);
+  assert.doesNotMatch(planStage, /className="node-list"|className="plan-detail"/);
+  assert.match(css, /--sim-bg:\s*#1b1b1b/);
+  assert.match(css, /\.sim-terminal/);
+  assert.match(css, /\.sim-node__actions/);
 });
 
 test("Gate-3 exposes a read-only workflow plan versions API", () => {

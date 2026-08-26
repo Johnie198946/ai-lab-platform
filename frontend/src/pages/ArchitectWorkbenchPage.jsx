@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ReactFlow, applyNodeChanges } from "@xyflow/react";
+import { Background, Handle, Position, ReactFlow, applyNodeChanges } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Check, ChevronDown, GitBranch, LogOut, Play, Plus, RefreshCw } from "lucide-react";
+import { Bot, Box, Check, ChevronDown, GitBranch, LogOut, MoreHorizontal, Play, Plus, RefreshCw, Search, ShieldCheck, Sparkles, TerminalSquare, Workflow } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
 import { isShowroomAccount } from "../auth/entryRoute";
 import { platformApi } from "../services/platformApi";
@@ -40,7 +40,41 @@ const STATUS_COPY = {
 
 const listValue = (value) => (Array.isArray(value) ? value : []);
 
-function PlanCanvas({ plan, workflowId, onSaved }) {
+const SIM_NODE_TYPES = new Set(["agent", "artifact", "gate", "human"]);
+
+function SimWorkflowNode({ data, selected }) {
+  const serverNode = data?.serverNode || {};
+  const parameters = serverNode.parameters || data?.parameters || {};
+  const type = data?.visualType || "agent";
+  const status = parameters.capability_status || (parameters.execution_enabled ? "READY" : "PLAN");
+  const Icon = type === "artifact" ? Box : type === "gate" || type === "human" ? ShieldCheck : Bot;
+  return (
+    <article className={`sim-node sim-node--${type}${selected ? " is-selected" : ""}`} aria-label={`${data?.label || serverNode.name || "流程节点"} · ${status}`}>
+      {selected && <div className="sim-node__actions" aria-hidden="true"><Play size={13} /><Sparkles size={13} /><ShieldCheck size={13} /><MoreHorizontal size={13} /></div>}
+      <Handle className="sim-node__handle sim-node__handle--target" type="target" position={Position.Left} id="in" />
+      <div className="sim-node__icon"><Icon size={15} /></div>
+      <div className="sim-node__copy"><strong>{serverNode.name || data?.label || "未命名节点"}</strong><span>{parameters.agent_id || (Array.isArray(parameters.role_ids) ? parameters.role_ids.join(" · ") : "") || type}</span></div>
+      <span className={`sim-node__status sim-node__status--${String(status).toLowerCase()}`}>{status}</span>
+      <Handle className="sim-node__handle sim-node__handle--source" type="source" position={Position.Right} id="out" />
+    </article>
+  );
+}
+
+const simNodeTypes = {
+  agent: SimWorkflowNode,
+  artifact: SimWorkflowNode,
+  gate: SimWorkflowNode,
+  human: SimWorkflowNode,
+};
+
+const layoutSimNodes = (nodes) => nodes.map((node, index) => ({
+  ...node,
+  position: node.position && Number(node.position.x) !== 80
+    ? node.position
+    : { x: 80 + index * 310, y: 132 + (index % 2) * 92 },
+}));
+
+export function PlanCanvas({ plan, workflowId, onSaved }) {
   const [simulation, setSimulation] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -48,19 +82,33 @@ function PlanCanvas({ plan, workflowId, onSaved }) {
   const [selectedHistoryId, setSelectedHistoryId] = useState("");
   const [rollbackError, setRollbackError] = useState("");
   const [rollingBack, setRollingBack] = useState(false);
+  const [selectedNodeId, setSelectedNodeId] = useState("");
+  const [terminalOpen, setTerminalOpen] = useState(true);
   const serverPlan = useMemo(() => projectPlanToCanvas(plan), [plan]);
   const simulationView = useMemo(
     () => canonicalPlanToSimLike(serverPlan),
     [serverPlan],
   );
-  const [simulationNodes, setSimulationNodes] = useState(simulationView.nodes);
+  const [simulationNodes, setSimulationNodes] = useState(() => layoutSimNodes(simulationView.nodes));
   useEffect(() => {
     setSimulation(false);
-    setSimulationNodes(simulationView.nodes);
+    setSimulationNodes(layoutSimNodes(simulationView.nodes));
   }, [simulationView.nodes]);
-  const { nodes: serverNodes, edges: serverEdges } = projectPlanToReactFlow({ dsl: serverPlan });
-  const nodes = simulation ? simulationNodes : serverNodes;
+  const { nodes: projectedServerNodes, edges: serverEdges } = projectPlanToReactFlow({ dsl: serverPlan });
+  const typeById = useMemo(() => new Map(simulationView.nodes.map((node) => [node.id, node.type])), [simulationView.nodes]);
+  const serverNodes = useMemo(() => projectedServerNodes.map((node, index) => ({
+    ...node,
+    type: SIM_NODE_TYPES.has(node.type) ? node.type : (typeById.get(node.id) || "agent"),
+    position: serverPlan.nodes[index]?.position || { x: 80 + index * 310, y: 132 + (index % 2) * 92 },
+    data: {
+      ...node.data,
+      serverNode: serverPlan.nodes.find((item) => String(item.id) === node.id) || node.data?.serverNode || {},
+      visualType: SIM_NODE_TYPES.has(node.type) ? node.type : (typeById.get(node.id) || "agent"),
+    },
+  })), [projectedServerNodes, serverPlan.nodes, typeById]);
+  const nodes = simulation ? simulationNodes.map((node) => ({ ...node, data: { ...node.data, serverNode: { ...node.data, name: node.data?.name }, visualType: node.type } })) : serverNodes;
   const edges = simulation ? simulationView.edges : serverEdges;
+  const selectedNode = nodes.find((node) => node.id === selectedNodeId) || nodes[0] || null;
   useEffect(() => {
     if (!workflowId) return undefined;
     let active = true;
@@ -118,16 +166,14 @@ function PlanCanvas({ plan, workflowId, onSaved }) {
   };
   const toggleSimulation = () => {
     setSimulation((current) => !current);
-    setSimulationNodes(simulationView.nodes);
+    setSimulationNodes(layoutSimNodes(simulationView.nodes));
   };
   return (
-    <div className="plan-canvas" aria-label="server workflow plan canvas">
+    <div className="plan-canvas-shell">
       <div className="plan-canvas__toolbar">
-        <span>{simulation ? "SIMULATION · 本地编辑，不会保存或执行" : "SERVER PLAN · 只读"}</span>
-        <button type="button" onClick={toggleSimulation} aria-pressed={simulation}>
-          {simulation ? "退出 SIMULATION" : "进入 SIMULATION 编辑"}
-        </button>
-        {simulation ? <button type="button" onClick={saveSimulation} disabled={saving}>{saving ? "保存中…" : "保存 SIMULATION 编辑"}</button> : null}
+        <div><Workflow size={15} /><span>{simulation ? "SIMULATION · 本地编辑" : "SERVER PLAN · 只读"}</span></div>
+        <div className="plan-canvas__toolbar-actions"><button type="button" onClick={toggleSimulation} aria-pressed={simulation}>{simulation ? "退出编辑" : "编辑画布"}</button>
+        {simulation ? <button className="is-primary" type="button" onClick={saveSimulation} disabled={saving}>{saving ? "保存中…" : "保存"}</button> : null}
         {saveError ? <span role="alert">{saveError}</span> : null}
         {historyVersions.length > 1 ? <>
           <select aria-label="历史 Plan 版本" value={selectedHistoryId} onChange={(event) => setSelectedHistoryId(event.target.value)}>
@@ -136,25 +182,39 @@ function PlanCanvas({ plan, workflowId, onSaved }) {
           </select>
           <button type="button" onClick={rollbackSelected} disabled={!selectedHistoryId || rollingBack}>{rollingBack ? "回滚中…" : "从历史版本回滚"}</button>
           {rollbackError ? <span role="alert">{rollbackError}</span> : null}
-        </> : null}
+        </> : null}</div>
       </div>
-      {nodes.length ? (
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          fitView
-          nodesDraggable={simulation}
-          nodesConnectable={false}
-          elementsSelectable={true}
-          onNodesChange={(changes) => {
-            if (simulation) setSimulationNodes((current) => applyNodeChanges(changes, current));
-          }}
-          panOnDrag
-          zoomOnScroll
-        />
-      ) : (
-        <div className="empty-state"><GitBranch size={18} /> 暂无服务端流程</div>
-      )}
+      <div className="plan-canvas" aria-label="server workflow plan canvas">
+        {nodes.length ? (
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={simNodeTypes}
+            fitView
+            fitViewOptions={{ padding: 0.2, minZoom: 0.3, maxZoom: 1.15 }}
+            nodesDraggable={simulation}
+            nodesConnectable={false}
+            elementsSelectable={true}
+            onNodeClick={(_, node) => setSelectedNodeId(node.id)}
+            onPaneClick={() => setSelectedNodeId("")}
+            onNodesChange={(changes) => {
+              if (simulation) setSimulationNodes((current) => applyNodeChanges(changes, current));
+            }}
+            panOnDrag
+            zoomOnScroll
+            minZoom={0.25}
+            maxZoom={1.8}
+            defaultEdgeOptions={{ type: "smoothstep", style: { stroke: "var(--sim-edge)", strokeWidth: 2 } }}
+          >
+            <Background color="var(--sim-grid)" gap={24} size={1} />
+          </ReactFlow>
+        ) : (
+          <div className="empty-state"><GitBranch size={18} /> 暂无服务端流程</div>
+        )}
+        {selectedNode && <aside className="sim-node-inspector" aria-label="节点详情"><span>NODE</span><strong>{selectedNode.data?.serverNode?.name || selectedNode.data?.label}</strong><p>{selectedNode.data?.serverNode?.parameters?.agent_id || selectedNode.type}</p><small>{selectedNode.data?.serverNode?.parameters?.decision_gate || "由服务端流程合同约束"}</small></aside>}
+        <div className="sim-canvas-controls" aria-label="画布控制"><button type="button" onClick={() => setTerminalOpen((open) => !open)} aria-pressed={terminalOpen}><TerminalSquare size={15} /><span>日志</span></button><span>{nodes.length} nodes</span><span>{edges.length} edges</span></div>
+      </div>
+      {terminalOpen && <section className="sim-terminal"><header><span>Logs</span><span>Output</span><button type="button" onClick={() => setTerminalOpen(false)} aria-label="收起日志">—</button></header><div>{nodes.map((node, index) => <p key={node.id}><span>{String(index + 1).padStart(2, "0")}</span><strong>{node.data?.serverNode?.name || node.data?.label}</strong><small>{node.data?.serverNode?.parameters?.capability_status || "PLAN"}</small></p>)}</div></section>}
     </div>
   );
 }
@@ -393,10 +453,12 @@ export default function ArchitectPage() {
         <div className="topbar-actions"><div className="architect-view-toggle" aria-label="Architect 视图"><button type="button" className={architectView === "office" ? "is-active" : ""} aria-pressed={architectView === "office"} onClick={() => switchArchitectView("office")}>Office</button><button type="button" className={architectView === "workbench" ? "is-active" : ""} aria-pressed={architectView === "workbench"} onClick={() => switchArchitectView("workbench")}>Workbench</button></div><span className="connection-state">{isAuthenticated ? "已登录" : "未登录"}</span><span>{authSession?.user?.username || "account"}</span><button type="button" onClick={logout} aria-label="退出"><LogOut size={16} /></button></div>
       </header>
 
-      {architectView === "office" ? <ProjectOfficeView projection={officeProjection} error={error} busy={busy} onSwitchToWorkbench={() => switchArchitectView("workbench")} /> : <div className="workbench-layout">
+      {architectView === "office" ? <ProjectOfficeView projection={officeProjection} error={error} busy={busy} onSwitchToWorkbench={() => switchArchitectView("workbench")} /> : <div className={`workbench-layout${plan ? " has-canvas" : ""}`}>
         <aside className="workbench-nav">
-          <button className="new-task" type="button" onClick={() => loadWorkflow("")}><Plus size={16} />新任务</button>
-          <label htmlFor="workflow-select">当前任务</label>
+          <div className="sim-workspace-lockup"><span>AI</span><strong>AI Lab Workspace</strong><ChevronDown size={14} /></div>
+          <button className="new-task" type="button" onClick={() => loadWorkflow("")}><Plus size={16} />新建 workflow</button>
+          <button className="sim-search" type="button" onClick={() => document.getElementById("workflow-select")?.focus()}><Search size={15} />搜索 workflow</button>
+          <label htmlFor="workflow-select">Workflows</label>
           <select id="workflow-select" disabled={busy} value={workflow?.id || ""} onChange={(event) => loadWorkflow(event.target.value)}>
             <option value="">未命名任务</option>
             {workflows.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
@@ -406,10 +468,10 @@ export default function ArchitectPage() {
           </ol>
         </aside>
 
-        <section className="workbench-main">
+        <section className={`workbench-main${plan ? " workbench-main--canvas" : ""}`}>
           {showroomSessionId && <div className="context-strip"><span>已续接来访上下文</span><code>{showroomSessionId}</code></div>}
           {customerDemandId && <div className="context-strip"><span>已续接确认需求</span><code>{customerDemandId}</code></div>}
-          <div className="focus-heading"><div><span className="eyebrow">当前步骤</span><h1>{stageTitle}</h1><p>{stageReason}</p></div><span className={`status-chip status-chip--${executionStatus || workflow?.status || "draft"}`}>{busy ? "处理中" : executionStatus || workflow?.status || "待开始"}</span></div>
+          {!plan && <div className="focus-heading"><div><span className="eyebrow">当前步骤</span><h1>{stageTitle}</h1><p>{stageReason}</p></div><span className={`status-chip status-chip--${executionStatus || workflow?.status || "draft"}`}>{busy ? "处理中" : executionStatus || workflow?.status || "待开始"}</span></div>}
           {error && <div className="error-banner">{error}</div>}
 
           {!plan && !execution && (
@@ -427,11 +489,9 @@ export default function ArchitectPage() {
           )}
 
           {plan && !execution && (
-            <section className="focus-card">
-              <div className="process-summary"><div><span>推荐流程</span><h2>{planDsl?.name || "服务端流程"}</h2><p>{planDsl?.process_contract_id ? `已绑定合同 ${planDsl.process_contract_id}` : "服务端安全计划"}</p></div><span className="truth-badge">{planDsl?.process_contract_digest ? "CONTRACT" : "PLAN"}</span></div>
-              <div className="node-list">{planNodes.map((node, index) => <article className={node.parameters?.execution_enabled ? "node-card node-card--live" : "node-card"} key={node.id}><span className="node-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{node.name}</strong><p>{listValue(node.parameters?.role_ids).join(" · ") || node.parameters?.agent_id}</p><small>{node.parameters?.decision_gate || "无自动决策"}</small></div><span>{node.parameters?.execution_enabled ? "可执行" : "参考"}</span></article>)}</div>
-              <details className="plan-detail"><summary>查看完整流程图与通过标准<ChevronDown size={16} /></summary><PlanCanvas plan={plan} workflowId={workflow?.id} onSaved={(nextPlan) => setPlan(nextPlan)} /></details>
-              <div className="approval-row"><p>批准只允许合同中已激活的节点执行。</p><button className="primary-action" type="button" disabled={busy || workflow?.status !== "awaiting_approval"} onClick={approve}><Check size={16} />批准并构建 AI 员工</button>{canStartWorkflow(workflow?.status, execution) && <button className="primary-action" type="button" disabled={busy} onClick={start}><Play size={16} />启动真实执行</button>}</div>
+            <section className="sim-workflow-stage">
+              <header className="sim-workflow-header"><div><span className="eyebrow">WORKFLOW</span><h1>{planDsl?.name || workflow?.title || "服务端流程"}</h1><p>{planDsl?.process_contract_id ? `Contract ${planDsl.process_contract_id}` : "Hermes server plan"}</p></div><div className="sim-workflow-actions"><span className="truth-badge">{planDsl?.process_contract_digest ? "CONTRACT" : "PLAN"}</span><button className="secondary-action" type="button" disabled={busy} onClick={() => workflow && loadWorkflow(workflow.id)}><RefreshCw size={15} />刷新</button><button className="primary-action" type="button" disabled={busy || workflow?.status !== "awaiting_approval"} onClick={approve}><Check size={16} />批准 workflow</button>{canStartWorkflow(workflow?.status, execution) && <button className="primary-action" type="button" disabled={busy} onClick={start}><Play size={16} />Run</button>}</div></header>
+              <PlanCanvas plan={plan} workflowId={workflow?.id} onSaved={(nextPlan) => setPlan(nextPlan)} />
             </section>
           )}
 
@@ -443,7 +503,7 @@ export default function ArchitectPage() {
             </section>
           )}
 
-          {(plan || execution) && <div className="detail-stack">
+          {execution && <div className="detail-stack">
             <DetailDrawer title="证据" count={recentEvents.length}>{recentEvents.length ? recentEvents.map((event, index) => <p key={event.id || index}>{event.message || event.event_type}</p>) : <p>尚无运行证据。</p>}</DetailDrawer>
             <DetailDrawer title="工具与 Skill" count={toolEvents.length}>{toolEvents.length ? toolEvents.map((event, index) => <p key={event.id || index}>{event.payload?.tool || event.event_type} · {event.payload?.status || "done"}</p>) : <p>尚未调用工具。</p>}</DetailDrawer>
             <DetailDrawer title="工件" count={artifacts.length}>{artifacts.length ? artifacts.map((artifact) => <p key={artifact.id}>{artifact.title}</p>) : <p>尚无工件。</p>}</DetailDrawer>
@@ -452,7 +512,7 @@ export default function ArchitectPage() {
           </div>}
         </section>
 
-        <aside className="explain-panel"><span className="eyebrow">解释 AI</span><h2>为什么是这一步？</h2><p>{explainContext?.why_this_step || stageReason}</p>{explainContext && <small>Snapshot {explainContext.snapshot_id.slice(0, 10)}</small>}<div><strong>系统不会做什么</strong><ul><li>不展示隐藏思维链</li><li>不绕过人工批准</li><li>不把参考流程标成 LIVE</li></ul></div><button type="button" onClick={() => workflow && loadWorkflow(workflow.id)} disabled={busy}><RefreshCw size={15} />刷新真实状态</button></aside>
+        <aside className="explain-panel"><div className="sim-panel-tabs"><span className="is-active">Inspector</span><span>Editor</span></div><span className="eyebrow">解释 AI</span><h2>为什么是这一步？</h2><p>{explainContext?.why_this_step || stageReason}</p>{explainContext && <small>Snapshot {explainContext.snapshot_id.slice(0, 10)}</small>}<div><strong>运行边界</strong><ul><li>服务端节点是唯一事实来源</li><li>批准前不会真实执行</li><li>参考能力保持 UNCONNECTED</li></ul></div>{plan && <div className="sim-plan-summary"><p><Workflow size={14} />{planNodes.length} 个节点</p><p><ShieldCheck size={14} />{planDsl?.process_contract_digest ? "合同已绑定" : "等待合同"}</p></div>}<button type="button" onClick={() => workflow && loadWorkflow(workflow.id)} disabled={busy}><RefreshCw size={15} />刷新真实状态</button></aside>
       </div>}
     </main>
   );
