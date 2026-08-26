@@ -321,6 +321,25 @@ test("running Office agents use scoped, pausable motion while non-running agents
   assert.match(styles, /prefers-reduced-motion:reduce/);
 });
 
+test("Reference Office uses a Sim-style light information layout without overlaying the project floor", () => {
+  const source = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.css", import.meta.url), "utf8");
+
+  assert.match(source, /reference-office-overview/);
+  assert.match(source, /reference-office-content/);
+  assert.match(source, /reference-handoff-rail/);
+  assert.match(source, /reference-office-sidebar/);
+  assert.match(source, /<SimWorkflowCanvas/);
+  assert.match(source, /variant="light"/);
+  assert.match(source, /executionNodes=\{executionNodes\}/);
+  assert.doesNotMatch(source, /TransferLayer|reference-bubble/);
+  assert.match(styles, /--canvas:#f7f8fb/);
+  assert.match(styles, /grid-template-columns:repeat\(auto-fit,minmax\(218px,1fr\)\)/);
+  assert.match(styles, /@media\(max-width:500px\)/);
+  assert.doesNotMatch(styles, /\.reference-artifact-gallery\{[^}]*position:absolute/s);
+  assert.doesNotMatch(styles, /\.reference-floor\{[^}]*overflow:hidden/s);
+});
+
 test("Office artifact gallery opens real content with dedicated accessible previews", () => {
   const source = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
   const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");

@@ -93,56 +93,6 @@ button { touch-action: manipulation; }
 .sim-workflow-header .eyebrow { margin-bottom: 3px; font-size: 9px; }
 .sim-workflow-actions { flex-wrap: wrap; }
 
-.plan-canvas-shell { min-height: 0; flex: 1; display: flex; flex-direction: column; background: var(--sim-bg); }
-.plan-canvas__toolbar { min-height: 42px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; background: var(--sim-surface-1); border-bottom: 1px solid var(--sim-border-soft); }
-.plan-canvas__toolbar > div { display: flex; align-items: center; gap: 8px; color: var(--sim-muted); font-size: 10px; }
-.plan-canvas__toolbar-actions { justify-content: flex-end; }
-.plan-canvas__toolbar button, .plan-canvas__toolbar select { min-height: 28px; padding: 0 9px; color: var(--sim-body); background: var(--sim-surface-3); border: 1px solid var(--sim-border); border-radius: 6px; cursor: pointer; font-size: 10px; }
-.plan-canvas__toolbar button:hover { color: var(--sim-text); background: var(--sim-surface-4); }
-.plan-canvas__toolbar button.is-primary { color: #151515; background: #f4f4f4; border-color: #f4f4f4; }
-.plan-canvas__toolbar [role="alert"] { color: #ffb1b1; }
-.plan-canvas { position: relative; min-height: 280px; flex: 1; overflow: hidden; background: var(--sim-bg); isolation: isolate; }
-.plan-canvas .react-flow { z-index: var(--sim-z-canvas); background: var(--sim-bg); }
-.plan-canvas .react-flow__pane { cursor: grab; }
-.plan-canvas .react-flow__pane:active { cursor: grabbing; }
-.plan-canvas .react-flow__edge-path { stroke: var(--sim-edge); }
-.plan-canvas .react-flow__edge.selected .react-flow__edge-path { stroke: var(--sim-blue); }
-.plan-canvas .react-flow__attribution { display: none; }
-
-.sim-node { position: relative; width: 264px; min-height: 64px; display: grid; grid-template-columns: 34px minmax(0, 1fr) auto; align-items: center; gap: 9px; padding: 10px 12px; color: var(--sim-text); background: var(--sim-surface-2); border: 1px solid #666; border-radius: 12px; box-shadow: 0 6px 18px rgba(0, 0, 0, .16); }
-.sim-node.is-selected { border-color: #d7d7d7; box-shadow: 0 0 0 1px rgba(255,255,255,.18), 0 10px 24px rgba(0,0,0,.28); }
-.sim-node__icon { width: 32px; height: 32px; display: grid; place-items: center; color: #dcdcdc; background: var(--sim-surface-4); border: 1px solid #4d4d4d; border-radius: 8px; }
-.sim-node--gate .sim-node__icon, .sim-node--human .sim-node__icon { color: #9addbd; background: #203329; border-color: #345942; }
-.sim-node--artifact .sim-node__icon { color: #a9dfff; background: #22303a; border-color: #354f60; }
-.sim-node__copy { min-width: 0; display: grid; gap: 3px; }
-.sim-node__copy strong { overflow: hidden; color: var(--sim-text); font-size: 12px; font-weight: 520; text-overflow: ellipsis; white-space: nowrap; }
-.sim-node__copy span { overflow: hidden; color: var(--sim-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-.sim-node__status { padding: 3px 5px; color: #a9a9a9; background: #303030; border-radius: 4px; font-size: 8px; letter-spacing: .04em; }
-.sim-node__status--ready, .sim-node__status--live { color: #91e2b9; background: #1f382b; }
-.sim-node__status--unconnected { color: #ffc2a4; background: #4a2c20; }
-.sim-node__actions { position: absolute; top: -31px; right: 18px; height: 29px; display: flex; align-items: center; gap: 11px; padding: 0 11px; color: #333; background: #e6e6e6; border-radius: 14px 14px 0 0; z-index: var(--sim-z-node-tools); }
-.sim-node__handle { width: 11px !important; height: 11px !important; background: #d2d2d2 !important; border: 2px solid #4a4a4a !important; }
-.sim-node__handle--target { left: -6px !important; }
-.sim-node__handle--source { right: -6px !important; }
-.sim-node-inspector { position: absolute; top: 14px; right: 14px; z-index: var(--sim-z-overlay); width: 210px; display: grid; gap: 5px; padding: 12px; color: var(--sim-body); background: rgba(35,35,35,.96); border: 1px solid var(--sim-border); border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,.28); }
-.sim-node-inspector span { color: var(--sim-muted); font-size: 8px; letter-spacing: .12em; }
-.sim-node-inspector strong { font-size: 12px; font-weight: 550; }
-.sim-node-inspector p, .sim-node-inspector small { margin: 0; color: var(--sim-muted); font-size: 10px; line-height: 1.45; }
-.sim-canvas-controls { position: absolute; left: 12px; bottom: 12px; z-index: var(--sim-z-overlay); display: flex; align-items: center; gap: 4px; padding: 4px; color: var(--sim-muted); background: rgba(35,35,35,.94); border: 1px solid var(--sim-border); border-radius: 7px; }
-.sim-canvas-controls button { min-height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; color: var(--sim-body); background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
-.sim-canvas-controls button:hover { background: var(--sim-surface-4); }
-.sim-canvas-controls span { padding: 0 7px; font-size: 9px; }
-.empty-state { height: 100%; display: grid; place-items: center; color: var(--sim-muted); font-size: 12px; }
-
-.sim-terminal { height: 172px; flex: 0 0 172px; overflow: hidden; background: #191919; border-top: 1px solid var(--sim-border-soft); }
-.sim-terminal header { height: 34px; display: flex; align-items: center; gap: 18px; padding: 0 12px; color: var(--sim-muted); border-bottom: 1px solid var(--sim-border-soft); font-size: 10px; }
-.sim-terminal header span:first-child { color: var(--sim-text); }
-.sim-terminal header button { margin-left: auto; color: var(--sim-muted); background: transparent; border: 0; cursor: pointer; }
-.sim-terminal > div { max-height: 138px; overflow: auto; padding: 6px 8px; }
-.sim-terminal p { min-height: 26px; display: grid; grid-template-columns: 30px 1fr auto; align-items: center; gap: 8px; margin: 0; padding: 0 8px; color: var(--sim-body); border-radius: 5px; font-size: 10px; }
-.sim-terminal p:hover { background: var(--sim-surface-3); }
-.sim-terminal p span, .sim-terminal p small { color: var(--sim-muted); font-variant-numeric: tabular-nums; }
-.sim-terminal p strong { font-weight: 450; }
 
 .execution-focus h2 { margin: 6px 0; font-size: 20px; }
 .execution-focus p { margin: 0; color: var(--sim-muted); font-size: 12px; }
@@ -187,7 +137,6 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
   .workbench-layout { grid-template-columns: 198px minmax(0, 1fr) 270px; }
   .sim-workflow-header { align-items: flex-start; }
   .sim-workflow-actions { max-width: 390px; }
-  .sim-node-inspector { display: none; }
 }
 
 @media (max-width: 860px) {
@@ -212,12 +161,6 @@ button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focu
   .sim-workflow-header { min-height: 114px; display: block; overflow: auto; }
   .sim-workflow-actions { margin-top: 8px; justify-content: flex-start; flex-wrap: nowrap; }
   .truth-badge { display: none; }
-  .plan-canvas__toolbar { overflow-x: auto; }
-  .plan-canvas__toolbar > div:first-child { display: none; }
-  .plan-canvas__toolbar-actions { min-width: max-content; }
-  .sim-terminal { height: 132px; flex-basis: 132px; }
-  .sim-terminal > div { max-height: 98px; }
-  .sim-node { width: 232px; }
   .focus-card { padding: 16px; }
   .detail-stack { grid-template-columns: 1fr; }
 }

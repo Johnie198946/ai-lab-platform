@@ -24,6 +24,14 @@ import {
   canonicalPlanToSimLike,
   simLikeToCanonicalPlan,
 } from "../src/architectCanvasAdapter.js";
+import {
+  autoLayoutWorkflowNodes,
+  canvasLayoutStorageKey,
+  readCanvasLayout,
+  validateCanvasConnection,
+  wouldCreateWorkflowCycle,
+  writeCanvasLayout,
+} from "../src/features/workflow-canvas/workflowCanvasModel.js";
 
 test("plan-to-canvas projection uses only server nodes and edges", () => {
   const result = projectPlanToCanvas({ dsl: { nodes: [{ id: "n1" }], edges: [{ source: "n1", target: "n2" }] } });
@@ -56,15 +64,17 @@ test("result area exposes exactly four server-backed view types and honest empti
   ]);
 });
 
-test("ArchitectPage uses real React Flow with server-only nodes and edges", () => {
-  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  assert.match(source, /import\s+\{[^}]*\bReactFlow\b[^}]*\}\s+from\s+["']@xyflow\/react["']/);
-  assert.match(source, /<ReactFlow[\s\S]*nodes=\{nodes\}[\s\S]*edges=\{edges\}/);
-  assert.match(source, /nodeTypes=\{simNodeTypes\}/);
-  assert.match(source, /nodesDraggable=\{simulation\}/);
-  assert.match(source, /nodesConnectable=\{false\}/);
-  assert.match(source, /SIMULATION/);
-  assert.match(source, /projectPlanToCanvas\(plan\)/);
+test("the shared Sim canvas uses real React Flow and both Hermes views reuse it", () => {
+  const canvas = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.jsx", import.meta.url), "utf8");
+  const workbench = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+  const office = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
+  assert.match(canvas, /from\s+["']@xyflow\/react["']/);
+  assert.match(canvas, /<ReactFlow[\s\S]*nodes=\{displayNodes\}[\s\S]*edges=\{displayEdges\}/);
+  assert.match(canvas, /nodesDraggable=\{editable && mode === "pointer"\}/);
+  assert.match(canvas, /nodesConnectable=\{editable && mode === "pointer"\}/);
+  assert.match(canvas, /projectPlanToCanvas\(plan\)/);
+  assert.match(workbench, /<SimWorkflowCanvas/);
+  assert.match(office, /<SimWorkflowCanvas/);
 });
 
 test("requirement confirmation actions send structured confirm and revise intents", () => {
@@ -318,8 +328,7 @@ test("Sim-like adapter omits absent conditions and rejects invalid condition typ
 });
 
 test("PlanCanvas saves edited nodes and edges over the original DSL root contract", () => {
-  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
+  const canvas = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.jsx", import.meta.url), "utf8");
   assert.match(canvas, /dsl:\s*\{\s*\.\.\.plan\.dsl,\s*\.\.\.editedDsl\s*\}/);
   assert.match(canvas, /expected_hash:\s*plan\.content_hash/);
   assert.match(canvas, /expected_revision:\s*plan\.activation_revision/);
@@ -335,24 +344,23 @@ test("Gate-2 platform API exposes CAS-safe plan save and rollback helpers", () =
 });
 
 test("Gate-2 PlanCanvas exposes explicit save and keeps execution actions out of the canvas", () => {
-  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
-  assert.match(canvas, /SIMULATION · 本地编辑/);
-  assert.match(canvas, /onClick=\{saveSimulation\}/);
+  const canvas = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.jsx", import.meta.url), "utf8");
+  assert.match(canvas, /SIM EDITOR · Hermes 草稿/);
+  assert.match(canvas, /onClick=\{save\}/);
   assert.match(canvas, /request_id/);
   assert.doesNotMatch(canvas, /approveWorkflowPlan|startWorkflow|Runtime|Realtime/);
 });
 
 test("Workbench presents the plan as a Sim-style full canvas instead of a confirmation list", () => {
   const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  const css = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.css", import.meta.url), "utf8");
+  const css = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.css", import.meta.url), "utf8");
   const planStage = source.slice(source.indexOf("{plan && !execution"), source.indexOf("{execution &&"));
   assert.match(planStage, /className="sim-workflow-stage"/);
-  assert.match(planStage, /<PlanCanvas/);
+  assert.match(planStage, /<SimWorkflowCanvas/);
   assert.doesNotMatch(planStage, /className="node-list"|className="plan-detail"/);
-  assert.match(css, /--sim-bg:\s*#1b1b1b/);
-  assert.match(css, /\.sim-terminal/);
-  assert.match(css, /\.sim-node__actions/);
+  assert.match(css, /\.hermes-sim-canvas\{--hermes-sim-bg:#191a1c/);
+  assert.match(css, /\.hermes-sim-canvas__toolbar/);
+  assert.match(css, /\.hermes-sim-node__actions/);
 });
 
 test("Gate-3 exposes a read-only workflow plan versions API", () => {
@@ -362,11 +370,49 @@ test("Gate-3 exposes a read-only workflow plan versions API", () => {
 });
 
 test("Gate-3 PlanCanvas uses an explicit server-selected rollback target", () => {
-  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
+  const canvas = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.jsx", import.meta.url), "utf8");
   assert.match(canvas, /listWorkflowPlanVersions/);
   assert.match(canvas, /rollbackWorkflowPlan/);
-  assert.match(canvas, /从历史版本回滚/);
+  assert.match(canvas, /历史 Plan 版本/);
+  assert.match(canvas, /恢复中/);
   assert.match(canvas, /source_plan_id/);
   assert.doesNotMatch(canvas, /useEffect\([^)]*rollbackWorkflowPlan/);
+});
+
+test("editable canvas rejects invalid Hermes graph connections and preserves DAG semantics", () => {
+  const nodes = [{ id: "a" }, { id: "b" }, { id: "c" }];
+  const edges = [{ source: "a", target: "b" }, { source: "b", target: "c" }];
+  assert.match(validateCanvasConnection({ source: "a", target: "a" }, nodes, edges), /自身/);
+  assert.match(validateCanvasConnection({ source: "a", target: "missing" }, nodes, edges), /不存在/);
+  assert.match(validateCanvasConnection({ source: "a", target: "b" }, nodes, edges), /已经存在/);
+  assert.match(validateCanvasConnection({ source: "c", target: "a" }, nodes, edges), /循环依赖/);
+  assert.equal(validateCanvasConnection({ source: "a", target: "c" }, nodes, edges), "");
+  assert.equal(wouldCreateWorkflowCycle(edges, "c", "a"), true);
+});
+
+test("canvas layout is deterministic and browser-scoped without entering the Hermes DSL", () => {
+  const nodes = [{ id: "a", position: {} }, { id: "b", position: {} }, { id: "c", position: {} }];
+  const laidOut = autoLayoutWorkflowNodes(nodes, [{ source: "a", target: "b" }, { source: "b", target: "c" }]);
+  assert.deepEqual(laidOut.map((node) => node.position.x), [90, 420, 750]);
+  const values = new Map();
+  const storage = { getItem: (key) => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  assert.equal(writeCanvasLayout("wf-1", laidOut, { x: 1, y: 2, zoom: .8 }, storage), true);
+  assert.deepEqual(readCanvasLayout("wf-1", storage).viewport, { x: 1, y: 2, zoom: .8 });
+  assert.match(canvasLayoutStorageKey("wf-1"), /wf-1$/);
+});
+
+test("shared canvas contains Sim-style editing, history and only real runtime animation", () => {
+  const canvas = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.jsx", import.meta.url), "utf8");
+  const css = fs.readFileSync(new URL("../src/features/workflow-canvas/SimWorkflowCanvas.css", import.meta.url), "utf8");
+  assert.match(canvas, /application\/reactflow/);
+  assert.match(canvas, /applyNodeChanges/);
+  assert.match(canvas, /\["select", "dimensions"\]/);
+  assert.match(canvas, /applyEdgeChanges/);
+  assert.match(canvas, /validateCanvasConnection/);
+  assert.match(canvas, /Undo2/);
+  assert.match(canvas, /Redo2/);
+  assert.match(canvas, /autoLayoutWorkflowNodes/);
+  assert.match(canvas, /runtimeById/);
+  assert.match(css, /hermes-sim-edge\.is-running/);
+  assert.match(css, /prefers-reduced-motion/);
 });
