@@ -3,12 +3,16 @@
 ## 状态
 
 - task_id: `fix-architect-edge-condition`
-- status: `TESTED`
-- branch: `fix/architect-edge-condition`（按已批准隔离修复方案）
+- status: `VERIFIED`
+- branch: GitHub `main`（隔离 worktree 本地分支 `fix/architect-edge-condition`，以 fast-forward `HEAD:main` 交付；未触碰含未推送历史提交的本地 main worktree）
 - worktree: `/private/tmp/ai-lab-fix-edge-condition`
-- baseline / HEAD: `b08cc5b961ccad75edd12daf13d4b4f2715b7551`
+- baseline: `b08cc5b961ccad75edd12daf13d4b4f2715b7551`
+- code commit: `f671459cd3bc95d17e7e05b889402037f7ca790a`
 - origin/main（开工核对）: `b08cc5b961ccad75edd12daf13d4b4f2715b7551`
-- commit / push / deploy: 未执行（任务明确禁止提交和推送）
+- GitHub main（代码推送核对）: `f671459cd3bc95d17e7e05b889402037f7ca790a`
+- server_before: `b08cc5b961ccad75edd12daf13d4b4f2715b7551`
+- server_after（运行时代码）: `f671459cd3bc95d17e7e05b889402037f7ca790a`
+- deployment: frontend image rebuild + container recreate；API 因 compose 依赖同步 recreate 后恢复 healthy。
 
 ## 修改
 
@@ -105,10 +109,22 @@ git diff --check
 
 ## 剩余风险
 
-- 未提交、未推送、未部署，等待 Main 验收处理。
 - 构建仍报告既存的单 chunk 大于 500 kB 提示；与本修复无关。
 - 后端目标测试仍报告既存 Pydantic V2 弃用警告；与本修复无关。
+- 未使用真实用户凭据做浏览器登录后的端到端交互；已用生产源文件执行真实 `node_type + condition` 双向合同，并核对新 bundle、HTTP、容器和运行时审计。
 
 ## 回滚点
 
-- 未产生 commit；可由 Main 在验收后按本任务五个白名单文件审查和处理。
+- Git: `b08cc5b961ccad75edd12daf13d4b4f2715b7551`
+- Server files: `/opt/ai-lab-platform/rollbacks/20260826T2235Z-b08cc5b-architect-edge-condition`
+- Docker image: `ai-lab-platform-frontend:rollback-b08cc5b`
+
+## 线上验收
+
+- `/architect`: HTTP 200，served bundle `index-LIltqJEz.js`。
+- `/health`: HTTP 200，`{"status":"ok","version":"0.8.0"}`。
+- frontend container: running；API container: healthy。
+- local/server 两个生产源文件 SHA-256 完全一致。
+- 服务器 adapter 实跑：`truth=SIMULATION`、`node_type=KNOWLEDGE_RETRIEVAL`、`condition=ready`。
+- `scripts/audit_runtime_contracts.py --data-dir ./data`: passed。
+- 未登录入口浏览器加载无 console message、无 JavaScript error。
