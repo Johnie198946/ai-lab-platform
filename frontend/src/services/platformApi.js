@@ -219,6 +219,15 @@ export const platformApi = {
   getWorkflowPlan(workflowId) {
     return request(`/api/v1/workflows/${workflowId}/plan`);
   },
+  listWorkflowPlanVersions(workflowId) {
+    return request(`/api/v1/workflows/${workflowId}/plan/versions`);
+  },
+  patchWorkflowPlan(workflowId, payload) {
+    return request(`/api/v1/workflows/${workflowId}/plan`, { method: "PATCH", body: payload });
+  },
+  rollbackWorkflowPlan(workflowId, payload) {
+    return request(`/api/v1/workflows/${workflowId}/plan/rollback`, { method: "POST", body: payload });
+  },
   reviseWorkflow(workflowId, instruction) {
     return request(`/api/v1/workflows/${workflowId}/replan`, { method: "POST", body: { instruction } });
   },

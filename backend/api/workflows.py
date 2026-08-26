@@ -54,6 +54,13 @@ from backend.services.workflow_executor import (
     retry_remote,
 )
 from backend.services.workflow_planner import validate_plan_policy
+from backend.services.workflow_contract import (
+    PlanContractError,
+    assert_plan_binding,
+    canonical_plan_hash,
+    require_compare_and_set_inputs,
+    truth_for_execution,
+)
 from backend.services.workflow_planning import (
     backfill_orphaned_planning_jobs,
     enqueue_planning_job,
@@ -110,6 +117,16 @@ class PlanEdit(BaseModel):
     allow_network: bool = True
     max_tokens: int = Field(999999, ge=1000, le=999999)
     knowledge_scope: list[str] = []
+    expected_hash: str = Field(..., min_length=64, max_length=64)
+    expected_revision: int = Field(..., ge=1)
+    request_id: str | None = Field(None, min_length=8, max_length=160)
+
+
+class RollbackRequest(BaseModel):
+    source_plan_id: str = Field(..., min_length=1, max_length=48)
+    expected_hash: str = Field(..., min_length=64, max_length=64)
+    expected_revision: int = Field(..., ge=1)
+    request_id: str = Field(..., min_length=8, max_length=160)
 
 
 class ReplanRequest(BaseModel):
@@ -164,6 +181,10 @@ def plan_out(plan: WorkflowPlanVersion) -> dict[str, Any]:
         "estimated_tokens": plan.estimated_tokens,
         "knowledge_scope": plan.knowledge_scope or [],
         "validation_errors": plan.validation_errors or [],
+        "content_hash": plan.content_hash or canonical_plan_hash(plan.dsl or {}),
+        "activation_revision": plan.activation_revision,
+        "parent_plan_id": plan.parent_plan_id,
+        "edit_request_id": plan.edit_request_id,
         "dsl": dsl,
         "frozen_at": plan.frozen_at.isoformat() if plan.frozen_at else None,
         "created_at": plan.created_at.isoformat() if plan.created_at else None,
@@ -289,7 +310,9 @@ def execution_out(
         "workflow_id": row.workflow_id,
         "plan_id": row.plan_id,
         "status": row.status,
-        "truth": "LIVE",
+        "truth": truth_for_execution(
+            status=row.status, hermes_receipt=None
+        ),
         "progress": row.progress,
         "token_budget": row.token_budget,
         "token_used": row.token_used,
@@ -1214,6 +1237,24 @@ async def get_plan(workflow_id: str, payload: dict = Depends(require_auth)):
         return plan_out(plan)
 
 
+@router.get("/workflows/{workflow_id}/plan/versions")
+async def list_plan_versions(workflow_id: str, payload: dict = Depends(require_auth)):
+    async with SessionLocal() as db:
+        workflow = await owned_workflow(db, workflow_id, payload)
+        versions = (
+            await db.execute(
+                select(WorkflowPlanVersion)
+                .where(WorkflowPlanVersion.workflow_id == workflow.id)
+                .order_by(
+                    WorkflowPlanVersion.version.desc(),
+                    WorkflowPlanVersion.created_at.desc(),
+                    WorkflowPlanVersion.id.desc(),
+                )
+            )
+        ).scalars().all()
+        return [plan_out(plan) for plan in versions]
+
+
 @router.patch("/workflows/{workflow_id}/plan")
 async def edit_plan(
     workflow_id: str, body: PlanEdit, payload: dict = Depends(require_auth)
@@ -1224,10 +1265,58 @@ async def edit_plan(
             raise HTTPException(
                 status_code=409, detail="已确认计划不能直接修改，请创建新版本"
             )
+        current_plan = (
+            await db.execute(
+                select(WorkflowPlanVersion)
+                .where(WorkflowPlanVersion.id == workflow.active_plan_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        if current_plan is None:
+            raise HTTPException(status_code=409, detail="当前计划不存在")
+        request_hash = canonical_plan_hash(
+            {
+                "dsl": body.dsl,
+                "deliverable": body.deliverable,
+                "allow_network": body.allow_network,
+                "max_tokens": body.max_tokens,
+                "knowledge_scope": body.knowledge_scope,
+                "expected_hash": body.expected_hash,
+                "expected_revision": body.expected_revision,
+            }
+        )
+        if body.request_id:
+            prior = (
+                await db.execute(
+                    select(WorkflowPlanVersion)
+                    .where(
+                        WorkflowPlanVersion.workflow_id == workflow.id,
+                        WorkflowPlanVersion.edit_request_id == body.request_id,
+                    )
+                    .order_by(WorkflowPlanVersion.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if prior is not None:
+                if prior.edit_request_hash != request_hash:
+                    raise HTTPException(status_code=409, detail="同一request_id对应不同请求")
+                return plan_out(prior)
+        current_hash = current_plan.content_hash or canonical_plan_hash(current_plan.dsl or {})
+        try:
+            expected_hash, expected_revision = require_compare_and_set_inputs(
+                expected_hash=body.expected_hash,
+                expected_revision=body.expected_revision,
+            )
+            if (
+                expected_hash != current_hash
+                or expected_revision != current_plan.activation_revision
+            ):
+                raise PlanContractError("计划已被更新，请刷新后重试")
+        except PlanContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
             compiled: WorkflowDSLPlan = DSLSafetyCompiler.compile_and_validate(body.dsl)
-            current_plan = await db.get(WorkflowPlanVersion, workflow.active_plan_id)
-            if current_plan is not None and is_registered_ipd_plan(current_plan.dsl or {}):
+            if is_registered_ipd_plan(current_plan.dsl or {}):
                 validate_registered_ipd_execution_contract(compiled.model_dump(mode="json"))
             await validate_plan_policy(
                 db,
@@ -1240,11 +1329,21 @@ async def edit_plan(
             )
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        compiled_dsl = compiled.model_dump(mode="json")
+        candidate_hash = canonical_plan_hash(compiled_dsl)
+        if (
+            candidate_hash == current_hash
+            and body.deliverable == current_plan.deliverable
+            and body.allow_network == current_plan.allow_network
+            and body.max_tokens == current_plan.max_tokens
+            and body.knowledge_scope == (current_plan.knowledge_scope or [])
+        ):
+            return plan_out(current_plan)
         version = (
             int(
                 (
                     await db.execute(
-                        select(func.count(WorkflowPlanVersion.id)).where(
+                        select(func.coalesce(func.max(WorkflowPlanVersion.version), 0)).where(
                             WorkflowPlanVersion.workflow_id == workflow.id
                         )
                     )
@@ -1256,7 +1355,12 @@ async def edit_plan(
             id=uid("wfp"),
             workflow_id=workflow.id,
             version=version,
-            dsl=compiled.model_dump(mode="json"),
+            dsl=compiled_dsl,
+            content_hash=candidate_hash,
+            activation_revision=current_plan.activation_revision + 1,
+            parent_plan_id=current_plan.id,
+            edit_request_id=body.request_id,
+            edit_request_hash=request_hash,
             goal=workflow.description,
             deliverable=body.deliverable,
             allow_network=body.allow_network,
@@ -1270,6 +1374,111 @@ async def edit_plan(
         db.add(plan)
         workflow.active_plan_id = plan.id
         workflow.desired_output = body.deliverable
+        workflow.status = "awaiting_approval"
+        await db.commit()
+        await db.refresh(plan)
+        return plan_out(plan)
+
+
+@router.post("/workflows/{workflow_id}/plan/rollback")
+async def rollback_plan(
+    workflow_id: str, body: RollbackRequest, payload: dict = Depends(require_auth)
+):
+    async with SessionLocal() as db:
+        workflow = await owned_workflow(db, workflow_id, payload)
+        if workflow.status not in {"awaiting_approval", "draft", "planning"}:
+            raise HTTPException(status_code=409, detail="当前阶段不能回滚计划")
+        current = (
+            await db.execute(
+                select(WorkflowPlanVersion)
+                .where(WorkflowPlanVersion.id == workflow.active_plan_id)
+                .with_for_update()
+            )
+        ).scalar_one_or_none()
+        source = (
+            await db.execute(
+                select(WorkflowPlanVersion).where(
+                    WorkflowPlanVersion.id == body.source_plan_id,
+                    WorkflowPlanVersion.workflow_id == workflow.id,
+                )
+            )
+        ).scalar_one_or_none()
+        if current is None or source is None:
+            raise HTTPException(status_code=409, detail="计划谱系不存在")
+        request_hash = canonical_plan_hash(
+            {
+                "source_plan_id": body.source_plan_id,
+                "expected_hash": body.expected_hash,
+                "expected_revision": body.expected_revision,
+            }
+        )
+        prior = (
+            await db.execute(
+                select(WorkflowPlanVersion)
+                .where(
+                    WorkflowPlanVersion.workflow_id == workflow.id,
+                    WorkflowPlanVersion.edit_request_id == body.request_id,
+                )
+                .order_by(WorkflowPlanVersion.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if prior is not None:
+            if prior.edit_request_hash != request_hash:
+                raise HTTPException(status_code=409, detail="同一request_id对应不同请求")
+            return plan_out(prior)
+        try:
+            expected_hash, expected_revision = require_compare_and_set_inputs(
+                expected_hash=body.expected_hash,
+                expected_revision=body.expected_revision,
+            )
+            current_hash = current.content_hash or canonical_plan_hash(current.dsl or {})
+            if expected_hash != current_hash or expected_revision != current.activation_revision:
+                raise PlanContractError("计划已被更新，请刷新后重试")
+            compiled = DSLSafetyCompiler.compile_and_validate(source.dsl or {})
+            await validate_plan_policy(
+                db,
+                tenant(),
+                compiled,
+                allow_network=source.allow_network,
+                max_tokens=source.max_tokens,
+                knowledge_scope=source.knowledge_scope or [],
+                owner_user_id=current_user(payload),
+            )
+        except PlanContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        version = int(
+            (
+                await db.execute(
+                    select(func.coalesce(func.max(WorkflowPlanVersion.version), 0)).where(
+                        WorkflowPlanVersion.workflow_id == workflow.id
+                    )
+                )
+            ).scalar_one()
+        ) + 1
+        plan = WorkflowPlanVersion(
+            id=uid("wfp"),
+            workflow_id=workflow.id,
+            version=version,
+            dsl=source.dsl,
+            content_hash=source.content_hash or canonical_plan_hash(source.dsl or {}),
+            activation_revision=current.activation_revision + 1,
+            parent_plan_id=current.id,
+            edit_request_id=body.request_id,
+            edit_request_hash=request_hash,
+            goal=source.goal,
+            deliverable=source.deliverable,
+            allow_network=source.allow_network,
+            max_tokens=source.max_tokens,
+            estimated_tokens=source.estimated_tokens,
+            knowledge_scope=source.knowledge_scope or [],
+            validation_errors=[],
+        )
+        db.add(plan)
+        workflow.active_plan_id = plan.id
+        workflow.desired_output = plan.deliverable
         workflow.status = "awaiting_approval"
         await db.commit()
         await db.refresh(plan)
@@ -1472,6 +1681,31 @@ async def approve_plan(
             )
         ).scalar_one_or_none()
         if existing is not None:
+            approval = (
+                await db.execute(
+                    select(WorkflowApproval)
+                    .where(
+                        WorkflowApproval.workflow_id == workflow.id,
+                        WorkflowApproval.approval_type == "plan",
+                        WorkflowApproval.decision == "approved",
+                    )
+                    .order_by(WorkflowApproval.created_at.desc(), WorkflowApproval.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            try:
+                assert_plan_binding(
+                    active_plan_id=plan.id,
+                    active_plan_hash=plan.content_hash,
+                    active_activation_revision=plan.activation_revision,
+                    approval_plan_id=approval.plan_id if approval else None,
+                    approval_plan_hash=approval.plan_hash if approval else None,
+                    approval_activation_revision=(
+                        approval.activation_revision if approval else None
+                    ),
+                )
+            except PlanContractError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
             return {"workflow": workflow_out(workflow), "agent": task_agent_out(existing)}
 
         compiled = DSLSafetyCompiler.compile_and_validate(plan.dsl)
@@ -1553,6 +1787,9 @@ async def approve_plan(
                 id=uid("wfa"),
                 workflow_id=workflow.id,
                 execution_id=None,
+                plan_id=plan.id,
+                plan_hash=plan.content_hash,
+                activation_revision=plan.activation_revision,
                 approval_type="plan",
                 decision="approved",
                 actor_id=current_user(payload),
@@ -1588,6 +1825,29 @@ async def start_workflow(
         if workflow.status not in {"agent_ready", "ready"} or not workflow.active_plan_id:
             raise HTTPException(status_code=409, detail="专属 Agent 尚未就绪")
         plan = await db.get(WorkflowPlanVersion, workflow.active_plan_id)
+        approval = (
+            await db.execute(
+                select(WorkflowApproval)
+                .where(
+                    WorkflowApproval.workflow_id == workflow.id,
+                    WorkflowApproval.approval_type == "plan",
+                    WorkflowApproval.decision == "approved",
+                )
+                .order_by(WorkflowApproval.created_at.desc(), WorkflowApproval.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        try:
+            assert_plan_binding(
+                active_plan_id=plan.id if plan else None,
+                active_plan_hash=plan.content_hash if plan else None,
+                active_activation_revision=plan.activation_revision if plan else None,
+                approval_plan_id=approval.plan_id if approval else None,
+                approval_plan_hash=approval.plan_hash if approval else None,
+                approval_activation_revision=approval.activation_revision if approval else None,
+            )
+        except PlanContractError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         request_key = body.request_id or f"start:{workflow.id}:{uuid.uuid4().hex}"
         existing = (
             await db.execute(
