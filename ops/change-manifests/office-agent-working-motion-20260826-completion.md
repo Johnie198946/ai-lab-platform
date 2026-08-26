@@ -43,20 +43,38 @@
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 用户本轮未要求提交，未执行。
-- GitHub remote/ref/SHA: 用户本轮未授权 push，未执行；因此未执行交付用 `git ls-remote`。
+- status: `VERIFIED`
+- deployed code commit SHA: `f491b0a7aa32dce1f21e2cfabc3f1aad3887116b`
+- GitHub remote/ref/SHA: `origin refs/heads/codex/office-agent-working-motion`；部署前 `git ls-remote` 已确认远端 SHA 为 `f491b0a7aa32dce1f21e2cfabc3f1aad3887116b`。
 
 ## 服务器记录
 
-- server_before: 未执行服务器变更；上一已知线上部署 SHA 为 `7e1c986dccfa8277629a7ced5d2912ac39080b42`。
-- server_after: 未授权/未执行部署，与 `server_before` 相同。
-- health_check: 本轮未部署，不适用；本地生产构建与组件功能检查通过。
-- functional_check: 本地真实组件工作态动态采样通过；线上尚未包含本任务改动。
-- rollback_point: 未部署，无新增服务器回滚点；本地任务基线为 `c981ff04a811c9083501d3be49c1be7bcf6e3294`。
+- server_before:
+  - deployed SHA: `7e1c986dccfa8277629a7ced5d2912ac39080b42`
+  - frontend image: `sha256:5b3326c655b0404238f5e08cfbc6e1914ddd1b460e969d271e63be8b392fe409`
+  - API health: `{"status":"ok","version":"0.8.0"}`
+- server_after:
+  - deployed SHA: `f491b0a7aa32dce1f21e2cfabc3f1aad3887116b`
+  - frontend image: `sha256:bc1f204a0968741dbc433910a6482d382e8d7d0abaf61d15c4f65c83bcae6317`
+  - production assets: `/assets/index-U_irm9D_.js`、`/assets/index-W6DghyOw.css`
+  - server/local CSS SHA-256: `490d320893d476b18fd730d1a9f3a3c317ea9b5daf32194c17bc801a0bbe0923`，完全一致。
+  - server/local JSX SHA-256: `2c4910dbf8e0d3fb9e7b3b89ed669e13ef389caed103901b3b4221657675f84b`，完全一致。
+  - server/local CharacterDesk SHA-256: `ca7cc9409b7a13eedddcb3efcd801ae79668481128c90318804c68ed7c4de9da`，完全一致。
+- health_check:
+  - API `http://127.0.0.1:8000/health`: PASS，`{"status":"ok","version":"0.8.0"}`。
+  - 7 个 Compose 服务均为 running；API、Postgres、Redis 为 healthy。
+  - 部署脚本 runtime contract audit: PASS，matrix `/app/data/knowledge_matrix.json`。
+- functional_check:
+  - production `/architect?view=office`: HTTP 200。
+  - production JS bundle 命中 `character-desk__arm--left|visibilitychange` 工作动效标记：1 个 bundle。
+  - production CSS bundle 命中 `character-desk--working` 状态与降级样式：1 个 bundle。
+  - 本地真实组件动态采样、98 项契约测试及 production build 均通过；服务器源码哈希与该已测源码完全一致。
+- rollback_point:
+  - 文件回滚点：`/opt/ai-lab-platform/rollbacks/20260826T152717Z-7e1c986d-office-agent-working-motion`
+  - Docker 镜像回滚标签：`ai-lab-platform-frontend:rollback-7e1c986d-office-motion`
+  - 基线 SHA：`7e1c986dccfa8277629a7ced5d2912ac39080b42`
 
 ## 风险与未完成项
 
-- 当前改动仅在独立 Worktree 中完成并测试，尚未提交、推送或部署。
 - 持续动画只在真实运行态存在；若服务端节点状态没有进入 `running`，小人按设计不会启动工作循环。
 - Vite 主 chunk 仍有既有体积警告，后续可独立安排代码拆分。
