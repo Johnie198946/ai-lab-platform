@@ -10,12 +10,12 @@
   - ops/change-manifests/fix-architect-node-type-contract-completion.md
 - root_cause: production workflow plans expose node_type values while the simulation adapter required canvas type, causing canonical node[0].type is required.
 - fix: normalize server node_type values to the four canvas node types at the adapter boundary; preserve canonical type behavior and fail closed for unknown values.
-- tests: pending final commit/deploy receipt
-- commit: pending
-- remote_sha: pending
-- server_before: pending
-- server_after: pending
-- deployment: pending
-- functional_check: pending
-- rollback_point: pending
-- remaining_risks: login 401 still requires real account/token verification; anonymous /api/v1/me 401 is expected.
+- tests: `npm test` — 93 passed; `npm run build` — passed; `git diff --check` — passed
+- code_commit: 47c6fd1c967a3e66f77b1dcad16dabf9d23601fc
+- code_remote_sha: 47c6fd1c967a3e66f77b1dcad16dabf9d23601fc
+- server_before: 6cbc615c1434e5b3c181e491f30243dac1708bb8
+- server_after: 47c6fd1c967a3e66f77b1dcad16dabf9d23601fc
+- deployment: `bash scripts/update.sh 47c6fd1c967a3e66f77b1dcad16dabf9d23601fc` passed; frontend rebuilt; runtime contract audit passed
+- functional_check: frontend `/architect` HTTP 200; browser redirects unauthenticated access to `/login`; production bundle contains `KNOWLEDGE_RETRIEVAL` adapter mapping and no longer contains the observed `canonical node[0].type is required` text; API `/health` HTTP 200; all containers healthy/running
+- rollback_point: server marker `6cbc615c1434e5b3c181e491f30243dac1708bb8` and prior frontend source retained in deployment history
+- remaining_risks: real authenticated browser E2E is blocked without a supplied test account/token; anonymous `/api/v1/me` 401 is expected and was not changed.
