@@ -1,4 +1,12 @@
 const NODE_TYPES = new Set(["agent", "artifact", "gate", "human"]);
+const SERVER_NODE_TYPE_MAP = {
+  KNOWLEDGE_RETRIEVAL: "agent",
+  LLM_INFERENCE: "agent",
+  PROMPT_TRANSFORM: "agent",
+  FILTER_PASS: "gate",
+  AGGREGATION: "agent",
+  OUTPUT_FORMAT: "artifact",
+};
 const NODE_FIELDS = new Set(["id", "type", "data", "position"]);
 const DATA_FIELDS = new Set(["name", "label", "parameters", "retry", "loop", "loops", "parallel", "parallels"]);
 const EDGE_FIELDS = new Set(["id", "source", "target", "sourceHandle", "targetHandle"]);
@@ -28,6 +36,19 @@ function parameters(value, label) {
     if (UNSUPPORTED_SEMANTICS.has(key)) throw new Error(`unsupported execution semantics: ${key}`);
   }
   return { ...result };
+}
+
+function canonicalType(node, index) {
+  const type = node.type ?? SERVER_NODE_TYPE_MAP[node.node_type];
+  return text(type, `canonical node[${index}].type`);
+}
+
+function canonicalName(node, index) {
+  return text(node.name ?? node.data?.name ?? node.data?.label, `canonical node[${index}].name`);
+}
+
+function canonicalParameters(node, index) {
+  return parameters(node.parameters ?? node.data?.parameters, `canonical node[${index}].parameters`);
 }
 
 function canonicalNode(node, index) {
@@ -92,12 +113,12 @@ export function canonicalPlanToSimLike(plan) {
   if (!Array.isArray(canonical.nodes) || !Array.isArray(canonical.edges)) throw new Error("canonical nodes and edges are required");
   const nodes = canonical.nodes.map((node, index) => {
     object(node, `canonical node[${index}]`);
-    const type = text(node.type, `canonical node[${index}].type`);
+    const type = canonicalType(node, index);
     if (!NODE_TYPES.has(type)) throw new Error(`unsupported node type: ${type}`);
     return {
       id: text(node.id, `canonical node[${index}].id`),
       type,
-      data: { name: text(node.name, `canonical node[${index}].name`), parameters: parameters(node.parameters, `canonical node[${index}].parameters`) },
+      data: { name: canonicalName(node, index), parameters: canonicalParameters(node, index) },
       position: { x: 80, y: index * 120 },
     };
   });

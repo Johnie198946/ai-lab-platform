@@ -1,0 +1,21 @@
+# Change Completion — Architect node_type contract
+
+- task_id: fix-architect-node-type-contract
+- scope: frontend Architect canvas adapter only
+- branch: main
+- baseline: 6cbc615c1434e5b3c181e491f30243dac1708bb8
+- changed_files:
+  - frontend/src/architectCanvasAdapter.js
+  - frontend/tests/architect-contract.test.mjs
+  - ops/change-manifests/fix-architect-node-type-contract-completion.md
+- root_cause: production workflow plans expose node_type values while the simulation adapter required canvas type, causing canonical node[0].type is required.
+- fix: normalize server node_type values to the four canvas node types at the adapter boundary; preserve canonical type behavior and fail closed for unknown values.
+- tests: pending final commit/deploy receipt
+- commit: pending
+- remote_sha: pending
+- server_before: pending
+- server_after: pending
+- deployment: pending
+- functional_check: pending
+- rollback_point: pending
+- remaining_risks: login 401 still requires real account/token verification; anonymous /api/v1/me 401 is expected.

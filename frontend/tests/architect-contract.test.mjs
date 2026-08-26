@@ -262,6 +262,26 @@ test("Sim-like adapter round-trips canonical execution semantics", () => {
   assert.deepEqual(simLikeToCanonicalPlan(canonicalPlanToSimLike(canonical)), canonical);
 });
 
+test("Sim-like adapter normalizes the server DSL node_type contract", () => {
+  const view = canonicalPlanToSimLike({
+    nodes: [
+      { id: "retrieve", node_type: "KNOWLEDGE_RETRIEVAL", name: "检索知识", parameters: { agent_id: "knowledge" } },
+      { id: "gate", node_type: "FILTER_PASS", name: "人工决策门", parameters: {} },
+      { id: "output", node_type: "OUTPUT_FORMAT", name: "交付物", parameters: {} },
+    ],
+    edges: [
+      { source: "retrieve", target: "gate" },
+      { source: "gate", target: "output" },
+    ],
+  });
+  assert.deepEqual(view.nodes.map(({ id, type, data }) => ({ id, type, name: data.name })), [
+    { id: "retrieve", type: "agent", name: "检索知识" },
+    { id: "gate", type: "gate", name: "人工决策门" },
+    { id: "output", type: "artifact", name: "交付物" },
+  ]);
+  assert.equal(view.truth, "SIMULATION");
+});
+
 test("Gate-2 platform API exposes CAS-safe plan save and rollback helpers", () => {
   const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
   assert.match(api, /patchWorkflowPlan\(workflowId, payload\)/);
