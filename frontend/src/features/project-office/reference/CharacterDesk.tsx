@@ -2,6 +2,12 @@
 // 2.5D character at desk  ·  top-down Marvis style with realistic screens
 // States: working | sleeping | selected | carrying | done
 
+import { useRef } from 'react'
+import gsap from 'gsap'
+import { useGSAP } from '@gsap/react'
+
+gsap.registerPlugin(useGSAP)
+
 export type CharState  = 'working' | 'sleeping' | 'selected' | 'carrying' | 'done'
 export type ScreenType = 'dashboard' | 'browsing' | 'typing' | 'code' | 'checklist' | 'analytics'
 
@@ -437,24 +443,112 @@ function CarryingView({ color }: { color: string }) {
    MAIN COMPONENT
    ═══════════════════════════════════════════════════════════════════════ */
 export default function CharacterDesk({ color, state, screenType = 'dashboard' }: Props) {
+  const rootRef = useRef<SVGSVGElement>(null)
   const sleeping = state === 'sleeping'
   const done     = state === 'done'
   const selected = state === 'selected'
   const carrying = state === 'carrying'
   const working  = !sleeping && !done && !selected && !carrying
 
+  useGSAP(() => {
+    if (!working) return
+
+    const media = gsap.matchMedia()
+    media.add('(prefers-reduced-motion: no-preference)', () => {
+      const motions = [
+        gsap.to('.character-desk__arm--left', {
+          y: -4,
+          rotation: -1.8,
+          transformOrigin: '76px 148px',
+          duration: 0.18,
+          ease: 'power1.inOut',
+          repeat: -1,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__arm--right', {
+          y: -4,
+          rotation: 1.8,
+          transformOrigin: '124px 148px',
+          duration: 0.18,
+          delay: 0.09,
+          ease: 'power1.inOut',
+          repeat: -1,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__body, .character-desk__collar', {
+          y: 2,
+          duration: 0.82,
+          ease: 'sine.inOut',
+          repeat: -1,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__head', {
+          x: 2.2,
+          rotation: 1.4,
+          transformOrigin: '100px 157px',
+          duration: 1.05,
+          ease: 'sine.inOut',
+          repeat: -1,
+          repeatDelay: 0.35,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__horn--left', {
+          rotation: -2.5,
+          transformOrigin: '79px 168px',
+          duration: 0.46,
+          ease: 'power1.inOut',
+          repeat: -1,
+          repeatDelay: 1.15,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__horn--right', {
+          rotation: 2.5,
+          transformOrigin: '121px 168px',
+          duration: 0.46,
+          delay: 0.08,
+          ease: 'power1.inOut',
+          repeat: -1,
+          repeatDelay: 1.15,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__screen-live', {
+          opacity: 0.9,
+          duration: 0.64,
+          ease: 'sine.inOut',
+          repeat: -1,
+          yoyo: true,
+        }),
+        gsap.to('.character-desk__steam', {
+          y: -5,
+          opacity: 0.18,
+          duration: 1.15,
+          ease: 'sine.out',
+          repeat: -1,
+          yoyo: true,
+        }),
+      ]
+
+      const syncVisibility = () => motions.forEach((motion) => document.hidden ? motion.pause() : motion.resume())
+      document.addEventListener('visibilitychange', syncVisibility)
+      syncVisibility()
+      return () => document.removeEventListener('visibilitychange', syncVisibility)
+    })
+
+    return () => media.revert()
+  }, { scope: rootRef, dependencies: [working], revertOnUpdate: true })
+
   /* ── Non-desk states ── */
   if (carrying) return (
-    <svg viewBox="0 0 200 320" xmlns="http://www.w3.org/2000/svg"
-      style={{overflow:'visible'}} className="w-full h-full">
+    <svg ref={rootRef} viewBox="0 0 200 320" xmlns="http://www.w3.org/2000/svg"
+      style={{overflow:'visible'}} className="character-desk character-desk--carrying w-full h-full">
       <ellipse cx="100" cy="315" rx="62" ry="7" fill="rgba(0,0,0,0.08)" />
       <CarryingView color={color} />
     </svg>
   )
 
   if (selected) return (
-    <svg viewBox="0 0 200 320" xmlns="http://www.w3.org/2000/svg"
-      style={{overflow:'visible'}} className="w-full h-full">
+    <svg ref={rootRef} viewBox="0 0 200 320" xmlns="http://www.w3.org/2000/svg"
+      style={{overflow:'visible'}} className="character-desk character-desk--selected w-full h-full">
       <ellipse cx="100" cy="315" rx="62" ry="7" fill="rgba(0,0,0,0.08)" />
       <SelectedView color={color} />
     </svg>
@@ -462,14 +556,16 @@ export default function CharacterDesk({ color, state, screenType = 'dashboard' }
 
   /* ── TOP-DOWN desk scene (working | sleeping | done) ── */
   return (
-    <svg viewBox="0 0 200 320" xmlns="http://www.w3.org/2000/svg"
-      style={{overflow:'visible'}} className="w-full h-full">
+    <svg ref={rootRef} viewBox="0 0 200 320" xmlns="http://www.w3.org/2000/svg"
+      style={{overflow:'visible'}} className={`character-desk character-desk--${working ? 'working' : sleeping ? 'sleeping' : 'done'} w-full h-full`}>
       <ellipse cx="100" cy="315" rx="62" ry="7" fill="rgba(0,0,0,0.08)" />
 
       {/* ── Monitor ── */}
       <rect x={10} y={5}  width={180} height={78} rx={7}   fill="#252532" />
       <rect x={10} y={83} width={180} height={5}  rx={2}   fill="#1e1e28" />
-      <ScreenContent type={screenType} color={color} on={!sleeping} />
+      <g className={working ? 'character-desk__screen-live' : undefined}>
+        <ScreenContent type={screenType} color={color} on={!sleeping} />
+      </g>
       {/* Stand */}
       <rect x={88} y={88} width={24} height={16} rx={3}   fill="#252532" />
       <rect x={72} y={102} width={56} height={6}  rx={3}  fill="#1e1e28" />
@@ -512,10 +608,10 @@ export default function CharacterDesk({ color, state, screenType = 'dashboard' }
       <circle cx={18} cy={148} r={2.5} fill={color} opacity={0.14} />
       <path d="M 24 145 Q 30 148 24 151" stroke="#ddd8cc" strokeWidth={1.8} fill="none" />
       {working && (
-        <>
+        <g className="character-desk__steam">
           <path d="M 16 139 Q 15 135 16 131" stroke="rgba(180,160,140,0.38)" strokeWidth={1.2} fill="none" strokeLinecap="round" className="zzz-1" />
           <path d="M 20 138 Q 19 134 20 130" stroke="rgba(180,160,140,0.28)" strokeWidth={1.2} fill="none" strokeLinecap="round" className="zzz-2" />
-        </>
+        </g>
       )}
       {/* Post-it */}
       <rect x={8} y={150} width={18} height={18} rx={2} fill="#fef08a" transform="rotate(-3 8 150)" />
@@ -540,11 +636,11 @@ export default function CharacterDesk({ color, state, screenType = 'dashboard' }
       {/* Arms */}
       {!sleeping && !done && (
         <>
-          <g className={working?'arm-l':''}>
+          <g className={working ? 'character-desk__arm character-desk__arm--left' : undefined}>
             <path d="M 54 208 Q 36 176 32 142" stroke={BD} strokeWidth={20} fill="none" strokeLinecap="round" />
             <ellipse cx={31} cy={140} rx={14} ry={9} fill={BD} transform="rotate(-14 31 140)" />
           </g>
-          <g className={working?'arm-r':''}>
+          <g className={working ? 'character-desk__arm character-desk__arm--right' : undefined}>
             <path d="M 146 208 Q 164 176 168 142" stroke={BD} strokeWidth={20} fill="none" strokeLinecap="round" />
             <ellipse cx={169} cy={140} rx={14} ry={9} fill={BD} transform="rotate(14 169 140)" />
           </g>
@@ -565,22 +661,28 @@ export default function CharacterDesk({ color, state, screenType = 'dashboard' }
         </>
       )}
       {/* Body */}
-      <ellipse cx={100} cy={208} rx={48} ry={38} fill={BD} />
+      <ellipse className={working ? 'character-desk__body' : undefined} cx={100} cy={208} rx={48} ry={38} fill={BD} />
       {/* Collar ring */}
-      <ellipse cx={100} cy={172} rx={30} ry={13} fill={color} opacity={0.92} />
-      <ellipse cx={100} cy={172} rx={24} ry={10} fill={BDS} />
+      <g className={working ? 'character-desk__collar' : undefined}>
+        <ellipse cx={100} cy={172} rx={30} ry={13} fill={color} opacity={0.92} />
+        <ellipse cx={100} cy={172} rx={24} ry={10} fill={BDS} />
+      </g>
       {/* Head */}
-      <g transform={sleeping?'translate(-10 15) rotate(18, 100, 157)':''}>
+      <g className={working ? 'character-desk__head' : undefined} transform={sleeping?'translate(-10 15) rotate(18, 100, 157)':''}>
         <circle cx={100} cy={152} r={28} fill={BD} />
         <ellipse cx={93}  cy={140} rx={11} ry={7} fill="rgba(255,255,255,0.035)" transform="rotate(-18 93 140)" />
       </g>
       {/* Horns pointing toward viewer */}
       {!sleeping?(
         <>
-          <path d="M 79 168 Q 62 180 56 196" stroke={BDH} strokeWidth={12} fill="none" strokeLinecap="round" />
-          <circle cx={56} cy={195} r={6} fill={BDH} />
-          <path d="M 121 168 Q 138 180 144 196" stroke={BDH} strokeWidth={12} fill="none" strokeLinecap="round" />
-          <circle cx={144} cy={195} r={6} fill={BDH} />
+          <g className={working ? 'character-desk__horn character-desk__horn--left' : undefined}>
+            <path d="M 79 168 Q 62 180 56 196" stroke={BDH} strokeWidth={12} fill="none" strokeLinecap="round" />
+            <circle cx={56} cy={195} r={6} fill={BDH} />
+          </g>
+          <g className={working ? 'character-desk__horn character-desk__horn--right' : undefined}>
+            <path d="M 121 168 Q 138 180 144 196" stroke={BDH} strokeWidth={12} fill="none" strokeLinecap="round" />
+            <circle cx={144} cy={195} r={6} fill={BDH} />
+          </g>
         </>
       ):(
         <g transform="translate(-10 15) rotate(18, 100, 157)">

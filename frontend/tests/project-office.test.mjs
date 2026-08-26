@@ -302,6 +302,25 @@ test("Office detail sheet starts closed and remains closed after the close actio
   assert.match(source, /onClose=\{\(\) => setSelectedId\(""\)\}/);
 });
 
+test("running Office agents use scoped, pausable motion while non-running agents stay settled", () => {
+  const office = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
+  const character = fs.readFileSync(new URL("../src/features/project-office/reference/CharacterDesk.tsx", import.meta.url), "utf8");
+  const styles = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.css", import.meta.url), "utf8");
+
+  assert.match(office, /reference-seat--\$\{tag\}/);
+  assert.match(office, /data-agent-state=\{tag\}/);
+  assert.match(character, /state === 'sleeping'/);
+  assert.match(character, /useGSAP\(\(\) => \{/);
+  assert.match(character, /if \(!working\) return/);
+  assert.match(character, /prefers-reduced-motion: no-preference/);
+  assert.match(character, /visibilitychange/);
+  assert.match(character, /document\.hidden \? motion\.pause\(\) : motion\.resume\(\)/);
+  assert.match(character, /media\.revert\(\)/);
+  assert.match(character, /scope: rootRef/);
+  assert.match(styles, /character-desk--working/);
+  assert.match(styles, /prefers-reduced-motion:reduce/);
+});
+
 test("Office artifact gallery opens real content with dedicated accessible previews", () => {
   const source = fs.readFileSync(new URL("../src/features/project-office/ReferenceOfficeView.jsx", import.meta.url), "utf8");
   const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");

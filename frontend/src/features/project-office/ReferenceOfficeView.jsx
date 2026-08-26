@@ -69,7 +69,7 @@ function Seat({ seat, index, selected, onClick, visible }) {
   const color = COLORS[index % COLORS.length];
   const active = tag === "working" ? "working" : tag === "blocked" ? "selected" : tag === "done" ? "done" : "sleeping";
   const event = seat.lastEvent;
-  return <button className={`reference-seat ${visible ? "is-visible" : ""} ${selected ? "is-selected" : ""}`} type="button" onClick={onClick} aria-pressed={selected}>
+  return <button className={`reference-seat reference-seat--${tag} ${visible ? "is-visible" : ""} ${selected ? "is-selected" : ""}`} type="button" onClick={onClick} aria-pressed={selected} data-agent-state={tag}>
     {event && <div className="reference-bubble"><span>{event.message || event.event_type || "服务端事件"}</span><small>{event.event_id || event.id || "event"}</small></div>}
     <div className="reference-character" style={{ filter: selected ? `drop-shadow(0 12px 32px ${color}55)` : "drop-shadow(0 4px 12px rgba(0,0,0,.13))" }}><CharacterDesk color={color} state={active} screenType={SCREEN_TYPES[index % SCREEN_TYPES.length]} /></div>
     <strong>{seat.name || `节点 ${index + 1}`}</strong>
