@@ -2,7 +2,7 @@
 
 - task_id: `office-sim-light-redesign-20260826`
 - objective: 将 Architect Office 重构为白底 Sim 风格项目办公室，并把官方 Sim 画布交互模式适配为 Workbench/Office 共享、可拖动、可连线、可编辑且服从 Hermes 合同的 Workflow 画布。
-- status: `DEPLOYED`
+- status: `VERIFIED`
 - branch: `codex/office-sim-light-redesign`
 - worktree: `/private/tmp/ai-lab-office-sim-light-redesign`
 - base_head: `a3d79b9a2df18d52fe59552f52d18d0b02ffc480`
@@ -65,11 +65,11 @@
 
 ## Delivery and deployment
 
-- current_status: `DEPLOYED`
-- commit_sha: `b62bea83be0a16c8afb62ac7efe339a6d76de53e`。
-- github_remote_ref_sha: `refs/heads/codex/office-sim-light-redesign=b62bea83be0a16c8afb62ac7efe339a6d76de53e`，已由 `git ls-remote` 核验。
+- current_status: `VERIFIED`
+- implementation_commit: `b62bea83be0a16c8afb62ac7efe339a6d76de53e`；deployed_commit: `284df38e8b68d9e18415e598f250726d023839e4`。
+- github_remote_ref_sha: 部署验收时 `refs/heads/codex/office-sim-light-redesign=284df38e8b68d9e18415e598f250726d023839e4`，已由 `git ls-remote` 核验；其后的分支变更仅为把本 manifest 状态从 `DEPLOYED` 更新为 `VERIFIED`，不改变运行源码。
 - server_before: `.deployed-sha=f491b0a7aa32dce1f21e2cfabc3f1aad3887116b`；release symlink `/opt/releases/ai-lab-platform-2703827`；frontend image `sha256:bc1f204a0968741dbc433910a6482d382e8d7d0abaf61d15c4f65c83bcae6317`；API `{"status":"ok","version":"0.8.0"}`。
-- server_after: `.deployed-sha=b62bea83be0a16c8afb62ac7efe339a6d76de53e`；frontend image `sha256:19f8ab3092ba45a023142071754499f0c50925d329a8e6a961937e7653decd71`；7/7 compose services running。
+- server_after: `.deployed-sha=284df38e8b68d9e18415e598f250726d023839e4`；frontend image `sha256:19f8ab3092ba45a023142071754499f0c50925d329a8e6a961937e7653decd71`；7/7 compose services running。
 - health_check: API `http://127.0.0.1:8000/health` 返回 `{"status":"ok","version":"0.8.0"}`；Hermes Bridge systemd `active/running`，实际端口 `9118` 的 `/health` 返回 `status=ok, version=v6.0, workflow_orchestration=true`。
 - functional_check: 公网 `https://120.24.248.58/architect?view=office` 返回 HTTP 200；生产 CSS 包包含 `hermes-sim-edge-flow`；线上四个核心源码 SHA-256 与本地完全一致。本地共享画布拖动、连线、增删、撤销/重做、响应式布局、真实边动画与角色动效检查通过。
 - source_hashes: `SimWorkflowCanvas.jsx=a981b182038a141ecc032bb2d9e7ef238aca0c8d9c286ed25b2c7eda23160f26`；`SimWorkflowCanvas.css=49d1515dd798bdc7a3aaa88a32bfae8670b0554c74ef75f07612547bf3fb2142`；`ReferenceOfficeView.jsx=a53f5b457d415bfdcd36dfeb97069e59f8e6b3c8dd527de5e705fc5df28f6c81`；`ReferenceOfficeView.css=edfab32f4a8bed3a674261d54201d1eb8200b4e59c755a7d0673559747dd5279`。
