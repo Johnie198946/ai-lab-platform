@@ -78,9 +78,9 @@ function PlanCanvas({ plan, workflowId, onSaved }) {
     setSaving(true);
     setSaveError("");
     try {
-      const dsl = simLikeToCanonicalPlan({ nodes: simulationNodes, edges: simulationView.edges });
+      const editedDsl = simLikeToCanonicalPlan({ nodes: simulationNodes, edges: simulationView.edges });
       const nextPlan = await platformApi.patchWorkflowPlan(workflowId, {
-        dsl,
+        dsl: { ...plan.dsl, ...editedDsl },
         deliverable: plan.deliverable,
         allow_network: plan.allow_network,
         max_tokens: plan.max_tokens,

@@ -1211,6 +1211,57 @@ class TestWorkflowsAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 422, response.text)
 
+    def test_plan_patch_round_trips_real_node_types_and_edge_conditions_with_cas(self):
+        body = self.create_ready()
+        plan = body["plan"]
+        dsl = copy.deepcopy(plan["dsl"])
+        self.assertTrue(all(node.get("node_type") for node in dsl["nodes"]))
+        self.assertGreaterEqual(len(dsl["edges"]), 2)
+        dsl["edges"][0]["condition"] = "evidence_ready"
+        dsl["edges"][1].pop("condition", None)
+
+        response = self.request(
+            "PATCH",
+            f"/api/v1/workflows/{body['id']}/plan",
+            json={
+                "dsl": dsl,
+                "deliverable": plan["deliverable"],
+                "allow_network": plan["allow_network"],
+                "max_tokens": plan["max_tokens"],
+                "knowledge_scope": plan["knowledge_scope"],
+                "expected_hash": plan["content_hash"],
+                "expected_revision": plan["activation_revision"],
+                "request_id": "architect-node-type-condition-001",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        edited = response.json()
+        self.assertEqual(edited["activation_revision"], plan["activation_revision"] + 1)
+        self.assertEqual(edited["parent_plan_id"], plan["id"])
+        self.assertTrue(
+            all(
+                set(node) == {"id", "node_type", "name", "parameters"}
+                for node in edited["dsl"]["nodes"]
+            )
+        )
+        self.assertEqual(
+            edited["dsl"]["edges"][0],
+            {
+                "source": dsl["edges"][0]["source"],
+                "target": dsl["edges"][0]["target"],
+                "condition": "evidence_ready",
+            },
+        )
+        self.assertEqual(
+            edited["dsl"]["edges"][1],
+            {
+                "source": dsl["edges"][1]["source"],
+                "target": dsl["edges"][1]["target"],
+                "condition": None,
+            },
+        )
+
     def test_plan_patch_uses_cas_and_rejects_stale_retry(self):
         body = self.create_ready()
         plan = body["plan"]

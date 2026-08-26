@@ -225,38 +225,40 @@ test("architect accepts an explicit customer demand id from the URL", () => {
 test("Sim-like adapter preserves execution semantics and excludes view position", () => {
   const sim = {
     nodes: [
-      { id: "n1", type: "agent", data: { name: "Research", parameters: { capability_status: "UNCONNECTED" } }, position: { x: 10, y: 20 } },
-      { id: "n2", type: "artifact", data: { name: "Report" }, position: { x: 300, y: 20 } },
+      { id: "n1", type: "agent", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: { capability_status: "UNCONNECTED" } }, position: { x: 10, y: 20 } },
+      { id: "n2", type: "artifact", data: { node_type: "OUTPUT_FORMAT", name: "Report" }, position: { x: 300, y: 20 } },
     ],
     edges: [{ id: "e1", source: "n1", target: "n2", sourceHandle: "out", targetHandle: "in" }],
     viewport: { x: 1, y: 2, zoom: 0.8 },
   };
   const plan = simLikeToCanonicalPlan(sim);
   assert.deepEqual(plan.nodes, [
-    { id: "n1", type: "agent", name: "Research", parameters: { capability_status: "UNCONNECTED" } },
-    { id: "n2", type: "artifact", name: "Report", parameters: {} },
+    { id: "n1", node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: { capability_status: "UNCONNECTED" } },
+    { id: "n2", node_type: "OUTPUT_FORMAT", name: "Report", parameters: {} },
   ]);
-  assert.deepEqual(plan.edges, [{ id: "e1", source: "n1", target: "n2", sourceHandle: "out", targetHandle: "in" }]);
+  assert.deepEqual(plan.edges, [{ source: "n1", target: "n2" }]);
   assert.deepEqual(simLikeToCanonicalPlan({ ...sim, viewport: { x: 99, y: 99, zoom: 2 } }), plan);
 });
 
 test("Sim-like adapter fails closed for unknown node types, fields, dangling edges, and handles", () => {
   assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "mystery", data: {} }], edges: [] }), /unsupported node type/);
   assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: {}, extra: true }], edges: [] }), /unknown node field/);
-  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { name: "A" } }], edges: [{ source: "n1", target: "missing" }] }), /dangling edge/);
-  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { name: "A" } }, { id: "n2", type: "artifact", data: { name: "B" } }], edges: [{ source: "n1", target: "n2", sourceHandle: "unknown" }] }), /unknown edge handle/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "A" } }], edges: [{ source: "n1", target: "missing" }] }), /dangling edge/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "A" } }, { id: "n2", type: "artifact", data: { node_type: "OUTPUT_FORMAT", name: "B" } }], edges: [{ source: "n1", target: "n2", sourceHandle: "unknown" }] }), /unknown edge handle/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "gate", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "A" } }], edges: [] }), /node_type and visual type mismatch/);
+  assert.throws(() => canonicalPlanToSimLike({ nodes: [{ id: "n1", node_type: "FILTER_PASS", type: "agent", name: "A" }], edges: [] }), /node_type and visual type mismatch/);
 });
 
 test("Sim-like adapter rejects undefined execution semantics and never returns LIVE", () => {
   assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { retry: 3 } }], edges: [] }), /unsupported execution semantics/);
-  const view = canonicalPlanToSimLike({ nodes: [{ id: "n1", type: "agent", name: "Research", parameters: {} }], edges: [] });
+  const view = canonicalPlanToSimLike({ nodes: [{ id: "n1", node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: {} }], edges: [] });
   assert.equal(view.truth, "SIMULATION");
   assert.notEqual(view.truth, "LIVE");
 });
 
 test("Sim-like adapter round-trips canonical execution semantics", () => {
   const canonical = {
-    nodes: [{ id: "n1", type: "agent", name: "Research", parameters: { capability_status: "UNCONNECTED" } }],
+    nodes: [{ id: "n1", node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: { capability_status: "UNCONNECTED" } }],
     edges: [],
   };
   assert.deepEqual(simLikeToCanonicalPlan(canonicalPlanToSimLike(canonical)), canonical);
@@ -280,6 +282,47 @@ test("Sim-like adapter normalizes the server DSL node_type contract", () => {
     { id: "output", type: "artifact", name: "交付物" },
   ]);
   assert.equal(view.truth, "SIMULATION");
+});
+
+test("Sim-like adapter round-trips the real server node_type and edge condition DSL", () => {
+  const canonical = {
+    nodes: [
+      { id: "retrieve", node_type: "KNOWLEDGE_RETRIEVAL", name: "检索知识", parameters: { agent_id: "knowledge" } },
+      { id: "gate", node_type: "FILTER_PASS", name: "人工决策门", parameters: {} },
+      { id: "output", node_type: "OUTPUT_FORMAT", name: "交付物", parameters: {} },
+    ],
+    edges: [
+      { source: "retrieve", target: "gate", condition: "evidence_ready" },
+      { source: "gate", target: "output", condition: null },
+    ],
+  };
+  const view = canonicalPlanToSimLike(canonical);
+  assert.equal(view.nodes[0].data.node_type, "KNOWLEDGE_RETRIEVAL");
+  assert.deepEqual(simLikeToCanonicalPlan(view), canonical);
+});
+
+test("Sim-like adapter omits absent conditions and rejects invalid condition types", () => {
+  const canonical = {
+    nodes: [
+      { id: "retrieve", node_type: "KNOWLEDGE_RETRIEVAL", name: "检索知识", parameters: {} },
+      { id: "output", node_type: "OUTPUT_FORMAT", name: "交付物", parameters: {} },
+    ],
+    edges: [{ source: "retrieve", target: "output" }],
+  };
+  assert.deepEqual(simLikeToCanonicalPlan(canonicalPlanToSimLike(canonical)).edges, canonical.edges);
+  assert.throws(
+    () => canonicalPlanToSimLike({ ...canonical, edges: [{ source: "retrieve", target: "output", condition: true }] }),
+    /condition must be a string or null/,
+  );
+});
+
+test("PlanCanvas saves edited nodes and edges over the original DSL root contract", () => {
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
+  assert.match(canvas, /dsl:\s*\{\s*\.\.\.plan\.dsl,\s*\.\.\.editedDsl\s*\}/);
+  assert.match(canvas, /expected_hash:\s*plan\.content_hash/);
+  assert.match(canvas, /expected_revision:\s*plan\.activation_revision/);
+  assert.match(canvas, /request_id:/);
 });
 
 test("Gate-2 platform API exposes CAS-safe plan save and rollback helpers", () => {
