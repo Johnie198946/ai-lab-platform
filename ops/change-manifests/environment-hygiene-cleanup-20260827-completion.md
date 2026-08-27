@@ -32,6 +32,7 @@
 
 - Docker builder cache：回收 `9.842 GB`。
 - Docker dangling image：回收 `15.87 KB`。
+- 最终回读后再删除全部未被容器使用的可重建镜像，额外回收 `8.442 GB`；保留的 16 个镜像均被运行中或已保留容器使用。
 - 删除可重建依赖：`ai-radar-web/node_modules`（约 `762 MB`）、`ai-lab-showroom-prototype/ai-lab-intro-video/node_modules`（约 `416 MB`）。
 - 删除仓库根 `.DS_Store`。
 - 保留约 `4.136 GB` 的未知 Docker volume，因为无法证明可安全删除；未触碰 Hermes/Codex 运行状态和用户脏工作区。
@@ -58,7 +59,7 @@
 ## GitHub 分支清理
 
 - 删除 15 个 Git 明确判定为 `--merged origin/main` 的远端分支：`auth-wechat-alipay-phone`、`diagnose-local-note-service`、`global-press-border-glow`、`hermes-session-note-draft`、`hermes-unified-capability-router`、`ios-chat-freeze`、`ios-chat-response-latency`、`ios-note-action-protocol`、`knowledge-source-router`、`login-magic-rings-card-reveal`、`profile-card-center`、`profile-card-welcome-logo`、`tenant-hermes-sandbox`、`upgrade-hermes-triage-20260827`、`wiki-agent-integration`（均为 `codex/` 前缀）。
-- 未删除任何未合并分支。任务分支在 completion manifest 推送并确认后删除。
+- 未删除任何未合并分支；completion manifest 推送并确认后，任务分支也已删除。远端最终仅保留 `main` 和 9 个未合并分支。
 
 ## 生产收据
 
