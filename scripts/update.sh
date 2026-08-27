@@ -135,8 +135,28 @@ SWITCHED=1
 systemctl restart hermes-bridge.service
 
 echo "==> [6/6] 最终健康检查"
-curl -fsS --max-time 10 http://127.0.0.1:8000/health
-curl -fsS --max-time 10 http://127.0.0.1:9118/health
+api_status=""
+bridge_status=""
+for _ in $(seq 1 30); do
+  api_status="$(curl -fsS --max-time 5 http://127.0.0.1:8000/health || true)"
+  [ -n "$api_status" ] && break
+  sleep 1
+done
+if [ -z "$api_status" ]; then
+  echo "ERROR: 原子切换后 API 30 秒内未就绪" >&2
+  exit 1
+fi
+printf '%s\n' "$api_status"
+for _ in $(seq 1 30); do
+  bridge_status="$(curl -fsS --max-time 5 http://127.0.0.1:9118/health || true)"
+  [ -n "$bridge_status" ] && break
+  sleep 1
+done
+if [ -z "$bridge_status" ]; then
+  echo "ERROR: Hermes Bridge 重启后 30 秒内未就绪" >&2
+  exit 1
+fi
+printf '%s\n' "$bridge_status"
 echo "deployed_sha=$EXPECTED_SHA"
 echo "release=$RELEASE_DIR"
 echo "rollback_point=$CURRENT_DIR"
