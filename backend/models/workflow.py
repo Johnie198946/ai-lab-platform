@@ -17,7 +17,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from backend.db import Base
+from backend.db import Base, canonical_plan_hash
+
+
+def _workflow_plan_hash(context) -> str:
+    return canonical_plan_hash(context.get_current_parameters().get("dsl") or {})
 
 
 class WorkflowDefinition(Base):
@@ -174,6 +178,13 @@ class WorkflowPlanVersion(Base):
     )
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     dsl: Mapped[dict] = mapped_column(JSON, nullable=False)
+    content_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=_workflow_plan_hash, index=True
+    )
+    activation_revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    parent_plan_id: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
+    edit_request_id: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    edit_request_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     goal: Mapped[str] = mapped_column(Text, nullable=False)
     deliverable: Mapped[str] = mapped_column(String(300), nullable=False)
     allow_network: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -335,6 +346,9 @@ class WorkflowApproval(Base):
         ForeignKey("workflows.id", ondelete="CASCADE"), index=True
     )
     execution_id: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    plan_id: Mapped[str | None] = mapped_column(String(48), nullable=True, index=True)
+    plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    activation_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
     approval_type: Mapped[str] = mapped_column(String(32), nullable=False)
     decision: Mapped[str] = mapped_column(String(24), nullable=False)
     actor_id: Mapped[str] = mapped_column(String(64), default="")

@@ -1170,6 +1170,8 @@ class TestWorkflowsAPI(unittest.TestCase):
                 "allow_network": plan["allow_network"],
                 "max_tokens": plan["max_tokens"],
                 "knowledge_scope": plan["knowledge_scope"],
+                "expected_hash": plan["content_hash"],
+                "expected_revision": plan["activation_revision"],
             },
         )
         self.assertEqual(edited.status_code, 200, edited.text)
@@ -1203,9 +1205,151 @@ class TestWorkflowsAPI(unittest.TestCase):
                 "allow_network": True,
                 "max_tokens": 24000,
                 "knowledge_scope": ["wiki"],
+                "expected_hash": plan["content_hash"],
+                "expected_revision": plan["activation_revision"],
             },
         )
         self.assertEqual(response.status_code, 422, response.text)
+
+    def test_plan_patch_round_trips_real_node_types_and_edge_conditions_with_cas(self):
+        body = self.create_ready()
+        plan = body["plan"]
+        dsl = copy.deepcopy(plan["dsl"])
+        self.assertTrue(all(node.get("node_type") for node in dsl["nodes"]))
+        self.assertGreaterEqual(len(dsl["edges"]), 2)
+        dsl["edges"][0]["condition"] = "evidence_ready"
+        dsl["edges"][1].pop("condition", None)
+
+        response = self.request(
+            "PATCH",
+            f"/api/v1/workflows/{body['id']}/plan",
+            json={
+                "dsl": dsl,
+                "deliverable": plan["deliverable"],
+                "allow_network": plan["allow_network"],
+                "max_tokens": plan["max_tokens"],
+                "knowledge_scope": plan["knowledge_scope"],
+                "expected_hash": plan["content_hash"],
+                "expected_revision": plan["activation_revision"],
+                "request_id": "architect-node-type-condition-001",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        edited = response.json()
+        self.assertEqual(edited["activation_revision"], plan["activation_revision"] + 1)
+        self.assertEqual(edited["parent_plan_id"], plan["id"])
+        self.assertTrue(
+            all(
+                set(node) == {"id", "node_type", "name", "parameters"}
+                for node in edited["dsl"]["nodes"]
+            )
+        )
+        self.assertEqual(
+            edited["dsl"]["edges"][0],
+            {
+                "source": dsl["edges"][0]["source"],
+                "target": dsl["edges"][0]["target"],
+                "condition": "evidence_ready",
+            },
+        )
+        self.assertEqual(
+            edited["dsl"]["edges"][1],
+            {
+                "source": dsl["edges"][1]["source"],
+                "target": dsl["edges"][1]["target"],
+                "condition": None,
+            },
+        )
+
+    def test_plan_patch_uses_cas_and_rejects_stale_retry(self):
+        body = self.create_ready()
+        plan = body["plan"]
+        original_dsl = copy.deepcopy(plan["dsl"])
+        payload = {
+            "dsl": copy.deepcopy(original_dsl),
+            "deliverable": plan["deliverable"],
+            "allow_network": plan["allow_network"],
+            "max_tokens": plan["max_tokens"],
+            "knowledge_scope": plan["knowledge_scope"],
+            "expected_hash": plan["content_hash"],
+            "expected_revision": plan["activation_revision"],
+        }
+        payload["dsl"]["name"] = "第一次合法编辑"
+        first = self.request("PATCH", f"/api/v1/workflows/{body['id']}/plan", json=payload)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertNotEqual(first.json()["id"], plan["id"])
+
+        stale = {
+            **payload,
+            "dsl": {**original_dsl, "name": "并发覆盖"},
+        }
+        stale_response = self.request(
+            "PATCH", f"/api/v1/workflows/{body['id']}/plan", json=stale
+        )
+        self.assertEqual(stale_response.status_code, 409, stale_response.text)
+        current = self.request("GET", f"/api/v1/workflows/{body['id']}/plan").json()
+        self.assertEqual(current["id"], first.json()["id"])
+
+    def test_plan_patch_request_id_is_idempotent_and_conflict_safe(self):
+        body = self.create_ready()
+        plan = body["plan"]
+        request_id = "plan-edit-request-001"
+        payload = {
+            "dsl": {**plan["dsl"], "name": "幂等编辑"},
+            "deliverable": plan["deliverable"],
+            "allow_network": plan["allow_network"],
+            "max_tokens": plan["max_tokens"],
+            "knowledge_scope": plan["knowledge_scope"],
+            "expected_hash": plan["content_hash"],
+            "expected_revision": plan["activation_revision"],
+            "request_id": request_id,
+        }
+        first = self.request("PATCH", f"/api/v1/workflows/{body['id']}/plan", json=payload)
+        self.assertEqual(first.status_code, 200, first.text)
+        second = self.request("PATCH", f"/api/v1/workflows/{body['id']}/plan", json=payload)
+        self.assertEqual(second.status_code, 200, second.text)
+        self.assertEqual(second.json()["id"], first.json()["id"])
+
+        conflict = {**payload, "dsl": {**plan["dsl"], "name": "同key不同payload"}}
+        conflict_response = self.request(
+            "PATCH", f"/api/v1/workflows/{body['id']}/plan", json=conflict
+        )
+        self.assertEqual(conflict_response.status_code, 409, conflict_response.text)
+
+    def test_plan_rollback_creates_new_version_and_preserves_history(self):
+        body = self.create_ready()
+        original = body["plan"]
+        edit_payload = {
+            "dsl": {**original["dsl"], "name": "待回滚版本"},
+            "deliverable": original["deliverable"],
+            "allow_network": original["allow_network"],
+            "max_tokens": original["max_tokens"],
+            "knowledge_scope": original["knowledge_scope"],
+            "expected_hash": original["content_hash"],
+            "expected_revision": original["activation_revision"],
+            "request_id": "plan-edit-before-rollback",
+        }
+        edited = self.request(
+            "PATCH", f"/api/v1/workflows/{body['id']}/plan", json=edit_payload
+        )
+        self.assertEqual(edited.status_code, 200, edited.text)
+        rollback = self.request(
+            "POST",
+            f"/api/v1/workflows/{body['id']}/plan/rollback",
+            json={
+                "source_plan_id": original["id"],
+                "expected_hash": edited.json()["content_hash"],
+                "expected_revision": edited.json()["activation_revision"],
+                "request_id": "plan-rollback-001",
+            },
+        )
+        self.assertEqual(rollback.status_code, 200, rollback.text)
+        rolled = rollback.json()
+        self.assertNotEqual(rolled["id"], original["id"])
+        self.assertNotEqual(rolled["id"], edited.json()["id"])
+        self.assertEqual(rolled["dsl"]["name"], original["dsl"]["name"])
+        self.assertEqual(rolled["parent_plan_id"], edited.json()["id"])
 
     def test_worker_executes_nodes_and_persists_artifacts(self):
         from backend.db import SessionLocal

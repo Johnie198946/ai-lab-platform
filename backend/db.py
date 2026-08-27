@@ -8,9 +8,11 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 
-from sqlalchemy import inspect
+from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, inspect, select
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -22,6 +24,21 @@ DATABASE_URL = os.environ.get(
     "DATABASE_URL",
     "postgresql+asyncpg://ailab:ailab_dev@localhost:5432/ai_lab",
 )
+
+
+def canonical_plan_hash(plan: dict) -> str:
+    """Hash strict canonical JSON without importing the service layer."""
+    if not isinstance(plan, dict):
+        raise TypeError("plan must be a JSON object")
+    canonical = json.dumps(
+        plan,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
 
 _engine_kwargs: dict = {"pool_pre_ping": True}
 if not DATABASE_URL.startswith("sqlite"):
@@ -52,6 +69,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_workflow_v2_columns)
         await conn.run_sync(_migrate_workflow_lifecycle_columns)
+        await conn.run_sync(_migrate_workflow_contract_columns)
         await conn.run_sync(_migrate_knowledge_policy_v2_columns)
         await conn.run_sync(_migrate_showroom_epoch_bigint)
 
@@ -173,6 +191,75 @@ def _migrate_workflow_lifecycle_columns(connection) -> None:
         connection.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS ix_tenant_agents_origin_workflow_id "
             "ON tenant_agents (origin_workflow_id)"
+        )
+
+
+def _migrate_workflow_contract_columns(connection) -> None:
+    """Add and backfill immutable plan/approval binding columns."""
+    schema = inspect(connection)
+    tables = set(schema.get_table_names())
+    if "workflow_plan_versions" in tables:
+        existing = {item["name"] for item in schema.get_columns("workflow_plan_versions")}
+        columns = {
+            "content_hash": "VARCHAR(64) NOT NULL DEFAULT ''",
+            "activation_revision": "INTEGER NOT NULL DEFAULT 1",
+            "parent_plan_id": "VARCHAR(48)",
+            "edit_request_id": "VARCHAR(160)",
+            "edit_request_hash": "VARCHAR(64)",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.exec_driver_sql(
+                    f'ALTER TABLE workflow_plan_versions ADD COLUMN "{name}" {definition}'
+                )
+
+        from backend.services.workflow_contract import canonical_plan_hash
+
+        plans = Table(
+            "workflow_plan_versions",
+            MetaData(),
+            Column("id", String(48), primary_key=True),
+            Column("dsl", JSON),
+            Column("content_hash", String(64)),
+            extend_existing=True,
+        )
+        for row in connection.execute(
+            select(plans.c.id, plans.c.dsl, plans.c.content_hash)
+        ).mappings():
+            if row["content_hash"]:
+                continue
+            dsl = row["dsl"]
+            if isinstance(dsl, str):
+                dsl = json.loads(dsl)
+            connection.execute(
+                plans.update()
+                .where(plans.c.id == row["id"])
+                .values(content_hash=canonical_plan_hash(dsl or {}))
+            )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_workflow_plan_versions_content_hash "
+            "ON workflow_plan_versions (content_hash)"
+        )
+
+    if "workflow_approvals" in tables:
+        existing = {item["name"] for item in schema.get_columns("workflow_approvals")}
+        columns = {
+            "plan_id": "VARCHAR(48)",
+            "plan_hash": "VARCHAR(64)",
+            "activation_revision": "INTEGER",
+        }
+        for name, definition in columns.items():
+            if name not in existing:
+                connection.exec_driver_sql(
+                    f'ALTER TABLE workflow_approvals ADD COLUMN "{name}" {definition}'
+                )
+        connection.exec_driver_sql(
+            "CREATE INDEX IF NOT EXISTS ix_workflow_approvals_plan_id "
+            "ON workflow_approvals (plan_id)"
+        )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_plan_edit_request "
+            "ON workflow_plan_versions (workflow_id, edit_request_id)"
         )
 
 

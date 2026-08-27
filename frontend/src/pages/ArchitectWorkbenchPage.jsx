@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ReactFlow } from "@xyflow/react";
+import { ReactFlow, applyNodeChanges } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { Check, ChevronDown, GitBranch, LogOut, Play, Plus, RefreshCw } from "lucide-react";
 import { useAuth } from "../auth/AuthContext";
@@ -19,6 +19,7 @@ import {
   showroomSessionIdFromSearch,
   shouldFetchWorkflowPlan,
 } from "../architectContract";
+import { canonicalPlanToSimLike, simLikeToCanonicalPlan } from "../architectCanvasAdapter";
 import ProjectOfficeView from "../features/project-office/ProjectOfficeView";
 import "./ArchitectWorkbenchPage.css";
 
@@ -39,13 +40,118 @@ const STATUS_COPY = {
 
 const listValue = (value) => (Array.isArray(value) ? value : []);
 
-function PlanCanvas({ plan }) {
-  const serverPlan = projectPlanToCanvas(plan);
-  const { nodes, edges } = projectPlanToReactFlow({ dsl: serverPlan });
+function PlanCanvas({ plan, workflowId, onSaved }) {
+  const [simulation, setSimulation] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [historyVersions, setHistoryVersions] = useState([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const [rollbackError, setRollbackError] = useState("");
+  const [rollingBack, setRollingBack] = useState(false);
+  const serverPlan = useMemo(() => projectPlanToCanvas(plan), [plan]);
+  const simulationView = useMemo(
+    () => canonicalPlanToSimLike(serverPlan),
+    [serverPlan],
+  );
+  const [simulationNodes, setSimulationNodes] = useState(simulationView.nodes);
+  useEffect(() => {
+    setSimulation(false);
+    setSimulationNodes(simulationView.nodes);
+  }, [simulationView.nodes]);
+  const { nodes: serverNodes, edges: serverEdges } = projectPlanToReactFlow({ dsl: serverPlan });
+  const nodes = simulation ? simulationNodes : serverNodes;
+  const edges = simulation ? simulationView.edges : serverEdges;
+  useEffect(() => {
+    if (!workflowId) return undefined;
+    let active = true;
+    platformApi.listWorkflowPlanVersions(workflowId)
+      .then((versions) => {
+        if (active) setHistoryVersions(Array.isArray(versions) ? versions : []);
+      })
+      .catch(() => {
+        if (active) setHistoryVersions([]);
+      });
+    return () => { active = false; };
+  }, [workflowId, plan?.id]);
+  const saveSimulation = async () => {
+    if (!simulation || saving || !workflowId || !plan?.content_hash || !plan?.activation_revision) return;
+    setSaving(true);
+    setSaveError("");
+    try {
+      const editedDsl = simLikeToCanonicalPlan({ nodes: simulationNodes, edges: simulationView.edges });
+      const nextPlan = await platformApi.patchWorkflowPlan(workflowId, {
+        dsl: { ...plan.dsl, ...editedDsl },
+        deliverable: plan.deliverable,
+        allow_network: plan.allow_network,
+        max_tokens: plan.max_tokens,
+        knowledge_scope: plan.knowledge_scope || [],
+        expected_hash: plan.content_hash,
+        expected_revision: plan.activation_revision,
+        request_id: `canvas-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
+      });
+      onSaved?.(nextPlan);
+      setSimulation(false);
+    } catch (nextError) {
+      setSaveError(nextError.message || "保存失败，当前本地编辑仍保留。");
+    } finally {
+      setSaving(false);
+    }
+  };
+  const rollbackSelected = async () => {
+    if (!selectedHistoryId || rollingBack || !workflowId || !plan?.content_hash || !plan?.activation_revision) return;
+    setRollingBack(true);
+    setRollbackError("");
+    try {
+      const nextPlan = await platformApi.rollbackWorkflowPlan(workflowId, {
+        source_plan_id: selectedHistoryId,
+        expected_hash: plan.content_hash,
+        expected_revision: plan.activation_revision,
+        request_id: `rollback-${globalThis.crypto?.randomUUID?.() || Date.now()}`,
+      });
+      onSaved?.(nextPlan);
+      setSelectedHistoryId("");
+    } catch (nextError) {
+      setRollbackError(nextError.message || "回滚失败，当前计划保持不变。");
+    } finally {
+      setRollingBack(false);
+    }
+  };
+  const toggleSimulation = () => {
+    setSimulation((current) => !current);
+    setSimulationNodes(simulationView.nodes);
+  };
   return (
     <div className="plan-canvas" aria-label="server workflow plan canvas">
+      <div className="plan-canvas__toolbar">
+        <span>{simulation ? "SIMULATION · 本地编辑，不会保存或执行" : "SERVER PLAN · 只读"}</span>
+        <button type="button" onClick={toggleSimulation} aria-pressed={simulation}>
+          {simulation ? "退出 SIMULATION" : "进入 SIMULATION 编辑"}
+        </button>
+        {simulation ? <button type="button" onClick={saveSimulation} disabled={saving}>{saving ? "保存中…" : "保存 SIMULATION 编辑"}</button> : null}
+        {saveError ? <span role="alert">{saveError}</span> : null}
+        {historyVersions.length > 1 ? <>
+          <select aria-label="历史 Plan 版本" value={selectedHistoryId} onChange={(event) => setSelectedHistoryId(event.target.value)}>
+            <option value="">选择历史版本</option>
+            {historyVersions.filter((version) => version.id !== plan?.id).map((version) => <option key={version.id} value={version.id}>v{version.version} · {version.id}</option>)}
+          </select>
+          <button type="button" onClick={rollbackSelected} disabled={!selectedHistoryId || rollingBack}>{rollingBack ? "回滚中…" : "从历史版本回滚"}</button>
+          {rollbackError ? <span role="alert">{rollbackError}</span> : null}
+        </> : null}
+      </div>
       {nodes.length ? (
-        <ReactFlow nodes={nodes} edges={edges} fitView nodesDraggable={false} nodesConnectable={false} elementsSelectable={true} panOnDrag zoomOnScroll />
+        <ReactFlow
+          nodes={nodes}
+          edges={edges}
+          fitView
+          nodesDraggable={simulation}
+          nodesConnectable={false}
+          elementsSelectable={true}
+          onNodesChange={(changes) => {
+            if (simulation) setSimulationNodes((current) => applyNodeChanges(changes, current));
+          }}
+          panOnDrag
+          zoomOnScroll
+        />
       ) : (
         <div className="empty-state"><GitBranch size={18} /> 暂无服务端流程</div>
       )}
@@ -324,7 +430,7 @@ export default function ArchitectPage() {
             <section className="focus-card">
               <div className="process-summary"><div><span>推荐流程</span><h2>{planDsl?.name || "服务端流程"}</h2><p>{planDsl?.process_contract_id ? `已绑定合同 ${planDsl.process_contract_id}` : "服务端安全计划"}</p></div><span className="truth-badge">{planDsl?.process_contract_digest ? "CONTRACT" : "PLAN"}</span></div>
               <div className="node-list">{planNodes.map((node, index) => <article className={node.parameters?.execution_enabled ? "node-card node-card--live" : "node-card"} key={node.id}><span className="node-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{node.name}</strong><p>{listValue(node.parameters?.role_ids).join(" · ") || node.parameters?.agent_id}</p><small>{node.parameters?.decision_gate || "无自动决策"}</small></div><span>{node.parameters?.execution_enabled ? "可执行" : "参考"}</span></article>)}</div>
-              <details className="plan-detail"><summary>查看完整流程图与通过标准<ChevronDown size={16} /></summary><PlanCanvas plan={plan} /></details>
+              <details className="plan-detail"><summary>查看完整流程图与通过标准<ChevronDown size={16} /></summary><PlanCanvas plan={plan} workflowId={workflow?.id} onSaved={(nextPlan) => setPlan(nextPlan)} /></details>
               <div className="approval-row"><p>批准只允许合同中已激活的节点执行。</p><button className="primary-action" type="button" disabled={busy || workflow?.status !== "awaiting_approval"} onClick={approve}><Check size={16} />批准并构建 AI 员工</button>{canStartWorkflow(workflow?.status, execution) && <button className="primary-action" type="button" disabled={busy} onClick={start}><Play size={16} />启动真实执行</button>}</div>
             </section>
           )}

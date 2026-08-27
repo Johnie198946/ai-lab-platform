@@ -20,6 +20,11 @@ import {
   shouldFetchWorkflowPlan,
 } from "../src/architectContract.js";
 
+import {
+  canonicalPlanToSimLike,
+  simLikeToCanonicalPlan,
+} from "../src/architectCanvasAdapter.js";
+
 test("plan-to-canvas projection uses only server nodes and edges", () => {
   const result = projectPlanToCanvas({ dsl: { nodes: [{ id: "n1" }], edges: [{ source: "n1", target: "n2" }] } });
   assert.deepEqual(result, { nodes: [{ id: "n1" }], edges: [{ source: "n1", target: "n2" }] });
@@ -53,11 +58,11 @@ test("result area exposes exactly four server-backed view types and honest empti
 
 test("ArchitectPage uses real React Flow with server-only nodes and edges", () => {
   const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
-  assert.match(source, /import\s+\{\s*ReactFlow\s*\}\s+from\s+["']@xyflow\/react["']/);
+  assert.match(source, /import\s+\{\s*ReactFlow(?:,\s*applyNodeChanges)?\s*\}\s+from\s+["']@xyflow\/react["']/);
   assert.match(source, /<ReactFlow[\s\S]*nodes=\{nodes\}[\s\S]*edges=\{edges\}/);
-  assert.match(source, /nodesDraggable=\{false\}/);
+  assert.match(source, /nodesDraggable=\{simulation\}/);
   assert.match(source, /nodesConnectable=\{false\}/);
-  assert.match(source, /elementsSelectable=\{true\}/);
+  assert.match(source, /SIMULATION/);
   assert.match(source, /projectPlanToCanvas\(plan\)/);
 });
 
@@ -215,4 +220,139 @@ test("architect only accepts an explicit showroom business session from the URL"
 test("architect accepts an explicit customer demand id from the URL", () => {
   assert.equal(customerDemandIdFromSearch("?customer_demand_id=dmd_abc123"), "dmd_abc123");
   assert.equal(customerDemandIdFromSearch("?customer_demand_id=../../bad"), "");
+});
+
+test("Sim-like adapter preserves execution semantics and excludes view position", () => {
+  const sim = {
+    nodes: [
+      { id: "n1", type: "agent", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: { capability_status: "UNCONNECTED" } }, position: { x: 10, y: 20 } },
+      { id: "n2", type: "artifact", data: { node_type: "OUTPUT_FORMAT", name: "Report" }, position: { x: 300, y: 20 } },
+    ],
+    edges: [{ id: "e1", source: "n1", target: "n2", sourceHandle: "out", targetHandle: "in" }],
+    viewport: { x: 1, y: 2, zoom: 0.8 },
+  };
+  const plan = simLikeToCanonicalPlan(sim);
+  assert.deepEqual(plan.nodes, [
+    { id: "n1", node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: { capability_status: "UNCONNECTED" } },
+    { id: "n2", node_type: "OUTPUT_FORMAT", name: "Report", parameters: {} },
+  ]);
+  assert.deepEqual(plan.edges, [{ source: "n1", target: "n2" }]);
+  assert.deepEqual(simLikeToCanonicalPlan({ ...sim, viewport: { x: 99, y: 99, zoom: 2 } }), plan);
+});
+
+test("Sim-like adapter fails closed for unknown node types, fields, dangling edges, and handles", () => {
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "mystery", data: {} }], edges: [] }), /unsupported node type/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: {}, extra: true }], edges: [] }), /unknown node field/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "A" } }], edges: [{ source: "n1", target: "missing" }] }), /dangling edge/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "A" } }, { id: "n2", type: "artifact", data: { node_type: "OUTPUT_FORMAT", name: "B" } }], edges: [{ source: "n1", target: "n2", sourceHandle: "unknown" }] }), /unknown edge handle/);
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "gate", data: { node_type: "KNOWLEDGE_RETRIEVAL", name: "A" } }], edges: [] }), /node_type and visual type mismatch/);
+  assert.throws(() => canonicalPlanToSimLike({ nodes: [{ id: "n1", node_type: "FILTER_PASS", type: "agent", name: "A" }], edges: [] }), /node_type and visual type mismatch/);
+});
+
+test("Sim-like adapter rejects undefined execution semantics and never returns LIVE", () => {
+  assert.throws(() => simLikeToCanonicalPlan({ nodes: [{ id: "n1", type: "agent", data: { retry: 3 } }], edges: [] }), /unsupported execution semantics/);
+  const view = canonicalPlanToSimLike({ nodes: [{ id: "n1", node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: {} }], edges: [] });
+  assert.equal(view.truth, "SIMULATION");
+  assert.notEqual(view.truth, "LIVE");
+});
+
+test("Sim-like adapter round-trips canonical execution semantics", () => {
+  const canonical = {
+    nodes: [{ id: "n1", node_type: "KNOWLEDGE_RETRIEVAL", name: "Research", parameters: { capability_status: "UNCONNECTED" } }],
+    edges: [],
+  };
+  assert.deepEqual(simLikeToCanonicalPlan(canonicalPlanToSimLike(canonical)), canonical);
+});
+
+test("Sim-like adapter normalizes the server DSL node_type contract", () => {
+  const view = canonicalPlanToSimLike({
+    nodes: [
+      { id: "retrieve", node_type: "KNOWLEDGE_RETRIEVAL", name: "检索知识", parameters: { agent_id: "knowledge" } },
+      { id: "gate", node_type: "FILTER_PASS", name: "人工决策门", parameters: {} },
+      { id: "output", node_type: "OUTPUT_FORMAT", name: "交付物", parameters: {} },
+    ],
+    edges: [
+      { source: "retrieve", target: "gate" },
+      { source: "gate", target: "output" },
+    ],
+  });
+  assert.deepEqual(view.nodes.map(({ id, type, data }) => ({ id, type, name: data.name })), [
+    { id: "retrieve", type: "agent", name: "检索知识" },
+    { id: "gate", type: "gate", name: "人工决策门" },
+    { id: "output", type: "artifact", name: "交付物" },
+  ]);
+  assert.equal(view.truth, "SIMULATION");
+});
+
+test("Sim-like adapter round-trips the real server node_type and edge condition DSL", () => {
+  const canonical = {
+    nodes: [
+      { id: "retrieve", node_type: "KNOWLEDGE_RETRIEVAL", name: "检索知识", parameters: { agent_id: "knowledge" } },
+      { id: "gate", node_type: "FILTER_PASS", name: "人工决策门", parameters: {} },
+      { id: "output", node_type: "OUTPUT_FORMAT", name: "交付物", parameters: {} },
+    ],
+    edges: [
+      { source: "retrieve", target: "gate", condition: "evidence_ready" },
+      { source: "gate", target: "output", condition: null },
+    ],
+  };
+  const view = canonicalPlanToSimLike(canonical);
+  assert.equal(view.nodes[0].data.node_type, "KNOWLEDGE_RETRIEVAL");
+  assert.deepEqual(simLikeToCanonicalPlan(view), canonical);
+});
+
+test("Sim-like adapter omits absent conditions and rejects invalid condition types", () => {
+  const canonical = {
+    nodes: [
+      { id: "retrieve", node_type: "KNOWLEDGE_RETRIEVAL", name: "检索知识", parameters: {} },
+      { id: "output", node_type: "OUTPUT_FORMAT", name: "交付物", parameters: {} },
+    ],
+    edges: [{ source: "retrieve", target: "output" }],
+  };
+  assert.deepEqual(simLikeToCanonicalPlan(canonicalPlanToSimLike(canonical)).edges, canonical.edges);
+  assert.throws(
+    () => canonicalPlanToSimLike({ ...canonical, edges: [{ source: "retrieve", target: "output", condition: true }] }),
+    /condition must be a string or null/,
+  );
+});
+
+test("PlanCanvas saves edited nodes and edges over the original DSL root contract", () => {
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
+  assert.match(canvas, /dsl:\s*\{\s*\.\.\.plan\.dsl,\s*\.\.\.editedDsl\s*\}/);
+  assert.match(canvas, /expected_hash:\s*plan\.content_hash/);
+  assert.match(canvas, /expected_revision:\s*plan\.activation_revision/);
+  assert.match(canvas, /request_id:/);
+});
+
+test("Gate-2 platform API exposes CAS-safe plan save and rollback helpers", () => {
+  const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  assert.match(api, /patchWorkflowPlan\(workflowId, payload\)/);
+  assert.match(api, /PATCH/);
+  assert.match(api, /rollbackWorkflowPlan\(workflowId, payload\)/);
+  assert.match(api, /\/plan\/rollback/);
+});
+
+test("Gate-2 PlanCanvas exposes explicit save and keeps execution actions out of the canvas", () => {
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
+  assert.match(canvas, /保存 SIMULATION 编辑/);
+  assert.match(canvas, /request_id/);
+  assert.doesNotMatch(canvas, /approveWorkflowPlan|startWorkflow|Runtime|Realtime/);
+});
+
+test("Gate-3 exposes a read-only workflow plan versions API", () => {
+  const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  assert.match(api, /listWorkflowPlanVersions\(workflowId\)/);
+  assert.match(api, /\/plan\/versions/);
+});
+
+test("Gate-3 PlanCanvas uses an explicit server-selected rollback target", () => {
+  const source = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+  const canvas = source.slice(source.indexOf("function PlanCanvas"), source.indexOf("function DetailDrawer"));
+  assert.match(canvas, /listWorkflowPlanVersions/);
+  assert.match(canvas, /rollbackWorkflowPlan/);
+  assert.match(canvas, /从历史版本回滚/);
+  assert.match(canvas, /source_plan_id/);
+  assert.doesNotMatch(canvas, /useEffect\([^)]*rollbackWorkflowPlan/);
 });

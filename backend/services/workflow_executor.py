@@ -22,6 +22,7 @@ from backend.db import SessionLocal
 from backend.models.tenant import TenantMapping
 from backend.models.tenant_agent import TenantAgentModel
 from backend.models.workflow import (
+    WorkflowApproval,
     WorkflowArtifact,
     WorkflowEvent,
     WorkflowExecution,
@@ -29,6 +30,7 @@ from backend.models.workflow import (
     WorkflowNodeRun,
     WorkflowPlanVersion,
 )
+from backend.services.workflow_contract import assert_plan_binding
 from backend.services.workflow_artifacts import (
     append_event,
     initialize_run,
@@ -143,6 +145,32 @@ async def _nodes(db: AsyncSession, execution_id: str) -> dict[str, WorkflowNodeR
         ).scalars().all()
     )
     return {row.node_id: row for row in rows}
+
+
+async def _assert_execution_plan_binding(
+    db: AsyncSession, execution: WorkflowExecution, plan: WorkflowPlanVersion
+) -> None:
+    workflow = await db.get(WorkflowDefinition, execution.workflow_id)
+    approval = (
+        await db.execute(
+            select(WorkflowApproval)
+            .where(
+                WorkflowApproval.workflow_id == execution.workflow_id,
+                WorkflowApproval.approval_type == "plan",
+                WorkflowApproval.decision == "approved",
+            )
+            .order_by(WorkflowApproval.created_at.desc(), WorkflowApproval.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    assert_plan_binding(
+        active_plan_id=workflow.active_plan_id if workflow else None,
+        active_plan_hash=plan.content_hash,
+        active_activation_revision=plan.activation_revision,
+        approval_plan_id=approval.plan_id if approval else None,
+        approval_plan_hash=approval.plan_hash if approval else None,
+        approval_activation_revision=approval.activation_revision if approval else None,
+    )
 
 
 def executable_plan_projection(plan: dict[str, Any]) -> dict[str, Any]:
@@ -510,6 +538,7 @@ async def sync_execution(execution_id: str, db: AsyncSession) -> None:
         )
     ).scalar_one()
     plan = await _plan(db, execution)
+    await _assert_execution_plan_binding(db, execution, plan)
     initialize_run(execution, executable_plan_projection(plan.dsl))
     try:
         dispatched = await dispatch(execution, plan)
