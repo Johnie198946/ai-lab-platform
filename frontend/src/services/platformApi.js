@@ -416,6 +416,9 @@ export const platformApi = {
   updateProjectTask(projectId, taskId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: payload });
   },
+  editProjectTask(projectId, taskId, payload) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}`, { method: "PUT", body: payload });
+  },
   createProjectTask(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: payload });
   },

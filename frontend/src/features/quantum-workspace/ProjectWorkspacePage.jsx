@@ -8,7 +8,7 @@ import { ProjectSchedule } from "./ProjectSchedule";
 import { ProjectTaskboard } from "./ProjectTaskboard";
 import { StageRail } from "./StageRail";
 import { TaskChatDrawer } from "./TaskChatDrawer";
-import { BindWorkflowDialog, NewProjectTaskDialog } from "./TaskboardDialogs";
+import { BindWorkflowDialog, EditProjectTaskDialog, NewProjectTaskDialog } from "./TaskboardDialogs";
 
 export function ProjectWorkspacePage() {
   const { projectId, viewType } = useParams();
@@ -19,6 +19,7 @@ export function ProjectWorkspacePage() {
   const [viewData, setViewData] = useState(null);
   const [selectedStageId, setSelectedStageId] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [editTask, setEditTask] = useState(null);
   const [workflows, setWorkflows] = useState([]);
   const [workflowState, setWorkflowState] = useState("SYNCING");
   const [boardMode, setBoardMode] = useState("status");
@@ -118,6 +119,19 @@ export function ProjectWorkspacePage() {
     }
   };
 
+  const editTaskDetails = async (taskDraft) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      await platformApi.editProjectTask(projectId, editTask.id, { expected_revision: process.process_revision, ...taskDraft });
+      setEditTask(null);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "项目 revision 已变化，请关闭后重试。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally { setDialogBusy(false); }
+  };
+
   const createAndBindWorkflow = async (task) => {
     setDialogBusy(true);
     setDialogError("");
@@ -160,10 +174,11 @@ export function ProjectWorkspacePage() {
       <StageRail process={process} selectedStageId={selectedStageId} onSelect={(id) => setSelectedStageId((current) => current === id ? null : id)} />
       {stage && <div className="qw-stage-focus"><strong>{stage.name}</strong><span>{stage.status} · {stage.progress}%</span><button onClick={() => setSelectedStageId(null)}>清除筛选</button></div>}
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <ProjectTaskboard process={process} workflows={workflows} selectedStageId={selectedStageId} onTaskOpen={setSelectedTask} onStatusChange={updateStatus} onWorkflowOpen={(workflowId) => window.location.assign(`/architect?workflow_id=${encodeURIComponent(workflowId)}`)} onBindWorkflow={(task) => { setDialogError(""); setBindTask(task); }} onCreateTask={() => { setDialogError(""); setNewTaskOpen(true); }} boardMode={boardMode} onBoardModeChange={setBoardMode} workflowState={workflowState} intake={<BusinessIntakePanel project={project} process={process} onApplied={load} />} />}
+      {view === "taskboard" && <ProjectTaskboard process={process} workflows={workflows} selectedStageId={selectedStageId} onTaskOpen={(task) => { setDialogError(""); setEditTask(task); }} onTaskChat={setSelectedTask} onStatusChange={updateStatus} onWorkflowOpen={(workflowId) => window.location.assign(`/architect?workflow_id=${encodeURIComponent(workflowId)}`)} onBindWorkflow={(task) => { setDialogError(""); setBindTask(task); }} onCreateTask={() => { setDialogError(""); setNewTaskOpen(true); }} boardMode={boardMode} onBoardModeChange={setBoardMode} workflowState={workflowState} intake={<BusinessIntakePanel project={project} process={process} onApplied={load} />} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewData && <ProjectGraph graph={viewData} />}
       {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
+      {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
       {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
       {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}
     </div>

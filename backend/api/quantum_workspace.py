@@ -104,6 +104,14 @@ class BindTaskWorkflowRequest(BaseModel):
     workflow_id: str = Field(min_length=1, max_length=48)
 
 
+class EditProjectTaskRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    stage_id: str = Field(min_length=1, max_length=48)
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=4000)
+    assignee_role: str | None = Field(default=None, max_length=160)
+
+
 class OpenTaskConversationRequest(BaseModel):
     project_id: str
     task_id: str
@@ -1137,6 +1145,46 @@ async def update_project_task(
             "task": task,
             "stage": stage,
         }
+
+
+@router.put("/projects/{project_id}/tasks/{task_id}")
+async def edit_project_task(
+    project_id: str,
+    task_id: str,
+    body: EditProjectTaskRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    """Persist the card editor fields without opening a chat or changing execution state."""
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        tasks = [dict(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item["id"] == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        stages = [dict(item) for item in process.get("stages", [])]
+        target_stage = next((item for item in stages if item["id"] == body.stage_id), None)
+        if target_stage is None:
+            raise HTTPException(status_code=422, detail="stage not found")
+        old_stage_id = task.get("stage_id")
+        task.update({"stage_id": body.stage_id, "title": body.title.strip(), "summary": body.summary.strip(), "assignee_role": (body.assignee_role or "").strip() or None})
+        for stage in stages:
+            _aggregate_stage(stage, [item for item in tasks if item.get("stage_id") == stage["id"]])
+        graphs = dict(process.get("graphs") or {})
+        workflow_graph = dict(graphs.get("workflow") or {})
+        workflow_graph["nodes"] = [{**node, "title": task["title"], "task_status": task.get("status", "TODO")} if node.get("id") == task_id else node for node in workflow_graph.get("nodes", [])]
+        graphs["workflow"] = workflow_graph
+        process.update({"tasks": tasks, "stages": stages, "graphs": graphs})
+        next_revision = body.expected_revision + 1
+        cas = await db.execute(update(WorkspaceProject).where(WorkspaceProject.id == project.id, WorkspaceProject.tenant_key == tenant_key, WorkspaceProject.owner_user_id == user_id, WorkspaceProject.process_revision == body.expected_revision).values(process_snapshot=process, process_revision=next_revision, updated_at=datetime.now().astimezone()).execution_options(synchronize_session=False))
+        if cas.rowcount != 1:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict"})
+        await db.commit()
+        return {"project_id": project.id, "process_revision": next_revision, "task": task, "stage": target_stage, "previous_stage_id": old_stage_id}
 
 
 @router.post("/task-conversations")

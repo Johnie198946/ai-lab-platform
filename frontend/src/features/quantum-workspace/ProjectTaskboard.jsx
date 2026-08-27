@@ -10,6 +10,7 @@ export function ProjectTaskboard({
   workflows,
   selectedStageId,
   onTaskOpen,
+  onTaskChat,
   onStatusChange,
   onWorkflowOpen,
   onBindWorkflow,
@@ -51,13 +52,13 @@ export function ProjectTaskboard({
           <section className="qw-board-column" key={column.key} onDragOver={boardMode === "status" ? (event) => event.preventDefault() : undefined} onDrop={boardMode === "status" ? (event) => drop(event, column.key) : undefined}>
             <div className="qw-column-head"><span>{column.label}{column.description && <em>{column.description}</em>}</span><small>{column.tasks.length}</small></div>
             <div className="qw-card-stack">{column.tasks.map((task) => (
-              <article className="qw-task-card" key={task.id} draggable={boardMode === "status"} onDragStart={boardMode === "status" ? (event) => { event.dataTransfer.setData("text/qw-task-id", task.id); event.dataTransfer.effectAllowed = "move"; } : undefined} onClick={() => onTaskOpen(task)}>
+                <article className="qw-task-card" key={task.id} draggable={boardMode === "status"} onDragStart={boardMode === "status" ? (event) => { event.dataTransfer.setData("text/qw-task-id", task.id); event.dataTransfer.effectAllowed = "move"; } : undefined} onClick={() => onTaskOpen(task)}>
                 <div className="qw-task-top"><span className={`qw-status-dot ${statusTone[task.displayStatus]}`} /><span>{stages.get(task.stage_id)?.name ?? "未分阶段"}</span>{task.risk === "MEDIUM" && <CircleAlert size={14} />}</div>
                 <h4>{task.title}</h4><p>{task.summary}</p>
                 <div className="qw-task-tags"><span><UserRound size={13} />{task.assignee_id || task.assignee_role || "待分配"}</span><span><Bot size={13} />{task.workflowStatus || task.workflow_status}</span>{task.truth && <span className={`qw-truth ${task.truth.toLowerCase()}`}>{task.truth}</span>}</div>
                 {boardMode === "lifecycle" && <dl className="qw-canonical-facts"><div><dt>Execution</dt><dd>{task.executionId ? task.executionId.slice(-8) : "尚未创建"}</dd></div><div><dt>工件</dt><dd>{task.artifactCount}</dd></div><div><dt>Token / 费用</dt><dd>{task.tokenUsed} / {formattedCost(task.estimatedCostUsd)}</dd></div><div><dt>进度</dt><dd>{task.executionId ? `${task.progress}%` : "—"}</dd></div></dl>}
                 {task.errorMessage && <p className="qw-task-runtime-error">{task.errorMessage}</p>}
-                <div className="qw-task-footer"><span><CalendarDays size={13} />{task.planned_finish_at ? task.planned_finish_at.slice(0, 10) : "待排期"}</span><span className="qw-card-actions">{task.workflowId || task.workflow_id ? <button type="button" aria-label={`打开 ${task.title} 真实工作流`} onClick={(event) => { event.stopPropagation(); onWorkflowOpen(task.workflowId || task.workflow_id); }}><ArrowUpRight size={15} /></button> : <button type="button" aria-label={`为 ${task.title} 绑定工作流`} onClick={(event) => { event.stopPropagation(); onBindWorkflow(task); }}><Link2 size={15} /></button>}<button type="button" aria-label={`打开 ${task.title} 对话`}><MessageSquare size={15} /></button></span></div>
+                <div className="qw-task-footer"><span><CalendarDays size={13} />{task.planned_finish_at ? task.planned_finish_at.slice(0, 10) : "待排期"}</span><span className="qw-card-actions">{task.workflowId || task.workflow_id ? <button type="button" aria-label={`打开 ${task.title} 真实工作流`} onClick={(event) => { event.stopPropagation(); onWorkflowOpen(task.workflowId || task.workflow_id); }}><ArrowUpRight size={15} /></button> : <button type="button" aria-label={`为 ${task.title} 绑定工作流`} onClick={(event) => { event.stopPropagation(); onBindWorkflow(task); }}><Link2 size={15} /></button>}<button type="button" aria-label={`打开 ${task.title} 对话`} onClick={(event) => { event.stopPropagation(); onTaskChat(task); }}><MessageSquare size={15} /></button></span></div>
               </article>
             ))}{!column.tasks.length && <div className="qw-column-empty">{boardMode === "status" ? "拖动任务到这里" : "暂无 canonical 记录"}</div>}</div>
           </section>
