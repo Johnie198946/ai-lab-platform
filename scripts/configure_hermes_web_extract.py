@@ -66,7 +66,12 @@ def configure(hermes_home: Path, plugin_source: Path, backup_root: Path) -> dict
     temporary = Path(tempfile.mkdtemp(prefix=PLUGIN_NAME + ".", dir=plugin_root))
     previous = plugin_root / f".{PLUGIN_NAME}.previous-{os.getpid()}"
     try:
-        shutil.copytree(plugin_source, temporary, dirs_exist_ok=True)
+        shutil.copytree(
+            plugin_source,
+            temporary,
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
         if destination.exists():
             os.replace(destination, previous)
         os.replace(temporary, destination)
