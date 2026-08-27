@@ -3,16 +3,17 @@
 ```yaml
 task_id: 20260827-qws-dashi-functional-parity
 goal: "审计 QuantumWorkspace 与 dashi-taskboard 的功能偏离并补齐 QWS 缺失能力"
-status: PUSHED
+status: VERIFIED
 branch: codex/quantumworkspace-dashi-functional-parity-20260827
 worktree: /private/tmp/ai-lab-qws-dashi-functional-parity-20260827
 base_head: a6ba5adfbe6d5501fbaa1289fce9db7809e1664e
-head_local_commit: fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f (部署代码提交；证据收尾提交见下方)
-remote_sha: "refs/heads/codex/quantumworkspace-dashi-functional-parity-20260827 = 0092c83d3e082ae5d91377c3f0984dcc46008b31（git ls-remote 核验）；服务器部署代码祖先提交 = fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f"
-server_after: "QWS SHA 曾成功切换至 /opt/releases/ai-lab-platform-fa6a5b5f0ca4 并通过检查；随后被并发任务覆盖，当前实际为 /opt/releases/ai-lab-platform-2b3c9753d46a，.deployed-sha=2b3c9753d46a3a89229327916a5ec561e6d4aa38"
-health_check: "QWS 切换时 scripts/update.sh ready/health/Bridge 均通过；当前服务器（另一任务版本）再次检查 ready=ready、health=ok、Bridge v6.0 ok"
-functional_check: "本地前端 107/107、后端 15/15、production build 通过；QWS 版本切换时公网 HTTPS 前端 HTTP 200；当前生产功能不归属于本任务"
-rollback_point: "/opt/releases/ai-lab-platform-2b3c9753d46a（当前服务器版本）；QWS 曾用回滚点 /opt/releases/ai-lab-platform-23f42fae75a9"
+head_local_commit: 6a108c8ffe8614a4590569f14024718657e65fc4 (部署代码提交；本 manifest 收尾提交会在其后)
+remote_sha: "部署目标 refs/heads/codex/quantumworkspace-dashi-functional-parity-20260827 = 6a108c8ffe8614a4590569f14024718657e65fc4（git ls-remote 核验）"
+server_before: "/opt/releases/ai-lab-platform-2b3c9753d46a，.deployed-sha=2b3c9753d46a3a89229327916a5ec561e6d4aa38；ready/health/Bridge 均正常"
+server_after: "/opt/releases/ai-lab-platform-6a108c8ffe86，.deployed-sha=6a108c8ffe8614a4590569f14024718657e65fc4；api/frontend/worker 容器已更新并运行"
+health_check: "scripts/update.sh runtime contract audit passed；独立复核 ready={status:ready,version:0.8.0}、health={status:ok,version:0.8.0}、Bridge={status:ok,version:v6.0,workflow_orchestration:true,streaming:true}；Compose 服务均 running，api/postgres healthy"
+functional_check: "本地前端 107/107、后端 15/15、production build、ruff、py_compile、diff check 全部通过；远端发布后 API ready/health/Bridge 及前端容器复核通过；公网 80/443 当前不可达（网络入口限制，非应用健康失败）"
+rollback_point: "/opt/releases/ai-lab-platform-2b3c9753d46a（部署前版本，可用 scripts/update.sh 2b3c9753d46a3a89229327916a5ec561e6d4aa38 回滚）"
 ```
 
 ## 变更文件
@@ -57,7 +58,6 @@ PASS git diff --check
 
 ## 风险、未完成项与回滚
 
-- QWS 代码已提交并推送；曾完成一次部署但随后被并发任务覆盖，当前交付状态为 `PUSHED`，不是 `DEPLOYED/VERIFIED`。
+- QWS 代码已按用户“允许覆盖”授权覆盖部署并完成远端核验；本 manifest 收尾提交为文档证据，不需要再次部署。
 - Production build 仍有既存的单 chunk 大于 500 kB 提示，不是本次功能错误。
 - 未进行带真实账号和真实 provider execution 的线上人工验收；LIVE 投影由单元合同覆盖。
-- 再次部署需要显式确认覆盖当前较新的 `2b3c9753...` 生产版本；未获确认前不执行。
