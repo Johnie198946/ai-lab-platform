@@ -6,6 +6,7 @@ const root = new URL('../public/showroom/', import.meta.url);
 const html = readFileSync(new URL('index.html', root), 'utf8');
 const script = readFileSync(new URL('showroom-journey.js', root), 'utf8');
 const updateScript = readFileSync(new URL('../../scripts/update.sh', import.meta.url), 'utf8');
+const backendDockerfile = readFileSync(new URL('../../backend/Dockerfile', import.meta.url), 'utf8');
 
 test('new default entry is isolated from the legacy nine-screen app', () => {
   assert.match(html, /showroom-journey\.js/);
@@ -39,19 +40,30 @@ test('S3 and S4 use structured demand fields and the shared showroom API', () =>
   assert.doesNotMatch(script, /JsonRpcGatewayClient/);
 });
 
-test('deployment prepares runtime contracts and writes marker only after hard audit', () => {
-  const restart = updateScript.indexOf('docker compose up -d --build');
-  const health = updateScript.indexOf('if [ -z "${status:-}" ]');
+test('immutable deployment audits the release before switching the live symlink', () => {
+  const migration = updateScript.indexOf('python scripts/migrate_quantum_workspace.py');
+  const restart = updateScript.indexOf(
+    'docker compose -p "$COMPOSE_PROJECT" up -d --build',
+    migration,
+  );
+  const health = updateScript.indexOf('if [ -z "$status" ]');
   const runtimeDirs = updateScript.indexOf('mkdir -p data/manifests data/runtime');
   const matrixLink = updateScript.indexOf('ln -s vault/knowledge_matrix.json data/knowledge_matrix.json');
   const audit = updateScript.indexOf('audit_runtime_contracts.py');
-  const marker = updateScript.indexOf('mv -f "$marker_tmp" .deployed-sha');
-  assert.ok(restart >= 0 && health > restart);
+  const marker = updateScript.indexOf('> .deployed-sha');
+  const switchLink = updateScript.indexOf('mv -Tf "$LINK_TMP" "$APP_LINK"');
+  const bridgeRestart = updateScript.indexOf('systemctl restart hermes-bridge.service', switchLink);
+  const finalApiHealth = updateScript.lastIndexOf('curl -fsS --max-time 10 http://127.0.0.1:8000/ready');
+  const finalBridgeHealth = updateScript.lastIndexOf('curl -fsS --max-time 10 http://127.0.0.1:9118/health');
+  assert.ok(migration >= 0 && restart > migration && health > restart);
   assert.ok(runtimeDirs > health && matrixLink > runtimeDirs && audit > matrixLink);
-  assert.ok(marker > audit);
+  assert.ok(marker > audit && switchLink > marker && bridgeRestart > switchLink);
+  assert.ok(finalApiHealth > bridgeRestart && finalBridgeHealth > finalApiHealth);
   assert.match(updateScript, /\[ "\$#" -ne 1 \]/);
   assert.match(updateScript, /\^\[0-9a-fA-F\]\{40\}\$/);
   assert.doesNotMatch(updateScript, /refs\/heads\/main/);
   assert.doesNotMatch(updateScript, /audit_runtime_contracts[^\n]*\|\|/);
+  assert.doesNotMatch(updateScript, /rm -rf "\$CURRENT_DIR"/);
   assert.match(updateScript, /trap cleanup EXIT/);
+  assert.match(backendDockerfile, /PYTHONPATH=\/app/);
 });

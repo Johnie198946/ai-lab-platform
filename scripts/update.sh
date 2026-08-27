@@ -101,13 +101,17 @@ if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
   /opt/hermes/venv/bin/pip install --no-cache-dir \
     -i https://mirrors.aliyun.com/pypi/simple/ 'ddgs>=9.0'
 fi
+echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
+docker compose -p "$COMPOSE_PROJECT" build api
+docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps api \
+  python scripts/migrate_quantum_workspace.py
 RUNTIME_CHANGED=1
 docker compose -p "$COMPOSE_PROJECT" up -d --build
 
 echo "==> [4/6] API 健康检查与运行契约审计"
 status=""
 for _ in $(seq 1 30); do
-  status="$(curl -sf http://127.0.0.1:8000/health || true)"
+  status="$(curl -sf http://127.0.0.1:8000/ready || true)"
   [ -n "$status" ] && break
   sleep 2
 done
@@ -135,7 +139,7 @@ SWITCHED=1
 systemctl restart hermes-bridge.service
 
 echo "==> [6/6] 最终健康检查"
-curl -fsS --max-time 10 http://127.0.0.1:8000/health
+curl -fsS --max-time 10 http://127.0.0.1:8000/ready
 curl -fsS --max-time 10 http://127.0.0.1:9118/health
 echo "deployed_sha=$EXPECTED_SHA"
 echo "release=$RELEASE_DIR"

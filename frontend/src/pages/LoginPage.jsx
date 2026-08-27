@@ -42,7 +42,7 @@ export function LoginPage() {
     if (requestedPath.startsWith("/") && !requestedPath.startsWith("//")) {
       return requestedPath;
     }
-    return location.state?.from?.pathname || "/orchestration";
+    return location.state?.from?.pathname || "/home";
   }, [location.state, query]);
 
   useEffect(() => {

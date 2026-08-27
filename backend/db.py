@@ -64,6 +64,7 @@ async def init_db() -> None:
     import backend.models.workflow  # noqa: F401  (注册持久工作流模型)
     import backend.models.knowledge_action  # noqa: F401  (注册知识动作幂等记录)
     import backend.models.external_auth  # noqa: F401  (注册外部登录短期票据)
+    import backend.models.workspace  # noqa: F401  (注册 QuantumWorkspace 控制面模型)
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

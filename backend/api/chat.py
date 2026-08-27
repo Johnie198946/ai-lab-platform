@@ -979,6 +979,10 @@ async def _call_bridge_stream(
                 return
             async for line in resp.aiter_lines():
                 if not line:
+                    # Preserve the blank line that terminates each SSE event.
+                    # Dropping it concatenates data frames and prevents browser
+                    # clients from dispatching delta/done events incrementally.
+                    yield "\n"
                     continue
                 yield line + "\n"
 

@@ -1,5 +1,6 @@
 import { getAuthAccessToken } from "../auth/storage";
 import { API_TOKEN, REQUEST_TIMEOUT_MS, buildApiUrl, buildAuthUrl } from "../config/env";
+import { parseSseFrame, splitSseFrames } from "./sseFrames";
 
 export class PlatformApiError extends Error {
   constructor(message, options = {}) {
@@ -77,6 +78,42 @@ const request = async (path, options = {}) => {
   } finally {
     window.clearTimeout(timeoutId);
   }
+};
+
+const streamRequest = async (path, body, onEvent) => {
+  const headers = new Headers({ Accept: "text/event-stream", "Content-Type": "application/json" });
+  const accessToken = getAuthAccessToken() || API_TOKEN;
+  if (accessToken) headers.set("Authorization", `Bearer ${accessToken}`);
+  const response = await fetch(buildApiUrl(path), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    throw new PlatformApiError(await parseErrorMessage(response), { status: response.status });
+  }
+  if (!response.body) throw new PlatformApiError("浏览器未返回流式响应体。");
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let finalEvent = null;
+  const dispatchFrames = (frames) => {
+    for (const frame of frames) {
+      const event = parseSseFrame(frame);
+      if (!event) continue;
+      finalEvent = event;
+      onEvent?.(event);
+    }
+  };
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
+    const parsed = splitSseFrames(buffer, done);
+    buffer = parsed.remainder;
+    dispatchFrames(parsed.frames);
+    if (done) break;
+  }
+  return finalEvent;
 };
 
 export const platformApi = {
@@ -345,5 +382,47 @@ export const platformApi = {
   },
   getExecutionEvidenceReport(executionId) {
     return request(`/api/v1/workflow-executions/${executionId}/evidence-report`);
+  },
+  listProjectTemplates() {
+    return request("/api/v1/project-templates");
+  },
+  instantiateProject(templateId, payload) {
+    return request(`/api/v1/project-templates/${templateId}/instantiate`, { method: "POST", body: payload });
+  },
+  listProjects() {
+    return request("/api/v1/projects");
+  },
+  getProject(projectId) {
+    return request(`/api/v1/projects/${projectId}`);
+  },
+  getProjectProcess(projectId) {
+    return request(`/api/v1/projects/${projectId}/process`);
+  },
+  createBusinessIntake(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/business-intakes`, { method: "POST", body: payload });
+  },
+  generateProcessDraft(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/process-drafts/generate`, { method: "POST", body: payload });
+  },
+  applyProcessDraft(projectId, draftId, payload) {
+    return request(`/api/v1/projects/${projectId}/process-drafts/${draftId}/apply`, { method: "POST", body: payload });
+  },
+  getProjectSchedule(projectId) {
+    return request(`/api/v1/projects/${projectId}/schedule`);
+  },
+  getProjectGraph(projectId, viewType) {
+    return request(`/api/v1/projects/${projectId}/graphs/${viewType}`);
+  },
+  updateProjectTask(projectId, taskId, payload) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: payload });
+  },
+  openTaskConversation(payload) {
+    return request("/api/v1/task-conversations", { method: "POST", body: payload });
+  },
+  listTaskMessages(conversationId) {
+    return request(`/api/v1/task-conversations/${conversationId}/messages`);
+  },
+  streamTaskMessage(conversationId, payload, onEvent) {
+    return streamRequest(`/api/v1/task-conversations/${conversationId}/messages/stream`, payload, onEvent);
   },
 };

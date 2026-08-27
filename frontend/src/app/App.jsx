@@ -13,6 +13,9 @@ import RoleProduct from "../pages/RoleProduct";
 import ArchitectPage from "../pages/ArchitectWorkbenchPage";
 import AgencyPortalPage from "../pages/AgencyPortalPage";
 import { isShowroomAccount } from "../auth/entryRoute";
+import { QuantumWorkspaceLayout } from "../features/quantum-workspace/QuantumWorkspaceLayout";
+import { WorkspaceHomePage } from "../features/quantum-workspace/WorkspaceHomePage";
+import { ProjectWorkspacePage } from "../features/quantum-workspace/ProjectWorkspacePage";
 
 function ShowroomRedirect() {
   const { isAuthenticated, authSession } = useAuth();
@@ -26,12 +29,19 @@ export default function App() {
     <Routes>
       <Route
         path="/"
-        element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/agency" : "/orchestration") : "/login"} replace />}
+        element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/agency" : "/home") : "/login"} replace />}
       />
       <Route path="/login" element={<LoginPage />} />
       <Route path="/showroom/*" element={<ShowroomRedirect />} />
       <Route element={<ProtectedRoute />}>
         <Route path="/agency" element={<AgencyPortalPage />} />
+        <Route element={<QuantumWorkspaceLayout />}>
+          <Route path="/home" element={<WorkspaceHomePage />} />
+          <Route path="/templates" element={<WorkspaceHomePage />} />
+          <Route path="/projects/:projectId/taskboard" element={<ProjectWorkspacePage />} />
+          <Route path="/projects/:projectId/schedule" element={<ProjectWorkspacePage />} />
+          <Route path="/projects/:projectId/graph/:viewType" element={<ProjectWorkspacePage />} />
+        </Route>
         <Route path="/architect" element={<ArchitectPage />} />
         <Route path="/orchestration" element={<OrchestrationPage />} />
         <Route path="/agents" element={<AgentPage />} />
@@ -44,7 +54,7 @@ export default function App() {
       </Route>
       <Route
         path="*"
-        element={<Navigate to={isAuthenticated ? "/orchestration" : "/login"} replace />}
+        element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/agency" : "/home") : "/login"} replace />}
       />
     </Routes>
   );

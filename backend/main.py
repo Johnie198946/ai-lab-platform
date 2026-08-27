@@ -7,6 +7,8 @@ import logging
 from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
 from contextlib import asynccontextmanager
 from backend.api.errors import register_error_handlers
 from backend.api.screens import router as screens_router
@@ -36,7 +38,9 @@ from backend.api.subscriptions import router as subscriptions_router
 from backend.api.knowledge_publication import router as knowledge_publication_router
 from backend.api.hot_memory import router as hot_memory_router
 from backend.api.external_auth import router as external_auth_router
-from backend.db import init_db
+from backend.api.quantum_workspace import router as quantum_workspace_router
+from backend.db import SessionLocal, init_db
+from backend.models.workspace import WorkspaceProject
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +56,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         db_ready = False
         logger.exception("Database initialization failed; file-backed features remain available")
+    app.state.db_ready = db_ready
     if db_ready:
         try:
             from backend.services.workflow_migration import migrate_legacy_workflows
@@ -157,13 +162,36 @@ app.include_router(showroom_router)
 app.include_router(customer_demands_router, dependencies=[Depends(require_auth)])
 # 可执行工作流：计划审批、持久执行、素材复核
 app.include_router(workflows_router, dependencies=[Depends(require_auth)])
+# QuantumWorkspace 项目控制面。执行事实继续由 workflows/chat 路由持有。
+app.include_router(quantum_workspace_router, dependencies=[Depends(require_auth)])
 # Authen HMAC webhook + signed-capability Knowledge Gateway use their own auth.
 app.include_router(knowledge_policy_router)
 
 # ---------- 健康检查 ----------
 @app.get("/health")
 async def health():
+    """Process liveness; intentionally independent of external services."""
     return {"status": "ok", "version": "0.8.0"}
+
+
+@app.get("/ready")
+async def ready():
+    """Deployment readiness; fails closed when DB/schema is unavailable."""
+    if not getattr(app.state, "db_ready", False):
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "reason": "database initialization failed"},
+        )
+    try:
+        async with SessionLocal() as db:
+            await db.scalar(select(WorkspaceProject.id).limit(1))
+    except Exception:
+        logger.exception("Workspace schema readiness check failed")
+        return JSONResponse(
+            status_code=503,
+            content={"status": "degraded", "reason": "workspace schema unavailable"},
+        )
+    return {"status": "ready", "version": "0.8.0"}
 
 
 # 自动生成 OpenAPI schema
