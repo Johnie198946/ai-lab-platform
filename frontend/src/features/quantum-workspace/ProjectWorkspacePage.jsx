@@ -8,6 +8,7 @@ import { ProjectSchedule } from "./ProjectSchedule";
 import { ProjectTaskboard } from "./ProjectTaskboard";
 import { StageRail } from "./StageRail";
 import { TaskChatDrawer } from "./TaskChatDrawer";
+import { BindWorkflowDialog, NewProjectTaskDialog } from "./TaskboardDialogs";
 
 export function ProjectWorkspacePage() {
   const { projectId, viewType } = useParams();
@@ -18,6 +19,13 @@ export function ProjectWorkspacePage() {
   const [viewData, setViewData] = useState(null);
   const [selectedStageId, setSelectedStageId] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [workflows, setWorkflows] = useState([]);
+  const [workflowState, setWorkflowState] = useState("SYNCING");
+  const [boardMode, setBoardMode] = useState("status");
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [bindTask, setBindTask] = useState(null);
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [dialogError, setDialogError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
@@ -32,6 +40,18 @@ export function ProjectWorkspacePage() {
       setProject(projectValue);
       setProcess(processValue);
       setViewData(selectedView ?? null);
+      if (view === "taskboard") {
+        setWorkflowState("SYNCING");
+        try {
+          const workflowValue = await platformApi.listWorkflows();
+          setWorkflows(workflowValue.workflows || workflowValue || []);
+          setWorkflowState("CONNECTED");
+        } catch (reason) {
+          setWorkflows([]);
+          setWorkflowState("UNCONNECTED");
+          setError((current) => current || `canonical workflow 读取失败：${reason.message}`);
+        }
+      }
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -62,6 +82,67 @@ export function ProjectWorkspacePage() {
     }
   };
 
+  const createTask = async (taskDraft) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      await platformApi.createProjectTask(projectId, {
+        expected_revision: process.process_revision,
+        ...taskDraft,
+      });
+      setNewTaskOpen(false);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "项目 revision 已变化，请关闭后重试。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const bindWorkflow = async (task, workflowId) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
+        expected_revision: process.process_revision,
+        workflow_id: workflowId,
+      });
+      setBindTask(null);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "该 Workflow 已被绑定，或项目 revision 已变化。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const createAndBindWorkflow = async (task) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      const created = await platformApi.createWorkflow({
+        title: task.title,
+        description: task.summary,
+        desired_output: (task.deliverables || []).join("、") || "可审阅业务成果",
+        clarification_mode: "dynamic",
+      });
+      const workflow = created.workflow || created;
+      await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
+        expected_revision: process.process_revision,
+        workflow_id: workflow.id,
+      });
+      setBindTask(null);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "项目 revision 已变化，Workflow 已创建但尚未绑定，请重新选择绑定。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;
   if (!project || !process) return <div className="qw-page-state error">{error || "项目不可用"}<Link to="/home">返回 Home</Link></div>;
   return (
@@ -79,10 +160,12 @@ export function ProjectWorkspacePage() {
       <StageRail process={process} selectedStageId={selectedStageId} onSelect={(id) => setSelectedStageId((current) => current === id ? null : id)} />
       {stage && <div className="qw-stage-focus"><strong>{stage.name}</strong><span>{stage.status} · {stage.progress}%</span><button onClick={() => setSelectedStageId(null)}>清除筛选</button></div>}
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <ProjectTaskboard process={process} selectedStageId={selectedStageId} onTaskOpen={setSelectedTask} onStatusChange={updateStatus} intake={<BusinessIntakePanel project={project} process={process} onApplied={load} />} />}
+      {view === "taskboard" && <ProjectTaskboard process={process} workflows={workflows} selectedStageId={selectedStageId} onTaskOpen={setSelectedTask} onStatusChange={updateStatus} onWorkflowOpen={(workflowId) => window.location.assign(`/architect?workflow_id=${encodeURIComponent(workflowId)}`)} onBindWorkflow={(task) => { setDialogError(""); setBindTask(task); }} onCreateTask={() => { setDialogError(""); setNewTaskOpen(true); }} boardMode={boardMode} onBoardModeChange={setBoardMode} workflowState={workflowState} intake={<BusinessIntakePanel project={project} process={process} onApplied={load} />} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewData && <ProjectGraph graph={viewData} />}
       {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
+      {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
+      {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}
     </div>
   );
 }

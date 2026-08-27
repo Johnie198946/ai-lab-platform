@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 
 import {
   buildBoardColumns,
+  buildLifecycleColumns,
   buildStageRail,
   buildScheduleRows,
   layoutProjectGraph,
 } from "../src/features/quantum-workspace/quantumProjection.js";
+import { workflowIdFromSearch } from "../src/architectContract.js";
 import { parseSseFrame, splitSseFrames } from "../src/services/sseFrames.js";
 import { restoreTaskMessages } from "../src/features/quantum-workspace/taskChatMessages.js";
 
@@ -84,4 +86,43 @@ test("task chat history restores terminal errors as failed messages", () => {
     },
   ]);
   assert.equal(restored[0].failed, true);
+});
+
+test("Dashi lifecycle parity projects canonical workflow and execution truth into six lanes", () => {
+  const lifecycle = buildLifecycleColumns(
+    {
+      tasks: [
+        { id: "t-intake", workflow_id: "wf_intake", workflow_status: "clarifying" },
+        { id: "t-run", workflow_id: "wf_run", workflow_status: "ready" },
+        { id: "t-review", workflow_id: "wf_review", workflow_status: "running" },
+        { id: "t-unconnected", workflow_id: null, workflow_status: "UNCONNECTED" },
+      ],
+    },
+    [
+      { id: "wf_intake", status: "clarifying", latest_execution: null },
+      { id: "wf_run", status: "ready", latest_execution: { id: "exe-run", status: "running", truth: "LIVE", started_at: "2026-08-27T01:00:00Z", input_tokens: 10, output_tokens: 5, reasoning_tokens: 2, artifact_count: 3, progress: 45, estimated_cost_usd: 0.12 } },
+      { id: "wf_review", status: "running", latest_execution: { id: "exe-review", status: "awaiting_review", truth: "LIVE", hermes_session_id: "session-1", artifact_count: 2 } },
+    ],
+  );
+
+  assert.deepEqual(lifecycle.map((column) => column.key), ["intake", "planning", "execution", "review", "completed", "attention"]);
+  assert.deepEqual(lifecycle.map((column) => column.tasks.length), [1, 0, 1, 1, 0, 1]);
+  assert.equal(lifecycle[2].tasks[0].truth, "LIVE");
+  assert.equal(lifecycle[2].tasks[0].tokenUsed, 17);
+  assert.equal(lifecycle[2].tasks[0].artifactCount, 3);
+  assert.equal(lifecycle[2].tasks[0].estimatedCostUsd, 0.12);
+  assert.equal(lifecycle[5].tasks[0].truth, "UNCONNECTED");
+});
+
+test("queued LIVE claims stay PLAN until a provider run receipt exists", () => {
+  const lifecycle = buildLifecycleColumns(
+    { tasks: [{ id: "t1", workflow_id: "wf_queue" }] },
+    [{ id: "wf_queue", status: "queued", latest_execution: { id: "exe-q", status: "queued", truth: "LIVE" } }],
+  );
+  assert.equal(lifecycle[2].tasks[0].truth, "PLAN");
+});
+
+test("QuantumWorkspace opens a specifically requested canonical workflow", () => {
+  assert.equal(workflowIdFromSearch("?workflow_id=wf_abc-123"), "wf_abc-123");
+  assert.equal(workflowIdFromSearch("?workflow_id=../../bad"), "");
 });

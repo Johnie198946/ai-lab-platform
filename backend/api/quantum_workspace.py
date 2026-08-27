@@ -23,6 +23,7 @@ from backend.models.workspace import (
     WorkspaceTaskConversation,
     WorkspaceTaskMessage,
 )
+from backend.models.workflow import WorkflowDefinition
 from backend.services.workspace_process import (
     compile_ipd_draft,
     instantiate_reviewed_process,
@@ -88,6 +89,19 @@ class UpdateTaskRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     status: Literal["TODO", "IN_PROGRESS", "BLOCKED", "PAUSED", "DONE"]
     reason: str | None = Field(default=None, min_length=3, max_length=500)
+
+
+class CreateProjectTaskRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    stage_id: str = Field(min_length=1, max_length=48)
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=4000)
+    assignee_role: str | None = Field(default=None, max_length=160)
+
+
+class BindTaskWorkflowRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    workflow_id: str = Field(min_length=1, max_length=48)
 
 
 class OpenTaskConversationRequest(BaseModel):
@@ -696,6 +710,53 @@ def _aggregate_stage(stage: dict[str, Any], tasks: list[dict[str, Any]]) -> None
     )
 
 
+async def _cas_project_process(
+    db,
+    *,
+    project_id: str,
+    tenant_key: str,
+    user_id: str,
+    expected_revision: int,
+    process: dict[str, Any],
+    commit: bool = True,
+) -> int:
+    next_revision = expected_revision + 1
+    result = await db.execute(
+        update(WorkspaceProject)
+        .where(
+            WorkspaceProject.id == project_id,
+            WorkspaceProject.tenant_key == tenant_key,
+            WorkspaceProject.owner_user_id == user_id,
+            WorkspaceProject.process_revision == expected_revision,
+        )
+        .values(
+            process_snapshot=process,
+            process_revision=next_revision,
+            updated_at=datetime.now().astimezone(),
+        )
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        await db.rollback()
+        server_revision = await db.scalar(
+            select(WorkspaceProject.process_revision).where(
+                WorkspaceProject.id == project_id,
+                WorkspaceProject.tenant_key == tenant_key,
+                WorkspaceProject.owner_user_id == user_id,
+            )
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "project_revision_conflict",
+                "server_revision": server_revision,
+            },
+        )
+    if commit:
+        await db.commit()
+    return next_revision
+
+
 @router.get("/projects/{project_id}/schedule")
 async def get_project_schedule(
     project_id: str,
@@ -745,6 +806,206 @@ async def get_project_graph(
             "process_instance_id": process.get("process_instance_id"),
             "process_revision": project.process_revision,
             **graph,
+        }
+
+
+@router.post("/projects/{project_id}/tasks", status_code=201)
+async def create_project_task(
+    project_id: str,
+    body: CreateProjectTaskRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "project_revision_conflict",
+                    "server_revision": project.process_revision,
+                },
+            )
+        process = dict(project.process_snapshot or {})
+        if not process.get("process_instance_id"):
+            raise HTTPException(status_code=409, detail="project process is not instantiated")
+        stages = [dict(item) for item in process.get("stages", [])]
+        stage = next((item for item in stages if item["id"] == body.stage_id), None)
+        if stage is None:
+            raise HTTPException(status_code=404, detail="project stage not found")
+        task = {
+            "id": f"tsk_{uuid4().hex}",
+            "stage_id": stage["id"],
+            "title": body.title.strip(),
+            "summary": body.summary.strip(),
+            "status": "TODO",
+            "status_source": "PLANNED",
+            "assignee_id": None,
+            "assignee_role": (body.assignee_role or "").strip() or None,
+            "agent_candidates": [],
+            "workflow_id": None,
+            "workflow_status": "UNCONNECTED",
+            "planned_start_at": None,
+            "planned_finish_at": None,
+            "actual_start_at": None,
+            "actual_finish_at": None,
+            "estimated_duration_days": 5,
+            "unscheduled_reason": "missing_planned_dates",
+            "deliverables": [],
+            "evidence_refs": [],
+            "risk": "LOW",
+            "created_by": user_id,
+        }
+        tasks = [dict(item) for item in process.get("tasks", [])]
+        tasks.append(task)
+        _aggregate_stage(stage, [item for item in tasks if item["stage_id"] == stage["id"]])
+        graphs = dict(process.get("graphs") or {})
+        workflow_graph = dict(graphs.get("workflow") or {})
+        workflow_graph["nodes"] = [
+            *(workflow_graph.get("nodes") or []),
+            {
+                "id": task["id"],
+                "type": "task",
+                "label": task["title"],
+                "status": "UNCONNECTED",
+                "task_status": "TODO",
+                "stage_id": stage["id"],
+            },
+        ]
+        resource_graph = dict(graphs.get("ai-resource") or {})
+        resource_graph["nodes"] = [
+            *(resource_graph.get("nodes") or []),
+            {
+                "id": task["id"],
+                "type": "task",
+                "label": task["title"],
+                "task_status": "TODO",
+            },
+        ]
+        graphs["workflow"] = workflow_graph
+        graphs["ai-resource"] = resource_graph
+        process["tasks"] = tasks
+        process["stages"] = stages
+        process["graphs"] = graphs
+        next_revision = await _cas_project_process(
+            db,
+            project_id=project.id,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            expected_revision=body.expected_revision,
+            process=process,
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "task": task,
+            "stage": stage,
+        }
+
+
+@router.put("/projects/{project_id}/tasks/{task_id}/workflow")
+async def bind_project_task_workflow(
+    project_id: str,
+    task_id: str,
+    body: BindTaskWorkflowRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "project_revision_conflict",
+                    "server_revision": project.process_revision,
+                },
+            )
+        workflow = await db.scalar(
+            select(WorkflowDefinition).where(
+                WorkflowDefinition.id == body.workflow_id,
+                WorkflowDefinition.tenant_key == tenant_key,
+                WorkflowDefinition.created_by == user_id,
+                WorkflowDefinition.archived_at.is_(None),
+            )
+        )
+        if workflow is None:
+            raise HTTPException(status_code=404, detail="workflow not found")
+        process = dict(project.process_snapshot or {})
+        tasks = [dict(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item["id"] == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        bound_elsewhere = next(
+            (
+                item
+                for item in tasks
+                if item["id"] != task_id and item.get("workflow_id") == workflow.id
+            ),
+            None,
+        )
+        if bound_elsewhere is not None:
+            raise HTTPException(status_code=409, detail="workflow already binds another project task")
+        if task.get("workflow_id") == workflow.id:
+            return {
+                "project_id": project.id,
+                "process_revision": project.process_revision,
+                "task": task,
+            }
+        task["workflow_id"] = workflow.id
+        task["workflow_status"] = workflow.status
+        task["workflow_bound_at"] = datetime.now().astimezone().isoformat()
+        task["workflow_bound_by"] = user_id
+        graphs = dict(process.get("graphs") or {})
+        workflow_graph = dict(graphs.get("workflow") or {})
+        workflow_graph["nodes"] = [
+            {
+                **node,
+                "status": workflow.status,
+                "workflow_id": workflow.id,
+            }
+            if node["id"] == task_id
+            else node
+            for node in workflow_graph.get("nodes", [])
+        ]
+        graphs["workflow"] = workflow_graph
+        process["tasks"] = tasks
+        process["graphs"] = graphs
+        next_revision = await _cas_project_process(
+            db,
+            project_id=project.id,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            expected_revision=body.expected_revision,
+            process=process,
+            commit=False,
+        )
+        conversations = list(
+            (
+                await db.execute(
+                    select(WorkspaceTaskConversation).where(
+                        WorkspaceTaskConversation.tenant_key == tenant_key,
+                        WorkspaceTaskConversation.user_id == user_id,
+                        WorkspaceTaskConversation.project_id == project.id,
+                        WorkspaceTaskConversation.task_id == task_id,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for conversation in conversations:
+            conversation.workflow_id = workflow.id
+            conversation.binding = {
+                **(conversation.binding or {}),
+                "workflow_id": workflow.id,
+                "process_revision": next_revision,
+            }
+        await db.commit()
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "task": task,
         }
 
 
