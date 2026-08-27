@@ -57,6 +57,12 @@ const request = async (path, options = {}) => {
     });
 
     if (!response.ok) {
+      if (response.status === 401) {
+        clearAuthSession();
+        throw new PlatformApiError(await parseErrorMessage(response), {
+          status: 401,
+        });
+      }
       throw new PlatformApiError(await parseErrorMessage(response), {
         status: response.status,
       });
@@ -77,6 +83,19 @@ const request = async (path, options = {}) => {
   } finally {
     window.clearTimeout(timeoutId);
   }
+};
+
+export const clearAuthSession = () => {
+  try {
+    localStorage.removeItem("auth_session");
+  } catch {}
+  window.dispatchEvent(new CustomEvent("ai-lab:auth-expired"));
+};
+
+const handleUnauthorized = async (response) => {
+  await response.arrayBuffer();
+  clearAuthSession();
+  return response;
 };
 
 export const platformApi = {

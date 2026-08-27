@@ -21,6 +21,8 @@ import {
 } from "../architectContract";
 import { canonicalPlanToSimLike, simLikeToCanonicalPlan } from "../architectCanvasAdapter";
 import ProjectOfficeView from "../features/project-office/ProjectOfficeView";
+import { taskboardProjection } from "../features/project-office/taskboardProjection";
+import TaskboardView from "../features/project-office/TaskboardView";
 import "./ArchitectWorkbenchPage.css";
 
 const STATUS_COPY = {
@@ -207,6 +209,15 @@ export default function ArchitectPage() {
     [workflow, plan, execution, executionEvents, artifacts, connectionState],
   );
 
+  const taskboardData = useMemo(
+    () => workflows.map((wf) => ({ ...wf, latest_execution: execution })),
+    [workflows, execution],
+  );
+  const taskboardProjectionValue = useMemo(
+    () => taskboardProjection(taskboardData),
+    [taskboardData],
+  );
+
   const switchArchitectView = (view) => {
     const search = architectSearchWithView(window.location.search, view);
     window.history.replaceState(window.history.state, "", `${window.location.pathname}${search}${window.location.hash}`);
@@ -390,70 +401,85 @@ export default function ArchitectPage() {
     <main className="architect-page">
       <header className="architect-topbar">
         <div className="brand-lockup"><span className="quantum-mark" /><strong>AI Lab</strong><span>共创工作台</span></div>
-        <div className="topbar-actions"><div className="architect-view-toggle" aria-label="Architect 视图"><button type="button" className={architectView === "office" ? "is-active" : ""} aria-pressed={architectView === "office"} onClick={() => switchArchitectView("office")}>Office</button><button type="button" className={architectView === "workbench" ? "is-active" : ""} aria-pressed={architectView === "workbench"} onClick={() => switchArchitectView("workbench")}>Workbench</button></div><span className="connection-state">{isAuthenticated ? "已登录" : "未登录"}</span><span>{authSession?.user?.username || "account"}</span><button type="button" onClick={logout} aria-label="退出"><LogOut size={16} /></button></div>
+        <div className="topbar-actions">
+          <div className="architect-view-toggle" aria-label="Architect 视图">
+            <button type="button" className={architectView === "office" ? "is-active" : ""} aria-pressed={architectView === "office"} onClick={() => switchArchitectView("office")}>Office</button>
+            <button type="button" className={architectView === "workbench" ? "is-active" : ""} aria-pressed={architectView === "workbench"} onClick={() => switchArchitectView("workbench")}>Workbench</button>
+            <button type="button" className={architectView === "taskboard" ? "is-active" : ""} aria-pressed={architectView === "taskboard"} onClick={() => switchArchitectView("taskboard")}>Taskboard</button>
+          </div>
+          <span className="connection-state">{isAuthenticated ? "已登录" : "未登录"}</span>
+          <span>{authSession?.user?.username || "account"}</span>
+          <button type="button" onClick={logout} aria-label="退出"><LogOut size={16} /></button>
+        </div>
       </header>
 
-      {architectView === "office" ? <ProjectOfficeView projection={officeProjection} error={error} busy={busy} onSwitchToWorkbench={() => switchArchitectView("workbench")} /> : <div className="workbench-layout">
-        <aside className="workbench-nav">
-          <button className="new-task" type="button" onClick={() => loadWorkflow("")}><Plus size={16} />新任务</button>
-          <label htmlFor="workflow-select">当前任务</label>
-          <select id="workflow-select" disabled={busy} value={workflow?.id || ""} onChange={(event) => loadWorkflow(event.target.value)}>
-            <option value="">未命名任务</option>
-            {workflows.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
-          </select>
-          <ol className="stage-list">
-            {["需求确认", "流程与 AI 员工", "真实执行", "成果复核"].map((label, index) => <li className={index <= (["draft", "clarifying"].includes(statusKey) ? 0 : plan ? execution ? 3 : 1 : 0) ? "is-active" : ""} key={label}><span>{index + 1}</span>{label}</li>)}
-          </ol>
-        </aside>
+      {architectView === "taskboard" ? (
+        <TaskboardView projection={taskboardProjectionValue} error={error} busy={busy} onOpenWorkflow={(id) => loadWorkflow(id)} onCreateTask={() => {}} />
+      ) : architectView === "office" ? (
+        <ProjectOfficeView projection={officeProjection} error={error} busy={busy} onSwitchToWorkbench={() => switchArchitectView("workbench")} />
+      ) : (
+        <div className="workbench-layout">
+          <aside className="workbench-nav">
+            <button className="new-task" type="button" onClick={() => loadWorkflow("")}><Plus size={16} />新任务</button>
+            <label htmlFor="workflow-select">当前任务</label>
+            <select id="workflow-select" disabled={busy} value={workflow?.id || ""} onChange={(event) => loadWorkflow(event.target.value)}>
+              <option value="">未命名任务</option>
+              {workflows.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
+            </select>
+            <ol className="stage-list">
+              {["需求确认", "流程与 AI 员工", "真实执行", "成果复核"].map((label, index) => <li className={index <= (["draft", "clarifying"].includes(statusKey) ? 0 : plan ? execution ? 3 : 1 : 0) ? "is-active" : ""} key={label}><span>{index + 1}</span>{label}</li>)}
+            </ol>
+          </aside>
 
-        <section className="workbench-main">
-          {showroomSessionId && <div className="context-strip"><span>已续接来访上下文</span><code>{showroomSessionId}</code></div>}
-          {customerDemandId && <div className="context-strip"><span>已续接确认需求</span><code>{customerDemandId}</code></div>}
-          <div className="focus-heading"><div><span className="eyebrow">当前步骤</span><h1>{stageTitle}</h1><p>{stageReason}</p></div><span className={`status-chip status-chip--${executionStatus || workflow?.status || "draft"}`}>{busy ? "处理中" : executionStatus || workflow?.status || "待开始"}</span></div>
-          {error && <div className="error-banner">{error}</div>}
+          <section className="workbench-main">
+            {showroomSessionId && <div className="context-strip"><span>已续接来访上下文</span><code>{showroomSessionId}</code></div>}
+            {customerDemandId && <div className="context-strip"><span>已续接确认需求</span><code>{customerDemandId}</code></div>}
+            <div className="focus-heading"><div><span className="eyebrow">当前步骤</span><h1>{stageTitle}</h1><p>{stageReason}</p></div><span className={`status-chip status-chip--${executionStatus || workflow?.status || "draft"}`}>{busy ? "处理中" : executionStatus || workflow?.status || "待开始"}</span></div>
+            {error && <div className="error-banner">{error}</div>}
 
-          {!plan && !execution && (
-            <section className="focus-card">
-              {workflow && <div className="goal-summary"><span>客户目标</span><p>{workflow.description}</p></div>}
-              <div className="conversation-list">
-                {messages.slice(-4).map((message) => <div className={`conversation-row conversation-row--${message.role}`} key={message.id}><span>{message.role === "assistant" ? "Hermes" : "你"}</span><p>{message.content}</p></div>)}
-              </div>
-              <form onSubmit={workflow ? send : create} className="primary-composer">
-                <label htmlFor="architect-response">{workflow ? "补充关键信息" : "你希望解决什么问题？"}</label>
-                <textarea id="architect-response" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="说清目标即可，Hermes 会自然追问缺失条件。" />
-                {awaitingConfirmation ? <div className="composer-actions"><button className="primary-action" disabled={busy} type="button" onClick={() => submitClarification("confirm")}><Check size={16} />确认并生成流程</button><button className="secondary-action" disabled={busy} type="button" onClick={() => submitClarification("revise")}>继续修改</button></div> : <button className="primary-action" disabled={busy || !draft.trim()} type="submit"><Check size={16} />{workflow ? "提交回复" : "开始澄清"}</button>}
-              </form>
-            </section>
-          )}
+            {!plan && !execution && (
+              <section className="focus-card">
+                {workflow && <div className="goal-summary"><span>客户目标</span><p>{workflow.description}</p></div>}
+                <div className="conversation-list">
+                  {messages.slice(-4).map((message) => <div className={`conversation-row conversation-row--${message.role}`} key={message.id}><span>{message.role === "assistant" ? "Hermes" : "你"}</span><p>{message.content}</p></div>)}
+                </div>
+                <form onSubmit={workflow ? send : create} className="primary-composer">
+                  <label htmlFor="architect-response">{workflow ? "补充关键信息" : "你希望解决什么问题？"}</label>
+                  <textarea id="architect-response" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="说清目标即可，Hermes 会自然追问缺失条件。" />
+                  {awaitingConfirmation ? <div className="composer-actions"><button className="primary-action" disabled={busy} type="button" onClick={() => submitClarification("confirm")}><Check size={16} />确认并生成流程</button><button className="secondary-action" disabled={busy} type="button" onClick={() => submitClarification("revise")}>继续修改</button></div> : <button className="primary-action" disabled={busy || !draft.trim()} type="submit"><Check size={16} />{workflow ? "提交回复" : "开始澄清"}</button>}
+                </form>
+              </section>
+            )}
 
-          {plan && !execution && (
-            <section className="focus-card">
-              <div className="process-summary"><div><span>推荐流程</span><h2>{planDsl?.name || "服务端流程"}</h2><p>{planDsl?.process_contract_id ? `已绑定合同 ${planDsl.process_contract_id}` : "服务端安全计划"}</p></div><span className="truth-badge">{planDsl?.process_contract_digest ? "CONTRACT" : "PLAN"}</span></div>
-              <div className="node-list">{planNodes.map((node, index) => <article className={node.parameters?.execution_enabled ? "node-card node-card--live" : "node-card"} key={node.id}><span className="node-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{node.name}</strong><p>{listValue(node.parameters?.role_ids).join(" · ") || node.parameters?.agent_id}</p><small>{node.parameters?.decision_gate || "无自动决策"}</small></div><span>{node.parameters?.execution_enabled ? "可执行" : "参考"}</span></article>)}</div>
-              <details className="plan-detail"><summary>查看完整流程图与通过标准<ChevronDown size={16} /></summary><PlanCanvas plan={plan} workflowId={workflow?.id} onSaved={(nextPlan) => setPlan(nextPlan)} /></details>
-              <div className="approval-row"><p>批准只允许合同中已激活的节点执行。</p><button className="primary-action" type="button" disabled={busy || workflow?.status !== "awaiting_approval"} onClick={approve}><Check size={16} />批准并构建 AI 员工</button>{canStartWorkflow(workflow?.status, execution) && <button className="primary-action" type="button" disabled={busy} onClick={start}><Play size={16} />启动真实执行</button>}</div>
-            </section>
-          )}
+            {plan && !execution && (
+              <section className="focus-card">
+                <div className="process-summary"><div><span>推荐流程</span><h2>{planDsl?.name || "服务端流程"}</h2><p>{planDsl?.process_contract_id ? `已绑定合同 ${planDsl.process_contract_id}` : "服务端安全计划"}</p></div><span className="truth-badge">{planDsl?.process_contract_digest ? "CONTRACT" : "PLAN"}</span></div>
+                <div className="node-list">{planNodes.map((node, index) => <article className={node.parameters?.execution_enabled ? "node-card node-card--live" : "node-card"} key={node.id}><span className="node-index">{String(index + 1).padStart(2, "0")}</span><div><strong>{node.name}</strong><p>{listValue(node.parameters?.role_ids).join(" · ") || node.parameters?.agent_id}</p><small>{node.parameters?.decision_gate || "无自动决策"}</small></div><span>{node.parameters?.execution_enabled ? "可执行" : "参考"}</span></article>)}</div>
+                <details className="plan-detail"><summary>查看完整流程图与通过标准<ChevronDown size={16} /></summary><PlanCanvas plan={plan} workflowId={workflow?.id} onSaved={(nextPlan) => setPlan(nextPlan)} /></details>
+                <div className="approval-row"><p>批准只允许合同中已激活的节点执行。</p><button className="primary-action" type="button" disabled={busy || workflow?.status !== "awaiting_approval"} onClick={approve}><Check size={16} />批准并构建 AI 员工</button>{canStartWorkflow(workflow?.status, execution) && <button className="primary-action" type="button" disabled={busy} onClick={start}><Play size={16} />启动真实执行</button>}</div>
+              </section>
+            )}
 
-          {execution && (
-            <section className="focus-card">
-              <div className="execution-focus"><span>当前任务</span><h2>{currentNode?.name || (executionStatus === "awaiting_review" ? "成果等待复核" : "Hermes 执行")}</h2><p>{currentNode?.agent_id ? `AI 员工：${currentNode.agent_id}` : "由 Hermes 唯一运行时执行"}</p><progress max="100" value={execution.progress || 0} /></div>
-              <div className="event-list">{recentEvents.map((event, index) => <div key={event.id || event.event_id || index}><span className="event-dot" /><div><strong>{event.message || event.event_type}</strong><small>{event.payload?.category || event.event_type}</small></div></div>)}</div>
-              {artifacts[0] && <article className="latest-output"><span>当前输出</span><h3>{artifacts[0].title || "Hermes成果"}</h3><pre>{artifacts[0].content || artifacts[0].preview || ""}</pre></article>}
-            </section>
-          )}
+            {execution && (
+              <section className="focus-card">
+                <div className="execution-focus"><span>当前任务</span><h2>{currentNode?.name || (executionStatus === "awaiting_review" ? "成果等待复核" : "Hermes 执行")}</h2><p>{currentNode?.agent_id ? `AI 员工：${currentNode.agent_id}` : "由 Hermes 唯一运行时执行"}</p><progress max="100" value={execution.progress || 0} /></div>
+                <div className="event-list">{recentEvents.map((event, index) => <div key={event.id || event.event_id || index}><span className="event-dot" /><div><strong>{event.message || event.event_type}</strong><small>{event.payload?.category || event.event_type}</small></div></div>)}</div>
+                {artifacts[0] && <article className="latest-output"><span>当前输出</span><h3>{artifacts[0].title || "Hermes成果"}</h3><pre>{artifacts[0].content || artifacts[0].preview || ""}</pre></article>}
+              </section>
+            )}
 
-          {(plan || execution) && <div className="detail-stack">
-            <DetailDrawer title="证据" count={recentEvents.length}>{recentEvents.length ? recentEvents.map((event, index) => <p key={event.id || index}>{event.message || event.event_type}</p>) : <p>尚无运行证据。</p>}</DetailDrawer>
-            <DetailDrawer title="工具与 Skill" count={toolEvents.length}>{toolEvents.length ? toolEvents.map((event, index) => <p key={event.id || index}>{event.payload?.tool || event.event_type} · {event.payload?.status || "done"}</p>) : <p>尚未调用工具。</p>}</DetailDrawer>
-            <DetailDrawer title="工件" count={artifacts.length}>{artifacts.length ? artifacts.map((artifact) => <p key={artifact.id}>{artifact.title}</p>) : <p>尚无工件。</p>}</DetailDrawer>
-            <DetailDrawer title="Evidence-bound 报告" count={evidenceReport?.claims?.length || 0}>{evidenceReport ? <div className="evidence-report"><strong>结论与证据</strong>{evidenceReport.claims.map((claim) => <p key={claim.claim_id}><span className={`claim-status claim-status--${claim.status.toLowerCase()}`}>{claim.status}</span>{claim.statement}</p>)}<strong>Token Factory 建议</strong><p>{evidenceReport.token_factory_recommendation?.recommendation}</p><small>{evidenceReport.token_factory_recommendation?.status}</small></div> : <p>执行后生成确定性报告。</p>}</DetailDrawer>
-            <DetailDrawer title="Token 与资源" count={tokenTotal}><dl><div><dt>输入</dt><dd>{execution?.input_tokens || 0}</dd></div><div><dt>输出</dt><dd>{execution?.output_tokens || 0}</dd></div><div><dt>推理</dt><dd>{execution?.reasoning_tokens || 0}</dd></div><div><dt>估算费用</dt><dd>${Number(execution?.estimated_cost_usd || 0).toFixed(4)}</dd></div></dl></DetailDrawer>
-          </div>}
-        </section>
+            {(plan || execution) && <div className="detail-stack">
+              <DetailDrawer title="证据" count={recentEvents.length}>{recentEvents.length ? recentEvents.map((event, index) => <p key={event.id || index}>{event.message || event.event_type}</p>) : <p>尚无运行证据。</p>}</DetailDrawer>
+              <DetailDrawer title="工具与 Skill" count={toolEvents.length}>{toolEvents.length ? toolEvents.map((event, index) => <p key={event.id || index}>{event.payload?.tool || event.event_type} · {event.payload?.status || "done"}</p>) : <p>尚未调用工具。</p>}</DetailDrawer>
+              <DetailDrawer title="工件" count={artifacts.length}>{artifacts.length ? artifacts.map((artifact) => <p key={artifact.id}>{artifact.title}</p>) : <p>尚无工件。</p>}</DetailDrawer>
+              <DetailDrawer title="Evidence-bound 报告" count={evidenceReport?.claims?.length || 0}>{evidenceReport ? <div className="evidence-report"><strong>结论与证据</strong>{evidenceReport.claims.map((claim) => <p key={claim.claim_id}><span className={`claim-status claim-status--${claim.status.toLowerCase()}`}>{claim.status}</span>{claim.statement}</p>)}<strong>Token Factory 建议</strong><p>{evidenceReport.token_factory_recommendation?.recommendation}</p><small>{evidenceReport.token_factory_recommendation?.status}</small></div> : <p>执行后生成确定性报告。</p>}</DetailDrawer>
+              <DetailDrawer title="Token 与资源" count={tokenTotal}><dl><div><dt>输入</dt><dd>{execution?.input_tokens || 0}</dd></div><div><dt>输出</dt><dd>{execution?.output_tokens || 0}</dd></div><div><dt>推理</dt><dd>{execution?.reasoning_tokens || 0}</dd></div><div><dt>估算费用</dt><dd>${Number(execution?.estimated_cost_usd || 0).toFixed(4)}</dd></div></dl></DetailDrawer>
+            </div>}
+          </section>
 
-        <aside className="explain-panel"><span className="eyebrow">解释 AI</span><h2>为什么是这一步？</h2><p>{explainContext?.why_this_step || stageReason}</p>{explainContext && <small>Snapshot {explainContext.snapshot_id.slice(0, 10)}</small>}<div><strong>系统不会做什么</strong><ul><li>不展示隐藏思维链</li><li>不绕过人工批准</li><li>不把参考流程标成 LIVE</li></ul></div><button type="button" onClick={() => workflow && loadWorkflow(workflow.id)} disabled={busy}><RefreshCw size={15} />刷新真实状态</button></aside>
-      </div>}
+          <aside className="explain-panel"><span className="eyebrow">解释 AI</span><h2>为什么是这一步？</h2><p>{explainContext?.why_this_step || stageReason}</p>{explainContext && <small>Snapshot {explainContext.snapshot_id.slice(0, 10)}</small>}<div><strong>系统不会做什么</strong><ul><li>不展示隐藏思维链</li><li>不绕过人工批准</li><li>不把参考流程标成 LIVE</li></ul></div><button type="button" onClick={() => workflow && loadWorkflow(workflow.id)} disabled={busy}><RefreshCw size={15} />刷新真实状态</button></aside>
+        </div>
+      )}
     </main>
   );
 }

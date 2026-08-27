@@ -22,6 +22,12 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let active = true;
 
+    const handleAuthExpired = () => {
+      if (!active) return;
+      setAuthSession(null);
+    };
+    window.addEventListener("ai-lab:auth-expired", handleAuthExpired);
+
     const restoreSession = async () => {
       const storedSession = loadAuthSession();
       if (!storedSession) {

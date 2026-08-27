@@ -12,6 +12,10 @@ import {
   artifactPresentation,
   parseStructuredArtifact,
 } from "../src/features/project-office/artifactPresentation.js";
+import {
+  taskboardProjection,
+  taskboardStatus,
+} from "../src/features/project-office/taskboardProjection.js";
 
 const plan = {
   dsl: {
@@ -338,4 +342,65 @@ test("Architect integrates the view toggle without replacing Workbench actions",
   assert.match(source, /platformApi\.answerClarification/);
   assert.match(source, /platformApi\.approveWorkflowPlan/);
   assert.match(source, /platformApi\.startWorkflow/);
+});
+
+test("Taskboard projects only canonical workflow and latest execution truth into stable lanes", () => {
+  const rows = [
+    { id: "wf-intake", title: "需求确认", status: "clarifying", latest_execution: null },
+    { id: "wf-plan", title: "方案审批", status: "awaiting_approval", active_plan_id: "plan-1", latest_execution: null },
+    { id: "wf-run", title: "真实执行", status: "ready", latest_execution: { id: "exe-1", status: "running", truth: "LIVE", started_at: "2026-08-27T01:00:00Z", input_tokens: 10, output_tokens: 5, estimated_cost_usd: 0.12 } },
+    { id: "wf-review", title: "成果复核", status: "running", latest_execution: { id: "exe-2", status: "awaiting_review", truth: "LIVE", started_at: "2026-08-27T02:00:00Z", artifact_count: 2 } },
+    { id: "wf-failed", title: "失败留痕", status: "failed", latest_execution: { id: "exe-3", status: "failed", truth: "LIVE", started_at: "2026-08-27T03:00:00Z", error_message: "provider unavailable" } },
+  ];
+
+  const projection = taskboardProjection(rows);
+
+  assert.deepEqual(projection.lanes.map((lane) => lane.id), ["intake", "planning", "execution", "review", "completed", "attention"]);
+  assert.deepEqual(projection.lanes.map((lane) => lane.items.length), [1, 1, 1, 1, 0, 1]);
+  assert.equal(projection.items[2].workflowId, "wf-run");
+  assert.equal(projection.items[2].executionId, "exe-1");
+  assert.equal(projection.items[2].truth, "LIVE");
+  assert.equal(projection.items[2].tokenUsed, 15);
+  assert.equal(projection.items[2].estimatedCostUsd, 0.12);
+  assert.equal(projection.items[3].artifactCount, 2);
+  assert.equal(projection.items[4].errorMessage, "provider unavailable");
+  assert.equal(taskboardStatus({ status: "ready", latest_execution: { status: "cancelled" } }), "attention");
+});
+
+test("Taskboard refuses fabricated LIVE truth without a provider run receipt", () => {
+  const projection = taskboardProjection([
+    { id: "wf-plan", title: "只有计划", status: "ready", latest_execution: null },
+    { id: "wf-queued", title: "只有排队记录", status: "queued", latest_execution: { id: "exe-q", status: "queued", truth: "LIVE" } },
+    { id: "wf-unknown", title: "未知状态", status: "invented", latest_execution: null },
+  ]);
+
+  assert.deepEqual(projection.items.map((item) => item.truth), ["PLAN", "PLAN", "UNCONNECTED"]);
+  assert.deepEqual(projection.items.map((item) => item.laneId), ["execution", "execution", "attention"]);
+  assert.doesNotMatch(JSON.stringify(projection), /tenantId|X-Tenant-ID|mock/i);
+});
+
+test("Taskboard UI remains a read-only provider projection and opens the canonical workflow", () => {
+  const source = fs.readFileSync(new URL("../src/features/project-office/TaskboardView.jsx", import.meta.url), "utf8");
+  const architect = fs.readFileSync(new URL("../src/pages/ArchitectWorkbenchPage.jsx", import.meta.url), "utf8");
+
+  assert.match(source, /projection\.lanes\.map/);
+  assert.match(source, /onOpenWorkflow\(item\.workflowId\)/);
+  assert.match(source, /workflowId/);
+  assert.match(source, /executionId/);
+  assert.match(source, /LIVE|PLAN|UNCONNECTED/);
+  assert.doesNotMatch(source, /localStorage|SQLite|tenantId|X-Tenant-ID|createWorkflow|startWorkflow|fetch\s*\(/);
+  assert.match(architect, /architectView === "taskboard"/);
+  assert.match(architect, /<TaskboardView/);
+  assert.match(architect, />Taskboard</);
+});
+
+test("Platform API expires the shared login on 401 without tenant or mock fallback", () => {
+  const api = fs.readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  const auth = fs.readFileSync(new URL("../src/auth/AuthContext.jsx", import.meta.url), "utf8");
+
+  assert.match(api, /response\.status === 401/);
+  assert.match(api, /clearAuthSession\(\)/);
+  assert.match(api, /ai-lab:auth-expired/);
+  assert.match(auth, /ai-lab:auth-expired/);
+  assert.doesNotMatch(api, /X-Tenant-ID|tenantId|mock|fallbackTenant/i);
 });
