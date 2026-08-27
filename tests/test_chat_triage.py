@@ -50,3 +50,23 @@ def test_explicit_capability_is_professional_but_does_not_self_grant():
     assert payload["route_class"] == PROFESSIONAL_TASK
     assert payload["agency_enabled"] is False
     assert payload["skill_enabled"] is True
+
+
+def test_explicit_skill_agent_keeps_skill_discovery_enabled():
+    from backend.api.chat import _skill_routing_enabled
+    from backend.services.agent_capabilities import EffectiveAgent
+
+    agent = EffectiveAgent(
+        id="skill_article-summary",
+        base_agent_id="main_agent",
+        name="article-summary",
+        prompt="",
+        allowed_tools=("skill_load",),
+        capability_agent_ids=(),
+        knowledge_scope=(),
+        allow_network=False,
+        max_concurrent_children=0,
+        max_spawn_depth=0,
+    )
+
+    assert _skill_routing_enabled(agent, None) is True

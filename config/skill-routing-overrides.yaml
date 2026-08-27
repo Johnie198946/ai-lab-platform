@@ -1,0 +1,98 @@
+version: 1
+skills:
+  article-research-summary:
+    description: 当用户要求总结或概括单篇文章、网页或链接时使用；仅用于摘要后做必要核验，不能用于多源行业研究、知识入库或正式研究报告。
+    skill_path: research/article/summary
+    skill_level: simple
+    trigger_phrases: [总结文章, 概括链接, 单篇文章摘要, summarize an article]
+    negative_phrases: [多源行业研究, 竞品调研报告, 保存入库, 批量资料研究]
+  evidence-first-content-research:
+    description: 当用户要求研究外部链接并交叉核验关键事实时使用；仅用于证据优先的内容研究，不能用于只做摘要、受保护应用 E2E 或直接知识入库。
+    skill_path: research/article/verification
+    skill_level: professional
+    trigger_phrases: [研究这个链接, 核验外部资料, 交叉验证文章, evidence-first research]
+    negative_phrases: [只做摘要, 登录后页面测试, 保存到知识库]
+  evidence-first-article-ingestion:
+    description: 当用户明确要求把外部文章按证据分层写入知识库时使用；仅用于文章入库，不能用于只读研究、简单摘要或市场扫描。
+    skill_path: knowledge/ingestion/article
+    skill_level: professional
+    trigger_phrases: [文章入库, 证据分层入库, 保存文章到知识库]
+    negative_phrases: [只研究不保存, 只做摘要, 行业市场扫描]
+  content-research-ingest:
+    description: 当用户要求研究链接并保存原文、来源卡片和更新记录时使用；仅用于完整研究入库流水线，不能用于只读回答或单篇快速摘要。
+    skill_path: knowledge/ingestion/content-pipeline
+    skill_level: professional
+    trigger_phrases: [研究并入库链接, 保存原文和来源卡片, content research ingest]
+    negative_phrases: [只读研究, 不要保存, 简单总结]
+  external-article-analysis:
+    description: 当用户要求对单篇外部文章做深度拆解、基准比较或方法转换时使用；不能用于快速摘要、多源行业研究或知识入库。
+    skill_path: research/article/deep-analysis
+    skill_level: professional
+    trigger_phrases: [深度拆解文章, 分析外部文章, 文章基准比较]
+    negative_phrases: [简单摘要, 多源行业研究, 保存入库]
+  web-market-research:
+    description: 当用户要求跨地区、跨厂商的市场或行业研究并需要新鲜网页证据时使用；不能用于单篇文章摘要、应用 E2E 测试或不联网的内部资料整理。
+    skill_path: research/market/multi-region
+    skill_level: professional
+    trigger_phrases: [行业市场研究, 跨地区市场调研, 多厂商对比, API价格对比]
+    negative_phrases: [单篇文章摘要, 登录后页面测试, 只用内部资料]
+  multi-source-industry-synthesis:
+    description: 当用户要求把多个来源综合为行业判断、趋势和决策报告时使用；不能用于单篇摘要、原始内容抓取或直接发布。
+    skill_path: research/market/synthesis
+    skill_level: professional
+    trigger_phrases: [多源行业综合, 行业趋势综合报告, 多份资料形成判断]
+    negative_phrases: [单篇摘要, 只抓取原文, 直接发布]
+  source-verification:
+    description: 当用户要求核验具体来源、声明或引用是否可靠时使用；仅用于证据核验，不能替代完整市场研究、应用测试或内容入库。
+    skill_path: research/evidence/source-verification
+    skill_level: professional
+    trigger_phrases: [核验来源, 验证声明, 检查引用可靠性]
+    negative_phrases: [完整市场研究, 应用E2E测试, 保存入库]
+  authenticated-web-e2e-verification:
+    description: 当用户要求在登录态或受保护 Web 应用中执行端到端功能验证时使用；不能用于研究公开链接、文章事实核验或市场调研。
+    skill_path: engineering/testing/web-e2e
+    skill_level: professional
+    trigger_phrases: [登录态E2E, 受保护页面验证, Web应用端到端测试]
+    negative_phrases: [研究公开链接, 核验外部资料, 行业市场调研]
+  systematic-debugging:
+    description: 当用户要求定位可复现的软件故障根因时使用；仅用于系统化调试，不能用于新功能设计、普通代码解释或视觉重设计。
+    skill_path: engineering/debugging/general
+    skill_level: professional
+    trigger_phrases: [排查软件故障, 定位根因, 系统化调试]
+    negative_phrases: [开发新功能, 解释代码, 只改视觉]
+  ui-redesign-anti-ai-slop:
+    description: 当用户要求重构现有界面视觉并消除模板化 AI 感时使用；不能用于性能调试、从零开发业务功能或只做动画优化。
+    skill_path: design/frontend/redesign
+    skill_level: professional
+    trigger_phrases: [界面AI味, 重构UI视觉, 消除模板感]
+    negative_phrases: [性能调试, 开发业务功能, 只优化动画]
+  gpt-taste:
+    description: 当用户要求设计高完成度网页并明确需要 GSAP 动效或高级视觉方向时使用；不能用于修复现有 React 性能、后端开发或简单样式微调。
+    skill_path: design/frontend/motion
+    skill_level: professional
+    trigger_phrases: [高级网页动效, GSAP页面设计, 高完成度视觉设计]
+    negative_phrases: [React性能问题, 后端开发, 简单样式微调]
+  powerpoint:
+    description: 当用户要求创建、读取或编辑 PowerPoint/PPTX 文件时使用；仅用于演示文稿文件，不能用于 Word、PDF 或网页设计。
+    skill_path: productivity/documents/presentation
+    skill_level: simple
+    trigger_phrases: [制作PPT, 编辑PPTX, 读取PowerPoint]
+    negative_phrases: [Word文档, PDF处理, 网页设计]
+  docx:
+    description: 当用户要求创建、读取或编辑 Word/DOCX 文件时使用；仅用于 Word 文档，不能用于 PPT、PDF 或网页。
+    skill_path: productivity/documents/word
+    skill_level: simple
+    trigger_phrases: [制作Word, 编辑DOCX, 读取Word文档]
+    negative_phrases: [制作PPT, PDF处理, 网页设计]
+  pdf:
+    description: 当用户要求读取、创建、编辑或检查 PDF 文件时使用；仅用于 PDF，不能用于 Word、PPT 或普通网页内容抽取。
+    skill_path: productivity/documents/pdf
+    skill_level: simple
+    trigger_phrases: [读取PDF, 创建PDF, 检查PDF布局]
+    negative_phrases: [Word文档, 制作PPT, 普通网页抽取]
+  defuddle:
+    description: 当用户提供普通网页链接并要求提取干净正文时使用；仅用于网页正文抽取，不能用于 Markdown 直链、市场研究或登录态应用测试。
+    skill_path: research/web/extraction
+    skill_level: simple
+    trigger_phrases: [提取网页正文, 清理网页内容, 读取文章链接]
+    negative_phrases: [Markdown直链, 市场研究, 登录态应用测试]

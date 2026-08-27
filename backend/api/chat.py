@@ -650,6 +650,14 @@ def _triaged_agent_config(
     return config
 
 
+def _skill_routing_enabled(agent: EffectiveAgent, skill_id: str | None) -> bool:
+    return bool(
+        skill_id
+        or agent.id == DEFAULT_AGENT_ID
+        or agent.id.startswith("skill_")
+    )
+
+
 def _triage_frame(decision: TriageDecision, config: dict[str, Any]) -> str:
     triage = dict(config.get("triage") or {})
     payload = {
@@ -750,7 +758,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             and delegated_target is None
             and not skill_id
         ),
-        skill_enabled=bool(skill_id) or agent.id == DEFAULT_AGENT_ID,
+        skill_enabled=_skill_routing_enabled(agent, skill_id),
     )
 
     # 透传 Hermes bridge（附真实思维链）。自然语言委派先运行隔离的专属
@@ -1221,7 +1229,7 @@ async def stream_chat(
                     and delegated_target is None
                     and not skill_id
                 ),
-                skill_enabled=bool(skill_id) or agent.id == DEFAULT_AGENT_ID,
+                skill_enabled=_skill_routing_enabled(agent, skill_id),
             )
             yield _triage_frame(triage, main_agent_config)
             policy_version = policy.policy_version

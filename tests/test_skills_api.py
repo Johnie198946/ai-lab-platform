@@ -81,6 +81,7 @@ class TestTenantSkillsAPI(unittest.TestCase):
         body = r.json()
         self.assertEqual(body["skills"], [])
         self.assertEqual(body["tenant_id"], "u-topo")
+        self.assertEqual(body["tree"]["count"], 0)
 
     def test_tenant_skills_scans_real_dir(self):
         from backend.api.skills import TenantSkillOut
@@ -97,6 +98,7 @@ class TestTenantSkillsAPI(unittest.TestCase):
         self.assertEqual(skill["name"], "bayern-insight")
         self.assertEqual(skill["description"], "追踪拜仁转会")
         self.assertEqual(skill["created_at"], "2026-08-17")
+        self.assertEqual(body["tree"]["count"], 1)
 
     def test_tenant_isolation(self):
         """Bridge 返回空目录时 API 不得补入全局或其他租户技能。"""

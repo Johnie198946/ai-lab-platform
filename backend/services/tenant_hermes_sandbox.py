@@ -18,6 +18,16 @@ import tempfile
 import threading
 from typing import Any
 
+import yaml
+
+from backend.services.skill_router import (
+    legacy_routing_hints,
+    legacy_skill_level,
+    legacy_skill_path,
+    normalize_skill_record,
+    routing_quality_issues,
+)
+
 
 _SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 _LOCKS: dict[str, threading.Lock] = {}
@@ -235,24 +245,58 @@ def list_sandbox_skills(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
             if skill_md.is_symlink():
                 continue
             raw = skill_md.read_bytes()
-            head = raw.decode("utf-8", errors="replace")[:4000]
-            metadata: dict[str, str] = {}
-            for line in head.splitlines():
-                key, separator, value = line.partition(":")
-                if separator and key.strip() in {
-                    "description", "date", "base_agent", "depends_on", "related_skills"
-                }:
-                    metadata[key.strip()] = value.strip().strip("'\"")
-            items.append({
+            head = raw.decode("utf-8", errors="replace")[:16_000]
+            metadata: dict[str, Any] = {}
+            if head.startswith("---"):
+                parts = head.split("---", 2)
+                if len(parts) == 3:
+                    try:
+                        parsed = yaml.safe_load(parts[1]) or {}
+                        if isinstance(parsed, dict):
+                            metadata = parsed
+                    except yaml.YAMLError:
+                        metadata = {}
+            relative_parent = skill_md.parent.relative_to(root).parts[:-1]
+            category = relative_parent[0] if relative_parent else "uncategorized"
+            fallback_path = legacy_skill_path(
+                category,
+                skill_md.parent.name,
+                str(metadata.get("description") or ""),
+            )
+            declared_triggers = metadata.get("trigger_phrases") or metadata.get("triggers") or []
+            declared_negatives = metadata.get("negative_phrases") or metadata.get("exclusions") or []
+            inferred_triggers, inferred_negatives = legacy_routing_hints(head, metadata)
+            record = normalize_skill_record({
                 "name": skill_md.parent.name,
                 "scope": scope,
                 "template_version": sandbox.template_version,
-                "description": metadata.get("description", "")[:200],
+                "description": metadata.get("description", ""),
                 "created_at": metadata.get("date") or None,
-                "base_agent": metadata.get("base_agent", "main_agent")[:100],
+                "base_agent": str(metadata.get("base_agent") or "main_agent")[:100],
                 "depends_on": metadata.get("depends_on") or metadata.get("related_skills") or "",
+                "skill_path": metadata.get("skill_path") or metadata.get("taxonomy") or fallback_path,
+                "skill_level": (
+                    metadata.get("skill_level") or metadata.get("level")
+                    or legacy_skill_level(
+                        skill_md.parent.name, str(metadata.get("description") or "")
+                    )
+                ),
+                "trigger_phrases": declared_triggers or inferred_triggers,
+                "negative_phrases": declared_negatives or inferred_negatives,
+                "routing_source": (
+                    "declared" if declared_triggers and declared_negatives
+                    else "legacy_body_inference"
+                ),
                 "sha256": hashlib.sha256(raw).hexdigest(),
             })
+            record["routing_issues"] = routing_quality_issues({
+                **metadata,
+                "name": record["name"],
+                "description": record["description"],
+                "skill_path": metadata.get("skill_path") or metadata.get("taxonomy") or "",
+                "skill_level": metadata.get("skill_level") or metadata.get("level") or "",
+            })
+            items.append(record)
     return items
 
 

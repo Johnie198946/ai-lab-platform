@@ -80,8 +80,23 @@ from backend.services.chat_triage import (  # noqa: E402
     GENERAL_QA,
     PROFESSIONAL_TASK,
 )
+from backend.services.skill_router import (  # noqa: E402
+    apply_routing_overrides,
+    candidate_prompt,
+    load_routing_overrides,
+    rank_skill_candidates,
+)
 
 app = FastAPI(title="Hermes Bridge v6.0")
+
+SKILL_ROUTING_OVERRIDES = _REPO_ROOT / "config" / "skill-routing-overrides.yaml"
+
+
+def _routed_skill_catalog(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
+    return apply_routing_overrides(
+        list_sandbox_skills(sandbox),
+        load_routing_overrides(str(SKILL_ROUTING_OVERRIDES)),
+    )
 
 HERMES_BIN = os.environ.get("HERMES_BIN", "/opt/hermes/venv/bin/hermes")
 HERMES_CWD = os.environ.get("HERMES_CWD", "/opt/ai-lab-platform")
@@ -1004,6 +1019,7 @@ _knowledge_tool_context = threading.local()
 _knowledge_tool_registration_lock = threading.Lock()
 _knowledge_tool_registered = False
 _sandbox_tool_context = threading.local()
+_skill_route_context = threading.local()
 _sandbox_tool_registration_lock = threading.Lock()
 _sandbox_tool_registered = False
 _client_context_tool_context = threading.local()
@@ -1260,6 +1276,15 @@ def _tenant_skill_read_tool(args: dict[str, Any], **_kwargs) -> str:
     if not isinstance(sandbox, TenantHermesSandbox):
         return json.dumps({"success": False, "error": "sandbox_unavailable"})
     name = str((args or {}).get("name") or "").strip()
+    route = getattr(_skill_route_context, "value", None)
+    if isinstance(route, dict) and route.get("enforced"):
+        allowed = {str(item) for item in route.get("allowed") or []}
+        if name not in allowed:
+            return json.dumps({
+                "success": False,
+                "error": "skill_not_shortlisted",
+                "allowed_candidates": sorted(allowed),
+            }, ensure_ascii=False)
     content = read_sandbox_skill(sandbox, name)
     if not content:
         return json.dumps({"success": False, "error": "skill_not_found"})
@@ -3843,6 +3868,22 @@ def _build_in_process_agent(
             )
         )
     )
+    skill_candidates: list[dict[str, Any]] = []
+    pinned_skills: set[str] = set()
+    agent_id = str(agent_config.get("id") or "")
+    if agent_id.startswith("skill_"):
+        pinned_skills.add(agent_id[6:])
+    if tenant_skill_enabled:
+        skill_candidates = rank_skill_candidates(
+            goal,
+            _routed_skill_catalog(sandbox),
+            limit=5,
+        )
+    candidate_names = {item["name"] for item in skill_candidates}
+    _skill_route_context.value = {
+        "enforced": tenant_skill_enabled,
+        "allowed": sorted(candidate_names | pinned_skills),
+    }
     network_tool_requested = bool(
         agent_config.get("allow_network")
         and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
@@ -4028,6 +4069,7 @@ def _build_in_process_agent(
             + "。只可调用当前回合实际提供 Schema 的工具；不得调用权限上限之外工具。"
             + "\nSkill 只能通过 tenant_skill_read 从当前租户沙箱副本读取；"
               "禁止读取全局 Hermes Skill 目录。"
+            + (candidate_prompt(skill_candidates) if tenant_skill_enabled else "")
             + "\n知识来源路由：当前对话用 session_context_read；当前用户笔记用"
               " user_note_search；租户内部 Wiki/业务资料用 knowledge_search；"
               "互联网公开信息用 web_search。租户知识检索零命中、被权限策略拒绝或暂时不可用时，"
@@ -4099,6 +4141,10 @@ def _build_in_process_agent(
     return agent, session_db, {
         "triage": triage,
         "enabled_toolsets": tuple(toolsets_list),
+        "skill_candidates": tuple(
+            {"name": item["name"], "score": item["score"]}
+            for item in skill_candidates
+        ),
     }
 
 
@@ -4195,6 +4241,7 @@ def _run_agent_sync(
                 "route_class": applied_triage["route_class"],
                 "reason_code": applied_triage["reason_code"],
                 "selected_capabilities": list(route_context["enabled_toolsets"]),
+                "skill_candidates": list(route_context.get("skill_candidates") or []),
             })
         agent_holder[0] = agent
         result = agent.run_conversation(
@@ -4251,6 +4298,7 @@ def _run_agent_sync(
         _knowledge_tool_context.value = None
         _client_context_tool_context.value = None
         _sandbox_tool_context.value = None
+        _skill_route_context.value = None
         # 显式回收：agent.close + session_db.close（防内存泄漏）
         try:
             if agent is not None:
@@ -5256,7 +5304,7 @@ async def list_skills(
         client_claims=None,
     )
     return {
-        "skills": list_sandbox_skills(sandbox),
+        "skills": _routed_skill_catalog(sandbox),
         "tenant_namespace": sandbox.tenant_namespace,
         "template_version": sandbox.template_version,
     }

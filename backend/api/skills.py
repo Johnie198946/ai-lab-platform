@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
 from backend.api.chat import _resolve_chat_policy
 from backend.services.hermes_sandbox_catalog import fetch_skill_catalog
+from backend.services.skill_router import build_skill_tree
 
 router = APIRouter(prefix="/api/v1", tags=["skills"])
 
@@ -19,11 +20,17 @@ class TenantSkillOut(BaseModel):
     description: str = ""
     category: str = ""
     created_at: Optional[str] = None
+    skill_path: str = "uncategorized/general"
+    skill_level: str = "simple"
+    trigger_phrases: List[str] = Field(default_factory=list)
+    negative_phrases: List[str] = Field(default_factory=list)
+    routing_issues: List[str] = Field(default_factory=list)
 
 
 class TenantSkillsOut(BaseModel):
     tenant_id: str
     skills: List[TenantSkillOut]
+    tree: Dict[str, Any]
 
 
 async def _bridge_skill_entries(payload: Dict[str, Any]) -> List[TenantSkillOut]:
@@ -38,6 +45,11 @@ async def _bridge_skill_entries(payload: Dict[str, Any]) -> List[TenantSkillOut]
         description=str(item.get("description") or "")[:120],
         category=str(item.get("scope") or ""),
         created_at=item.get("created_at"),
+        skill_path=str(item.get("skill_path") or "uncategorized/general"),
+        skill_level=str(item.get("skill_level") or "simple"),
+        trigger_phrases=[str(value) for value in item.get("trigger_phrases") or []],
+        negative_phrases=[str(value) for value in item.get("negative_phrases") or []],
+        routing_issues=[str(value) for value in item.get("routing_issues") or []],
     ) for item in items if item.get("name")]
 
 
@@ -58,5 +70,7 @@ async def list_tenant_skills(
     if owned_only:
         skills = [skill for skill in skills if skill.category == "tenant"]
     return TenantSkillsOut(
-        tenant_id=tenant_id, skills=skills
+        tenant_id=tenant_id,
+        skills=skills,
+        tree=build_skill_tree([skill.model_dump() for skill in skills]),
     )
