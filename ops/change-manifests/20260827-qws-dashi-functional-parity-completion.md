@@ -3,17 +3,16 @@
 ```yaml
 task_id: 20260827-qws-dashi-functional-parity
 goal: "审计 QuantumWorkspace 与 dashi-taskboard 的功能偏离并补齐 QWS 缺失能力"
-status: VERIFIED
+status: PUSHED
 branch: codex/quantumworkspace-dashi-functional-parity-20260827
 worktree: /private/tmp/ai-lab-qws-dashi-functional-parity-20260827
 base_head: a6ba5adfbe6d5501fbaa1289fce9db7809e1664e
 head_local_commit: fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f (部署代码提交；证据收尾提交见下方)
 remote_sha: "refs/heads/codex/quantumworkspace-dashi-functional-parity-20260827 = 0092c83d3e082ae5d91377c3f0984dcc46008b31（git ls-remote 核验）；服务器部署代码祖先提交 = fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f"
-server_before: "/opt/releases/ai-lab-platform-23f42fae75a9；.deployed-sha=23f42fae75a9e0c260f434ff5f77c21352d3e916；API/Bridge/Compose 健康"
-server_after: "/opt/releases/ai-lab-platform-fa6a5b5f0ca4；.deployed-sha=fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f；API image sha256:db00bf0037294de808c00da7c85599eb89b76d4064a2d5e450d6b21724446adc；frontend image sha256:224efbf5bdae0c16ea0f53a6b21eabe9ad397a9df335897e0465af60248d8f12"
-health_check: "scripts/update.sh 最终 ready=\\\"{\\\"status\\\":\\\"ready\\\",\\\"version\\\":\\\"0.8.0\\\"}\\\"；health=ok；Bridge v6.0 ok；部署后再次检查全部通过"
-functional_check: "本地前端 107/107、后端 15/15、production build 通过；公网 HTTPS 前端 HTTP 200；部署后 api/frontend/planning-worker/workflow-worker/agent-evaluation-worker/postgres/redis 全部 running（api/postgres/redis healthy）"
-rollback_point: "/opt/releases/ai-lab-platform-23f42fae75a9；如需回滚执行 /opt/ai-lab-platform/scripts/update.sh 23f42fae75a9e0c260f434ff5f77c21352d3e916"
+server_after: "QWS SHA 曾成功切换至 /opt/releases/ai-lab-platform-fa6a5b5f0ca4 并通过检查；随后被并发任务覆盖，当前实际为 /opt/releases/ai-lab-platform-2b3c9753d46a，.deployed-sha=2b3c9753d46a3a89229327916a5ec561e6d4aa38"
+health_check: "QWS 切换时 scripts/update.sh ready/health/Bridge 均通过；当前服务器（另一任务版本）再次检查 ready=ready、health=ok、Bridge v6.0 ok"
+functional_check: "本地前端 107/107、后端 15/15、production build 通过；QWS 版本切换时公网 HTTPS 前端 HTTP 200；当前生产功能不归属于本任务"
+rollback_point: "/opt/releases/ai-lab-platform-2b3c9753d46a（当前服务器版本）；QWS 曾用回滚点 /opt/releases/ai-lab-platform-23f42fae75a9"
 ```
 
 ## 变更文件
@@ -58,7 +57,7 @@ PASS git diff --check
 
 ## 风险、未完成项与回滚
 
-- 未提交、未 push、未部署；当前交付上限为 `TESTED`。
+- QWS 代码已提交并推送；曾完成一次部署但随后被并发任务覆盖，当前交付状态为 `PUSHED`，不是 `DEPLOYED/VERIFIED`。
 - Production build 仍有既存的单 chunk 大于 500 kB 提示，不是本次功能错误。
 - 未进行带真实账号和真实 provider execution 的线上人工验收；LIVE 投影由单元合同覆盖。
-- 回滚方式：丢弃本任务 Worktree 中列出的文件改动，基线为 `a6ba5adfbe6d5501fbaa1289fce9db7809e1664e`；未部署，无服务器回滚动作。
+- 再次部署需要显式确认覆盖当前较新的 `2b3c9753...` 生产版本；未获确认前不执行。
