@@ -8,7 +8,7 @@ branch: codex/quantumworkspace-dashi-functional-parity-20260827
 worktree: /private/tmp/ai-lab-qws-dashi-functional-parity-20260827
 base_head: a6ba5adfbe6d5501fbaa1289fce9db7809e1664e
 head_local_commit: fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f (部署代码提交；证据收尾提交见下方)
-remote_sha: "部署代码 fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f 已推送并经 git ls-remote 核验；manifest 收尾提交随后推送"
+remote_sha: "refs/heads/codex/quantumworkspace-dashi-functional-parity-20260827 = 0092c83d3e082ae5d91377c3f0984dcc46008b31（git ls-remote 核验）；服务器部署代码祖先提交 = fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f"
 server_before: "/opt/releases/ai-lab-platform-23f42fae75a9；.deployed-sha=23f42fae75a9e0c260f434ff5f77c21352d3e916；API/Bridge/Compose 健康"
 server_after: "/opt/releases/ai-lab-platform-fa6a5b5f0ca4；.deployed-sha=fa6a5b5f0ca42688a6a1266a7469dbe20157bd1f；API image sha256:db00bf0037294de808c00da7c85599eb89b76d4064a2d5e450d6b21724446adc；frontend image sha256:224efbf5bdae0c16ea0f53a6b21eabe9ad397a9df335897e0465af60248d8f12"
 health_check: "scripts/update.sh 最终 ready=\\\"{\\\"status\\\":\\\"ready\\\",\\\"version\\\":\\\"0.8.0\\\"}\\\"；health=ok；Bridge v6.0 ok；部署后再次检查全部通过"
