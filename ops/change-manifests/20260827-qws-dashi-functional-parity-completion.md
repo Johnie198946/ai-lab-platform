@@ -7,13 +7,13 @@ status: VERIFIED
 branch: codex/quantumworkspace-dashi-functional-parity-20260827
 worktree: /private/tmp/ai-lab-qws-dashi-functional-parity-20260827
 base_head: a6ba5adfbe6d5501fbaa1289fce9db7809e1664e
-head_local_commit: 6a108c8ffe8614a4590569f14024718657e65fc4 (部署代码提交；本 manifest 收尾提交会在其后)
-remote_sha: "部署目标 refs/heads/codex/quantumworkspace-dashi-functional-parity-20260827 = 6a108c8ffe8614a4590569f14024718657e65fc4（git ls-remote 核验）"
-server_before: "/opt/releases/ai-lab-platform-2b3c9753d46a，.deployed-sha=2b3c9753d46a3a89229327916a5ec561e6d4aa38；ready/health/Bridge 均正常"
-server_after: "/opt/releases/ai-lab-platform-6a108c8ffe86，.deployed-sha=6a108c8ffe8614a4590569f14024718657e65fc4；api/frontend/worker 容器已更新并运行"
+head_local_commit: e88040b2f58f05156dc4c9e342e51b2ddc93afb5 (卡片编辑修复部署代码提交；本 manifest 收尾提交会在其后)
+remote_sha: "部署目标 refs/heads/codex/quantumworkspace-dashi-functional-parity-20260827 = e88040b2f58f05156dc4c9e342e51b2ddc93afb5（git ls-remote 核验）"
+server_before: "/opt/releases/ai-lab-platform-6a108c8ffe86，.deployed-sha=6a108c8ffe8614a4590569f14024718657e65fc4；ready/health/Bridge 均正常"
+server_after: "/opt/releases/ai-lab-platform-e88040b2f58f，.deployed-sha=e88040b2f58f05156dc4c9e342e51b2ddc93afb5；api/frontend/worker 容器已更新并运行"
 health_check: "scripts/update.sh runtime contract audit passed；独立复核 ready={status:ready,version:0.8.0}、health={status:ok,version:0.8.0}、Bridge={status:ok,version:v6.0,workflow_orchestration:true,streaming:true}；Compose 服务均 running，api/postgres healthy"
-functional_check: "本地前端 107/107、后端 15/15、production build、ruff、py_compile、diff check 全部通过；远端发布后 API ready/health/Bridge 及前端容器复核通过；公网 80/443 当前不可达（网络入口限制，非应用健康失败）"
-rollback_point: "/opt/releases/ai-lab-platform-2b3c9753d46a（部署前版本，可用 scripts/update.sh 2b3c9753d46a3a89229327916a5ec561e6d4aa38 回滚）"
+functional_check: "本地前端 107/107、后端 15/15、production build、ruff、py_compile、diff check 全部通过；卡片主体进入编辑弹窗、消息按钮进入对话、PUT 任务编辑接口已实现并随 release 部署；远端 API ready/health/Bridge 及全部容器复核通过"
+rollback_point: "/opt/releases/ai-lab-platform-6a108c8ffe86（部署前版本，可用 scripts/update.sh 6a108c8ffe8614a4590569f14024718657e65fc4 回滚）"
 ```
 
 ## 变更文件
