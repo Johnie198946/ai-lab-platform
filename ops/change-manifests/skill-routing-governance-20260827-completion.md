@@ -62,7 +62,8 @@
 ## 交付状态
 
 - implementation_commit: `2b3c9753d46a3a89229327916a5ec561e6d4aa38`。
-- remote_sha: GitHub `main` 与 `codex/skill-routing-governance-20260827` 已通过 `git ls-remote` 核验为 `2b3c9753d46a3a89229327916a5ec561e6d4aa38`；收尾 manifest 提交后以不可变 deploy tag 继续固定该运行代码 SHA。
+- mac_followup_commit: `2c33fbbc74a8d5f9741cf1c443e8dd345418fd51`。
+- remote_sha: GitHub `main` 与 `codex/skill-routing-governance-20260827` 已通过 `git ls-remote` 核验为 `2c33fbbc74a8d5f9741cf1c443e8dd345418fd51`；服务器仍以不可变 deploy tag 固定运行代码 SHA `2b3c9753d46a3a89229327916a5ec561e6d4aa38`，Mac 运行插件来自 follow-up commit。
 - server_before: `.deployed-sha=23f42fae75a9e0c260f434ff5f77c21352d3e916`；release `/opt/releases/ai-lab-platform-23f42fae75a9`；API `status=ok/version=0.8.0`；Hermes Bridge `status=ok/version=v6.0` 且 systemd active；Compose 7 个服务均 running，API/Postgres/Redis healthy。
 - server_after: `.deployed-sha=2b3c9753d46a3a89229327916a5ec561e6d4aa38`；release `/opt/releases/ai-lab-platform-2b3c9753d46a`；API、frontend、planning/workflow/agent-evaluation workers、Postgres、Redis 全部 running。
 - health_check: 部署脚本 runtime contract audit passed；内网 API `/health`=`status=ok/version=0.8.0`、`/ready`=`status=ready`；公网 `http://120.24.248.58:8000/health` 正常；Bridge `/health`=`status=ok/version=v6.0` 且 systemd active；API/Postgres/Redis healthy。
