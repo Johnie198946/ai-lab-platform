@@ -1,6 +1,6 @@
 name: ai-lab-capabilities
-version: 1.1.0
-description: Adaptive extension for Hermes tool search plus the server-owned AI Lab capability surface.
+version: 1.2.0
+description: Mac-native triage and governed Skill/Agency shortlist plus the AI Lab capability surface.
 provides_tools:
   - ai_lab_capabilities
   - ai_lab_execute

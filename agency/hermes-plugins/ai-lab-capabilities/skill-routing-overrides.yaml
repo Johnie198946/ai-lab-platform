@@ -1,0 +1,50 @@
+version: 1
+skills:
+  article-research-summary:
+    description: 当用户要求总结或概括单篇文章、网页或链接时使用；仅用于摘要后做必要核验，不能用于多源行业研究、知识入库或正式研究报告。
+    skill_path: research/article/summary
+    skill_level: simple
+    trigger_phrases: [总结文章, 概括链接, 单篇文章摘要, summarize an article]
+    negative_phrases: [多源行业研究, 竞品调研报告, 保存入库, 批量资料研究]
+  evidence-first-content-research:
+    description: 当用户要求研究外部链接并交叉核验关键事实时使用；仅用于证据优先的内容研究，不能用于只做摘要、受保护应用 E2E 或直接知识入库。
+    skill_path: research/article/verification
+    skill_level: professional
+    trigger_phrases: [研究这个链接, 核验外部资料, 交叉验证文章, evidence-first research]
+    negative_phrases: [只做摘要, 登录后页面测试, 保存到知识库]
+  evidence-first-article-ingestion:
+    description: 当用户明确要求把外部文章按证据分层写入知识库时使用；仅用于文章入库，不能用于只读研究、简单摘要或市场扫描。
+    skill_path: knowledge/ingestion/article
+    skill_level: professional
+    trigger_phrases: [文章入库, 证据分层入库, 保存文章到知识库]
+    negative_phrases: [只研究不保存, 只做摘要, 行业市场扫描]
+  content-research-ingest:
+    description: 当用户要求研究链接并保存原文、来源卡片和更新记录时使用；仅用于完整研究入库流水线，不能用于只读回答或单篇快速摘要。
+    skill_path: knowledge/ingestion/content-pipeline
+    skill_level: professional
+    trigger_phrases: [研究并入库链接, 保存原文和来源卡片, content research ingest]
+    negative_phrases: [只读研究, 不要保存, 简单总结]
+  external-article-analysis:
+    description: 当用户要求对单篇外部文章做深度拆解、基准比较或方法转换时使用；不能用于快速摘要、多源行业研究或知识入库。
+    skill_path: research/article/deep-analysis
+    skill_level: professional
+    trigger_phrases: [深度拆解文章, 分析外部文章, 文章基准比较]
+    negative_phrases: [简单摘要, 多源行业研究, 保存入库]
+  web-market-research:
+    description: 当用户要求跨地区、跨厂商的市场或行业研究并需要新鲜网页证据时使用；不能用于单篇文章摘要、应用 E2E 测试或不联网的内部资料整理。
+    skill_path: research/market/multi-region
+    skill_level: professional
+    trigger_phrases: [行业市场研究, 跨地区市场调研, 多厂商对比, API价格对比]
+    negative_phrases: [单篇文章摘要, 登录后页面测试, 只用内部资料]
+  authenticated-web-e2e-verification:
+    description: 当用户要求在登录态或受保护 Web 应用中执行端到端功能验证时使用；不能用于研究公开链接、文章事实核验或市场调研。
+    skill_path: engineering/testing/web-e2e
+    skill_level: professional
+    trigger_phrases: [登录态E2E, 受保护页面验证, Web应用端到端测试]
+    negative_phrases: [研究公开链接, 核验外部资料, 行业市场调研]
+  defuddle:
+    description: 当用户提供普通网页链接并要求提取干净正文时使用；仅用于网页正文抽取，不能用于 Markdown 直链、市场研究或登录态应用测试。
+    skill_path: research/web/extraction
+    skill_level: simple
+    trigger_phrases: [提取网页正文, 清理网页内容, 读取文章链接]
+    negative_phrases: [Markdown直链, 市场研究, 登录态应用测试]

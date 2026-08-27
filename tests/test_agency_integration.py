@@ -220,6 +220,72 @@ def test_capability_hook_abstains_for_server_routed_casual_and_general_turns():
     assert router._pre_llm_call(
         '<<AI_LAB_TRIAGE class="CASUAL" agency="0">>\n你好'
     ) is None
+
+
+def test_mac_native_triage_keeps_chat_and_general_qa_direct():
+    router = load_capability_router()
+    assert router._skill_route_class("你好") == "CASUAL"
+    assert router._pre_llm_call("你好") is None
+    assert router._skill_route_class("什么是 API") == "GENERAL_QA"
+    assert router._pre_llm_call("什么是 API") is None
+
+
+def test_mac_native_link_research_shortlists_governed_skill(monkeypatch):
+    router = load_capability_router()
+    inventory = [
+        router._govern_skill({
+            "id": "skill:evidence-first-content-research",
+            "kind": "skill",
+            "name": "evidence-first-content-research",
+            "description": "Research content.",
+            "domain": "research",
+            "invoke_tool": "skill_view",
+            "invoke_args": {"name": "evidence-first-content-research"},
+            "depth": 0.62,
+            "cost": 0.035,
+        }),
+        router._govern_skill({
+            "id": "skill:authenticated-web-e2e-verification",
+            "kind": "skill",
+            "name": "authenticated-web-e2e-verification",
+            "description": "Verify a web application.",
+            "domain": "engineering",
+            "invoke_tool": "skill_view",
+            "invoke_args": {"name": "authenticated-web-e2e-verification"},
+            "depth": 0.62,
+            "cost": 0.035,
+        }),
+    ]
+    cards = router.recommend(
+        "帮我研究这个链接 https://example.com/report 并核验外部资料",
+        capabilities=inventory,
+        stats={},
+    )
+    assert cards[0]["id"] == "skill:evidence-first-content-research"
+    assert "skill:authenticated-web-e2e-verification" not in {
+        card["id"] for card in cards
+    }
+
+
+def test_mac_native_negative_boundary_overrides_positive_keyword():
+    router = load_capability_router()
+    skill = router._govern_skill({
+        "id": "skill:content-research-ingest",
+        "kind": "skill",
+        "name": "content-research-ingest",
+        "description": "Research and ingest content.",
+        "domain": "knowledge",
+        "invoke_tool": "skill_view",
+        "invoke_args": {"name": "content-research-ingest"},
+        "depth": 0.62,
+        "cost": 0.035,
+    })
+    cards = router.recommend(
+        "研究这个链接，但只读研究，不要保存",
+        capabilities=[skill],
+        stats={},
+    )
+    assert cards == []
     assert router._pre_llm_call(
         '<<AI_LAB_TRIAGE class="GENERAL_QA" agency="0">>\n解释一下 API'
     ) is None
