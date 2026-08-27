@@ -2,7 +2,7 @@
 
 - task_id: `hermes-web-extract-fallback-20260827`
 - objective: 同时修复 Mac 与云端 Hermes 的 `web_extract` 后端错配，并约束链接研究的安全降级顺序。
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `codex/hermes-web-extract-fallback-20260827`
 - worktree: `/private/tmp/ai-lab-hermes-web-extract-fallback-20260827`
 
@@ -34,13 +34,17 @@
 
 ## 交付状态
 
-- implementation_commit: 待提交。
-- remote_sha: 待推送与 `git ls-remote` 核验。
+- implementation_commit: `fe963c34c27849d5e21dc076ba84a20455d3072f`；部署清洁性补丁 `62e3ad7b5f082a9ce93acd50a46c99291b8d1ca8`。
+- remote_sha: GitHub `main` 与 `codex/hermes-web-extract-fallback-20260827` 已通过 `git ls-remote` 核验为 `62e3ad7b5f082a9ce93acd50a46c99291b8d1ca8`；后续 completion manifest-only 提交不改变运行代码。
 - server_before: 平台 `.deployed-sha=d21686e48e91f7ad40a2930f0c745b7afeace97c`；release `/opt/releases/ai-lab-platform-d21686e48e91`；`hermes-bridge.service=active`；Bridge health `status=ok/version=v6.0`；网页配置为空且无付费抽取 Provider 凭据。
-- server_after: 待部署；为避免覆盖领先于 GitHub main 的平台版本，只部署 Hermes 插件和配置，平台 release/SHA 保持不变。
-- health_check: 待执行。
-- functional_check: 待执行。
-- rollback_point: 待创建。
+- server_after: 平台 `.deployed-sha` 与 release 保持 `d21686e48e91f7ad40a2930f0c745b7afeace97c` / `/opt/releases/ai-lab-platform-d21686e48e91`；仅将 `/root/.hermes/plugins/ai-lab-capabilities` 升级到 `1.3.0`，配置为 `search_backend=ddgs`、`extract_backend=ai-lab-native`。
+- health_check: 云端 `hermes-bridge.service=active`；Bridge `/health` 返回 `status=ok/version=v6.0`；插件列表显示 `agency-agents-router 1.0.0 enabled` 与 `ai-lab-capabilities 1.3.0 enabled`。
+- functional_check: 云端真实 Hermes `web_extract_tool` 对 `https://example.com/report` 一次成功，返回 `Example Domain` 正文；首个抽取允许、重复抽取阻止、terminal 抓取阻止。Mac 同一真实工具链结果一致。两端 `capability_router.py` SHA-256 均为 `42a4237f411253c6adf7e54c38ccfac46af9a09f05783059f3deee7652ffe680`，`native_extract_provider.py` 均为 `61b0b584cfb907f5f27aa09211be8790dee82b64b7007c070b35812bcc524279`。
+- rollback_point: 云端 `/opt/ai-lab-rollbacks/hermes-web-extract-20260827T154500Z`；恢复其中插件与配置后重启 `hermes-bridge.service`。平台无需回滚，因为 release/SHA 未改变。
 - mac_before: Gateway PID `95020`；Feishu/Weixin connected；插件 `1.2.0`；网页配置为空，自动选择 DDGS 导致 `web_extract` 必然失败。
-- mac_after: 待部署。
-- remaining_risks: 原生 Provider 面向 HTML、纯文本、JSON 和 XML；PDF/OCR、重 JS 或登录态页面仍需浏览器或未来配置 Firecrawl/Tavily/Exa/Parallel。
+- mac_after: 插件 `1.3.0`；Gateway launchd PID `2706`；Feishu/Weixin connected；配置为 `search_backend=ddgs`、`extract_backend=ai-lab-native`；真实 `web_extract_tool` 一次返回 `Example Domain` 正文。
+- mac_rollback_point: `/Users/dengzhaoyu/.hermes/backups/hermes-web-extract-20260827T154214Z`；恢复其中插件与配置后执行 `hermes gateway restart`。
+- remaining_risks:
+  - 原生 Provider 面向 HTML、纯文本、JSON 和 XML；PDF/OCR、重 JS 或登录态页面仍需浏览器或未来配置 Firecrawl/Tavily/Exa/Parallel。
+  - 云端功能验证期间出现既有用户插件目录 `hermes-internal` 缺少 `__init__.py` 的警告；不影响本插件注册、抽取或 Bridge 健康，本任务未擅自删除该未知目录。
+  - SSH 客户端提示云端连接未使用后量子密钥交换；与本次功能无关，应作为服务器 SSH 加固任务单独处理。
