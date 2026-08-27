@@ -185,6 +185,30 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
+  # Dashi Taskboard — upstream UI and issue-management runtime.
+  # AI execution remains owned by AI Lab and is entered through the QWS host bridge.
+  taskboard:
+    build:
+      context: ./apps/dashi-taskboard
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      CODEX_TASKBOARD_HOST: 0.0.0.0
+      CODEX_TASKBOARD_PORT: 47823
+      CODEX_TASKBOARD_DATA_DIR: /data
+      CODEX_TASKBOARD_VERSION: qws-dashi-5c96d1a
+      CODEX_TASKBOARD_QWS_MODE: "true"
+      AI_LAB_INTERNAL_BASE_URL: http://api:8000
+    volumes:
+      - taskboard_data:/data
+      - /opt/ai-lab-platform:/workspace:ro
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:47823/api/meta"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
   # 前端服务
   frontend:
     build:
@@ -201,8 +225,10 @@ services:
       - "host.docker.internal:host-gateway"
     depends_on:
       - api
+      - taskboard
     volumes:
       - ./docs/charts:/usr/share/nginx/html/charts
 
 volumes:
   pgdata:
+  taskboard_data:

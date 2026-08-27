@@ -1,4 +1,4 @@
-import { createHmac, randomUUID } from "node:crypto";
+import { createHash, createHmac, randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -6,6 +6,7 @@ import { isIP } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { WebSocket as WebSocketClient, WebSocketServer } from "ws";
@@ -1623,6 +1624,8 @@ export function resolveServerOptions(options = {}) {
     instanceToken,
     instanceSecret,
     trustedOrigins: parseTrustedOrigins(environment[TRUSTED_ORIGINS_ENV]),
+    qwsMode: String(options.qwsMode ?? environment.CODEX_TASKBOARD_QWS_MODE ?? "false") === "true",
+    aiLabBaseUrl: String(options.aiLabBaseUrl ?? environment.AI_LAB_INTERNAL_BASE_URL ?? "http://api:8000").replace(/\/$/, ""),
     version: String(
       options.version ?? environment.CODEX_TASKBOARD_VERSION ?? "development",
     ).trim(),
@@ -1651,8 +1654,58 @@ export function createTaskboardServer(options = {}) {
     options.processEnv ?? process.env,
   );
   const routePrefix = resolved.instanceToken ? `/${resolved.instanceToken}` : "";
-  const database = new TaskboardDatabase(resolved.databasePath);
-  const events = new EventHub();
+  const defaultResources = {
+    database: new TaskboardDatabase(resolved.databasePath),
+    events: new EventHub(),
+    attachmentsDirectory: resolved.attachmentsDirectory,
+  };
+  const requestScope = new AsyncLocalStorage();
+  const tenantResources = new Map();
+  const qwsSessions = new Map();
+  const currentResources = () => requestScope.getStore() ?? defaultResources;
+  const database = new Proxy(defaultResources.database, {
+    get(_target, property) {
+      const target = currentResources().database;
+      const value = target[property];
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const events = new Proxy(defaultResources.events, {
+    get(_target, property) {
+      const target = currentResources().events;
+      const value = target[property];
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const attachmentsDirectory = () => currentResources().attachmentsDirectory;
+
+  function resourcesForTenant(tenantKey) {
+    const scopeId = createHash("sha256").update(tenantKey).digest("hex").slice(0, 24);
+    let resources = tenantResources.get(scopeId);
+    if (!resources) {
+      const directory = path.join(resolved.dataDirectory, "qws-tenants", scopeId);
+      resources = {
+        database: new TaskboardDatabase(path.join(directory, "taskboard.sqlite")),
+        events: new EventHub(),
+        attachmentsDirectory: path.join(directory, "attachments"),
+      };
+      tenantResources.set(scopeId, resources);
+    }
+    return resources;
+  }
+
+  function qwsSessionFromRequest(request) {
+    const cookies = String(request.headers.cookie ?? "").split(";");
+    const raw = cookies.find((entry) => entry.trim().startsWith("qws-taskboard-session="));
+    if (!raw) return null;
+    const token = raw.slice(raw.indexOf("=") + 1).trim();
+    const session = qwsSessions.get(token);
+    if (!session || session.expiresAt < Date.now()) {
+      if (session) qwsSessions.delete(token);
+      return null;
+    }
+    return session;
+  }
   let clientStorageWrite = Promise.resolve();
 
   async function readClientStorage() {
@@ -2022,6 +2075,48 @@ export function createTaskboardServer(options = {}) {
       }
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
+      if (resolved.qwsMode && pathname === "/api/qws/session") {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        await readJson(request);
+        const headers = { accept: "application/json" };
+        if (typeof request.headers.authorization === "string") {
+          headers.authorization = request.headers.authorization;
+        }
+        const upstream = await fetch(`${resolved.aiLabBaseUrl}/api/v1/me`, { headers });
+        if (!upstream.ok) {
+          throw new ApiError(401, "QWS_AUTH_REQUIRED", "AI Lab 登录会话无效或已过期");
+        }
+        const identity = await upstream.json();
+        const tenantKey = String(identity.tenant_key ?? "").trim();
+        if (!tenantKey) throw new ApiError(401, "QWS_TENANT_REQUIRED", "AI Lab 会话缺少租户身份");
+        const token = randomUUID().replaceAll("-", "");
+        qwsSessions.set(token, {
+          identity,
+          resources: resourcesForTenant(tenantKey),
+          expiresAt: Date.now() + 12 * 60 * 60 * 1000,
+        });
+        return sendJson(response, 200, { user: identity }, {
+          "set-cookie": `qws-taskboard-session=${token}; Path=/taskboard/; HttpOnly; SameSite=Strict; Max-Age=43200`,
+        });
+      }
+      if (
+        resolved.qwsMode
+        && pathname.startsWith("/api/")
+        && pathname !== "/api/meta"
+      ) {
+        const session = qwsSessionFromRequest(request);
+        if (!session) throw new ApiError(401, "QWS_AUTH_REQUIRED", "请从 QuantumWorkspace 打开 Taskboard");
+        requestScope.enterWith(session.resources);
+        request.headers["x-taskboard-user-id"] = String(
+          session.identity.user_id || session.identity.username || "qws-user",
+        ).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-|-$/g, "").slice(0, 96) || "qws-user";
+        request.headers["x-taskboard-user-name"] = encodeURIComponent(session.identity.username || "QWS 用户");
+        if (session.identity.avatar_url) {
+          request.headers["x-taskboard-user-avatar"] = session.identity.avatar_url;
+        } else {
+          delete request.headers["x-taskboard-user-avatar"];
+        }
+      }
       const configuredTrustedOrigin = resolved.trustedOrigins.has(origin);
       const isLocalAiRoute = pathname === "/api/local/ai" || pathname.startsWith("/api/local/ai/");
       const isDevelopmentContextsRoute = /^\/api\/projects\/[^/]+\/development-contexts$/.test(pathname);
@@ -2291,7 +2386,8 @@ export function createTaskboardServer(options = {}) {
         return sendJson(response, 200, {
           ...(configuredTrustedOrigin ? {} : { manageTaskboardSkillPath: resolved.skillPath }),
           capabilities: {
-            localAiChat: !configuredTrustedOrigin
+            localAiChat: !resolved.qwsMode
+              && !configuredTrustedOrigin
               && isLoopbackAddress(request.socket.remoteAddress),
           },
           ...(capabilityCloudConfig?.remoteUrl
@@ -2564,8 +2660,8 @@ export function createTaskboardServer(options = {}) {
         }
         const body = await readBody(request, ATTACHMENT_BODY_LIMIT, "Attachment cannot exceed 25 MiB");
         const id = randomUUID();
-        await mkdir(resolved.attachmentsDirectory, { recursive: true });
-        const storagePath = path.join(resolved.attachmentsDirectory, id);
+        await mkdir(attachmentsDirectory(), { recursive: true });
+        const storagePath = path.join(attachmentsDirectory(), id);
         await writeFile(storagePath, body, { flag: "wx" });
         let attachment;
         try {
@@ -2855,7 +2951,7 @@ export function createTaskboardServer(options = {}) {
           const comment = database.deleteComment(id, version);
           for (const attachment of comment.attachments) {
             try {
-              await unlink(path.join(resolved.attachmentsDirectory, attachment.id));
+              await unlink(path.join(attachmentsDirectory(), attachment.id));
             } catch (error) {
               if (error.code !== "ENOENT") throw error;
             }
@@ -2895,8 +2991,8 @@ export function createTaskboardServer(options = {}) {
           const metadata = parseAttachmentHeaders(request);
           const body = await readBody(request, ATTACHMENT_BODY_LIMIT, "Attachment cannot exceed 25 MiB");
           const id = randomUUID();
-          await mkdir(resolved.attachmentsDirectory, { recursive: true });
-          const storagePath = path.join(resolved.attachmentsDirectory, id);
+          await mkdir(attachmentsDirectory(), { recursive: true });
+          const storagePath = path.join(attachmentsDirectory(), id);
           await writeFile(storagePath, body, { flag: "wx" });
           let attachment;
           try {
@@ -2940,8 +3036,8 @@ export function createTaskboardServer(options = {}) {
           const metadata = parseAttachmentHeaders(request);
           const body = await readBody(request, ATTACHMENT_BODY_LIMIT, "Attachment cannot exceed 25 MiB");
           const id = randomUUID();
-          await mkdir(resolved.attachmentsDirectory, { recursive: true });
-          const storagePath = path.join(resolved.attachmentsDirectory, id);
+          await mkdir(attachmentsDirectory(), { recursive: true });
+          const storagePath = path.join(attachmentsDirectory(), id);
           await writeFile(storagePath, body, { flag: "wx" });
           let attachment;
           try {
@@ -2975,7 +3071,7 @@ export function createTaskboardServer(options = {}) {
         }
         const attachment = database.getAttachment(id) ?? database.getProjectReadmeAttachment(id);
         if (!attachment) throw new ApiError(404, "ATTACHMENT_NOT_FOUND", `Attachment '${id}' does not exist`);
-        const body = await readFile(path.join(resolved.attachmentsDirectory, attachment.id));
+        const body = await readFile(path.join(attachmentsDirectory(), attachment.id));
         const encodedFilename = encodeURIComponent(attachment.filename).replace(/['()*]/g, (character) => (
           `%${character.charCodeAt(0).toString(16).toUpperCase()}`
         ));
@@ -3010,7 +3106,7 @@ export function createTaskboardServer(options = {}) {
         const attachment = database.getAttachment(id);
         if (!attachment) throw new ApiError(404, "ATTACHMENT_NOT_FOUND", `Attachment '${id}' does not exist`);
         try {
-          await unlink(path.join(resolved.attachmentsDirectory, attachment.id));
+          await unlink(path.join(attachmentsDirectory(), attachment.id));
         } catch (error) {
           if (error.code !== "ENOENT") throw error;
         }
@@ -3132,7 +3228,7 @@ export function createTaskboardServer(options = {}) {
           const deleted = database.deleteArchivedTask(id, version);
           for (const attachmentId of deleted.attachmentIds) {
             try {
-              await unlink(path.join(resolved.attachmentsDirectory, attachmentId));
+              await unlink(path.join(attachmentsDirectory(), attachmentId));
             } catch (error) {
               if (error.code !== "ENOENT") throw error;
             }
@@ -3391,14 +3487,16 @@ export function createTaskboardServer(options = {}) {
             server.close((error) => error ? reject(error) : resolve());
           })
         : Promise.resolve();
-      events.close();
+      defaultResources.events.close();
+      for (const resources of tenantResources.values()) resources.events.close();
       for (const response of aiEventResponses) response.end();
       aiEventResponses.clear();
       await aiChat.close();
       await projectSummary.close();
       await serverClosed;
       listening = false;
-      database.close();
+      defaultResources.database.close();
+      for (const resources of tenantResources.values()) resources.database.close();
     },
   };
 }

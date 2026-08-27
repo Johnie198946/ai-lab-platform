@@ -5,7 +5,7 @@ import { platformApi } from "../../services/platformApi";
 import { BusinessIntakePanel } from "./BusinessIntakePanel";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
-import { ProjectTaskboard } from "./ProjectTaskboard";
+import { DashiTaskboardHost } from "./DashiTaskboardHost";
 import { StageRail } from "./StageRail";
 import { TaskChatDrawer } from "./TaskChatDrawer";
 import { BindWorkflowDialog, EditProjectTaskDialog, NewProjectTaskDialog } from "./TaskboardDialogs";
@@ -171,10 +171,10 @@ export function ProjectWorkspacePage() {
         <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
         <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
       </div>
-      <StageRail process={process} selectedStageId={selectedStageId} onSelect={(id) => setSelectedStageId((current) => current === id ? null : id)} />
-      {stage && <div className="qw-stage-focus"><strong>{stage.name}</strong><span>{stage.status} · {stage.progress}%</span><button onClick={() => setSelectedStageId(null)}>清除筛选</button></div>}
+      {view !== "taskboard" && <StageRail process={process} selectedStageId={selectedStageId} onSelect={(id) => setSelectedStageId((current) => current === id ? null : id)} />}
+      {view !== "taskboard" && stage && <div className="qw-stage-focus"><strong>{stage.name}</strong><span>{stage.status} · {stage.progress}%</span><button onClick={() => setSelectedStageId(null)}>清除筛选</button></div>}
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <ProjectTaskboard process={process} workflows={workflows} selectedStageId={selectedStageId} onTaskOpen={(task) => { setDialogError(""); setEditTask(task); }} onTaskChat={setSelectedTask} onStatusChange={updateStatus} onWorkflowOpen={(workflowId) => window.location.assign(`/architect?workflow_id=${encodeURIComponent(workflowId)}`)} onBindWorkflow={(task) => { setDialogError(""); setBindTask(task); }} onCreateTask={() => { setDialogError(""); setNewTaskOpen(true); }} boardMode={boardMode} onBoardModeChange={setBoardMode} workflowState={workflowState} intake={<BusinessIntakePanel project={project} process={process} onApplied={load} />} />}
+      {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewData && <ProjectGraph graph={viewData} />}
       {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
