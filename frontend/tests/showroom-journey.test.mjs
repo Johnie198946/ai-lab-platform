@@ -53,8 +53,12 @@ test('immutable deployment audits the release before switching the live symlink'
   const marker = updateScript.indexOf('> .deployed-sha');
   const switchLink = updateScript.indexOf('mv -Tf "$LINK_TMP" "$APP_LINK"');
   const bridgeRestart = updateScript.indexOf('systemctl restart hermes-bridge.service', switchLink);
-  const finalApiHealth = updateScript.lastIndexOf('curl -fsS --max-time 10 http://127.0.0.1:8000/ready');
-  const finalBridgeHealth = updateScript.lastIndexOf('curl -fsS --max-time 10 http://127.0.0.1:9118/health');
+  const finalApiHealth = updateScript.lastIndexOf(
+    'api_status="$(curl -fsS --max-time 5 http://127.0.0.1:8000/ready || true)"',
+  );
+  const finalBridgeHealth = updateScript.lastIndexOf(
+    'bridge_status="$(curl -fsS --max-time 5 http://127.0.0.1:9118/health || true)"',
+  );
   assert.ok(migration >= 0 && restart > migration && health > restart);
   assert.ok(runtimeDirs > health && matrixLink > runtimeDirs && audit > matrixLink);
   assert.ok(marker > audit && switchLink > marker && bridgeRestart > switchLink);

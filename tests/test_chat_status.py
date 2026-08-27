@@ -117,10 +117,10 @@ class TestQueryStatusStateMachine(unittest.TestCase):
         self.assertEqual(_query_status(None)["status"], "not_found")
 
     def test_not_found_when_session_missing(self):
-        self.assertEqual(_query_status("sid_nonexistent")["status"], "not_found")
+        self.assertEqual(self._query("sid_nonexistent")["status"], "not_found")
 
     def test_not_found_when_archived(self):
-        self.assertEqual(_query_status("sid_archived")["status"], "not_found")
+        self.assertEqual(self._query("sid_archived")["status"], "not_found")
 
     def test_completed_returns_answer_and_reasoning(self):
         result = self._query("sid_completed")

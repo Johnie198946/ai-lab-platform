@@ -93,8 +93,13 @@ CONTENT_FILE = (
     / "content.yaml"
 )
 RUNTIME_ID = "venue"
-PERSONA_SKILL_PATH = Path(
-    "/root/.hermes/skills/productivity/solution-consultant-persona/SKILL.md"
+PERSONA_SKILL_PATH = (
+    Path.home()
+    / ".hermes"
+    / "skills"
+    / "productivity"
+    / "solution-consultant-persona"
+    / "SKILL.md"
 )
 PERSONA_MIN_VERSION = (1, 7, 0)
 MAX_SHOWROOM_EPOCH = (1 << 63) - 1
