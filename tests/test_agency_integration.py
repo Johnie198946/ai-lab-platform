@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import queue
 import sys
 import types
 from pathlib import Path
 
 from backend.api.orchestration import _agency_agent_config
-from scripts.hermes_bridge import _include_available_toolsets
+from scripts.hermes_bridge import (
+    _apply_triage_toolset_policy,
+    _emit_tool_start,
+    _include_available_toolsets,
+    _request_triage,
+    _triage_route_marker,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -208,6 +215,54 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
     assert not any("router" in name for name in context.tools)
 
 
+def test_capability_hook_abstains_for_server_routed_casual_and_general_turns():
+    router = load_capability_router()
+    assert router._pre_llm_call(
+        '<<AI_LAB_TRIAGE class="CASUAL" agency="0">>\n你好'
+    ) is None
+    assert router._pre_llm_call(
+        '<<AI_LAB_TRIAGE class="GENERAL_QA" agency="0">>\n解释一下 API'
+    ) is None
+
+
+def test_capability_hook_uses_only_exact_agency_slugs_for_professional_turn(monkeypatch):
+    router = load_capability_router()
+    observed = {}
+    agency = [{
+        "id": "agency:trend-researcher",
+        "kind": "agency_agent",
+        "name": "Trend Researcher",
+        "description": "Research market trends with evidence.",
+        "domain": "research",
+        "invoke_tool": "tool_call",
+        "invoke_args": {
+            "name": "agency_agents_load",
+            "arguments": {"agent": "trend-researcher"},
+        },
+        "depth": 0.82,
+        "cost": 0.10,
+    }]
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency)
+
+    original = router.recommend
+
+    def capture(query, **kwargs):
+        observed["query"] = query
+        observed["capabilities"] = kwargs.get("capabilities")
+        return original(query, **kwargs)
+
+    monkeypatch.setattr(router, "recommend", capture)
+    result = router._pre_llm_call(
+        '<<AI_LAB_TRIAGE class="PROFESSIONAL_TASK" agency="1">>\n'
+        "调研企业 AI 市场"
+    )
+    assert result is not None
+    assert observed["query"] == "调研企业 AI 市场"
+    assert observed["capabilities"] == agency
+    assert '"agent":"trend-researcher"' in result["context"]
+    assert "engineering-trend-researcher" not in result["context"]
+
+
 def test_capability_router_extends_existing_tool_search_contract(monkeypatch):
     router = load_capability_router()
     fake_search = types.ModuleType("tools.tool_search")
@@ -260,3 +315,57 @@ def test_agency_plugins_are_added_after_lightweight_tool_selection():
     )
     assert selected == ["clarify", "delegation", "agency_agents", "ai_lab"]
     assert "terminal" not in selected
+
+
+def test_bridge_applies_fail_closed_toolsets_from_server_triage():
+    all_tools = [
+        "clarify", "memory", "web", "delegation", "skills",
+        "tenant_skills", "agency_agents", "ai_lab", "file", "terminal",
+    ]
+    casual = _request_triage({"triage": {
+        "route_class": "CASUAL",
+        "reason_code": "conversation_marker",
+        "agency_enabled": True,
+    }})
+    assert casual is not None
+    assert _apply_triage_toolset_policy(all_tools, casual) == []
+
+    general = _request_triage({"triage": {
+        "route_class": "GENERAL_QA",
+        "reason_code": "evidence_qa",
+        "evidence_requirements": ["web_extract"],
+        "agency_enabled": True,
+    }})
+    assert general is not None
+    assert _apply_triage_toolset_policy(all_tools, general) == [
+        "clarify", "memory", "web",
+    ]
+
+    professional = _request_triage({"triage": {
+        "route_class": "PROFESSIONAL_TASK",
+        "reason_code": "professional_url_research",
+        "evidence_requirements": ["web_extract", "web_search"],
+        "agency_enabled": True,
+        "skill_enabled": False,
+    }})
+    assert professional is not None
+    assert _apply_triage_toolset_policy(all_tools, professional) == [
+        "clarify", "memory", "web", "delegation",
+        "agency_agents", "ai_lab", "file", "terminal",
+    ]
+    assert _triage_route_marker(professional).startswith(
+        '<<AI_LAB_TRIAGE class="PROFESSIONAL_TASK" agency="1">>'
+    )
+
+
+def test_agency_tool_event_exposes_only_selected_route_target():
+    events: queue.Queue = queue.Queue()
+    _emit_tool_start(
+        events,
+        "call-1",
+        "agency_agents_load",
+        {"agent": "trend-researcher", "private_context": "do not expose"},
+    )
+    event = events.get_nowait()
+    assert event["route_target"] == "trend-researcher"
+    assert "private_context" not in event

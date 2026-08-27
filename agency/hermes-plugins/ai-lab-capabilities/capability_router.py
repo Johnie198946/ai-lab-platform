@@ -31,6 +31,9 @@ _STATS_LOCK = threading.Lock()
 
 _LATIN_RE = re.compile(r"[a-z0-9][a-z0-9+.#_-]*", re.I)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
+_TRIAGE_MARKER_RE = re.compile(
+    r'^<<AI_LAB_TRIAGE class="(CASUAL|GENERAL_QA|PROFESSIONAL_TASK)" agency="([01])">>\s*'
+)
 
 # Small domain glossary, not a role catalog.  It fixes CJK recall while the
 # actual inventory remains dynamic and comes from Hermes/Agency themselves.
@@ -340,8 +343,20 @@ def recommend(
     return cards
 
 
-def _candidate_context(query: str) -> str | None:
-    cards = recommend(query, limit=MAX_CANDIDATES)
+def _candidate_context(
+    query: str,
+    *,
+    capabilities: Iterable[dict[str, Any]] | None = None,
+    professional_only: bool = False,
+) -> str | None:
+    if capabilities is None:
+        cards = recommend(query, limit=MAX_CANDIDATES)
+    else:
+        cards = recommend(
+            query,
+            limit=MAX_CANDIDATES,
+            capabilities=capabilities,
+        )
     if not cards:
         return None
     compact = [
@@ -360,15 +375,24 @@ def _candidate_context(query: str) -> str | None:
         }
         for card in cards
     ]
-    prefix = (
-        "[Hermes capability recommendations — internal routing metadata]\n"
-        "Choose objectively; the user did not request a specific implementation. "
-        "For a quick/general request, direct response may be best. For a professional "
-        "request, prefer the highest-fit proven specialist. Load only the selected "
-        "capability using invoke; do not expose internal capability names unless asked. "
-        "If no candidate materially improves the answer, respond directly.\n"
-        "Candidates: "
-    )
+    if professional_only:
+        prefix = (
+            "[Agency specialist selection — internal routing metadata]\n"
+            "The server classified this as professional work and granted Agency routing. "
+            "Select the single highest-fit specialist, then invoke it with the exact slug "
+            "and arguments shown below. Never add a division prefix or invent a slug. "
+            "Do not expose internal capability names unless asked.\nCandidates: "
+        )
+    else:
+        prefix = (
+            "[Hermes capability recommendations — internal routing metadata]\n"
+            "Choose objectively; the user did not request a specific implementation. "
+            "For a quick/general request, direct response may be best. For a professional "
+            "request, prefer the highest-fit proven specialist. Load only the selected "
+            "capability using invoke; do not expose internal capability names unless asked. "
+            "If no candidate materially improves the answer, respond directly.\n"
+            "Candidates: "
+        )
     # Drop the weakest tail candidate rather than truncating JSON.  The model
     # always receives valid, actionable cards and context remains hard-bounded.
     while compact:
@@ -382,6 +406,18 @@ def _candidate_context(query: str) -> str | None:
 
 def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, str] | None:
     del kwargs
+    marker = _TRIAGE_MARKER_RE.match(user_message or "")
+    if marker is not None:
+        route_class, agency_enabled = marker.groups()
+        if route_class != "PROFESSIONAL_TASK" or agency_enabled != "1":
+            return None
+        query = _TRIAGE_MARKER_RE.sub("", user_message, count=1)
+        context = _candidate_context(
+            query,
+            capabilities=_agency_capabilities(),
+            professional_only=True,
+        )
+        return {"context": context} if context else None
     context = _candidate_context(user_message)
     return {"context": context} if context else None
 

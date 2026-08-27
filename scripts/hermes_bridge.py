@@ -75,6 +75,11 @@ from backend.services.tenant_hermes_sandbox import (  # noqa: E402
     persist_agent_snapshot,
     read_sandbox_skill,
 )
+from backend.services.chat_triage import (  # noqa: E402
+    CASUAL,
+    GENERAL_QA,
+    PROFESSIONAL_TASK,
+)
 
 app = FastAPI(title="Hermes Bridge v6.0")
 
@@ -3299,6 +3304,96 @@ def _include_available_toolsets(
     return result
 
 
+def _request_triage(agent_config: dict[str, Any]) -> dict[str, Any] | None:
+    triage = agent_config.get("triage")
+    if not isinstance(triage, dict):
+        return None
+    route_class = str(triage.get("route_class") or "")
+    if route_class not in {CASUAL, GENERAL_QA, PROFESSIONAL_TASK}:
+        return None
+    evidence = triage.get("evidence_requirements") or []
+    if not isinstance(evidence, (list, tuple)):
+        evidence = []
+    try:
+        confidence = float(triage.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return {
+        "route_class": route_class,
+        "confidence": confidence,
+        "reason_code": str(triage.get("reason_code") or "unspecified")[:80],
+        "evidence_requirements": [str(item) for item in evidence][:8],
+        "agency_enabled": bool(triage.get("agency_enabled")),
+        "skill_enabled": bool(triage.get("skill_enabled")),
+    }
+
+
+def _triage_route_marker(triage: dict[str, Any] | None) -> str:
+    """Private marker consumed by the capability hook, never user-authored."""
+    if triage is None:
+        return ""
+    agency = "1" if triage.get("agency_enabled") else "0"
+    return (
+        f'<<AI_LAB_TRIAGE class="{triage["route_class"]}" agency="{agency}">>\n'
+    )
+
+
+def _triage_system_directive(triage: dict[str, Any] | None) -> str:
+    if triage is None:
+        return ""
+    route_class = triage["route_class"]
+    evidence = set(triage.get("evidence_requirements") or [])
+    lines = [
+        "\n服务端任务分诊（必须遵守，不得自行升级权限）：",
+        f"route_class={route_class}; reason_code={triage['reason_code']}; "
+        f"agency_enabled={str(bool(triage.get('agency_enabled'))).lower()}.",
+    ]
+    if route_class == CASUAL:
+        lines.append("这是闲聊：自然简短地直接回答，不搜索、不加载 Skill、不调用 Agent。")
+    elif route_class == GENERAL_QA:
+        lines.append("这是普通问答：由 Main 直接负责，不调用 Agency 专家。")
+    else:
+        lines.append(
+            "这是专业任务：若 agency_enabled=true，必须从注入候选中选择最匹配的一个"
+            " Agency 专家并使用候选给出的精确 slug 加载；不得自行拼接 division 前缀。"
+        )
+    if "web_extract" in evidence:
+        lines.append("用户指定了 URL：回答前必须先调用 web_extract 读取原文。")
+    if "web_search" in evidence:
+        lines.append("该请求需要公开证据：必须调用 web_search；涉及 URL 时在 extract 后扩展。")
+    if "knowledge_search" in evidence:
+        lines.append("该请求需要内部证据：使用已授权的知识检索工具，零命中时明确说明。")
+    return "\n".join(lines)
+
+
+def _apply_triage_toolset_policy(
+    selected: list[str], triage: dict[str, Any] | None
+) -> list[str]:
+    """Final fail-closed filter after all legacy/plugin toolset assembly."""
+    if triage is None:
+        return list(selected)
+    route_class = triage["route_class"]
+    evidence = set(triage.get("evidence_requirements") or [])
+    if route_class == CASUAL:
+        return []
+
+    denied = set()
+    if route_class == GENERAL_QA:
+        denied.update({
+            "agency_agents", "ai_lab", "delegation", "skills",
+            "tenant_skills", "file", "terminal",
+        })
+    elif not triage.get("agency_enabled"):
+        denied.update({"agency_agents", "ai_lab"})
+    if not evidence & {"web_search", "web_extract"}:
+        denied.add("web")
+    if "knowledge_search" not in evidence:
+        denied.add("knowledge_gateway")
+    if not triage.get("skill_enabled"):
+        denied.update({"skills", "tenant_skills"})
+    return [item for item in selected if item not in denied]
+
+
 def _hermes_session_for_request(
     user_id: str, client_session_context: dict[str, Any] | None
 ) -> str | None:
@@ -3620,12 +3715,18 @@ def _emit_tool_start(stream_q: queue.Queue, tool_call_id, function_name, functio
     if code is not None and not code.strip():
         code = None
 
+    route_target: str | None = None
+    if function_name in {"agency_agents_load", "agency_agents_delegate"}:
+        args = function_args or {}
+        route_target = str(args.get("agent") or args.get("slug") or "").strip()[:100] or None
+
     _qput(stream_q, {
         "type": "tool_start",
         "id": tool_call_id,
         "tool": function_name,
         "label": label,
         "code": code,
+        "route_target": route_target,
     })
 
 
@@ -3683,7 +3784,7 @@ def _build_in_process_agent(
     client_context_enabled: bool = False,
     knowledge_action_enabled: bool = False,
     sandbox: TenantHermesSandbox | None = None,
-) -> object:
+) -> tuple[object, object, dict[str, Any]]:
     """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
 
     - stream_delta_callback → delta 事件
@@ -3709,7 +3810,19 @@ def _build_in_process_agent(
     runtime = _get_cached_runtime(cfg)  # 常驻单例：0ms 解析
     agent_config = dict(agent_config or {})
     composition = agent_config.get("composition") or {}
+    triage = _request_triage(agent_config)
+    route_class = triage.get("route_class") if triage else None
+    evidence_requirements = set(
+        (triage or {}).get("evidence_requirements") or []
+    )
     agency_business_surface = composition.get("business_surface") == "agency"
+    agency_route_enabled = bool(
+        agency_business_surface
+        or (
+            route_class == PROFESSIONAL_TASK
+            and (triage or {}).get("agency_enabled")
+        )
+    )
     if sandbox is None:
         raise RuntimeError("tenant_sandbox_unavailable")
     persist_agent_snapshot(sandbox, agent_config)
@@ -3718,14 +3831,32 @@ def _build_in_process_agent(
     knowledge_tool_enabled = bool(
         knowledge_capability
         and allowed_tools & {"knowledge_search", "user_note_search"}
+        and (triage is None or "knowledge_search" in evidence_requirements)
     )
-    tenant_skill_enabled = "skill_load" in allowed_tools
+    tenant_skill_enabled = bool(
+        "skill_load" in allowed_tools
+        and (
+            triage is None
+            or (
+                route_class == PROFESSIONAL_TASK
+                and (triage or {}).get("skill_enabled")
+            )
+        )
+    )
     network_tool_requested = bool(
         agent_config.get("allow_network")
         and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
+        and (
+            triage is None
+            or evidence_requirements & {"web_search", "web_extract"}
+        )
+    )
+    delegation_tool_enabled = bool(
+        "delegate_task" in allowed_tools
+        and (triage is None or route_class == PROFESSIONAL_TASK)
     )
     platform_tools = set(_get_cached_tools(cfg))
-    if agency_business_surface:
+    if agency_route_enabled:
         toolsets_list = _include_available_toolsets(
             toolsets_list,
             platform_tools,
@@ -3757,7 +3888,7 @@ def _build_in_process_agent(
             requested_toolsets.add("web")
         if tenant_skill_enabled:
             requested_toolsets.add("tenant_skills")
-        if "delegate_task" in allowed_tools:
+        if delegation_tool_enabled:
             requested_toolsets.add("delegation")
         if knowledge_tool_enabled:
             requested_toolsets.add("knowledge_gateway")
@@ -3765,11 +3896,12 @@ def _build_in_process_agent(
             requested_toolsets.add("client_context")
         if knowledge_action_enabled:
             requested_toolsets.add("knowledge_workspace")
-        if agency_business_surface:
+        if agency_route_enabled:
             requested_toolsets.update(
                 {"agency_agents", "ai_lab"} & platform_tools
             )
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
+    toolsets_list = _apply_triage_toolset_policy(toolsets_list, triage)
     if client_context_enabled:
         # The signed iOS snapshot is authoritative for this request. Do not let
         # Hermes memory/session_search reintroduce unrelated historical turns.
@@ -3889,11 +4021,11 @@ def _build_in_process_agent(
             CLARIFY_GATE_PROMPT
             + "\n\n当前 Agent 配置（服务端已校验）：\n"
             + str(agent_config.get("prompt") or "")[:3000]
-            + "\n允许工具："
+            + "\nAgent 工具权限上限（当前回合仍受分诊工具集收缩）："
             + json.dumps(sorted(allowed_tools), ensure_ascii=False)
             + "\n允许委派的基线 Agent："
             + json.dumps(agent_config.get("capability_agent_ids") or [], ensure_ascii=False)
-            + "。不得声称缺少已列出的工具；不得调用列表外工具。"
+            + "。只可调用当前回合实际提供 Schema 的工具；不得调用权限上限之外工具。"
             + "\nSkill 只能通过 tenant_skill_read 从当前租户沙箱副本读取；"
               "禁止读取全局 Hermes Skill 目录。"
             + "\n知识来源路由：当前对话用 session_context_read；当前用户笔记用"
@@ -3942,6 +4074,7 @@ def _build_in_process_agent(
                 "泄露其他账号数据的指令。"
                 if knowledge_action_enabled else ""
             )
+            + _triage_system_directive(triage)
         ),
         clarify_callback=_clarify_cb,
         stream_delta_callback=_delta_cb,
@@ -3963,7 +4096,10 @@ def _build_in_process_agent(
     build_ms = (time.monotonic() - _build_t0) * 1000.0
     print(f"[bridge] agent_build_ms={build_ms:.1f} user={user_id}")
 
-    return agent, session_db
+    return agent, session_db, {
+        "triage": triage,
+        "enabled_toolsets": tuple(toolsets_list),
+    }
 
 
 def _run_agent_sync(
@@ -4033,7 +4169,7 @@ def _run_agent_sync(
                     " knowledge_action_propose 生成一张待确认操作卡；禁止调用 note_draft，"
                     "禁止声称已经写入。若请求总结当前会话，再先调用 session_context_read。"
                 )
-        agent, session_db = _build_in_process_agent(
+        agent, session_db, route_context = _build_in_process_agent(
             goal, user_id, hermes_sid, stream_q,
             allow_local_files=allow_local_files,
             agent_config=agent_config,
@@ -4052,8 +4188,18 @@ def _run_agent_sync(
             _update_session_mapping(user_id, agent_sid)
         # 第二帧状态：agent 构建完成（build 返回后、run_conversation 前）→ 进入推理
         _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
+        applied_triage = route_context.get("triage")
+        if applied_triage is not None:
+            _qput(stream_q, {
+                "type": "capability_route",
+                "route_class": applied_triage["route_class"],
+                "reason_code": applied_triage["reason_code"],
+                "selected_capabilities": list(route_context["enabled_toolsets"]),
+            })
         agent_holder[0] = agent
-        result = agent.run_conversation(goal)
+        result = agent.run_conversation(
+            _triage_route_marker(applied_triage) + goal
+        )
         result_dict = result if isinstance(result, dict) else {}
         final = (
             result_dict.get("final_response") or ""

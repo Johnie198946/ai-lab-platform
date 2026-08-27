@@ -28,6 +28,7 @@ from backend.api.catalog import compute_catalog
 from backend.api.identity import match_identity_rule
 from backend.db import SessionLocal
 from backend.models.agent_registry import (
+    DEFAULT_AGENT_ID,
     session_prefix_for,
 )
 from backend.services.reasoning_extractor import ReasoningStep
@@ -55,6 +56,7 @@ from backend.services.agent_capabilities import (
     match_explicit_tenant_agent,
     resolve_agent,
 )
+from backend.services.chat_triage import TriageDecision, classify_request
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -626,6 +628,47 @@ def _route_frame(target: EffectiveAgent, *, delegated: bool) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _triaged_agent_config(
+    agent: EffectiveAgent,
+    decision: TriageDecision,
+    *,
+    agency_enabled: bool = False,
+    skill_enabled: bool = False,
+) -> dict[str, Any]:
+    """Attach the server decision to the trusted Bridge configuration."""
+    config = agent.bridge_config()
+    config["triage"] = decision.as_dict(
+        agency_enabled=agency_enabled,
+        skill_enabled=skill_enabled,
+    )
+    return config
+
+
+def _triage_frame(decision: TriageDecision, config: dict[str, Any]) -> str:
+    triage = dict(config.get("triage") or {})
+    payload = {
+        "type": "triage_route",
+        "route_class": decision.route_class,
+        "confidence": decision.confidence,
+        "reason_code": decision.reason_code,
+        "evidence_requirements": list(decision.evidence_requirements),
+        "selected_capabilities": [
+            capability
+            for capability, enabled in (
+                ("agency_agents", triage.get("agency_enabled")),
+                ("tenant_skills", triage.get("skill_enabled")),
+                ("web", any(
+                    item in decision.evidence_requirements
+                    for item in ("web_search", "web_extract")
+                )),
+                ("knowledge", "knowledge_search" in decision.evidence_requirements),
+            )
+            if enabled
+        ],
+    }
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
 def _message_sse(answer: str, *, clarify: ClarifyPayload | None = None) -> Iterator[str]:
     if clarify is not None:
         yield f"data: {json.dumps({'type': 'clarify', 'question': clarify.question, 'choices': clarify.choices, 'multi_select': False, 'source': clarify.source}, ensure_ascii=False)}\n\n"
@@ -685,6 +728,24 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         return cached
 
     delegated_target = invocation.agent if invocation.status == "matched" else None
+    triage = classify_request(
+        req.question,
+        explicit_agent=(
+            delegated_target is not None
+            or bool(req.agent_id and req.agent_id != DEFAULT_AGENT_ID)
+        ),
+        explicit_skill=bool(skill_id),
+    )
+    main_agent_config = _triaged_agent_config(
+        agent,
+        triage,
+        agency_enabled=(
+            agent.id == DEFAULT_AGENT_ID
+            and delegated_target is None
+            and not skill_id
+        ),
+        skill_enabled=bool(skill_id) or agent.id == DEFAULT_AGENT_ID,
+    )
 
     # 透传 Hermes bridge（附真实思维链）。自然语言委派先运行隔离的专属
     # Agent，再由 Main 在父会话中忠实转交，使父会话保留连续上下文。
@@ -710,7 +771,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 knowledge_capability=child_context.capability,
                 policy_version=child_context.policy_version,
                 knowledge_query=child_context.knowledge_query,
-                agent_config=delegated_target.bridge_config(),
+                agent_config=_triaged_agent_config(delegated_target, triage),
             )
             if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                 raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
@@ -730,7 +791,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 knowledge_capability=source_context.capability,
                 policy_version=source_context.policy_version,
                 knowledge_query=source_context.knowledge_query,
-                agent_config=agent.bridge_config(),
+                agent_config=main_agent_config,
             )
         else:
             reply, reasoning = await _call_hermes_recorded(
@@ -739,7 +800,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 knowledge_capability=source_context.capability,
                 policy_version=source_context.policy_version,
                 knowledge_query=source_context.knowledge_query,
-                agent_config=agent.bridge_config(),
+                agent_config=main_agent_config,
             )
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
@@ -1127,6 +1188,25 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             delegated_target = invocation.agent if invocation.status == "matched" else None
             routed_agent = delegated_target or agent
             yield _route_frame(routed_agent, delegated=delegated_target is not None)
+            triage = classify_request(
+                req.question,
+                explicit_agent=(
+                    delegated_target is not None
+                    or bool(req.agent_id and req.agent_id != DEFAULT_AGENT_ID)
+                ),
+                explicit_skill=bool(skill_id),
+            )
+            main_agent_config = _triaged_agent_config(
+                agent,
+                triage,
+                agency_enabled=(
+                    agent.id == DEFAULT_AGENT_ID
+                    and delegated_target is None
+                    and not skill_id
+                ),
+                skill_enabled=bool(skill_id) or agent.id == DEFAULT_AGENT_ID,
+            )
+            yield _triage_frame(triage, main_agent_config)
             policy_version = policy.policy_version
             setup_ms = (time.monotonic() - setup_started) * 1000.0
             print(
@@ -1161,7 +1241,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                         knowledge_capability=child_capability,
                         policy_version=child_policy_version,
                         knowledge_query=req.question,
-                        agent_config=delegated_target.bridge_config(),
+                        agent_config=_triaged_agent_config(delegated_target, triage),
                     )
                     if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
                         raise RuntimeError(child_reply.strip() or "专属 Agent 未返回结果")
@@ -1184,7 +1264,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 "knowledge_capability": source_context.capability,
                 "policy_version": source_context.policy_version,
                 "knowledge_query": source_context.knowledge_query,
-                "agent_config": agent.bridge_config(),
+                "agent_config": main_agent_config,
                 "client_session_context": client_context,
                 "client_context_capability": client_context_capability,
                 "client_capabilities": req.client_capabilities,

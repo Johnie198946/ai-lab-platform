@@ -307,6 +307,69 @@ async def test_stream_emits_agent_route_and_handoffs_child_result(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("question", "route_class", "agency_enabled", "evidence"),
+    [
+        ("你好", "CASUAL", False, []),
+        (
+            "这个页面讲了什么 https://example.com/post",
+            "GENERAL_QA",
+            False,
+            ["web_extract"],
+        ),
+        (
+            "帮我深入研究这个链接 https://example.com/report",
+            "PROFESSIONAL_TASK",
+            True,
+            ["web_extract", "web_search"],
+        ),
+    ],
+)
+async def test_stream_triage_controls_bridge_config_and_emits_route(
+    monkeypatch, question, route_class, agency_enabled, evidence
+):
+    import backend.api.chat as chat_mod
+
+    main = effective_agent("main_agent", "Main 智能编排")
+    observed = {}
+
+    async def fake_policy(_payload):
+        return SimpleNamespace(policy_version="v1")
+
+    async def fake_source_context(**_kwargs):
+        return SimpleNamespace(
+            evidence="",
+            capability=None,
+            policy_version="v1",
+            knowledge_query=question,
+            sources=[],
+        )
+
+    async def fake_route(**_kwargs):
+        return main, AgentInvocationMatch(status="none")
+
+    async def fake_bridge_stream(_goal: str, _session_id: str, **kwargs):
+        observed.update(kwargs["agent_config"]["triage"])
+        yield 'data: {"type":"done","answer":"ok"}\n\n'
+
+    monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
+    monkeypatch.setattr(chat_mod, "_resolve_source_context", fake_source_context)
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", fake_route)
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+
+    response = await chat_mod.chat_stream(
+        StreamRequest(question=question, session_id="s1"),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+    )
+    body = "".join([frame async for frame in response.body_iterator])
+    assert observed["route_class"] == route_class
+    assert observed["agency_enabled"] is agency_enabled
+    assert observed["evidence_requirements"] == evidence
+    assert '"type": "triage_route"' in body
+    assert f'"route_class": "{route_class}"' in body
+
+
+@pytest.mark.asyncio
 async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """bridge 返回非 200 时下发 error 帧而非崩溃。"""
 
