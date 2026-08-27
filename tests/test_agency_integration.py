@@ -211,7 +211,7 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
     router._INSTALLED = False
     module.register(context)
     assert set(context.tools) == {"ai_lab_capabilities", "ai_lab_execute"}
-    assert set(context.hooks) == {"pre_llm_call", "post_tool_call"}
+    assert set(context.hooks) == {"pre_llm_call", "pre_tool_call", "post_tool_call"}
     assert not any("router" in name for name in context.tools)
 
 
@@ -219,6 +219,9 @@ def test_capability_hook_abstains_for_server_routed_casual_and_general_turns():
     router = load_capability_router()
     assert router._pre_llm_call(
         '<<AI_LAB_TRIAGE class="CASUAL" agency="0">>\n你好'
+    ) is None
+    assert router._pre_llm_call(
+        '<<AI_LAB_TRIAGE class="GENERAL_QA" agency="0">>\n解释一下 API'
     ) is None
 
 
@@ -286,9 +289,78 @@ def test_mac_native_negative_boundary_overrides_positive_keyword():
         stats={},
     )
     assert cards == []
-    assert router._pre_llm_call(
-        '<<AI_LAB_TRIAGE class="GENERAL_QA" agency="0">>\n解释一下 API'
+
+
+def test_link_research_blocks_terminal_and_duplicate_extract():
+    router = load_capability_router()
+    router._WEB_RESEARCH_TURNS.clear()
+    router._pre_llm_call(
+        "研究这个链接 https://example.com/report",
+        turn_id="turn-web-policy",
+    )
+    assert router._pre_tool_call(
+        "web_extract", {"urls": ["https://example.com/report"]},
+        turn_id="turn-web-policy",
     ) is None
+    duplicate = router._pre_tool_call(
+        "web_extract", {"urls": ["https://example.com/report"]},
+        turn_id="turn-web-policy",
+    )
+    terminal = router._pre_tool_call(
+        "terminal", {"command": "curl https://example.com/report"},
+        turn_id="turn-web-policy",
+    )
+    assert duplicate and duplicate["action"] == "block"
+    assert terminal and terminal["action"] == "block"
+
+
+def test_native_extract_html_parser_removes_scripts_and_keeps_readable_text():
+    plugin = load_capability_plugin()
+    path = ROOT / "agency/hermes-plugins/ai-lab-capabilities/native_extract_provider.py"
+    spec = importlib.util.spec_from_file_location(
+        f"{plugin.__name__}.native_extract_provider", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    parser = module._ReadableHTML()
+    parser.feed(
+        "<html><head><title>Report</title><script>steal()</script></head>"
+        "<body><h1>Finding</h1><p>Evidence first.</p></body></html>"
+    )
+    title, text = parser.result()
+    assert title == "Report"
+    assert "Finding" in text and "Evidence first." in text
+    assert "steal" not in text
+
+
+def test_configure_web_extract_preserves_plugins_and_sets_split_backends(tmp_path):
+    path = ROOT / "scripts/configure_hermes_web_extract.py"
+    spec = importlib.util.spec_from_file_location("configure_hermes_web_extract", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "plugins:\n  enabled: [feishu-write-guard]\nmodel:\n  default: test-model\n",
+        encoding="utf-8",
+    )
+    source = ROOT / "agency/hermes-plugins/ai-lab-capabilities"
+    result = module.configure(home, source, tmp_path / "backups")
+    import yaml
+
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert config["model"]["default"] == "test-model"
+    assert set(config["plugins"]["enabled"]) == {
+        "feishu-write-guard", "ai-lab-capabilities",
+    }
+    assert config["web"] == {
+        "search_backend": "ddgs",
+        "extract_backend": "ai-lab-native",
+    }
+    assert Path(result["backup"]).is_dir()
+    assert (home / "plugins/ai-lab-capabilities/native_extract_provider.py").is_file()
 
 
 def test_capability_hook_uses_only_exact_agency_slugs_for_professional_turn(monkeypatch):

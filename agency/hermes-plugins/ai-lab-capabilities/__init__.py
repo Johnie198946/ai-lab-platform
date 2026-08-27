@@ -36,6 +36,10 @@ def _json(payload: dict[str, Any]) -> str:
 
 
 def register(ctx):
+    if hasattr(ctx, "register_web_search_provider"):
+        from .native_extract_provider import build_provider
+
+        ctx.register_web_search_provider(build_provider())
     # Reuse Hermes' existing progressive disclosure and lifecycle hooks.  This
     # does not add another model-facing navigation tool.
     install_capability_router(ctx)
