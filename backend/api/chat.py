@@ -89,6 +89,7 @@ HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
 BRIDGE_GOAL_MAX_CHARS = 12_000
+BRIDGE_KNOWLEDGE_QUERY_MAX_CHARS = 200
 
 CHAT_SKILLS = {"solution-consultant-persona"}
 
@@ -99,6 +100,11 @@ def _bounded_bridge_goal(goal: str) -> str:
         return goal
     suffix = "\n\n[部分资料已按模型输入预算自动精简]"
     return goal[: BRIDGE_GOAL_MAX_CHARS - len(suffix)] + suffix
+
+
+def _bounded_knowledge_query(question: str) -> str:
+    """Keep retrieval text inside the Hermes ``GoalRequest`` contract."""
+    return question[:BRIDGE_KNOWLEDGE_QUERY_MAX_CHARS]
 
 # ---------------------------------------------------------------------------
 # 首屏滑动窗口熔断器与 Citation 提取器（2026-08-16 增强：多层嵌套前缀 + 破折号变体）
@@ -1088,13 +1094,20 @@ async def _authorize_knowledge_action_event(
     return authorized
 
 
-@router.post("/stream")
-async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> StreamingResponse:
+async def stream_chat(
+    req: StreamRequest,
+    payload: Dict[str, Any],
+    *,
+    knowledge_query: str | None = None,
+) -> StreamingResponse:
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
 
     澄清统一由 agent 原生 CLARIFY_GATE 门禁触发（source=bridge），无规则预分诊直出路径。
     身份话术规则秒回：命中即合成 SSE 流直接返回，零 agent 拉起（「你是谁」秒答）。
     """
+    effective_knowledge_query = _bounded_knowledge_query(
+        knowledge_query or req.question
+    )
     # 身份规则秒回快速通道：避免全量拉起 agent（11s → <1s）
     fixed = match_identity_rule(req.question)
     if fixed:
@@ -1165,7 +1178,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                 scope=req.context_scope,
                 payload=payload,
                 subject_id=isolated_session_id,
-                question=req.question,
+                question=effective_knowledge_query,
                 policy=policy,
                 prefetch_platform=False,
             )
@@ -1244,7 +1257,7 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
                         session_id=child_session_id,
                         knowledge_capability=child_capability,
                         policy_version=child_policy_version,
-                        knowledge_query=req.question,
+                        knowledge_query=effective_knowledge_query,
                         agent_config=_triaged_agent_config(delegated_target, triage),
                     )
                     if not child_reply.strip() or child_reply.lstrip().startswith("⚠️"):
@@ -1320,6 +1333,14 @@ async def chat_stream(req: StreamRequest, payload=Depends(require_auth)) -> Stre
             "X-Session-ID": isolated_session_id,
         },
     )
+
+
+@router.post("/stream")
+async def chat_stream(
+    req: StreamRequest, payload=Depends(require_auth)
+) -> StreamingResponse:
+    """Public chat route; internal callers may use ``stream_chat`` with a raw query."""
+    return await stream_chat(req, payload)
 
 
 @router.post("/stream/clarify")

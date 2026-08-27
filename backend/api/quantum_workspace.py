@@ -14,7 +14,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.api.auth import require_auth
-from backend.api.chat import StreamRequest, chat_stream
+from backend.api.chat import StreamRequest, stream_chat
 from backend.db import SessionLocal
 from backend.models.workspace import (
     WorkspaceBusinessIntake,
@@ -1100,7 +1100,7 @@ async def stream_task_message(
             body.question,
         ]
     )
-    upstream = await chat_stream(
+    upstream = await stream_chat(
         StreamRequest(
             question=server_goal,
             request_id=body.request_id,
@@ -1110,6 +1110,7 @@ async def stream_task_message(
             quoted_context=None,
         ),
         payload,
+        knowledge_query=body.question,
     )
 
     async def relay_and_record():

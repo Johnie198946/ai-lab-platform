@@ -584,9 +584,10 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
 
     captured = {}
 
-    async def fake_chat_stream(req, payload):
+    async def fake_chat_stream(req, payload, *, knowledge_query=None):
         captured["calls"] = captured.get("calls", 0) + 1
         captured["question"] = req.question
+        captured["knowledge_query"] = knowledge_query
         captured["session_id"] = req.session_id
 
         async def events():
@@ -596,7 +597,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         return StreamingResponse(events(), media_type="text/event-stream")
 
     monkeypatch.setattr(
-        "backend.api.quantum_workspace.chat_stream", fake_chat_stream
+        "backend.api.quantum_workspace.stream_chat", fake_chat_stream
     )
     streamed = client.post(
         f"/api/v1/task-conversations/{conversation['id']}/messages/stream",
@@ -607,6 +608,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     assert project_id in captured["question"]
     assert task["id"] in captured["question"]
     assert "下一步做什么" in captured["question"]
+    assert captured["knowledge_query"] == "下一步做什么？"
     assert captured["session_id"] == conversation["binding"]["session_id"]
 
     messages = client.get(
@@ -649,7 +651,7 @@ def test_task_chat_persists_and_replays_terminal_stream_failure(
     ).json()
     calls = {"count": 0}
 
-    async def failing_chat_stream(req, payload):
+    async def failing_chat_stream(req, payload, *, knowledge_query=None):
         calls["count"] += 1
 
         async def events():
@@ -659,7 +661,7 @@ def test_task_chat_persists_and_replays_terminal_stream_failure(
         return StreamingResponse(events(), media_type="text/event-stream")
 
     monkeypatch.setattr(
-        "backend.api.quantum_workspace.chat_stream", failing_chat_stream
+        "backend.api.quantum_workspace.stream_chat", failing_chat_stream
     )
     url = f"/api/v1/task-conversations/{conversation['id']}/messages/stream"
     request = {"question": "继续", "request_id": "chat-failure-request"}
@@ -693,7 +695,7 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
     ).json()
     calls = {"count": 0}
 
-    async def disconnected_chat_stream(req, payload):
+    async def disconnected_chat_stream(req, payload, *, knowledge_query=None):
         calls["count"] += 1
 
         async def events():
@@ -703,7 +705,7 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
         return StreamingResponse(events(), media_type="text/event-stream")
 
     monkeypatch.setattr(
-        "backend.api.quantum_workspace.chat_stream", disconnected_chat_stream
+        "backend.api.quantum_workspace.stream_chat", disconnected_chat_stream
     )
     url = f"/api/v1/task-conversations/{conversation['id']}/messages/stream"
     request = {"question": "继续", "request_id": "chat-disconnect-request"}

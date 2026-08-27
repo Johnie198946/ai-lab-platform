@@ -370,6 +370,54 @@ async def test_stream_triage_controls_bridge_config_and_emits_route(
 
 
 @pytest.mark.asyncio
+async def test_internal_stream_uses_raw_knowledge_query_for_augmented_goal(monkeypatch):
+    """Server-bound callers must not send their augmented prompt as Bridge query."""
+    import backend.api.chat as chat_mod
+
+    main = effective_agent("main_agent", "Main 智能编排")
+    observed = {}
+
+    async def fake_policy(_payload):
+        return SimpleNamespace(policy_version="v1")
+
+    async def fake_source_context(**kwargs):
+        observed["source_question"] = kwargs["question"]
+        return SimpleNamespace(
+            evidence="",
+            capability=None,
+            policy_version="v1",
+            knowledge_query=kwargs["question"],
+            sources=[],
+        )
+
+    async def fake_route(**_kwargs):
+        return main, AgentInvocationMatch(status="none")
+
+    async def fake_bridge_stream(_goal: str, _session_id: str, **kwargs):
+        observed["bridge_query"] = kwargs["knowledge_query"]
+        yield 'data: {"type":"done","answer":"ok"}\n\n'
+
+    monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
+    monkeypatch.setattr(chat_mod, "_resolve_source_context", fake_source_context)
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", fake_route)
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", fake_bridge_stream)
+
+    raw_question = "需求基线要做什么？" * 30
+    augmented_goal = "[server binding]\n" + ("x" * 300) + "\n" + raw_question
+    response = await chat_mod.stream_chat(
+        StreamRequest(question=augmented_goal, session_id="qw-session"),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+        knowledge_query=raw_question,
+    )
+    body = "".join([frame async for frame in response.body_iterator])
+
+    assert observed["source_question"] == raw_question[:200]
+    assert observed["bridge_query"] == raw_question[:200]
+    assert len(observed["bridge_query"]) == 200
+    assert '"type":"done"' in body
+
+
+@pytest.mark.asyncio
 async def test_stream_bridge_error_frame(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """bridge 返回非 200 时下发 error 帧而非崩溃。"""
 
