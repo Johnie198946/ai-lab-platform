@@ -9,9 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 先装依赖（利用层缓存；大陆服务器使用阿里云 pip 镜像加速）
+# 先装依赖（利用层缓存；大陆服务器使用清华 pip 镜像加速）
 COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ -r requirements.txt pyyaml
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple/ -r requirements.txt pyyaml
 
 # 再拷代码
 COPY backend /app/backend

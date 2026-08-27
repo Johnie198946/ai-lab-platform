@@ -99,7 +99,7 @@ cd "$RELEASE_DIR"
 echo "==> [3/6] 重建 Compose 服务"
 if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
   /opt/hermes/venv/bin/pip install --no-cache-dir \
-    -i https://mirrors.aliyun.com/pypi/simple/ 'ddgs>=9.0'
+    -i https://pypi.tuna.tsinghua.edu.cn/simple/ 'ddgs>=9.0'
 fi
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
 docker compose -p "$COMPOSE_PROJECT" build api
