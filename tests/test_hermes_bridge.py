@@ -197,7 +197,7 @@ class TestContextCoherence(unittest.TestCase):
         import asyncio
 
         body_r1 = GoalRequest(goal="你好我叫李四", session_id="user_1001")
-        result_r1 = asyncio.run(chat(body_r1))
+        asyncio.run(chat(body_r1))
 
         # 验证 R1 使用 --resume
         cmd_r1 = mock_run.call_args.args[0]

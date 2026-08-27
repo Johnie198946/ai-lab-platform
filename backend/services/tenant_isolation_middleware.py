@@ -124,7 +124,7 @@ class ABACPreFilterGenerator:
     ) -> Tuple[str, Dict[str, Any]]:
         """
         生成带有参数化绑定的 SQL WHERE 过滤子句与参数字典
-        
+
         支持两种 SQL 方言：
         - dialect="postgresql" (默认):
           ((tenant = :current_tenant) OR (tenant = 'public' AND (security_level = 'green' OR :current_tenant = ANY(subscribers))))

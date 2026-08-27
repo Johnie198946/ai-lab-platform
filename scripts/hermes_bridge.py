@@ -2883,7 +2883,7 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
         open_timeout=10,
         close_timeout=5,
     ) as ws:
-        print(f"[bridge] WS PTY 已连接·发送 goal")
+        print("[bridge] WS PTY 已连接·发送 goal")
 
         # 发送用户输入（PTY 协议：原始文本·非 JSON·实测 web_server.py writer loop）
         # ⚠️ 2026-08-10 修复: 之前发 {"type":"input","data":...} JSON 被当纯文本写入 PTY
@@ -2936,7 +2936,7 @@ async def _stream_from_ws_pty(goal: str, session_id: str | None = None):
                     break
 
         except websockets.exceptions.ConnectionClosed:
-            print(f"[bridge] WS PTY 连接关闭·流结束")
+            print("[bridge] WS PTY 连接关闭·流结束")
 
         # 发送结束标记
         yield f"data: {json.dumps({'type': 'done', 'content': ''})}\n\n"
@@ -2962,7 +2962,7 @@ async def _fallback_sse(reply: str):
 
 async def _stream_from_serve(goal: str, session_id: str | None = None):
     """对接 hermes serve SSE 流式端点·逐 chunk 转发。
-    
+
     返回异步生成器·产出 SSE 格式字符串（data: {...}\n\n）。
     失败时抛出异常·由调用方降级处理。
     """
@@ -3138,14 +3138,14 @@ async def chat_stream(body: GoalRequest):
 
         # 首次对话：先通过 CLI 新建会话·捕获 session_id
         if not hermes_sid:
-            print(f"[bridge] 首次对话·先通过 CLI 新建会话")
+            print("[bridge] 首次对话·先通过 CLI 新建会话")
             reply, new_sid = await asyncio.to_thread(_run_hermes, goal, None)
             if new_sid:
                 _update_session_mapping(user_id, new_sid)
                 hermes_sid = new_sid
             else:
                 # CLI 新建失败·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
-                print(f"[bridge] CLI 新建失败·降级 SSE 包装返回")
+                print("[bridge] CLI 新建失败·降级 SSE 包装返回")
                 return StreamingResponse(
                     _fallback_sse(reply),
                     media_type="text/event-stream",
@@ -3190,7 +3190,7 @@ async def chat_stream(body: GoalRequest):
 
         # 最终降级：CLI -z 非流式（SSE 包装·契约统一）·包装为 SSE 流（与前端契约一致·杜绝裸 JSON 导致前端空回复）
         reply, _ = await asyncio.to_thread(_run_hermes, goal, hermes_sid)
-        print(f"[bridge] 最终降级 CLI·包装 SSE 返回")
+        print("[bridge] 最终降级 CLI·包装 SSE 返回")
         return StreamingResponse(
             _fallback_sse(reply),
             media_type="text/event-stream",
@@ -3279,7 +3279,7 @@ def _resolve_dynamic_toolsets(goal: str, cfg: dict) -> list:
     is_execution = any(k in goal.lower() for k in execution_keywords)
     if is_execution:
         return sorted(list(platform_tools))
-    
+
     # 核心轻量对话与技能管理工具集（仅 6 个核心工具）
     # Delegation is part of the normal Hermes reasoning loop, not only a coding
     # task.  Omitting it here made ``delegate_task`` impossible even when the
@@ -3601,7 +3601,7 @@ def _qput(stream_q: queue.Queue, item: dict) -> None:
         stream_q.put_nowait(item)
     except queue.Full:
         if item_type in ("delta",):
-            print(f"[bridge] ⚠️ 队列满·丢弃 delta（正文帧可重组）")
+            print("[bridge] ⚠️ 队列满·丢弃 delta（正文帧可重组）")
             return
         # 控制事件：挤出队首 delta 腾位（若无 delta 则丢弃事件并告警）
         try:

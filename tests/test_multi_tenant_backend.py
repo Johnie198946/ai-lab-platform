@@ -329,7 +329,7 @@ class TestABACPreFilterAndIsolation:
 
     def test_sql_filter_generation(self):
         ctx = TenantContext(tenant_id="tenant_123", user_id="user_1")
-        
+
         # PostgreSQL 方言（默认）
         sql_pg, params_pg = ABACPreFilterGenerator.build_sql_filter(ctx, domain="manufacturing", dialect="postgresql")
         assert "tenant = :current_tenant" in sql_pg

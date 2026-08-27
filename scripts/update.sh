@@ -1,67 +1,142 @@
 #!/bin/bash
-# 服务器端一键更新：从 GitHub 拉取最新代码并重建
-# 用法: bash scripts/update.sh [40位 commit SHA]
-#
-# 说明: 服务器位于中国大陆，github.com 直连被墙，但 codeload.github.com
-# （代码包下载源）可达，因此通过官方 tarball 拉取，无需 git/deploy key。
-# .env / data/（vault 镜像 + 数据库卷）不在仓库内，更新不受影响。
+# 服务器端不可变发布：每个 SHA 解压到一个全新 release，验证后原子切换软链。
+# 用法: bash scripts/update.sh <40位 commit SHA>
 
 set -euo pipefail
-cd "$(dirname "$0")/.."
 
 if [ "$#" -ne 1 ] || [[ ! "$1" =~ ^[0-9a-fA-F]{40}$ ]]; then
   echo "ERROR: 必须提供且仅提供一个精确的 40 位 commit SHA" >&2
   exit 2
 fi
-EXPECTED_SHA="$1"
-SOURCE_REF="$EXPECTED_SHA"
 
-echo "==> [1/4] 从 GitHub 拉取最新代码 (codeload)"
-TARBALL=$(mktemp /tmp/ailab-src.XXXXXX.tgz)
-cleanup() { rm -f "$TARBALL"; }
-trap cleanup EXIT
-curl -fsSL --retry 3 "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$SOURCE_REF?cachebust=${EXPECTED_SHA}-$(date +%s)" \
-  -o "$TARBALL"
-tar xzf "$TARBALL" --strip-components=1 -C .
-echo "    代码已更新: $(git log --oneline -1 2>/dev/null || echo '(无 git 元数据, 以文件为准)')"
+EXPECTED_SHA="${1,,}"
+SHORT_SHA="${EXPECTED_SHA:0:12}"
+APP_LINK="${AI_LAB_APP_LINK:-/opt/ai-lab-platform}"
+RELEASE_ROOT="${AI_LAB_RELEASE_ROOT:-/opt/releases}"
+SHARED_ROOT="${AI_LAB_SHARED_ROOT:-/opt/ai-lab-shared}"
+COMPOSE_PROJECT="${AI_LAB_COMPOSE_PROJECT:-ai-lab-platform}"
+RELEASE_DIR="$RELEASE_ROOT/ai-lab-platform-$SHORT_SHA"
+CURRENT_DIR="$(readlink -f "$APP_LINK")"
+TARBALL="$(mktemp /tmp/ailab-src.XXXXXX.tgz)"
+STAGING_DIR="$(mktemp -d "$RELEASE_ROOT/.ai-lab-$SHORT_SHA.XXXXXX")"
+SWITCHED=0
+RUNTIME_CHANGED=0
 
-echo "==> [2/4] 重建并重启服务"
-# Hermes Bridge runs in its dedicated venv (outside the API image).  Install the
-# credential-free DDGS provider when absent so the built-in web toolset passes
-# Hermes' availability gate in the production sandbox.
-if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
-  echo "    安装 Hermes DDGS 联网 provider"
-  /opt/hermes/venv/bin/pip install --no-cache-dir -i https://mirrors.aliyun.com/pypi/simple/ 'ddgs>=9.0'
-fi
-docker compose up -d --build
+case "$RELEASE_DIR" in
+  "$RELEASE_ROOT"/ai-lab-platform-*) ;;
+  *) echo "ERROR: 非法 release 路径: $RELEASE_DIR" >&2; exit 2 ;;
+esac
 
-echo "==> [3/4] 健康检查"
-status=""
-for i in $(seq 1 30); do
-  status=$(curl -sf http://127.0.0.1:8000/health || true)
-  if [ -n "$status" ]; then
-    echo "    API 就绪: $status"
-    break
-  fi
-  sleep 2
-done
-if [ -z "${status:-}" ]; then
-  echo "WARN: 30 秒内未就绪，请查看: docker compose logs api"
+if [ ! -d "$CURRENT_DIR" ]; then
+  echo "ERROR: 当前 release 不存在: $CURRENT_DIR" >&2
   exit 1
 fi
-echo "==> [4/4] 运行平台契约审计（容器内 Python 3.12，宿主机 3.6 兼容问题规避）"
+if [ -e "$RELEASE_DIR" ]; then
+  echo "ERROR: release 已存在，拒绝覆盖: $RELEASE_DIR" >&2
+  exit 1
+fi
+
+cleanup() {
+  rc=$?
+  trap - EXIT
+  rm -f "$TARBALL"
+  if [ "$rc" -ne 0 ] && [ "$RUNTIME_CHANGED" -eq 1 ]; then
+    echo "WARN: 发布失败，恢复旧 release: $CURRENT_DIR" >&2
+    if [ "$SWITCHED" -eq 1 ]; then
+      rollback_link="$APP_LINK.rollback.$$"
+      ln -s "$CURRENT_DIR" "$rollback_link"
+      mv -Tf "$rollback_link" "$APP_LINK"
+    fi
+    cd "$CURRENT_DIR"
+    docker compose -p "$COMPOSE_PROJECT" up -d --build || true
+    systemctl restart hermes-bridge.service || true
+  fi
+  if [ "$SWITCHED" -eq 0 ] || [ "$rc" -ne 0 ]; then
+    rm -rf "$STAGING_DIR"
+    if [ -d "$RELEASE_DIR" ]; then
+      rm -rf "$RELEASE_DIR"
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+
+echo "==> [1/6] 下载并解包 SHA $EXPECTED_SHA"
+curl -fsSL --retry 3 \
+  "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
+  -o "$TARBALL"
+tar xzf "$TARBALL" --strip-components=1 -C "$STAGING_DIR"
+test -f "$STAGING_DIR/docker-compose.yml"
+test -f "$STAGING_DIR/scripts/update.sh"
+
+echo "==> [2/6] 建立共享运行数据入口"
+mkdir -p "$SHARED_ROOT"
+if [ ! -f "$SHARED_ROOT/.env" ]; then
+  install -m 600 "$CURRENT_DIR/.env" "$SHARED_ROOT/.env"
+fi
+for name in backups rollbacks; do
+  if [ ! -e "$SHARED_ROOT/$name" ]; then
+    if [ -e "$CURRENT_DIR/$name" ]; then
+      cp -a "$CURRENT_DIR/$name" "$SHARED_ROOT/$name"
+    else
+      mkdir -p "$SHARED_ROOT/$name"
+    fi
+  fi
+done
+DATA_TARGET="$(readlink -f "$CURRENT_DIR/data")"
+if [ ! -d "$DATA_TARGET" ]; then
+  echo "ERROR: 持久数据目录不存在: $DATA_TARGET" >&2
+  exit 1
+fi
+rm -rf "$STAGING_DIR/data" "$STAGING_DIR/backups" "$STAGING_DIR/rollbacks"
+ln -s "$SHARED_ROOT/.env" "$STAGING_DIR/.env"
+ln -s "$DATA_TARGET" "$STAGING_DIR/data"
+ln -s "$SHARED_ROOT/backups" "$STAGING_DIR/backups"
+ln -s "$SHARED_ROOT/rollbacks" "$STAGING_DIR/rollbacks"
+mv "$STAGING_DIR" "$RELEASE_DIR"
+
+cd "$RELEASE_DIR"
+echo "==> [3/6] 重建 Compose 服务"
+if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
+  /opt/hermes/venv/bin/pip install --no-cache-dir \
+    -i https://mirrors.aliyun.com/pypi/simple/ 'ddgs>=9.0'
+fi
+RUNTIME_CHANGED=1
+docker compose -p "$COMPOSE_PROJECT" up -d --build
+
+echo "==> [4/6] API 健康检查与运行契约审计"
+status=""
+for _ in $(seq 1 30); do
+  status="$(curl -sf http://127.0.0.1:8000/health || true)"
+  [ -n "$status" ] && break
+  sleep 2
+done
+if [ -z "$status" ]; then
+  echo "ERROR: API 30 秒内未就绪" >&2
+  exit 1
+fi
 mkdir -p data/manifests data/runtime
 if [ ! -e data/knowledge_matrix.json ]; then
   if [ ! -f data/vault/knowledge_matrix.json ]; then
-    echo "ERROR: 缺少 Vault knowledge_matrix.json，无法建立运行契约入口" >&2
+    echo "ERROR: 缺少 Vault knowledge_matrix.json" >&2
     exit 1
   fi
-  rm -f data/knowledge_matrix.json
   ln -s vault/knowledge_matrix.json data/knowledge_matrix.json
 fi
-docker compose exec -T api python scripts/audit_runtime_contracts.py --data-dir /app/data
+docker compose -p "$COMPOSE_PROJECT" exec -T api \
+  python scripts/audit_runtime_contracts.py --data-dir /app/data
+printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
 
-marker_tmp=$(mktemp .deployed-sha.XXXXXX)
-trap 'rm -f "$TARBALL" "$marker_tmp"' EXIT
-printf '%s\n' "$EXPECTED_SHA" > "$marker_tmp"
-mv -f "$marker_tmp" .deployed-sha
+echo "==> [5/6] 原子切换 release 并重启 Hermes Bridge"
+LINK_TMP="$APP_LINK.next.$$"
+ln -s "$RELEASE_DIR" "$LINK_TMP"
+mv -Tf "$LINK_TMP" "$APP_LINK"
+SWITCHED=1
+systemctl restart hermes-bridge.service
+
+echo "==> [6/6] 最终健康检查"
+curl -fsS --max-time 10 http://127.0.0.1:8000/health
+curl -fsS --max-time 10 http://127.0.0.1:9118/health
+echo "deployed_sha=$EXPECTED_SHA"
+echo "release=$RELEASE_DIR"
+echo "rollback_point=$CURRENT_DIR"

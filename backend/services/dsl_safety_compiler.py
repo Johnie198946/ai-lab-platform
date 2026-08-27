@@ -106,7 +106,7 @@ class DSLSafetyCompiler:
     def check_dag_cycle_kahn(cls, plan: WorkflowDSLPlan) -> List[str]:
         """
         基于 Kahn 算法进行 DAG 有效性验证与拓扑执行序列生成
-        
+
         算法流程：
         1. 验证所有 edges 引用源和目标是否均在 nodes 集合中（防悬空边）；
         2. 计算所有节点的入度（In-degree）并构建邻接表；

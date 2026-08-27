@@ -121,7 +121,7 @@ def test_demand_survives_a_new_session_and_validates_lengths(demand_db):
 
 
 def test_patch_source_hash_conflict_is_controlled_409(demand_db):
-    first = run(create_demand(body("first"), AUTH))
+    run(create_demand(body("first"), AUTH))
     second = run(create_demand(body("second"), AUTH))
 
     with pytest.raises(HTTPException) as error:
