@@ -2,7 +2,7 @@
 
 - task_id: `skill-routing-governance-20260827`
 - objective: 为 Hermes 建立分层 Skill Tree、正负触发元数据、后端 Top-K 评分召回、模型二次裁决和自动读取白名单，并将创建治理规范写入 `AGENTS.md`。
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `codex/skill-routing-governance-20260827`
 - worktree: `/private/tmp/ai-lab-skill-routing-governance-20260827`
 
@@ -58,14 +58,16 @@
 
 ## 交付状态
 
-- head/local_commit: 未提交。
-- remote_sha: 未授权/未执行 push。
+- implementation_commit: `2b3c9753d46a3a89229327916a5ec561e6d4aa38`。
+- remote_sha: GitHub `main` 与 `codex/skill-routing-governance-20260827` 已通过 `git ls-remote` 核验为 `2b3c9753d46a3a89229327916a5ec561e6d4aa38`；收尾 manifest 提交后以不可变 deploy tag 继续固定该运行代码 SHA。
 - server_before: `.deployed-sha=23f42fae75a9e0c260f434ff5f77c21352d3e916`；release `/opt/releases/ai-lab-platform-23f42fae75a9`；API `status=ok/version=0.8.0`；Hermes Bridge `status=ok/version=v6.0` 且 systemd active；Compose 7 个服务均 running，API/Postgres/Redis healthy。
-- server_after: 待本次授权部署完成后填写。
-- health_check: 部署前 API 与 Bridge 健康；部署后检查待执行。
-- functional_check: 本地路由审计、三轮攻防和相关 106 项回归通过。
-- rollback_point: 生产回滚基线为 `23f42fae75a9e0c260f434ff5f77c21352d3e916` / `/opt/releases/ai-lab-platform-23f42fae75a9`；部署前将另建带任务标识的服务器证据目录。
+- server_after: `.deployed-sha=2b3c9753d46a3a89229327916a5ec561e6d4aa38`；release `/opt/releases/ai-lab-platform-2b3c9753d46a`；API、frontend、planning/workflow/agent-evaluation workers、Postgres、Redis 全部 running。
+- health_check: 部署脚本 runtime contract audit passed；内网 API `/health`=`status=ok/version=0.8.0`、`/ready`=`status=ready`；公网 `http://120.24.248.58:8000/health` 正常；Bridge `/health`=`status=ok/version=v6.0` 且 systemd active；API/Postgres/Redis healthy。
+- functional_check: 本地路由审计、三轮攻防和相关回归通过；生产四个关键文件 SHA-256 与部署提交逐项一致；生产真实 Skill 目录运行测试句“研究这个链接并用外部资料交叉核验”进入 professional 候选，首选 `source-verification`，其完整指令覆盖原文捕获、声明拆分、一手来源优先、交叉核验和逐项证据评级。
+- rollback_point: `/opt/ai-lab-rollbacks/skill-routing-governance-20260827-before-2b3c975`，保存旧 SHA、release、Compose 镜像与 Bridge 状态；旧 release `/opt/releases/ai-lab-platform-23f42fae75a9` 保留，可重新执行 `scripts/update.sh 23f42fae75a9e0c260f434ff5f77c21352d3e916` 回退。
+- deployment_incident: 首次发布与另一个 QuantumWorkspace 任务的 `fa6a5b5` 发布并发，共用 Compose project 导致容器替换竞态；自动安全审查禁止跨任务合并。随后先从旧 release 恢复 7 服务并确认 Bridge/API 健康，在无其他 update 进程且目标 release 不存在时重试，本任务发布成功。未删除、改写或合入另一任务分支。
 - remaining_risks:
-  - 219 个旧 Skill 尚未原生迁移，新路由可兼容召回但审计继续标红；应依据实际调用和误路由日志分批治理。
-  - 已获当前任务 push 与部署授权；远端和生产验证结果待执行后补齐。
+  - 生产模板目录有 209 个 Skill，本机有 235 个；生产原生新契约合规仍为 0，服务端覆盖表有效治理其中 11 个已安装 Skill。剩余旧 Skill 应依据实际调用和误路由日志分批治理。
+  - 本机首选的 `evidence-first-content-research` 未镜像到生产；生产当前由能力边界匹配的 `source-verification` 承担链接交叉核验。若要求两端候选名称完全一致，应另立 Skill 模板同步任务，不能在本次代码部署中静默改写共享 Hermes 数据。
+  - 发布脚本目前没有跨任务互斥锁；本次已暴露同一 Compose project 并发部署竞态。应另立任务为 `scripts/update.sh` 增加服务器级 `flock`，避免后续重复发生。
   - 最新 main 自身存在全量测试基线故障，需另立任务修复依赖与数据库隔离，不能混入本治理任务。
