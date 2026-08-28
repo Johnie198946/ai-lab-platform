@@ -1,13 +1,14 @@
-import { ChevronLeft, GitBranch, LayoutDashboard, Route, Rows3 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { ChevronLeft, GitBranch, LayoutDashboard, Route } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
 import { BusinessIntakePanel } from "./BusinessIntakePanel";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
-import { ProjectTaskboard } from "./ProjectTaskboard";
+import { DashiTaskboardHost } from "./DashiTaskboardHost";
 import { StageRail } from "./StageRail";
 import { TaskChatDrawer } from "./TaskChatDrawer";
+import { BindWorkflowDialog, EditProjectTaskDialog, NewProjectTaskDialog } from "./TaskboardDialogs";
 
 export function ProjectWorkspacePage() {
   const { projectId, viewType } = useParams();
@@ -18,6 +19,14 @@ export function ProjectWorkspacePage() {
   const [viewData, setViewData] = useState(null);
   const [selectedStageId, setSelectedStageId] = useState(null);
   const [selectedTask, setSelectedTask] = useState(null);
+  const [editTask, setEditTask] = useState(null);
+  const [workflows, setWorkflows] = useState([]);
+  const [workflowState, setWorkflowState] = useState("SYNCING");
+  const [boardMode, setBoardMode] = useState("status");
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [bindTask, setBindTask] = useState(null);
+  const [dialogBusy, setDialogBusy] = useState(false);
+  const [dialogError, setDialogError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
@@ -32,6 +41,18 @@ export function ProjectWorkspacePage() {
       setProject(projectValue);
       setProcess(processValue);
       setViewData(selectedView ?? null);
+      if (view === "taskboard") {
+        setWorkflowState("SYNCING");
+        try {
+          const workflowValue = await platformApi.listWorkflows();
+          setWorkflows(workflowValue.workflows || workflowValue || []);
+          setWorkflowState("CONNECTED");
+        } catch (reason) {
+          setWorkflows([]);
+          setWorkflowState("UNCONNECTED");
+          setError((current) => current || `canonical workflow 读取失败：${reason.message}`);
+        }
+      }
     } catch (reason) {
       setError(reason.message);
     } finally {
@@ -40,8 +61,6 @@ export function ProjectWorkspacePage() {
   }, [projectId, view, viewType]);
 
   useEffect(() => { setLoading(true); load(); }, [load]);
-  const stage = useMemo(() => process?.stages?.find((item) => item.id === selectedStageId), [process, selectedStageId]);
-
   const updateStatus = async (taskId, status) => {
     setError("");
     let reason = null;
@@ -62,6 +81,80 @@ export function ProjectWorkspacePage() {
     }
   };
 
+  const createTask = async (taskDraft) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      await platformApi.createProjectTask(projectId, {
+        expected_revision: process.process_revision,
+        ...taskDraft,
+      });
+      setNewTaskOpen(false);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "项目 revision 已变化，请关闭后重试。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const bindWorkflow = async (task, workflowId) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
+        expected_revision: process.process_revision,
+        workflow_id: workflowId,
+      });
+      setBindTask(null);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "该 Workflow 已被绑定，或项目 revision 已变化。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
+  const editTaskDetails = async (taskDraft) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      await platformApi.editProjectTask(projectId, editTask.id, { expected_revision: process.process_revision, ...taskDraft });
+      setEditTask(null);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "项目 revision 已变化，请关闭后重试。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally { setDialogBusy(false); }
+  };
+
+  const createAndBindWorkflow = async (task) => {
+    setDialogBusy(true);
+    setDialogError("");
+    try {
+      const created = await platformApi.createWorkflow({
+        title: task.title,
+        description: task.summary,
+        desired_output: (task.deliverables || []).join("、") || "可审阅业务成果",
+        clarification_mode: "dynamic",
+      });
+      const workflow = created.workflow || created;
+      await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
+        expected_revision: process.process_revision,
+        workflow_id: workflow.id,
+      });
+      setBindTask(null);
+      await load();
+    } catch (reason) {
+      setDialogError(reason.status === 409 ? "项目 revision 已变化，Workflow 已创建但尚未绑定，请重新选择绑定。" : reason.message);
+      if (reason.status === 409) await load();
+    } finally {
+      setDialogBusy(false);
+    }
+  };
+
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;
   if (!project || !process) return <div className="qw-page-state error">{error || "项目不可用"}<Link to="/home">返回 Home</Link></div>;
   return (
@@ -70,19 +163,22 @@ export function ProjectWorkspacePage() {
         <div className="qw-project-title"><Link to="/home" aria-label="返回 Home"><ChevronLeft size={18} /></Link><div><span className="qw-eyebrow">Project · {project.id.slice(-8)}</span><h1>{project.name}</h1><p>{project.goal}</p></div></div>
         <div className="qw-revision"><span>process revision</span><strong>{process.process_revision}</strong></div>
       </div>
-      <div className="qw-view-tabs">
-        <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
-        <NavLink to={`/projects/${projectId}/schedule`}><Rows3 size={15} />甘特图</NavLink>
-        <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
-        <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
+      <div className="qw-project-sticky">
+        <div className="qw-view-tabs">
+          <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
+          <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
+          <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
+        </div>
+        <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
       </div>
-      <StageRail process={process} selectedStageId={selectedStageId} onSelect={(id) => setSelectedStageId((current) => current === id ? null : id)} />
-      {stage && <div className="qw-stage-focus"><strong>{stage.name}</strong><span>{stage.status} · {stage.progress}%</span><button onClick={() => setSelectedStageId(null)}>清除筛选</button></div>}
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <ProjectTaskboard process={process} selectedStageId={selectedStageId} onTaskOpen={setSelectedTask} onStatusChange={updateStatus} intake={<BusinessIntakePanel project={project} process={process} onApplied={load} />} />}
+      {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewData && <ProjectGraph graph={viewData} />}
       {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
+      {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
+      {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
+      {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}
     </div>
   );
 }

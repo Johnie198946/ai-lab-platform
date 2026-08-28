@@ -691,3 +691,46 @@ def test_member_and_appointment_payloads_are_complete_and_replay_identically(cli
         "member_id": member_payload["id"],
         "project_approver_id": appointment_payload["project_approver_id"],
     }
+
+
+def test_project_write_member_edits_task_and_persists_normalized_revision(client):
+    project_id = _applied_project(client, "member-edit")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    task = process["tasks"][0]
+    stage = process["stages"][0]
+    member = client.post(
+        f"/api/v1/projects/{project_id}/members",
+        json={
+            "request_id": "member-edit-request",
+            "user_id": "writer-a",
+            "role": "editor",
+            "scopes": ["project:read", "project:write"],
+        },
+    )
+    assert member.status_code == 201
+
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a",
+        "user_id": "writer-a",
+        "sub": "writer-a",
+        "is_super_admin": False,
+    }
+    edited = client.put(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}",
+        json={
+            "expected_revision": 1,
+            "stage_id": stage["id"],
+            "title": "Member edited title",
+            "summary": "Member edited summary",
+            "assignee_role": "Editor",
+        },
+    )
+    assert edited.status_code == 200, edited.text
+    assert edited.json()["process_revision"] == 2
+
+    projected = client.get(f"/api/v1/projects/{project_id}/process")
+    assert projected.status_code == 200, projected.text
+    assert projected.json()["process_revision"] == 2
+    assert next(
+        item for item in projected.json()["tasks"] if item["id"] == task["id"]
+    )["title"] == "Member edited title"

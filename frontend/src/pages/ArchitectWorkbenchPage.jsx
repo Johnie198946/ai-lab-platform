@@ -18,6 +18,7 @@ import {
   projectOfficeProjection,
   showroomSessionIdFromSearch,
   shouldFetchWorkflowPlan,
+  workflowIdFromSearch,
 } from "../architectContract";
 import { canonicalPlanToSimLike, simLikeToCanonicalPlan } from "../architectCanvasAdapter";
 import ProjectOfficeView from "../features/project-office/ProjectOfficeView";
@@ -174,6 +175,7 @@ export default function ArchitectPage() {
   const [architectView, setArchitectView] = useState(() => architectViewFromSearch(window.location.search, defaultArchitectView));
   const showroomSessionId = useMemo(() => showroomSessionIdFromSearch(window.location.search), []);
   const customerDemandId = useMemo(() => customerDemandIdFromSearch(window.location.search), []);
+  const requestedWorkflowId = useMemo(() => workflowIdFromSearch(window.location.search), []);
   const [workflows, setWorkflows] = useState([]);
   const [workflow, setWorkflow] = useState(null);
   const [clarification, setClarification] = useState(null);
@@ -308,7 +310,8 @@ export default function ArchitectPage() {
       const architectRows = rows.filter((item) => item.clarification_session_id);
       setWorkflows(architectRows);
       setConnectionState("CONNECTED");
-      const selected = architectWorkflowForContext(architectRows, { customerDemandId, showroomSessionId });
+      const selected = architectRows.find((item) => item.id === requestedWorkflowId)
+        || architectWorkflowForContext(architectRows, { customerDemandId, showroomSessionId });
       if (selected) loadWorkflow(selected.id);
     }).catch((nextError) => {
       setWorkflows([]);

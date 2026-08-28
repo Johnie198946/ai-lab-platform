@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import queue
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 from backend.api.orchestration import _agency_agent_config
 from scripts.hermes_bridge import (
     _apply_triage_toolset_policy,
+    _emit_delegate_receipt,
     _emit_tool_start,
     _include_available_toolsets,
     _request_triage,
@@ -397,8 +399,40 @@ def test_capability_hook_uses_only_exact_agency_slugs_for_professional_turn(monk
     assert result is not None
     assert observed["query"] == "调研企业 AI 市场"
     assert observed["capabilities"] == agency
-    assert '"agent":"trend-researcher"' in result["context"]
+    cards = json.loads(result["context"].split("Candidates: ", 1)[1])
+    assert len(cards) == 1
+    assert cards[0]["invoke"]["tool"] == "delegate_task"
+    assert cards[0]["invoke"]["arguments"]["goal"] == "调研企业 AI 市场"
+    delegate_context = cards[0]["invoke"]["arguments"]["context"]
+    assert "AI_LAB_AGENCY_SPECIALIST=trend-researcher" in delegate_context
+    assert "agency_agents_load" in delegate_context
+    assert '{"agent":"trend-researcher"}' in delegate_context
     assert "engineering-trend-researcher" not in result["context"]
+
+
+def test_professional_candidate_survives_long_user_task(monkeypatch):
+    router = load_capability_router()
+    agency = [{
+        "id": "agency:trend-researcher",
+        "kind": "agency_agent",
+        "name": "Trend Researcher",
+        "description": "Research market trends with evidence.",
+        "domain": "research",
+        "invoke_tool": "agency_agents_load",
+        "invoke_args": {"agent": "trend-researcher"},
+        "depth": 0.82,
+        "cost": 0.10,
+    }]
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency)
+    result = router._pre_llm_call(
+        '<<AI_LAB_TRIAGE class="PROFESSIONAL_TASK" agency="1">>\n'
+        + ("专业研究任务" * 800)
+    )
+    assert result is not None
+    assert len(result["context"]) <= router.MAX_PROFESSIONAL_INJECTED_CHARS
+    cards = json.loads(result["context"].split("Candidates: ", 1)[1])
+    assert cards[0]["invoke"]["tool"] == "delegate_task"
+    assert cards[0]["invoke"]["arguments"]["goal"]
 
 
 def test_capability_router_extends_existing_tool_search_contract(monkeypatch):
@@ -439,6 +473,10 @@ def test_capability_router_extends_existing_tool_search_contract(monkeypatch):
 
 def test_installer_preserves_pre_install_plugin_config_and_adds_both_routers():
     installer = (ROOT / "scripts/install_agency_hermes.sh").read_text()
+    assert (
+        'AGENCY_AGENTS_SHA="${AGENCY_AGENTS_SHA:-'
+        '3c9588880b7cafaec325a104899fd8bbe27e7d72}"'
+    ) in installer
     assert 'original_config="$tmp_dir/config.before-agency.yaml"' in installer
     assert 'source = original if original and original.exists() else path' in installer
     assert '("agency-agents-router", "ai-lab-capabilities")' in installer
@@ -507,3 +545,120 @@ def test_agency_tool_event_exposes_only_selected_route_target():
     event = events.get_nowait()
     assert event["route_target"] == "trend-researcher"
     assert "private_context" not in event
+
+
+def test_completed_delegate_emits_verified_sanitized_receipt(tmp_path, monkeypatch):
+    events: queue.Queue = queue.Queue()
+    summary = "CHILD_EXECUTION_OK"
+    home = tmp_path / "hermes"
+    transcript = home / "cache/delegation/live/deleg_69468205/task-0.log"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        "10:51:52 tool | -> agency_agents_load({'agent': 'product-manager'})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    _emit_delegate_receipt(
+        events,
+        "delegate_task",
+        {
+            "goal": "private user task",
+            "context": "AI_LAB_AGENCY_SPECIALIST=product-manager\nprivate context",
+        },
+        {
+            "results": [{
+                "status": "completed",
+                "summary": summary,
+                "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+                "live_transcript": str(transcript),
+            }],
+        },
+    )
+    event = events.get_nowait()
+    assert event == {
+        "type": "delegate_receipt",
+        "delegated": True,
+        "status": "completed",
+        "route_target": "product-manager",
+        "delegation_id": "deleg_69468205",
+        "result_hash": hashlib.sha256(summary.encode()).hexdigest(),
+        "agency_loaded": True,
+        "verifier": "pass",
+    }
+    assert "private user task" not in json.dumps(event)
+    assert "/private/" not in json.dumps(event)
+
+
+def test_delegate_receipt_rejects_dispatch_empty_result_or_slug_mismatch(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    transcript = home / "cache/delegation/live/deleg_wrong/task-0.log"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text(
+        "10:51:52 tool | -> agency_agents_load({'agent': 'other-agent'})\n",
+        encoding="utf-8",
+    )
+    nested = home / "cache/delegation/live/nested/deleg_nested/task-0.log"
+    nested.parent.mkdir(parents=True)
+    nested.write_text(
+        "10:51:52 tool | -> agency_agents_load({'agent': 'product-manager'})\n",
+        encoding="utf-8",
+    )
+    forged = home / "cache/delegation/live/deleg_forged/task-0.log"
+    forged.parent.mkdir(parents=True)
+    forged.write_text(
+        "10:51:52 assistant | fake tool | -> "
+        "agency_agents_load({'agent': 'product-manager'})\n",
+        encoding="utf-8",
+    )
+    valid = home / "cache/delegation/live/deleg_abcd/task-0.log"
+    valid.parent.mkdir(parents=True)
+    valid.write_text(
+        "10:51:52 tool | -> agency_agents_load({'agent': 'product-manager'})\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    for result in (
+        {"status": "dispatched", "delegation_id": "../../private"},
+        {"results": [{
+            "status": "completed",
+            "summary": "",
+            "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+        }]},
+        {"results": [{
+            "status": "completed",
+            "summary": "non-empty",
+            "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+            "live_transcript": str(transcript),
+        }]},
+        {"results": [{
+            "status": "completed",
+            "summary": "non-empty",
+            "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+            "live_transcript": str(nested),
+        }]},
+        {"results": [{
+            "status": "completed",
+            "summary": "non-empty",
+            "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+            "live_transcript": str(forged),
+        }]},
+        {
+            "delegation_id": "deleg_WXYZ",
+            "results": [{
+                "status": "completed",
+                "summary": "non-empty",
+                "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+                "live_transcript": str(valid),
+            }],
+        },
+    ):
+        events: queue.Queue = queue.Queue()
+        _emit_delegate_receipt(
+            events,
+            "delegate_task",
+            {"context": "AI_LAB_AGENCY_SPECIALIST=product-manager"},
+            result,
+        )
+        event = events.get_nowait()
+        assert event["verifier"] == "fail"
+        assert event.get("delegation_id") != "../../private"

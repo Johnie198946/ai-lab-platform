@@ -20,6 +20,17 @@ RUN echo $'server {\n\
         index  index.html index.htm;\n\
         try_files $uri $uri/ /index.html;\n\
     }\n\
+    location /taskboard/ {\n\
+        proxy_pass http://taskboard:47823/;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Host 127.0.0.1;\n\
+        proxy_set_header Origin http://127.0.0.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+        proxy_read_timeout 3600s;\n\
+        proxy_buffering off;\n\
+        client_max_body_size 30M;\n\
+    }\n\
     location /api/ {\n\
         proxy_pass http://api:8000/api/;\n\
         proxy_read_timeout 480s;\n\
@@ -150,6 +161,17 @@ server {\n\
         root   /usr/share/nginx/html;\n\
         index  index.html index.htm;\n\
         try_files $uri $uri/ /index.html;\n\
+    }\n\
+    location /taskboard/ {\n\
+        proxy_pass http://taskboard:47823/;\n\
+        proxy_http_version 1.1;\n\
+        proxy_set_header Host 127.0.0.1;\n\
+        proxy_set_header Origin http://127.0.0.1;\n\
+        proxy_set_header Upgrade $http_upgrade;\n\
+        proxy_set_header Connection "upgrade";\n\
+        proxy_read_timeout 3600s;\n\
+        proxy_buffering off;\n\
+        client_max_body_size 30M;\n\
     }\n\
     location /api/ {\n\
         proxy_pass http://api:8000/api/;\n\

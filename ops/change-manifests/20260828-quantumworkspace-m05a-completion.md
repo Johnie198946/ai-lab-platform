@@ -5,7 +5,9 @@
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/.hermes/sandbox/20260828-QuantumWorkspace-M05A/repo`（一次性隔离 clone，非 Git worktree）
 - base: `8bf9d7d72a22137b127ccb630a04292a1f45e6ef`
-- local_commit: `NOT_COMMITTED`
+- pre_merge_commit: `bc3e55e6b2aaf086328a300ca04c2bae8bebefd3`
+- merged_remote_base: `ec1844338e92299590f9e3195d6a66affc2e41f1`
+- local_commit: `PENDING_MERGE_COMMIT`
 - remote_sha: `NOT_PUSHED`
 - server_before: `NOT_CHECKED`
 - server_after: `NOT_DEPLOYED`
@@ -32,6 +34,7 @@
 - `scripts/migrate_quantum_workspace.py`
 - `tests/test_quantum_workspace_m05a.py`
 - `tests/test_quantum_workspace_m05a_attacks.py`
+- `tests/test_quantum_workspace_api.py`
 - `ops/change-manifests/20260828-quantumworkspace-m05a-completion.md`
 
 ## TDD 与验证记录
@@ -42,6 +45,18 @@ Coder 记录的 RED：缺少规范化 revision、缺迁移服务、审批端点 
 2. `PYTHONPATH=. .venv/bin/python -m pytest -q` → `691 passed, 2 skipped`。
 3. `.venv/bin/ruff check <全部改动 Python 文件>` → `All checks passed`。
 4. 临时 SQLite CLI：`--dry-run`、apply、12 表回读 → `M05A_CLI_SQLITE=PASS`。
+
+## 最新 origin/main 合并验收
+
+经用户明确授权，普通 merge 保留 `origin/main@ec18443` 的全部 QWS/Gantt/Taskboard 改动与 M0.5A。唯一冲突位于 `backend/api/quantum_workspace.py`，合并结果同时保留远端任务卡编辑端点与 M0.5A RBAC/审批端点。合并态 Main 独立执行：
+
+1. M0.5A + API 目标套件 → `31 passed`。
+2. 全量后端 pytest → `697 passed, 2 skipped`。
+3. 主前端测试 → `113 passed`。
+4. `apps/dashi-taskboard` Node 测试 → `368 passed, 1 skipped`；组件测试 → `9 passed`。
+5. Ruff 与 `git diff --check` → `All checks passed`。
+
+Supervision 在首次合并态复核中发现远端任务 create/bind/edit 三条写路径绕过 normalized facts，以及 edit 仍为 owner-only。按 TDD 新增回归测试并观察预期 RED：create 后读取 process 为 `409 normalized_projection_drift`，`project:write` 成员 edit 为 `404`；随后统一使用 CAS + `persist_process_revision()` 并将 edit 接入 `project:write`，聚焦测试 `2 passed`，上述全量门禁再次通过。
 
 ## 当前验收门
 

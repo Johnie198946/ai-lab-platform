@@ -3379,8 +3379,9 @@ def _triage_system_directive(triage: dict[str, Any] | None) -> str:
         lines.append("这是普通问答：由 Main 直接负责，不调用 Agency 专家。")
     else:
         lines.append(
-            "这是专业任务：若 agency_enabled=true，必须从注入候选中选择最匹配的一个"
-            " Agency 专家并使用候选给出的精确 slug 加载；不得自行拼接 division 前缀。"
+            "这是专业任务：若 agency_enabled=true，必须按注入候选调用原生 delegate_task，"
+            "由隔离子 Agent 使用候选给出的精确 slug 加载 Agency 专家，并等待终态结果；"
+            "父 Agent 只加载提示词不算委派，不得自行拼接 division 前缀。"
         )
     if "web_extract" in evidence:
         lines.append("用户指定了 URL：回答前必须先调用 web_extract 读取原文。")
@@ -3798,6 +3799,127 @@ def _emit_tool_complete(stream_q: queue.Queue, tool_call_id, function_name, func
     })
 
 
+_AGENCY_SPECIALIST_MARKER_RE = re.compile(
+    r"(?:^|\n)AI_LAB_AGENCY_SPECIALIST=([a-z0-9][a-z0-9_-]{0,99})(?:\n|$)",
+    re.IGNORECASE,
+)
+_DELEGATION_ID_FULL_RE = re.compile(r"deleg_[a-zA-Z0-9]{4,64}")
+_AGENCY_TOOL_LINE_RE = re.compile(
+    r"^\d{2}:\d{2}:\d{2}\s+tool\s+\|\s+->\s+agency_agents_load\(\{"
+    r"[^}\n]*['\"]agent['\"]\s*:\s*"
+    r"['\"]([a-z0-9][a-z0-9_-]{0,99})['\"]",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DELEGATE_STATUSES = frozenset(
+    {"completed", "failed", "error", "timeout", "cancelled", "dispatched", "unknown"}
+)
+
+
+def _verified_delegation_transcript(value: Any) -> tuple[str | None, str | None]:
+    """Return (delegation_id, loaded_slug) only for a bounded Hermes transcript."""
+    raw = str(value or "").strip()
+    if not raw:
+        return None, None
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    root = home / "cache/delegation/live"
+    try:
+        resolved_root = root.resolve(strict=True)
+        path = Path(raw).resolve(strict=True)
+        if path.parent.parent != resolved_root or path.name != "task-0.log":
+            return None, None
+        if path.stat().st_size > 1_000_000:
+            return None, None
+    except (OSError, RuntimeError):
+        return None, None
+    delegation_id = path.parent.name
+    if _DELEGATION_ID_FULL_RE.fullmatch(delegation_id) is None:
+        return None, None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None, None
+    loaded_slugs = set(_AGENCY_TOOL_LINE_RE.findall(text))
+    loaded_slug = next(iter(loaded_slugs)) if len(loaded_slugs) == 1 else None
+    return delegation_id, loaded_slug
+
+
+def _emit_delegate_receipt(
+    stream_q: queue.Queue,
+    function_name: str,
+    function_args=None,
+    result=None,
+) -> None:
+    """Emit a sanitized receipt derived from Hermes' terminal child result.
+
+    A dispatch acknowledgement is deliberately not a successful receipt.  No
+    goal, child summary, transcript path, or tenant context leaves the bridge.
+    """
+    if function_name != "delegate_task":
+        return
+    payload = result
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+
+    args = function_args if isinstance(function_args, dict) else {}
+    context = str(args.get("context") or "")
+    marker = _AGENCY_SPECIALIST_MARKER_RE.search(context)
+    route_target = marker.group(1) if marker else None
+
+    results = payload.get("results")
+    child = results[0] if isinstance(results, list) and results else {}
+    if not isinstance(child, dict):
+        child = {}
+    raw_status = str(child.get("status") or payload.get("status") or "unknown")
+    status = raw_status if raw_status in _DELEGATE_STATUSES else "unknown"
+    summary = str(child.get("summary") or "").strip()
+    trace = child.get("tool_trace") if isinstance(child.get("tool_trace"), list) else []
+    trace_reports_load = any(
+        isinstance(item, dict)
+        and item.get("tool") == "agency_agents_load"
+        and item.get("status") == "ok"
+        for item in trace
+    )
+
+    payload_id = str(payload.get("delegation_id") or "").strip()
+    delegation_id = (
+        payload_id if _DELEGATION_ID_FULL_RE.fullmatch(payload_id) is not None else None
+    )
+    transcript_id, loaded_slug = _verified_delegation_transcript(
+        child.get("live_transcript")
+    )
+    ids_match = not payload_id or payload_id == transcript_id
+    if transcript_id is not None:
+        delegation_id = transcript_id if ids_match else None
+    agency_loaded = bool(
+        trace_reports_load and route_target and loaded_slug == route_target
+    )
+    delegated = bool(delegation_id or child)
+    verified = bool(
+        transcript_id
+        and ids_match
+        and delegated
+        and status == "completed"
+        and summary
+        and agency_loaded
+    )
+
+    _qput(stream_q, {
+        "type": "delegate_receipt",
+        "delegated": delegated,
+        "status": status,
+        "route_target": route_target,
+        "delegation_id": delegation_id,
+        "result_hash": hashlib.sha256(summary.encode()).hexdigest() if verified else None,
+        "agency_loaded": agency_loaded,
+        "verifier": "pass" if verified else "fail",
+    })
+
+
 def _build_in_process_agent(
     goal: str,
     user_id: str,
@@ -4037,6 +4159,7 @@ def _build_in_process_agent(
     def _tool_complete_cb(tool_call_id, function_name, function_args, result) -> None:
         # 载荷治理：不发 raw result（对齐 api_server 契约·防内部信息泄露）
         _emit_tool_complete(stream_q, tool_call_id, function_name, function_args, result)
+        _emit_delegate_receipt(stream_q, function_name, function_args, result)
         # 技能创建租户化：skill_manage(action=create) 完成后把新技能迁移到 tenants/<tenant>/
         # （租户设置页只显示租户专属技能——用户创建的技能自动归租户，不留在 public）
         if function_name == "skill_manage":
@@ -4788,7 +4911,7 @@ async def chat(body: GoalRequest):
                         item for item in events
                         if item.get("type") in {
                             "note_draft", "knowledge_action_draft", "knowledge_navigation",
-                            "tool_start", "tool_complete"
+                            "tool_start", "tool_complete", "delegate_receipt"
                         }
                     ],
                 }
