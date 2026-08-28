@@ -81,6 +81,14 @@
 - frontend production build: passed; only the existing large-chunk advisory remains.
 - browser execution-trace layout verification: passed at the real `420px` drawer width with long Skill names and the 20-second warning visible; measured `scrollWidth=clientWidth=420`, so no horizontal overflow was introduced.
 
+## Authorized deployment attempt and migration correction
+
+- implementation commit `474d1bf82b4c9fadc85951d5d06d6f5530ca8ba2` was pushed and verified with `git ls-remote` before the first deployment attempt.
+- the first exact-SHA deployment stopped before runtime replacement because the legacy migration classified two existing Dashi-only card conversations as orphaned. The deployment script had not set `RUNTIME_CHANGED`, had not switched `/opt/ai-lab-platform`, and production remained on the healthy rollback release.
+- read-only production inspection proved both reported conversations already had matching `(project_id, task_id)` identities in `workspace_tasks`; database foreign-key integrity was intact. The mismatch was solely that `_orphan_conversations` looked only at `process_snapshot.tasks` and ignored the normalized stable identity table.
+- the correction preserves every existing foreign key and fail-closed orphan rule. Migration validation now unions task identities from the immutable process snapshot and normalized `workspace_tasks`; a conversation absent from both still blocks every write.
+- migration regression suite: `8 passed`, including a new Dashi normalized-anchor case plus existing true-orphan, workflow/execution-orphan, FK and task-chat/card-session checks. `ruff`, Python compilation and `git diff --check` passed.
+
 ## Delivery
 
 - status: `TESTED`

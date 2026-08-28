@@ -88,6 +88,44 @@ def test_orphan_apply_is_fail_closed_and_performs_zero_writes(tmp_path):
         assert db.execute("SELECT count(*) FROM workspace_task_conversations").fetchone()[0] == 1
 
 
+def test_normalized_task_identity_keeps_dashi_card_conversation_non_orphan(tmp_path):
+    path = tmp_path / "dashi-card-anchor.db"
+    _legacy_db(
+        path,
+        [_project("p1", "t1", "u1", 0)],
+        [("card", "t1", "u1", "p1", "dashi-card", None, None, "s", "a", "{}", None, None)],
+    )
+    with sqlite3.connect(path) as db:
+        db.executescript(
+            """
+            CREATE TABLE workspace_tasks (
+                id VARCHAR(40) NOT NULL,
+                project_id VARCHAR(40) NOT NULL,
+                tenant_key VARCHAR(64) NOT NULL,
+                created_at DATETIME,
+                PRIMARY KEY (project_id, id),
+                FOREIGN KEY(project_id) REFERENCES workspace_projects(id) ON DELETE CASCADE
+            );
+            """
+        )
+        db.execute(
+            "INSERT INTO workspace_tasks (id, project_id, tenant_key) VALUES (?, ?, ?)",
+            ("dashi-card", "p1", "t1"),
+        )
+
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        dry_run = migrate_workspace_schema(connection, dry_run=True)
+        assert dry_run["orphan_conversation_ids"] == []
+        migrated = migrate_workspace_schema(connection)
+
+    assert migrated["orphan_conversation_ids"] == []
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT count(*) FROM workspace_task_conversations WHERE id='card'"
+        ).fetchone()[0] == 1
+
+
 def test_existing_sqlite_conversation_workflow_and_execution_orphans_fail_closed(
     tmp_path,
 ):

@@ -93,6 +93,13 @@ def _orphan_conversations(
         for row in projects
     }
     tables = set(inspect(connection).get_table_names())
+    if "workspace_tasks" in tables:
+        for row in connection.execute(
+            text("SELECT project_id, id FROM workspace_tasks")
+        ).mappings():
+            task_ids_by_project.setdefault(str(row["project_id"]), set()).add(
+                str(row["id"])
+            )
     workflow_ids = (
         {
             str(row["id"])
