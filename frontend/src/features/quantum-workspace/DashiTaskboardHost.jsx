@@ -12,14 +12,17 @@ function resolveDashiTheme() {
   return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
+function addTaskboardUserHeaders(headers, user) {
+  if (!user) return;
+  headers.set("X-Taskboard-User-Id", safeSlug(user.user_id || user.username || "qws-user"));
+  headers.set("X-Taskboard-User-Name", encodeURIComponent(user.username || "QWS 用户"));
+  if (user.avatar_url) headers.set("X-Taskboard-User-Avatar", user.avatar_url);
+}
+
 async function dashiRequest(path, { method = "GET", body, user } = {}) {
   const headers = new Headers({ Accept: "application/json" });
   if (body !== undefined) headers.set("Content-Type", "application/json");
-  if (user) {
-    headers.set("X-Taskboard-User-Id", safeSlug(user.user_id || user.username || "qws-user"));
-    headers.set("X-Taskboard-User-Name", encodeURIComponent(user.username || "QWS 用户"));
-    if (user.avatar_url) headers.set("X-Taskboard-User-Avatar", user.avatar_url);
-  }
+  addTaskboardUserHeaders(headers, user);
   const response = await fetch(`/taskboard${path}`, {
     method,
     headers,
@@ -44,6 +47,18 @@ const issueSummary = (issue) => issue ? {
   priority: issue.priority || null,
   assignee: issue.assignee || null,
   archived_at: issue.archivedAt || null,
+} : null;
+
+const issueFull = (issue) => issue ? {
+  ...issueSummary(issue),
+  description: issue.description || "",
+  labels: issue.labels || [],
+  development_context: issue.developmentContext || null,
+  start_date: issue.startDate || null,
+  due_date: issue.dueDate || null,
+  recurrence: issue.recurrence || null,
+  version: issue.version ?? null,
+  updated_at: issue.updatedAt || null,
 } : null;
 
 function resolveCanonicalTask(dashiTask, qwsTasks) {
@@ -80,14 +95,16 @@ function collectDescendants(rootTask, allTasks) {
     const { task, depth } = queue.shift();
     if (seen.has(task.id)) continue;
     seen.add(task.id);
-    descendants.push({ ...issueSummary(task), depth });
+    descendants.push({ ...issueFull(task), depth });
     for (const child of byParent.get(task.id) || []) queue.push({ task: child, depth: depth + 1 });
   }
   return descendants;
 }
 
-function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTasks, comments }) {
+function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTasks, comments, attachments }) {
   const relations = dashiTask.relations || {};
+  const tasksById = new Map((allTasks || []).map((item) => [item.id, item]));
+  const fullRelation = (item) => issueFull(tasksById.get(item?.id) || item);
   return {
     schema_version: 1,
     session_registry: (allTasks || []).map((item) => ({
@@ -109,7 +126,7 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
       dashi_task_id: dashiTask.id,
       identifier: dashiTask.identifier || null,
       title: dashiTask.title || qwsTask.title,
-      parent_issue: issueSummary(relations.parent),
+      parent_issue: fullRelation(relations.parent),
       descriptions: [
         { id: "qws-summary", source: "qws_summary", content: qwsTask.summary || "" },
         { id: "taskboard-description", source: "taskboard_description", content: dashiTask.description || "" },
@@ -129,6 +146,14 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
         created_at: comment.createdAt,
         updated_at: comment.updatedAt,
       })),
+      attachments: (attachments || []).map((attachment) => ({
+        id: attachment.id,
+        filename: attachment.filename,
+        content_type: attachment.contentType,
+        size: attachment.size,
+        kind: attachment.kind,
+        created_at: attachment.createdAt,
+      })),
       status: dashiTask.status,
       priority: dashiTask.priority,
       assignee: dashiTask.assignee || null,
@@ -136,10 +161,11 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
       development_context: dashiTask.developmentContext || null,
       start_date: dashiTask.startDate || null,
       due_date: dashiTask.dueDate || null,
+      recurrence: dashiTask.recurrence || null,
       related_issues: {
-        blocked_by: (relations.blockedBy || []).map(issueSummary),
-        blocks: (relations.blocks || []).map(issueSummary),
-        related: (relations.related || []).map(issueSummary),
+        blocked_by: (relations.blockedBy || []).map(fullRelation),
+        blocks: (relations.blocks || []).map(fullRelation),
+        related: (relations.related || []).map(fullRelation),
       },
       qws: {
         binding_kind: qwsTask.binding_kind || "canonical_task",
@@ -201,10 +227,11 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
   }, []);
 
   const loadTaskSession = useCallback(async (dashiTaskId) => {
-    const [taskPayload, tasksPayload, commentsPayload, latestProcess] = await Promise.all([
+    const [taskPayload, tasksPayload, commentsPayload, attachmentsPayload, latestProcess] = await Promise.all([
       dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user }),
       dashiRequest(`/api/tasks?projectId=${encodeURIComponent(dashiProjectId)}&archived=false`, { user }),
       dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/comments`, { user }),
+      dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/attachments`, { user }),
       platformApi.getProjectProcess(project.id),
     ]);
     const dashiTask = taskPayload.task;
@@ -218,32 +245,10 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
         qwsTask,
         allTasks: tasksPayload.tasks || [],
         comments: commentsPayload.comments || [],
+        attachments: attachmentsPayload.attachments || [],
       }),
     };
   }, [dashiProjectId, project, user]);
-
-  const applyBackfill = useCallback(async (dashiTaskId, selfChanges, expectedVersion) => {
-    const current = (await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user })).task;
-    if (expectedVersion != null && current.version !== expectedVersion) {
-      throw new Error("卡片版本已变化，请重新生成回填方案。");
-    }
-    const { appendComment, ...fieldChanges } = selfChanges || {};
-    if (Object.keys(fieldChanges).length) {
-      await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, {
-        method: "PATCH",
-        user,
-        body: { version: current.version, ...fieldChanges },
-      });
-    }
-    if (appendComment?.trim()) {
-      await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/comments`, {
-        method: "POST",
-        user,
-        body: { body: `AI 回填（经用户确认）\n\n${appendComment.trim()}` },
-      });
-    }
-    return loadTaskSession(dashiTaskId);
-  }, [loadTaskSession, user]);
 
   useEffect(() => {
     const postTheme = () => {
@@ -294,7 +299,6 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
         onOpenTaskChat?.({
           ...session,
           refreshCardContext: () => loadTaskSession(dashiTaskId),
-          applyBackfill: (changes, expectedVersion) => applyBackfill(dashiTaskId, changes, expectedVersion),
         });
         frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId } }, window.location.origin);
         setState("");
@@ -309,7 +313,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       mediaQuery?.removeEventListener?.("change", handleThemeChange);
       themeObserver?.disconnect();
     };
-  }, [applyBackfill, dashiProjectId, loadTaskSession, onOpenTaskChat, openArchitect, project, user]);
+  }, [dashiProjectId, loadTaskSession, onOpenTaskChat, openArchitect, project, user]);
 
   const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">

@@ -10,6 +10,10 @@ const drawerSource = await readFile(
   new URL("../src/features/quantum-workspace/TaskChatDrawer.jsx", import.meta.url),
   "utf8",
 );
+const backendSource = await readFile(
+  new URL("../../backend/api/quantum_workspace.py", import.meta.url),
+  "utf8",
+);
 
 test("opening a card session never creates a canonical task in the web host", () => {
   const openHandler = hostSource.slice(hostSource.indexOf('event.data.type !== "taskboard:create-thread"'));
@@ -35,6 +39,8 @@ test("card session sends versionable full card context to the backend", () => {
     "development_context",
     "start_date",
     "due_date",
+    "recurrence",
+    "attachments",
     "related_issues",
   ]) assert.match(hostSource, new RegExp(field));
   assert.match(drawerSource, /card_context: cardContext/);
@@ -43,13 +49,26 @@ test("card session sends versionable full card context to the backend", () => {
 
 test("card backfill requires confirmation and routes overflow through session inbox", () => {
   assert.match(hostSource, /session_registry/);
-  assert.match(hostSource, /method: "PATCH"/);
-  assert.match(hostSource, /AI 回填（经用户确认）/);
-  assert.doesNotMatch(hostSource, /dashiRequest\("\/api\/tasks",\s*\{\s*method: "POST"/);
+  assert.doesNotMatch(hostSource, /method: "PATCH"/);
+  assert.match(backendSource, /async def _apply_taskboard_backfill/);
+  assert.match(backendSource, /"createIssues"/);
+  assert.match(backendSource, /"addAttachments"/);
+  assert.match(backendSource, /"relationChanges"/);
+  assert.match(backendSource, /relations\/parent/);
   assert.match(drawerSource, /materializeTaskBackfillProposal/);
   assert.match(drawerSource, /window\.confirm/);
   assert.match(drawerSource, /completeTaskBackfillProposal/);
+  assert.match(drawerSource, /applyTaskBackfillProposal/);
   assert.match(drawerSource, /确认回填/);
+  assert.match(drawerSource, /BackfillChangeList/);
+});
+
+test("card session renders and submits Hermes clarification instead of waiting silently", () => {
+  assert.match(drawerSource, /streamEvent\.type === "clarify"/);
+  assert.match(drawerSource, /AI 需要补充信息/);
+  assert.match(drawerSource, /submitTaskClarification/);
+  assert.match(drawerSource, /clarify_id: clarification\.clarify_id/);
+  assert.match(drawerSource, /等待你补充信息/);
 });
 
 test("card session exposes safe skill execution progress without chain-of-thought", () => {

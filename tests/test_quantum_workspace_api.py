@@ -22,6 +22,7 @@ os.environ.setdefault("AUTHEN_DEV_MODE", "true")
 
 from backend.main import app  # noqa: E402
 from backend.api.auth import require_auth  # noqa: E402
+from backend.api.quantum_workspace import _parse_backfill_block  # noqa: E402
 from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
@@ -843,6 +844,49 @@ def test_task_conversation_card_context_is_full_then_incremental(_reset_database
     assert cross_tenant.status_code == 404
 
 
+def test_structured_card_backfill_normalizes_field_issue_attachment_and_relation_ops():
+    payload = {
+        "summary": "把访谈结论写入卡片字段",
+        "self_changes": {
+            "description": "## 目标\n完成门禁场景的人脸识别需求梳理。",
+            "status": "in_progress",
+            "priority": "high",
+            "labels": ["人脸识别", "需求"],
+            "assigneeTarget": "current-user",
+            "developmentContext": {"type": "branch", "branch": "feature/face-id"},
+            "startDate": "2026-09-01",
+            "dueDate": "2026-09-15",
+            "recurrence": None,
+            "createIssues": [
+                {
+                    "title": "补充活体检测验收标准",
+                    "description": "明确攻击样本与误拒率指标。",
+                    "priority": "urgent",
+                    "relation": "sub_issue",
+                }
+            ],
+            "addAttachments": [
+                {
+                    "filename": "需求访谈纪要.md",
+                    "contentType": "text/markdown",
+                    "content": "# 需求访谈纪要\n首要场景：园区门禁。",
+                }
+            ],
+            "relationChanges": {
+                "add": [{"type": "blocked_by", "target_task_id": "card-risk"}],
+                "remove": [{"type": "related", "target_task_id": "card-old"}],
+            },
+        },
+        "routes": [],
+    }
+    parsed = _parse_backfill_block(
+        "完成。\n```task_backfill\n"
+        + json.dumps(payload, ensure_ascii=False)
+        + "\n```"
+    )
+    assert parsed == payload
+
+
 def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
     _reset_database, monkeypatch
 ):
@@ -1013,6 +1057,25 @@ def test_card_backfill_applies_only_self_and_routes_overflow_to_target_session(
     proposal = proposal_response.json()
     assert proposal["self_changes"] == {"description": "新需求描述"}
     assert proposal["routed_items"][0]["target_task_id"] == target_id
+
+    applied_call = {}
+
+    async def fake_apply_taskboard_backfill(**kwargs):
+        applied_call.update(kwargs)
+        return {"created_issues": [], "attachments": [], "relations": []}
+
+    monkeypatch.setattr(
+        "backend.api.quantum_workspace._apply_taskboard_backfill",
+        fake_apply_taskboard_backfill,
+    )
+    applied = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/backfill-proposals/{proposal['id']}/apply",
+        headers={"Authorization": "Bearer test-token"},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied_call["task_id"] == source_id
+    assert applied_call["self_changes"] == {"description": "新需求描述"}
+    assert applied_call["authorization"] == "Bearer test-token"
 
     updated_context = context(source_id, "需求梳理", "新需求描述", version=2)
     completed = client.post(

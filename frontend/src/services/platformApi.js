@@ -458,6 +458,9 @@ export const platformApi = {
   streamTaskMessage(conversationId, payload, onEvent) {
     return streamRequest(`/api/v1/task-conversations/${conversationId}/messages/stream`, payload, onEvent);
   },
+  submitTaskClarification(payload) {
+    return request("/api/chat/stream/clarify", { method: "POST", body: payload });
+  },
   listTaskBackfillProposals(conversationId) {
     return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals`);
   },
@@ -470,10 +473,13 @@ export const platformApi = {
   discardTaskBackfillProposal(conversationId, proposalId) {
     return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals/${proposalId}/discard`, { method: "POST" });
   },
-  completeTaskBackfillProposal(conversationId, proposalId, cardContext) {
+  applyTaskBackfillProposal(conversationId, proposalId) {
+    return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals/${proposalId}/apply`, { method: "POST" });
+  },
+  completeTaskBackfillProposal(conversationId, proposalId, cardContext, appliedEvidence = {}) {
     return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals/${proposalId}/complete`, {
       method: "POST",
-      body: { card_context: cardContext },
+      body: { card_context: cardContext, applied_evidence: appliedEvidence },
     });
   },
 };
