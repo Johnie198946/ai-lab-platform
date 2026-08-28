@@ -2,7 +2,7 @@
 
 - task_id: `20260829-qws-apply-ai-employees`
 - task_goal: 修复 QuantumWorkspace 卡片 AI 回填 `apply` 的 502，并将新项目流程中的通用 Codex 身份升级为项目级 AI Lab AI 员工（真实租户 Agent、岗位、人名、卡片会话绑定）。
-- current_status: `TESTED`
+- current_status: `VERIFIED`
 - branch: `codex/qws-apply-ai-employees-20260828`
 - worktree: `/private/tmp/ai-lab-qws-apply-ai-employees-20260828`
 
@@ -66,17 +66,17 @@
 
 ## 交付与部署
 
-- commit SHA: 未授权/未执行；本任务保持工作区修改。
-- GitHub remote/ref/SHA: 未授权/未执行；没有 `git ls-remote` 推送证据。
-- server_before: 本任务未执行部署前版本切换检查；诊断时线上仍为此前版本，不将其作为本任务交付证据。
-- server_after: 未授权/未执行部署。
-- health_check: 本地构建与测试通过；未执行部署后远程健康检查。
-- functional_check: 本地验证通过 Host 修复、AI 员工创建/绑定、Hermes agent_id 路由和字段 Apply 契约；未执行生产写入检查。
-- rollback_point: 未发生部署，无需新建服务器回滚点；本地回滚基线为 `3fc5290abcbafe7c4731e01c9423f01144031fee`。
+- implementation commit SHA: `a3be3d55a2c79b45956c19e0d8f3a1a1e200f33d`。
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/qws-apply-ai-employees-20260828` / `a3be3d55a2c79b45956c19e0d8f3a1a1e200f33d`；已通过 `git ls-remote` 核验。
+- server_before: `/opt/releases/ai-lab-platform-ef29d857e1fa.t5gHOg`，`.deployed-sha=ef29d857e1fa7b22c198aeffd813ea36bf1e1ab1`；API ready、Hermes Bridge v6.0 healthy，关键 Compose 服务均 running。
+- server_after: `/opt/releases/ai-lab-platform-a3be3d55a2c7.TAmZ0J`，实现 SHA `a3be3d55a2c79b45956c19e0d8f3a1a1e200f33d`；不可变发布完成并原子切换成功。
+- health_check: PASS — additive migration 扫描 4 个项目、零孤儿、零待回填；runtime contract audit 通过；API `/ready`=`ready/0.8.0`、`/health`=`ok/0.8.0`；Hermes Bridge `/health`=`ok/v6.0/streaming=true`；api、frontend、taskboard、三个 worker、PostgreSQL、Redis 全部 running，API/Taskboard/PostgreSQL/Redis healthy；公网 HTTPS `/health` HTTP 200。
+- functional_check: PASS — 生产 OpenAPI 同时暴露 AI 员工 ensure 与回填 apply；运行时代码包含可信内部 Host 与 AI 员工创建逻辑；前端和 Taskboard 产物均包含 AI 员工身份文案；容器内 Taskboard Host 门禁返回预期 `401` 而非原来的 `403`；两个无认证探针均在鉴权边界返回 `401`，未产生业务写入；部署后近期日志未发现 `502`、`INVALID_HOST` 或旧的 Session 打开失败。
+- rollback_point: `/opt/releases/ai-lab-platform-ef29d857e1fa.t5gHOg`；发生回归时将应用链接原子切回该 release，重新运行 Compose 并重启 Hermes Bridge。
 
 ## 风险与未完成项
 
 - 为避免无提示改写用户数据，既有卡片不会被批量重新分配；新同步卡片自动绑定岗位员工，既有卡片可通过经用户确认的负责人回填切换。
 - 当前 AI 员工沿用平台现有的租户 + owner 私有安全边界；项目内跨用户共享同一 Agent 实例需要先补项目级 Agent ACL，不能通过放宽为租户全可见来实现，否则会扩大项目数据访问面。
-- 本次有可见身份文案变化，按 Taskboard 规则应由用户确认后再提交、推送或部署。
+- 用户已明确确认推送和部署；实现 SHA 已完成精确 SHA 发布与生产验证。
 - 上述两个基线测试失败仍待单独任务处理。
