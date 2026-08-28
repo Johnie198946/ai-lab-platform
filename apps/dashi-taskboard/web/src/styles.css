@@ -11213,13 +11213,14 @@ kbd {
   display: flex;
   flex-direction: column;
   gap: 0;
-  padding: 0;
+  padding: 0 clamp(8px, 2vw, 28px) clamp(8px, 2vw, 24px);
   overflow: hidden;
-  background: var(--surface);
+  background: var(--bg);
 }
 
 .gantt-toolbar-controls {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   min-width: 0;
   gap: 2px;
@@ -11306,12 +11307,15 @@ kbd {
 .gantt-canvas-shell {
   position: relative;
   flex: 1 1 auto;
+  width: min(100%, 1840px);
+  min-width: 0;
   min-height: 280px;
+  margin-inline: auto;
   overflow: hidden;
-  border: 0;
-  border-radius: 0;
+  border: var(--border-hairline) solid var(--border);
+  border-radius: 12px;
   background: var(--surface);
-  box-shadow: none;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--text-primary) 4%, transparent);
 }
 
 .gantt-canvas { width: 100%; height: 100%; }
@@ -11379,6 +11383,9 @@ kbd {
 }
 
 .gantt_container {
+  width: 100% !important;
+  max-width: 100%;
+  min-width: 0;
   border: 0 !important;
   border-radius: inherit;
 }
@@ -11676,8 +11683,20 @@ kbd {
 }
 .gantt_task_drag.task_left { left: 2px !important; }
 .gantt_task_drag.task_right { right: 2px !important; }
-.gantt_hor_scroll { scrollbar-width: none; }
-.gantt_hor_scroll::-webkit-scrollbar { display: none; }
+.gantt_hor_scroll {
+  height: 10px !important;
+  background: var(--surface) !important;
+  scrollbar-color: var(--border-strong) transparent;
+  scrollbar-width: thin;
+}
+.gantt_hor_scroll::-webkit-scrollbar { height: 8px; }
+.gantt_hor_scroll::-webkit-scrollbar-track { background: transparent; }
+.gantt_hor_scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: var(--border-strong);
+  background-clip: padding-box;
+}
 .gantt_ver_scroll { width: 7px !important; opacity: 0; }
 .gantt_link_line_right,
 .gantt_link_line_left,
@@ -11780,6 +11799,8 @@ kbd {
     scrollbar-width: none;
   }
   .app-shell.embedded .workspace-command-bar.is-board-mode .toolbar-tools::-webkit-scrollbar { display: none; }
+  .gantt-view { padding-inline: 6px; padding-bottom: 6px; }
+  .gantt-canvas-shell { border-radius: 10px; }
   .issue-list-view { padding: 10px 8px 24px; }
   .issue-list-groups { gap: 8px; }
   .issue-list-group { border-radius: 10px; }

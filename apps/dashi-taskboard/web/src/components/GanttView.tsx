@@ -139,7 +139,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
     instance.config.row_height = 58;
     instance.config.bar_height = 44;
     instance.config.scale_height = 66;
-    instance.config.scroll_size = 1;
+    instance.config.scroll_size = 10;
     instance.config.grid_width = 360;
     instance.config.min_column_width = 38;
     instance.config.drag_progress = false;
@@ -317,8 +317,12 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
     const markerFrame = requestAnimationFrame(updateOverlays);
     const resizeObserver = new ResizeObserver(([entry]) => {
       const width = entry.contentRect.width;
-      const ratio = width >= 1200 ? 0.3 : 0.32;
-      const nextGridWidth = Math.round(Math.max(300, Math.min(460, width * ratio)));
+      const compact = width < 720;
+      const medium = width < 1200;
+      const ratio = compact ? 0.44 : medium ? 0.34 : 0.3;
+      const minGridWidth = compact ? 190 : medium ? 240 : 320;
+      const maxGridWidth = compact ? 240 : medium ? 360 : 460;
+      const nextGridWidth = Math.round(Math.max(minGridWidth, Math.min(maxGridWidth, width * ratio)));
       expandedGridWidthRef.current = nextGridWidth;
       setGridWidth(nextGridWidth);
       if (!gridCollapsedRef.current) instance.config.grid_width = nextGridWidth;
