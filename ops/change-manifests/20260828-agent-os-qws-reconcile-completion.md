@@ -1,7 +1,7 @@
 # Completion Manifest — QWS main reconciliation + Agent OS routing
 
 task_id: 20260828-agent-os-qws-reconcile
-status: TESTED
+status: COMMITTED
 branch: main
 worktree: /tmp/quantumworkspace-agent-os-20260828 (isolated clone; not a Git worktree)
 base: 8bf9d7d72a22137b127ccb630a04292a1f45e6ef
@@ -9,7 +9,7 @@ qws_candidate: 0e39cb5638d44724f50d10d8487eaad5fcb96a4a
 qws_merge_commit_local: 567c74dd0e16fe600c302938fe9453e396c825c2
 qws_latest_server_candidate: 392e88852f221fa4deb00904e5c6c759b8e2a09b
 qws_latest_merge_commit_local: 4ea86dc41e10a86e873c8f4b1966c4b1c15171ea
-local_commit: pending
+local_commit: 75c30f640560d98f031b34bdcb471411ade705ea
 remote_sha: pending
 server_before: 392e88852f221fa4deb00904e5c6c759b8e2a09b
 server_after: pending
@@ -117,8 +117,7 @@ runtime_provider: openai-codex
 
 ## Remaining risks / pending gates
 
-- Final Dashi `npm run check` and independent reviewer must pass.
-- Changes are not yet committed or pushed.
+- Implementation is committed locally; GitHub push and remote SHA verification are pending.
 - Server has not been changed; no deployment or online verification has occurred.
 - Mac live capability plugin has not yet been reinstalled from the committed artifact.
 - The exposed AccessKey must be revoked/rotated outside this repository.
