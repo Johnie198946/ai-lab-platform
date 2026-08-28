@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+import json
 import os
 from pathlib import Path
 from tempfile import gettempdir
@@ -449,6 +450,75 @@ def test_taskboard_schedule_and_graph_share_one_revision(_reset_database):
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["server_revision"] == 2
+
+
+def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "resource-workbench")
+
+    initial = client.get(f"/api/v1/projects/{project_id}/resource-plan")
+    assert initial.status_code == 200
+    assert initial.json()["plan"]["source_status"] == "UNCONFIGURED"
+    assert initial.json()["monitoring"]["source_status"] == "UNCONNECTED"
+
+    async def fake_chat_stream(req, payload):
+        assert "企业 AI 基础设施解决方案架构师" in req.question
+        assert "token_factory.status 必须为 UNCONNECTED" in req.question
+
+        async def events():
+            answer = {
+                "systems": [{"id": "gateway", "name": "业务网关", "role": "接入", "deployment": "容器", "replicas": 2}],
+                "infrastructure": {
+                    "ecs": {"count": 2, "v_cpu": 16, "memory_gb": 64},
+                    "storage": {"system_disk_gb": 200, "data_disk_gb": 500, "object_storage_gb": 1024},
+                    "hyperconverged_nodes": {"count": 3, "profile": "通用计算"},
+                    "gpu": {"model": "L20", "count": 1, "memory_gb": 48},
+                    "network": {"bandwidth_mbps": 1000},
+                },
+                "runtime": {
+                    "microservices": 6, "containers": 10, "queues": 1, "ontology": "用户与任务本体",
+                    "agents": {"count": 4, "concurrency": 8},
+                    "inference": {"service": "vLLM", "provider": "自部署", "model": "Qwen", "replicas": 1},
+                },
+                "sla": {"p95_latency_ms": 1500, "throughput_rps": 12, "availability": "99.9%", "target_monthly_cost_cny": 30000, "acceleration": "连续批处理"},
+                "token_factory": {"status": "CONNECTED", "product_mapping": "Token Factory 推理单元", "token_peak_per_minute": 50000, "monthly_token_estimate": 50000000, "capacity_unit": "待接口确认", "evidence": "需压测"},
+                "topology": {"nodes": [{"id": "gateway", "label": "业务网关", "type": "system", "status": "PLANNED"}], "edges": []},
+                "assumptions": ["按首期 100 并发用户估算"],
+            }
+            yield f'data: {json.dumps({"type": "done", "answer": json.dumps(answer, ensure_ascii=False)}, ensure_ascii=False)}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.chat_stream", fake_chat_stream)
+    recommended = client.post(
+        f"/api/v1/projects/{project_id}/resource-plan/recommend",
+        json={"request_id": "resource-recommend-0001", "expected_revision": 1, "constraints": "成本优先"},
+    )
+    assert recommended.status_code == 200, recommended.text
+    proposal = recommended.json()["plan"]
+    assert recommended.json()["process_revision"] == 2
+    assert proposal["source_status"] == "AI_PROPOSED"
+    assert proposal["infrastructure"]["gpu"]["model"] == "L20"
+    assert proposal["token_factory"]["status"] == "UNCONNECTED"
+
+    proposal["sla"]["p95_latency_ms"] = 1200
+    saved = client.put(
+        f"/api/v1/projects/{project_id}/resource-plan",
+        json={"expected_revision": 2, "plan": proposal},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["process_revision"] == 3
+    assert saved.json()["plan"]["source_status"] == "USER_CONFIGURED"
+    assert saved.json()["plan"]["sla"]["p95_latency_ms"] == 1200
+
+    stale = client.put(
+        f"/api/v1/projects/{project_id}/resource-plan",
+        json={"expected_revision": 2, "plan": proposal},
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["server_revision"] == 3
 
 
 def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_database):

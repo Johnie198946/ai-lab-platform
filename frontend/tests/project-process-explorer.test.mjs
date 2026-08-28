@@ -5,6 +5,8 @@ import { readFile } from "node:fs/promises";
 import { buildStageRail } from "../src/features/quantum-workspace/quantumProjection.js";
 
 const pageSource = await readFile(new URL("../src/features/quantum-workspace/ProjectWorkspacePage.jsx", import.meta.url), "utf8");
+const resourceSource = await readFile(new URL("../src/features/quantum-workspace/AIResourceWorkbench.jsx", import.meta.url), "utf8");
+const apiSource = await readFile(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../src/app/App.jsx", import.meta.url), "utf8");
 const railSource = await readFile(new URL("../src/features/quantum-workspace/StageRail.jsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/features/quantum-workspace/quantumWorkspace.css", import.meta.url), "utf8");
@@ -13,6 +15,25 @@ test("project navigation removes the duplicate top-level Gantt entry", () => {
   assert.doesNotMatch(pageSource, /<NavLink to=\{`\/projects\/\$\{projectId\}\/schedule`\}/);
   assert.doesNotMatch(pageSource, /Rows3/);
   assert.match(appSource, /path="\/projects\/:projectId\/schedule"/);
+});
+
+test("AI Resource opens a configurable planning and operations workbench", () => {
+  assert.match(pageSource, /getProjectResourcePlan/);
+  assert.match(pageSource, /<AIResourceWorkbench/);
+  assert.match(resourceSource, /资源配置/);
+  assert.match(resourceSource, /架构与拓扑/);
+  assert.match(resourceSource, /运行监控/);
+  assert.match(resourceSource, /Token Factory/);
+  assert.match(resourceSource, /AI 一键推荐/);
+  assert.match(apiSource, /resource-plan\/recommend/);
+  assert.match(styles, /\.qw-resource-workbench\{width:min\(1840px,calc\(100% - 48px\)\)/);
+});
+
+test("AI Resource labels disconnected truth instead of fabricating live infrastructure", () => {
+  assert.match(resourceSource, /接口未连接/);
+  assert.match(resourceSource, /不代表资源已经部署/);
+  assert.match(resourceSource, /canonical Execution/);
+  assert.match(resourceSource, /不会自动部署资源/);
 });
 
 test("project process explorer is sticky and rendered on the Dashi taskboard view", () => {

@@ -413,6 +413,15 @@ export const platformApi = {
   getProjectGraph(projectId, viewType) {
     return request(`/api/v1/projects/${projectId}/graphs/${viewType}`);
   },
+  getProjectResourcePlan(projectId) {
+    return request(`/api/v1/projects/${projectId}/resource-plan`);
+  },
+  recommendProjectResourcePlan(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/resource-plan/recommend`, { method: "POST", body: payload });
+  },
+  saveProjectResourcePlan(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/resource-plan`, { method: "PUT", body: payload });
+  },
   updateProjectTask(projectId, taskId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: payload });
   },
