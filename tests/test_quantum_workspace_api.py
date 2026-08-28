@@ -21,6 +21,8 @@ os.environ.setdefault("AUTHEN_DEV_MODE", "true")
 
 from backend.main import app  # noqa: E402
 from backend.api.auth import require_auth  # noqa: E402
+from backend.db import SessionLocal  # noqa: E402
+from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
     WorkspaceBusinessIntake,
     WorkspaceProcessDraft,
@@ -447,6 +449,95 @@ def test_taskboard_schedule_and_graph_share_one_revision(_reset_database):
     )
     assert stale.status_code == 409
     assert stale.json()["detail"]["server_revision"] == 2
+
+
+def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "dashi-parity")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    stage = process["stages"][0]
+
+    created_task = client.post(
+        f"/api/v1/projects/{project_id}/tasks",
+        json={
+            "expected_revision": 1,
+            "stage_id": stage["id"],
+            "title": "客户证据复核",
+            "summary": "核验真实客户证据并形成可审阅结论",
+            "assignee_role": "研究负责人",
+        },
+    )
+    assert created_task.status_code == 201
+    assert created_task.json()["process_revision"] == 2
+    task = created_task.json()["task"]
+    assert task["status"] == "TODO"
+    assert task["workflow_status"] == "UNCONNECTED"
+
+    schedule = client.get(f"/api/v1/projects/{project_id}/schedule").json()
+    assert next(item for item in schedule["tasks"] if item["id"] == task["id"])["schedule_status"] == "UNSCHEDULED"
+    graph = client.get(f"/api/v1/projects/{project_id}/graphs/workflow").json()
+    assert next(node for node in graph["nodes"] if node["id"] == task["id"])["status"] == "UNCONNECTED"
+
+    conversation = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": task["id"],
+            "workflow_id": None,
+            "agent_version": "hermes-current",
+        },
+    )
+    assert conversation.status_code == 201
+
+    workflow = {
+        "id": "wf_qws_dashi_parity",
+        "title": task["title"],
+        "description": task["summary"],
+        "status": "clarifying",
+    }
+
+    async def create_owned_workflow():
+        async with SessionLocal() as db:
+            db.add(
+                WorkflowDefinition(
+                    tenant_key="tenant-a",
+                    created_by="user-a",
+                    desired_output="可审阅证据结论",
+                    **workflow,
+                )
+            )
+            await db.commit()
+
+    asyncio.run(create_owned_workflow())
+
+    bound = client.put(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/workflow",
+        json={"expected_revision": 2, "workflow_id": workflow["id"]},
+    )
+    assert bound.status_code == 200, bound.text
+    assert bound.json()["process_revision"] == 3
+    assert bound.json()["task"]["workflow_id"] == workflow["id"]
+    assert bound.json()["task"]["workflow_status"] == workflow["status"]
+
+    reopened = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": task["id"],
+            "workflow_id": workflow["id"],
+            "agent_version": "hermes-current",
+        },
+    )
+    assert reopened.status_code == 200
+    assert reopened.json()["binding"]["workflow_id"] == workflow["id"]
+    assert reopened.json()["binding"]["process_revision"] == 3
+
+    duplicate = client.put(
+        f"/api/v1/projects/{project_id}/tasks/{process['tasks'][0]['id']}/workflow",
+        json={"expected_revision": 3, "workflow_id": workflow["id"]},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "workflow already binds another project task"
 
 
 def test_task_state_machine_rejects_terminal_rollback_and_missing_reason(_reset_database):

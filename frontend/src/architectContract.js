@@ -153,6 +153,11 @@ export function customerDemandIdFromSearch(search = "") {
   return /^dmd_[A-Za-z0-9_-]{1,44}$/.test(value) ? value : "";
 }
 
+export function workflowIdFromSearch(search = "") {
+  const value = new URLSearchParams(search).get("workflow_id")?.trim() || "";
+  return /^wf_[A-Za-z0-9_-]{1,44}$/.test(value) ? value : "";
+}
+
 const ARCHITECT_VIEWS = new Set(["office", "workbench"]);
 
 export function architectViewFromSearch(search = "", defaultView = "workbench") {
