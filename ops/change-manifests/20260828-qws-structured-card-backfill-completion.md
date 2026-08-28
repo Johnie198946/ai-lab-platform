@@ -2,7 +2,7 @@
 
 - task_id: `20260828-qws-structured-card-backfill`
 - task_goal: 将卡片 AI 会话的结果从“追加评论”升级为可确认、可验证的结构化字段回填；信息不足时先向用户澄清；由 AI Lab 后端通过租户 Taskboard 会话执行写入，前端仅展示方案并收集确认。
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `codex/qws-structured-card-backfill-20260828`
 - worktree: `/private/tmp/ai-lab-qws-structured-card-backfill-20260828`
 
@@ -51,18 +51,18 @@
 
 ## 交付与部署
 
-- current_delivery_status: `TESTED`
-- commit_sha: 用户已授权提交，等待生成。
-- github_remote_ref_sha: 用户已授权 push，等待推送并以 `git ls-remote` 核验。
+- current_delivery_status: `VERIFIED`
+- implementation_commit_sha: `ef29d857e1fa7b22c198aeffd813ea36bf1e1ab1`。
+- github_remote_ref_sha: `origin/codex/qws-structured-card-backfill-20260828` 已推送，并以 `git ls-remote` 核验实现 SHA 为 `ef29d857e1fa7b22c198aeffd813ea36bf1e1ab1`；最终清单提交将在标准完成通报中另行记录。
 - server_before: `/opt/releases/ai-lab-platform-7d7685b51cc1.0wi5Jq`，`.deployed-sha=7d7685b51cc16ec4f19edd78457350900bba5d9a`；API ready、Hermes Bridge healthy，关键 Compose 服务均 running。
-- server_after: 未部署，服务器未改变。
-- health_check: 不适用；未部署。
-- functional_check: 本地后端定向测试、前端全量测试、生产构建及抽屉浏览器检查通过；尚未执行生产租户端到端写入验证。
+- server_after: `/opt/releases/ai-lab-platform-ef29d857e1fa.t5gHOg`，`.deployed-sha=ef29d857e1fa7b22c198aeffd813ea36bf1e1ab1`；不可变发布完成并原子切换成功。
+- health_check: PASS — additive migration 零孤儿；runtime contract audit 通过；API `/ready`=`ready/0.8.0`、`/health`=`ok/0.8.0`；Hermes Bridge `/health`=`ok/v6.0/streaming=true`；api、frontend、taskboard、三个 worker、PostgreSQL、Redis 全部 running；公网 HTTPS `/health` HTTP 200。
+- functional_check: PASS — 生产 OpenAPI 已暴露 `/api/v1/task-conversations/{conversation_id}/backfill-proposals/{proposal_id}/apply`；生产主 bundle `index-DRVte40F.js` 包含“确认回填”；部署后近 10 分钟 `host-runtime 403=0`、卡片回填相关 `422=0`、HTTP `5xx=0`。本地后端定向测试、前端 128 项全量测试、production build 与 420px 抽屉视觉检查同时通过。
 - rollback_point: `/opt/releases/ai-lab-platform-7d7685b51cc1.0wi5Jq`；部署失败时不可变发布脚本会恢复该 release 并重建 Compose、重启 Hermes Bridge。
 
 ## 风险、未完成项与回滚说明
 
-- 已获得本轮 push/deploy 授权，等待精确 SHA 部署及生产验证。
+- 用户已授权 push/deploy，实现 SHA 已完成精确 SHA 部署与生产验证。
 - 服务端一次确认可能包含多次 Taskboard API 写入，目前不是跨服务分布式事务；卡片版本检查可阻止陈旧方案开始执行，执行结果会逐项重新读取并验证。
 - 新增附件当前面向 AI 生成的文本、Markdown、CSV、JSON；现有二进制文件仍应通过 Taskboard 原有上传流程添加。
-- 部署后应以真实租户账号验证：澄清问答、字段确认、任务创建、附件、关系写入、版本冲突，以及租户隔离。
+- 为避免修改用户真实项目，本轮没有在生产卡片上确认一次会产生字段写入的方案；首次业务使用时仍应观察澄清问答、任务创建、附件、关系写入与版本冲突的真实回执。
