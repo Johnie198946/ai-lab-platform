@@ -53,9 +53,17 @@ function resolveCanonicalTask(dashiTask, qwsTasks) {
   if (markerMatches.length > 1) throw new Error("该卡片绑定了多个 QWS 任务，无法安全打开 AI Session。");
   const titleMatches = (qwsTasks || []).filter((item) => item.title?.trim() === dashiTask.title?.trim());
   if (titleMatches.length === 1) return titleMatches[0];
-  throw new Error(titleMatches.length > 1
-    ? "存在多个同名 QWS 任务，请先为卡片补充唯一绑定。"
-    : "该卡片尚未绑定 QWS canonical task；Web 不会自动创建任务，请先完成服务端同步。");
+  return {
+    id: dashiTask.id,
+    title: dashiTask.title,
+    summary: dashiTask.description || "",
+    status: dashiTask.status,
+    assignee_role: dashiTask.assignee?.name || null,
+    deliverables: [],
+    stage_id: "taskboard-card",
+    workflow_id: null,
+    binding_kind: "taskboard_card",
+  };
 }
 
 function collectDescendants(rootTask, allTasks) {
@@ -126,6 +134,7 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
         related: (relations.related || []).map(issueSummary),
       },
       qws: {
+        binding_kind: qwsTask.binding_kind || "canonical_task",
         stage_id: qwsTask.stage_id,
         workflow_id: qwsTask.workflow_id || null,
         status: qwsTask.status,

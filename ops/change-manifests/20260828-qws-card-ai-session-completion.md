@@ -65,6 +65,7 @@ The `host=qws` embedding mode remains embedded but does not activate the Workbud
 - root_cause: 目标卡片缺少可解析的 `qws-*` 标签时，旧 Web host 会回退调用 `POST /api/v1/projects/{project_id}/tasks` 暗中创建 QWS task；生产请求因此返回 422，聊天抽屉未打开。
 - design:
   - 卡片映射仅允许唯一 label binding 或唯一标题匹配；缺失/歧义即明确失败，不在 Web 侧创建任务。
+  - 生产目标项目实际为 process revision 0、没有 canonical QWS task。Dashi-only 卡片使用自身 UUID 作为 session identity；后端仅补充 `workspace_tasks` 稳定引用行以满足会话外键，不写入 process snapshot、不创建流程任务。
   - QWS Web 只把 `project_id` 交给 Taskboard session bootstrap；Taskboard 服务端使用同一 bearer 从 AI Lab 读取 canonical project/process，并在租户数据库内完成镜像同步。前端不再 POST 创建 Dashi project/task。
   - `workspace_task_conversation_contexts` 保存 append-only 全量快照、hash、revision 和相邻 delta。
   - 首次 Hermes 消息传全量；后续从 `applied_context_revision` 到最新 revision 计算聚合增量。
@@ -81,7 +82,7 @@ The `host=qws` embedding mode remains embedded but does not activate the Workbud
 - follow_up_verification:
   - `python3 -m py_compile backend/api/quantum_workspace.py backend/models/workspace.py`: passed.
   - `ruff check backend/api/quantum_workspace.py backend/models/workspace.py tests/test_quantum_workspace_api.py`: passed.
-  - compatible temporary test runtime (`httpx 0.27.2`) focused backend tests: `5 passed`.
+  - compatible temporary test runtime (`httpx 0.27.2`) focused backend tests: `6 passed`，新增 Dashi-only 卡片打开、Hermes context stream 且 process tasks 不变化的保护。
   - full `tests/test_quantum_workspace_api.py`: follow-up tests passed; total `16 passed, 1 failed`. The one failure is an unrelated pre-existing AI resource-plan call using `_cas_project_process(project_id=...)`, outside this card-session change.
   - frontend `npm test`: `125 passed`, including both new card-session protections.
   - frontend `npm run build`: passed; existing bundle-size warning remains.
@@ -97,7 +98,13 @@ The `host=qws` embedding mode remains embedded but does not activate the Workbud
 - health_check: 本 follow-up 未部署，因此未执行新的服务器健康检查；prior verified release 健康证据保留在上文。
 - functional_check: 本地前端字段/禁止创建路径、后端全量/unchanged/增量、Hermes client context、失败保持 revision、消息持久化和跨租户 404 均通过自动化验证；尚未在生产目标卡片复验。
 - rollback_point: 本 follow-up 尚未改变服务器；当前线上 rollback point 仍为 `/opt/releases/ai-lab-platform-5a7d176e9ba9.cNVHeO`。
-- remaining_risks: 需要用户明确授权后 commit/push/deploy，并在截图目标项目上验证弹窗、context revision 和真实 Hermes 回答。单次未消费上下文受 Hermes client-session context 预算约束，超过约 110,000 字符会明确返回 413，不会静默截断。
+- remaining_risks: 用户已授权 commit/push/deploy；仍需部署下述生产纠正并在截图目标项目上验证 context revision 和真实 Hermes 回答。单次未消费上下文受 Hermes client-session context 预算约束，超过约 110,000 字符会明确返回 413，不会静默截断。
+
+### Production correction during authorized deployment
+
+- first_follow_up_deploy: `289a0975a64e836592a126e8c8016bbea0afc60c` deployed to `/opt/releases/ai-lab-platform-289a0975a64e.rXJcTj`; health checks passed.
+- production_probe: target project `prj_5f19be8519c9496e8a400a76882c8ca3` resolved to tenant `u-b73e4bf7`, owner `b73e4bf7-c27c-4e78-acf4-0da84446d5a7`, process revision 0, and zero canonical process tasks. This proved the first follow-up deploy still could not open the screenshot card.
+- correction: Dashi-only cards now bind directly to a tenant/user/project/card Hermes conversation without frontend or process-task creation. The first follow-up deploy is treated as `DEPLOYED`, not `VERIFIED`; a corrected exact-SHA deployment and functional smoke are required below.
 
 ## Risks and rollback
 

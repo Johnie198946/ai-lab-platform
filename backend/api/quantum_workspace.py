@@ -34,6 +34,7 @@ from backend.models.workspace import (
     WorkspaceProject,
     WorkspaceProjectApprover,
     WorkspaceProjectMember,
+    WorkspaceTask,
     WorkspaceTaskConversation,
     WorkspaceTaskConversationContext,
     WorkspaceTaskMessage,
@@ -172,7 +173,7 @@ class UpdateTopologyNodeRequest(BaseModel):
 
 class OpenTaskConversationRequest(BaseModel):
     project_id: str
-    task_id: str
+    task_id: str = Field(min_length=1, max_length=40)
     workflow_id: str | None = None
     agent_version: str = Field(min_length=1, max_length=80)
     card_context: dict[str, Any] | None = None
@@ -2217,6 +2218,40 @@ async def _sync_task_conversation_context(
     }
 
 
+def _task_from_card_context(
+    context: dict[str, Any] | None, *, expected_task_id: str
+) -> dict[str, Any] | None:
+    card = (context or {}).get("task")
+    if not isinstance(card, dict):
+        return None
+    if str(card.get("dashi_task_id") or "") != expected_task_id:
+        return None
+    if str(card.get("qws_task_id") or "") != expected_task_id:
+        return None
+    qws = card.get("qws") if isinstance(card.get("qws"), dict) else {}
+    descriptions = card.get("descriptions") if isinstance(card.get("descriptions"), list) else []
+    summary = next(
+        (
+            str(item.get("content") or "")
+            for item in descriptions
+            if isinstance(item, dict) and item.get("content")
+        ),
+        "",
+    )
+    assignee = card.get("assignee") if isinstance(card.get("assignee"), dict) else {}
+    return {
+        "id": expected_task_id,
+        "title": str(card.get("title") or "Taskboard card"),
+        "summary": summary,
+        "status": str(card.get("status") or "UNSPECIFIED"),
+        "assignee_role": assignee.get("name"),
+        "deliverables": qws.get("deliverables") or [],
+        "stage_id": qws.get("stage_id") or "taskboard-card",
+        "workflow_id": qws.get("workflow_id"),
+        "binding_kind": "taskboard_card",
+    }
+
+
 @router.post("/task-conversations")
 async def open_task_conversation(
     body: OpenTaskConversationRequest,
@@ -2234,7 +2269,26 @@ async def open_task_conversation(
             None,
         )
         if task is None:
-            raise HTTPException(status_code=404, detail="project task not found")
+            task = _task_from_card_context(
+                body.card_context, expected_task_id=body.task_id
+            )
+            if task is None:
+                raise HTTPException(status_code=404, detail="project task or card not found")
+            task_identity = await db.scalar(
+                select(WorkspaceTask).where(
+                    WorkspaceTask.project_id == project_record_id,
+                    WorkspaceTask.id == task["id"],
+                    WorkspaceTask.tenant_key == tenant_key,
+                )
+            )
+            if task_identity is None:
+                db.add(
+                    WorkspaceTask(
+                        id=task["id"],
+                        project_id=project_record_id,
+                        tenant_key=tenant_key,
+                    )
+                )
         if body.workflow_id != task.get("workflow_id"):
             raise HTTPException(status_code=409, detail="task workflow binding changed")
         card_context = _normalize_card_context(body.card_context, project=project, task=task)
@@ -2299,6 +2353,7 @@ async def open_task_conversation(
             "execution_id": None,
             "session_id": session_id,
             "agent_version": body.agent_version,
+            "binding_kind": task.get("binding_kind") or "canonical_task",
         }
         conversation = WorkspaceTaskConversation(
             id=conversation_id,
@@ -2431,16 +2486,6 @@ async def stream_task_message(
         project = await _project_for_access(
             db, conversation.project_id, tenant_key, user_id, "project:write"
         )
-        task = next(
-            (
-                item
-                for item in (project.process_snapshot or {}).get("tasks", [])
-                if item["id"] == conversation.task_id
-            ),
-            None,
-        )
-        if task is None:
-            raise HTTPException(status_code=409, detail="bound task no longer exists")
         latest_context = await db.scalar(
             select(WorkspaceTaskConversationContext)
             .where(
@@ -2450,6 +2495,23 @@ async def stream_task_message(
             .order_by(WorkspaceTaskConversationContext.revision.desc())
             .limit(1)
         )
+        task = next(
+            (
+                item
+                for item in (project.process_snapshot or {}).get("tasks", [])
+                if item["id"] == conversation.task_id
+            ),
+            None,
+        )
+        if task is None:
+            task = _task_from_card_context(
+                latest_context.snapshot if latest_context else None,
+                expected_task_id=conversation.task_id,
+            )
+            if task is None:
+                raise HTTPException(
+                    status_code=409, detail="bound task or card no longer exists"
+                )
         applied_revision = int(
             (conversation.binding or {}).get("applied_context_revision") or 0
         )

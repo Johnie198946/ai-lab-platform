@@ -843,6 +843,66 @@ def test_task_conversation_card_context_is_full_then_incremental(_reset_database
     assert cross_tenant.status_code == 404
 
 
+def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "taskboard-only-card")
+    card_id = "b685c17a-8b34-4a9e-b311-000000000001"
+    context = {
+        "schema_version": 1,
+        "project": {"id": project_id, "name": "Card only", "business_goal": "Discuss"},
+        "task": {
+            "qws_task_id": card_id,
+            "dashi_task_id": card_id,
+            "title": "需求梳理",
+            "descriptions": [{"id": "taskboard-description", "content": "梳理需求"}],
+            "comments": [],
+            "sub_issues": [],
+            "status": "todo",
+            "assignee": {"name": "johnie"},
+            "qws": {"binding_kind": "taskboard_card", "workflow_id": None},
+        },
+    }
+    opened = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": card_id,
+            "workflow_id": None,
+            "agent_version": "hermes-current",
+            "card_context": context,
+        },
+    )
+    assert opened.status_code == 201, opened.text
+    assert opened.json()["binding"]["binding_kind"] == "taskboard_card"
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert all(task["id"] != card_id for task in process["tasks"])
+
+    captured = {}
+
+    async def fake_chat_stream(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+    ):
+        captured["question"] = req.question
+        captured["context"] = req.client_session_context
+
+        async def events():
+            yield 'data: {"type":"done","answer":"已读取纯卡片会话"}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
+    streamed = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages/stream",
+        json={"question": "总结此卡片", "request_id": "card-only-stream-0001"},
+    )
+    assert streamed.status_code == 200
+    assert "已读取纯卡片会话" in streamed.text
+    assert card_id in captured["question"]
+    assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["context"].messages[0].content
+
+
 def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     _reset_database, monkeypatch
 ):
