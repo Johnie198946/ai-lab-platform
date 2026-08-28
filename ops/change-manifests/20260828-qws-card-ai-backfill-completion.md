@@ -95,12 +95,12 @@
 
 ## Delivery
 
-- status: `TESTED`
-- commit: 未执行；用户本轮未要求 commit。
-- GitHub remote/ref/SHA: 未授权 push / 未执行。
-- server_before: `796c4d42db8e51aeb2b9255acc846915c663e0d9`（只读诊断所得；本轮未授权部署）。
-- server_after: 未部署。
-- health_check: 不适用；未改变服务器。
-- functional_check: local backend direct path, Skill routing/timeout tests, frontend build and isolated browser layout passed; production authenticated click/Skill/backfill path awaits deployment and user UI confirmation.
-- rollback_point: 不适用；服务器未改变。工作树变更可通过独立任务分支审阅，不影响其他工作区。
-- remaining_risks: Hermes 若未按约定输出合法 `task_backfill` JSON，系统会保留普通回答但不会生成可应用提案；这是失败关闭行为。生产当前仍运行旧 SHA，修复尚未在生产登录态下验收。新增表通过现有 SQLAlchemy additive initialization 创建，部署前应按标准发布脚本完成数据库初始化审计。
+- status: `VERIFIED`
+- implementation commits: `474d1bf82b4c9fadc85951d5d06d6f5530ca8ba2`（卡片 Session、回填、执行轨迹与 Skill 路由）、`3997422d9a0f0c19e4ab741f683c7b81f7542a0a`（规范化卡片身份迁移校正）、`d3ed52d111f68e60bf619072299a79ddf0bfe468`（卡片 Session 禁止 Agency 越界委派）。
+- GitHub remote/ref/SHA: `origin/codex/qws-card-ai-backfill-20260828` 已逐次 push，并以 `git ls-remote` 核验 `d3ed52d111f68e60bf619072299a79ddf0bfe468`；最终清单提交 SHA 在标准完成通报中记录并再次核验。
+- server_before: `.deployed-sha=796c4d42db8e51aeb2b9255acc846915c663e0d9`；release `/opt/releases/ai-lab-platform-796c4d42db8e.IGsTST`。
+- server_after: 运行时代码已部署为 `d3ed52d111f68e60bf619072299a79ddf0bfe468`，release `/opt/releases/ai-lab-platform-d3ed52d111f6.lRWJov`；最终清单提交将以 exact-SHA 部署，使服务器标记与分支最终 HEAD 一致。
+- health_check: PASS — API `/ready`=`ready/0.8.0`、`/health`=`ok/0.8.0`；Hermes Bridge `/health`=`ok/v6.0/streaming=true` 且 systemd `active`；API、frontend、Taskboard、三个 Worker、PostgreSQL、Redis 全部 running；公网 HTTPS `/health` HTTP 200；部署后最近 15 分钟 `host-runtime 403=0`、卡片会话 `422=0`、HTTP `5xx=0`。
+- functional_check: PASS — 生产卡片会话 `conv_951c4db9e9bf480d9f62b94f723ceb27` 以请求 `deploy-smoke-d3ed52d-boundary` 完成真实流式验证：HTTP 200、约 15.98 秒、`PROFESSIONAL_TASK`、租户 Skill 候选可见、无 Agency 工具、无工具伪调用、终态 `done`、用户和助手消息均持久化；没有相关 Skill 时返回真实无匹配提示。
+- rollback_point: 当前运行时的直接回滚点为 `/opt/releases/ai-lab-platform-3997422d9a0f.FpKmvf`；本任务原始生产回滚点为 `/opt/releases/ai-lab-platform-796c4d42db8e.IGsTST`。新增数据库对象为加法变更，可保留；回滚应用 release 后重建 Compose 并重启 Hermes Bridge。
+- remaining_risks: 当前租户候选列表没有与“人脸识别需求梳理”语义匹配的 Skill，因此正确行为是明确无匹配并继续普通任务回答；若希望实际出现 `skill_load`/`tenant_skill_read`，需要为该租户安装对应业务 Skill。Hermes 若未输出合法 `task_backfill` JSON，系统会保留普通回答但不生成回填提案，这是预期的失败关闭策略。
