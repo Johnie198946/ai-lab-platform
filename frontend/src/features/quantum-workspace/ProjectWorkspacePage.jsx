@@ -1,4 +1,4 @@
-import { ChevronLeft, GitBranch, LayoutDashboard, Route, Rows3 } from "lucide-react";
+import { ChevronLeft, GitBranch, LayoutDashboard, Route } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
@@ -166,7 +166,6 @@ export function ProjectWorkspacePage() {
       <div className="qw-project-sticky">
         <div className="qw-view-tabs">
           <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
-          <NavLink to={`/projects/${projectId}/schedule`}><Rows3 size={15} />甘特图</NavLink>
           <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
           <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
         </div>

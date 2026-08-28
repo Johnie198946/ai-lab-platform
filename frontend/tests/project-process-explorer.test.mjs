@@ -5,8 +5,15 @@ import { readFile } from "node:fs/promises";
 import { buildStageRail } from "../src/features/quantum-workspace/quantumProjection.js";
 
 const pageSource = await readFile(new URL("../src/features/quantum-workspace/ProjectWorkspacePage.jsx", import.meta.url), "utf8");
+const appSource = await readFile(new URL("../src/app/App.jsx", import.meta.url), "utf8");
 const railSource = await readFile(new URL("../src/features/quantum-workspace/StageRail.jsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/features/quantum-workspace/quantumWorkspace.css", import.meta.url), "utf8");
+
+test("project navigation removes the duplicate top-level Gantt entry", () => {
+  assert.doesNotMatch(pageSource, /<NavLink to=\{`\/projects\/\$\{projectId\}\/schedule`\}/);
+  assert.doesNotMatch(pageSource, /Rows3/);
+  assert.match(appSource, /path="\/projects\/:projectId\/schedule"/);
+});
 
 test("project process explorer is sticky and rendered on the Dashi taskboard view", () => {
   assert.match(pageSource, /className="qw-project-sticky"/);
