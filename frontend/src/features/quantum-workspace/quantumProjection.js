@@ -101,11 +101,13 @@ export function buildBoardColumns(process = {}) {
 
 export function buildStageRail(process = {}) {
   const gates = Array.isArray(process.gates) ? process.gates : [];
+  const tasks = Array.isArray(process.tasks) ? process.tasks : [];
   return [...(process.stages ?? [])]
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
     .map((stage) => ({
       ...stage,
       gates: gates.filter((gate) => gate.stage_id === stage.id),
+      tasks: tasks.filter((task) => task.stage_id === stage.id),
     }));
 }
 

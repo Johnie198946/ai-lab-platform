@@ -1,5 +1,5 @@
 import { ChevronLeft, GitBranch, LayoutDashboard, Route, Rows3 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
 import { BusinessIntakePanel } from "./BusinessIntakePanel";
@@ -61,8 +61,6 @@ export function ProjectWorkspacePage() {
   }, [projectId, view, viewType]);
 
   useEffect(() => { setLoading(true); load(); }, [load]);
-  const stage = useMemo(() => process?.stages?.find((item) => item.id === selectedStageId), [process, selectedStageId]);
-
   const updateStatus = async (taskId, status) => {
     setError("");
     let reason = null;
@@ -165,14 +163,15 @@ export function ProjectWorkspacePage() {
         <div className="qw-project-title"><Link to="/home" aria-label="返回 Home"><ChevronLeft size={18} /></Link><div><span className="qw-eyebrow">Project · {project.id.slice(-8)}</span><h1>{project.name}</h1><p>{project.goal}</p></div></div>
         <div className="qw-revision"><span>process revision</span><strong>{process.process_revision}</strong></div>
       </div>
-      <div className="qw-view-tabs">
-        <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
-        <NavLink to={`/projects/${projectId}/schedule`}><Rows3 size={15} />甘特图</NavLink>
-        <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
-        <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
+      <div className="qw-project-sticky">
+        <div className="qw-view-tabs">
+          <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
+          <NavLink to={`/projects/${projectId}/schedule`}><Rows3 size={15} />甘特图</NavLink>
+          <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
+          <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
+        </div>
+        <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
       </div>
-      {view !== "taskboard" && <StageRail process={process} selectedStageId={selectedStageId} onSelect={(id) => setSelectedStageId((current) => current === id ? null : id)} />}
-      {view !== "taskboard" && stage && <div className="qw-stage-focus"><strong>{stage.name}</strong><span>{stage.status} · {stage.progress}%</span><button onClick={() => setSelectedStageId(null)}>清除筛选</button></div>}
       {error && <p className="qw-error page">{error}</p>}
       {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
