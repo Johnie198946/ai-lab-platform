@@ -2,7 +2,7 @@
 
 - task_id: `20260828-qws-ai-resource-prototype-v2`
 - objective: 在保留资源配置、架构与拓扑、运行监控三项现有能力的基础上，将模拟数据升级为专业数据集工作区与版本化目录；补齐线上/线下大模型仓库、可编辑拓扑节点详情及配置/拓扑/监控联动；同步完善数据库模型、API 契约与响应式前端原型。
-- current_status: `TESTED`
+- current_status: `VERIFIED`
 
 ## Changed files
 
@@ -52,7 +52,7 @@
 - 新增 `GET /projects/{id}/datasets`、`GET /projects/{id}/models` 与 `PUT /projects/{id}/resource-plan/topology/nodes/{node_id}`；数据集生成会写入版本、digest、Schema、质量、血缘和生成 manifest。
 - 场景、Subagent、数据源与模拟环境、系统拆解、基础设施、AI 运行时、本体/SLA 和 Token Factory 均提供上下文 Chat 入口；Chat 不会自动修改或部署资源。
 - Token Factory 作为方案价值而非单独配置页：资源配置底部提供负载到产品形态的映射和四项优势；拓扑右侧提供 WHY TOKEN FACTORY 推介栏。
-- 架构页提供逻辑架构/部署拓扑/数据流视图入口；当前原型实现逻辑架构画布及产品价值说明。
+- 架构页已实现逻辑架构、部署拓扑、数据流三套可交互画布及 Token Factory 产品价值说明。
 - 无真实监控时使用明确标注的 `DEMO · 原型数据`；不伪装成 LIVE。
 - 产品收益文案包含“具体规格与收益以压测和商务方案为准”的边界声明。
 
@@ -80,13 +80,13 @@
 
 ## Delivery state
 
-- commit SHA: 未授权/未执行；当前为评审原型。
-- GitHub remote/ref/SHA: 未授权/未推送。
-- server_before: 不适用，本任务未部署。
-- server_after: 不适用，本任务未部署。
-- health_check: 本地 Vite 原型可访问；生产环境未变更。
-- functional_check: 专业数据集五视图、线上/线下模型仓库、逻辑架构/部署拓扑/数据流三视图、节点配置持久化、配置驱动监控、桌面/平板/手机/横屏布局、116 项前端测试、构建、Python 编译和后端纯契约均通过；后端接口集成测试受本机依赖冲突阻塞。
-- rollback_point: 不适用；未修改服务器。丢弃本任务 Worktree 即可回退本地原型。
+- implementation commit SHA: `70857b4d30687e6960dfe4fdbbc5eb6d23fb2b87`
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/qws-ai-resource-prototype-v2-20260828` / `70857b4d30687e6960dfe4fdbbc5eb6d23fb2b87`；已由 `git ls-remote` 核验。完成清单更新将以单独 follow-up commit 推送并再次核验。
+- server_before: `/opt/releases/ai-lab-platform-467d867166b0`，SHA `467d867166b05a9685c255f6924cc9291ca96330`。
+- server_after: `/opt/releases/ai-lab-platform-70857b4d3068`，SHA `70857b4d30687e6960dfe4fdbbc5eb6d23fb2b87`；完成清单 follow-up commit 将再次通过不可变发布脚本部署，使服务器 SHA 与远端分支最终 SHA 对齐。
+- health_check: API `/ready` 返回 `ready`、`/health` 返回 `ok`；Hermes Bridge 返回 `ok`（v6.0）；前端容器及公网 HTTPS 均返回 HTTP 200；PostgreSQL、Redis、Taskboard 均为 healthy，其他工作进程持续运行。
+- functional_check: 116/116 前端测试、生产构建、Python 编译、后端纯契约与 runtime contract audit 均通过；三条新增 API 未认证探针返回 401（已部署且鉴权边界生效）；三张新增元数据表存在；生产前端 bundle 包含 `DEPLOYMENT BLUEPRINT` 与 `Token Stream`；专业数据集、模型仓库、三套拓扑、节点配置、动态监控及多端无溢出浏览器检查通过。
+- rollback_point: 功能发布前版本 `/opt/releases/ai-lab-platform-467d867166b0`（SHA `467d867166b05a9685c255f6924cc9291ca96330`）；可通过 `/opt/ai-lab-platform/scripts/update.sh 467d867166b05a9685c255f6924cc9291ca96330` 回滚。
 
 ## Remaining risks
 
@@ -95,4 +95,3 @@
 - 监控范围已按配置动态生成；真实指标值仍标记为 UNCONNECTED/DEMO，上线前需把 TelemetryBinding 接入 canonical Execution、Prometheus/OpenTelemetry 和 Token Factory 指标。
 - 模型仓库已完成前后端契约与 ONLINE/OFFLINE 原型；真实 Provider catalog、制品签名、漏洞扫描、评测流水线及模型晋级审批需对接后端模型平台。
 - Token Factory 的正式产品命名、合规文案、可量化收益和品牌视觉仍需产品/市场确认。
-- 原型尚未提交、推送或部署，等待用户评审。
