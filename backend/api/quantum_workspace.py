@@ -31,7 +31,14 @@ from backend.models.workspace import (
     WorkspaceTaskConversation,
     WorkspaceTaskMessage,
 )
-from backend.models.workflow import WorkflowDefinition
+from backend.models.workflow import WorkflowDefinition, WorkflowExecution
+from backend.services.resource_planning import (
+    build_resource_monitoring,
+    build_resource_plan_skeleton,
+    build_resource_recommendation_prompt,
+    extract_resource_plan_json,
+    normalize_resource_plan,
+)
 from backend.services.workspace_process import (
     compile_ipd_draft,
     create_project_config_revision,
@@ -121,6 +128,17 @@ class EditProjectTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=4000)
     assignee_role: str | None = Field(default=None, max_length=160)
+
+
+class SaveResourcePlanRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    plan: dict[str, Any]
+
+
+class RecommendResourcePlanRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=100)
+    expected_revision: int = Field(ge=0)
+    constraints: str = Field(default="", max_length=4000)
 
 
 class OpenTaskConversationRequest(BaseModel):
@@ -943,6 +961,166 @@ async def get_project_schedule(
             ],
             "dependencies": process.get("dependencies") or [],
             "critical_path": [],
+        }
+
+
+async def _resource_monitoring(db, process: dict[str, Any], tenant_key: str) -> dict[str, Any]:
+    workflow_ids = {
+        str(item.get("workflow_id"))
+        for item in (process.get("tasks") or [])
+        if item.get("workflow_id")
+    }
+    if not workflow_ids:
+        return build_resource_monitoring([])
+    executions = (
+        await db.scalars(
+            select(WorkflowExecution)
+            .where(
+                WorkflowExecution.tenant_key == tenant_key,
+                WorkflowExecution.workflow_id.in_(workflow_ids),
+            )
+            .order_by(WorkflowExecution.created_at.desc())
+            .limit(50)
+        )
+    ).all()
+    return build_resource_monitoring(list(executions))
+
+
+async def _collect_hermes_answer(upstream: StreamingResponse) -> str:
+    answer: str | None = None
+    deltas: list[str] = []
+    failure: str | None = None
+    buffer = ""
+
+    def consume(frames: list[str]) -> None:
+        nonlocal answer, failure
+        for frame in frames:
+            event = _parse_sse_event(frame)
+            if event is None:
+                continue
+            if event.get("type") == "delta" and event.get("content"):
+                deltas.append(str(event["content"]))
+            elif event.get("type") == "done":
+                answer = str(event.get("answer") or "".join(deltas))
+            elif event.get("type") == "error":
+                failure = str(event.get("detail") or event.get("message") or "Hermes recommendation failed")
+
+    async for chunk in upstream.body_iterator:
+        buffer += chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+        frames, buffer = _extract_sse_frames(buffer)
+        consume(frames)
+    frames, _ = _extract_sse_frames(buffer, final=True)
+    consume(frames)
+    if failure:
+        raise HTTPException(status_code=502, detail=failure)
+    result = answer or "".join(deltas)
+    if not result.strip():
+        raise HTTPException(status_code=502, detail="Hermes returned an empty resource recommendation")
+    return result
+
+
+@router.get("/projects/{project_id}/resource-plan")
+async def get_project_resource_plan(
+    project_id: str,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        process = project.process_snapshot or {}
+        plan = process.get("resource_plan") or build_resource_plan_skeleton(project, process)
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            "plan": plan,
+            "monitoring": await _resource_monitoring(db, process, tenant_key),
+        }
+
+
+@router.put("/projects/{project_id}/resource-plan")
+async def save_project_resource_plan(
+    project_id: str,
+    body: SaveResourcePlanRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        plan = normalize_resource_plan(body.plan, project, process, generated_by="user")
+        process["resource_plan"] = plan
+        next_revision = await _cas_project_process(
+            db,
+            project_id=project.id,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            expected_revision=body.expected_revision,
+            process=process,
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "plan": plan,
+            "monitoring": await _resource_monitoring(db, process, tenant_key),
+        }
+
+
+@router.post("/projects/{project_id}/resource-plan/recommend")
+async def recommend_project_resource_plan(
+    project_id: str,
+    body: RecommendResourcePlanRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        prompt = build_resource_recommendation_prompt(project, process, body.constraints)
+
+    upstream = await chat_stream(
+        StreamRequest(
+            question=prompt,
+            request_id=body.request_id,
+            session_id=None,
+            agent_id=None,
+            skill_id=None,
+            quoted_context=None,
+        ),
+        payload,
+    )
+    try:
+        candidate = extract_resource_plan_json(await _collect_hermes_answer(upstream))
+    except HTTPException:
+        raise
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"Hermes resource recommendation is invalid: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Hermes resource recommendation failed: {exc}") from exc
+
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        plan = normalize_resource_plan(candidate, project, process, generated_by="hermes")
+        process["resource_plan"] = plan
+        next_revision = await _cas_project_process(
+            db,
+            project_id=project.id,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            expected_revision=body.expected_revision,
+            process=process,
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "plan": plan,
+            "monitoring": await _resource_monitoring(db, process, tenant_key),
         }
 
 

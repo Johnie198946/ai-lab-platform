@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
 import { BusinessIntakePanel } from "./BusinessIntakePanel";
+import { AIResourceWorkbench } from "./AIResourceWorkbench";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
 import { DashiTaskboardHost } from "./DashiTaskboardHost";
@@ -36,7 +37,7 @@ export function ProjectWorkspacePage() {
     try {
       const requests = [platformApi.getProject(projectId), platformApi.getProjectProcess(projectId)];
       if (view === "schedule") requests.push(platformApi.getProjectSchedule(projectId));
-      if (view === "graph") requests.push(platformApi.getProjectGraph(projectId, viewType));
+      if (view === "graph") requests.push(viewType === "ai-resource" ? platformApi.getProjectResourcePlan(projectId) : platformApi.getProjectGraph(projectId, viewType));
       const [projectValue, processValue, selectedView] = await Promise.all(requests);
       setProject(projectValue);
       setProcess(processValue);
@@ -155,6 +156,37 @@ export function ProjectWorkspacePage() {
     }
   };
 
+  const recommendResourcePlan = async (constraints) => {
+    try {
+      const result = await platformApi.recommendProjectResourcePlan(projectId, {
+        request_id: `resource-recommend-${crypto.randomUUID()}`,
+        expected_revision: viewData.process_revision,
+        constraints,
+      });
+      setViewData(result);
+      setProcess((current) => ({ ...current, process_revision: result.process_revision, resource_plan: result.plan }));
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新最新资源方案，请重新生成。" : reason.message);
+    }
+  };
+
+  const saveResourcePlan = async (plan) => {
+    try {
+      const result = await platformApi.saveProjectResourcePlan(projectId, {
+        expected_revision: viewData.process_revision,
+        plan,
+      });
+      setViewData(result);
+      setProcess((current) => ({ ...current, process_revision: result.process_revision, resource_plan: result.plan }));
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新最新资源方案，请重新修改。" : reason.message);
+    }
+  };
+
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;
   if (!project || !process) return <div className="qw-page-state error">{error || "项目不可用"}<Link to="/home">返回 Home</Link></div>;
   return (
@@ -174,7 +206,8 @@ export function ProjectWorkspacePage() {
       {error && <p className="qw-error page">{error}</p>}
       {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
-      {view === "graph" && viewData && <ProjectGraph graph={viewData} />}
+      {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} />}
+      {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} />}
       {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
       {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
