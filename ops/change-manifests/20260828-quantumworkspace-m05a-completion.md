@@ -1,16 +1,19 @@
 # QuantumWorkspace M0.5A Completion Manifest
 
 - task_id: `20260828-quantumworkspace-m05a`
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/.hermes/sandbox/20260828-QuantumWorkspace-M05A/repo`（一次性隔离 clone，非 Git worktree）
 - base: `8bf9d7d72a22137b127ccb630a04292a1f45e6ef`
 - pre_merge_commit: `bc3e55e6b2aaf086328a300ca04c2bae8bebefd3`
 - merged_remote_base: `ec1844338e92299590f9e3195d6a66affc2e41f1`
 - merged_commit: `467d867166b05a9685c255f6924cc9291ca96330`
-- remote_sha: `467d867166b05a9685c255f6924cc9291ca96330`
+- remote_sha: `this completion-receipt commit`（docs-only；运行代码基线见 `hotfix_commit`）
 - server_before: `a01d6554dc0bfe463ba23d1c1130c298deefe331`
 - server_after_initial: `467d867166b05a9685c255f6924cc9291ca96330`
+- hotfix_commit: `ab376748b9247dba0fe3560caf0d25dabcfbd836`
+- server_after_hotfix: `ab376748b9247dba0fe3560caf0d25dabcfbd836`
+- hotfix_release: `/opt/releases/ai-lab-platform-ab376748b924.Ybnux0`
 - rollback_point: `/opt/releases/ai-lab-platform-a01d6554dc0b`
 
 ## 范围盘点
@@ -78,13 +81,15 @@ Supervision 在首次合并态复核中发现远端任务 create/bind/edit 三�
 
 ## 外部状态
 
-- GitHub: `467d867166b05a9685c255f6924cc9291ca96330`
-- Server: `467d867166b05a9685c255f6924cc9291ca96330`（根治补丁尚未发布）
+- GitHub: `ab376748b9247dba0fe3560caf0d25dabcfbd836`（根治代码提交；最终 docs-only completion receipt 随后推送）
+- Server: `ab376748b9247dba0fe3560caf0d25dabcfbd836`，release `/opt/releases/ai-lab-platform-ab376748b924.Ybnux0`
 - health_check: `PASSED`（API ready/health、Bridge health、8 Compose services）
-- functional_check: `PASSED_WITH_RUNTIME_LINK_REPAIR`（QWS 路由公网未认证 401；17 张 Workspace 表存在；5 个核心源码哈希一致）
+- functional_check: `PASSED`（新 release 自动建立四个 Vault 链接；真实 QWS process 路由公网未认证 401；migration 幂等回放 `projects_to_backfill=0`、`revisions_written=0`）
 - independent_verifier: `deleg_3112ab8a`（首轮 merge 索引批准）；`deleg_84e53c88`（当前根治候选批准）
 
 ## 剩余风险
 
 - 生产 PostgreSQL additive migration 已通过并完成幂等回放，但未使用正式客户数据执行行为验收。
-- 当前服务器的 Vault 可见性依赖一次运行态修复；只有根治补丁获批、推送、重新部署并验证新 release 自动生成链接后，才能关闭该风险。
+- 未用正式客户数据或真实账号执行写入型业务验收；本次只验证无凭据 401 认证边界。
+- 保留 `/opt/releases/ai-lab-platform-6793d956f46a` 回滚点，但未做破坏性切回演练。
+- SSH 报告当前连接未使用 post-quantum KEX；不影响本次 SHA/哈希/CAS 验收，但属于后续基础设施加固项。
