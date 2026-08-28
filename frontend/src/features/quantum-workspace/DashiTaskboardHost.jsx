@@ -14,6 +14,12 @@ const statusToDashi = {
 const safeSlug = (value) => String(value || "qws").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "qws";
 const taskMarker = (taskId) => `qws-${safeSlug(taskId)}`.slice(0, 64);
 
+function resolveDashiTheme() {
+  const explicitTheme = document.documentElement.dataset.theme;
+  if (explicitTheme === "light" || explicitTheme === "dark") return explicitTheme;
+  return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
 async function dashiRequest(path, { method = "GET", body, user } = {}) {
   const headers = new Headers({ Accept: "application/json" });
   if (body !== undefined) headers.set("Content-Type", "application/json");
@@ -109,6 +115,14 @@ export function DashiTaskboardHost({ project, process, onProcessChanged }) {
   }, []);
 
   useEffect(() => {
+    const postTheme = () => {
+      iframeRef.current?.contentWindow?.postMessage({ type: "taskboard:theme", theme: resolveDashiTheme() }, window.location.origin);
+    };
+    const mediaQuery = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const handleThemeChange = () => postTheme();
+    mediaQuery?.addEventListener?.("change", handleThemeChange);
+    const themeObserver = typeof MutationObserver === "undefined" ? null : new MutationObserver(handleThemeChange);
+    themeObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     const receive = async (event) => {
       if (event.source !== iframeRef.current?.contentWindow || !event.data?.type) return;
       const frame = iframeRef.current.contentWindow;
@@ -122,12 +136,13 @@ export function DashiTaskboardHost({ project, process, onProcessChanged }) {
           payload: {
             user: { type: "user", id: safeSlug(user.user_id || user.username || "qws-user"), name: user.username || "QWS 用户", avatarUrl: user.avatar_url || null },
             language: "zh",
-            theme: document.documentElement.dataset.theme === "light" ? "light" : "dark",
+            theme: resolveDashiTheme(),
             projectId: dashiProjectId,
             workspacePath: "/workspace",
             projects: [{ id: project.id, name: project.name, projectKind: "local", hostId: "local", workspacePath: "/workspace" }],
           },
         }, window.location.origin);
+        postTheme();
         return;
       }
       if (event.data.type === "taskboard:open-external") {
@@ -195,7 +210,11 @@ export function DashiTaskboardHost({ project, process, onProcessChanged }) {
       }
     };
     window.addEventListener("message", receive);
-    return () => window.removeEventListener("message", receive);
+    return () => {
+      window.removeEventListener("message", receive);
+      mediaQuery?.removeEventListener?.("change", handleThemeChange);
+      themeObserver?.disconnect();
+    };
   }, [dashiProjectId, onProcessChanged, openArchitect, project.id, project.name, user]);
 
   const src = `/taskboard/?host=workbuddy&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
