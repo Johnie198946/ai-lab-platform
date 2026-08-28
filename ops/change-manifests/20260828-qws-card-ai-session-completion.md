@@ -90,15 +90,15 @@ The `host=qws` embedding mode remains embedded but does not activate the Workbud
   - Dashi `npm run typecheck`: passed.
   - Dashi QWS server-sync integration: `1 passed`, covering authenticated canonical project/task sync and tenant database isolation.
   - `git diff --check`: passed.
-- current_status: `TESTED`
-- follow_up_commit: 未授权/未执行。
-- follow_up_remote_sha: 未授权 push；远端仍为 prior manifest SHA `dfbbd4efd35858f7ffcea0406ba50efbe7d376dd`。
-- server_before: 当前线上仍为 prior verified release `/opt/releases/ai-lab-platform-9c54842ab759.5odIJV`，实现 SHA `9c54842ab759febace0a2081d52d71931603b798`。
-- server_after: 本 follow-up 未授权部署/未执行。
-- health_check: 本 follow-up 未部署，因此未执行新的服务器健康检查；prior verified release 健康证据保留在上文。
-- functional_check: 本地前端字段/禁止创建路径、后端全量/unchanged/增量、Hermes client context、失败保持 revision、消息持久化和跨租户 404 均通过自动化验证；尚未在生产目标卡片复验。
-- rollback_point: 本 follow-up 尚未改变服务器；当前线上 rollback point 仍为 `/opt/releases/ai-lab-platform-5a7d176e9ba9.cNVHeO`。
-- remaining_risks: 用户已授权 commit/push/deploy；仍需部署下述生产纠正并在截图目标项目上验证 context revision 和真实 Hermes 回答。单次未消费上下文受 Hermes client-session context 预算约束，超过约 110,000 字符会明确返回 413，不会静默截断。
+- current_status: `VERIFIED`
+- follow_up_commit: corrected implementation commit `796c4d42db8e51aeb2b9255acc846915c663e0d9`; the final manifest-only commit is recorded in the completion report.
+- follow_up_remote_sha: `origin/codex/qws-card-ai-session-20260828` was verified by `git ls-remote` at `796c4d42db8e51aeb2b9255acc846915c663e0d9` before this final manifest-only commit.
+- server_before: `/opt/releases/ai-lab-platform-289a0975a64e.rXJcTj`, implementation SHA `289a0975a64e836592a126e8c8016bbea0afc60c`.
+- server_after: `/opt/releases/ai-lab-platform-796c4d42db8e.IGsTST`, `.deployed-sha=796c4d42db8e51aeb2b9255acc846915c663e0d9`.
+- health_check: PASS — API `/ready={"status":"ready","version":"0.8.0"}` and `/health={"status":"ok","version":"0.8.0"}`; Hermes Bridge `9118/health` returned `status=ok`, `version=v6.0`, `streaming=true`, with `hermes-bridge.service=active`; Taskboard, API, PostgreSQL and Redis containers healthy; public `https://120.24.248.58/health` returned HTTP 200; runtime contract audit passed during deployment.
+- functional_check: PASS — production card `QWS-1` (`b685c17a-8b34-4a9e-b311-db4af37872fa`) opened as `binding_kind=taskboard_card`; repeated open reused `conversation_id=conv_951c4db9e9bf480d9f62b94f723ceb27`; first context sync was full revision 1 and the second was unchanged revision 1; real Hermes stream terminated with `done` and answered `该卡片的任务目标是梳理人脸识别系统的建设需求。`; user/assistant messages persisted; applied revision advanced to 1; canonical process task count remained `0 -> 0`. In the post-deploy 15-minute logs, `host-runtime 403=0`, task-conversation `422=0`, and HTTP `5xx=0`.
+- rollback_point: `/opt/releases/ai-lab-platform-289a0975a64e.rXJcTj`; the earlier verified `/opt/releases/ai-lab-platform-9c54842ab759.5odIJV` release also remains available.
+- remaining_risks: Browser visual automation could not take over the user's already-controlled authenticated Chrome tab; the exact target card, persistence and real Hermes provider path were instead verified server-side. A single unconsumed context delta above approximately 110,000 characters returns an explicit 413 rather than being silently truncated.
 
 ### Production correction during authorized deployment
 
@@ -106,8 +106,16 @@ The `host=qws` embedding mode remains embedded but does not activate the Workbud
 - production_probe: target project `prj_5f19be8519c9496e8a400a76882c8ca3` resolved to tenant `u-b73e4bf7`, owner `b73e4bf7-c27c-4e78-acf4-0da84446d5a7`, process revision 0, and zero canonical process tasks. This proved the first follow-up deploy still could not open the screenshot card.
 - correction: Dashi-only cards now bind directly to a tenant/user/project/card Hermes conversation without frontend or process-task creation. The first follow-up deploy is treated as `DEPLOYED`, not `VERIFIED`; a corrected exact-SHA deployment and functional smoke are required below.
 
+### Final corrected deployment and production verification
+
+- corrected_commit: `796c4d42db8e51aeb2b9255acc846915c663e0d9`.
+- remote_evidence: `git ls-remote origin refs/heads/codex/qws-card-ai-session-20260828` returned the exact corrected implementation SHA before the final manifest-only commit.
+- release: `/opt/releases/ai-lab-platform-796c4d42db8e.IGsTST` with `.deployed-sha=796c4d42db8e51aeb2b9255acc846915c663e0d9`.
+- production_card_smoke: exact screenshot card `QWS-1` passed session reuse, full-once/unchanged-next context synchronization, real Hermes streaming, message persistence, applied-revision advancement, and no process-task mutation.
+- error_regression: post-deploy logs showed zero `host-runtime` 403, zero task-conversation 422, and zero HTTP 5xx events in the sampled 15-minute window.
+
 ## Risks and rollback
 
-- The complete server/API/provider path is verified. Browser visual inspection was not automated because the user's authenticated tab was already controlled elsewhere; the user should refresh the existing page to load the new assets.
-- Existing task-conversation persistence and streaming backend were reused; no schema migration was added.
-- Rollback can atomically restore `/opt/releases/ai-lab-platform-5a7d176e9ba9.cNVHeO`.
+- The complete target-card server/API/provider path is verified. Browser visual inspection was not automated because the user's authenticated tab was already controlled elsewhere; refresh the existing page to load the new assets.
+- Existing task-conversation persistence and streaming backend were reused; the additive context table migration is applied by the normal database initialization path.
+- Rollback can atomically restore `/opt/releases/ai-lab-platform-289a0975a64e.rXJcTj`; the earlier `/opt/releases/ai-lab-platform-9c54842ab759.5odIJV` release also remains intact.
