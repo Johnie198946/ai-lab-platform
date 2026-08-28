@@ -1,7 +1,7 @@
 # Completion Manifest — QWS main reconciliation + Agent OS routing
 
 task_id: 20260828-agent-os-qws-reconcile
-status: COMMITTED
+status: PUSHED
 branch: main
 worktree: /tmp/quantumworkspace-agent-os-20260828 (isolated clone; not a Git worktree)
 base: 8bf9d7d72a22137b127ccb630a04292a1f45e6ef
@@ -10,9 +10,9 @@ qws_merge_commit_local: 567c74dd0e16fe600c302938fe9453e396c825c2
 qws_latest_server_candidate: 392e88852f221fa4deb00904e5c6c759b8e2a09b
 qws_latest_merge_commit_local: 4ea86dc41e10a86e873c8f4b1966c4b1c15171ea
 local_commit: 75c30f640560d98f031b34bdcb471411ade705ea
-remote_sha: pending
-server_before: 392e88852f221fa4deb00904e5c6c759b8e2a09b
-server_after: pending
+remote_sha: 25f421ebb15ff37a4fd03835a5a73785b0b49a3a
+server_before: a01d6554dc0bfe463ba23d1c1130c298deefe331
+server_after: not deployed (deferred by user due concurrent QWS delivery)
 runtime_model: gpt-5.6-sol
 runtime_provider: openai-codex
 
@@ -100,8 +100,8 @@ runtime_provider: openai-codex
 
 ## Read-only rollback baseline before commit
 
-- app release: `/opt/releases/ai-lab-platform-392e88852f22`
-- app SHA: `392e88852f221fa4deb00904e5c6c759b8e2a09b`
+- app release at initial inventory: `/opt/releases/ai-lab-platform-392e88852f22`
+- app SHA at initial inventory: `392e88852f221fa4deb00904e5c6c759b8e2a09b`
 - Agency plugin tree SHA-256: `4a0daec7dc0c08e428c6c6e0b3223f6f4e0c8dc46d325b986dca33fd999c3777`
 - Capability plugin tree SHA-256: `206b745002067e8a42a88bac7152904c054da0c1a387be5cbdca1cffd28cd98e`
 - server roster SHA-256: `52992d1e8dfeec5741a126d61e69152d62063c2331e884c0c54197a5a75d388f`
@@ -115,9 +115,17 @@ runtime_provider: openai-codex
 4. Deploy only the GitHub-verified `main` SHA, install pinned plugins, then restart.
 5. On any failed health/functional/delegate check: stop bridge, restore the old app symlink and both plugin snapshots, restart, and re-run health.
 
+## Delivery state
+
+- GitHub `main` push was verified at `25f421ebb15ff37a4fd03835a5a73785b0b49a3a` before the docs-only receipt update.
+- Mac live installation: 273 unique agents, canonical roster hash matched, both plugins enabled, installed capability source matched the committed file.
+- Mac real delegation: parent session `20260828_113216_e472dc`; child `deleg_c4deb1dc`; terminal completed; transcript showed `agency_agents_load(research-synthesist)` success; non-empty `MAC_CHILD_OK` result.
+- During server deployment preparation another QWS task moved the server to `a01d6554dc0bfe463ba23d1c1130c298deefe331`, adding an AI resource planning workbench not yet on GitHub `main`.
+- The user explicitly chose to let that QWS task continue and defer Agent OS server deployment. No app, plugin, config or roster change from this release was applied to the server.
+- The bridge was stopped only long enough to materialize the backup, then restored; final bridge state and API health were both healthy.
+- Materialized rollback snapshot: `/opt/rollback/20260828-agent-os-a01d6554dc0b` (root-only config backup; metadata records the actual `a01d655...` app pointer).
+
 ## Remaining risks / pending gates
 
-- Implementation is committed locally; GitHub push and remote SHA verification are pending.
-- Server has not been changed; no deployment or online verification has occurred.
-- Mac live capability plugin has not yet been reinstalled from the committed artifact.
+- Server Agent OS deployment and online receipt verification are intentionally deferred until the concurrent QWS branch is reconciled into `main`.
 - The exposed AccessKey must be revoked/rotated outside this repository.
