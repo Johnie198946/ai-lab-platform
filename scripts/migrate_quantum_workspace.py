@@ -1,44 +1,38 @@
 #!/usr/bin/env python3
-"""Create the additive QuantumWorkspace M0 tables before application restart.
-
-This migration is intentionally idempotent and additive. Rolling back the app
-release does not require dropping these tables; older releases simply ignore
-them.
-"""
+"""Additive QuantumWorkspace M0.5A migration with dry-run/orphan reporting."""
 
 from __future__ import annotations
 
+import argparse
 import asyncio
+import json
 
-from backend.db import Base, engine
-from backend.models.workspace import (
-    WorkspaceBusinessIntake,
-    WorkspaceProcessDraft,
-    WorkspaceProject,
-    WorkspaceTaskConversation,
-    WorkspaceTaskMessage,
-)
-
-TABLES = [
-    WorkspaceProject.__table__,
-    WorkspaceBusinessIntake.__table__,
-    WorkspaceProcessDraft.__table__,
-    WorkspaceTaskConversation.__table__,
-    WorkspaceTaskMessage.__table__,
-]
+from backend.db import engine
+from backend.services.workspace_migration import migrate_workspace_schema
 
 
-async def migrate() -> None:
+async def migrate(*, dry_run: bool = False) -> dict:
     async with engine.begin() as connection:
-        await connection.run_sync(
-            lambda sync_connection: Base.metadata.create_all(
+        report = await connection.run_sync(
+            lambda sync_connection: migrate_workspace_schema(
                 sync_connection,
-                tables=TABLES,
-                checkfirst=True,
+                dry_run=dry_run,
             )
         )
-    print("quantum_workspace_schema=ready")
+    print(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    return report
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="scan legacy projects/orphan references without schema or data writes",
+    )
+    args = parser.parse_args()
+    asyncio.run(migrate(dry_run=args.dry_run))
 
 
 if __name__ == "__main__":
-    asyncio.run(migrate())
+    main()

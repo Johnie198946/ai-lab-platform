@@ -6,6 +6,19 @@ from copy import deepcopy
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import select
+
+from backend.db import canonical_plan_hash
+from backend.models.workspace import (
+    WorkspaceGate,
+    WorkspaceProcessRevision,
+    WorkspaceProjectConfigRevision,
+    WorkspaceStage,
+    WorkspaceTask,
+    WorkspaceTaskDependency,
+    WorkspaceTaskRevision,
+)
+
 STAGE_SPECS = [
     ("concept", "概念", [("TR1", "TR"), ("CDCP", "DCP")]),
     ("plan", "计划", [("TR2", "TR"), ("TR3", "TR"), ("PDCP", "DCP")]),
@@ -208,3 +221,187 @@ def instantiate_reviewed_process(draft_process: dict[str, Any]) -> dict[str, Any
         },
     }
     return process
+
+
+def project_config_snapshot(project) -> dict[str, Any]:
+    return {
+        "name": project.name,
+        "goal": project.goal,
+        "desired_outputs": project.desired_outputs or [],
+        "template_id": project.template_id,
+        "template_version": project.template_version,
+        "truth_mode": project.truth_mode,
+    }
+
+
+def create_project_config_revision(project) -> WorkspaceProjectConfigRevision:
+    snapshot = project_config_snapshot(project)
+    return WorkspaceProjectConfigRevision(
+        id=f"cfgrev_{uuid4().hex}",
+        project_id=project.id,
+        revision=1,
+        canonical_hash=canonical_plan_hash(snapshot),
+        snapshot=snapshot,
+    )
+
+
+async def persist_process_revision(
+    db,
+    *,
+    project,
+    process: dict[str, Any],
+    revision: int,
+) -> WorkspaceProcessRevision:
+    """Append normalized facts while retaining an equivalent legacy projection."""
+    config = await db.scalar(
+        select(WorkspaceProjectConfigRevision).where(
+            WorkspaceProjectConfigRevision.project_id == project.id,
+            WorkspaceProjectConfigRevision.revision == 1,
+        )
+    )
+    if config is None:
+        config = create_project_config_revision(project)
+        db.add(config)
+        await db.flush()
+
+    canonical_hash = canonical_plan_hash(process)
+    record = WorkspaceProcessRevision(
+        id=f"procrev_{uuid4().hex}",
+        project_id=project.id,
+        config_revision_id=config.id,
+        revision=revision,
+        canonical_hash=canonical_hash,
+        legacy_snapshot=process,
+    )
+    db.add(record)
+
+    task_ids = [str(task["id"]) for task in process.get("tasks", [])]
+    existing_task_ids = set(
+        (
+            await db.scalars(
+                select(WorkspaceTask.id).where(
+                    WorkspaceTask.project_id == project.id,
+                    WorkspaceTask.id.in_(task_ids),
+                )
+            )
+        ).all()
+    ) if task_ids else set()
+    for task_id in task_ids:
+        if task_id not in existing_task_ids:
+            db.add(
+                WorkspaceTask(
+                    id=task_id,
+                    project_id=project.id,
+                    tenant_key=project.tenant_key,
+                )
+            )
+
+    for position, stage in enumerate(process.get("stages", [])):
+        db.add(
+            WorkspaceStage(
+                id=f"{record.id}:stage:{position}",
+                process_revision_id=record.id,
+                stage_id=stage["id"],
+                position=position,
+                facts=stage,
+            )
+        )
+    for position, task in enumerate(process.get("tasks", [])):
+        db.add(
+            WorkspaceTaskRevision(
+                id=f"{record.id}:task:{position}",
+                process_revision_id=record.id,
+                task_project_id=project.id,
+                task_id=task["id"],
+                stage_id=task["stage_id"],
+                position=position,
+                facts=task,
+            )
+        )
+    for position, gate in enumerate(process.get("gates", [])):
+        db.add(
+            WorkspaceGate(
+                id=f"{record.id}:gate:{position}",
+                process_revision_id=record.id,
+                gate_id=gate["id"],
+                stage_id=gate["stage_id"],
+                position=position,
+                facts=gate,
+            )
+        )
+    for position, dependency in enumerate(process.get("dependencies", [])):
+        db.add(
+            WorkspaceTaskDependency(
+                id=f"{record.id}:dependency:{position}",
+                process_revision_id=record.id,
+                project_id=project.id,
+                from_task_id=dependency["from_task_id"],
+                to_task_id=dependency["to_task_id"],
+                position=position,
+            )
+        )
+    return record
+
+
+async def reconstruct_process_projection(db, project) -> tuple[int, str | None, dict[str, Any]]:
+    """Build the legacy response from immutable normalized facts and reject cache drift."""
+    config = await db.scalar(
+        select(WorkspaceProjectConfigRevision).where(
+            WorkspaceProjectConfigRevision.project_id == project.id,
+            WorkspaceProjectConfigRevision.revision == 1,
+        )
+    )
+    if config is None:
+        raise ValueError("project config revision is missing")
+    if project.process_revision == 0:
+        return config.revision, None, {
+            "process_instance_id": None,
+            "stages": [],
+            "gates": [],
+            "tasks": [],
+            "dependencies": [],
+            "graphs": {},
+        }
+    revision = await db.scalar(
+        select(WorkspaceProcessRevision).where(
+            WorkspaceProcessRevision.project_id == project.id,
+            WorkspaceProcessRevision.revision == project.process_revision,
+        )
+    )
+    if revision is None:
+        raise ValueError("normalized process revision is missing")
+    if canonical_plan_hash(revision.legacy_snapshot or {}) != revision.canonical_hash:
+        raise ValueError("immutable process revision hash drift")
+    stages = list((await db.scalars(
+        select(WorkspaceStage)
+        .where(WorkspaceStage.process_revision_id == revision.id)
+        .order_by(WorkspaceStage.position)
+    )).all())
+    tasks = list((await db.scalars(
+        select(WorkspaceTaskRevision)
+        .where(WorkspaceTaskRevision.process_revision_id == revision.id)
+        .order_by(WorkspaceTaskRevision.position)
+    )).all())
+    gates = list((await db.scalars(
+        select(WorkspaceGate)
+        .where(WorkspaceGate.process_revision_id == revision.id)
+        .order_by(WorkspaceGate.position)
+    )).all())
+    dependencies = list((await db.scalars(
+        select(WorkspaceTaskDependency)
+        .where(WorkspaceTaskDependency.process_revision_id == revision.id)
+        .order_by(WorkspaceTaskDependency.position)
+    )).all())
+    projection = deepcopy(revision.legacy_snapshot or {})
+    projection["stages"] = [row.facts for row in stages]
+    projection["tasks"] = [row.facts for row in tasks]
+    projection["gates"] = [row.facts for row in gates]
+    projection["dependencies"] = [
+        {"from_task_id": row.from_task_id, "to_task_id": row.to_task_id}
+        for row in dependencies
+    ]
+    if projection != (revision.legacy_snapshot or {}):
+        raise ValueError("normalized facts drift from immutable legacy projection")
+    if projection != (project.process_snapshot or {}):
+        raise ValueError("normalized projection drifts from project cache")
+    return config.revision, revision.canonical_hash, projection

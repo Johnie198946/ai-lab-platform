@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import datetime
 from typing import Any, Literal
 from uuid import uuid4
@@ -10,22 +11,32 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError, OperationalError
 
 from backend.api.auth import require_auth
 from backend.api.chat import StreamRequest, stream_chat
 from backend.db import SessionLocal
 from backend.models.workspace import (
+    WorkspaceApprovalDecision,
+    WorkspaceAuditEvent,
     WorkspaceBusinessIntake,
+    WorkspaceGate,
+    WorkspaceGateApprover,
     WorkspaceProcessDraft,
+    WorkspaceProcessRevision,
     WorkspaceProject,
+    WorkspaceProjectApprover,
+    WorkspaceProjectMember,
     WorkspaceTaskConversation,
     WorkspaceTaskMessage,
 )
 from backend.services.workspace_process import (
     compile_ipd_draft,
+    create_project_config_revision,
     instantiate_reviewed_process,
+    persist_process_revision,
+    reconstruct_process_projection,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
@@ -100,6 +111,25 @@ class OpenTaskConversationRequest(BaseModel):
 class TaskMessageRequest(BaseModel):
     question: str = Field(min_length=1, max_length=12000)
     request_id: str = Field(min_length=8, max_length=100)
+
+
+class AddProjectMemberRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=100)
+    user_id: str = Field(min_length=1, max_length=64)
+    role: str = Field(min_length=1, max_length=40)
+    scopes: list[Literal["project:read", "project:write", "gate:approve"]]
+
+
+class AppointGateApproverRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=100)
+    user_id: str = Field(min_length=1, max_length=64)
+
+
+class GateDecisionRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=100)
+    expected_process_revision: int = Field(ge=1)
+    decision: Literal["APPROVED", "REJECTED"]
+    comment: str = Field(default="", max_length=2000)
 
 
 TASK_TRANSITIONS: dict[str, set[str]] = {
@@ -233,6 +263,53 @@ async def _project_for_owner(
     return project
 
 
+async def _project_for_access(
+    db,
+    project_id: str,
+    tenant_key: str,
+    user_id: str,
+    required_scope: Literal["project:read", "project:write"],
+) -> WorkspaceProject:
+    project = await db.scalar(
+        select(WorkspaceProject).where(
+            WorkspaceProject.id == project_id,
+            WorkspaceProject.tenant_key == tenant_key,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if project.owner_user_id == user_id:
+        return project
+    member = await db.scalar(
+        select(WorkspaceProjectMember).where(
+            WorkspaceProjectMember.project_id == project.id,
+            WorkspaceProjectMember.tenant_key == tenant_key,
+            WorkspaceProjectMember.user_id == user_id,
+            WorkspaceProjectMember.status == "ACTIVE",
+        )
+    )
+    if member is None:
+        # The project exists in this tenant; conceal membership only for a
+        # missing project/cross-tenant lookup, not for an existing memberless user.
+        member_exists = await db.scalar(
+            select(WorkspaceProjectMember.id).where(
+                WorkspaceProjectMember.project_id == project.id,
+                WorkspaceProjectMember.tenant_key == tenant_key,
+                WorkspaceProjectMember.user_id == user_id,
+            )
+        )
+        if member_exists is not None:
+            raise HTTPException(status_code=403, detail="active project membership required")
+        raise HTTPException(status_code=404, detail="project not found")
+    scopes = set(member.scopes or [])
+    allowed = required_scope in scopes or (
+        required_scope == "project:read" and "project:write" in scopes
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail=f"{required_scope} scope required")
+    return project
+
+
 @router.get("/project-templates")
 async def list_project_templates(payload=Depends(require_auth)) -> list[dict[str, Any]]:
     return [IPD_TEMPLATE]
@@ -304,6 +381,19 @@ async def instantiate_project(
             },
         )
         db.add(project)
+        db.add(create_project_config_revision(project))
+        db.add(
+            WorkspaceProjectMember(
+                id=f"member_{uuid4().hex}",
+                tenant_key=tenant_key,
+                project_id=project.id,
+                user_id=user_id,
+                request_id=f"owner:{body.request_id}",
+                role="owner",
+                scopes=["project:read", "project:write"],
+                status="ACTIVE",
+            )
+        )
         try:
             await db.commit()
         except IntegrityError:
@@ -355,32 +445,76 @@ async def list_projects(payload=Depends(require_auth)) -> list[dict[str, Any]]:
         rows = (
             await db.scalars(
                 select(WorkspaceProject)
+                .outerjoin(
+                    WorkspaceProjectMember,
+                    (WorkspaceProjectMember.project_id == WorkspaceProject.id)
+                    & (WorkspaceProjectMember.tenant_key == tenant_key)
+                    & (WorkspaceProjectMember.user_id == user_id)
+                    & (WorkspaceProjectMember.status == "ACTIVE"),
+                )
                 .where(
                     WorkspaceProject.tenant_key == tenant_key,
-                    WorkspaceProject.owner_user_id == user_id,
+                    or_(
+                        WorkspaceProject.owner_user_id == user_id,
+                        WorkspaceProjectMember.id.is_not(None),
+                    ),
                 )
                 .order_by(WorkspaceProject.updated_at.desc(), WorkspaceProject.id)
             )
-        ).all()
-        return [_project_out(row) for row in rows]
+        ).unique().all()
+        return [
+            _project_out(row)
+            for row in rows
+            if row.owner_user_id == user_id
+            or any(
+                scope in {"project:read", "project:write"}
+                for member in [
+                    await db.scalar(
+                        select(WorkspaceProjectMember).where(
+                            WorkspaceProjectMember.project_id == row.id,
+                            WorkspaceProjectMember.tenant_key == tenant_key,
+                            WorkspaceProjectMember.user_id == user_id,
+                            WorkspaceProjectMember.status == "ACTIVE",
+                        )
+                    )
+                ]
+                if member is not None
+                for scope in (member.scopes or [])
+            )
+        ]
 
 
 @router.get("/projects/{project_id}")
 async def get_project(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        return _project_out(await _project_for_owner(db, project_id, tenant_key, user_id))
+        return _project_out(
+            await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        )
 
 
 @router.get("/projects/{project_id}/process")
 async def get_project_process(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
+        try:
+            config_revision, canonical_hash, process = await reconstruct_process_projection(
+                db, project
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "normalized_projection_drift", "reason": str(exc)},
+            ) from exc
         return {
             "project_id": project.id,
             "process_revision": project.process_revision,
-            **(project.process_snapshot or {}),
+            "config_revision": config_revision,
+            "canonical_hash": canonical_hash,
+            **process,
         }
 
 
@@ -392,7 +526,9 @@ async def create_business_intake(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
         project_record_id = project.id
         intake_payload = body.model_dump(mode="json", exclude={"request_id"})
         existing = await db.scalar(
@@ -458,7 +594,9 @@ async def generate_process_draft(
         raise HTTPException(status_code=409, detail="project template version changed")
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
         project_record_id = project.id
         existing = await db.scalar(
             select(WorkspaceProcessDraft).where(
@@ -538,7 +676,7 @@ async def get_process_draft(
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_owner(db, project_id, tenant_key, user_id)
+        await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
         draft = await db.scalar(
             select(WorkspaceProcessDraft).where(
                 WorkspaceProcessDraft.id == draft_id,
@@ -568,7 +706,9 @@ async def apply_process_draft(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
         draft = await db.scalar(
             select(WorkspaceProcessDraft).where(
                 WorkspaceProcessDraft.id == draft_id,
@@ -625,7 +765,6 @@ async def apply_process_draft(
             .where(
                 WorkspaceProject.id == project_record_id,
                 WorkspaceProject.tenant_key == tenant_key,
-                WorkspaceProject.owner_user_id == user_id,
                 WorkspaceProject.process_revision == body.expected_revision,
             )
             .values(
@@ -641,7 +780,6 @@ async def apply_process_draft(
                 select(WorkspaceProject.process_revision).where(
                     WorkspaceProject.id == project_record_id,
                     WorkspaceProject.tenant_key == tenant_key,
-                    WorkspaceProject.owner_user_id == user_id,
                 )
             )
             raise HTTPException(
@@ -671,6 +809,12 @@ async def apply_process_draft(
         if draft_cas.rowcount != 1:
             await db.rollback()
             raise HTTPException(status_code=409, detail="process draft changed")
+        await persist_process_revision(
+            db,
+            project=project,
+            process=process,
+            revision=next_revision,
+        )
         await db.commit()
         return apply_result
 
@@ -703,7 +847,9 @@ async def get_project_schedule(
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
         process = project.process_snapshot or {}
         return {
             "project_id": project.id,
@@ -735,7 +881,9 @@ async def get_project_graph(
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
         process = project.process_snapshot or {}
         graph = (process.get("graphs") or {}).get(view_type)
         if graph is None:
@@ -756,7 +904,9 @@ async def get_project_task(
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
         task = next(
             (item for item in (project.process_snapshot or {}).get("tasks", []) if item["id"] == task_id),
             None,
@@ -775,7 +925,9 @@ async def update_project_task(
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
         project_record_id = project.id
         if project.process_revision != body.expected_revision:
             raise HTTPException(
@@ -843,7 +995,6 @@ async def update_project_task(
             .where(
                 WorkspaceProject.id == project_record_id,
                 WorkspaceProject.tenant_key == tenant_key,
-                WorkspaceProject.owner_user_id == user_id,
                 WorkspaceProject.process_revision == body.expected_revision,
             )
             .values(
@@ -859,7 +1010,6 @@ async def update_project_task(
                 select(WorkspaceProject.process_revision).where(
                     WorkspaceProject.id == project_record_id,
                     WorkspaceProject.tenant_key == tenant_key,
-                    WorkspaceProject.owner_user_id == user_id,
                 )
             )
             raise HTTPException(
@@ -869,6 +1019,12 @@ async def update_project_task(
                     "server_revision": server_revision,
                 },
             )
+        await persist_process_revision(
+            db,
+            project=project,
+            process=process,
+            revision=next_revision,
+        )
         await db.commit()
         return {
             "project_id": project_record_id,
@@ -878,6 +1034,377 @@ async def update_project_task(
         }
 
 
+def _decision_out(decision: WorkspaceApprovalDecision) -> dict[str, Any]:
+    return {
+        "id": decision.id,
+        "project_id": decision.project_id,
+        "gate_id": decision.gate_id,
+        "process_revision": decision.process_revision,
+        "approver_user_id": decision.approver_user_id,
+        "request_id": decision.request_id,
+        "decision": decision.decision,
+        "comment": decision.comment,
+    }
+
+
+async def _member_out(db, member: WorkspaceProjectMember, appointed_by: str) -> dict[str, Any]:
+    approver = await db.scalar(
+        select(WorkspaceProjectApprover).where(
+            WorkspaceProjectApprover.project_id == member.project_id,
+            WorkspaceProjectApprover.member_id == member.id,
+        )
+    )
+    return {
+        "id": member.id,
+        "project_id": member.project_id,
+        "tenant_id": member.tenant_key,
+        "user_id": member.user_id,
+        "request_id": member.request_id,
+        "role": member.role,
+        "scopes": member.scopes or [],
+        "status": member.status,
+        "appointed_by": appointed_by,
+        "approver_id": approver.id if approver is not None else None,
+    }
+
+
+def _appointment_out(
+    appointment: WorkspaceGateApprover, project_approver: WorkspaceProjectApprover | None
+) -> dict[str, Any]:
+    if project_approver is None:
+        raise HTTPException(status_code=409, detail="project approver record is missing")
+    return {
+        "id": appointment.id,
+        "project_id": appointment.project_id,
+        "tenant_id": appointment.tenant_key,
+        "gate_id": appointment.gate_id,
+        "user_id": appointment.user_id,
+        "request_id": appointment.request_id,
+        "status": "ACTIVE",
+        "appointed_by": project_approver.appointed_by,
+        "member_id": project_approver.member_id,
+        "project_approver_id": project_approver.id,
+    }
+
+
+@router.post("/projects/{project_id}/members")
+async def add_project_member(
+    project_id: str,
+    body: AddProjectMemberRequest,
+    payload=Depends(require_auth),
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project_record_id = project.id
+        existing = await db.scalar(
+            select(WorkspaceProjectMember).where(
+                WorkspaceProjectMember.project_id == project.id,
+                WorkspaceProjectMember.request_id == body.request_id,
+            )
+        )
+        requested = {"user_id": body.user_id, "role": body.role, "scopes": body.scopes}
+        if existing is not None:
+            stored = {
+                "user_id": existing.user_id,
+                "role": existing.role,
+                "scopes": existing.scopes,
+            }
+            if stored != requested:
+                raise HTTPException(status_code=409, detail="request_id binds another member")
+            return JSONResponse(
+                status_code=200,
+                content=await _member_out(db, existing, user_id),
+            )
+        member = WorkspaceProjectMember(
+            id=f"member_{uuid4().hex}",
+            tenant_key=tenant_key,
+            project_id=project.id,
+            user_id=body.user_id,
+            request_id=body.request_id,
+            role=body.role,
+            scopes=body.scopes,
+            status="ACTIVE",
+        )
+        db.add(member)
+        db.add(
+            WorkspaceAuditEvent(
+                id=f"audit_{uuid4().hex}",
+                tenant_key=tenant_key,
+                project_id=project.id,
+                actor_user_id=user_id,
+                event_type="MEMBER_ADDED",
+                subject_id=body.user_id,
+                payload=requested,
+            )
+        )
+        try:
+            await db.commit()
+        except (IntegrityError, OperationalError):
+            await db.rollback()
+            await asyncio.sleep(0.05)
+            existing = await db.scalar(
+                select(WorkspaceProjectMember).where(
+                    WorkspaceProjectMember.project_id == project_record_id,
+                    WorkspaceProjectMember.request_id == body.request_id,
+                )
+            )
+            if existing is None:
+                raise HTTPException(status_code=409, detail="member already exists")
+            stored = {"user_id": existing.user_id, "role": existing.role, "scopes": existing.scopes}
+            if stored != requested:
+                raise HTTPException(status_code=409, detail="request_id binds another member")
+            return JSONResponse(
+                status_code=200,
+                content=await _member_out(db, existing, user_id),
+            )
+        return JSONResponse(
+            status_code=201,
+            content=await _member_out(db, member, project.owner_user_id),
+        )
+
+
+@router.post("/projects/{project_id}/gates/{gate_id}/approvers")
+async def appoint_gate_approver(
+    project_id: str,
+    gate_id: str,
+    body: AppointGateApproverRequest,
+    payload=Depends(require_auth),
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        project_record_id = project.id
+        if body.user_id == project.owner_user_id:
+            raise HTTPException(status_code=403, detail="project owner cannot self-review gates")
+        if not any(gate["id"] == gate_id for gate in (project.process_snapshot or {}).get("gates", [])):
+            raise HTTPException(status_code=404, detail="project gate not found")
+        member = await db.scalar(
+            select(WorkspaceProjectMember).where(
+                WorkspaceProjectMember.project_id == project.id,
+                WorkspaceProjectMember.tenant_key == tenant_key,
+                WorkspaceProjectMember.user_id == body.user_id,
+                WorkspaceProjectMember.status == "ACTIVE",
+            )
+        )
+        if member is None or "gate:approve" not in (member.scopes or []):
+            raise HTTPException(status_code=403, detail="active member gate:approve scope required")
+        existing = await db.scalar(
+            select(WorkspaceGateApprover).where(
+                WorkspaceGateApprover.project_id == project.id,
+                WorkspaceGateApprover.request_id == body.request_id,
+            )
+        )
+        if existing is not None:
+            if existing.user_id != body.user_id or existing.gate_id != gate_id:
+                raise HTTPException(status_code=409, detail="request_id binds another approver")
+            project_approver = await db.scalar(
+                select(WorkspaceProjectApprover).where(
+                    WorkspaceProjectApprover.id == existing.project_approver_id,
+                )
+            )
+            return JSONResponse(
+                status_code=200,
+                content=_appointment_out(existing, project_approver),
+            )
+        project_approver = await db.scalar(
+            select(WorkspaceProjectApprover).where(
+                WorkspaceProjectApprover.project_id == project.id,
+                WorkspaceProjectApprover.user_id == body.user_id,
+            )
+        )
+        if project_approver is None:
+            project_approver = WorkspaceProjectApprover(
+                id=f"approver_{uuid4().hex}",
+                tenant_key=tenant_key,
+                project_id=project.id,
+                member_id=member.id,
+                user_id=body.user_id,
+                appointed_by=user_id,
+            )
+            db.add(project_approver)
+        gate_approver = WorkspaceGateApprover(
+            id=f"gateapprover_{uuid4().hex}",
+            tenant_key=tenant_key,
+            project_id=project.id,
+            project_approver_id=project_approver.id,
+            gate_id=gate_id,
+            user_id=body.user_id,
+            request_id=body.request_id,
+        )
+        db.add(gate_approver)
+        db.add(
+            WorkspaceAuditEvent(
+                id=f"audit_{uuid4().hex}",
+                tenant_key=tenant_key,
+                project_id=project.id,
+                actor_user_id=user_id,
+                event_type="GATE_APPROVER_APPOINTED",
+                subject_id=gate_id,
+                payload={"user_id": body.user_id, "request_id": body.request_id},
+            )
+        )
+        try:
+            await db.commit()
+        except (IntegrityError, OperationalError):
+            await db.rollback()
+            await asyncio.sleep(0.05)
+            existing = await db.scalar(
+                select(WorkspaceGateApprover).where(
+                    WorkspaceGateApprover.project_id == project_record_id,
+                    WorkspaceGateApprover.request_id == body.request_id,
+                )
+            )
+            if existing is None:
+                raise HTTPException(status_code=409, detail="gate approver already exists")
+            if existing.user_id != body.user_id or existing.gate_id != gate_id:
+                raise HTTPException(status_code=409, detail="request_id binds another approver")
+            project_approver = await db.scalar(
+                select(WorkspaceProjectApprover).where(
+                    WorkspaceProjectApprover.id == existing.project_approver_id,
+                )
+            )
+            return JSONResponse(
+                status_code=200,
+                content=_appointment_out(existing, project_approver),
+            )
+        return JSONResponse(
+            status_code=201,
+            content=_appointment_out(gate_approver, project_approver),
+        )
+
+
+@router.post("/projects/{project_id}/gates/{gate_id}/decisions")
+async def decide_gate(
+    project_id: str,
+    gate_id: str,
+    body: GateDecisionRequest,
+    payload=Depends(require_auth),
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await db.scalar(
+            select(WorkspaceProject).where(
+                WorkspaceProject.id == project_id,
+                WorkspaceProject.tenant_key == tenant_key,
+            )
+        )
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        if user_id == project.owner_user_id:
+            raise HTTPException(status_code=403, detail="project owner cannot self-review gates")
+        if project.process_revision != body.expected_process_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "project_revision_conflict", "server_revision": project.process_revision},
+            )
+        if not any(gate["id"] == gate_id for gate in (project.process_snapshot or {}).get("gates", [])):
+            raise HTTPException(status_code=404, detail="project gate not found")
+        member = await db.scalar(
+            select(WorkspaceProjectMember).where(
+                WorkspaceProjectMember.project_id == project.id,
+                WorkspaceProjectMember.tenant_key == tenant_key,
+                WorkspaceProjectMember.user_id == user_id,
+                WorkspaceProjectMember.status == "ACTIVE",
+            )
+        )
+        if member is None or "gate:approve" not in (member.scopes or []):
+            raise HTTPException(status_code=403, detail="active member gate:approve scope required")
+        gate_approver = await db.scalar(
+            select(WorkspaceGateApprover).where(
+                WorkspaceGateApprover.project_id == project.id,
+                WorkspaceGateApprover.tenant_key == tenant_key,
+                WorkspaceGateApprover.gate_id == gate_id,
+                WorkspaceGateApprover.user_id == user_id,
+            )
+        )
+        if gate_approver is None:
+            raise HTTPException(status_code=403, detail="gate approver appointment required")
+        process_revision = await db.scalar(
+            select(WorkspaceProcessRevision).where(
+                WorkspaceProcessRevision.project_id == project.id,
+                WorkspaceProcessRevision.revision == body.expected_process_revision,
+            )
+        )
+        normalized_gate = await db.scalar(
+            select(WorkspaceGate).where(
+                WorkspaceGate.process_revision_id == process_revision.id
+                if process_revision is not None
+                else WorkspaceGate.id == "__missing__",
+                WorkspaceGate.gate_id == gate_id,
+            )
+        )
+        if process_revision is None or normalized_gate is None:
+            raise HTTPException(status_code=409, detail="normalized gate revision is missing")
+        existing = await db.scalar(
+            select(WorkspaceApprovalDecision).where(
+                WorkspaceApprovalDecision.project_id == project.id,
+                WorkspaceApprovalDecision.request_id == body.request_id,
+            )
+        )
+        if existing is not None:
+            if (
+                existing.gate_id != gate_id
+                or existing.process_revision != body.expected_process_revision
+                or existing.decision != body.decision
+                or existing.comment != body.comment
+            ):
+                raise HTTPException(status_code=409, detail="request_id binds another decision")
+            return JSONResponse(status_code=200, content=_decision_out(existing))
+        project_record_id = project.id
+        decision = WorkspaceApprovalDecision(
+            id=f"decision_{uuid4().hex}",
+            tenant_key=tenant_key,
+            project_id=project_record_id,
+            gate_approver_id=gate_approver.id,
+            process_revision_id=process_revision.id,
+            gate_id=gate_id,
+            process_revision=body.expected_process_revision,
+            approver_user_id=user_id,
+            request_id=body.request_id,
+            decision=body.decision,
+            comment=body.comment,
+        )
+        db.add(decision)
+        db.add(
+            WorkspaceAuditEvent(
+                id=f"audit_{uuid4().hex}",
+                tenant_key=tenant_key,
+                project_id=project.id,
+                actor_user_id=user_id,
+                event_type="GATE_DECIDED",
+                subject_id=gate_id,
+                payload={
+                    "request_id": body.request_id,
+                    "process_revision": body.expected_process_revision,
+                    "decision": body.decision,
+                },
+            )
+        )
+        try:
+            await db.commit()
+        except (IntegrityError, OperationalError):
+            await db.rollback()
+            await asyncio.sleep(0.05)
+            existing = await db.scalar(
+                select(WorkspaceApprovalDecision).where(
+                    WorkspaceApprovalDecision.project_id == project_record_id,
+                    WorkspaceApprovalDecision.request_id == body.request_id,
+                )
+            )
+            if existing is None:
+                raise HTTPException(status_code=409, detail="gate already decided by approver")
+            if (
+                existing.gate_id != gate_id
+                or existing.process_revision != body.expected_process_revision
+                or existing.decision != body.decision
+                or existing.comment != body.comment
+            ):
+                raise HTTPException(status_code=409, detail="request_id binds another decision")
+            return JSONResponse(status_code=200, content=_decision_out(existing))
+        return JSONResponse(status_code=201, content=_decision_out(decision))
+
+
 @router.post("/task-conversations")
 async def open_task_conversation(
     body: OpenTaskConversationRequest,
@@ -885,7 +1412,9 @@ async def open_task_conversation(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await _project_for_owner(db, body.project_id, tenant_key, user_id)
+        project = await _project_for_access(
+            db, body.project_id, tenant_key, user_id, "project:write"
+        )
         project_record_id = project.id
         process = project.process_snapshot or {}
         task = next(
@@ -1019,8 +1548,8 @@ async def stream_task_message(
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         conversation = await _conversation_for_tenant(db, conversation_id, tenant_key, user_id)
-        project = await _project_for_owner(
-            db, conversation.project_id, tenant_key, user_id
+        project = await _project_for_access(
+            db, conversation.project_id, tenant_key, user_id, "project:write"
         )
         task = next(
             (
