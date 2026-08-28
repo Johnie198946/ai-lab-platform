@@ -42,6 +42,9 @@ test("AI Resource opens a configurable planning and operations workbench", () =>
   assert.match(apiSource, /resource-plan\/recommend/);
   assert.match(apiSource, /resource-plan\/simulations/);
   assert.match(apiSource, /resource-plan\/chat/);
+  assert.match(pageSource, /resource_plan: resourcePlan/);
+  assert.match(resourceSource, /AI Lab Platform AI 能力尚未连接/);
+  assert.doesNotMatch(resourceSource, /原型回答会同时核对/);
   assert.match(styles, /\.qw-resource-workbench\{width:min\(1840px,calc\(100% - 48px\)\)/);
 });
 

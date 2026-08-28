@@ -203,11 +203,12 @@ export function ProjectWorkspacePage() {
     }
   };
 
-  const askResourceContext = ({ contextId, contextTitle, question }) => platformApi.askProjectResourceContext(projectId, {
+  const askResourceContext = ({ contextId, contextTitle, question, resourcePlan }) => platformApi.askProjectResourceContext(projectId, {
     request_id: `resource-chat-${crypto.randomUUID()}`,
     context_id: contextId,
     context_title: contextTitle,
     question,
+    resource_plan: resourcePlan,
   });
 
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;

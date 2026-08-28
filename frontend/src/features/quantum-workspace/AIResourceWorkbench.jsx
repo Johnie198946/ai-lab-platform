@@ -599,7 +599,10 @@ export function AIResourceWorkbench({ resourceData, onRecommend, onSave, onGener
     if (result?.plan) setDraft(clone(result.plan));
     return result;
   };
-  const askContext = onAskContext || (async ({ contextTitle, question }) => ({ answer: `基于「${contextTitle}」当前方案：${question}。原型回答会同时核对场景、真实性标签、容量假设和验收指标；接入 Hermes 后将返回完整依据与修改建议。` }));
+  const askContext = async (request) => {
+    if (!onAskContext) throw new Error("AI Lab Platform AI 能力尚未连接");
+    return onAskContext({ ...request, resourcePlan: clone(draft) });
+  };
 
   const runAction = async (kind, action, success) => {
     setBusy(kind); setError(""); setNotice("");

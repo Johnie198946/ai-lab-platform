@@ -156,6 +156,7 @@ class ResourceContextChatRequest(BaseModel):
     context_id: str = Field(min_length=1, max_length=80)
     context_title: str = Field(min_length=1, max_length=160)
     question: str = Field(min_length=1, max_length=12000)
+    resource_plan: dict[str, Any] | None = None
 
 
 class UpdateTopologyNodeRequest(BaseModel):
@@ -1274,8 +1275,23 @@ async def ask_project_resource_context(
     async with SessionLocal() as db:
         project = await _project_for_owner(db, project_id, tenant_key, user_id)
         process = dict(project.process_snapshot or {})
-        plan = process.get("resource_plan") or build_resource_plan_skeleton(project, process)
-        prompt = build_resource_context_chat_prompt(plan, context_id=body.context_id, context_title=body.context_title, question=body.question)
+        stored_plan = process.get("resource_plan") or build_resource_plan_skeleton(project, process)
+        if body.resource_plan is not None and len(json.dumps(body.resource_plan, ensure_ascii=False)) > 120_000:
+            raise HTTPException(status_code=413, detail="resource plan snapshot is too large")
+        plan = normalize_resource_plan(
+            body.resource_plan if isinstance(body.resource_plan, dict) else stored_plan,
+            project,
+            process,
+            generated_by="user",
+        )
+        monitoring = await _resource_monitoring(db, process, tenant_key)
+        prompt = build_resource_context_chat_prompt(
+            plan,
+            context_id=body.context_id,
+            context_title=body.context_title,
+            question=body.question,
+            monitoring=monitoring,
+        )
     upstream = await chat_stream(StreamRequest(question=prompt, request_id=body.request_id, session_id=None, agent_id=None, skill_id=None, quoted_context=None), payload)
     try:
         answer = await _collect_hermes_answer(upstream)

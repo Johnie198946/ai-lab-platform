@@ -507,13 +507,33 @@ def generate_simulation_dataset(plan: dict[str, Any], simulator_id: str, *, row_
     }
 
 
-def build_resource_context_chat_prompt(plan: dict[str, Any], *, context_id: str, context_title: str, question: str) -> str:
+def build_resource_context_chat_prompt(
+    plan: dict[str, Any],
+    *,
+    context_id: str,
+    context_title: str,
+    question: str,
+    monitoring: dict[str, Any] | None = None,
+) -> str:
     safe_plan = normalize_resource_plan(plan, type("Project", (), {"name": "", "goal": "", "desired_outputs": []})(), {}, generated_by="user")
+    scenario_twin = safe_plan.get("scenario_twin") or {}
     context_map = {
         "scenario": safe_plan.get("scenario"), "scenario-twin": safe_plan.get("scenario_twin"),
         "simulation": safe_plan.get("scenario_twin"), "systems": safe_plan.get("systems"),
         "infrastructure": safe_plan.get("infrastructure"), "runtime": safe_plan.get("runtime"),
         "sla": safe_plan.get("sla"), "token-factory": safe_plan.get("token_factory"),
+        "datasets": {
+            "datasets": scenario_twin.get("datasets") or [],
+            "systems": scenario_twin.get("systems") or [],
+        },
+        "model-registry": safe_plan.get("model_registry"),
+        "topology-node": {
+            "topology": safe_plan.get("topology"),
+            "infrastructure": safe_plan.get("infrastructure"),
+            "runtime": safe_plan.get("runtime"),
+            "model_registry": safe_plan.get("model_registry"),
+        },
+        "monitoring": monitoring or {"source_status": "UNCONNECTED"},
     }
     context = context_map.get(context_id, {"title": context_title})
     return "\n".join([

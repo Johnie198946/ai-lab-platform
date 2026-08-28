@@ -532,6 +532,7 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
         assert "AI Resource 工作台的上下文助手" in req.question
         assert "ERP 模拟器如何设计" in req.question
         assert "不得把规划或模拟数据描述成生产事实" in req.question
+        assert "Web 当前草案模型" in req.question
 
         async def events():
             yield 'data: {"type":"done","answer":"应按订单状态机与接口契约模拟，并保留 seed 和 lineage。"}\n\n'
@@ -541,7 +542,22 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
     monkeypatch.setattr("backend.api.quantum_workspace.chat_stream", fake_context_chat)
     chat = client.post(
         f"/api/v1/projects/{project_id}/resource-plan/chat",
-        json={"request_id": "resource-chat-0001", "context_id": "simulation", "context_title": "数据源、接口与模拟环境", "question": "ERP 模拟器如何设计？"},
+        json={
+            "request_id": "resource-chat-0001",
+            "context_id": "runtime",
+            "context_title": "AI 运行时与本体",
+            "question": "ERP 模拟器如何设计？",
+            "resource_plan": {
+                **proposal,
+                "runtime": {
+                    **proposal["runtime"],
+                    "inference": {
+                        **proposal["runtime"]["inference"],
+                        "model": "Web 当前草案模型",
+                    },
+                },
+            },
+        },
     )
     assert chat.status_code == 200, chat.text
     assert chat.json()["truth"] == "AI_GENERATED"
