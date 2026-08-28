@@ -8401,6 +8401,11 @@ kbd {
 }
 
 /* PPT taskboard presentation */
+.workspace-command-bar {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
 .workspace-header {
   flex-basis: 44px;
   height: 44px;
@@ -8531,15 +8536,23 @@ kbd {
   align-items: center;
   height: 30px;
   gap: 2px;
-  padding: 1px;
-  border-radius: 7px;
+  padding: 2px;
+  overflow-x: auto;
+  border-radius: 9px;
+  background: var(--surface-muted);
+  scrollbar-width: none;
+}
+
+.view-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .view-tab {
-  height: 28px;
-  padding: 6px 20px;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 14px;
   border: .5px solid transparent;
-  border-radius: 16px;
+  border-radius: 7px;
   background: transparent;
   color: var(--text-secondary);
   font-size: 10px;
@@ -8548,11 +8561,11 @@ kbd {
 }
 
 .view-tab:first-child {
-  padding-inline: 0;
+  padding-inline: 14px;
 }
 
 .view-tab:nth-child(2) {
-  padding-inline: 0;
+  padding-inline: 14px;
 }
 
 .view-tab:hover {
@@ -8571,6 +8584,7 @@ kbd {
 }
 
 .toolbar-tools {
+  flex: 0 0 auto;
   gap: 5px;
 }
 
@@ -8611,6 +8625,51 @@ kbd {
   box-shadow: none;
 }
 
+.app-shell.embedded .workspace-command-bar.is-board-mode {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  width: min(calc(100% - 32px), 1840px);
+  min-height: 48px;
+  margin: 8px auto 12px;
+  padding: 7px 8px;
+  gap: 8px;
+  border: var(--border-hairline) solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-raised);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--text-primary) 5%, transparent);
+}
+
+.app-shell.embedded .workspace-command-bar.is-board-mode > .workspace-header,
+.app-shell.embedded .workspace-command-bar.is-board-mode > .board-toolbar {
+  display: contents;
+}
+
+.app-shell.embedded .workspace-command-bar.is-board-mode .workspace-title,
+.app-shell.embedded .workspace-command-bar.is-board-mode .workspace-drag-region {
+  display: none;
+}
+
+.app-shell.embedded .workspace-command-bar.is-board-mode .view-tabs {
+  grid-column: 1;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.app-shell.embedded .workspace-command-bar.is-board-mode .toolbar-tools {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+}
+
+.app-shell.embedded .workspace-command-bar.is-board-mode .header-actions {
+  grid-column: 3;
+  grid-row: 1;
+  min-width: 0;
+  padding-left: 8px;
+  border-left: var(--border-hairline) solid var(--border);
+}
+
 .workspace {
   container: issue-board-workspace / inline-size;
 }
@@ -8640,7 +8699,7 @@ kbd {
   min-width: 0;
   min-height: 0;
   margin: 0;
-  padding: 0 clamp(12px, 2.25vw, 32px);
+  padding: 0 clamp(12px, 2vw, 28px);
   column-gap: 0;
   overflow: hidden;
   background: var(--surface);
@@ -8653,7 +8712,7 @@ kbd {
   grid-template-columns:
     repeat(var(--main-column-count, 3), minmax(0, 1fr))
     minmax(0, 1fr);
-  column-gap: 18px;
+  column-gap: 20px;
 }
 
 :root[data-theme="dark"] .issue-board-layout {
@@ -8665,7 +8724,7 @@ kbd {
   justify-self: center;
   flex: 1 1 auto;
   width: 100%;
-  max-width: var(--main-board-max-width, 1044px);
+  max-width: var(--main-board-max-width, 1228px);
   min-width: 0;
   min-height: 0;
   margin-inline: auto;
@@ -8678,19 +8737,19 @@ kbd {
 
 .board {
   display: grid;
-  grid-template-columns: repeat(var(--main-column-count, 3), minmax(280px, 1fr));
+  grid-template-columns: repeat(var(--main-column-count, 3), minmax(320px, 1fr));
   align-items: stretch;
   width: 100%;
-  min-width: var(--main-board-min-width, 876px);
+  min-width: var(--main-board-min-width, 1000px);
   height: 100%;
   min-height: 0;
-  gap: 18px;
+  gap: 20px;
 }
 
 .board-column {
   width: auto;
-  max-width: 336px;
-  min-width: 280px;
+  max-width: 445px;
+  min-width: 320px;
   overflow: visible;
   border: 0;
   border-radius: 0;
@@ -9534,9 +9593,9 @@ kbd {
   display: flex;
   flex: none;
   flex-direction: column;
-  width: var(--other-tasks-width, 336px);
-  max-width: 336px;
-  min-width: 280px;
+  width: var(--other-tasks-width, 360px);
+  max-width: 360px;
+  min-width: 300px;
   height: auto;
   min-height: 0;
   overflow: hidden;
@@ -9871,6 +9930,8 @@ kbd {
 
   .board-column {
     flex: 0 0 300px;
+    max-width: 300px;
+    min-width: 300px;
     scroll-snap-align: start;
   }
 
@@ -10884,12 +10945,12 @@ kbd {
 
 /* Linear-style list */
 .issue-list-view {
-  padding: clamp(16px, 2vw, 28px) clamp(16px, 3vw, 40px) 40px;
+  padding: clamp(12px, 1.5vw, 24px) clamp(12px, 2vw, 28px) 40px;
 }
 
 .issue-list-groups {
   display: grid;
-  width: min(100%, 1180px);
+  width: min(100%, 1840px);
   margin-inline: auto;
   gap: 12px;
 }
@@ -11653,6 +11714,21 @@ kbd {
 }
 
 @media (max-width: 760px) {
+  .app-shell.embedded .workspace-command-bar.is-board-mode {
+    width: calc(100% - 16px);
+    min-height: 44px;
+    margin: 6px auto 8px;
+    padding: 5px;
+    gap: 5px;
+    border-radius: 10px;
+  }
+  .app-shell.embedded .workspace-command-bar.is-board-mode .view-tab {
+    width: auto;
+    min-width: max-content;
+    padding-inline: 12px;
+    font-size: 11px;
+  }
+  .app-shell.embedded .workspace-command-bar.is-board-mode .header-actions { padding-left: 5px; }
   .board-toolbar { overflow: hidden; }
   .view-tabs { gap: 2px; overflow-x: auto; scrollbar-width: none; }
   .view-tabs::-webkit-scrollbar { display: none; }
@@ -11695,6 +11771,15 @@ kbd {
 }
 
 @media (max-width: 520px) {
+  .app-shell.embedded .workspace-command-bar.is-board-mode {
+    grid-template-columns: minmax(92px, 1fr) minmax(0, 96px) auto;
+  }
+  .app-shell.embedded .workspace-command-bar.is-board-mode .toolbar-tools {
+    max-width: 96px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .app-shell.embedded .workspace-command-bar.is-board-mode .toolbar-tools::-webkit-scrollbar { display: none; }
   .issue-list-view { padding: 10px 8px 24px; }
   .issue-list-groups { gap: 8px; }
   .issue-list-group { border-radius: 10px; }

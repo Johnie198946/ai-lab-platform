@@ -51,6 +51,7 @@ test("project selection starts from the route or recent projects and updates the
 });
 
 test("the selected project exposes the current board surfaces", () => {
+  assert.match(appSource, /className=\{`workspace-command-bar\$\{selectedProjectId && !detailTask \? " is-board-mode" : ""\}`\}/);
   assert.match(appSource, /<header className="workspace-header">/);
   assert.match(appSource, /<div className="board-toolbar">/);
   assert.match(appSource, /<DashboardView/);
@@ -58,6 +59,16 @@ test("the selected project exposes the current board surfaces", () => {
   assert.match(appSource, /<GanttView/);
   assert.match(appSource, /<BoardColumn/);
   assert.match(styles, /\.workspace-header \{[\s\S]*?border-bottom: var\(--border-hairline\) solid var\(--border\)/);
+});
+
+test("embedded project controls collapse into one responsive command bar", () => {
+  assert.match(styles, /\.app-shell\.embedded \.workspace-command-bar\.is-board-mode \{[\s\S]*?grid-template-columns: minmax\(0, 1fr\) auto auto/);
+  assert.match(styles, /width: min\(calc\(100% - 32px\), 1840px\)/);
+  assert.match(styles, /\.app-shell\.embedded \.workspace-command-bar\.is-board-mode > \.workspace-header,[\s\S]*?display: contents/);
+  assert.match(styles, /\.app-shell\.embedded \.workspace-command-bar\.is-board-mode \.workspace-title,[\s\S]*?display: none/);
+  assert.match(styles, /\.app-shell\.embedded \.workspace-command-bar\.is-board-mode \.view-tabs \{[\s\S]*?grid-row: 1/);
+  assert.match(styles, /\.app-shell\.embedded \.workspace-command-bar\.is-board-mode \.header-actions \{[\s\S]*?grid-row: 1/);
+  assert.match(styles, /@media \(max-width: 520px\)[\s\S]*?grid-template-columns: minmax\(92px, 1fr\) minmax\(0, 96px\) auto/);
 });
 
 test("new issues stage attachments in the composer and upload them after creation", () => {

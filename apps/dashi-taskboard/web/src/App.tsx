@@ -2211,10 +2211,10 @@ export function App() {
 
   const mainBoardItems = boardDisplaySettings.mainStatuses;
   const mainColumnCount = Math.max(mainBoardItems.length, 1);
-  const mainBoardMinWidth = (mainColumnCount * 280) + ((mainColumnCount - 1) * 18);
-  const mainBoardMaxWidth = (mainColumnCount * 336) + ((mainColumnCount - 1) * 18);
+  const mainBoardMinWidth = (mainColumnCount * 320) + ((mainColumnCount - 1) * 20);
+  const mainBoardMaxWidth = (mainColumnCount * 445) + ((mainColumnCount - 1) * 20);
   const otherTasksColumnCount = mainColumnCount + 1;
-  const otherTasksWidth = `clamp(280px, calc(${100 / otherTasksColumnCount}% - ${(64 + (mainColumnCount * 18)) / otherTasksColumnCount}px), 336px)`;
+  const otherTasksWidth = `clamp(300px, calc(${100 / otherTasksColumnCount}% - ${(56 + (mainColumnCount * 20)) / otherTasksColumnCount}px), 360px)`;
   const otherTaskTabs = boardDisplaySettings.sidebarStatuses;
   const otherTaskTabsKey = otherTaskTabs.join(",");
   const otherTasksAvailable = otherTaskTabs.length > 0;
@@ -3252,6 +3252,7 @@ export function App() {
         />
       )}
       <main className="workspace">
+        <div className={`workspace-command-bar${selectedProjectId && !detailTask ? " is-board-mode" : ""}`}>
         <header className="workspace-header">
           <div className="workspace-title">
             <div className="workspace-kicker">
@@ -3573,6 +3574,7 @@ export function App() {
             )}
           </div>}
         </div>}
+        </div>
 
         {(loadError || actionErrorText) && (
           <div className="error-banner" role="alert">

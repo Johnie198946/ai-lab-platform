@@ -114,13 +114,13 @@ test("legacy empty-column and manual visibility runtime paths are removed", asyn
 
 test("the adaptive desktop grid stays compact, centered, and degrades to horizontal scrolling", () => {
   assert.match(cssBlock(".board"), /display: grid/);
-  assert.match(cssBlock(".board"), /grid-template-columns: repeat\(var\(--main-column-count, 3\), minmax\(280px, 1fr\)\)/);
+  assert.match(cssBlock(".board"), /grid-template-columns: repeat\(var\(--main-column-count, 3\), minmax\(320px, 1fr\)\)/);
   assert.match(cssBlock(".board"), /width: 100%/);
-  assert.match(cssBlock(".board"), /min-width: var\(--main-board-min-width, 876px\)/);
+  assert.match(cssBlock(".board"), /min-width: var\(--main-board-min-width, 1000px\)/);
   assert.match(cssBlock(".board-scroll"), /justify-self: center/);
   assert.match(cssBlock(".board-scroll"), /margin-inline: auto/);
-  assert.match(cssBlock(".board-column"), /max-width: 336px/);
-  assert.match(cssBlock(".board-column"), /min-width: 280px/);
+  assert.match(cssBlock(".board-column"), /max-width: 445px/);
+  assert.match(cssBlock(".board-column"), /min-width: 320px/);
   assert.match(cssBlock(".board-scroll"), /overflow-x: auto/);
   assert.match(cssBlock(".board-scroll"), /overflow-y: hidden/);
   assert.match(cssBlock(".column-list"), /overflow-y: auto/);
@@ -130,7 +130,7 @@ test("the adaptive desktop grid stays compact, centered, and degrades to horizon
 });
 
 test("the list view uses a centered reading width and responsive row layout", () => {
-  assert.match(cssBlock(".issue-list-groups"), /width: min\(100%, 1180px\)/);
+  assert.match(cssBlock(".issue-list-groups"), /width: min\(100%, 1840px\)/);
   assert.match(cssBlock(".issue-list-groups"), /margin-inline: auto/);
   assert.match(cssBlock(".issue-list-group"), /border-radius: 12px/);
   assert.match(cssBlock(".issue-list-row"), /min-height: 50px/);
