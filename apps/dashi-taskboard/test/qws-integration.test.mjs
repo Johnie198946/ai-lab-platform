@@ -19,6 +19,20 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
   const identityServer = createServer((request, response) => {
     const tenant = request.headers.authorization === "Bearer tenant-b" ? "tenant-b" : "tenant-a";
     response.writeHead(200, { "content-type": "application/json" });
+    if (request.url === "/api/v1/projects/prj-sync") {
+      response.end(JSON.stringify({ id: "prj-sync", name: "Synced project", goal: "Ship safely" }));
+      return;
+    }
+    if (request.url === "/api/v1/projects/prj-sync/process") {
+      response.end(JSON.stringify({
+        stages: [{ id: "stage-1", name: "需求" }],
+        tasks: [{
+          id: "task-1", stage_id: "stage-1", title: "Canonical task", summary: "Server owned",
+          status: "TODO", deliverables: ["Evidence"], start_date: null, due_date: null,
+        }],
+      }));
+      return;
+    }
     response.end(JSON.stringify({ tenant_key: tenant, user_id: `${tenant}-user`, username: tenant }));
   });
   const identityAddress = await listen(identityServer);
@@ -36,16 +50,16 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     const sessionA = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
-      body: "{}",
+      body: JSON.stringify({ project_id: "prj-sync" }),
     });
     assert.equal(sessionA.status, 200);
+    const sessionPayload = await sessionA.json();
+    assert.equal(sessionPayload.taskboard_project_id, "qws-tenant-a-prj-sync");
     const cookieA = sessionA.headers.get("set-cookie").split(";", 1)[0];
-    const created = await fetch(`${origin}/api/projects`, {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie: cookieA },
-      body: JSON.stringify({ id: "qws-tenant-a-project", name: "Tenant A", workspacePath: "/workspace" }),
-    });
-    assert.equal(created.status, 201);
+    const tasksA = await fetch(`${origin}/api/tasks?projectId=qws-tenant-a-prj-sync&archived=false`, { headers: { cookie: cookieA } }).then((response) => response.json());
+    assert.equal(tasksA.tasks.length, 1);
+    assert.equal(tasksA.tasks[0].title, "Canonical task");
+    assert.deepEqual(tasksA.tasks[0].labels, ["qws-task-1"]);
 
     const sessionB = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
@@ -54,7 +68,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     });
     const cookieB = sessionB.headers.get("set-cookie").split(";", 1)[0];
     const projectsB = await fetch(`${origin}/api/projects`, { headers: { cookie: cookieB } }).then((response) => response.json());
-    assert.equal(projectsB.projects.some((project) => project.id === "qws-tenant-a-project"), false);
+    assert.equal(projectsB.projects.some((project) => project.id === "qws-tenant-a-prj-sync"), false);
   } finally {
     await app.close();
     await close(identityServer);

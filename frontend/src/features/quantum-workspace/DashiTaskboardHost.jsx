@@ -3,14 +3,6 @@ import { useAuth } from "../../auth/AuthContext";
 import { platformApi } from "../../services/platformApi";
 import "./DashiTaskboardHost.css";
 
-const statusToDashi = {
-  TODO: "todo",
-  IN_PROGRESS: "in_progress",
-  BLOCKED: "blocked",
-  PAUSED: "backlog",
-  DONE: "done",
-};
-
 const safeSlug = (value) => String(value || "qws").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "qws";
 const taskMarker = (taskId) => `qws-${safeSlug(taskId)}`.slice(0, 64);
 
@@ -35,11 +27,119 @@ async function dashiRequest(path, { method = "GET", body, user } = {}) {
     credentials: "same-origin",
   });
   const payload = response.status === 204 ? null : await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || `Dashi API ${response.status}`);
+  const detail = typeof payload?.detail === "string"
+    ? payload.detail
+    : Array.isArray(payload?.detail)
+      ? payload.detail.map((item) => item?.msg || JSON.stringify(item)).join("；")
+      : "";
+  if (!response.ok) throw new Error(payload?.error?.message || payload?.message || detail || `Dashi API ${response.status}`);
   return payload;
 }
 
-export function DashiTaskboardHost({ project, process, onProcessChanged, onOpenTaskChat }) {
+const issueSummary = (issue) => issue ? {
+  id: issue.id,
+  identifier: issue.identifier || null,
+  title: issue.title || "",
+  status: issue.status || null,
+  priority: issue.priority || null,
+  assignee: issue.assignee || null,
+  archived_at: issue.archivedAt || null,
+} : null;
+
+function resolveCanonicalTask(dashiTask, qwsTasks) {
+  const labels = new Set(dashiTask.labels || []);
+  const markerMatches = (qwsTasks || []).filter((item) => labels.has(taskMarker(item.id)));
+  if (markerMatches.length === 1) return markerMatches[0];
+  if (markerMatches.length > 1) throw new Error("该卡片绑定了多个 QWS 任务，无法安全打开 AI Session。");
+  const titleMatches = (qwsTasks || []).filter((item) => item.title?.trim() === dashiTask.title?.trim());
+  if (titleMatches.length === 1) return titleMatches[0];
+  throw new Error(titleMatches.length > 1
+    ? "存在多个同名 QWS 任务，请先为卡片补充唯一绑定。"
+    : "该卡片尚未绑定 QWS canonical task；Web 不会自动创建任务，请先完成服务端同步。");
+}
+
+function collectDescendants(rootTask, allTasks) {
+  const byParent = new Map();
+  for (const candidate of allTasks || []) {
+    const parentId = candidate.relations?.parent?.id;
+    if (!parentId) continue;
+    byParent.set(parentId, [...(byParent.get(parentId) || []), candidate]);
+  }
+  const descendants = [];
+  const queue = (byParent.get(rootTask.id) || []).map((task) => ({ task, depth: 1 }));
+  const seen = new Set([rootTask.id]);
+  while (queue.length) {
+    const { task, depth } = queue.shift();
+    if (seen.has(task.id)) continue;
+    seen.add(task.id);
+    descendants.push({ ...issueSummary(task), depth });
+    for (const child of byParent.get(task.id) || []) queue.push({ task: child, depth: depth + 1 });
+  }
+  return descendants;
+}
+
+function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTasks, comments }) {
+  const relations = dashiTask.relations || {};
+  return {
+    schema_version: 1,
+    project: {
+      id: project.id,
+      name: project.name,
+      business_goal: project.goal || "",
+      taskboard_project_id: dashiProjectId,
+    },
+    task: {
+      qws_task_id: qwsTask.id,
+      dashi_task_id: dashiTask.id,
+      identifier: dashiTask.identifier || null,
+      title: dashiTask.title || qwsTask.title,
+      parent_issue: issueSummary(relations.parent),
+      descriptions: [
+        { id: "qws-summary", source: "qws_summary", content: qwsTask.summary || "" },
+        { id: "taskboard-description", source: "taskboard_description", content: dashiTask.description || "" },
+      ],
+      sub_issues: collectDescendants(dashiTask, allTasks),
+      comments: (comments || []).map((comment) => ({
+        id: comment.id,
+        body: comment.body || "",
+        author: { type: comment.authorType, id: comment.authorId, name: comment.authorName },
+        attachments: (comment.attachments || []).map((attachment) => ({
+          id: attachment.id,
+          filename: attachment.filename,
+          content_type: attachment.contentType,
+          size: attachment.size,
+        })),
+        version: comment.version,
+        created_at: comment.createdAt,
+        updated_at: comment.updatedAt,
+      })),
+      status: dashiTask.status,
+      priority: dashiTask.priority,
+      assignee: dashiTask.assignee || null,
+      labels: dashiTask.labels || [],
+      development_context: dashiTask.developmentContext || null,
+      start_date: dashiTask.startDate || null,
+      due_date: dashiTask.dueDate || null,
+      related_issues: {
+        blocked_by: (relations.blockedBy || []).map(issueSummary),
+        blocks: (relations.blocks || []).map(issueSummary),
+        related: (relations.related || []).map(issueSummary),
+      },
+      qws: {
+        stage_id: qwsTask.stage_id,
+        workflow_id: qwsTask.workflow_id || null,
+        status: qwsTask.status,
+        assignee_role: qwsTask.assignee_role || null,
+        deliverables: qwsTask.deliverables || [],
+      },
+      version: dashiTask.version,
+      created_at: dashiTask.createdAt,
+      updated_at: dashiTask.updatedAt,
+    },
+  };
+}
+
+export function DashiTaskboardHost({ project, onOpenTaskChat }) {
   const { authSession } = useAuth();
   const user = authSession?.user || {};
   const tenant = safeSlug(user.tenant_key || user.user_id || "default");
@@ -49,7 +149,7 @@ export function DashiTaskboardHost({ project, process, onProcessChanged, onOpenT
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
 
-  const ensureProjectAndTasks = useCallback(async () => {
+  const ensureTaskboardSession = useCallback(async () => {
     const accessToken = authSession?.accessToken || "";
     const sessionResponse = await fetch("/taskboard/api/qws/session", {
       method: "POST",
@@ -59,56 +159,24 @@ export function DashiTaskboardHost({ project, process, onProcessChanged, onOpenT
         "Content-Type": "application/json",
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
-      body: "{}",
+      body: JSON.stringify({ project_id: project.id }),
     });
     if (!sessionResponse.ok) throw new Error("Dashi 无法验证 AI Lab 登录会话");
-    const projectsPayload = await dashiRequest("/api/projects", { user });
-    let boardProject = (projectsPayload.projects || []).find((item) => item.id === dashiProjectId);
-    if (!boardProject) {
-      const created = await dashiRequest("/api/projects", {
-        method: "POST",
-        user,
-        body: { id: dashiProjectId, name: project.name, workspacePath: "/workspace" },
-      });
-      boardProject = created.project;
-    }
-    const tasksPayload = await dashiRequest(`/api/tasks?projectId=${encodeURIComponent(dashiProjectId)}&archived=false`, { user });
-    const existingMarkers = new Set((tasksPayload.tasks || []).flatMap((item) => item.labels || []));
-    for (const task of process.tasks || []) {
-      const marker = taskMarker(task.id);
-      if (existingMarkers.has(marker)) continue;
-      const stage = (process.stages || []).find((item) => item.id === task.stage_id);
-      await dashiRequest("/api/tasks", {
-        method: "POST",
-        user,
-        body: {
-          projectId: dashiProjectId,
-          title: task.title,
-          description: [task.summary, stage?.name ? `QWS 阶段：${stage.name}` : "", ...(task.deliverables || []).map((item) => `交付物：${item}`)].filter(Boolean).join("\n\n"),
-          status: statusToDashi[task.status] || "backlog",
-          priority: "none",
-          labels: [marker],
-          assigneeTarget: "current-user",
-          developmentContext: null,
-          startDate: task.start_date || null,
-          dueDate: task.due_date || null,
-          recurrence: null,
-        },
-      });
-    }
-    return boardProject;
-  }, [authSession?.accessToken, dashiProjectId, process.stages, process.tasks, project.name, user]);
+    const session = await sessionResponse.json();
+    if (session.taskboard_project_id !== dashiProjectId) throw new Error("Dashi 返回了不一致的租户项目绑定");
+    return session;
+  }, [authSession?.accessToken, dashiProjectId, project.id]);
 
   useEffect(() => {
     let active = true;
     setReady(false);
     setError("");
     setState("正在同步 QWS 项目与 Dashi 数据…");
-    ensureProjectAndTasks()
+    ensureTaskboardSession()
       .then(() => { if (active) { setReady(true); setState(""); } })
       .catch((reason) => { if (active) setError(reason.message || "Dashi 初始化失败"); });
     return () => { active = false; };
-  }, [ensureProjectAndTasks]);
+  }, [ensureTaskboardSession]);
 
   const openArchitect = useCallback((workflowId) => {
     window.location.assign(`/architect?workflow_id=${encodeURIComponent(workflowId)}`);
@@ -159,25 +227,25 @@ export function DashiTaskboardHost({ project, process, onProcessChanged, onOpenT
       const dashiTaskId = event.data.payload?.taskId;
       try {
         setState("正在打开任务 AI Session…");
-        const dashiTask = (await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user })).task;
-        const marker = (dashiTask.labels || []).find((label) => label.startsWith("qws-"));
-        let latestProcess = await platformApi.getProjectProcess(project.id);
-        let qwsTask = (latestProcess.tasks || []).find((item) => taskMarker(item.id) === marker);
-        if (!qwsTask) {
-          const createdTask = await platformApi.createProjectTask(project.id, {
-            expected_revision: latestProcess.process_revision,
-            stage_id: latestProcess.stages?.[0]?.id,
-            title: dashiTask.title,
-            summary: dashiTask.description || dashiTask.title,
-            deliverables: [],
-          });
-          qwsTask = createdTask.task || createdTask;
-          latestProcess = await platformApi.getProjectProcess(project.id);
-        }
-        onOpenTaskChat?.(qwsTask);
+        const [taskPayload, tasksPayload, commentsPayload, latestProcess] = await Promise.all([
+          dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user }),
+          dashiRequest(`/api/tasks?projectId=${encodeURIComponent(dashiProjectId)}&archived=false`, { user }),
+          dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/comments`, { user }),
+          platformApi.getProjectProcess(project.id),
+        ]);
+        const dashiTask = taskPayload.task;
+        const qwsTask = resolveCanonicalTask(dashiTask, latestProcess.tasks || []);
+        const cardContext = buildCardContext({
+          project,
+          dashiProjectId,
+          dashiTask,
+          qwsTask,
+          allTasks: tasksPayload.tasks || [],
+          comments: commentsPayload.comments || [],
+        });
+        onOpenTaskChat?.({ task: qwsTask, cardContext });
         frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId } }, window.location.origin);
         setState("");
-        await onProcessChanged?.();
       } catch (reason) {
         setState("");
         frame.postMessage({ type: "taskboard:thread-create-error", payload: { taskId: dashiTaskId, error: reason.message || "任务 AI Session 打开失败" } }, window.location.origin);
@@ -189,7 +257,7 @@ export function DashiTaskboardHost({ project, process, onProcessChanged, onOpenT
       mediaQuery?.removeEventListener?.("change", handleThemeChange);
       themeObserver?.disconnect();
     };
-  }, [dashiProjectId, onOpenTaskChat, onProcessChanged, openArchitect, project.id, project.name, user]);
+  }, [dashiProjectId, onOpenTaskChat, openArchitect, project, user]);
 
   const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">

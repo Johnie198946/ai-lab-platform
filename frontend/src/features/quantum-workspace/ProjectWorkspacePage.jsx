@@ -19,7 +19,7 @@ export function ProjectWorkspacePage() {
   const [process, setProcess] = useState(null);
   const [viewData, setViewData] = useState(null);
   const [selectedStageId, setSelectedStageId] = useState(null);
-  const [selectedTask, setSelectedTask] = useState(null);
+  const [selectedTaskSession, setSelectedTaskSession] = useState(null);
   const [editTask, setEditTask] = useState(null);
   const [workflows, setWorkflows] = useState([]);
   const [workflowState, setWorkflowState] = useState("SYNCING");
@@ -228,11 +228,11 @@ export function ProjectWorkspacePage() {
         <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
       </div>
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} onOpenTaskChat={setSelectedTask} />}
+      {view === "taskboard" && <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
-      {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
+      {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} onClose={() => setSelectedTaskSession(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
       {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
       {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}

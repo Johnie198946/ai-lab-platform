@@ -784,6 +784,65 @@ def test_concurrent_task_conversation_open_replays_without_500(
     assert len({response.json()["id"] for response in responses}) == 1
 
 
+def test_task_conversation_card_context_is_full_then_incremental(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "card-context")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    base_context = {
+        "schema_version": 1,
+        "project": {"id": project_id, "name": "Card Context", "business_goal": "Ship"},
+        "task": {
+            "qws_task_id": task["id"],
+            "dashi_task_id": "card-1",
+            "title": task["title"],
+            "descriptions": [{"id": "taskboard-description", "content": "first"}],
+            "sub_issues": [],
+            "comments": [],
+        },
+    }
+    request = {
+        "project_id": project_id,
+        "task_id": task["id"],
+        "workflow_id": task["workflow_id"],
+        "agent_version": "hermes-current",
+        "card_context": base_context,
+    }
+
+    first = client.post("/api/v1/task-conversations", json=request)
+    assert first.status_code == 201
+    assert first.json()["context_sync"] == {
+        **first.json()["context_sync"],
+        "mode": "full",
+        "revision": 1,
+        "changes_count": 0,
+    }
+
+    unchanged = client.post("/api/v1/task-conversations", json=request)
+    assert unchanged.status_code == 200
+    assert unchanged.json()["context_sync"]["mode"] == "unchanged"
+    assert unchanged.json()["context_sync"]["revision"] == 1
+
+    changed_context = json.loads(json.dumps(base_context))
+    changed_context["task"]["comments"].append({"id": "comment-1", "body": "new"})
+    request["card_context"] = changed_context
+    incremental = client.post("/api/v1/task-conversations", json=request)
+    assert incremental.status_code == 200
+    assert incremental.json()["context_sync"]["mode"] == "incremental"
+    assert incremental.json()["context_sync"]["revision"] == 2
+    assert incremental.json()["context_sync"]["changes_count"] == 1
+
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-b",
+        "user_id": "user-b",
+        "sub": "user-b",
+        "is_super_admin": False,
+    }
+    cross_tenant = client.get(
+        f"/api/v1/task-conversations/{first.json()['id']}/messages"
+    )
+    assert cross_tenant.status_code == 404
+
+
 def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     _reset_database, monkeypatch
 ):
@@ -809,11 +868,15 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
 
     captured = {}
 
-    async def fake_chat_stream(req, payload, *, knowledge_query=None):
+    async def fake_chat_stream(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+    ):
         captured["calls"] = captured.get("calls", 0) + 1
         captured["question"] = req.question
         captured["knowledge_query"] = knowledge_query
         captured["session_id"] = req.session_id
+        captured["client_session_context"] = req.client_session_context
+        captured["allow_agent_invocation"] = allow_agent_invocation
 
         async def events():
             yield 'data: {"type":"delta","content":"已读取"}\n\n'
@@ -835,6 +898,9 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     assert "下一步做什么" in captured["question"]
     assert captured["knowledge_query"] == "下一步做什么？"
     assert captured["session_id"] == conversation["binding"]["session_id"]
+    assert captured["client_session_context"].session_id == captured["session_id"]
+    assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["client_session_context"].messages[0].content
+    assert captured["allow_agent_invocation"] is False
 
     messages = client.get(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
@@ -876,7 +942,9 @@ def test_task_chat_persists_and_replays_terminal_stream_failure(
     ).json()
     calls = {"count": 0}
 
-    async def failing_chat_stream(req, payload, *, knowledge_query=None):
+    async def failing_chat_stream(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+    ):
         calls["count"] += 1
 
         async def events():
@@ -920,7 +988,9 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
     ).json()
     calls = {"count": 0}
 
-    async def disconnected_chat_stream(req, payload, *, knowledge_query=None):
+    async def disconnected_chat_stream(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+    ):
         calls["count"] += 1
 
         async def events():

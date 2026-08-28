@@ -3,8 +3,9 @@ import { useEffect, useRef, useState } from "react";
 import { platformApi } from "../../services/platformApi";
 import { restoreTaskMessages } from "./taskChatMessages.js";
 
-export function TaskChatDrawer({ project, process, task, onClose }) {
+export function TaskChatDrawer({ project, process, task, cardContext, onClose }) {
   const [conversation, setConversation] = useState(null);
+  const [contextSync, setContextSync] = useState(null);
   const [messages, setMessages] = useState([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
@@ -14,6 +15,7 @@ export function TaskChatDrawer({ project, process, task, onClose }) {
   useEffect(() => {
     let active = true;
     setConversation(null);
+    setContextSync(null);
     setMessages([]);
     setError("");
     platformApi.openTaskConversation({
@@ -21,15 +23,17 @@ export function TaskChatDrawer({ project, process, task, onClose }) {
       task_id: task.id,
       workflow_id: task.workflow_id,
       agent_version: "hermes-current",
+      card_context: cardContext,
     }).then(async (value) => {
       const history = await platformApi.listTaskMessages(value.id);
       if (active) {
         setConversation(value);
+        setContextSync(value.context_sync || null);
         setMessages(restoreTaskMessages(history));
       }
     }).catch((reason) => active && setError(reason.message));
     return () => { active = false; };
-  }, [project.id, task.id, task.workflow_id]);
+  }, [cardContext, project.id, task.id, task.workflow_id]);
 
   useEffect(() => {
     messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
@@ -71,9 +75,9 @@ export function TaskChatDrawer({ project, process, task, onClose }) {
   return (
     <aside className="qw-chat-drawer" aria-label={`${task.title} 任务对话`}>
       <header><div><span className="qw-eyebrow">AI Lab · Task Session</span><h3>{task.title}</h3></div><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></header>
-      <div className="qw-binding"><span>task · {task.id.slice(-8)}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span></div>
+      <div className="qw-binding"><span>task · {task.id.slice(-8)}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span>{contextSync && <span>context v{contextSync.revision} · {contextSync.mode === "full" ? "首次全量" : contextSync.mode === "incremental" ? `增量 +${contextSync.changes_count}` : "已是最新"}</span>}</div>
       <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
-        {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>上下文已由服务端绑定</strong><span>对话不会创建第二套执行状态；执行仍以 AI Lab canonical Workflow 为准。</span></div>}
+        {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>卡片上下文已绑定到租户 Hermes Session</strong><span>首次同步完整卡片，后续仅传递增量；AI 只读，不会在前端创建或修改任务。</span></div>}
         {messages.map((message) => <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "AI Assistant"}</small><p>{message.content || (message.pending ? "正在读取真实任务上下文…" : "")}</p></article>)}
       </div>
       {error && <p className="qw-error compact">{error}</p>}

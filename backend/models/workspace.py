@@ -433,6 +433,39 @@ class WorkspaceTaskConversation(Base):
     )
 
 
+class WorkspaceTaskConversationContext(Base):
+    """Append-only card context observed by one task conversation."""
+
+    __tablename__ = "workspace_task_conversation_contexts"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id",
+            "revision",
+            name="uq_workspace_task_conversation_context_revision",
+        ),
+        UniqueConstraint(
+            "conversation_id",
+            "context_hash",
+            name="uq_workspace_task_conversation_context_hash",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_task_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    context_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    delta: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 class WorkspaceTaskMessage(Base):
     __tablename__ = "workspace_task_messages"
     __table_args__ = (

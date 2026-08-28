@@ -1706,6 +1706,61 @@ export function createTaskboardServer(options = {}) {
     }
     return session;
   }
+
+  function qwsSlug(value, fallback = "qws", maxLength = 40) {
+    return String(value ?? fallback).toLowerCase().replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "").slice(0, maxLength) || fallback;
+  }
+
+  function syncQwsProject(resources, identity, project, process) {
+    const tenant = qwsSlug(identity.tenant_key || identity.user_id || "default");
+    const projectId = `qws-${tenant}-${qwsSlug(project.id)}`.slice(0, 64).replace(/-$/, "");
+    const actor = {
+      type: "user",
+      id: qwsSlug(identity.user_id || identity.username || "qws-user", "qws-user", 96),
+      name: String(identity.username || "QWS 用户").slice(0, 120),
+      avatarUrl: identity.avatar_url || null,
+    };
+    requestScope.run(resources, () => {
+      if (!database.listProjects().some((item) => item.id === projectId)) {
+        const created = database.createProject({ id: projectId, name: project.name, workspacePath: "/workspace" });
+        events.emit("project.created", { project: created });
+      }
+      const existingMarkers = new Set(database.listTasks({ projectId, archived: "false" })
+        .flatMap((item) => item.labels || []));
+      const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
+      const statusMap = { TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", DONE: "done" };
+      for (const task of process.tasks || []) {
+        const marker = `qws-${qwsSlug(task.id)}`.slice(0, 64);
+        if (existingMarkers.has(marker)) continue;
+        const stage = stages.get(task.stage_id);
+        const parsed = parseTaskCreate({
+          projectId,
+          title: task.title,
+          description: [
+            task.summary,
+            stage?.name ? `QWS 阶段：${stage.name}` : "",
+            ...(task.deliverables || []).map((item) => `交付物：${item}`),
+          ].filter(Boolean).join("\n\n"),
+          status: statusMap[task.status] || "backlog",
+          priority: "none",
+          labels: [marker],
+          developmentContext: null,
+          startDate: task.start_date || null,
+          dueDate: task.due_date || null,
+          recurrence: null,
+        });
+        const created = database.createTask({
+          ...parsed,
+          actor,
+          assignee: actor,
+        });
+        events.emit("task.created", { task: created });
+        existingMarkers.add(marker);
+      }
+    });
+    return projectId;
+  }
   let clientStorageWrite = Promise.resolve();
 
   async function readClientStorage() {
@@ -2077,7 +2132,12 @@ export function createTaskboardServer(options = {}) {
       const pathname = url.pathname;
       if (resolved.qwsMode && pathname === "/api/qws/session") {
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
-        await readJson(request);
+        const body = await readJson(request);
+        assertPlainObject(body);
+        assertAllowedKeys(body, new Set(["project_id"]));
+        const requestedProjectId = body.project_id === undefined
+          ? null
+          : stringField(body.project_id, "project_id", { required: true, maxLength: 80 });
         const headers = { accept: "application/json" };
         if (typeof request.headers.authorization === "string") {
           headers.authorization = request.headers.authorization;
@@ -2089,13 +2149,31 @@ export function createTaskboardServer(options = {}) {
         const identity = await upstream.json();
         const tenantKey = String(identity.tenant_key ?? "").trim();
         if (!tenantKey) throw new ApiError(401, "QWS_TENANT_REQUIRED", "AI Lab 会话缺少租户身份");
+        const resources = resourcesForTenant(tenantKey);
+        let taskboardProjectId = null;
+        if (requestedProjectId) {
+          const encodedProjectId = encodeURIComponent(requestedProjectId);
+          const [projectResponse, processResponse] = await Promise.all([
+            fetch(`${resolved.aiLabBaseUrl}/api/v1/projects/${encodedProjectId}`, { headers }),
+            fetch(`${resolved.aiLabBaseUrl}/api/v1/projects/${encodedProjectId}/process`, { headers }),
+          ]);
+          if (!projectResponse.ok || !processResponse.ok) {
+            throw new ApiError(409, "QWS_PROJECT_SYNC_FAILED", "无法从 AI Lab 服务端同步 canonical 项目任务");
+          }
+          taskboardProjectId = syncQwsProject(
+            resources,
+            identity,
+            await projectResponse.json(),
+            await processResponse.json(),
+          );
+        }
         const token = randomUUID().replaceAll("-", "");
         qwsSessions.set(token, {
           identity,
-          resources: resourcesForTenant(tenantKey),
+          resources,
           expiresAt: Date.now() + 12 * 60 * 60 * 1000,
         });
-        return sendJson(response, 200, { user: identity }, {
+        return sendJson(response, 200, { user: identity, taskboard_project_id: taskboardProjectId }, {
           "set-cookie": `qws-taskboard-session=${token}; Path=/taskboard/; HttpOnly; SameSite=Strict; Max-Age=43200`,
         });
       }
