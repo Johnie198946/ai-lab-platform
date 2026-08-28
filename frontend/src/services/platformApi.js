@@ -422,6 +422,21 @@ export const platformApi = {
   saveProjectResourcePlan(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/resource-plan`, { method: "PUT", body: payload });
   },
+  generateProjectSimulationDataset(projectId, simulatorId, payload) {
+    return request(`/api/v1/projects/${projectId}/resource-plan/simulations/${encodeURIComponent(simulatorId)}/datasets`, { method: "POST", body: payload });
+  },
+  listProjectDatasets(projectId) {
+    return request(`/api/v1/projects/${projectId}/datasets`);
+  },
+  listProjectModels(projectId) {
+    return request(`/api/v1/projects/${projectId}/models`);
+  },
+  updateProjectTopologyNode(projectId, nodeId, payload) {
+    return request(`/api/v1/projects/${projectId}/resource-plan/topology/nodes/${encodeURIComponent(nodeId)}`, { method: "PUT", body: payload });
+  },
+  askProjectResourceContext(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/resource-plan/chat`, { method: "POST", body: payload });
+  },
   updateProjectTask(projectId, taskId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: payload });
   },

@@ -24,16 +24,55 @@ test("AI Resource opens a configurable planning and operations workbench", () =>
   assert.match(resourceSource, /架构与拓扑/);
   assert.match(resourceSource, /运行监控/);
   assert.match(resourceSource, /Token Factory/);
+  assert.doesNotMatch(resourceSource, /\["token-factory", "Token Factory"/);
+  assert.match(resourceSource, /WHY TOKEN FACTORY/);
+  assert.match(resourceSource, /DEMO · 原型数据/);
+  assert.match(resourceSource, /SCENARIO ENVIRONMENT TWIN/);
+  assert.match(resourceSource, /场景 Subagent/);
+  assert.match(resourceSource, /SIMULATED/);
+  assert.match(resourceSource, /业务仿真轨迹/);
+  assert.match(resourceSource, /技术资源监控/);
+  assert.match(resourceSource, /SIMULATION SPEC/);
+  assert.match(resourceSource, /ERP 行为模拟 Agent/);
+  assert.match(resourceSource, /SYNTHETIC DATA GENERATOR/);
+  assert.match(resourceSource, /数据集 manifest/);
+  assert.match(resourceSource, /CONTEXT COPILOT/);
+  assert.match(resourceSource, /ContextChatButton/);
   assert.match(resourceSource, /AI 一键推荐/);
   assert.match(apiSource, /resource-plan\/recommend/);
+  assert.match(apiSource, /resource-plan\/simulations/);
+  assert.match(apiSource, /resource-plan\/chat/);
   assert.match(styles, /\.qw-resource-workbench\{width:min\(1840px,calc\(100% - 48px\)\)/);
 });
 
 test("AI Resource labels disconnected truth instead of fabricating live infrastructure", () => {
-  assert.match(resourceSource, /接口未连接/);
+  assert.match(resourceSource, /具体规格与收益以压测和商务方案为准/);
+  assert.match(resourceSource, /当前展示原型数据/);
   assert.match(resourceSource, /不代表资源已经部署/);
   assert.match(resourceSource, /canonical Execution/);
   assert.match(resourceSource, /不会自动部署资源/);
+});
+
+test("AI Resource aligns datasets, models, topology configuration, and monitoring", () => {
+  assert.match(resourceSource, /模拟数据集工作区/);
+  assert.match(resourceSource, /Schema、版本、质量、血缘和使用关系/);
+  assert.match(resourceSource, /大模型仓库/);
+  assert.match(resourceSource, /ONLINE/);
+  assert.match(resourceSource, /OFFLINE/);
+  assert.match(resourceSource, /NODE CONFIGURATION/);
+  assert.match(resourceSource, /dataset_binding/);
+  assert.match(resourceSource, /配置对齐监控矩阵/);
+  assert.match(resourceSource, /resource_inventory/);
+  assert.match(resourceSource, /跨可用区部署拓扑/);
+  assert.match(resourceSource, /Agent Runtime A/);
+  assert.match(resourceSource, /模型仓库 ·/);
+  assert.match(resourceSource, /场景数据与推理流/);
+  assert.match(resourceSource, /Prompt \/ Context/);
+  assert.match(resourceSource, /Token Stream/);
+  assert.match(resourceSource, /决策证据/);
+  assert.match(apiSource, /projects\/\$\{projectId\}\/datasets/);
+  assert.match(apiSource, /projects\/\$\{projectId\}\/models/);
+  assert.match(apiSource, /topology\/nodes/);
 });
 
 test("project process explorer is sticky and rendered on the Dashi taskboard view", () => {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime
 from typing import Any, Literal
@@ -10,7 +11,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.api.auth import require_auth
@@ -24,11 +25,14 @@ from backend.models.workspace import (
     WorkspaceTaskMessage,
 )
 from backend.models.workflow import WorkflowDefinition, WorkflowExecution
+from backend.models.resource_catalog import WorkspaceDataset, WorkspaceDatasetVersion
 from backend.services.resource_planning import (
+    build_resource_context_chat_prompt,
     build_resource_monitoring,
     build_resource_plan_skeleton,
     build_resource_recommendation_prompt,
     extract_resource_plan_json,
+    generate_simulation_dataset,
     normalize_resource_plan,
 )
 from backend.services.workspace_process import (
@@ -128,6 +132,24 @@ class RecommendResourcePlanRequest(BaseModel):
     request_id: str = Field(min_length=8, max_length=100)
     expected_revision: int = Field(ge=0)
     constraints: str = Field(default="", max_length=4000)
+
+
+class GenerateSimulationDatasetRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    row_count: int = Field(default=1000, ge=1, le=1_000_000)
+    seed: int = Field(default=20260828, ge=1, le=2_147_483_647)
+
+
+class ResourceContextChatRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=100)
+    context_id: str = Field(min_length=1, max_length=80)
+    context_title: str = Field(min_length=1, max_length=160)
+    question: str = Field(min_length=1, max_length=12000)
+
+
+class UpdateTopologyNodeRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    config: dict[str, Any]
 
 
 class OpenTaskConversationRequest(BaseModel):
@@ -821,7 +843,7 @@ async def _resource_monitoring(db, process: dict[str, Any], tenant_key: str) -> 
         if item.get("workflow_id")
     }
     if not workflow_ids:
-        return build_resource_monitoring([])
+        return build_resource_monitoring([], process.get("resource_plan"), process.get("tasks") or [])
     executions = (
         await db.scalars(
             select(WorkflowExecution)
@@ -833,7 +855,7 @@ async def _resource_monitoring(db, process: dict[str, Any], tenant_key: str) -> 
             .limit(50)
         )
     ).all()
-    return build_resource_monitoring(list(executions))
+    return build_resource_monitoring(list(executions), process.get("resource_plan"), process.get("tasks") or [])
 
 
 async def _collect_hermes_answer(upstream: StreamingResponse) -> str:
@@ -972,6 +994,146 @@ async def recommend_project_resource_plan(
             "plan": plan,
             "monitoring": await _resource_monitoring(db, process, tenant_key),
         }
+
+
+@router.post("/projects/{project_id}/resource-plan/simulations/{simulator_id}/datasets")
+async def generate_project_simulation_dataset(
+    project_id: str,
+    simulator_id: str,
+    body: GenerateSimulationDatasetRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        current = process.get("resource_plan") or build_resource_plan_skeleton(project, process)
+        plan = normalize_resource_plan(current, project, process, generated_by="user")
+        try:
+            dataset = generate_simulation_dataset(plan, simulator_id, row_count=body.row_count, seed=body.seed)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        datasets = [item for item in plan["scenario_twin"].get("datasets", []) if item.get("id") != dataset["id"]]
+        plan["scenario_twin"]["datasets"] = [dataset, *datasets][:50]
+        digest = hashlib.sha256(json.dumps(dataset, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+        catalog_id = f"ds_{hashlib.sha256(f'{project.id}:{dataset['id']}'.encode()).hexdigest()[:32]}"
+        catalog = await db.scalar(select(WorkspaceDataset).where(WorkspaceDataset.id == catalog_id))
+        if catalog is None:
+            catalog = WorkspaceDataset(
+                id=catalog_id, tenant_key=tenant_key, project_id=project.id, name=dataset["name"],
+                description=f"由 {simulator_id} 场景模拟器生成的可重放数据集。", dataset_type="synthetic",
+                truth_status="SYNTHETIC", lifecycle_stage="validated", owner_user_id=user_id,
+                tags={"simulator_id": simulator_id, "scenario": plan.get("scenario", {}).get("name", "")},
+            )
+            db.add(catalog)
+        latest_version = await db.scalar(select(func.max(WorkspaceDatasetVersion.version)).where(WorkspaceDatasetVersion.dataset_id == catalog_id)) or 0
+        version_id = f"dsv_{uuid4().hex[:32]}"
+        db.add(WorkspaceDatasetVersion(
+            id=version_id, dataset_id=catalog_id, version=latest_version + 1, digest=digest,
+            schema=dataset["schema"], profile={"sample_rows": dataset["sample_rows"][:20]},
+            splits=[{"name": "all", "rows": dataset["row_count"]}], quality=dataset["quality"],
+            lineage={"summary": dataset["lineage"], "simulator_id": simulator_id},
+            generation_manifest={"seed": dataset["seed"], "row_count": dataset["row_count"], "method": "deterministic-synthetic"},
+            row_count=dataset["row_count"], byte_size=0, object_uri="", storage_format="parquet", created_by=user_id,
+        ))
+        catalog.active_version_id = version_id
+        dataset["catalog_id"] = catalog_id
+        dataset["version"] = latest_version + 1
+        dataset["digest"] = digest
+        process["resource_plan"] = plan
+        next_revision = await _cas_project_process(
+            db,
+            project_id=project.id,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            expected_revision=body.expected_revision,
+            process=process,
+        )
+        return {"project_id": project.id, "process_revision": next_revision, "plan": plan, "dataset": dataset}
+
+
+@router.get("/projects/{project_id}/datasets")
+async def list_project_datasets(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        rows = (await db.scalars(select(WorkspaceDataset).where(
+            WorkspaceDataset.project_id == project.id, WorkspaceDataset.tenant_key == tenant_key,
+        ).order_by(WorkspaceDataset.updated_at.desc()))).all()
+        versions = {}
+        if rows:
+            version_rows = (await db.scalars(select(WorkspaceDatasetVersion).where(
+                WorkspaceDatasetVersion.dataset_id.in_([item.id for item in rows])
+            ))).all()
+            versions = {item.id: item for item in version_rows}
+        return {"project_id": project.id, "datasets": [{
+            "id": item.id, "name": item.name, "description": item.description, "type": item.dataset_type,
+            "truth": item.truth_status, "stage": item.lifecycle_stage, "tags": item.tags,
+            "active_version": ({
+                "id": versions[item.active_version_id].id, "version": versions[item.active_version_id].version,
+                "row_count": versions[item.active_version_id].row_count, "schema": versions[item.active_version_id].schema,
+                "profile": versions[item.active_version_id].profile, "quality": versions[item.active_version_id].quality,
+                "lineage": versions[item.active_version_id].lineage, "splits": versions[item.active_version_id].splits,
+                "digest": versions[item.active_version_id].digest, "object_uri": versions[item.active_version_id].object_uri,
+            } if item.active_version_id in versions else None),
+        } for item in rows]}
+
+
+@router.get("/projects/{project_id}/models")
+async def list_project_models(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        process = project.process_snapshot or {}
+        plan = normalize_resource_plan(process.get("resource_plan") or build_resource_plan_skeleton(project, process), project, process, generated_by="user")
+        return {"project_id": project.id, "registry": plan["model_registry"]}
+
+
+@router.put("/projects/{project_id}/resource-plan/topology/nodes/{node_id}")
+async def update_project_topology_node(project_id: str, node_id: str, body: UpdateTopologyNodeRequest, payload=Depends(require_auth)) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        current = process.get("resource_plan") or build_resource_plan_skeleton(project, process)
+        topology = dict(current.get("topology") or {})
+        nodes = topology.get("nodes") or []
+        if node_id not in {str(item.get("id")) for item in nodes} and not node_id.startswith(("deploy-", "flow-")):
+            raise HTTPException(status_code=404, detail="topology node does not exist")
+        node_configs = dict(topology.get("node_configs") or {})
+        node_configs[node_id] = body.config
+        topology["node_configs"] = node_configs
+        current["topology"] = topology
+        plan = normalize_resource_plan(current, project, process, generated_by="user")
+        process["resource_plan"] = plan
+        next_revision = await _cas_project_process(db, project_id=project.id, tenant_key=tenant_key, user_id=user_id, expected_revision=body.expected_revision, process=process)
+        return {"project_id": project.id, "process_revision": next_revision, "node_id": node_id, "config": plan["topology"]["node_configs"].get(node_id, {}), "plan": plan}
+
+
+@router.post("/projects/{project_id}/resource-plan/chat")
+async def ask_project_resource_context(
+    project_id: str,
+    body: ResourceContextChatRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        process = dict(project.process_snapshot or {})
+        plan = process.get("resource_plan") or build_resource_plan_skeleton(project, process)
+        prompt = build_resource_context_chat_prompt(plan, context_id=body.context_id, context_title=body.context_title, question=body.question)
+    upstream = await chat_stream(StreamRequest(question=prompt, request_id=body.request_id, session_id=None, agent_id=None, skill_id=None, quoted_context=None), payload)
+    try:
+        answer = await _collect_hermes_answer(upstream)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Hermes context chat failed: {exc}") from exc
+    return {"project_id": project_id, "context_id": body.context_id, "answer": answer, "truth": "AI_GENERATED"}
 
 
 @router.get("/projects/{project_id}/graphs/{view_type}")
