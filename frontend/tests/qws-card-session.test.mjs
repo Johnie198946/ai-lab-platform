@@ -61,6 +61,17 @@ test("card backfill requires confirmation and routes overflow through session in
   assert.match(drawerSource, /applyTaskBackfillProposal/);
   assert.match(drawerSource, /确认回填/);
   assert.match(drawerSource, /BackfillChangeList/);
+  assert.match(backendSource, /"Host": "127\.0\.0\.1"/);
+  assert.match(drawerSource, /再次点击“确认回填”重试/);
+});
+
+test("card session presents and routes through the project AI employee", () => {
+  assert.match(backendSource, /_ensure_project_ai_employees/);
+  assert.match(backendSource, /"qws_employee"/);
+  assert.match(backendSource, /agent_id=str\(\(conversation\.binding/);
+  assert.match(drawerSource, /AI Lab · AI 员工 Session/);
+  assert.match(drawerSource, /aiEmployee\.display_name/);
+  assert.match(drawerSource, /AI Lab AI 员工/);
 });
 
 test("card session renders and submits Hermes clarification instead of waiting silently", () => {

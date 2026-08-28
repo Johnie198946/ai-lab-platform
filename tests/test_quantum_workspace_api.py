@@ -22,7 +22,10 @@ os.environ.setdefault("AUTHEN_DEV_MODE", "true")
 
 from backend.main import app  # noqa: E402
 from backend.api.auth import require_auth  # noqa: E402
-from backend.api.quantum_workspace import _parse_backfill_block  # noqa: E402
+from backend.api.quantum_workspace import (  # noqa: E402
+    _apply_taskboard_backfill,
+    _parse_backfill_block,
+)
 from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
@@ -302,6 +305,20 @@ def test_business_intake_draft_requires_review_and_applies_atomically(_reset_dat
     assert applied.json()["process_revision"] == 1
     assert applied.json()["task_ids"]
     assert all(not task_id.startswith("draft_") for task_id in applied.json()["task_ids"])
+    active_process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    employees = active_process["ai_employees"]
+    assert employees
+    assert all(employee["is_ai"] for employee in employees)
+    assert all(task["assignee_id"] for task in active_process["tasks"])
+    assert all(
+        task["agent_candidates"][0]["availability"] == "AVAILABLE"
+        for task in active_process["tasks"]
+    )
+    ensured = client.post(f"/api/v1/projects/{project_id}/ai-employees/ensure")
+    assert ensured.status_code == 200
+    assert {item["employee_id"] for item in ensured.json()["ai_employees"]} == {
+        item["employee_id"] for item in employees
+    }
 
     repeated = client.post(
         f"/api/v1/projects/{project_id}/process-drafts/{draft['id']}/apply",
@@ -323,6 +340,51 @@ def test_business_intake_draft_requires_review_and_applies_atomically(_reset_dat
         },
     )
     assert mismatched_replay.status_code == 409
+
+
+def test_taskboard_backfill_uses_trusted_internal_host(monkeypatch):
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["host"] == "127.0.0.1"
+        if request.url.path == "/api/qws/session":
+            return httpx.Response(
+                200,
+                json={"taskboard_project_id": "qws-tenant-project"},
+                headers={
+                    "set-cookie": "qws-taskboard-session=session-token; Path=/taskboard/; HttpOnly"
+                },
+            )
+        if request.method == "GET":
+            return httpx.Response(200, json={"task": {"id": "task-1", "version": 1}})
+        if request.method == "PATCH":
+            return httpx.Response(
+                200,
+                json={"task": {"id": "task-1", "version": 2, "description": "新描述"}},
+            )
+        raise AssertionError(f"unexpected request: {request.method} {request.url}")
+
+    transport = httpx.MockTransport(handler)
+    original_client = httpx.AsyncClient
+
+    def client_factory(*, base_url, timeout):
+        return original_client(base_url=base_url, timeout=timeout, transport=transport)
+
+    monkeypatch.setattr(
+        "backend.api.quantum_workspace.httpx.AsyncClient", client_factory
+    )
+    evidence = asyncio.run(
+        _apply_taskboard_backfill(
+            project_id="project-1",
+            task_id="task-1",
+            expected_version=1,
+            self_changes={"description": "新描述"},
+            authorization="Bearer test-token",
+        )
+    )
+    assert evidence == {"created_issues": [], "attachments": [], "relations": []}
+    assert [request.method for request in requests] == ["POST", "GET", "PATCH"]
 
 
 def test_apply_rejects_stale_project_revision(_reset_database):

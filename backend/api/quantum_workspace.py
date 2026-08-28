@@ -47,7 +47,9 @@ from backend.models.workspace import (
     WorkspaceTaskMessage,
 )
 from backend.models.workflow import WorkflowDefinition, WorkflowExecution
+from backend.models.tenant_agent import TenantAgentModel
 from backend.models.resource_catalog import WorkspaceDataset, WorkspaceDatasetVersion
+from backend.services.agent_capabilities import SAFE_GLOBAL_TOOLS
 from backend.services.resource_planning import (
     build_resource_context_chat_prompt,
     build_resource_monitoring,
@@ -70,6 +72,12 @@ router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
 _TASKBOARD_INTERNAL_URL = os.getenv(
     "DASHI_TASKBOARD_INTERNAL_URL", "http://taskboard:47823"
 ).rstrip("/")
+
+_AI_EMPLOYEE_NAMES = (
+    "林知远", "苏明澈", "顾言川", "沈嘉禾", "周景行", "许清和",
+    "程若溪", "陆星野", "叶书宁", "江予安", "宋知夏", "唐以宁",
+    "韩慕青", "季云舟", "谢闻笙", "白砚秋", "乔思远", "夏语桐",
+)
 
 IPD_TEMPLATE: dict[str, Any] = {
     "id": "ipd-product-development",
@@ -237,6 +245,123 @@ def _scope(payload: dict[str, Any]) -> tuple[str, str]:
         str(payload.get("tenant_key") or "public"),
         str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
+
+
+def _base_agent_for_role(role: str) -> str:
+    normalized = role.lower()
+    if any(token in normalized for token in ("开发", "架构", "集成", "工程", "代码", "技术")):
+        return "coder"
+    if any(token in normalized for token in ("测试", "验证", "合规", "评审", "质量", "审计")):
+        return "supervision"
+    if any(token in normalized for token in ("市场", "需求", "洞察", "研究", "知识", "用户")):
+        return "knowledge"
+    return "main_agent"
+
+
+def _employee_payload(agent: TenantAgentModel) -> dict[str, Any]:
+    manifest = dict(agent.composition_manifest or {})
+    employee = manifest.get("qws_employee") if isinstance(manifest.get("qws_employee"), dict) else {}
+    return {
+        "employee_id": agent.id,
+        "agent_id": agent.id,
+        "display_name": str(employee.get("display_name") or agent.custom_name or "AI 员工"),
+        "job_title": str(employee.get("job_title") or "项目 AI 员工"),
+        "base_agent_id": agent.base_agent_id,
+        "project_id": str(employee.get("project_id") or ""),
+        "is_ai": True,
+    }
+
+
+async def _ensure_project_ai_employees(
+    db,
+    *,
+    project: WorkspaceProject,
+    tenant_key: str,
+    user_id: str,
+    roles: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    role_names = sorted({
+        str(role or "").strip()
+        for role in (
+            roles
+            if roles is not None
+            else [item.get("assignee_role") for item in (project.process_snapshot or {}).get("tasks", [])]
+        )
+        if str(role or "").strip()
+    })
+    existing_rows = (
+        await db.scalars(
+            select(TenantAgentModel).where(
+                TenantAgentModel.tenant_id == tenant_key,
+                TenantAgentModel.owner_user_id == user_id,
+                TenantAgentModel.is_active.is_(True),
+            )
+        )
+    ).all()
+    by_role: dict[str, TenantAgentModel] = {}
+    for row in existing_rows:
+        employee = (row.composition_manifest or {}).get("qws_employee")
+        if not isinstance(employee, dict) or employee.get("project_id") != project.id:
+            continue
+        role = str(employee.get("job_title") or "").strip()
+        if role:
+            by_role[role] = row
+
+    used_display_names = {
+        _employee_payload(row)["display_name"] for row in by_role.values()
+    }
+    employee_tools = [
+        tool for tool in SAFE_GLOBAL_TOOLS if tool in {"knowledge_search", "skill_load"}
+    ]
+    for role in role_names:
+        if role in by_role:
+            continue
+        employee_id = hashlib.sha256(
+            f"qws-employee:{tenant_key}:{user_id}:{project.id}:{role}".encode("utf-8")
+        ).hexdigest()[:32]
+        name_offset = int(employee_id[:8], 16) % len(_AI_EMPLOYEE_NAMES)
+        display_name = next(
+            (
+                _AI_EMPLOYEE_NAMES[(name_offset + offset) % len(_AI_EMPLOYEE_NAMES)]
+                for offset in range(len(_AI_EMPLOYEE_NAMES))
+                if _AI_EMPLOYEE_NAMES[(name_offset + offset) % len(_AI_EMPLOYEE_NAMES)]
+                not in used_display_names
+            ),
+            f"{_AI_EMPLOYEE_NAMES[name_offset]}{len(used_display_names) + 1}",
+        )
+        used_display_names.add(display_name)
+        base_agent_id = _base_agent_for_role(role)
+        agent = TenantAgentModel(
+            id=employee_id,
+            tenant_id=tenant_key,
+            base_agent_id=base_agent_id,
+            custom_name=f"{display_name} · {role}",
+            private_prompt_delta=(
+                f"你是 AI Lab 为项目《{project.name}》配置的 AI 员工。"
+                f"你的姓名是{display_name}，岗位是{role}。只承担该岗位和当前任务卡片范围内的工作；"
+                "事实不足时先向用户澄清，任何项目数据写入必须经过产品确认流程。"
+            ),
+            owner_user_id=user_id,
+            visibility="private",
+            composition_manifest={
+                "allowed_tools": employee_tools,
+                "capability_agent_ids": [base_agent_id],
+                "allow_network": False,
+                "delegation": {"max_concurrent_children": 0, "max_spawn_depth": 0},
+                "qws_employee": {
+                    "project_id": project.id,
+                    "display_name": display_name,
+                    "job_title": role,
+                    "is_ai": True,
+                },
+            },
+            subscribed_knowledge_packs=[],
+            is_active=True,
+        )
+        db.add(agent)
+        by_role[role] = agent
+    await db.flush()
+    return [_employee_payload(by_role[role]) for role in role_names]
 
 
 def _instantiate_payload(
@@ -609,6 +734,38 @@ async def get_project_process(project_id: str, payload=Depends(require_auth)) ->
         }
 
 
+@router.post("/projects/{project_id}/ai-employees/ensure")
+async def ensure_project_ai_employees(
+    project_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
+        employees = await _ensure_project_ai_employees(
+            db,
+            project=project,
+            tenant_key=tenant_key,
+            user_id=user_id,
+        )
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            project = await _project_for_access(
+                db, project_id, tenant_key, user_id, "project:write"
+            )
+            employees = await _ensure_project_ai_employees(
+                db,
+                project=project,
+                tenant_key=tenant_key,
+                user_id=user_id,
+            )
+            await db.commit()
+        return {"project_id": project.id, "ai_employees": employees}
+
+
 @router.post("/projects/{project_id}/business-intakes")
 async def create_business_intake(
     project_id: str,
@@ -838,6 +995,27 @@ async def apply_process_draft(
         project_record_id = project.id
         draft_record_id = draft.id
         process = instantiate_reviewed_process(draft.draft_snapshot)
+        employees = await _ensure_project_ai_employees(
+            db,
+            project=project,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            roles=[item.get("assignee_role") for item in process.get("tasks", [])],
+        )
+        employees_by_role = {item["job_title"]: item for item in employees}
+        for task in process.get("tasks", []):
+            employee = employees_by_role.get(str(task.get("assignee_role") or ""))
+            if employee is None:
+                continue
+            task["assignee_id"] = employee["employee_id"]
+            task["agent_candidates"] = [{
+                "catalog_key": task.get("assignee_role"),
+                "agent_id": employee["agent_id"],
+                "capability_version": "tenant-agent-v1",
+                "availability": "AVAILABLE",
+                "reason": "AI Lab 已按项目流程配置 AI 员工",
+            }]
+        process["ai_employees"] = employees
         instantiate_request = (project.process_snapshot or {}).get("instantiate_request")
         if instantiate_request is not None:
             process["instantiate_request"] = instantiate_request
@@ -2272,6 +2450,39 @@ def _task_from_card_context(
     }
 
 
+async def _resolve_card_ai_employee(
+    db,
+    *,
+    task: dict[str, Any],
+    card_context: dict[str, Any] | None,
+    project_id: str,
+    tenant_key: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    card = (card_context or {}).get("task")
+    assignee = card.get("assignee") if isinstance(card, dict) and isinstance(card.get("assignee"), dict) else {}
+    agent_id = str(task.get("assignee_id") or assignee.get("id") or "").strip()
+    candidates = (
+        await db.scalars(
+            select(TenantAgentModel).where(
+                TenantAgentModel.tenant_id == tenant_key,
+                TenantAgentModel.owner_user_id == user_id,
+                TenantAgentModel.is_active.is_(True),
+            )
+        )
+    ).all()
+    role = str(task.get("assignee_role") or "").strip()
+    for agent in candidates:
+        employee = _employee_payload(agent)
+        if employee["project_id"] != project_id:
+            continue
+        if agent_id and agent.id == agent_id:
+            return employee
+        if role and employee["job_title"] == role:
+            return employee
+    return None
+
+
 _BACKFILL_FIELDS = {
     "title",
     "description",
@@ -2360,7 +2571,9 @@ def _normalize_self_changes(value: Any) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail="AI backfill labels must be unique")
         result["labels"] = normalized_labels
     if "assigneeTarget" in value:
-        if value["assigneeTarget"] not in {"current-user", "codex-agent"}:
+        if value["assigneeTarget"] != "current-user" and not re.fullmatch(
+            r"ai-employee:[a-f0-9]{32}", str(value["assigneeTarget"])
+        ):
             raise HTTPException(status_code=422, detail="AI backfill assigneeTarget is invalid")
         result["assigneeTarget"] = value["assigneeTarget"]
     if "developmentContext" in value:
@@ -2725,10 +2938,18 @@ async def _apply_taskboard_backfill(
         session_response = await client.post(
             "/api/qws/session",
             json={"project_id": project_id},
-            headers={"Authorization": authorization},
+            headers={"Authorization": authorization, "Host": "127.0.0.1"},
         )
         if session_response.status_code != 200:
-            raise HTTPException(status_code=502, detail="Taskboard tenant session could not be opened")
+            try:
+                session_error = session_response.json()
+            except ValueError:
+                session_error = {}
+            message = (
+                ((session_error.get("error") or {}).get("message") if isinstance(session_error, dict) else None)
+                or f"Taskboard tenant session failed ({session_response.status_code})"
+            )
+            raise HTTPException(status_code=502, detail=str(message))
         session_token = session_response.cookies.get("qws-taskboard-session")
         if not session_token:
             raise HTTPException(status_code=502, detail="Taskboard tenant session cookie is missing")
@@ -2737,7 +2958,10 @@ async def _apply_taskboard_backfill(
         )
         if not taskboard_project_id:
             raise HTTPException(status_code=502, detail="Taskboard project binding is missing")
-        headers = {"Cookie": f"qws-taskboard-session={session_token}"}
+        headers = {
+            "Cookie": f"qws-taskboard-session={session_token}",
+            "Host": "127.0.0.1",
+        }
 
         async def call(
             method: str,
@@ -2933,6 +3157,14 @@ async def open_task_conversation(
             task=task,
             card_context=card_context,
         )
+        ai_employee = await _resolve_card_ai_employee(
+            db,
+            task=task,
+            card_context=card_context,
+            project_id=project_record_id,
+            tenant_key=tenant_key,
+            user_id=user_id,
+        )
         existing = await db.scalar(
             select(WorkspaceTaskConversation).where(
                 WorkspaceTaskConversation.tenant_key == tenant_key,
@@ -2972,6 +3204,11 @@ async def open_task_conversation(
                 }
                 existing = legacy
         if existing is not None:
+            existing.binding = {
+                **(existing.binding or {}),
+                "agent_id": ai_employee["agent_id"] if ai_employee else None,
+                "ai_employee": ai_employee,
+            }
             card_session.conversation_id = existing.id
             card_context = await _decorate_card_context_with_sessions(
                 db, snapshot=card_context, current=card_session
@@ -3028,6 +3265,8 @@ async def open_task_conversation(
             "session_id": session_id,
             "agent_version": body.agent_version,
             "binding_kind": task.get("binding_kind") or "canonical_task",
+            "agent_id": ai_employee["agent_id"] if ai_employee else None,
+            "ai_employee": ai_employee,
         }
         conversation = WorkspaceTaskConversation(
             id=conversation_id,
@@ -3545,6 +3784,26 @@ async def stream_task_message(
                 raise HTTPException(
                     status_code=409, detail="bound task or card no longer exists"
                 )
+        assigned_employee = (
+            (conversation.binding or {}).get("ai_employee")
+            if isinstance((conversation.binding or {}).get("ai_employee"), dict)
+            else None
+        )
+        employee_rows = (
+            await db.scalars(
+                select(TenantAgentModel).where(
+                    TenantAgentModel.tenant_id == tenant_key,
+                    TenantAgentModel.owner_user_id == user_id,
+                    TenantAgentModel.is_active.is_(True),
+                )
+            )
+        ).all()
+        project_employees = [
+            _employee_payload(row)
+            for row in employee_rows
+            if ((row.composition_manifest or {}).get("qws_employee") or {}).get("project_id")
+            == project.id
+        ]
         applied_revision = int(
             (conversation.binding or {}).get("applied_context_revision") or 0
         )
@@ -3701,6 +3960,8 @@ async def stream_task_message(
             f"task_summary={task.get('summary') or 'UNSPECIFIED'}",
             f"task_status={task['status']}",
             f"task_assignee_role={task.get('assignee_role') or 'UNASSIGNED'}",
+            f"ai_employee={json.dumps(assigned_employee, ensure_ascii=False)}",
+            f"project_ai_employees={json.dumps(project_employees, ensure_ascii=False)}",
             f"task_deliverables={json.dumps(deliverables, ensure_ascii=False)}",
             f"workflow_id={task.get('workflow_id') or 'UNCONNECTED'}",
             "This Hermes session is bound to exactly one task card inside the authenticated tenant sandbox.",
@@ -3711,7 +3972,7 @@ async def stream_task_message(
             "When this conversation establishes material information that belongs on the current card, or the user asks to update/write back, finish the human-readable answer with exactly one fenced task_backfill JSON block. Do not require the user to repeat a special command after answering a clarification.",
             "Use description for the complete, durable task narrative. Merge confirmed new facts with useful existing description content; never replace it with a fragment. Use appendComment only when the user explicitly requests a comment or audit note; never use a comment as a substitute for the correct field.",
             "Use full replacement values for labels and dates. Use exact task IDs from session_directory for existing relations. Use createIssues for newly discovered work and choose sub_issue, blocks, blocked_by, or related according to its relationship to the current card. addAttachments may contain only useful generated text artifacts.",
-            'Schema: {"summary":"...","self_changes":{"title"?:str,"description"?:str,"status"?:"backlog|todo|in_progress|in_review|blocked|done|canceled","priority"?:"none|urgent|high|medium|low","labels"?:str[],"assigneeTarget"?:"current-user|codex-agent","developmentContext"?:({"type":"branch","branch":str}|{"type":"worktree","path":str,"branch":str|null}|null),"startDate"?:"YYYY-MM-DD"|null,"dueDate"?:"YYYY-MM-DD"|null,"recurrence"?:({"interval":int,"unit":"day|week|month|year"}|null),"appendComment"?:str,"createIssues"?:[{"title":str,"description"?:str,"status"?:str,"priority"?:str,"labels"?:str[],"assigneeTarget"?:str,"developmentContext"?:object|null,"startDate"?:str|null,"dueDate"?:str|null,"recurrence"?:object|null,"relation":"sub_issue|blocks|blocked_by|related"}],"addAttachments"?:[{"filename":str,"contentType":"text/plain|text/markdown|text/csv|application/json","content":str}],"relationChanges"?:{"add"?:[{"type":"parent|blocks|blocked_by|related","target_task_id":str}],"remove"?:[{"type":"parent|blocks|blocked_by|related","target_task_id":str}]}},"routes":[{"target_task_id":"...","content":"..."}]}.',
+            'Schema: {"summary":"...","self_changes":{"title"?:str,"description"?:str,"status"?:"backlog|todo|in_progress|in_review|blocked|done|canceled","priority"?:"none|urgent|high|medium|low","labels"?:str[],"assigneeTarget"?:"current-user|ai-employee:<employee_id>","developmentContext"?:({"type":"branch","branch":str}|{"type":"worktree","path":str,"branch":str|null}|null),"startDate"?:"YYYY-MM-DD"|null,"dueDate"?:"YYYY-MM-DD"|null,"recurrence"?:({"interval":int,"unit":"day|week|month|year"}|null),"appendComment"?:str,"createIssues"?:[{"title":str,"description"?:str,"status"?:str,"priority"?:str,"labels"?:str[],"assigneeTarget"?:str,"developmentContext"?:object|null,"startDate"?:str|null,"dueDate"?:str|null,"recurrence"?:object|null,"relation":"sub_issue|blocks|blocked_by|related"}],"addAttachments"?:[{"filename":str,"contentType":"text/plain|text/markdown|text/csv|application/json","content":str}],"relationChanges"?:{"add"?:[{"type":"parent|blocks|blocked_by|related","target_task_id":str}],"remove"?:[{"type":"parent|blocks|blocked_by|related","target_task_id":str}]}},"routes":[{"target_task_id":"...","content":"..."}]}. Use only exact employee_id values from project_ai_employees.',
             "A task_backfill block is only a proposal. It is never applied without explicit user confirmation in the product UI.",
             (
                 "TASK_SESSION_SKILL_REQUESTED=true. The user explicitly requested a related Skill. If the trusted tenant shortlist contains a clear match, you must call tenant_skill_read before answering. If it contains no clear match, say that no matching tenant Skill was found; never pretend a Skill ran."
@@ -3730,7 +3991,7 @@ async def stream_task_message(
             question=server_goal,
             request_id=body.request_id,
             session_id=conversation.session_id,
-            agent_id=None,
+            agent_id=str((conversation.binding or {}).get("agent_id") or "") or None,
             skill_id=None,
             quoted_context=None,
             client_session_context=hermes_context,

@@ -1306,7 +1306,7 @@ test("issue comments can be created, edited, listed, and deleted", async () => {
   assert.equal(taskAfterDelete.body.task.threadId, null);
 });
 
-test("taskctl issue creation and comments use the Codex Agent identity", async () => {
+test("taskctl issue creation and comments use the AI Lab employee identity", async () => {
   const baseUrl = await startServer();
   const agentHeaders = {
     "x-taskboard-client": "taskctl",
@@ -1323,12 +1323,12 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const task = createTaskResult.body.task;
   assert.equal(task.creatorType, "agent");
   assert.equal(task.creatorId, "codex-agent");
-  assert.equal(task.creatorName, "Codex Agent");
+  assert.equal(task.creatorName, "AI Lab AI 员工");
   assert.equal(task.creatorAvatarUrl, null);
   assert.deepEqual(task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "AI Lab AI 员工",
     avatarUrl: null,
   });
 
@@ -1341,7 +1341,7 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const comment = createCommentResult.body.comment;
   assert.equal(comment.authorType, "agent");
   assert.equal(comment.authorId, "codex-agent");
-  assert.equal(comment.authorName, "Codex Agent");
+  assert.equal(comment.authorName, "AI Lab AI 员工");
   assert.equal(comment.authorAvatarUrl, null);
   assert.equal(comment.threadId, "thread-agent-comment");
 });
@@ -1383,7 +1383,7 @@ test("Codex-hosted user mutations persist the current account identity and avata
   assert.deepEqual(assignedToCodexResult.body.task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "AI Lab AI 员工",
     avatarUrl: null,
   });
 

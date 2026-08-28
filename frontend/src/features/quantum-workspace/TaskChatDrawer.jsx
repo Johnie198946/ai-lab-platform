@@ -73,7 +73,7 @@ const VALUE_LABELS = {
   backlog: "待规划", todo: "待处理", in_progress: "进行中", in_review: "待评审",
   blocked: "已阻塞", done: "已完成", canceled: "已取消",
   none: "无优先级", urgent: "紧急", high: "高", medium: "中", low: "低",
-  "current-user": "当前用户", "codex-agent": "Codex Agent",
+  "current-user": "当前用户", "codex-agent": "AI Lab AI 员工",
 };
 
 const RELATION_LABELS = {
@@ -127,6 +127,10 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   const [error, setError] = useState("");
   const [clock, setClock] = useState(Date.now());
   const messagesRef = useRef(null);
+  const aiEmployee = conversation?.binding?.ai_employee || null;
+  const assistantLabel = aiEmployee
+    ? `${aiEmployee.display_name} · AI 员工`
+    : "AI Lab AI 员工";
 
   useEffect(() => {
     let active = true;
@@ -271,7 +275,9 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       setContextSync(completed.context_sync || contextSync);
       setProposals((current) => current.map((item) => item.id === proposal.id ? completed : item));
     } catch (reason) {
-      setError(reason.status === 409 ? "卡片已被其他操作更新，请重新生成回填方案。" : reason.message);
+      setError(reason.status === 409
+        ? "卡片已被其他操作更新，请重新生成回填方案。"
+        : `${reason.message} 请检查后再次点击“确认回填”重试。`);
     } finally {
       setProposalBusy("");
     }
@@ -292,14 +298,14 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
 
   return (
     <aside className="qw-chat-drawer" aria-label={`${task.title} 任务对话`}>
-      <header><div><span className="qw-eyebrow">AI Lab · Task Session</span><h3>{task.title}</h3></div><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></header>
-      <div className="qw-binding"><span>task · {task.id.slice(-8)}</span><span>card v{currentCardContext?.task?.version ?? "-"}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span>{contextSync && <span>context v{contextSync.revision} · {contextSync.mode === "full" ? "首次全量" : contextSync.mode === "incremental" ? `增量 +${contextSync.changes_count}` : "已是最新"}</span>}</div>
+      <header><div><span className="qw-eyebrow">AI Lab · AI 员工 Session</span><h3>{task.title}</h3></div><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></header>
+      <div className="qw-binding">{aiEmployee && <span>{aiEmployee.display_name} · AI 员工 · {aiEmployee.job_title}</span>}<span>task · {task.id.slice(-8)}</span><span>card v{currentCardContext?.task?.version ?? "-"}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span>{contextSync && <span>context v{contextSync.revision} · {contextSync.mode === "full" ? "首次全量" : contextSync.mode === "incremental" ? `增量 +${contextSync.changes_count}` : "已是最新"}</span>}</div>
       <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
         {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>卡片上下文已绑定到租户 Hermes Session</strong><span>首次同步完整卡片，之后每次发言前只同步增量；要求 AI 回填时会先生成方案，确认后才写入。</span></div>}
         {messages.map((message) => {
           const elapsedMs = message.execution ? (message.pending ? clock - message.execution.startedAt : message.execution.elapsedMs) : 0;
           const slowNotice = message.waitingForClarification ? "Hermes 已暂停执行，正在等待你的回答。" : message.pending && elapsedMs >= 20000 ? "模型响应较慢，系统会在首个输出、技能调用或澄清问题前最多等待 60 秒。" : message.pending && elapsedMs >= 8000 ? "模型正在规划，可继续等待。" : "";
-          return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "AI Assistant"}</small>{message.role === "assistant" && message.execution && <details className="qw-execution-trace" open={message.pending || undefined}><summary><span>{message.execution.current || "执行详情"}</span><time>{elapsedLabel(elapsedMs)}</time></summary><ol>{message.execution.steps.map((step) => <li key={`${step.signature}-${step.elapsedMs}`}><time>{elapsedLabel(step.elapsedMs)}</time><span>{step.detail}</span></li>)}</ol>{slowNotice && <p className="qw-execution-slow">{slowNotice}</p>}</details>}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
+          return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : assistantLabel}</small>{message.role === "assistant" && message.execution && <details className="qw-execution-trace" open={message.pending || undefined}><summary><span>{message.execution.current || "执行详情"}</span><time>{elapsedLabel(elapsedMs)}</time></summary><ol>{message.execution.steps.map((step) => <li key={`${step.signature}-${step.elapsedMs}`}><time>{elapsedLabel(step.elapsedMs)}</time><span>{step.detail}</span></li>)}</ol>{slowNotice && <p className="qw-execution-slow">{slowNotice}</p>}</details>}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
         })}
         {clarification && <section className="qw-clarification" aria-live="assertive" aria-labelledby="qw-clarification-question">
           <div><small>AI 需要补充信息</small><strong id="qw-clarification-question">{clarification.question}</strong><span>回答后将继续生成字段级回填方案。</span></div>
@@ -317,7 +323,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
           {proposal.status === "proposed" && <div className="qw-backfill-actions"><button type="button" onClick={() => discardProposal(proposal)} disabled={proposalBusy === proposal.id}>放弃</button><button type="button" className="qw-button primary" onClick={() => applyProposal(proposal)} disabled={proposalBusy === proposal.id}><Check size={14} />确认回填</button></div>}
         </section>)}
       </div>
-      {error && <p className="qw-error compact">{error}</p>}
+      {error && <p className="qw-error compact" role="alert">{error}</p>}
       <form className="qw-chat-form" onSubmit={send}><label className="qw-sr-only" htmlFor="qw-task-chat-question">围绕当前任务提问</label><textarea id="qw-task-chat-question" rows={2} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={conversation ? "围绕当前任务提问；如需写入，请明确说“生成回填方案”…" : "正在建立服务端绑定…"} disabled={!conversation || busy} /><button className="qw-button primary" aria-label="发送消息" disabled={!conversation || busy || !question.trim()}><Send size={16} /></button></form>
     </aside>
   );

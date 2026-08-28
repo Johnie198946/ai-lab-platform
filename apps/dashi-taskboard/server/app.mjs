@@ -59,7 +59,7 @@ const TRUSTED_ORIGINS_ENV = "CODEX_TASKBOARD_TRUSTED_ORIGINS";
 const CODEX_AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
-  name: "Codex Agent",
+  name: "AI Lab AI 员工",
   avatarUrl: null,
 };
 const CONTENT_TYPES = new Map([
@@ -603,15 +603,32 @@ function actorFromRequest(request) {
 
 function parseAssigneeTarget(value) {
   if (value === undefined) return undefined;
-  if (value !== "current-user" && value !== "codex-agent") {
-    throw new ApiError(400, "INVALID_FIELD", "'assigneeTarget' must be current-user or codex-agent");
+  if (
+    value !== "current-user"
+    && value !== "codex-agent"
+    && !/^ai-employee:[a-f0-9]{32}$/.test(value)
+  ) {
+    throw new ApiError(400, "INVALID_FIELD", "'assigneeTarget' must be current-user or a project AI employee");
   }
   return value;
 }
 
-function resolveAssignee(target, actor) {
+function resolveAssignee(target, actor, aiEmployees = []) {
   if (target === undefined) return actor;
   if (target === "codex-agent") return CODEX_AGENT_ACTOR;
+  if (target.startsWith("ai-employee:")) {
+    const employeeId = target.slice("ai-employee:".length);
+    const employee = aiEmployees.find((item) => item?.employee_id === employeeId);
+    if (!employee) {
+      throw new ApiError(400, "INVALID_FIELD", "AI employee is not part of this project session");
+    }
+    return {
+      type: "agent",
+      id: employee.employee_id,
+      name: `${employee.display_name} · AI 员工 · ${employee.job_title}`.slice(0, 120),
+      avatarUrl: null,
+    };
+  }
   if (actor.type !== "user") {
     throw new ApiError(400, "INVALID_FIELD", "'current-user' requires a user request identity");
   }
@@ -1712,7 +1729,7 @@ export function createTaskboardServer(options = {}) {
       .replace(/^-|-$/g, "").slice(0, maxLength) || fallback;
   }
 
-  function syncQwsProject(resources, identity, project, process) {
+  function syncQwsProject(resources, identity, project, process, aiEmployees = []) {
     const tenant = qwsSlug(identity.tenant_key || identity.user_id || "default");
     const projectId = `qws-${tenant}-${qwsSlug(project.id)}`.slice(0, 64).replace(/-$/, "");
     const actor = {
@@ -1729,11 +1746,19 @@ export function createTaskboardServer(options = {}) {
       const existingMarkers = new Set(database.listTasks({ projectId, archived: "false" })
         .flatMap((item) => item.labels || []));
       const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
+      const employeesByRole = new Map(aiEmployees.map((item) => [item.job_title, item]));
       const statusMap = { TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", DONE: "done" };
       for (const task of process.tasks || []) {
         const marker = `qws-${qwsSlug(task.id)}`.slice(0, 64);
         if (existingMarkers.has(marker)) continue;
         const stage = stages.get(task.stage_id);
+        const employee = employeesByRole.get(task.assignee_role);
+        const assignee = employee ? {
+          type: "agent",
+          id: employee.employee_id,
+          name: `${employee.display_name} · AI 员工 · ${employee.job_title}`.slice(0, 120),
+          avatarUrl: null,
+        } : actor;
         const parsed = parseTaskCreate({
           projectId,
           title: task.title,
@@ -1753,7 +1778,7 @@ export function createTaskboardServer(options = {}) {
         const created = database.createTask({
           ...parsed,
           actor,
-          assignee: actor,
+          assignee,
         });
         events.emit("task.created", { task: created });
         existingMarkers.add(marker);
@@ -2153,27 +2178,43 @@ export function createTaskboardServer(options = {}) {
         let taskboardProjectId = null;
         if (requestedProjectId) {
           const encodedProjectId = encodeURIComponent(requestedProjectId);
-          const [projectResponse, processResponse] = await Promise.all([
+          const [projectResponse, processResponse, employeesResponse] = await Promise.all([
             fetch(`${resolved.aiLabBaseUrl}/api/v1/projects/${encodedProjectId}`, { headers }),
             fetch(`${resolved.aiLabBaseUrl}/api/v1/projects/${encodedProjectId}/process`, { headers }),
+            fetch(`${resolved.aiLabBaseUrl}/api/v1/projects/${encodedProjectId}/ai-employees/ensure`, {
+              method: "POST",
+              headers: { ...headers, "content-type": "application/json" },
+              body: "{}",
+            }),
           ]);
-          if (!projectResponse.ok || !processResponse.ok) {
-            throw new ApiError(409, "QWS_PROJECT_SYNC_FAILED", "无法从 AI Lab 服务端同步 canonical 项目任务");
+          if (!projectResponse.ok || !processResponse.ok || !employeesResponse.ok) {
+            throw new ApiError(409, "QWS_PROJECT_SYNC_FAILED", "无法从 AI Lab 服务端同步项目任务与 AI 员工");
           }
+          const employeesPayload = await employeesResponse.json();
+          const aiEmployees = Array.isArray(employeesPayload.ai_employees)
+            ? employeesPayload.ai_employees
+            : [];
           taskboardProjectId = syncQwsProject(
             resources,
             identity,
             await projectResponse.json(),
             await processResponse.json(),
+            aiEmployees,
           );
+          identity.ai_employees = aiEmployees;
         }
         const token = randomUUID().replaceAll("-", "");
         qwsSessions.set(token, {
           identity,
           resources,
+          aiEmployees: identity.ai_employees || [],
           expiresAt: Date.now() + 12 * 60 * 60 * 1000,
         });
-        return sendJson(response, 200, { user: identity, taskboard_project_id: taskboardProjectId }, {
+        return sendJson(response, 200, {
+          user: identity,
+          taskboard_project_id: taskboardProjectId,
+          ai_employees: identity.ai_employees || [],
+        }, {
           "set-cookie": `qws-taskboard-session=${token}; Path=/taskboard/; HttpOnly; SameSite=Strict; Max-Age=43200`,
         });
       }
@@ -2861,7 +2902,11 @@ export function createTaskboardServer(options = {}) {
           const task = database.createTask({
             ...input,
             actor,
-            assignee: resolveAssignee(assigneeTarget, actor),
+            assignee: resolveAssignee(
+              assigneeTarget,
+              actor,
+              qwsSessionFromRequest(request)?.aiEmployees || [],
+            ),
           });
           events.emit("task.created", { task });
           return sendJson(response, 201, { task });
@@ -3275,7 +3320,11 @@ export function createTaskboardServer(options = {}) {
             jiraChanged = await jira.updateTask(current, changes);
           }
           if (assigneeTarget !== undefined) {
-            changes.assignee = resolveAssignee(assigneeTarget, actor);
+            changes.assignee = resolveAssignee(
+              assigneeTarget,
+              actor,
+              qwsSessionFromRequest(request)?.aiEmployees || [],
+            );
           }
           let task;
           try {

@@ -28,9 +28,16 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
         stages: [{ id: "stage-1", name: "需求" }],
         tasks: [{
           id: "task-1", stage_id: "stage-1", title: "Canonical task", summary: "Server owned",
-          status: "TODO", deliverables: ["Evidence"], start_date: null, due_date: null,
+          status: "TODO", assignee_role: "需求经理", deliverables: ["Evidence"], start_date: null, due_date: null,
         }],
       }));
+      return;
+    }
+    if (request.url === "/api/v1/projects/prj-sync/ai-employees/ensure") {
+      response.end(JSON.stringify({ ai_employees: [{
+        employee_id: "a".repeat(32), agent_id: "a".repeat(32), display_name: "林知远",
+        job_title: "需求经理", base_agent_id: "knowledge", project_id: "prj-sync", is_ai: true,
+      }] }));
       return;
     }
     response.end(JSON.stringify({ tenant_key: tenant, user_id: `${tenant}-user`, username: tenant }));
@@ -60,6 +67,12 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     assert.equal(tasksA.tasks.length, 1);
     assert.equal(tasksA.tasks[0].title, "Canonical task");
     assert.deepEqual(tasksA.tasks[0].labels, ["qws-task-1"]);
+    assert.deepEqual(tasksA.tasks[0].assignee, {
+      type: "agent",
+      id: "a".repeat(32),
+      name: "林知远 · AI 员工 · 需求经理",
+      avatarUrl: null,
+    });
 
     const sessionB = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
