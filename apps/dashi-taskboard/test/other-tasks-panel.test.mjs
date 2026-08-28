@@ -112,15 +112,27 @@ test("legacy empty-column and manual visibility runtime paths are removed", asyn
   await assert.rejects(access(new URL("../web/src/components/ColumnVisibilityMenu.tsx", import.meta.url)));
 });
 
-test("the adaptive desktop grid fills available width and degrades to horizontal scrolling", () => {
+test("the adaptive desktop grid stays compact, centered, and degrades to horizontal scrolling", () => {
   assert.match(cssBlock(".board"), /display: grid/);
-  assert.match(cssBlock(".board"), /grid-template-columns: repeat\(var\(--main-column-count, 3\), minmax\(300px, 1fr\)\)/);
+  assert.match(cssBlock(".board"), /grid-template-columns: repeat\(var\(--main-column-count, 3\), minmax\(280px, 1fr\)\)/);
   assert.match(cssBlock(".board"), /width: 100%/);
-  assert.match(cssBlock(".board"), /min-width: var\(--main-board-min-width, 948px\)/);
+  assert.match(cssBlock(".board"), /min-width: var\(--main-board-min-width, 876px\)/);
+  assert.match(cssBlock(".board-scroll"), /justify-self: center/);
+  assert.match(cssBlock(".board-scroll"), /margin-inline: auto/);
+  assert.match(cssBlock(".board-column"), /max-width: 336px/);
+  assert.match(cssBlock(".board-column"), /min-width: 280px/);
   assert.match(cssBlock(".board-scroll"), /overflow-x: auto/);
   assert.match(cssBlock(".board-scroll"), /overflow-y: hidden/);
   assert.match(cssBlock(".column-list"), /overflow-y: auto/);
   assert.match(styles, /@media \(max-width: 719px\)[\s\S]*?\.board \{[\s\S]*?display: flex[\s\S]*?width: max-content/);
   assert.match(styles, /@media \(max-width: 719px\)[\s\S]*?\.board-column \{[\s\S]*?flex: 0 0 300px/);
   assert.match(styles, /@media \(max-width: 719px\)[\s\S]*?\.other-tasks-panel \{[\s\S]*?width: 300px/);
+});
+
+test("the list view uses a centered reading width and responsive row layout", () => {
+  assert.match(cssBlock(".issue-list-groups"), /width: min\(100%, 1180px\)/);
+  assert.match(cssBlock(".issue-list-groups"), /margin-inline: auto/);
+  assert.match(cssBlock(".issue-list-group"), /border-radius: 12px/);
+  assert.match(cssBlock(".issue-list-row"), /min-height: 50px/);
+  assert.match(styles, /@media \(max-width: 760px\)[\s\S]*?\.issue-list-row \{[\s\S]*?grid-template-areas:/);
 });

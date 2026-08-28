@@ -2211,10 +2211,10 @@ export function App() {
 
   const mainBoardItems = boardDisplaySettings.mainStatuses;
   const mainColumnCount = Math.max(mainBoardItems.length, 1);
-  const mainBoardMinWidth = (mainColumnCount * 300) + ((mainColumnCount - 1) * 24);
-  const mainBoardMaxWidth = (mainColumnCount * 400) + ((mainColumnCount - 1) * 24);
+  const mainBoardMinWidth = (mainColumnCount * 280) + ((mainColumnCount - 1) * 18);
+  const mainBoardMaxWidth = (mainColumnCount * 336) + ((mainColumnCount - 1) * 18);
   const otherTasksColumnCount = mainColumnCount + 1;
-  const otherTasksWidth = `clamp(300px, calc(${100 / otherTasksColumnCount}% - ${(36 + (mainColumnCount * 24)) / otherTasksColumnCount}px), 400px)`;
+  const otherTasksWidth = `clamp(280px, calc(${100 / otherTasksColumnCount}% - ${(64 + (mainColumnCount * 18)) / otherTasksColumnCount}px), 336px)`;
   const otherTaskTabs = boardDisplaySettings.sidebarStatuses;
   const otherTaskTabsKey = otherTaskTabs.join(",");
   const otherTasksAvailable = otherTaskTabs.length > 0;
