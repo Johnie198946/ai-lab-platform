@@ -56,7 +56,12 @@ from backend.services.agent_capabilities import (
     match_explicit_tenant_agent,
     resolve_agent,
 )
-from backend.services.chat_triage import TriageDecision, classify_request
+from backend.services.chat_triage import (
+    GENERAL_QA,
+    PROFESSIONAL_TASK,
+    TriageDecision,
+    classify_request,
+)
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 
@@ -662,6 +667,39 @@ def _skill_routing_enabled(agent: EffectiveAgent, skill_id: str | None) -> bool:
     )
 
 
+def _classify_stream_request(
+    req: "StreamRequest",
+    *,
+    delegated: bool,
+    skill_id: str | None,
+    trusted_professional_surface: bool,
+    question: str | None = None,
+) -> TriageDecision:
+    """Apply a server-trusted professional surface without trusting the client.
+
+    A task-card Session is already a bounded work surface.  Its ordinary task
+    questions must keep tenant skills eligible even when the wording alone
+    looks like GENERAL_QA.  Casual turns remain casual and no public request
+    field can enable this override.
+    """
+    decision = classify_request(
+        question or req.question,
+        explicit_agent=(
+            delegated
+            or bool(req.agent_id and req.agent_id != DEFAULT_AGENT_ID)
+        ),
+        explicit_skill=bool(skill_id),
+    )
+    if trusted_professional_surface and decision.route_class == GENERAL_QA:
+        return TriageDecision(
+            PROFESSIONAL_TASK,
+            max(0.94, decision.confidence),
+            "trusted_professional_surface",
+            decision.evidence_requirements,
+        )
+    return decision
+
+
 def _triage_frame(decision: TriageDecision, config: dict[str, Any]) -> str:
     triage = dict(config.get("triage") or {})
     payload = {
@@ -1112,6 +1150,8 @@ async def stream_chat(
     *,
     knowledge_query: str | None = None,
     allow_agent_invocation: bool = True,
+    trusted_professional_surface: bool = False,
+    first_activity_timeout_seconds: float | None = None,
 ) -> StreamingResponse:
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
 
@@ -1219,13 +1259,12 @@ async def stream_chat(
             delegated_target = invocation.agent if invocation.status == "matched" else None
             routed_agent = delegated_target or agent
             yield _route_frame(routed_agent, delegated=delegated_target is not None)
-            triage = classify_request(
-                req.question,
-                explicit_agent=(
-                    delegated_target is not None
-                    or bool(req.agent_id and req.agent_id != DEFAULT_AGENT_ID)
-                ),
-                explicit_skill=bool(skill_id),
+            triage = _classify_stream_request(
+                req,
+                delegated=delegated_target is not None,
+                skill_id=skill_id,
+                trusted_professional_surface=trusted_professional_surface,
+                question=(knowledge_query if trusted_professional_surface else None),
             )
             main_agent_config = _triaged_agent_config(
                 agent,
@@ -1301,8 +1340,65 @@ async def stream_chat(
                 "client_capabilities": req.client_capabilities,
             }
             kwargs["request_id"] = effective_request_id
-            async for frame in _call_bridge_stream(routed_goal, isolated_session_id, **kwargs):
+            bridge_stream = _call_bridge_stream(
+                routed_goal, isolated_session_id, **kwargs
+            )
+            first_activity_seen = False
+            first_activity_deadline = (
+                asyncio.get_running_loop().time() + first_activity_timeout_seconds
+                if first_activity_timeout_seconds
+                and first_activity_timeout_seconds > 0
+                else None
+            )
+            while True:
+                try:
+                    if first_activity_seen or first_activity_deadline is None:
+                        frame = await anext(bridge_stream)
+                    else:
+                        remaining = max(
+                            0.001,
+                            first_activity_deadline
+                            - asyncio.get_running_loop().time(),
+                        )
+                        frame = await asyncio.wait_for(
+                            anext(bridge_stream), timeout=remaining
+                        )
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    try:
+                        async with httpx.AsyncClient(timeout=5) as client:
+                            await client.post(
+                                HERMES_BRIDGE_CANCEL_URL,
+                                json={"session_id": isolated_session_id},
+                            )
+                    except Exception:
+                        pass
+                    await bridge_stream.aclose()
+                    event = {
+                        "type": "error",
+                        "code": "first_activity_timeout",
+                        "message": (
+                            f"AI 在 {int(first_activity_timeout_seconds or 0)} 秒内"
+                            "未开始生成内容或调用技能，本次运行已停止，请重试。"
+                        ),
+                    }
+                    await record_llm_usage(
+                        auth_payload=payload,
+                        usage_payload=None,
+                        latency_ms=round((time.perf_counter() - started) * 1000),
+                        success=False,
+                    )
+                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                    break
                 event = _stream_event(frame)
+                if event and event.get("type") in {
+                    "delta",
+                    "tool_start",
+                    "tool_complete",
+                    "clarify",
+                }:
+                    first_activity_seen = True
                 if event and event.get("type") == "knowledge_action_draft":
                     event = await _authorize_knowledge_action_event(
                         event,

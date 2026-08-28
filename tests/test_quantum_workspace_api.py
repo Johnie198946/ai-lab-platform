@@ -882,10 +882,16 @@ def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
     captured = {}
 
     async def fake_chat_stream(
-        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
         captured["question"] = req.question
         captured["context"] = req.client_session_context
+        captured["trusted_professional_surface"] = kwargs.get(
+            "trusted_professional_surface"
+        )
+        captured["first_activity_timeout_seconds"] = kwargs.get(
+            "first_activity_timeout_seconds"
+        )
 
         async def events():
             yield 'data: {"type":"done","answer":"已读取纯卡片会话"}\n\n'
@@ -895,12 +901,223 @@ def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
     monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
     streamed = client.post(
         f"/api/v1/task-conversations/{opened.json()['id']}/messages/stream",
-        json={"question": "总结此卡片", "request_id": "card-only-stream-0001"},
+        json={
+            "question": "调用相关技能总结此卡片",
+            "request_id": "card-only-stream-0001",
+        },
     )
     assert streamed.status_code == 200
     assert "已读取纯卡片会话" in streamed.text
     assert card_id in captured["question"]
+    assert "TASK_SESSION_SKILL_REQUESTED=true" in captured["question"]
     assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["context"].messages[0].content
+    assert captured["trusted_professional_surface"] is True
+    assert captured["first_activity_timeout_seconds"] == 60
+
+
+def test_card_backfill_applies_only_self_and_routes_overflow_to_target_session(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "card-backfill")
+    source_id = "b685c17a-8b34-4a9e-b311-000000000011"
+    target_id = "b685c17a-8b34-4a9e-b311-000000000012"
+
+    def context(task_id, title, description, version=1):
+        return {
+            "schema_version": 1,
+            "project": {"id": project_id, "name": "Backfill", "business_goal": "Ship"},
+            "session_registry": [
+                {
+                    "task_id": source_id,
+                    "identifier": "QWS-11",
+                    "title": "需求梳理",
+                    "responsibility": "梳理建设需求",
+                    "status": "todo",
+                    "card_version": version if task_id == source_id else 1,
+                },
+                {
+                    "task_id": target_id,
+                    "identifier": "QWS-12",
+                    "title": "接口开发",
+                    "responsibility": "实现识别接口",
+                    "status": "todo",
+                    "card_version": 1,
+                },
+            ],
+            "task": {
+                "qws_task_id": task_id,
+                "dashi_task_id": task_id,
+                "title": title,
+                "descriptions": [
+                    {
+                        "id": "taskboard-description",
+                        "source": "taskboard_description",
+                        "content": description,
+                    }
+                ],
+                "comments": [],
+                "sub_issues": [],
+                "status": "todo",
+                "version": version,
+                "qws": {"binding_kind": "taskboard_card", "workflow_id": None},
+            },
+        }
+
+    opened = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": source_id,
+            "workflow_id": None,
+            "agent_version": "hermes-current",
+            "card_context": context(source_id, "需求梳理", "旧描述"),
+        },
+    )
+    assert opened.status_code == 201, opened.text
+
+    async def fake_chat_stream(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
+    ):
+        async def events():
+            answer = (
+                "已形成回填方案。\n\n```task_backfill\n"
+                + json.dumps(
+                    {
+                        "summary": "更新需求，并把接口工作交给接口卡片",
+                        "self_changes": {"description": "新需求描述"},
+                        "routes": [
+                            {"target_task_id": target_id, "content": "实现新增的人脸识别接口"}
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n```"
+            )
+            yield f'data: {json.dumps({"type": "done", "answer": answer}, ensure_ascii=False)}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
+    request_id = "card-backfill-message-0001"
+    streamed = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages/stream",
+        json={"question": "生成回填方案", "request_id": request_id},
+    )
+    assert streamed.status_code == 200
+    proposal_response = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/backfill-proposals",
+        json={"assistant_request_id": request_id},
+    )
+    assert proposal_response.status_code == 201, proposal_response.text
+    proposal = proposal_response.json()
+    assert proposal["self_changes"] == {"description": "新需求描述"}
+    assert proposal["routed_items"][0]["target_task_id"] == target_id
+
+    updated_context = context(source_id, "需求梳理", "新需求描述", version=2)
+    completed = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/backfill-proposals/{proposal['id']}/complete",
+        json={"card_context": updated_context},
+    )
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["status"] == "applied"
+    assert completed.json()["context_sync"]["mode"] == "incremental"
+
+    target = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": target_id,
+            "workflow_id": None,
+            "agent_version": "hermes-current",
+            "card_context": context(target_id, "接口开发", "实现接口"),
+        },
+    )
+    assert target.status_code == 201, target.text
+    captured = {}
+
+    async def capture_target(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
+    ):
+        captured["context"] = req.client_session_context
+
+        async def events():
+            yield 'data: {"type":"done","answer":"已接收跨卡工作"}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", capture_target)
+    delivered = client.post(
+        f"/api/v1/task-conversations/{target.json()['id']}/messages/stream",
+        json={"question": "读取新工作", "request_id": "target-inbox-message-0001"},
+    )
+    assert delivered.status_code == 200
+    transferred = "\n".join(message.content for message in captured["context"].messages)
+    assert "实现新增的人脸识别接口" in transferred
+    assert source_id in transferred
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert all(task["id"] not in {source_id, target_id} for task in process["tasks"])
+
+
+def test_card_session_keeps_legacy_canonical_conversation_history(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "card-session-identity")
+    canonical = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    legacy = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": canonical["id"],
+            "workflow_id": canonical["workflow_id"],
+            "agent_version": "hermes-current",
+        },
+    )
+    assert legacy.status_code == 201
+    card_id = "b685c17a-8b34-4a9e-b311-000000000013"
+    rebound = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": card_id,
+            "workflow_id": canonical["workflow_id"],
+            "agent_version": "hermes-current",
+            "card_context": {
+                "schema_version": 1,
+                "project": {"id": project_id, "name": "Identity", "business_goal": "Ship"},
+                "session_registry": [
+                    {
+                        "task_id": card_id,
+                        "title": canonical["title"],
+                        "responsibility": canonical["summary"],
+                        "status": "todo",
+                        "card_version": 1,
+                    }
+                ],
+                "task": {
+                    "qws_task_id": card_id,
+                    "dashi_task_id": card_id,
+                    "title": canonical["title"],
+                    "descriptions": [
+                        {"id": "taskboard-description", "source": "taskboard_description", "content": canonical["summary"]}
+                    ],
+                    "comments": [],
+                    "sub_issues": [],
+                    "status": "todo",
+                    "version": 1,
+                    "qws": {
+                        "binding_kind": "taskboard_card",
+                        "canonical_task_id": canonical["id"],
+                        "stage_id": canonical["stage_id"],
+                        "workflow_id": canonical["workflow_id"],
+                    },
+                },
+            },
+        },
+    )
+    assert rebound.status_code == 200, rebound.text
+    assert rebound.json()["id"] == legacy.json()["id"]
+    assert rebound.json()["binding"]["task_id"] == card_id
+    assert rebound.json()["binding"]["canonical_task_id"] == canonical["id"]
 
 
 def test_task_chat_is_server_bound_and_persists_real_stream_messages(
@@ -929,7 +1146,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     captured = {}
 
     async def fake_chat_stream(
-        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
         captured["calls"] = captured.get("calls", 0) + 1
         captured["question"] = req.question
@@ -937,6 +1154,9 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         captured["session_id"] = req.session_id
         captured["client_session_context"] = req.client_session_context
         captured["allow_agent_invocation"] = allow_agent_invocation
+        captured["trusted_professional_surface"] = kwargs.get(
+            "trusted_professional_surface"
+        )
 
         async def events():
             yield 'data: {"type":"delta","content":"已读取"}\n\n'
@@ -961,6 +1181,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     assert captured["client_session_context"].session_id == captured["session_id"]
     assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["client_session_context"].messages[0].content
     assert captured["allow_agent_invocation"] is False
+    assert captured["trusted_professional_surface"] is True
 
     messages = client.get(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
@@ -1003,7 +1224,7 @@ def test_task_chat_persists_and_replays_terminal_stream_failure(
     calls = {"count": 0}
 
     async def failing_chat_stream(
-        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
         calls["count"] += 1
 
@@ -1049,7 +1270,7 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
     calls = {"count": 0}
 
     async def disconnected_chat_stream(
-        req, payload, *, knowledge_query=None, allow_agent_invocation=True
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
         calls["count"] += 1
 

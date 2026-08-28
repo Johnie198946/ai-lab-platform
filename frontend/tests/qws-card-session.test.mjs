@@ -14,9 +14,9 @@ const drawerSource = await readFile(
 test("opening a card session never creates a canonical task in the web host", () => {
   const openHandler = hostSource.slice(hostSource.indexOf('event.data.type !== "taskboard:create-thread"'));
   assert.doesNotMatch(openHandler, /createProjectTask/);
-  assert.match(openHandler, /resolveCanonicalTask/);
+  assert.match(hostSource, /resolveCanonicalTask/);
   assert.match(hostSource, /binding_kind: "taskboard_card"/);
-  assert.match(openHandler, /onOpenTaskChat\?\.\(\{ task: qwsTask, cardContext \}\)/);
+  assert.match(openHandler, /onOpenTaskChat\?\.\(\{/);
   assert.doesNotMatch(hostSource, /dashiRequest\("\/api\/tasks",\s*\{\s*method: "POST"/);
   assert.match(hostSource, /body: JSON\.stringify\(\{ project_id: project\.id \}\)/);
 });
@@ -39,4 +39,29 @@ test("card session sends versionable full card context to the backend", () => {
   ]) assert.match(hostSource, new RegExp(field));
   assert.match(drawerSource, /card_context: cardContext/);
   assert.match(drawerSource, /contextSync\.mode === "incremental"/);
+});
+
+test("card backfill requires confirmation and routes overflow through session inbox", () => {
+  assert.match(hostSource, /session_registry/);
+  assert.match(hostSource, /method: "PATCH"/);
+  assert.match(hostSource, /AI 回填（经用户确认）/);
+  assert.doesNotMatch(hostSource, /dashiRequest\("\/api\/tasks",\s*\{\s*method: "POST"/);
+  assert.match(drawerSource, /materializeTaskBackfillProposal/);
+  assert.match(drawerSource, /window\.confirm/);
+  assert.match(drawerSource, /completeTaskBackfillProposal/);
+  assert.match(drawerSource, /确认回填/);
+});
+
+test("card session exposes safe skill execution progress without chain-of-thought", () => {
+  for (const eventType of [
+    "status",
+    "triage_route",
+    "capability_route",
+    "tool_start",
+    "tool_complete",
+  ]) assert.match(drawerSource, new RegExp(eventType));
+  assert.match(drawerSource, /候选技能/);
+  assert.match(drawerSource, /模型响应较慢/);
+  assert.match(drawerSource, /最多等待 60 秒/);
+  assert.doesNotMatch(drawerSource, /chain.of.thought|思维链/i);
 });

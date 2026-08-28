@@ -49,19 +49,19 @@ const issueSummary = (issue) => issue ? {
 function resolveCanonicalTask(dashiTask, qwsTasks) {
   const labels = new Set(dashiTask.labels || []);
   const markerMatches = (qwsTasks || []).filter((item) => labels.has(taskMarker(item.id)));
-  if (markerMatches.length === 1) return markerMatches[0];
   if (markerMatches.length > 1) throw new Error("该卡片绑定了多个 QWS 任务，无法安全打开 AI Session。");
   const titleMatches = (qwsTasks || []).filter((item) => item.title?.trim() === dashiTask.title?.trim());
-  if (titleMatches.length === 1) return titleMatches[0];
+  const canonical = markerMatches[0] || (titleMatches.length === 1 ? titleMatches[0] : null);
   return {
     id: dashiTask.id,
+    canonical_task_id: canonical?.id || null,
     title: dashiTask.title,
-    summary: dashiTask.description || "",
+    summary: canonical?.summary || dashiTask.description || "",
     status: dashiTask.status,
-    assignee_role: dashiTask.assignee?.name || null,
-    deliverables: [],
-    stage_id: "taskboard-card",
-    workflow_id: null,
+    assignee_role: canonical?.assignee_role || dashiTask.assignee?.name || null,
+    deliverables: canonical?.deliverables || [],
+    stage_id: canonical?.stage_id || "taskboard-card",
+    workflow_id: canonical?.workflow_id || null,
     binding_kind: "taskboard_card",
   };
 }
@@ -90,6 +90,14 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
   const relations = dashiTask.relations || {};
   return {
     schema_version: 1,
+    session_registry: (allTasks || []).map((item) => ({
+      task_id: item.id,
+      identifier: item.identifier || null,
+      title: item.title || "未命名卡片",
+      responsibility: item.description?.trim() || item.title || "未定义任务职责",
+      status: item.status || null,
+      card_version: item.version ?? null,
+    })),
     project: {
       id: project.id,
       name: project.name,
@@ -135,6 +143,7 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
       },
       qws: {
         binding_kind: qwsTask.binding_kind || "canonical_task",
+        canonical_task_id: qwsTask.canonical_task_id || null,
         stage_id: qwsTask.stage_id,
         workflow_id: qwsTask.workflow_id || null,
         status: qwsTask.status,
@@ -191,6 +200,51 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
     window.location.assign(`/architect?workflow_id=${encodeURIComponent(workflowId)}`);
   }, []);
 
+  const loadTaskSession = useCallback(async (dashiTaskId) => {
+    const [taskPayload, tasksPayload, commentsPayload, latestProcess] = await Promise.all([
+      dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user }),
+      dashiRequest(`/api/tasks?projectId=${encodeURIComponent(dashiProjectId)}&archived=false`, { user }),
+      dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/comments`, { user }),
+      platformApi.getProjectProcess(project.id),
+    ]);
+    const dashiTask = taskPayload.task;
+    const qwsTask = resolveCanonicalTask(dashiTask, latestProcess.tasks || []);
+    return {
+      task: qwsTask,
+      cardContext: buildCardContext({
+        project,
+        dashiProjectId,
+        dashiTask,
+        qwsTask,
+        allTasks: tasksPayload.tasks || [],
+        comments: commentsPayload.comments || [],
+      }),
+    };
+  }, [dashiProjectId, project, user]);
+
+  const applyBackfill = useCallback(async (dashiTaskId, selfChanges, expectedVersion) => {
+    const current = (await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user })).task;
+    if (expectedVersion != null && current.version !== expectedVersion) {
+      throw new Error("卡片版本已变化，请重新生成回填方案。");
+    }
+    const { appendComment, ...fieldChanges } = selfChanges || {};
+    if (Object.keys(fieldChanges).length) {
+      await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, {
+        method: "PATCH",
+        user,
+        body: { version: current.version, ...fieldChanges },
+      });
+    }
+    if (appendComment?.trim()) {
+      await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/comments`, {
+        method: "POST",
+        user,
+        body: { body: `AI 回填（经用户确认）\n\n${appendComment.trim()}` },
+      });
+    }
+    return loadTaskSession(dashiTaskId);
+  }, [loadTaskSession, user]);
+
   useEffect(() => {
     const postTheme = () => {
       iframeRef.current?.contentWindow?.postMessage({ type: "taskboard:theme", theme: resolveDashiTheme() }, window.location.origin);
@@ -236,23 +290,12 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       const dashiTaskId = event.data.payload?.taskId;
       try {
         setState("正在打开任务 AI Session…");
-        const [taskPayload, tasksPayload, commentsPayload, latestProcess] = await Promise.all([
-          dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user }),
-          dashiRequest(`/api/tasks?projectId=${encodeURIComponent(dashiProjectId)}&archived=false`, { user }),
-          dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}/comments`, { user }),
-          platformApi.getProjectProcess(project.id),
-        ]);
-        const dashiTask = taskPayload.task;
-        const qwsTask = resolveCanonicalTask(dashiTask, latestProcess.tasks || []);
-        const cardContext = buildCardContext({
-          project,
-          dashiProjectId,
-          dashiTask,
-          qwsTask,
-          allTasks: tasksPayload.tasks || [],
-          comments: commentsPayload.comments || [],
+        const session = await loadTaskSession(dashiTaskId);
+        onOpenTaskChat?.({
+          ...session,
+          refreshCardContext: () => loadTaskSession(dashiTaskId),
+          applyBackfill: (changes, expectedVersion) => applyBackfill(dashiTaskId, changes, expectedVersion),
         });
-        onOpenTaskChat?.({ task: qwsTask, cardContext });
         frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId } }, window.location.origin);
         setState("");
       } catch (reason) {
@@ -266,7 +309,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       mediaQuery?.removeEventListener?.("change", handleThemeChange);
       themeObserver?.disconnect();
     };
-  }, [dashiProjectId, onOpenTaskChat, openArchitect, project, user]);
+  }, [applyBackfill, dashiProjectId, loadTaskSession, onOpenTaskChat, openArchitect, project, user]);
 
   const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">

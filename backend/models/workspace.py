@@ -494,6 +494,103 @@ class WorkspaceTaskMessage(Base):
     )
 
 
+class WorkspaceCardSessionRegistry(Base):
+    """Tenant/user scoped directory of card sessions and their responsibility."""
+
+    __tablename__ = "workspace_card_session_registry"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_key",
+            "user_id",
+            "project_id",
+            "task_id",
+            name="uq_workspace_card_session_registry_binding",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    conversation_id: Mapped[str | None] = mapped_column(
+        ForeignKey("workspace_task_conversations.id", ondelete="SET NULL"), nullable=True
+    )
+    identifier: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    responsibility: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    card_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), onupdate=func.now()
+    )
+
+
+class WorkspaceTaskBackfillProposal(Base):
+    """AI proposal ledger; applying requires an explicit user confirmation."""
+
+    __tablename__ = "workspace_task_backfill_proposals"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "assistant_request_id", name="uq_workspace_backfill_message"
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    conversation_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_task_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    assistant_request_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="proposed")
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    self_changes: Mapped[dict] = mapped_column(JSON, default=dict)
+    routed_items: Mapped[list] = mapped_column(JSON, default=list)
+    base_context_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_card_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WorkspaceCardSessionInbox(Base):
+    """Work routed from one card session to another without cross-card mutation."""
+
+    __tablename__ = "workspace_card_session_inbox"
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    source_session_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_card_session_registry.id", ondelete="CASCADE"), nullable=False
+    )
+    target_session_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_card_session_registry.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    proposal_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_task_backfill_proposals.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc)
+    )
+
+
 _IMMUTABLE_REVISION_MODELS = (
     WorkspaceProjectConfigRevision,
     WorkspaceProcessRevision,

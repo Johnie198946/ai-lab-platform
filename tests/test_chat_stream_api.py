@@ -14,6 +14,7 @@ from backend.api.chat import (  # noqa: E402
     CancelRequest,
     ClarifySubmitRequest,
     StreamRequest,
+    _classify_stream_request,
     _streaming_sessions,
     derive_isolated_session_id,
 )
@@ -84,6 +85,27 @@ def test_stream_request_model():
     assert req.session_id == "s1"
     assert req.agent_id == "main_agent"
     assert req.skill_id == "solution-consultant-persona"
+
+
+def test_trusted_task_surface_keeps_skills_eligible_without_affecting_casual_chat():
+    task_turn = _classify_stream_request(
+        StreamRequest(question="你可以调用相关技能在这里问我，然后进行回填"),
+        delegated=False,
+        skill_id=None,
+        trusted_professional_surface=True,
+    )
+    casual_turn = _classify_stream_request(
+        StreamRequest(question="[server-resolved task binding]\n[User message]\n你好"),
+        delegated=False,
+        skill_id=None,
+        trusted_professional_surface=True,
+        question="你好",
+    )
+
+    assert task_turn.route_class == "PROFESSIONAL_TASK"
+    assert task_turn.reason_code == "trusted_professional_surface"
+    assert task_turn.as_dict(skill_enabled=True)["skill_enabled"] is True
+    assert casual_turn.route_class == "CASUAL"
 
 
 def test_api_goal_budget_respects_hermes_bridge_contract():
@@ -415,6 +437,62 @@ async def test_internal_stream_uses_raw_knowledge_query_for_augmented_goal(monke
     assert observed["bridge_query"] == raw_question[:200]
     assert len(observed["bridge_query"]) == 200
     assert '"type":"done"' in body
+
+
+@pytest.mark.asyncio
+async def test_internal_stream_stops_when_no_model_or_tool_activity(monkeypatch):
+    import backend.api.chat as chat_mod
+
+    main = effective_agent("main_agent", "Main 智能编排")
+    cancelled = []
+
+    async def fake_policy(_payload):
+        return SimpleNamespace(policy_version="v1")
+
+    async def fake_source_context(**_kwargs):
+        return SimpleNamespace(
+            evidence="",
+            capability=None,
+            policy_version="v1",
+            knowledge_query="任务",
+            sources=[],
+        )
+
+    async def fake_route(**_kwargs):
+        return main, AgentInvocationMatch(status="none")
+
+    async def stalled_bridge_stream(_goal: str, _session_id: str, **_kwargs):
+        await asyncio.sleep(1)
+        yield 'data: {"type":"delta","content":"too late"}\n\n'
+
+    class FakeCancelClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, _url, *, json):
+            cancelled.append(json["session_id"])
+            return SimpleNamespace(status_code=200)
+
+    monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
+    monkeypatch.setattr(chat_mod, "_resolve_source_context", fake_source_context)
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", fake_route)
+    monkeypatch.setattr(chat_mod, "_call_bridge_stream", stalled_bridge_stream)
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda **_kwargs: FakeCancelClient())
+
+    response = await chat_mod.stream_chat(
+        StreamRequest(question="继续处理任务", session_id="qw-timeout"),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+        trusted_professional_surface=True,
+        first_activity_timeout_seconds=0.01,
+    )
+    body = "".join([frame async for frame in response.body_iterator])
+
+    assert '"code": "first_activity_timeout"' in body
+    assert "too late" not in body
+    assert cancelled
 
 
 @pytest.mark.asyncio

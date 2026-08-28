@@ -215,6 +215,12 @@
 .qw-message.failed{border-color:#efb6bd;background:#fff1f2}
 .qw-message small{font-size:8px;opacity:.65}
 .qw-message p{font-size:11px;line-height:1.55;white-space:pre-wrap;margin:4px 0 0}
+.qw-execution-trace{margin-top:6px;border:1px solid #dbe2eb;border-radius:7px;background:#fff;color:#657184}.qw-execution-trace summary{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:7px 8px;cursor:pointer;list-style:none;font-size:9px;font-weight:700}.qw-execution-trace summary::-webkit-details-marker{display:none}.qw-execution-trace summary time{flex:0 0 auto;color:#8e98a7;font-variant-numeric:tabular-nums}.qw-execution-trace ol{display:flex;flex-direction:column;gap:5px;margin:0;padding:0 8px 8px;list-style:none}.qw-execution-trace li{display:grid;grid-template-columns:24px minmax(0,1fr);gap:6px;align-items:start;font-size:8px;line-height:1.45}.qw-execution-trace li time{color:#9aa3af;font-variant-numeric:tabular-nums}.qw-execution-trace li span{color:#687486}.qw-execution-trace .qw-execution-slow{margin:0 8px 8px;padding:6px 7px;border-radius:5px;background:#fff7e8;color:#9a6415;font-size:8px;line-height:1.45}
+.qw-backfill-proposal{border:1px solid #b9c9e8;border-radius:9px;padding:11px;background:#f7f9fe;display:flex;flex-direction:column;gap:9px}
+.qw-backfill-proposal.applied{border-color:#a9d8bd;background:#f2fbf6}.qw-backfill-proposal.discarded{opacity:.62}
+.qw-backfill-proposal>div:first-child{display:flex;flex-direction:column;gap:3px}.qw-backfill-proposal small{font-size:8px;color:#5772aa}.qw-backfill-proposal strong{font-size:11px;line-height:1.45}
+.qw-backfill-scope,.qw-backfill-route{border:1px solid #dce3f0;border-radius:6px;padding:8px;background:#fff}.qw-backfill-scope span,.qw-backfill-route span{display:block;margin-bottom:5px;color:#60739a;font-size:8px;font-weight:800}.qw-backfill-scope code{display:block;overflow:auto;white-space:pre-wrap;font-size:9px;line-height:1.45}.qw-backfill-route p{margin:0;font-size:10px;line-height:1.5;white-space:pre-wrap}
+.qw-backfill-actions{display:flex;justify-content:flex-end;gap:7px}.qw-backfill-actions button{display:inline-flex;align-items:center;gap:4px;border:1px solid var(--qw-line);border-radius:6px;background:#fff;padding:6px 9px;font:inherit;font-size:9px;cursor:pointer}.qw-backfill-actions button:disabled{opacity:.5;cursor:not-allowed}
 .qw-chat-form{border-top:1px solid var(--qw-line);padding:12px;display:flex;gap:7px}
 .qw-chat-form textarea{font-size:11px}
 .qw-chat-form button{width:40px;padding:0}

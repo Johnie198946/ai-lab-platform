@@ -458,4 +458,22 @@ export const platformApi = {
   streamTaskMessage(conversationId, payload, onEvent) {
     return streamRequest(`/api/v1/task-conversations/${conversationId}/messages/stream`, payload, onEvent);
   },
+  listTaskBackfillProposals(conversationId) {
+    return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals`);
+  },
+  materializeTaskBackfillProposal(conversationId, assistantRequestId) {
+    return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals`, {
+      method: "POST",
+      body: { assistant_request_id: assistantRequestId },
+    });
+  },
+  discardTaskBackfillProposal(conversationId, proposalId) {
+    return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals/${proposalId}/discard`, { method: "POST" });
+  },
+  completeTaskBackfillProposal(conversationId, proposalId, cardContext) {
+    return request(`/api/v1/task-conversations/${conversationId}/backfill-proposals/${proposalId}/complete`, {
+      method: "POST",
+      body: { card_context: cardContext },
+    });
+  },
 };

@@ -232,7 +232,7 @@ export function ProjectWorkspacePage() {
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
-      {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} onClose={() => setSelectedTaskSession(null)} />}
+      {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} applyBackfill={selectedTaskSession.applyBackfill} onClose={() => setSelectedTaskSession(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
       {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
       {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}
