@@ -1150,6 +1150,7 @@ async def stream_chat(
     *,
     knowledge_query: str | None = None,
     allow_agent_invocation: bool = True,
+    allow_agency: bool = True,
     trusted_professional_surface: bool = False,
     first_activity_timeout_seconds: float | None = None,
 ) -> StreamingResponse:
@@ -1270,7 +1271,8 @@ async def stream_chat(
                 agent,
                 triage,
                 agency_enabled=(
-                    agent.id == DEFAULT_AGENT_ID
+                    allow_agency
+                    and agent.id == DEFAULT_AGENT_ID
                     and delegated_target is None
                     and not skill_id
                 ),

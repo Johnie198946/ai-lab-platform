@@ -88,6 +88,10 @@
 - read-only production inspection proved both reported conversations already had matching `(project_id, task_id)` identities in `workspace_tasks`; database foreign-key integrity was intact. The mismatch was solely that `_orphan_conversations` looked only at `process_snapshot.tasks` and ignored the normalized stable identity table.
 - the correction preserves every existing foreign key and fail-closed orphan rule. Migration validation now unions task identities from the immutable process snapshot and normalized `workspace_tasks`; a conversation absent from both still blocks every write.
 - migration regression suite: `8 passed`, including a new Dashi normalized-anchor case plus existing true-orphan, workflow/execution-orphan, FK and task-chat/card-session checks. `ruff`, Python compilation and `git diff --check` passed.
+- corrected migration commit `3997422d9a0f0c19e4ab741f683c7b81f7542a0a` was pushed, remotely verified and deployed to `/opt/releases/ai-lab-platform-3997422d9a0f.FpKmvf`; migration reported zero orphans, runtime contract audit passed, and API/Hermes/public health checks passed.
+- the first production card smoke completed in `26113ms`, emitted `PROFESSIONAL_TASK` with `tenant_skills=true`, exposed five Skill candidates, reached `done`, and persisted both user and assistant messages. It also revealed that an unrelated candidate set led Main Agent to call `agency_agents_delegate` rather than a Skill.
+- card Sessions therefore now pass a separate trusted `allow_agency=False` control. They retain tenant Skill discovery but cannot escape the card responsibility boundary via Agency delegation; cross-card work remains restricted to the explicit Session inbox mechanism. Public chat and other internal professional surfaces keep their existing Agency behavior.
+- the Agency-boundary correction passed Python compilation, Ruff, `git diff --check`, and `4` focused stream/card tests before the final deployment.
 
 ## Delivery
 

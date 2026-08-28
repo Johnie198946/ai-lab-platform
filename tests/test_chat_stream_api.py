@@ -417,6 +417,9 @@ async def test_internal_stream_uses_raw_knowledge_query_for_augmented_goal(monke
 
     async def fake_bridge_stream(_goal: str, _session_id: str, **kwargs):
         observed["bridge_query"] = kwargs["knowledge_query"]
+        observed["agency_enabled"] = kwargs["agent_config"]["triage"][
+            "agency_enabled"
+        ]
         yield 'data: {"type":"done","answer":"ok"}\n\n'
 
     monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
@@ -430,12 +433,14 @@ async def test_internal_stream_uses_raw_knowledge_query_for_augmented_goal(monke
         StreamRequest(question=augmented_goal, session_id="qw-session"),
         payload={"tenant_key": "u-test", "user_id": "1"},
         knowledge_query=raw_question,
+        allow_agency=False,
     )
     body = "".join([frame async for frame in response.body_iterator])
 
     assert observed["source_question"] == raw_question[:200]
     assert observed["bridge_query"] == raw_question[:200]
     assert len(observed["bridge_query"]) == 200
+    assert observed["agency_enabled"] is False
     assert '"type":"done"' in body
 
 

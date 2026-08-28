@@ -3282,6 +3282,7 @@ async def stream_task_message(
         payload,
         knowledge_query=body.question,
         allow_agent_invocation=False,
+        allow_agency=False,
         trusted_professional_surface=True,
         first_activity_timeout_seconds=60,
     )

@@ -1154,6 +1154,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         captured["session_id"] = req.session_id
         captured["client_session_context"] = req.client_session_context
         captured["allow_agent_invocation"] = allow_agent_invocation
+        captured["allow_agency"] = kwargs.get("allow_agency")
         captured["trusted_professional_surface"] = kwargs.get(
             "trusted_professional_surface"
         )
@@ -1181,6 +1182,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     assert captured["client_session_context"].session_id == captured["session_id"]
     assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["client_session_context"].messages[0].content
     assert captured["allow_agent_invocation"] is False
+    assert captured["allow_agency"] is False
     assert captured["trusted_professional_surface"] is True
 
     messages = client.get(
