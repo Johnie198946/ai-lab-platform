@@ -39,7 +39,7 @@ async function dashiRequest(path, { method = "GET", body, user } = {}) {
   return payload;
 }
 
-export function DashiTaskboardHost({ project, process, onProcessChanged }) {
+export function DashiTaskboardHost({ project, process, onProcessChanged, onOpenTaskChat }) {
   const { authSession } = useAuth();
   const user = authSession?.user || {};
   const tenant = safeSlug(user.tenant_key || user.user_id || "default");
@@ -158,7 +158,7 @@ export function DashiTaskboardHost({ project, process, onProcessChanged }) {
       if (event.data.type !== "taskboard:create-thread") return;
       const dashiTaskId = event.data.payload?.taskId;
       try {
-        setState("正在创建 AI Lab 工作流并绑定任务…");
+        setState("正在打开任务 AI Session…");
         const dashiTask = (await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user })).task;
         const marker = (dashiTask.labels || []).find((label) => label.startsWith("qws-"));
         let latestProcess = await platformApi.getProjectProcess(project.id);
@@ -174,39 +174,13 @@ export function DashiTaskboardHost({ project, process, onProcessChanged }) {
           qwsTask = createdTask.task || createdTask;
           latestProcess = await platformApi.getProjectProcess(project.id);
         }
-        let workflowId = qwsTask.workflow_id;
-        if (!workflowId) {
-          const created = await platformApi.createWorkflow({
-            title: dashiTask.title,
-            description: dashiTask.description || dashiTask.title,
-            desired_output: "可审阅、可验证的业务成果",
-            clarification_mode: "dynamic",
-          });
-          workflowId = (created.workflow || created).id;
-          latestProcess = await platformApi.getProjectProcess(project.id);
-          await platformApi.bindProjectTaskWorkflow(project.id, qwsTask.id, {
-            expected_revision: latestProcess.process_revision,
-            workflow_id: workflowId,
-          });
-        }
-        const freshDashiTask = (await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, { user })).task;
-        await dashiRequest(`/api/tasks/${encodeURIComponent(dashiTaskId)}`, {
-          method: "PATCH",
-          user,
-          body: {
-            version: freshDashiTask.version,
-            description: freshDashiTask.description,
-            threadId: workflowId,
-            threadBinding: { threadId: workflowId, codexProjectId: project.id, codexProjectKind: "local", codexHostId: "local", workspacePath: "/workspace" },
-          },
-        });
-        frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId, threadId: workflowId } }, window.location.origin);
+        onOpenTaskChat?.(qwsTask);
+        frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId } }, window.location.origin);
         setState("");
         await onProcessChanged?.();
-        openArchitect(workflowId);
       } catch (reason) {
         setState("");
-        frame.postMessage({ type: "taskboard:thread-create-error", payload: { taskId: dashiTaskId, error: reason.message || "AI Lab 工作流创建失败" } }, window.location.origin);
+        frame.postMessage({ type: "taskboard:thread-create-error", payload: { taskId: dashiTaskId, error: reason.message || "任务 AI Session 打开失败" } }, window.location.origin);
       }
     };
     window.addEventListener("message", receive);
@@ -215,9 +189,9 @@ export function DashiTaskboardHost({ project, process, onProcessChanged }) {
       mediaQuery?.removeEventListener?.("change", handleThemeChange);
       themeObserver?.disconnect();
     };
-  }, [dashiProjectId, onProcessChanged, openArchitect, project.id, project.name, user]);
+  }, [dashiProjectId, onOpenTaskChat, onProcessChanged, openArchitect, project.id, project.name, user]);
 
-  const src = `/taskboard/?host=workbuddy&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
+  const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">
     {(state || error) && <div className={`qw-dashi-status ${error ? "is-error" : ""}`}>{error || state}</div>}
     {ready && <iframe ref={iframeRef} title="Dashi Taskboard" src={src} allow="clipboard-read; clipboard-write" />}

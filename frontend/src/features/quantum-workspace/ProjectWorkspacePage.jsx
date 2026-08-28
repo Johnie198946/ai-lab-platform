@@ -228,7 +228,7 @@ export function ProjectWorkspacePage() {
         <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
       </div>
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} />}
+      {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} onOpenTaskChat={setSelectedTask} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}

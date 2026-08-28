@@ -2281,6 +2281,15 @@ async def stream_task_message(
                 await db.rollback()
                 raise HTTPException(status_code=409, detail="request is already in progress")
 
+    stage = next(
+        (
+            item
+            for item in (project.process_snapshot or {}).get("stages", [])
+            if item.get("id") == task.get("stage_id")
+        ),
+        None,
+    )
+    deliverables = task.get("deliverables") or []
     server_goal = "\n".join(
         [
             "[QuantumWorkspace server-resolved binding]",
@@ -2289,9 +2298,13 @@ async def stream_task_message(
             f"process_instance_id={(project.process_snapshot or {}).get('process_instance_id')}",
             f"process_revision={project.process_revision}",
             f"stage_id={task['stage_id']}",
+            f"stage_name={(stage or {}).get('name') or 'UNCONNECTED'}",
             f"task_id={task['id']}",
             f"task_title={task['title']}",
+            f"task_summary={task.get('summary') or 'UNSPECIFIED'}",
             f"task_status={task['status']}",
+            f"task_assignee_role={task.get('assignee_role') or 'UNASSIGNED'}",
+            f"task_deliverables={json.dumps(deliverables, ensure_ascii=False)}",
             f"workflow_id={task.get('workflow_id') or 'UNCONNECTED'}",
             "Do not claim an execution is live unless the canonical workflow endpoint confirms it.",
             "Any task mutation, workflow execution or resource change requires explicit user confirmation.",
@@ -2310,6 +2323,7 @@ async def stream_task_message(
         ),
         payload,
         knowledge_query=body.question,
+        allow_agent_invocation=False,
     )
 
     async def relay_and_record():

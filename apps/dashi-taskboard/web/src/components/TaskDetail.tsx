@@ -402,6 +402,7 @@ export function TaskDetail({
   openingThread,
   onError,
 }: TaskDetailProps) {
+  const qwsHost = new URL(document.baseURI).searchParams.get("host") === "qws";
   const { language, locale, text } = useTaskboardI18n();
   const [currentTask, setCurrentTask] = useState(task);
   const [title, setTitle] = useState(task.title);
@@ -1631,7 +1632,9 @@ export function TaskDetail({
                 <NewConversationIcon color="currentColor" />
                 <span>{openingThread
                   ? text("正在打开…", "Opening…")
-                  : text("在新对话打开", "Open in new conversation")}</span>
+                  : qwsHost
+                    ? text("与 AI 讨论此任务", "Discuss this task with AI")
+                    : text("在新对话打开", "Open in new conversation")}</span>
               </button>
               {currentTask.externalUrl && (
                 <a

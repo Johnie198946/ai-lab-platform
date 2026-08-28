@@ -372,7 +372,7 @@ function getInitialTheme(): Theme {
   const host = query.get("host");
   if (
     window.parent !== window
-    && (host === "codex" || host === "workbuddy" || host === "deepseek-harness")
+    && (host === "codex" || host === "workbuddy" || host === "deepseek-harness" || host === "qws")
   ) {
     const fromQuery = query.get("theme");
     if (isTheme(fromQuery)) return fromQuery;
@@ -682,7 +682,7 @@ function LocalRealtimeSync({
 export function App() {
   const query = useMemo(() => new URL(document.baseURI).searchParams, []);
   const host = query.get("host");
-  const embedded = host === "codex" || host === "workbuddy" || host === "deepseek-harness";
+  const embedded = host === "codex" || host === "workbuddy" || host === "deepseek-harness" || host === "qws";
   const undoShortcut = navigator.userAgent.includes("Macintosh") ? "⌘Z" : "Ctrl+Z";
   const [theme, setTheme] = useState<Theme>(getInitialTheme);
   const [hostContext, setHostContext] = useState<HostContext | null>(null);

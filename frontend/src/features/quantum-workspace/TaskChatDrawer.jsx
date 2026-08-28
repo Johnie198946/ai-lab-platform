@@ -1,5 +1,5 @@
 import { Bot, Send, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { platformApi } from "../../services/platformApi";
 import { restoreTaskMessages } from "./taskChatMessages.js";
 
@@ -9,9 +9,13 @@ export function TaskChatDrawer({ project, process, task, onClose }) {
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const messagesRef = useRef(null);
 
   useEffect(() => {
     let active = true;
+    setConversation(null);
+    setMessages([]);
+    setError("");
     platformApi.openTaskConversation({
       project_id: project.id,
       task_id: task.id,
@@ -26,6 +30,10 @@ export function TaskChatDrawer({ project, process, task, onClose }) {
     }).catch((reason) => active && setError(reason.message));
     return () => { active = false; };
   }, [project.id, task.id, task.workflow_id]);
+
+  useEffect(() => {
+    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
+  }, [messages]);
 
   const send = async (event) => {
     event.preventDefault();
@@ -62,14 +70,14 @@ export function TaskChatDrawer({ project, process, task, onClose }) {
 
   return (
     <aside className="qw-chat-drawer" aria-label={`${task.title} 任务对话`}>
-      <header><div><span className="qw-eyebrow">Hermes task chat</span><h3>{task.title}</h3></div><button onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></header>
+      <header><div><span className="qw-eyebrow">AI Lab · Task Session</span><h3>{task.title}</h3></div><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></header>
       <div className="qw-binding"><span>task · {task.id.slice(-8)}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span></div>
-      <div className="qw-chat-messages">
+      <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
         {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>上下文已由服务端绑定</strong><span>对话不会创建第二套执行状态；执行仍以 AI Lab canonical Workflow 为准。</span></div>}
-        {messages.map((message) => <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "Hermes"}</small><p>{message.content || (message.pending ? "正在读取真实执行上下文…" : "")}</p></article>)}
+        {messages.map((message) => <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "AI Assistant"}</small><p>{message.content || (message.pending ? "正在读取真实任务上下文…" : "")}</p></article>)}
       </div>
       {error && <p className="qw-error compact">{error}</p>}
-      <form className="qw-chat-form" onSubmit={send}><textarea rows={2} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={conversation ? "围绕当前任务提问…" : "正在建立服务端绑定…"} disabled={!conversation || busy} /><button className="qw-button primary" disabled={!conversation || busy || !question.trim()}><Send size={16} /></button></form>
+      <form className="qw-chat-form" onSubmit={send}><label className="qw-sr-only" htmlFor="qw-task-chat-question">围绕当前任务提问</label><textarea id="qw-task-chat-question" rows={2} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={conversation ? "围绕当前任务提问…" : "正在建立服务端绑定…"} disabled={!conversation || busy} /><button className="qw-button primary" aria-label="发送消息" disabled={!conversation || busy || !question.trim()}><Send size={16} /></button></form>
     </aside>
   );
 }
