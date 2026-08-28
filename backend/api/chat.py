@@ -581,7 +581,11 @@ async def _resolve_source_context(
 
 
 async def _resolve_agent_route(
-    *, question: str, requested_agent_id: str | None, payload: Dict[str, Any]
+    *,
+    question: str,
+    requested_agent_id: str | None,
+    payload: Dict[str, Any],
+    allow_explicit_invocation: bool = True,
 ) -> tuple[EffectiveAgent, AgentInvocationMatch]:
     tenant_id = str(payload.get("tenant_key") or "public")
     owner_user_id = str(payload.get("user_id") or payload.get("sub") or "")
@@ -592,7 +596,7 @@ async def _resolve_agent_route(
             tenant_id=tenant_id,
             owner_user_id=owner_user_id,
         )
-        if selected.id != "main_agent":
+        if selected.id != "main_agent" or not allow_explicit_invocation:
             return selected, AgentInvocationMatch(status="none")
         invocation = await match_explicit_tenant_agent(
             db,
@@ -1107,6 +1111,7 @@ async def stream_chat(
     payload: Dict[str, Any],
     *,
     knowledge_query: str | None = None,
+    allow_agent_invocation: bool = True,
 ) -> StreamingResponse:
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
 
@@ -1197,6 +1202,7 @@ async def stream_chat(
                 question=req.question,
                 requested_agent_id=req.agent_id,
                 payload=payload,
+                allow_explicit_invocation=allow_agent_invocation,
             )
             if invocation.status == "not_found":
                 for frame in _message_sse(

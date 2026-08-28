@@ -465,7 +465,8 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
     assert initial.json()["plan"]["scenario_twin"]["systems"][0]["methodology"]["agent_design"]["guardrails"]
     assert initial.json()["monitoring"]["source_status"] == "UNCONNECTED"
 
-    async def fake_chat_stream(req, payload):
+    async def fake_chat_stream(req, payload, *, allow_agent_invocation=True):
+        assert allow_agent_invocation is False
         assert "企业 AI 基础设施解决方案架构师" in req.question
         assert "token_factory.status 必须为 UNCONNECTED" in req.question
 
@@ -528,7 +529,8 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
     assert dataset["quality"]["pii_safety"] == 100
     assert "未读取生产数据" in dataset["lineage"]
 
-    async def fake_context_chat(req, payload):
+    async def fake_context_chat(req, payload, *, allow_agent_invocation=True):
+        assert allow_agent_invocation is False
         assert "AI Resource 工作台的上下文助手" in req.question
         assert "ERP 模拟器如何设计" in req.question
         assert "不得把规划或模拟数据描述成生产事实" in req.question

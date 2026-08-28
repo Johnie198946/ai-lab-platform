@@ -1114,6 +1114,7 @@ async def recommend_project_resource_plan(
             quoted_context=None,
         ),
         payload,
+        allow_agent_invocation=False,
     )
     try:
         candidate = extract_resource_plan_json(await _collect_hermes_answer(upstream))
@@ -1292,7 +1293,11 @@ async def ask_project_resource_context(
             question=body.question,
             monitoring=monitoring,
         )
-    upstream = await stream_chat(StreamRequest(question=prompt, request_id=body.request_id, session_id=None, agent_id=None, skill_id=None, quoted_context=None), payload)
+    upstream = await stream_chat(
+        StreamRequest(question=prompt, request_id=body.request_id, session_id=None, agent_id=None, skill_id=None, quoted_context=None),
+        payload,
+        allow_agent_invocation=False,
+    )
     try:
         answer = await _collect_hermes_answer(upstream)
     except HTTPException:
