@@ -187,6 +187,29 @@ export function ProjectWorkspacePage() {
     }
   };
 
+  const generateSimulationDataset = async ({ simulatorId, rowCount, seed }) => {
+    try {
+      const result = await platformApi.generateProjectSimulationDataset(projectId, simulatorId, {
+        expected_revision: viewData.process_revision,
+        row_count: rowCount,
+        seed,
+      });
+      setViewData((current) => ({ ...current, process_revision: result.process_revision, plan: result.plan }));
+      setProcess((current) => ({ ...current, process_revision: result.process_revision, resource_plan: result.plan }));
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新方案，请重新生成数据。" : reason.message);
+    }
+  };
+
+  const askResourceContext = ({ contextId, contextTitle, question }) => platformApi.askProjectResourceContext(projectId, {
+    request_id: `resource-chat-${crypto.randomUUID()}`,
+    context_id: contextId,
+    context_title: contextTitle,
+    question,
+  });
+
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;
   if (!project || !process) return <div className="qw-page-state error">{error || "项目不可用"}<Link to="/home">返回 Home</Link></div>;
   return (
@@ -207,7 +230,7 @@ export function ProjectWorkspacePage() {
       {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onProcessChanged={load} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} />}
-      {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} />}
+      {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
       {selectedTask && <TaskChatDrawer project={project} process={process} task={selectedTask} onClose={() => setSelectedTask(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
       {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}

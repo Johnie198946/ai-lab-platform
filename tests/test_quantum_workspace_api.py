@@ -461,6 +461,8 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
     initial = client.get(f"/api/v1/projects/{project_id}/resource-plan")
     assert initial.status_code == 200
     assert initial.json()["plan"]["source_status"] == "UNCONFIGURED"
+    assert initial.json()["plan"]["scenario_twin"]["systems"][0]["id"] == "erp-order-simulator"
+    assert initial.json()["plan"]["scenario_twin"]["systems"][0]["methodology"]["agent_design"]["guardrails"]
     assert initial.json()["monitoring"]["source_status"] == "UNCONNECTED"
 
     async def fake_chat_stream(req, payload):
@@ -513,12 +515,44 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
     assert saved.json()["plan"]["source_status"] == "USER_CONFIGURED"
     assert saved.json()["plan"]["sla"]["p95_latency_ms"] == 1200
 
+    generated = client.post(
+        f"/api/v1/projects/{project_id}/resource-plan/simulations/erp-order-simulator/datasets",
+        json={"expected_revision": 3, "row_count": 2500, "seed": 20260828},
+    )
+    assert generated.status_code == 200, generated.text
+    assert generated.json()["process_revision"] == 4
+    dataset = generated.json()["dataset"]
+    assert dataset["truth"] == "SYNTHETIC"
+    assert dataset["row_count"] == 2500
+    assert dataset["sample_rows"][0]["order_id"].startswith("SIM-SO-")
+    assert dataset["quality"]["pii_safety"] == 100
+    assert "未读取生产数据" in dataset["lineage"]
+
+    async def fake_context_chat(req, payload):
+        assert "AI Resource 工作台的上下文助手" in req.question
+        assert "ERP 模拟器如何设计" in req.question
+        assert "不得把规划或模拟数据描述成生产事实" in req.question
+
+        async def events():
+            yield 'data: {"type":"done","answer":"应按订单状态机与接口契约模拟，并保留 seed 和 lineage。"}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.chat_stream", fake_context_chat)
+    chat = client.post(
+        f"/api/v1/projects/{project_id}/resource-plan/chat",
+        json={"request_id": "resource-chat-0001", "context_id": "simulation", "context_title": "数据源、接口与模拟环境", "question": "ERP 模拟器如何设计？"},
+    )
+    assert chat.status_code == 200, chat.text
+    assert chat.json()["truth"] == "AI_GENERATED"
+    assert "seed" in chat.json()["answer"]
+
     stale = client.put(
         f"/api/v1/projects/{project_id}/resource-plan",
-        json={"expected_revision": 2, "plan": proposal},
+        json={"expected_revision": 3, "plan": proposal},
     )
     assert stale.status_code == 409
-    assert stale.json()["detail"]["server_revision"] == 3
+    assert stale.json()["detail"]["server_revision"] == 4
 
 
 def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_database):
