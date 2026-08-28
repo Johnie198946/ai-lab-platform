@@ -38,6 +38,147 @@ TASK_SPECS = {
 }
 
 
+def instantiate_project_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
+    """Compile a reviewed Hermes blueprint into the canonical dynamic process."""
+    raw_stages = blueprint.get("stages") or []
+    raw_tasks = blueprint.get("tasks") or []
+    if not isinstance(raw_stages, list) or not raw_stages:
+        raise ValueError("project blueprint requires at least one stage")
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        raise ValueError("project blueprint requires at least one task")
+
+    stage_ids: dict[str, str] = {}
+    stages: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_stages):
+        if not isinstance(item, dict):
+            raise ValueError("project blueprint stage must be an object")
+        key = str(item.get("key") or f"stage-{index + 1}").strip()
+        name = str(item.get("name") or "").strip()
+        if not name or key in stage_ids:
+            raise ValueError("project blueprint stage names and keys must be unique")
+        stage_id = f"stg_{uuid4().hex}"
+        stage_ids[key] = stage_id
+        stages.append({
+            "id": stage_id,
+            "key": key,
+            "name": name,
+            "order": index,
+            "goal": str(item.get("goal") or "").strip(),
+            "acceptance_criteria": list(item.get("acceptance_criteria") or []),
+            "status": "NOT_STARTED",
+            "progress": 0,
+            "planned_start_at": item.get("start_date"),
+            "planned_finish_at": item.get("due_date"),
+            "actual_start_at": None,
+            "actual_finish_at": None,
+            "unscheduled_reason": None if item.get("start_date") and item.get("due_date") else "missing_planned_dates",
+        })
+
+    status_map = {
+        "backlog": "BACKLOG", "todo": "TODO", "in_progress": "IN_PROGRESS",
+        "blocked": "BLOCKED", "in_review": "IN_REVIEW", "done": "DONE",
+    }
+    task_ids: dict[str, str] = {}
+    tasks: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_tasks):
+        if not isinstance(item, dict):
+            raise ValueError("project blueprint task must be an object")
+        key = str(item.get("key") or f"task-{index + 1}").strip()
+        stage_key = str(item.get("stage_key") or "").strip()
+        title = str(item.get("title") or "").strip()
+        if not title or key in task_ids or stage_key not in stage_ids:
+            raise ValueError("each project task needs a unique key, title and valid stage_key")
+        task_id = f"tsk_{uuid4().hex}"
+        task_ids[key] = task_id
+        raw_status = str(item.get("status") or "todo").lower()
+        tasks.append({
+            "id": task_id,
+            "blueprint_key": key,
+            "stage_id": stage_ids[stage_key],
+            "title": title,
+            "summary": str(item.get("description") or item.get("goal") or "").strip(),
+            "goal": str(item.get("goal") or "").strip(),
+            "acceptance_criteria": list(item.get("acceptance_criteria") or []),
+            "status": status_map.get(raw_status, "TODO"),
+            "status_source": "REVIEWED_CONFIGURATION",
+            "priority": str(item.get("priority") or "none").lower(),
+            "assignee_id": None,
+            "assignee_role": str(item.get("role") or "").strip() or None,
+            "labels": list(dict.fromkeys(str(value).strip() for value in item.get("labels") or [] if str(value).strip())),
+            "development_context": item.get("development_context"),
+            "planned_start_at": item.get("start_date"),
+            "planned_finish_at": item.get("due_date"),
+            "start_date": item.get("start_date"),
+            "due_date": item.get("due_date"),
+            "recurrence": item.get("recurrence"),
+            "parent_key": item.get("parent_key"),
+            "relations": list(item.get("relations") or []),
+            "handoff": item.get("handoff") or {},
+            "agent_candidates": [],
+            "workflow_id": None,
+            "workflow_status": "UNCONNECTED",
+            "actual_start_at": None,
+            "actual_finish_at": None,
+            "estimated_duration_days": int(item.get("estimated_duration_days") or 1),
+            "unscheduled_reason": None if item.get("start_date") and item.get("due_date") else "missing_planned_dates",
+            "deliverables": list(item.get("deliverables") or []),
+            "evidence_refs": [],
+            "risk": str(item.get("risk") or "LOW").upper(),
+        })
+
+    dependencies: list[dict[str, str]] = []
+    for task in tasks:
+        normalized_relations = []
+        parent_key = task.pop("parent_key", None)
+        if parent_key and str(parent_key) in task_ids:
+            normalized_relations.append({"type": "parent", "target_task_id": task_ids[str(parent_key)]})
+        for relation in task.get("relations") or []:
+            if not isinstance(relation, dict):
+                continue
+            target_key = str(relation.get("target_key") or "")
+            relation_type = str(relation.get("type") or "related").lower()
+            if target_key not in task_ids or relation_type not in {"blocks", "blocked_by", "related", "parent"}:
+                continue
+            target_id = task_ids[target_key]
+            normalized_relations.append({"type": relation_type, "target_task_id": target_id})
+            if relation_type == "blocks":
+                dependencies.append({"from_task_id": task["id"], "to_task_id": target_id})
+            elif relation_type == "blocked_by":
+                dependencies.append({"from_task_id": target_id, "to_task_id": task["id"]})
+        task["relations"] = normalized_relations
+
+    if not dependencies:
+        dependencies = [
+            {"from_task_id": tasks[index - 1]["id"], "to_task_id": tasks[index]["id"]}
+            for index in range(1, len(tasks))
+        ]
+
+    process_id = f"proc_{uuid4().hex}"
+    graphs = {
+        "workflow": {
+            "id": f"graph_{uuid4().hex}", "view_type": "workflow", "source_status": "REVIEWED_CONFIGURATION",
+            "nodes": [{"id": task["id"], "type": "task", "label": task["title"], "status": task["workflow_status"], "task_status": task["status"], "stage_id": task["stage_id"]} for task in tasks],
+            "edges": [{"id": f"edge_{index}", "source": item["from_task_id"], "target": item["to_task_id"]} for index, item in enumerate(dependencies)],
+        },
+        "ai-resource": {"id": f"graph_{uuid4().hex}", "view_type": "ai-resource", "source_status": "PLANNED", "nodes": [], "edges": []},
+    }
+    return {
+        "process_instance_id": process_id,
+        "template_id": "hermes-dynamic-project",
+        "template_version": "1.0.0",
+        "truth": "REVIEWED_CONFIGURATION",
+        "status": "ACTIVE",
+        "stages": stages,
+        "gates": [],
+        "tasks": tasks,
+        "dependencies": dependencies,
+        "documents": list(blueprint.get("documents") or []),
+        "project_goal": str(blueprint.get("project_goal") or "").strip(),
+        "graphs": graphs,
+        "calendar": {"timezone": "Asia/Shanghai", "work_calendar_id": None, "non_working_days": [], "status": "PLANNED"},
+    }
+
+
 def compile_ipd_draft(intake: dict[str, Any], template_version: str) -> dict[str, Any]:
     stage_specs = deepcopy(STAGE_SPECS)
     if intake["product_form"] in {"hardware", "integrated"}:

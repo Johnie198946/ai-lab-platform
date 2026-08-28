@@ -1743,11 +1743,19 @@ export function createTaskboardServer(options = {}) {
         const created = database.createProject({ id: projectId, name: project.name, workspacePath: "/workspace" });
         events.emit("project.created", { project: created });
       }
-      const existingMarkers = new Set(database.listTasks({ projectId, archived: "false" })
-        .flatMap((item) => item.labels || []));
+      const existingTasks = database.listTasks({ projectId, archived: "false" });
+      const existingMarkers = new Set(existingTasks.flatMap((item) => item.labels || []));
+      const cardIdsByQwsTaskId = new Map();
+      const newlyCreatedQwsTaskIds = new Set();
+      for (const item of existingTasks) {
+        const marker = (item.labels || []).find((label) => label.startsWith("qws-"));
+        const qwsTask = (process.tasks || []).find((task) => marker === `qws-${qwsSlug(task.id)}`.slice(0, 64));
+        if (qwsTask) cardIdsByQwsTaskId.set(qwsTask.id, item.id);
+      }
       const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
       const employeesByRole = new Map(aiEmployees.map((item) => [item.job_title, item]));
-      const statusMap = { TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", DONE: "done" };
+      const statusMap = { BACKLOG: "backlog", TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", IN_REVIEW: "in_review", DONE: "done" };
+      const createdRelationKeys = new Set();
       for (const task of process.tasks || []) {
         const marker = `qws-${qwsSlug(task.id)}`.slice(0, 64);
         if (existingMarkers.has(marker)) continue;
@@ -1764,16 +1772,21 @@ export function createTaskboardServer(options = {}) {
           title: task.title,
           description: [
             task.summary,
+            task.goal ? `任务目标：${task.goal}` : "",
+            ...(task.acceptance_criteria || []).map((item) => `验收标准：${item}`),
             stage?.name ? `QWS 阶段：${stage.name}` : "",
             ...(task.deliverables || []).map((item) => `交付物：${item}`),
+            task.handoff?.from ? `承接自：${task.handoff.from}` : "",
+            task.handoff?.to ? `转交至：${task.handoff.to}` : "",
+            task.handoff?.completion_definition ? `完成/转交判定：${task.handoff.completion_definition}` : "",
           ].filter(Boolean).join("\n\n"),
           status: statusMap[task.status] || "backlog",
-          priority: "none",
-          labels: [marker],
-          developmentContext: null,
+          priority: ["none", "urgent", "high", "medium", "low"].includes(task.priority) ? task.priority : "none",
+          labels: [marker, ...(task.labels || [])].slice(0, 20),
+          developmentContext: task.development_context || null,
           startDate: task.start_date || null,
           dueDate: task.due_date || null,
-          recurrence: null,
+          recurrence: task.due_date ? (task.recurrence || null) : null,
         });
         const created = database.createTask({
           ...parsed,
@@ -1781,7 +1794,24 @@ export function createTaskboardServer(options = {}) {
           assignee,
         });
         events.emit("task.created", { task: created });
+        cardIdsByQwsTaskId.set(task.id, created.id);
+        newlyCreatedQwsTaskIds.add(task.id);
         existingMarkers.add(marker);
+      }
+      for (const task of process.tasks || []) {
+        if (!newlyCreatedQwsTaskIds.has(task.id)) continue;
+        const taskId = cardIdsByQwsTaskId.get(task.id);
+        for (const relation of task.relations || []) {
+          const relatedId = cardIdsByQwsTaskId.get(relation.target_task_id);
+          if (!taskId || !relatedId) continue;
+          const relationKey = relation.type === "related"
+            ? `related:${[taskId, relatedId].sort().join(":")}`
+            : `${relation.type}:${taskId}:${relatedId}`;
+          if (createdRelationKeys.has(relationKey)) continue;
+          const current = database.getTask(taskId);
+          database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "qws-blueprint");
+          createdRelationKeys.add(relationKey);
+        }
       }
     });
     return projectId;

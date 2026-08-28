@@ -392,11 +392,26 @@ export const platformApi = {
   listProjects() {
     return request("/api/v1/projects");
   },
+  updateProject(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}`, { method: "PATCH", body: payload });
+  },
+  deleteProject(projectId) {
+    return request(`/api/v1/projects/${projectId}`, { method: "DELETE" });
+  },
   getProject(projectId) {
     return request(`/api/v1/projects/${projectId}`);
   },
   getProjectProcess(projectId) {
     return request(`/api/v1/projects/${projectId}/process`);
+  },
+  dispatchProjectBlueprint(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/planning/dispatch`, { method: "POST", body: payload });
+  },
+  listProjectDocuments(projectId) {
+    return request(`/api/v1/projects/${projectId}/documents`);
+  },
+  saveProjectDocument(projectId, documentId, payload) {
+    return request(`/api/v1/projects/${projectId}/documents/${encodeURIComponent(documentId)}`, { method: "PUT", body: payload });
   },
   createBusinessIntake(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/business-intakes`, { method: "POST", body: payload });

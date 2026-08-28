@@ -26,12 +26,14 @@ from backend.api.quantum_workspace import (  # noqa: E402
     _apply_taskboard_backfill,
     _parse_backfill_block,
 )
+from backend.services.workspace_process import instantiate_project_blueprint  # noqa: E402
 from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
     WorkspaceBusinessIntake,
     WorkspaceProcessDraft,
     WorkspaceTaskConversation,
+    WorkspaceTaskMessage,
 )
 
 
@@ -81,6 +83,94 @@ def test_ipd_template_instantiates_one_idempotent_project(_reset_database):
     projects = client.get("/api/v1/projects")
     assert projects.status_code == 200
     assert [item["id"] for item in projects.json()] == [first.json()["project_id"]]
+
+
+def test_project_home_supports_update_and_owner_delete(_reset_database):
+    client = _reset_database
+    project_id = _create_project(client, "home-crud")
+    updated = client.patch(
+        f"/api/v1/projects/{project_id}",
+        json={"name": "新项目名", "goal": "更新后的业务目标", "desired_outputs": ["项目文档"]},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "新项目名"
+    assert updated.json()["desired_outputs"] == ["项目文档"]
+    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    assert deleted.status_code == 204
+    assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
+
+
+def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
+    process = instantiate_project_blueprint({
+        "project_goal": "交付动态项目",
+        "stages": [
+            {"key": "discover", "name": "发现", "goal": "验证问题", "acceptance_criteria": ["完成访谈"]},
+            {"key": "ship", "name": "交付", "goal": "发布成果", "acceptance_criteria": ["验收通过"]},
+        ],
+        "tasks": [
+            {"key": "research", "stage_key": "discover", "title": "用户研究", "description": "访谈目标用户", "role": "研究员", "status": "todo", "priority": "high", "labels": ["需求"], "acceptance_criteria": ["5 份访谈"], "deliverables": ["访谈报告"], "handoff": {"to": "开发负责人", "completion_definition": "报告评审通过"}},
+            {"key": "build", "stage_key": "ship", "title": "完成交付", "description": "实现并交付", "role": "开发负责人", "status": "backlog", "priority": "urgent", "parent_key": "research", "relations": [{"type": "blocked_by", "target_key": "research"}], "deliverables": ["发布包"]},
+        ],
+        "documents": [{"id": "brief", "title": "项目说明", "content": "# 项目说明", "status": "ready"}],
+    })
+    assert [stage["name"] for stage in process["stages"]] == ["发现", "交付"]
+    assert process["tasks"][0]["priority"] == "high"
+    assert process["tasks"][1]["status"] == "BACKLOG"
+    assert {item["type"] for item in process["tasks"][1]["relations"]} == {"parent", "blocked_by"}
+    assert process["documents"][0]["title"] == "项目说明"
+
+
+def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database):
+    client = _reset_database
+    project_id = _create_project(client, "planning-dispatch")
+    opened = client.post("/api/v1/task-conversations", json={
+        "project_id": project_id,
+        "task_id": "project-intake",
+        "workflow_id": None,
+        "agent_version": "hermes-project-planning-v1",
+        "card_context": {
+            "schema_version": 1,
+            "project": {"id": project_id, "name": "planning-dispatch", "business_goal": "交付项目"},
+            "task": {
+                "dashi_task_id": "project-intake", "qws_task_id": "project-intake",
+                "title": "项目需求收敛与派发", "descriptions": [{"content": "交付项目"}],
+                "status": "in_progress", "assignee": {"id": "main_agent", "name": "Hermes"},
+                "qws": {"binding_kind": "project_planning", "stage_id": "project-planning"},
+            },
+        },
+    })
+    assert opened.status_code == 201, opened.text
+    conversation_id = opened.json()["id"]
+    request_id = "project-blueprint-0001"
+    blueprint = {
+        "project_goal": "交付项目",
+        "stages": [{"key": "delivery", "name": "交付", "goal": "完成", "acceptance_criteria": ["通过验收"]}],
+        "tasks": [{"key": "deliver", "stage_key": "delivery", "title": "完成交付", "description": "完成项目成果", "role": "交付负责人", "status": "todo", "priority": "high", "acceptance_criteria": ["成果可阅读"], "deliverables": ["交付说明"]}],
+        "documents": [{"id": "brief", "title": "项目说明", "content": "# 项目说明", "status": "ready"}],
+    }
+
+    async def insert_blueprint_message():
+        async with SessionLocal() as db:
+            db.add(WorkspaceTaskMessage(
+                id="msg_project_blueprint_0001", tenant_key="tenant-a",
+                conversation_id=conversation_id, request_id=request_id, role="assistant",
+                content=f"蓝图如下。\n```project_blueprint\n{json.dumps(blueprint, ensure_ascii=False)}\n```",
+                event_metadata={"terminal_type": "done"},
+            ))
+            await db.commit()
+
+    asyncio.run(insert_blueprint_message())
+    dispatched = client.post(f"/api/v1/projects/{project_id}/planning/dispatch", json={
+        "conversation_id": conversation_id,
+        "assistant_request_id": request_id,
+        "expected_revision": 0,
+    })
+    assert dispatched.status_code == 200, dispatched.text
+    assert dispatched.json()["stage_count"] == 1
+    assert dispatched.json()["task_count"] == 1
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert process["tasks"][0]["title"] == "完成交付"
+    assert process["documents"][0]["id"] == "brief"
 
 
 def test_readiness_fails_closed_when_database_initialization_failed(_reset_database):
