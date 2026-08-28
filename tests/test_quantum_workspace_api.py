@@ -493,7 +493,7 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
-    monkeypatch.setattr("backend.api.quantum_workspace.chat_stream", fake_chat_stream)
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
     recommended = client.post(
         f"/api/v1/projects/{project_id}/resource-plan/recommend",
         json={"request_id": "resource-recommend-0001", "expected_revision": 1, "constraints": "成本优先"},
@@ -539,7 +539,7 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
 
         return StreamingResponse(events(), media_type="text/event-stream")
 
-    monkeypatch.setattr("backend.api.quantum_workspace.chat_stream", fake_context_chat)
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_context_chat)
     chat = client.post(
         f"/api/v1/projects/{project_id}/resource-plan/chat",
         json={

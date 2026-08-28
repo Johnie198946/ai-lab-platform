@@ -1104,7 +1104,7 @@ async def recommend_project_resource_plan(
         process = dict(project.process_snapshot or {})
         prompt = build_resource_recommendation_prompt(project, process, body.constraints)
 
-    upstream = await chat_stream(
+    upstream = await stream_chat(
         StreamRequest(
             question=prompt,
             request_id=body.request_id,
@@ -1292,7 +1292,7 @@ async def ask_project_resource_context(
             question=body.question,
             monitoring=monitoring,
         )
-    upstream = await chat_stream(StreamRequest(question=prompt, request_id=body.request_id, session_id=None, agent_id=None, skill_id=None, quoted_context=None), payload)
+    upstream = await stream_chat(StreamRequest(question=prompt, request_id=body.request_id, session_id=None, agent_id=None, skill_id=None, quoted_context=None), payload)
     try:
         answer = await _collect_hermes_answer(upstream)
     except HTTPException:
