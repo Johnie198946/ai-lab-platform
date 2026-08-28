@@ -28,6 +28,7 @@ import yaml
 
 MAX_CANDIDATES = 5
 MAX_INJECTED_CHARS = 2600
+MAX_PROFESSIONAL_INJECTED_CHARS = 6000
 _INSTALLED = False
 _STATS_LOCK = threading.Lock()
 _WEB_POLICY_LOCK = threading.Lock()
@@ -533,11 +534,32 @@ def _candidate_context(
         for card in cards
     ]
     if professional_only:
+        # Professional Agency routing must transfer control to a real Hermes
+        # child Agent. Loading the specialist prompt in the parent is not a
+        # delegation. Keep a single deterministic candidate so the user task
+        # is injected once and the bounded context cannot silently drop it.
+        compact = compact[:1]
+        selected = compact[0]
+        slug = str(selected["id"]).removeprefix("agency:")[:100]
+        selected["invoke"] = {
+            "tool": "delegate_task",
+            "arguments": {
+                "goal": query[:4000],
+                "context": (
+                    f"AI_LAB_AGENCY_SPECIALIST={slug}\n"
+                    "You are an isolated child Agent. First call "
+                    f'agency_agents_load with arguments {{"agent":"{slug}"}}. '
+                    "Use the loaded specialist instructions to complete the goal. "
+                    "Return a non-empty final result and do not delegate again."
+                ),
+            },
+        }
         prefix = (
             "[Agency specialist selection — internal routing metadata]\n"
             "The server classified this as professional work and granted Agency routing. "
-            "Select the single highest-fit specialist, then invoke it with the exact slug "
-            "and arguments shown below. Never add a division prefix or invent a slug. "
+            "You MUST call the native delegate_task tool with the exact arguments shown "
+            "below and wait for its terminal result; loading the specialist in the parent "
+            "does not count as delegation. Never add a division prefix or invent a slug. "
             "Do not expose internal capability names unless asked.\nCandidates: "
         )
     else:
@@ -553,11 +575,22 @@ def _candidate_context(
         )
     # Drop the weakest tail candidate rather than truncating JSON.  The model
     # always receives valid, actionable cards and context remains hard-bounded.
+    max_context_chars = (
+        MAX_PROFESSIONAL_INJECTED_CHARS if professional_only else MAX_INJECTED_CHARS
+    )
     while compact:
         payload = json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
         context = prefix + payload
-        if len(context) <= MAX_INJECTED_CHARS:
+        if len(context) <= max_context_chars:
             return context
+        if professional_only:
+            goal = compact[0]["invoke"]["arguments"]["goal"]
+            overflow = len(context) - max_context_chars
+            shorter = goal[: max(512, len(goal) - overflow - 64)]
+            if len(shorter) < len(goal):
+                compact[0]["invoke"]["arguments"]["goal"] = shorter
+                continue
+            return None
         compact.pop()
     return None
 

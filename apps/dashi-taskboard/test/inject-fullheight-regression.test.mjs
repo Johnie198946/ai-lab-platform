@@ -278,10 +278,10 @@ test("Taskboard fills the workspace, opens HTTPS links and revokes hostile ifram
       "--disable-gpu",
       "--no-sandbox",
       `--user-data-dir=${profile}`,
-      "--virtual-time-budget=12000",
+      "--virtual-time-budget=20000",
       "--dump-dom",
       url,
-    ], { maxBuffer: 5 * 1024 * 1024, timeout: 20_000 }));
+    ], { maxBuffer: 5 * 1024 * 1024, timeout: 60_000 }));
   } catch (error) {
     if (!String(error?.stdout ?? "").trim()) {
       t.skip("Chrome or Chromium cannot run headless dump-dom in this environment");

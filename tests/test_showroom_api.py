@@ -204,8 +204,19 @@ def test_screen_0035_and_004_use_hermes_incremental_insight_contract() -> None:
 def test_frontend_nginx_normalizes_hermes_websocket_origin() -> None:
     dockerfile = Path("frontend/Dockerfile").read_text(encoding="utf-8")
 
-    assert dockerfile.count("location = /api/ws") == 2
-    assert dockerfile.count("proxy_set_header Origin http://127.0.0.1;") == 2
+    websocket_blocks = []
+    marker = "location = /api/ws {"
+    end_marker = "    }\\n\\\n"
+    cursor = 0
+    while (start := dockerfile.find(marker, cursor)) >= 0:
+        end = dockerfile.index(end_marker, start)
+        websocket_blocks.append(dockerfile[start:end])
+        cursor = end + len(end_marker)
+    assert len(websocket_blocks) == 2
+    assert all(
+        block.count("proxy_set_header Origin http://127.0.0.1;") == 1
+        for block in websocket_blocks
+    )
 
 
 def test_new_showroom_session_has_no_seed_business_data() -> None:
