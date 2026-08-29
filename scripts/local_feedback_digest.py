@@ -17,6 +17,7 @@ import sys
 from typing import Any
 
 DEFAULT_TARGET = "feedback-digest@120.24.248.58"
+IDENTITY_PATH = os.path.expanduser("~/.ssh/ai_lab_feedback_digest_ed25519")
 LOCK_PATH = os.path.expanduser("~/.hermes/run/local-feedback-digest.lock")
 
 
@@ -36,6 +37,7 @@ def _remote(command: list[str]) -> dict[str, Any]:
             "-o", "BatchMode=yes",
             "-o", "IdentitiesOnly=yes",
             "-o", "StrictHostKeyChecking=yes",
+            "-i", IDENTITY_PATH,
             "--", DEFAULT_TARGET, remote_command,
         ],
         text=True,

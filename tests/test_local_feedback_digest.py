@@ -53,6 +53,7 @@ def test_local_worker_sends_with_hermes_then_acks(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "LOCK_PATH", str(tmp_path / "digest.lock"))
     monkeypatch.setattr(sys, "argv", ["local_feedback_digest.py"])
     assert module.main() == 0
+    assert calls[0][0][calls[0][0].index("-i") + 1] == module.IDENTITY_PATH
     assert calls[0][0][-3:] == ["--", module.DEFAULT_TARGET, "feedback-digest prepare"]
     assert calls[1][0][1:4] == ["send", "--to", "feishu"]
     assert calls[1][1] == prepared["content"]

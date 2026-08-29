@@ -42,22 +42,23 @@ protocol: cloud-user-complaint-feedback-v1@2
 
 - [x] 本地 Hermes Gateway 飞书适配器状态为 `connected`
 - [x] 本地飞书 Home Chat 已设置
-- [x] 定向反馈/本地投递门禁：`35 passed`
-- [x] 后端全量门禁：`819 passed, 2 skipped, 10 warnings`
+- [x] 定向反馈/本地投递门禁：`36 passed`
+- [x] 后端全量门禁：`820 passed, 2 skipped, 10 warnings`
 - [x] QWS 回归：`1 passed`
 - [x] Python 编译与 `git diff --check` 通过
 - [x] `hermes send --help` 确认 `--to`、`--subject`、`--file -`、`--json` 参数
 - [ ] v2 增量复签（首轮双 REJECT 的四项阻断已修复；当前 adoption continuation 禁止同回合再次委派，不伪造签署）
-- [ ] GitHub `main` 提交与推送
+- [x] 功能提交 `6ca549ad2305280bf04e706828ab21f24d30a697` 已进入 GitHub `main`
 - [ ] 统一 SHA 生产部署
 - [ ] 本地 Cron 建立
-- [ ] 飞书真实消息收件验收
+- [x] 本地 `hermes send` 飞书实发并按 message ID 回读：目标与正文完全匹配
+- [x] `~/.hermes/scripts/local_feedback_digest.py` 与提交脚本 SHA-256 一致
 
 ## 交付状态
 
 - 分支：`main`
 - 基线：`71cde6d99a32bd7836fff62e1626c92687642d66`
-- GitHub 推送：待完成
+- GitHub 推送：`6ca549ad2305280bf04e706828ab21f24d30a697` 已推送
 - 云端部署：待完成
 - 本地计划：待部署和真实飞书收件验收
 - 回滚点：部署前创建
@@ -66,7 +67,7 @@ protocol: cloud-user-complaint-feedback-v1@2
 
 - 云端不新增飞书凭据。
 - 本地复用现有 Hermes 飞书连接，不复制或输出 Token。
-- 服务器使用专用 `feedback-digest` 强制命令账户，不授予通用生产 Shell；本地脚本固定目标并启用严格 Host Key 检查。
+- 服务器使用专用 `feedback-digest` 强制命令账户，不授予通用生产 Shell；本地脚本固定目标、显式绑定专用 Ed25519 私钥并启用严格 Host Key 检查。
 - 本地发送前重新计算并常量时间比较 payload SHA-256；不匹配时禁止发送和 ACK。
 - Cron 可独立暂停或删除，不影响聊天与反馈采集。
 - 不宣称物理 exactly-once：若飞书已接收但进程在 ACK 前崩溃，可能以相同 Digest ID 重复投递。
