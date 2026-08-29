@@ -1203,6 +1203,7 @@ public struct WorkflowPlanEditRequestDTO: Encodable {
 public enum APIError: Error, LocalizedError {
     case invalidURL
     case unauthorized
+    case authentication(String)
     case knowledgeScopeChanged
     case server(Int, String)
     case network(String)
@@ -1213,6 +1214,7 @@ public enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL: return "无效的请求地址"
         case .unauthorized: return "登录态失效，请重新登录"
+        case .authentication(let message): return message
         case .knowledgeScopeChanged:
             return "套餐或知识权限已变化，请刷新知识权限后重试"
         case .server(let code, let msg):
@@ -1230,11 +1232,28 @@ public enum APIError: Error, LocalizedError {
     /// 将后端结构化 403 统一映射为权限变化，避免把知识撤权误报为普通服务器错误。
     public static func fromHTTP(statusCode: Int, body: Data, fallback: String = "") -> APIError {
         let raw = String(data: body, encoding: .utf8) ?? fallback
+        let message = Self.extractServerMessage(from: body) ?? raw
+        if statusCode == 401 {
+            return .authentication(message.isEmpty ? "登录信息无效，请重新输入" : message)
+        }
         if statusCode == 403,
            raw.contains("knowledge_scope_denied") || raw.contains("套餐或知识权限已变化") {
             return .knowledgeScopeChanged
         }
-        return .server(statusCode, raw)
+        return .server(statusCode, message)
+    }
+
+    private static func extractServerMessage(from body: Data) -> String? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: body) as? [String: Any]
+        else { return nil }
+        if let detail = object["detail"] as? String, !detail.isEmpty {
+            return detail
+        }
+        if let message = object["message"] as? String, !message.isEmpty {
+            return message
+        }
+        return nil
     }
 }
 
@@ -1327,7 +1346,7 @@ public final class APIClient: ObservableObject {
     private let streamSession: URLSession
     private let decoder: JSONDecoder
 
-    public init(baseURL: URL = URL(string: "http://120.24.248.58")!) {
+    public init(baseURL: URL = URL(string: "https://120.24.248.58")!) {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
@@ -1410,13 +1429,15 @@ public final class APIClient: ObservableObject {
                     throw APIError.network("无效响应")
                 }
                 if http.statusCode == 401 {
-                    // 401 绝不重试：主链路清 token 置 needsReauth 引导登录；探测链路仅抛错由调用方降级
+                    // 已登录业务请求的 401 才代表会话失效。登录/验证码/OAuth
+                    // 等公开请求要保留服务端原因，不能误报“登录态失效”。
                     if reauthOn401 {
                         clearToken()
                         isOfflineMode = false
                         needsReauth = true
+                        throw APIError.unauthorized
                     }
-                    throw APIError.unauthorized
+                    throw APIError.fromHTTP(statusCode: http.statusCode, body: data)
                 }
                 guard (200..<300).contains(http.statusCode) else {
                     throw APIError.fromHTTP(statusCode: http.statusCode, body: data)

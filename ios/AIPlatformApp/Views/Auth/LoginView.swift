@@ -249,7 +249,7 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!wechatLoginEnabled || isLoading)
+                .disabled(isLoading)
                 .opacity(wechatLoginEnabled ? 1 : 0.45)
                 
                 // Alipay Button
@@ -269,7 +269,7 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!alipayLoginEnabled || isLoading)
+                .disabled(isLoading)
                 .opacity(alipayLoginEnabled ? 1 : 0.45)
             }
         }
@@ -360,6 +360,15 @@ public struct LoginView: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
         guard !isLoading else { return }
+        let isEnabled = provider == "alipay" ? alipayLoginEnabled : wechatLoginEnabled
+        guard isEnabled else {
+            let channel = provider == "alipay" ? "支付宝" : "微信"
+            errorMessage = "\(channel)登录尚未在服务端配置完成，请检查应用 AppID、密钥与 HTTPS 回调地址。"
+            #if os(iOS)
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            #endif
+            return
+        }
         isLoading = true
         errorMessage = nil
         Task { @MainActor in
