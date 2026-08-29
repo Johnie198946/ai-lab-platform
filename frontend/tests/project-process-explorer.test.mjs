@@ -9,6 +9,7 @@ const resourceSource = await readFile(new URL("../src/features/quantum-workspace
 const apiSource = await readFile(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
 const appSource = await readFile(new URL("../src/app/App.jsx", import.meta.url), "utf8");
 const railSource = await readFile(new URL("../src/features/quantum-workspace/StageRail.jsx", import.meta.url), "utf8");
+const workflowSource = await readFile(new URL("../src/features/quantum-workspace/ProjectGraph.jsx", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/features/quantum-workspace/quantumWorkspace.css", import.meta.url), "utf8");
 
 test("project navigation removes the duplicate top-level Gantt entry", () => {
@@ -103,4 +104,20 @@ test("stage nodes expose keyboard-friendly expanded state and explicit close con
   assert.match(railSource, /aria-controls=/);
   assert.match(railSource, /aria-label=\{`关闭\$\{stage\.name\}阶段详情`\}/);
   assert.match(styles, /focus-visible/);
+});
+
+test("Workflow is an editable stage-aware node studio with persisted responsibility inputs", () => {
+  assert.match(workflowSource, /useNodesState/);
+  assert.match(workflowSource, /onConnect/);
+  assert.match(workflowSource, /节点库/);
+  assert.match(workflowSource, /条件分支/);
+  assert.match(workflowSource, /人工审批/);
+  assert.match(workflowSource, /参与角色/);
+  assert.match(workflowSource, /输入数据/);
+  assert.match(workflowSource, /设备 \/ 环境/);
+  assert.match(workflowSource, /交付物/);
+  assert.match(workflowSource, /验收标准/);
+  assert.match(pageSource, /saveWorkflowGraph/);
+  assert.match(apiSource, /graphs\/workflow/);
+  assert.match(styles, /\.qw-workflow-layout\{display:grid;grid-template-columns:/);
 });

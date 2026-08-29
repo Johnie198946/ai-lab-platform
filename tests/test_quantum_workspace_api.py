@@ -808,6 +808,91 @@ def test_taskboard_schedule_and_graph_share_one_revision(_reset_database):
     assert stale.json()["detail"]["server_revision"] == 2
 
 
+def test_workflow_designer_persists_configured_nodes_edges_and_rejects_stale_revision(
+    _reset_database,
+):
+    client = _reset_database
+    project_id, applied = _create_applied_process(client, "workflow-designer")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    stage = process["stages"][0]
+    trigger_id = f"workflow_start_{stage['id']}"
+    action_id = "workflow_node_define_requirements"
+    payload = {
+        "expected_revision": applied["process_revision"],
+        "nodes": [
+            {
+                "id": trigger_id,
+                "type": "workflow_step",
+                "stage_id": stage["id"],
+                "position": {"x": 60, "y": 220},
+                "data": {
+                    "kind": "trigger",
+                    "label": f"{stage['name']}开始",
+                    "description": "业务需求进入已确认状态",
+                    "execution_mode": "human_ai",
+                    "participants": ["产品负责人"],
+                    "tools": [],
+                    "data_sources": ["需求池"],
+                    "devices": [],
+                    "deliverables": [],
+                    "acceptance_criteria": ["需求编号存在"],
+                },
+            },
+            {
+                "id": action_id,
+                "type": "workflow_step",
+                "stage_id": stage["id"],
+                "position": {"x": 380, "y": 220},
+                "data": {
+                    "kind": "action",
+                    "label": "定义需求与验收边界",
+                    "description": "梳理目标、范围和成功标准",
+                    "execution_mode": "human_ai",
+                    "participants": ["产品负责人", "业务代表"],
+                    "tools": ["访谈模板", "需求评审清单"],
+                    "data_sources": ["客户档案", "历史访谈"],
+                    "devices": ["会议室", "浏览器"],
+                    "deliverables": ["需求定义", "评审结论"],
+                    "acceptance_criteria": ["业务负责人确认"],
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "workflow_edge_start_define",
+                "source": trigger_id,
+                "target": action_id,
+            }
+        ],
+    }
+
+    saved = client.put(
+        f"/api/v1/projects/{project_id}/graphs/workflow",
+        json=payload,
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["process_revision"] == applied["process_revision"] + 1
+    assert saved.json()["source_status"] == "USER_CONFIGURED"
+    configured = next(node for node in saved.json()["nodes"] if node["id"] == action_id)
+    assert configured["data"]["participants"] == ["产品负责人", "业务代表"]
+    assert configured["data"]["tools"] == ["访谈模板", "需求评审清单"]
+    assert configured["data"]["data_sources"] == ["客户档案", "历史访谈"]
+    assert configured["data"]["devices"] == ["会议室", "浏览器"]
+    assert configured["data"]["deliverables"] == ["需求定义", "评审结论"]
+
+    reloaded = client.get(f"/api/v1/projects/{project_id}/graphs/workflow")
+    assert reloaded.status_code == 200
+    assert reloaded.json()["nodes"] == saved.json()["nodes"]
+    assert reloaded.json()["edges"] == saved.json()["edges"]
+
+    stale = client.put(
+        f"/api/v1/projects/{project_id}/graphs/workflow",
+        json=payload,
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["server_revision"] == saved.json()["process_revision"]
+
+
 def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
     _reset_database, monkeypatch
 ):

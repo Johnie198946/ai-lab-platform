@@ -180,6 +180,12 @@ class EditProjectTaskRequest(BaseModel):
     assignee_role: str | None = Field(default=None, max_length=160)
 
 
+class SaveWorkflowGraphRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    nodes: list[dict[str, Any]] = Field(max_length=300)
+    edges: list[dict[str, Any]] = Field(max_length=600)
+
+
 class SaveResourcePlanRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     plan: dict[str, Any]
@@ -1581,6 +1587,129 @@ async def get_project_graph(
             "process_instance_id": process.get("process_instance_id"),
             "process_revision": project.process_revision,
             **graph,
+        }
+
+
+def _workflow_text_list(value: Any, *, limit: int = 40) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        str(item or "").strip()[:240]
+        for item in value[:limit]
+        if str(item or "").strip()
+    ))
+
+
+@router.put("/projects/{project_id}/graphs/workflow")
+async def save_project_workflow_graph(
+    project_id: str,
+    body: SaveWorkflowGraphRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "project_revision_conflict",
+                    "server_revision": project.process_revision,
+                },
+            )
+        process = dict(project.process_snapshot or {})
+        if not process.get("process_instance_id"):
+            raise HTTPException(status_code=409, detail="project process is not instantiated")
+        stage_ids = {str(stage.get("id")) for stage in process.get("stages", [])}
+        existing_graph = dict((process.get("graphs") or {}).get("workflow") or {})
+        allowed_kinds = {"trigger", "action", "decision", "approval", "deliverable"}
+        nodes: list[dict[str, Any]] = []
+        node_ids: set[str] = set()
+        for raw_node in body.nodes:
+            node_id = str(raw_node.get("id") or "").strip()[:96]
+            stage_id = str(raw_node.get("stage_id") or "").strip()
+            if not node_id or node_id in node_ids:
+                raise HTTPException(status_code=422, detail="workflow node ids must be unique")
+            if stage_id not in stage_ids:
+                raise HTTPException(status_code=422, detail="workflow node stage is invalid")
+            raw_data = raw_node.get("data") if isinstance(raw_node.get("data"), dict) else {}
+            kind = str(raw_data.get("kind") or "action").strip().lower()
+            if kind not in allowed_kinds:
+                raise HTTPException(status_code=422, detail="workflow node kind is invalid")
+            position = raw_node.get("position") if isinstance(raw_node.get("position"), dict) else {}
+            node_ids.add(node_id)
+            node = {
+                "id": node_id,
+                "type": "workflow_step",
+                "stage_id": stage_id,
+                "position": {
+                    "x": float(position.get("x") or 0),
+                    "y": float(position.get("y") or 0),
+                },
+                "data": {
+                    "kind": kind,
+                    "label": str(raw_data.get("label") or "未命名步骤").strip()[:160] or "未命名步骤",
+                    "description": str(raw_data.get("description") or "").strip()[:4000],
+                    "execution_mode": str(raw_data.get("execution_mode") or "human_ai").strip()[:40],
+                    "participants": _workflow_text_list(raw_data.get("participants")),
+                    "tools": _workflow_text_list(raw_data.get("tools")),
+                    "data_sources": _workflow_text_list(raw_data.get("data_sources")),
+                    "devices": _workflow_text_list(raw_data.get("devices")),
+                    "deliverables": _workflow_text_list(raw_data.get("deliverables")),
+                    "acceptance_criteria": _workflow_text_list(raw_data.get("acceptance_criteria")),
+                    "condition": str(raw_data.get("condition") or "").strip()[:1000],
+                    "task_id": str(raw_data.get("task_id") or "").strip()[:96] or None,
+                },
+            }
+            for key in ("status", "task_status", "workflow_id"):
+                if raw_node.get(key) is not None:
+                    node[key] = raw_node[key]
+            nodes.append(node)
+
+        edges: list[dict[str, Any]] = []
+        edge_ids: set[str] = set()
+        for index, raw_edge in enumerate(body.edges):
+            source = str(raw_edge.get("source") or "").strip()
+            target = str(raw_edge.get("target") or "").strip()
+            edge_id = str(raw_edge.get("id") or f"workflow_edge_{index}").strip()[:96]
+            if source not in node_ids or target not in node_ids:
+                raise HTTPException(status_code=422, detail="workflow edge endpoint is invalid")
+            if not edge_id or edge_id in edge_ids:
+                raise HTTPException(status_code=422, detail="workflow edge ids must be unique")
+            edge_ids.add(edge_id)
+            edges.append({
+                "id": edge_id,
+                "source": source,
+                "target": target,
+                "type": "smoothstep",
+                "sourceHandle": raw_edge.get("sourceHandle"),
+                "targetHandle": raw_edge.get("targetHandle"),
+            })
+
+        workflow_graph = {
+            **existing_graph,
+            "id": existing_graph.get("id") or f"graph_{uuid4().hex}",
+            "view_type": "workflow",
+            "source_status": "USER_CONFIGURED",
+            "nodes": nodes,
+            "edges": edges,
+        }
+        graphs = dict(process.get("graphs") or {})
+        graphs["workflow"] = workflow_graph
+        process["graphs"] = graphs
+        next_revision = await _cas_project_process(
+            db,
+            project=project,
+            expected_revision=body.expected_revision,
+            process=process,
+        )
+        return {
+            "project_id": project.id,
+            "process_instance_id": process.get("process_instance_id"),
+            "process_revision": next_revision,
+            **workflow_graph,
         }
 
 
