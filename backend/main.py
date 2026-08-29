@@ -58,6 +58,16 @@ async def lifespan(app: FastAPI):
         logger.exception("Database initialization failed; file-backed features remain available")
     app.state.db_ready = db_ready
     if db_ready:
+        # Build the file-backed knowledge catalog before readiness.  The first
+        # compute_catalog() call scans the mounted vault and costs ~1.4s on the
+        # production host; doing this lazily inside require_auth made the first
+        # authenticated page load pay that full cold-start penalty.
+        try:
+            from backend.api.catalog import compute_catalog
+
+            compute_catalog()
+        except Exception:
+            logger.exception("Knowledge catalog prewarm failed; first request will retry")
         try:
             from backend.services.workflow_migration import migrate_legacy_workflows
 
