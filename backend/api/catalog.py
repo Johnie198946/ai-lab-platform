@@ -8,6 +8,11 @@
 
 from __future__ import annotations
 
+import os
+import time
+from pathlib import Path
+from threading import Lock
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -22,6 +27,10 @@ from backend.services.knowledge_catalog import (
 )
 
 router = APIRouter(prefix="/api/v1", tags=["catalog"])
+
+_CATALOG_CACHE_SECONDS = max(1, int(os.environ.get("KNOWLEDGE_CATALOG_CACHE_SECONDS", "60")))
+_catalog_cache_lock = Lock()
+_catalog_cache: tuple[tuple[str, int, int], float, list[dict]] | None = None
 
 # 不可订阅的系统目录（不进入知识分类）
 SYSTEM_DIRS = {
@@ -60,9 +69,30 @@ FORBIDDEN_CATEGORIES = frozenset(
     }
 )
 
+def _catalog_fingerprint(vault: Path) -> tuple[str, int, int]:
+    """Cheap version key; top-level packages and matrix govern the catalog."""
+    root_mtime = vault.stat().st_mtime_ns if vault.exists() else 0
+    matrix = vault / "knowledge_matrix.json"
+    matrix_mtime = matrix.stat().st_mtime_ns if matrix.exists() else 0
+    return (str(vault.resolve()), root_mtime, matrix_mtime)
+
+
 def compute_catalog() -> list[dict]:
-    """HTTP-layer catalog view; keeps API test/runtime vault overrides intact."""
-    return _compute_catalog(knowledge._vault())
+    """Versioned short cache; vault/matrix changes invalidate immediately."""
+    global _catalog_cache
+    vault = knowledge._vault()
+    fingerprint = _catalog_fingerprint(vault)
+    now = time.monotonic()
+    cached = _catalog_cache
+    if cached is not None and cached[0] == fingerprint and cached[1] > now:
+        return cached[2]
+    with _catalog_cache_lock:
+        cached = _catalog_cache
+        if cached is not None and cached[0] == fingerprint and cached[1] > now:
+            return cached[2]
+        catalog = _compute_catalog(vault)
+        _catalog_cache = (fingerprint, now + _CATALOG_CACHE_SECONDS, catalog)
+        return catalog
 
 
 @router.get("/catalog")
