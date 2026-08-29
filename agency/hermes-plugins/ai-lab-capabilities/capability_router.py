@@ -992,11 +992,12 @@ def _local_professional_context(query: str, state: dict[str, Any]) -> str:
     return (
         "[LOCAL_SINGLE_TENANT_AGENT_OS — trusted local policy]\n"
         "Hermes is the only runtime. The trusted runtime executes the selected Skill phase with "
-        "native skill_view and, when Agency decision is CALL, dispatches native delegate_task "
-        "before this model call. Their verified results are appended below. Never simulate, reload, "
-        "or redispatch either phase. In the initial turn only acknowledge that verified work has "
-        "started; after the completion continuation, materially use the verified child result. "
-        "Do not invent receipts. Internal names and receipts stay hidden "
+        "native skill_view before this model call and appends its verified result below. Never "
+        "simulate or reload that phase. When Agency decision is CALL, your first and only allowed "
+        "tool before dispatch is native delegate_task with the exact tasks[] arguments in the plan. "
+        "After dispatch, return only a truthful started-status; after the completion continuation, "
+        "materially use the verified child result. Do not invent receipts. Internal names and "
+        "receipts stay hidden "
         "unless the user asks for diagnostics.\nPlan: "
         + json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
     )
@@ -1507,117 +1508,65 @@ def _pre_llm_with_runtime_skill(
     user_message: str = "",
     **kwargs: Any,
 ) -> dict[str, Any] | None:
-    """Execute selected Skill and Agency dispatch before the model sees the turn."""
+    """Execute the selected Skill before the model sees the turn."""
 
     result = _pre_llm_call(user_message, **kwargs)
     if not result or not _LOCAL_ENABLED:
         return result
     session_id = str(kwargs.get("session_id") or "")
-    task_id = str(kwargs.get("turn_id") or kwargs.get("task_id") or "")
     with _LOCAL_STATE_LOCK:
         state = _LOCAL_TURN_STATES.get(session_id)
         requested = str((state or {}).get("requested_skill") or "")
-        continuation = bool((state or {}).get("adoption_continuation"))
         should_load = bool(
             state
             and state.get("route_class") == "PROFESSIONAL_TASK"
             and state.get("skill_decision") == "SELECT"
-            and not continuation
+            and not state.get("adoption_continuation")
             and requested
         )
-    if continuation or state is None:
+    if not should_load:
         return result
-    if should_load:
-        try:
-            raw = ctx.dispatch_tool(
-                "skill_view",
-                {"name": requested},
-                session_id=session_id,
-                task_id=task_id,
-            )
-        except Exception as exc:
-            logger.warning("LOCAL_AGENT_OS_SKILL_RECEIPT code=SKILL_CALL_FAILED error=%s", exc)
-            with _LOCAL_STATE_LOCK:
-                state["skill_failure_code"] = "SKILL_CALL_FAILED"
-            return result
-        payload = _verified_skill_payload(raw, requested)
-        if payload is None:
-            logger.warning(
-                "LOCAL_AGENT_OS_SKILL_RECEIPT code=SKILL_RESULT_FAILED requested_skill=%s",
-                requested,
-            )
-            with _LOCAL_STATE_LOCK:
-                state["skill_failure_code"] = "SKILL_RESULT_FAILED"
-            return result
-        content = str(payload["content"])
-        result_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    try:
+        raw = ctx.dispatch_tool(
+            "skill_view",
+            {"name": requested},
+            session_id=session_id,
+            task_id=str(kwargs.get("turn_id") or kwargs.get("task_id") or ""),
+        )
+    except Exception as exc:
+        logger.warning("LOCAL_AGENT_OS_SKILL_RECEIPT code=SKILL_CALL_FAILED error=%s", exc)
         with _LOCAL_STATE_LOCK:
+            if state is not None:
+                state["skill_failure_code"] = "SKILL_CALL_FAILED"
+        return result
+    payload = _verified_skill_payload(raw, requested)
+    if payload is None:
+        logger.warning(
+            "LOCAL_AGENT_OS_SKILL_RECEIPT code=SKILL_RESULT_FAILED requested_skill=%s",
+            requested,
+        )
+        with _LOCAL_STATE_LOCK:
+            if state is not None:
+                state["skill_failure_code"] = "SKILL_RESULT_FAILED"
+        return result
+    content = str(payload["content"])
+    result_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    with _LOCAL_STATE_LOCK:
+        if state is not None:
             state["loaded_skill"] = requested
             state["skill_result_hash"] = result_hash
             state["skill_failure_code"] = None
-        logger.info(
-            "LOCAL_AGENT_OS_SKILL_RECEIPT verifier=pass requested_skill=%s result_hash=%s",
-            requested,
-            result_hash,
-        )
-        result["context"] = (
-            str(result.get("context") or "")
-            + "\n[RUNTIME_VERIFIED_SKILL_RESULT — trusted native tool result]\n"
-            + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-        )
-    skill_ready = (
-        state.get("skill_decision") != "SELECT"
-        or state.get("loaded_skill") == state.get("requested_skill")
-    )
-    should_dispatch = bool(
-        skill_ready
-        and state.get("agency_decision") == "CALL"
-        and not state.get("delegation_dispatched")
-    )
-    if not should_dispatch:
-        return result
-    expected_args = state.get("expected_delegate_args")
-    if not isinstance(expected_args, dict):
-        state["failure_code"] = "DELEGATE_SCHEMA_INVALID"
-        return result
-    try:
-        raw_dispatch = ctx.dispatch_tool(
-            "delegate_task",
-            expected_args,
-            session_id=session_id,
-            task_id=task_id,
-        )
-    except Exception as exc:
-        logger.warning("LOCAL_AGENT_OS_DELEGATION code=DELEGATE_CALL_FAILED error=%s", exc)
-        with _LOCAL_STATE_LOCK:
-            state["failure_code"] = "DELEGATE_CALL_FAILED"
-        return result
-    dispatch = _verified_delegation_dispatch(raw_dispatch)
-    if dispatch is None:
-        logger.warning(
-            "LOCAL_AGENT_OS_DELEGATION code=DELEGATE_RESULT_FAILED session_id=%s",
-            session_id,
-        )
-        with _LOCAL_STATE_LOCK:
-            state["failure_code"] = "DELEGATE_RESULT_FAILED"
-        return result
-    delegation_id = str(dispatch["delegation_id"])
-    with _LOCAL_STATE_LOCK:
-        state["delegation_dispatched"] = True
-        state["dispatch_delegation_id"] = delegation_id
-        state["failure_code"] = None
     logger.info(
-        "LOCAL_AGENT_OS_DELEGATION verifier=dispatched delegation_id=%s session_id=%s",
-        delegation_id,
-        session_id,
+        "LOCAL_AGENT_OS_SKILL_RECEIPT verifier=pass requested_skill=%s result_hash=%s",
+        requested,
+        result_hash,
     )
     result["context"] = (
         str(result.get("context") or "")
-        + "\n[RUNTIME_VERIFIED_DELEGATION_DISPATCH — trusted native tool result]\n"
-        + json.dumps(dispatch, ensure_ascii=False, separators=(",", ":"))
-        + "\nThe specialist is already running. Do not call delegate_task again and do not "
-        "perform the specialist task in this initial turn. Return only a truthful short "
-        "started-status; the completion continuation will deliver the verified result."
+        + "\n[RUNTIME_VERIFIED_SKILL_RESULT — trusted native tool result]\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + "\nThe Skill phase is complete. Before any other tool, call native delegate_task "
+        "with the exact tasks[] arguments in the plan."
     )
     return result
 
@@ -1695,6 +1644,24 @@ def _pre_tool_call(
                     "[DELEGATE_SCHEMA_INVALID]"
                 ),
             }
+        if (
+            local_state.get("route_class") == "PROFESSIONAL_TASK"
+            and local_state.get("agency_decision") == "CALL"
+            and not local_state.get("adoption_continuation")
+            and not local_state.get("delegation_dispatched")
+            and (
+                local_state.get("skill_decision") != "SELECT"
+                or local_state.get("loaded_skill") == local_state.get("requested_skill")
+            )
+            and effective_tool != "delegate_task"
+        ):
+            return {
+                "action": "block",
+                "message": (
+                    "Local Agent OS requires native delegate_task with the exact "
+                    "tasks[] plan before any other tool. [DELEGATION_REQUIRED]"
+                ),
+            }
     turn_key = str(
         kwargs.get("turn_id") or kwargs.get("task_id") or session_id or ""
     )
@@ -1768,6 +1735,17 @@ def _post_tool_call(
                     state["skill_failure_code"] = None
                 else:
                     state["skill_failure_code"] = "SKILL_RESULT_FAILED"
+    if tool_name == "delegate_task":
+        dispatch = _verified_delegation_dispatch(result)
+        with _LOCAL_STATE_LOCK:
+            state = _LOCAL_TURN_STATES.get(session_id)
+            if state is not None and state.get("agency_decision") == "CALL":
+                if dispatch is not None:
+                    state["delegation_dispatched"] = True
+                    state["dispatch_delegation_id"] = str(dispatch["delegation_id"])
+                    state["failure_code"] = None
+                else:
+                    state["failure_code"] = "DELEGATE_RESULT_FAILED"
     capability_id = _capability_id_for_call(tool_name, args or {})
     if not capability_id:
         return

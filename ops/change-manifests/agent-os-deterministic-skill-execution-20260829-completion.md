@@ -12,7 +12,7 @@ tags:
 # Agent OS 确定性 Skill 执行修复
 
 > [!summary]
-> 将本地 Agent OS 的 Skill-first 与 Agency CALL 都从“提示模型自行调用”改为 Runtime 在 `pre_llm_call` 阶段通过 Hermes 原生 `ctx.dispatch_tool(...)` 确定性执行；初始回合只发布真实启动状态，异步完成回合再依据 canonical receipt 采用 child 结果。
+> Runtime 在 `pre_llm_call` 阶段真实读取所选 Skill；随后用 `pre_tool_call` 硬门禁止任何非委派工具，直到模型通过原生 `delegate_task` 完成 dispatch。这样保留 Hermes 的真实 `parent_agent` 与 canonical delegation lifecycle，不引入第二 Runtime。
 
 ## 根因
 
@@ -30,7 +30,8 @@ tags:
   - `content` 非空。
 - 对 Skill 正文计算 SHA-256，记录 `LOCAL_AGENT_OS_SKILL_RECEIPT`，并把真实结果作为 trusted runtime context 交给 Main。
 - `delegate_task` 计划统一为单任务 `tasks[]`；运行时拒绝任何与计划不完全一致的参数。
-- Runtime 在 Skill 回执通过后直接 dispatch `delegate_task`，保存真实 delegation ID，并阻止模型重复委派。
+- Runtime 在 Skill 回执通过后只允许原生 `delegate_task`；网页、文件及其他工具在 dispatch 前均返回 `DELEGATION_REQUIRED`。
+- `post_tool_call` 只在真实 `delegate_task` 返回 `status=dispatched` 与 delegation ID 后放行初始启动状态，并阻止重复委派。
 - 若 child 尚未结束，Main 只能返回“已启动专业研究”；不得把 Main 自行检索内容冒充 child 结果。
 - 原始用户请求（含 URL 与查询参数）作为 child `goal` 保真传递；状态中独立保存 `original_request`。
 - 增加结构化失败码：
@@ -39,7 +40,7 @@ tags:
   - `SKILL_RESULT_MISSING`
   - `DELEGATE_SCHEMA_INVALID`
   - `DELEGATION_RECEIPT_MISSING`
-- 插件版本：`1.4.8`。
+- 插件版本：`1.4.9`。
 
 ## 文件
 

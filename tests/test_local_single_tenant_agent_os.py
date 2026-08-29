@@ -141,10 +141,8 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
         "# Verified skill\nUse evidence and preserve the original URL.".encode()
     ).hexdigest()
     assert "RUNTIME_VERIFIED_SKILL_RESULT" in result["context"]
-    assert "RUNTIME_VERIFIED_DELEGATION_DISPATCH" in result["context"]
-    assert context.dispatched[1][0] == "delegate_task"
-    assert state["delegation_dispatched"] is True
-    assert state["dispatch_delegation_id"] == "deleg-runtime-test"
+    assert len(context.dispatched) == 1
+    assert state["delegation_dispatched"] is False
     raw_plan = result["context"].split("Plan: ", 1)[1].split(
         "\n[RUNTIME_VERIFIED_SKILL_RESULT", 1
     )[0]
@@ -152,6 +150,27 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
     delegate_args = plan[1]["invoke"]["arguments"]
     assert delegate_args == state["expected_delegate_args"]
     assert delegate_args["tasks"][0]["goal"] == original
+    blocked_other = router._pre_tool_call(
+        "web_extract",
+        {"urls": ["https://example.com/report"]},
+        session_id="runtime-skill-parent",
+    )
+    assert blocked_other and "DELEGATION_REQUIRED" in blocked_other["message"]
+    assert router._pre_tool_call(
+        "delegate_task", delegate_args, session_id="runtime-skill-parent"
+    ) is None
+    router._post_tool_call(
+        "delegate_task",
+        delegate_args,
+        json.dumps({
+            "status": "dispatched",
+            "delegation_id": "deleg-runtime-test",
+            "count": 1,
+        }),
+        session_id="runtime-skill-parent",
+    )
+    assert state["delegation_dispatched"] is True
+    assert state["dispatch_delegation_id"] == "deleg-runtime-test"
     duplicate = router._pre_tool_call(
         "delegate_task", delegate_args, session_id="runtime-skill-parent"
     )
