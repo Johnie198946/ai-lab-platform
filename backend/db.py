@@ -69,12 +69,17 @@ async def init_db() -> None:
     import backend.models.feedback  # noqa: F401  (注册用户抱怨与日报投递账本)
 
     async with engine.begin() as conn:
+        if conn.dialect.name == "postgresql":
+            # Every API/worker process runs init_db at startup. Serialize schema
+            # discovery and additive DDL so check-then-ALTER migrations cannot race.
+            await conn.exec_driver_sql("SELECT pg_advisory_xact_lock(486443210947)")
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_migrate_workflow_v2_columns)
         await conn.run_sync(_migrate_workflow_lifecycle_columns)
         await conn.run_sync(_migrate_workflow_contract_columns)
         await conn.run_sync(_migrate_knowledge_policy_v2_columns)
         await conn.run_sync(_migrate_showroom_epoch_bigint)
+        await conn.run_sync(_migrate_feedback_digest_columns)
 
 
 def _migrate_workflow_v2_columns(connection) -> None:
@@ -331,6 +336,26 @@ def _migrate_showroom_epoch_bigint(connection) -> None:
         "ALTER TABLE showroom_insight_executions "
         "ALTER COLUMN epoch TYPE BIGINT USING epoch::BIGINT"
     )
+
+
+def _migrate_feedback_digest_columns(connection) -> None:
+    """Persist the frozen digest body for cloud-prepare/local-send retries."""
+
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(
+            "ALTER TABLE feedback_digest_runs "
+            "ADD COLUMN IF NOT EXISTS payload_content TEXT NOT NULL DEFAULT ''"
+        )
+        return
+    schema = inspect(connection)
+    if "feedback_digest_runs" not in set(schema.get_table_names()):
+        return
+    existing = {item["name"] for item in schema.get_columns("feedback_digest_runs")}
+    if "payload_content" not in existing:
+        connection.exec_driver_sql(
+            "ALTER TABLE feedback_digest_runs "
+            "ADD COLUMN payload_content TEXT NOT NULL DEFAULT ''"
+        )
 
 
 async def get_session():

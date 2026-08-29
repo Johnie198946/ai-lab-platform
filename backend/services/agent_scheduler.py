@@ -191,18 +191,6 @@ async def _scan_due() -> None:
         await _run_agent_once(aid)
 
 
-async def _run_feedback_digest_job() -> None:
-    from backend.services.feedback import run_feedback_digest
-
-    result = await run_feedback_digest()
-    if result.get("status") == "failed":
-        logger.error(
-            "feedback digest delivery failed: digest_id=%s event_count=%s",
-            result.get("digest_id", "unknown"),
-            result.get("event_count", 0),
-        )
-
-
 def start_scheduler() -> None:
     """FastAPI lifespan 调用: 启动后台扫描循环。"""
     global _scheduler
@@ -214,20 +202,6 @@ def start_scheduler() -> None:
         "interval",
         seconds=_scan_interval,
         id="agent-scan",
-        max_instances=1,
-        coalesce=True,
-    )
-    # 抱怨日报是平台确定性系统任务，不是 Hermes Agent。09:00 后每 10 分钟
-    # 补偿一次；数据库锁保证并发 worker 只执行一个发送事务。飞书本身
-    # 不提供幂等键，极小的“发送成功后进程崩溃”窗口按 at-least-once 处理，
-    # 每份消息带稳定 Digest ID，禁止宣称物理 exactly-once。
-    scheduler.add_job(
-        _run_feedback_digest_job,
-        "cron",
-        minute="*/10",
-        hour="9-23",
-        timezone=CST,
-        id="feedback-digest",
         max_instances=1,
         coalesce=True,
     )

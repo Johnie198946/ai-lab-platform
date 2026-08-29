@@ -7,16 +7,17 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from sqlalchemy import delete, select
+from sqlalchemy import create_engine, delete, inspect as sa_inspect, select
 
-from backend.db import SessionLocal
+from backend.db import SessionLocal, _migrate_feedback_digest_columns
 from backend.models.feedback import FeedbackDigestRun, FeedbackEvent
 from backend.services.feedback import (
     FeedbackReceipt,
+    acknowledge_feedback_digest,
     capture_feedback,
     classify_feedback,
+    prepare_feedback_digest,
     render_digest,
-    run_feedback_digest,
     sanitize_excerpt,
 )
 
@@ -258,15 +259,37 @@ def test_digest_is_deterministic_and_reports_exact_counts():
 
 
 def test_postgres_digest_lock_is_transaction_scoped_contract():
-    source = inspect.getsource(run_feedback_digest)
+    source = inspect.getsource(prepare_feedback_digest)
     assert "pg_try_advisory_xact_lock" in source
     assert "pg_try_advisory_lock" not in source.replace("pg_try_advisory_xact_lock", "")
     assert "async with db.begin()" in source
 
 
+def test_feedback_digest_payload_migration_is_additive_and_idempotent():
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE feedback_digest_runs (digest_date DATE PRIMARY KEY, payload_hash VARCHAR(64))"
+        )
+        _migrate_feedback_digest_columns(connection)
+        _migrate_feedback_digest_columns(connection)
+        columns = {
+            item["name"] for item in sa_inspect(connection).get_columns("feedback_digest_runs")
+        }
+        assert "payload_content" in columns
+
+
+def test_postgres_startup_migration_serializes_and_is_idempotent():
+    import backend.db as database
+
+    init_source = inspect.getsource(database.init_db)
+    migration_source = inspect.getsource(database._migrate_feedback_digest_columns)
+    assert "pg_advisory_xact_lock" in init_source
+    assert "ADD COLUMN IF NOT EXISTS payload_content" in migration_source
+
+
 @pytest.mark.asyncio
-async def test_daily_digest_delivers_once_and_advances_only_on_success(monkeypatch):
-    import backend.services.feishu as feishu
+async def test_daily_digest_freezes_until_local_delivery_ack(monkeypatch):
     monkeypatch.setenv("FEEDBACK_HMAC_KEY", "feedback-digest-key")
 
     async with SessionLocal() as db:
@@ -280,26 +303,26 @@ async def test_daily_digest_delivers_once_and_advances_only_on_success(monkeypat
         session_id="digest-session",
     )
     assert receipt is not None
-    deliveries: list[tuple[str, str]] = []
-
-    async def fake_send(title: str, content: str, webhook_url=None):
-        deliveries.append((title, content))
-        return True
-
-    monkeypatch.setattr(feishu, "send_feishu_async", fake_send)
     now = datetime.now(timezone.utc) + timedelta(days=1, minutes=1)
-    first = await run_feedback_digest(now)
-    second = await run_feedback_digest(now + timedelta(minutes=10))
-    assert first["status"] == "delivered"
+    first = await prepare_feedback_digest(now)
+    second = await prepare_feedback_digest(now + timedelta(minutes=10))
+    assert first["status"] == "prepared"
     assert first["event_count"] == 1
-    assert second["status"] == "delivered"
-    assert len(deliveries) == 1
-    assert "新增抱怨：1 条" in deliveries[0][1]
+    assert second["status"] == "prepared"
+    assert first["digest_id"] == second["digest_id"]
+    assert first["payload_hash"] == second["payload_hash"]
+    assert first["content"] == second["content"]
+    assert "新增抱怨：1 条" in first["content"]
+    mismatch = await acknowledge_feedback_digest(first["digest_id"], "0" * 64)
+    assert mismatch["status"] == "payload_mismatch"
+    ack = await acknowledge_feedback_digest(first["digest_id"], first["payload_hash"])
+    assert ack["status"] == "delivered"
+    after = await prepare_feedback_digest(now + timedelta(minutes=20))
+    assert after["status"] == "delivered"
 
 
 @pytest.mark.asyncio
-async def test_failed_digest_retries_oldest_batch_with_stable_id(monkeypatch):
-    import backend.services.feishu as feishu
+async def test_unacked_digest_retries_oldest_batch_with_stable_id(monkeypatch):
     monkeypatch.setenv("FEEDBACK_HMAC_KEY", "feedback-retry-key")
     async with SessionLocal() as db:
         await db.execute(delete(FeedbackDigestRun))
@@ -311,22 +334,45 @@ async def test_failed_digest_retries_oldest_batch_with_stable_id(monkeypatch):
         request_id="retry-event",
         session_id="retry-session",
     )
-    deliveries: list[tuple[str, str]] = []
-    outcomes = iter([False, True])
-
-    async def fake_send(title: str, content: str, webhook_url=None):
-        deliveries.append((title, content))
-        return next(outcomes)
-
-    monkeypatch.setattr(feishu, "send_feishu_async", fake_send)
     first_now = datetime.now(timezone.utc) + timedelta(days=1)
-    first = await run_feedback_digest(first_now)
-    second = await run_feedback_digest(first_now + timedelta(days=1))
-    assert first["status"] == "failed"
-    assert second["status"] == "delivered"
+    first = await prepare_feedback_digest(first_now)
+    second = await prepare_feedback_digest(first_now + timedelta(days=1))
+    assert first["status"] == "prepared"
+    assert second["status"] == "prepared"
     assert first["digest_id"] == second["digest_id"]
-    assert deliveries[0][0] == deliveries[1][0]
-    assert deliveries[0][1] == deliveries[1][1]
+    assert first["content"] == second["content"]
+    assert first["payload_hash"] == second["payload_hash"]
+
+
+@pytest.mark.asyncio
+async def test_frozen_failed_digest_transitions_back_to_prepared_before_ack(monkeypatch):
+    monkeypatch.setenv("FEEDBACK_HMAC_KEY", "feedback-failed-retry-key")
+    async with SessionLocal() as db:
+        await db.execute(delete(FeedbackDigestRun))
+        await db.execute(delete(FeedbackEvent))
+        await db.commit()
+    assert await capture_feedback(
+        "我要反馈：同步功能连续失败",
+        auth_payload={"tenant_key": "failed-tenant", "sub": "failed-user"},
+        request_id="failed-retry-event",
+        session_id="failed-retry-session",
+    )
+    now = datetime.now(timezone.utc) + timedelta(days=1)
+    first = await prepare_feedback_digest(now)
+    digest_date = datetime.strptime(
+        first["digest_id"].removeprefix("feedback-"), "%Y-%m-%d"
+    ).date()
+    async with SessionLocal() as db:
+        run = await db.get(FeedbackDigestRun, digest_date)
+        assert run is not None
+        run.delivery_status = "failed"
+        run.last_error = "simulated_transport_failure"
+        await db.commit()
+    retried = await prepare_feedback_digest(now + timedelta(minutes=10))
+    assert retried["status"] == "prepared"
+    assert retried["payload_hash"] == first["payload_hash"]
+    ack = await acknowledge_feedback_digest(retried["digest_id"], retried["payload_hash"])
+    assert ack["status"] == "delivered"
 
 
 @pytest.mark.asyncio

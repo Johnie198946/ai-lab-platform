@@ -1,25 +1,31 @@
 id: cloud-user-complaint-feedback-v1
-version: 1
-status: signed
+version: 2
+status: delta_review_pending
+previous_version:
+  version: 1
+  status: signed
+  signed_at: "2026-08-29T19:43:25+08:00"
 purpose: 在不扫描历史聊天、不污染用户记忆的前提下，确定性捕获端侧产品抱怨并每日汇总给平台负责人。
 parties:
   main_agent:
     role: scope_owner_and_integrator
     decision: approve
-    signed_at: "2026-08-29T19:43:25+08:00"
+    signed_at: null
   supervision:
     role: privacy_security_reliability_reviewer
-    decision: approve
-    signed_at: "2026-08-29T19:43:25+08:00"
-    evidence: "round-5 DLP probes and feedback tests passed"
+    decision: pending
+    signed_at: null
+    evidence: null
   coder:
     role: implementation_and_test_reviewer
-    decision: approve
-    signed_at: "2026-08-29T19:43:25+08:00"
-    evidence: "round-5 final diff, DLP probe, tests, and diff-check passed"
+    decision: pending
+    signed_at: null
+    evidence: null
 review:
   required_rounds: 3
   completed_rounds: 5
+  required_delta_rounds: 1
+  completed_delta_rounds: 0
 contracts:
   capture:
     source: current_user_question_only
@@ -43,6 +49,12 @@ contracts:
     cross_tenant_feedback_api: forbidden
     cross_tenant_digest_destination: platform_owner_feishu_only
   delivery:
+    executor: local_mac_main
+    local_transport: hermes_send_feishu
+    remote_access: dedicated_forced_command_ssh_principal
+    general_production_shell: forbidden
+    local_overlap_lock: required
+    cloud_external_delivery: forbidden
     schedule: "*/10 9-23 * * *"
     timezone: Asia/Shanghai
     logical_frequency: once_per_calendar_day
@@ -52,6 +64,7 @@ contracts:
     advisory_lock: required_on_postgresql
     retry_after_failure: true
     watermark_advances_only_after_success: true
+    ack_after_confirmed_local_send: required
     external_delivery_semantics: at_least_once
     stable_digest_id: required
     exactly_once_claim: forbidden
@@ -69,6 +82,6 @@ acceptance:
 stop_conditions:
   - cross_tenant_leak
   - unsanitized_secret_or_pii
-  - duplicate_daily_delivery
+  - duplicate_delivery_with_different_digest_id_or_payload
   - chat_failure_caused_by_feedback_capture
   - feedback_receipt_without_durable_record

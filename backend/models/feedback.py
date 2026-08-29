@@ -52,6 +52,7 @@ class FeedbackDigestRun(Base):
     event_count: Mapped[int] = mapped_column(Integer, default=0)
     unique_user_count: Mapped[int] = mapped_column(Integer, default=0)
     payload_hash: Mapped[str] = mapped_column(String(64), default="")
+    payload_content: Mapped[str] = mapped_column(Text, default="")
     delivery_status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     last_error: Mapped[str] = mapped_column(String(500), default="")

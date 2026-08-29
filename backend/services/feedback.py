@@ -307,15 +307,8 @@ def render_digest(events: Sequence[FeedbackEvent], digest_date: str) -> str:
     return "\n".join(lines).strip()
 
 
-async def run_feedback_digest(now: datetime | None = None) -> dict[str, Any]:
-    """Deliver one logical digest per CST day.
-
-    PostgreSQL keeps a transaction-scoped advisory lock while the webhook call is
-    in flight, so every worker uses the same connection and the lock cannot leak
-    into the pool. Webhook delivery is intentionally at-least-once: the stable
-    digest ID/payload hash let the recipient identify a crash-window duplicate.
-    """
-    from backend.services.feishu import send_feishu_async
+async def prepare_feedback_digest(now: datetime | None = None) -> dict[str, Any]:
+    """Freeze one deterministic digest for the local Mac delivery worker."""
 
     current = (now or datetime.now(timezone.utc)).astimezone(CST)
     if current.hour < 9:
@@ -332,7 +325,7 @@ async def run_feedback_digest(now: datetime | None = None) -> dict[str, Any]:
             run = (
                 await db.execute(
                     select(FeedbackDigestRun)
-                    .where(FeedbackDigestRun.delivery_status == "failed")
+                    .where(FeedbackDigestRun.delivery_status.in_(["prepared", "failed"]))
                     .order_by(FeedbackDigestRun.digest_date.asc())
                     .with_for_update(skip_locked=True)
                     .limit(1)
@@ -343,6 +336,20 @@ async def run_feedback_digest(now: datetime | None = None) -> dict[str, Any]:
                 run = await db.get(FeedbackDigestRun, digest_date, with_for_update=True)
             if run and run.delivery_status in {"delivered", "empty"}:
                 return {"status": run.delivery_status, "event_count": run.event_count}
+            digest_id = f"feedback-{digest_date}"
+            if run and run.payload_content and run.payload_hash:
+                run.attempts = int(run.attempts or 0) + 1
+                run.delivery_status = "prepared"
+                run.last_error = ""
+                return {
+                    "status": "prepared",
+                    "title": f"产品抱怨日报 · {digest_date}",
+                    "content": run.payload_content,
+                    "payload_hash": run.payload_hash,
+                    "event_count": run.event_count,
+                    "unique_user_count": run.unique_user_count,
+                    "digest_id": digest_id,
+                }
             cutoff_local = datetime.combine(
                 digest_date, datetime.min.time().replace(hour=9), tzinfo=CST
             )
@@ -387,21 +394,54 @@ async def run_feedback_digest(now: datetime | None = None) -> dict[str, Any]:
                 result = {"status": "empty", "event_count": 0}
             else:
                 content = render_digest(events, str(digest_date))
-                digest_id = f"feedback-{digest_date}"
                 content = f"Digest ID: {digest_id}\n\n{content}"
+                run.payload_content = content
                 run.payload_hash = hashlib.sha256(content.encode()).hexdigest()
-                delivered = await send_feishu_async(
-                    f"产品抱怨日报 · {digest_date}", content
-                )
-                run.delivery_status = "delivered" if delivered else "failed"
-                run.last_error = (
-                    "" if delivered else "feishu_not_configured_or_delivery_failed"
-                )
-                run.delivered_at = datetime.now(timezone.utc) if delivered else None
+                run.delivery_status = "prepared"
+                run.last_error = ""
                 result = {
-                    "status": run.delivery_status,
+                    "status": "prepared",
+                    "title": f"产品抱怨日报 · {digest_date}",
+                    "content": content,
+                    "payload_hash": run.payload_hash,
                     "event_count": run.event_count,
                     "unique_user_count": run.unique_user_count,
                     "digest_id": digest_id,
                 }
     return result
+
+
+async def acknowledge_feedback_digest(
+    digest_id: str, payload_hash: str, now: datetime | None = None
+) -> dict[str, Any]:
+    """Advance the cloud ledger only after local Hermes confirms delivery."""
+
+    if not re.fullmatch(r"feedback-\d{4}-\d{2}-\d{2}", digest_id or ""):
+        return {"status": "invalid_digest_id"}
+    try:
+        digest_date = datetime.strptime(digest_id.removeprefix("feedback-"), "%Y-%m-%d").date()
+    except ValueError:
+        return {"status": "invalid_digest_id"}
+    async with SessionLocal() as db:
+        async with db.begin():
+            if db.bind and db.bind.dialect.name == "postgresql":
+                await db.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": _LOCK_ID})
+            run = await db.get(FeedbackDigestRun, digest_date, with_for_update=True)
+            if run is None:
+                return {"status": "not_found"}
+            if run.delivery_status == "delivered":
+                return {"status": "delivered", "digest_id": digest_id}
+            if run.delivery_status != "prepared":
+                return {"status": "not_prepared"}
+            if not payload_hash or not hmac.compare_digest(run.payload_hash, payload_hash):
+                return {"status": "payload_mismatch"}
+            run.delivery_status = "delivered"
+            run.last_error = ""
+            run.delivered_at = now or datetime.now(timezone.utc)
+    return {"status": "delivered", "digest_id": digest_id}
+
+
+async def run_feedback_digest(now: datetime | None = None) -> dict[str, Any]:
+    """Backward-compatible alias: cloud preparation only; never sends externally."""
+
+    return await prepare_feedback_digest(now)
