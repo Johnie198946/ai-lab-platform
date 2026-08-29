@@ -178,6 +178,22 @@ export function ProjectWorkspacePage() {
     }
   };
 
+  const saveWorkflowGraph = async ({ nodes, edges }) => {
+    try {
+      const result = await platformApi.saveProjectWorkflowGraph(projectId, {
+        expected_revision: viewData.process_revision,
+        nodes,
+        edges,
+      });
+      setViewData(result);
+      setProcess((current) => ({ ...current, process_revision: result.process_revision }));
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新最新 Workflow，请重新应用修改。" : reason.message);
+    }
+  };
+
   const generateSimulationDataset = async ({ simulatorId, rowCount, seed }) => {
     try {
       const result = await platformApi.generateProjectSimulationDataset(projectId, simulatorId, {
@@ -223,7 +239,7 @@ export function ProjectWorkspacePage() {
       {view === "taskboard" && <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "documents" && <ProjectDocuments projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />}
-      {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} process={process} onEditTask={setEditTask} onCreateTask={() => setNewTaskOpen(true)} />}
+      {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} process={process} onSave={saveWorkflowGraph} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
       {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} onClose={() => setSelectedTaskSession(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}

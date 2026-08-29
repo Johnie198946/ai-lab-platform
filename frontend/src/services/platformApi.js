@@ -431,6 +431,9 @@ export const platformApi = {
   getProjectGraph(projectId, viewType) {
     return request(`/api/v1/projects/${projectId}/graphs/${viewType}`);
   },
+  saveProjectWorkflowGraph(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/graphs/workflow`, { method: "PUT", body: payload });
+  },
   getProjectResourcePlan(projectId) {
     return request(`/api/v1/projects/${projectId}/resource-plan`);
   },
