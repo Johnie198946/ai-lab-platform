@@ -28,7 +28,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
         stages: [{ id: "stage-1", name: "需求" }],
         tasks: [{
           id: "task-1", stage_id: "stage-1", title: "Canonical task", summary: "Server owned",
-          status: "TODO", assignee_role: "需求经理", deliverables: ["Evidence"], start_date: null, due_date: null,
+          status: "BACKLOG", assignee_role: "需求经理", deliverables: ["Evidence"], start_date: null, due_date: null,
           development_context: { platform: "independent web", devices: ["mobile", "desktop"] },
           relations: [{ type: "related", target_task_id: "task-2" }],
         }, {
@@ -104,11 +104,29 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     assert.match(canonicalTask.description, /开发上下文（业务）/);
     assert.match(canonicalTask.description, /independent web/);
     assert.equal(canonicalTask.developmentContext, null);
+    assert.equal(canonicalTask.status, "todo", "dispatched QWS backlog tasks belong in the visible waiting-for-claim lane");
     assert.deepEqual(runtimeTask.developmentContext, {
       type: "branch",
       branch: "codex/runtime-task",
     });
     assert.equal(canonicalTask.relations.related.some((task) => task.id === runtimeTask.id), true);
+
+    const legacyBacklog = await fetch(`${origin}/api/tasks/${canonicalTask.id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json", cookie: cookieA },
+      body: JSON.stringify({ version: canonicalTask.version, status: "backlog" }),
+    });
+    assert.equal(legacyBacklog.status, 200);
+    const resyncedSession = await fetch(`${origin}/api/qws/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
+      body: JSON.stringify({ project_id: "prj-sync" }),
+    });
+    assert.equal(resyncedSession.status, 200);
+    const tasksAfterResync = await fetch(`${origin}/api/tasks?projectId=qws-tenant-a-prj-sync&archived=false`, {
+      headers: { cookie: cookieA },
+    }).then((response) => response.json());
+    assert.equal(tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id).status, "todo");
 
     const invalidSession = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
