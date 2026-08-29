@@ -48,28 +48,40 @@ The installer creates:
 
 ## Hermes scheduler desired state
 
+Install the reviewed worker inside Hermes' mandatory script root and verify that
+its content matches the deployed Git commit before creating the job:
+
+```bash
+install -m 0600 scripts/local_feedback_digest.py ~/.hermes/scripts/local_feedback_digest.py
+cmp scripts/local_feedback_digest.py ~/.hermes/scripts/local_feedback_digest.py
+```
+
 Create one script-only Hermes cron job with these exact properties:
 
 ```yaml
 name: local-feedback-digest
 schedule: "*/10 9-23 * * *"
 no_agent: true
-script: /Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828/scripts/local_feedback_digest.py
+script: local_feedback_digest.py
 deliver: local
-workdir: /Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828
 ```
 
-The script itself acquires a non-blocking local file lock, so overlapping scheduler ticks exit without sending. Empty stdout means Hermes sends no scheduler notification. Delivery uses the existing local Feishu Home Chat and performs zero LLM calls.
+Hermes resolves this relative path under `~/.hermes/scripts/`; repository paths
+and symlinks that resolve outside that directory are forbidden. The script itself
+acquires a non-blocking local file lock, so overlapping scheduler ticks exit
+without sending. Empty stdout means Hermes sends no scheduler notification.
+Delivery uses the existing local Feishu Home Chat and performs zero LLM calls.
 
 ## Acceptance
 
-1. `hermes send --list feishu --json` shows the intended Home Chat.
-2. Restricted SSH `prepare` returns one JSON object.
-3. An arbitrary SSH command is rejected with exit code 64.
-4. A hash-mismatched payload is rejected before `hermes send`.
-5. A successful send is followed by matching ACK.
-6. A second prepare returns `delivered` for the same Digest ID.
-7. The received Feishu message contains no user excerpt or identifier.
+1. The installed worker hash matches the reviewed Git blob.
+2. `hermes send --list feishu --json` shows the intended Home Chat.
+3. Restricted SSH `prepare` returns one JSON object.
+4. An arbitrary SSH command is rejected with exit code 64.
+5. A hash-mismatched payload is rejected before `hermes send`.
+6. A successful send is followed by matching ACK.
+7. A second prepare returns `delivered` for the same Digest ID.
+8. The received Feishu message contains no user excerpt or identifier.
 
 ## Rollback
 

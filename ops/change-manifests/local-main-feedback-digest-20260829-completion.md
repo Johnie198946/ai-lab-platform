@@ -1,7 +1,7 @@
 ---
 title: 本地 Main 抱怨日报投递
 task_id: local-main-feedback-digest-20260829
-status: TESTED_PENDING_RESIGN
+status: SIGNED_PENDING_DEPLOYMENT
 date: 2026-08-29
 tags:
   - ops/change-manifest
@@ -47,7 +47,7 @@ protocol: cloud-user-complaint-feedback-v1@2
 - [x] QWS 回归：`1 passed`
 - [x] Python 编译与 `git diff --check` 通过
 - [x] `hermes send --help` 确认 `--to`、`--subject`、`--file -`、`--json` 参数
-- [ ] v2 增量复签（首轮双 REJECT 的四项阻断已修复；当前 adoption continuation 禁止同回合再次委派，不伪造签署）
+- [x] v2 增量三轮复签：`main_agent / supervision / coder = APPROVE`
 - [x] 功能提交 `6ca549ad2305280bf04e706828ab21f24d30a697` 已进入 GitHub `main`
 - [ ] 统一 SHA 生产部署
 - [ ] 本地 Cron 建立
