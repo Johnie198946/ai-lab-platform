@@ -1,4 +1,5 @@
-import { CalendarDays, CheckCircle2, ChevronRight, ShieldCheck, UserRound, X } from "lucide-react";
+import { Bot, CalendarDays, CheckCircle2, ChevronRight, Layers3, ShieldCheck, Sparkles, UserRound, UsersRound, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { buildStageRail } from "./quantumProjection";
 
 const statusLabel = {
@@ -16,6 +17,164 @@ const displayDate = (value) => {
   return Number.isNaN(date.getTime()) ? "日期待确认" : new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(date);
 };
 const ownerOf = (item) => item.assignee_id || item.assignee_role || "待分配";
+
+const baseAgentPresentation = {
+  main_agent: { label: "通用执行基座", skills: ["项目统筹", "需求澄清", "跨角色协同"] },
+  knowledge: { label: "知识研究基座", skills: ["知识检索", "研究与洞察", "证据整理"] },
+  coder: { label: "工程实现基座", skills: ["技术设计", "代码实现", "系统集成"] },
+  supervision: { label: "监督评审基座", skills: ["质量评审", "风险验证", "验收把关"] },
+};
+
+const uniqueText = (values) => [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
+
+function buildRoleOverview(process, stages) {
+  const stageById = new Map(stages.map((stage) => [stage.id, stage]));
+  const employees = Array.isArray(process.ai_employees) ? process.ai_employees : [];
+  const employeeById = new Map(employees.map((employee) => [employee.employee_id, employee]));
+  const employeeByRole = new Map(employees.map((employee) => [employee.job_title, employee]));
+  const roles = new Map();
+  const ensureRole = (name) => {
+    if (!name || name === "待分配") return null;
+    if (!roles.has(name)) roles.set(name, { name, tasks: [], gates: [], stageIds: new Set(), employee: employeeByRole.get(name) || null });
+    return roles.get(name);
+  };
+
+  stages.forEach((stage) => {
+    stage.tasks.forEach((task) => {
+      const employee = employeeById.get(task.assignee_id) || null;
+      const role = ensureRole(task.assignee_role || employee?.job_title || task.assignee_id);
+      if (!role) return;
+      role.employee ||= employee;
+      role.tasks.push({ ...task, stageName: stage.name });
+      role.stageIds.add(stage.id);
+    });
+    stage.gates.forEach((gate) => {
+      const role = ensureRole(gate.responsible_role);
+      if (!role) return;
+      role.gates.push({ ...gate, stageName: stage.name });
+      role.stageIds.add(stage.id);
+    });
+  });
+
+  return [...roles.values()].map((role) => {
+    const base = baseAgentPresentation[role.employee?.base_agent_id] || null;
+    const gateSkills = role.gates.map((gate) => gate.node_type === "TR" ? "技术评审" : gate.node_type === "DCP" ? "决策评审" : `${gate.node_type} 评审`);
+    const capabilityVersions = role.tasks.flatMap((task) => (task.agent_candidates || []).map((candidate) => candidate.capability_version));
+    return {
+      ...role,
+      stages: [...role.stageIds].map((id) => stageById.get(id)).filter(Boolean),
+      baseLabel: base?.label || (role.gates.length ? "流程评审角色" : "能力基座待配置"),
+      skills: uniqueText([...(base?.skills || []), ...gateSkills]),
+      capabilityVersions: uniqueText(capabilityVersions),
+    };
+  }).sort((left, right) => (left.stages[0]?.order ?? 999) - (right.stages[0]?.order ?? 999) || left.name.localeCompare(right.name, "zh-CN"));
+}
+
+function RoleOverviewDialog({ process, stages, onClose }) {
+  const dialogRef = useRef(null);
+  const roles = useMemo(() => buildRoleOverview(process, stages), [process, stages]);
+  const [selectedRoleName, setSelectedRoleName] = useState(() => roles[0]?.name || "");
+  const selectedRole = roles.find((role) => role.name === selectedRoleName) || roles[0];
+  const taskCount = roles.reduce((total, role) => total + role.tasks.length, 0);
+  const gateCount = roles.reduce((total, role) => total + role.gates.length, 0);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return undefined;
+    dialog.showModal();
+    return () => { if (dialog.open) dialog.close(); };
+  }, []);
+
+  useEffect(() => {
+    const handleEscape = (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      onClose();
+    };
+    window.addEventListener("keydown", handleEscape);
+    return () => window.removeEventListener("keydown", handleEscape);
+  }, [onClose]);
+
+  return (
+    <dialog
+      ref={dialogRef}
+      className="qw-role-dialog"
+      aria-labelledby="qw-role-dialog-title"
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      onClick={(event) => { if (event.target === dialogRef.current) onClose(); }}
+    >
+      <div className="qw-role-dialog-card">
+        <header className="qw-role-dialog-head">
+          <div>
+            <span className="qw-eyebrow">Project role map</span>
+            <h2 id="qw-role-dialog-title">项目角色全景</h2>
+            <p>从当前项目流程中汇总角色、责任边界、交接关系与已配置能力。</p>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭项目角色全景" autoFocus><X size={18} /></button>
+        </header>
+        <div className="qw-role-dialog-metrics" aria-label="角色全景统计">
+          <span><UsersRound size={16} /><strong>{roles.length}</strong>个角色</span>
+          <span><CheckCircle2 size={16} /><strong>{taskCount}</strong>项责任任务</span>
+          <span><ShieldCheck size={16} /><strong>{gateCount}</strong>个评审节点</span>
+        </div>
+        {!selectedRole ? <p className="qw-role-dialog-empty">当前流程尚未配置责任角色。</p> : <div className="qw-role-dialog-body">
+          <nav className="qw-role-directory" aria-label="项目角色目录">
+            {roles.map((role) => {
+              const active = role.name === selectedRole.name;
+              return <button key={role.name} type="button" className={active ? "active" : ""} aria-current={active ? "true" : undefined} onClick={() => setSelectedRoleName(role.name)}>
+                <span className="qw-role-avatar">{role.employee ? <Bot size={16} /> : <UserRound size={16} />}</span>
+                <span><strong>{role.name}</strong><small>{role.employee ? `${role.employee.display_name} · AI 员工` : role.baseLabel}</small></span>
+                <em>{role.tasks.length + role.gates.length}</em>
+              </button>;
+            })}
+          </nav>
+          <section className="qw-role-profile" aria-live="polite">
+            <header>
+              <div className="qw-role-avatar large">{selectedRole.employee ? <Bot size={21} /> : <UserRound size={21} />}</div>
+              <div><span>{selectedRole.employee ? "AI EMPLOYEE" : "PROCESS ROLE"}</span><h3>{selectedRole.name}</h3><p>{selectedRole.employee ? `${selectedRole.employee.display_name} · ${selectedRole.baseLabel}` : selectedRole.baseLabel}</p></div>
+            </header>
+            <div className="qw-role-stage-strip"><Layers3 size={14} /><span>涉及阶段</span>{selectedRole.stages.map((stage) => <i key={stage.id}>{stage.name}</i>)}</div>
+            <div className="qw-role-profile-grid">
+              <section className="qw-role-responsibilities">
+                <h4>责任边界 <span>{selectedRole.tasks.length + selectedRole.gates.length}</span></h4>
+                <div>
+                  {selectedRole.tasks.map((task) => <article key={task.id}>
+                    <div><CheckCircle2 size={14} /><strong>{task.title}</strong><span>{task.stageName}</span></div>
+                    <p>{task.summary || "按任务卡片要求完成工作与验收。"}</p>
+                    {!!task.deliverables?.length && <small>交付物：{task.deliverables.join("、")}</small>}
+                  </article>)}
+                  {selectedRole.gates.map((gate) => <article key={gate.id} className="gate">
+                    <div><ShieldCheck size={14} /><strong>{gate.name}</strong><span>{gate.stageName} · {gate.node_type}</span></div>
+                    <p>负责该节点的评审与放行判断，不替代任务执行角色。</p>
+                  </article>)}
+                </div>
+              </section>
+              <aside>
+                <section>
+                  <h4><Sparkles size={14} />技能与能力</h4>
+                  <div className="qw-role-skills">
+                    {selectedRole.skills.length ? selectedRole.skills.map((skill) => <span key={skill}>{skill}</span>) : <small>尚未配置明确技能</small>}
+                  </div>
+                  {!!selectedRole.capabilityVersions.length && <p>能力版本 · {selectedRole.capabilityVersions.join("、")}</p>}
+                </section>
+                <section>
+                  <h4>交接边界</h4>
+                  <div className="qw-role-handoffs">
+                    {selectedRole.tasks.map((task) => {
+                      const handoff = task.handoff || {};
+                      return <p key={task.id}><strong>{task.title}</strong><span>{handoff.to ? `交给 ${handoff.to}` : "交给下游责任角色"}</span><small>{handoff.completion_definition || (task.deliverables?.length ? `完成 ${task.deliverables.join("、")}` : "达到任务卡片验收标准")}</small></p>;
+                    })}
+                    {!selectedRole.tasks.length && <p><span>评审结论交回项目流程</span><small>仅负责 Gate 判断，不承担具体交付任务</small></p>}
+                  </div>
+                </section>
+              </aside>
+            </div>
+          </section>
+        </div>}
+      </div>
+    </dialog>
+  );
+}
 
 function StageDetail({ stage, index, onClose }) {
   const owners = [...new Set(stage.tasks.map(ownerOf).filter((owner) => owner !== "待分配"))];
@@ -65,6 +224,8 @@ function StageDetail({ stage, index, onClose }) {
 
 export function StageRail({ process, selectedStageId, onSelect }) {
   const stages = buildStageRail(process);
+  const [roleOverviewOpen, setRoleOverviewOpen] = useState(false);
+  const roleCount = useMemo(() => buildRoleOverview(process, stages).length, [process, stages]);
   const selectedIndex = stages.findIndex((stage) => stage.id === selectedStageId);
   const selectedStage = selectedIndex >= 0 ? stages[selectedIndex] : null;
   if (!stages.length) return null;
@@ -72,7 +233,7 @@ export function StageRail({ process, selectedStageId, onSelect }) {
     <div className={`qw-stage-explorer ${selectedStage ? "is-open" : ""}`}>
       <div className="qw-stage-rail-head">
         <div><span className="qw-eyebrow">Project process</span><strong>项目流程</strong></div>
-        <span>点击节点查看内容与负责人</span>
+        <div className="qw-stage-rail-actions"><span>点击节点查看内容与负责人</span><button type="button" onClick={() => setRoleOverviewOpen(true)}><UsersRound size={14} />角色全景<strong>{roleCount}</strong></button></div>
       </div>
       <nav className="qw-stage-rail" aria-label="IPD 项目流程">
         {stages.map((stage, index) => {
@@ -97,6 +258,7 @@ export function StageRail({ process, selectedStageId, onSelect }) {
         })}
       </nav>
       {selectedStage && <StageDetail stage={selectedStage} index={selectedIndex} onClose={() => onSelect?.(null)} />}
+      {roleOverviewOpen && <RoleOverviewDialog process={process} stages={stages} onClose={() => setRoleOverviewOpen(false)} />}
     </div>
   );
 }
