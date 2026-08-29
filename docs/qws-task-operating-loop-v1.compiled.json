@@ -1,11 +1,11 @@
 {
   "schema_version": "1.0",
   "source": "docs/qws-task-operating-loop-v1.md",
-  "source_sha256": "5cda65f883351fe7d426ec50349e341f530d64548d0bef855fd32744d42e776b",
+  "source_sha256": "c824eebb244c6764a05756404499624b82d19718979eb567eeaebba90c05316d",
   "compile_status": "READY",
   "strategy": "P0_TO_P3",
   "phase_count": 4,
-  "task_count": 23,
+  "task_count": 37,
   "phases": [
     {
       "id": "P0",
@@ -26,6 +26,14 @@
           "status": "TODO",
           "acceptance": [
             "拆分 `请你决策` 与 `等你验收`具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_bd0897f04f",
+          "title": "六状态合法迁移、阻塞、返工 Run、终态和恢复规则",
+          "status": "TODO",
+          "acceptance": [
+            "六状态合法迁移、阻塞、返工 Run、终态和恢复规则具备可验证的主路径与证据"
           ]
         },
         {
@@ -50,6 +58,38 @@
           "status": "TODO",
           "acceptance": [
             "relation proposal、环检测、revision CAS具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_24856a3680",
+          "title": "任务级 Feedback、图片/附件状态和本轮反馈批次",
+          "status": "TODO",
+          "acceptance": [
+            "任务级 Feedback、图片/附件状态和本轮反馈批次具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_60e998eeba",
+          "title": "Initial Intake 原文、场景、方法论和受审计修订",
+          "status": "TODO",
+          "acceptance": [
+            "Initial Intake 原文、场景、方法论和受审计修订具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_4ca846ed98",
+          "title": "Artifact Registry、版本哈希和任务完成门禁",
+          "status": "TODO",
+          "acceptance": [
+            "Artifact Registry、版本哈希和任务完成门禁具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_eb18b7ebc5",
+          "title": "字段级真源、事件事务和投影 revision",
+          "status": "TODO",
+          "acceptance": [
+            "字段级真源、事件事务和投影 revision具备可验证的主路径与证据"
           ]
         }
       ]
@@ -92,6 +132,38 @@
           "acceptance": [
             "权限过滤的 Relation Digest具备可验证的主路径与证据"
           ]
+        },
+        {
+          "id": "work_7ee3dddec5",
+          "title": "Feedback 理解卡、返工、逐项验收和重新打开",
+          "status": "TODO",
+          "acceptance": [
+            "Feedback 理解卡、返工、逐项验收和重新打开具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_a82880fe5f",
+          "title": "附件扫描、解析失败披露、权限继承和原线程保留",
+          "status": "TODO",
+          "acceptance": [
+            "附件扫描、解析失败披露、权限继承和原线程保留具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_b835137da2",
+          "title": "Project Distiller 无状态增量候选与事件游标",
+          "status": "TODO",
+          "acceptance": [
+            "Project Distiller 无状态增量候选与事件游标具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_df7b087118",
+          "title": "Raw → Admission → Wiki → Index/Matrix → Receipt 基础链路",
+          "status": "TODO",
+          "acceptance": [
+            "Raw → Admission → Wiki → Index/Matrix → Receipt 基础链路具备可验证的主路径与证据"
+          ]
         }
       ]
     },
@@ -111,11 +183,27 @@
           ]
         },
         {
+          "id": "work_507a77897a",
+          "title": "项目资产库：原始需求、决策过程、交付物和项目蒸馏",
+          "status": "TODO",
+          "acceptance": [
+            "项目资产库：原始需求、决策过程、交付物和项目蒸馏具备可验证的主路径与证据"
+          ]
+        },
+        {
           "id": "work_a3f7a179a9",
           "title": "Automation 向导、run、报告与 recommendation",
           "status": "TODO",
           "acceptance": [
             "Automation 向导、run、报告与 recommendation具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_1d4789f770",
+          "title": "Cron 时区/DST、误点火、补跑、并发、规则版本和幂等语义",
+          "status": "TODO",
+          "acceptance": [
+            "Cron 时区/DST、误点火、补跑、并发、规则版本和幂等语义具备可验证的主路径与证据"
           ]
         },
         {
@@ -165,6 +253,30 @@
           "status": "TODO",
           "acceptance": [
             "仪表盘观察重复拦截准确率、交接恢复率、ETA 偏差、推荐采纳率、cron 噪声率具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_c1e34b5859",
+          "title": "反馈一次验收通过率、附件读取失败率和知识候选采纳率",
+          "status": "TODO",
+          "acceptance": [
+            "反馈一次验收通过率、附件读取失败率和知识候选采纳率具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_1a1c3c031b",
+          "title": "项目关闭时生成 Delivery Manifest 与 Final Project Distillation",
+          "status": "TODO",
+          "acceptance": [
+            "项目关闭时生成 Delivery Manifest 与 Final Project Distillation具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_cb6ee5f6bb",
+          "title": "候选知识过期、纠正、权限变更和合规删除治理",
+          "status": "TODO",
+          "acceptance": [
+            "候选知识过期、纠正、权限变更和合规删除治理具备可验证的主路径与证据"
           ]
         },
         {

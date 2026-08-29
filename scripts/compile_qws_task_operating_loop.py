@@ -13,6 +13,9 @@ SOURCE = ROOT / "docs" / "qws-task-operating-loop-v1.md"
 OUTPUT = ROOT / "docs" / "qws-task-operating-loop-v1.compiled.json"
 PHASE_RE = re.compile(r"^### (P[0-3])：(.+)$", re.MULTILINE)
 BULLET_RE = re.compile(r"^- (.+?)[；。]?$|^\d+\. (.+?)[；。]?$", re.MULTILINE)
+IMPLEMENTATION_HEADING = "## 13. 分阶段实施"
+DECISION_HEADING = "## 14. 需要产品拍板的 6 个问题"
+NEXT_HEADING = "## 15."
 
 
 def slug(value: str) -> str:
@@ -21,15 +24,20 @@ def slug(value: str) -> str:
 
 
 def compile_plan(markdown: str) -> dict:
-    phase_matches = list(PHASE_RE.finditer(markdown))
+    implementation_start = markdown.find(IMPLEMENTATION_HEADING)
+    decision_start = markdown.find(DECISION_HEADING)
+    if implementation_start < 0 or decision_start < 0 or implementation_start >= decision_start:
+        raise ValueError("implementation_or_decision_section_missing")
+    implementation = markdown[implementation_start:decision_start]
+    phase_matches = list(PHASE_RE.finditer(implementation))
     if len(phase_matches) != 4:
         raise ValueError(f"expected P0-P3, found {len(phase_matches)} phases")
 
     phases = []
     previous_phase = None
     for index, match in enumerate(phase_matches):
-        end = phase_matches[index + 1].start() if index + 1 < len(phase_matches) else markdown.find("## 14.", match.end())
-        section = markdown[match.end():end]
+        end = phase_matches[index + 1].start() if index + 1 < len(phase_matches) else len(implementation)
+        section = implementation[match.end():end]
         tasks = []
         for bullet in BULLET_RE.finditer(section):
             title = next(group for group in bullet.groups() if group)
@@ -48,12 +56,13 @@ def compile_plan(markdown: str) -> dict:
         phases.append(phase)
         previous_phase = phase["id"]
 
-    decision_start = markdown.find("## 14.")
+    decision_end = markdown.find(NEXT_HEADING, decision_start)
+    if decision_end < 0:
+        decision_end = len(markdown)
     decisions = []
-    if decision_start >= 0:
-        for bullet in BULLET_RE.finditer(markdown[decision_start:]):
-            title = next(group for group in bullet.groups() if group)
-            decisions.append({"id": slug(f"decision:{title}"), "question": title, "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"})
+    for bullet in BULLET_RE.finditer(markdown[decision_start:decision_end]):
+        title = next(group for group in bullet.groups() if group)
+        decisions.append({"id": slug(f"decision:{title}"), "question": title, "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"})
     if len(decisions) != 6:
         raise ValueError(f"expected 6 product decisions, found {len(decisions)}")
 

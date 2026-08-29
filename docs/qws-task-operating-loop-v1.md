@@ -1,7 +1,8 @@
-# QWS × Hermes 任务运行闭环设计 v1
+# QWS × Hermes 任务运行、反馈与知识治理设计 v1
 
-> 状态：产品/技术方案草案，供评审后实施  
-> 核心原则：**任务卡是长期事实源，Session 是可替换的执行容器，文档是可追溯的知识工件。**
+> 状态：已完成三轮攻防并获实施指令
+>
+> 核心原则：**任务卡拥有任务运行事实，Session 是可替换执行容器；Intake、Decision、Feedback、Artifact 各自拥有其字段真源，Wiki 与 Distillation 只做可追溯投影和候选知识。**
 
 ## 0. 先说结论
 
@@ -19,15 +20,20 @@
 
 ## 1. 任务与 Session 的所有权
 
-### 1.1 唯一事实源
+### 1.1 字段级事实所有权
 
-- **Task**：目标、范围、验收标准、关系、状态、时间、决策和工件的唯一事实源。
+- **Task**：目标、范围、验收标准、关系、状态、时间和对象引用的事实源。
+- **Project Intake**：用户原始需求、场景、方法论及修订的事实源；原始输入不可静默改写。
+- **Decision Registry**：已确认决策、备选方案和否决理由的事实源。
+- **Feedback**：图文反馈、附件、处理状态和用户复验结果的事实源。
+- **Artifact Registry**：交付物版本、哈希、血缘和验收状态的事实源。
 - **Primary Task Session**：当前执行该任务的主 Session；同一时刻最多一个持有执行租约。
 - **Related Task Session**：不得被主 Session 当作自己的事实源，只能通过目标任务的已批准摘要读取。
 - **Project Session**：负责跨任务规划、冲突处理与优先级，不直接冒充某张任务的执行记录。
-- **Document/Artifact**：大内容和证据的长期载体；任务只保存摘要、版本、引用和校验信息。
+- **Project Wiki**：上述结构化对象的可读投影和正式知识文档，不独立定义任务或工件状态。
+- **Distillation**：有来源的派生候选知识，不得修改任务、决策、验收和原始输入。
 
-结论：AI 处理任务时，**始终进入当前卡片绑定的 Primary Task Session**。若该 Session 不存在、已关闭或上下文过旧，就创建新 Session，并用 Context Pack 启动；不应随意跳到“相关议题的 Session”继续做。
+冲突时按所属对象裁决：结构化字段真源 > 已确认 Decision/已验收 Artifact > Wiki 投影 > Distillation > AI 推断。AI 处理任务时，**始终进入当前卡片绑定的 Primary Task Session**。若该 Session 不存在、已关闭或上下文过旧，就创建新 Session，并用 Context Pack 启动；不应随意跳到“相关议题的 Session”继续做。
 
 ### 1.2 执行租约
 
@@ -502,9 +508,14 @@ recommendation.created / accepted / merged / dismissed
 
 - 标题生成/校验；卡片去任务号和内部 UUID；
 - 拆分 `请你决策` 与 `等你验收`；
+- 六状态合法迁移、阻塞、返工 Run、终态和恢复规则；
 - baseline/forecast/actual；
 - Handoff Capsule + Context Pack v1；
 - relation proposal、环检测、revision CAS。
+- 任务级 Feedback、图片/附件状态和本轮反馈批次；
+- Initial Intake 原文、场景、方法论和受审计修订；
+- Artifact Registry、版本哈希和任务完成门禁；
+- 字段级真源、事件事务和投影 revision。
 
 ### P1：去重与合并
 
@@ -512,11 +523,17 @@ recommendation.created / accepted / merged / dismissed
 - Merge Preview、MERGED 重定向与撤销；
 - Challenge Review；
 - 权限过滤的 Relation Digest。
+- Feedback 理解卡、返工、逐项验收和重新打开；
+- 附件扫描、解析失败披露、权限继承和原线程保留；
+- Project Distiller 无状态增量候选与事件游标；
+- Raw → Admission → Wiki → Index/Matrix → Receipt 基础链路。
 
 ### P2：文档和自动化闭环
 
 - Obsidian-like Markdown 文档体验；
+- 项目资产库：原始需求、决策过程、交付物和项目蒸馏；
 - Automation 向导、run、报告与 recommendation；
+- Cron 时区/DST、误点火、补跑、并发、规则版本和幂等语义；
 - novelty 聚类、预算、熔断；
 - 采纳/拒绝反馈回流。
 
@@ -525,6 +542,9 @@ recommendation.created / accepted / merged / dismissed
 - 用真实任务校准重复阈值和 ETA；
 - 按项目开放 L2/L3 自动化；
 - 仪表盘观察重复拦截准确率、交接恢复率、ETA 偏差、推荐采纳率、cron 噪声率。
+- 反馈一次验收通过率、附件读取失败率和知识候选采纳率；
+- 项目关闭时生成 Delivery Manifest 与 Final Project Distillation；
+- 候选知识过期、纠正、权限变更和合规删除治理。
 
 核心产品指标建议：
 
@@ -547,4 +567,38 @@ recommendation.created / accepted / merged / dismissed
 5. 项目文档是否走 Obsidian-like 体验兼容层，而非整仓 fork；
 6. Challenge Review 的硬门禁范围是否至少包含安全、权限、删除、发布、成本超限和跨任务影响。
 
-以上 6 项确认后，才能把方案拆成可实施的 P0/P1/P2 任务，避免一开始同时改状态机、AI 协议、文档系统和 cron，造成不可控的大爆炸变更。
+以上 6 项已由全阶段实施指令确认。实施必须按 P0→P3 的依赖顺序，以可验证纵切推进，不能把计划编译等同于功能完成。
+
+---
+
+## 15. 图文反馈与返工合同
+
+评论不是普通聊天，而是独立 `Feedback` 对象。用户可以提交文本、图片、截图标注和通用附件；系统绑定 task revision、build、commit SHA、页面路由、设备与视口。多条评论先组成 `Feedback Batch`，用户点击“提交本轮修改”后统一分析；阻塞级反馈可绕过批次立即暂停危险动作。
+
+每条反馈按 `待分析 → 已接受 → 处理中 → 待用户验收 → 已解决` 流转，并支持“需要补充、重复、不处理、重新打开、升级为需求变更”。Hermes 必须生成反馈理解卡，明确准备修改、不修改的范围，以及实际读取成功或失败的附件。任务在“等你验收”被退回时创建新的返工 Run；已完成任务重新打开时保留原验收历史。
+
+附件必须保留原文件、哈希、所属线程、权限、扫描和解析状态。任务合并时不得扁平合并评论和附件，只建立重定向并在读取时重新校验权限。
+
+---
+
+## 16. 项目知识资产与蒸馏合同
+
+项目必须形成三类可追溯资产：
+
+1. **Project Intake**：首次需求、场景、方法论、约束、验收期待及原始附件；后续澄清和变更以 revision 追加，不覆盖 INITIAL。敏感信息误贴和合规删除使用受审计 tombstone/密钥销毁，并使派生摘要失效。
+2. **Artifact Registry**：文档、代码、设计、报告、数据集、发布包和部署结果的版本、存储引用、SHA256、来源 Run、血缘与验收。任务完成前必须验证计划工件已注册、可读取、哈希一致并已验收；项目关闭生成 Delivery Manifest。
+3. **Project Distillation**：目标变化、已确认决策、否决理由、失败与恢复、有效方法、风险、可复用模式和未决问题。无来源内容不得进入已确认事实。
+
+Project Distiller 不是第二 Runtime，而是 Hermes 内部由事件触发的短时只读 Subagent Run：从上次 event cursor 增量读取，只写候选区，不修改 Task、Decision、Feedback、Artifact 或 Wiki 真源，不常驻、不逐消息轮询。知识入库严格经过 `Raw → Admission → Wiki → Index/Matrix → Receipt`；没有来源、权限和收据，不得声称已入库。
+
+---
+
+## 17. Cron 与副作用合同
+
+每个 Automation Definition 必须固定时区、DST、错过运行、补跑、并发、最大运行时间、重试、预算和熔断策略。每个 immutable Run 绑定规则版本与幂等键；部分成功必须逐项记录。默认 L1 只生成等待认领推荐，不能直接执行。外部发布、删除、发送和数据写入必须进入副作用账本，重试不得重复执行。
+
+---
+
+## 18. 三轮攻防收敛与接受风险
+
+三轮攻防已经修正：多真源、状态迁移缺口、自动认领语义冲突、评论附件合并失真、Distiller 第二 Runtime、Cron 边界、原始输入合规删除、Wiki 双轨和 P0 过重。剩余接受风险包括：摘要无法绝对无损、重复检测和 ETA 初期需真实数据校准、异步投影有短暂延迟、Distiller 会产生低价值候选。对应门禁分别是结构化真源、人工合并、Actual 校准、revision 可见和候选过期治理。
