@@ -7,6 +7,9 @@
   - `ios/AIPlatformApp/Views/Auth/LoginView.swift`
   - `ios/AIPlatformAppTests/APIErrorTests.swift`
   - `ios/AIPlatformApp.xcodeproj/project.pbxproj`
+  - `frontend/Dockerfile`
+  - `frontend/docker-entrypoint.d/40-select-tls-cert.sh`
+  - `docker-compose.yml`
   - `ops/change-manifests/alipay-login-session-fix-20260829-completion.md`
 
 ## 开工前 Git 盘点
@@ -22,6 +25,7 @@
 
 - `git diff --check`: 通过。
 - 登录错误专项测试: 2/2 通过。
+- TLS 入口脚本: `sh -n` 通过；使用临时证书目录验证三个 Nginx TLS listener 的证书路径可被替换，且不残留备份文件。
 - 全量测试: 34 项中 33 项通过；唯一失败为既有 `KnowledgeNoteStoreTests/testReloadAndIndexedSearchScaleToOneThousandNotes()`，单独复跑仍为期望 1000、实际 0，与本任务登录文件无交集。
 - 构建/安装: 当前 HTTPS 版本已生成并重新安装至 `AIPlatform Preview`（iOS 26.1，UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`），bundle `com.ailab.AIPlatformApp`，启动 PID `39348`。
 - UI 功能检查: 登录卡片正常展开；支付宝按钮为可用状态；点击后成功打开 `openauth.alipay.com`。模拟器未安装支付宝客户端，因此授权页按预期提示“请在支付宝客户端打开链接”。
@@ -64,6 +68,6 @@
 
 - 唯一外部阻塞为支付宝开放平台登录二维码：必须由账号持有人本人扫码。登录后仍需在 AppID `2021006194609307` 中保存应用公钥与 OAuth 回调，再做真机完整授权验证。
 - 模拟器没有支付宝 App，只能验证授权页打开，无法验证客户端拉起及真实回调。
-- 服务器发布流程会重建 `frontend:latest`；本次已为当前 `b6b012...` 基底重新生成可信证书镜像并补充 Compose 只读证书挂载，但未来发布脚本仍应正式纳入这些配置，避免再次被覆盖。
+- 服务器发布流程会重建 `frontend:latest`；本任务分支已把证书选择入口脚本和 Compose 只读挂载正式纳入源码。合并到发布主分支前，其他 release 仍可能再次覆盖服务器证书。
 - 既有知识笔记 1000 条压力测试持续失败，需要独立任务修复；本任务登录专项测试通过。
 - 回滚时恢复上述 Compose/Authen 备份和记录的前端镜像，并重启对应服务；不得回退并行发布的 `b6b012...` 业务版本。

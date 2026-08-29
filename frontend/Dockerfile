@@ -13,6 +13,8 @@ COPY --from=build /app/frontend/dist /usr/share/nginx/html
 COPY web-dashboard/dist /usr/share/nginx/html/web-dashboard
 COPY frontend/nginx/ailab.crt /etc/nginx/ssl/ailab.crt
 COPY frontend/nginx/ailab.key /etc/nginx/ssl/ailab.key
+COPY frontend/docker-entrypoint.d/40-select-tls-cert.sh /docker-entrypoint.d/40-select-tls-cert.sh
+RUN chmod 0755 /docker-entrypoint.d/40-select-tls-cert.sh
 RUN echo $'server {\n\
     listen 80;\n\
     location / {\n\

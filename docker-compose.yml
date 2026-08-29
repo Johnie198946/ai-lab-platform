@@ -228,6 +228,9 @@ services:
       - taskboard
     volumes:
       - ./docs/charts:/usr/share/nginx/html/charts
+      # 生产环境挂载 Let's Encrypt；若目录内没有证书，入口脚本保留镜像内置开发证书。
+      - ${LETSENCRYPT_DIR:-/etc/letsencrypt}:/etc/letsencrypt:ro
+      - ${LETSENCRYPT_WEBROOT:-/var/lib/letsencrypt-webroot}/.well-known/acme-challenge:/usr/share/nginx/html/.well-known/acme-challenge:ro
 
 volumes:
   pgdata:
