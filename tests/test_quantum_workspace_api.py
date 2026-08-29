@@ -244,6 +244,29 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
 
+def test_project_blueprint_deduplicates_equivalent_dependency_edges():
+    process = instantiate_project_blueprint({
+        "project_goal": "验证依赖去重",
+        "stages": [{"key": "delivery", "name": "交付"}],
+        "tasks": [
+            {
+                "key": "A", "stage_key": "delivery", "title": "前置任务",
+                "relations": [
+                    {"type": "blocks", "target_key": "B"},
+                    {"type": "blocks", "target_key": "B"},
+                ],
+            },
+            {
+                "key": "B", "stage_key": "delivery", "title": "后置任务",
+                "relations": [{"type": "blocked_by", "target_key": "A"}],
+            },
+        ],
+    })
+    assert len(process["dependencies"]) == 1
+    assert len(process["graphs"]["workflow"]["edges"]) == 1
+    assert len(process["tasks"][0]["relations"]) == 1
+
+
 def test_new_project_session_automatically_assesses_context_and_preserves_system_origin(
     _reset_database, monkeypatch
 ):

@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from "react";
 import { platformApi } from "../../services/platformApi";
 import { HermesClarificationCard } from "./HermesClarificationCard";
 import { createHermesExecution, HermesExecutionTrace, updateHermesExecution } from "./HermesExecutionTrace";
-import { extractProjectBlueprint, projectPlanningVisibleAnswer } from "./projectBlueprintPresentation.js";
+import { ProjectBlueprintReview } from "./ProjectBlueprintReview";
+import { extractProjectBlueprint, projectPlanningNaturalReply, projectPlanningVisibleAnswer } from "./projectBlueprintPresentation.js";
 
 const planningContext = (project) => ({
   schema_version: 1,
@@ -36,6 +37,9 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
   const [clarificationSelections, setClarificationSelections] = useState([]);
   const [clock, setClock] = useState(Date.now());
   const messagesRef = useRef(null);
+  const blueprintMessages = messages.filter((item) => item.role === "assistant" && extractProjectBlueprint(item.content));
+  const latestBlueprintMessage = blueprintMessages.at(-1);
+  const latestBlueprintVersion = blueprintMessages.length;
 
   useEffect(() => {
     if (!project) return undefined;
@@ -124,6 +128,7 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
     const text = forcedQuestion || question.trim();
     if (!text || !conversation || busy) return;
     setQuestion("");
+    if (latestBlueprintVersion) setBlueprintRequestId("");
     await runStream(conversation, { text, requestId: `project-plan-${crypto.randomUUID()}` });
   };
 
@@ -156,10 +161,17 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
   return <div className="qw-modal qw-planning-modal" role="dialog" aria-modal="true" aria-labelledby="project-planning-title"><section className="qw-planning-card">
     <header><div><span className="qw-eyebrow">Hermes · Project planning session</span><h2 id="project-planning-title">{project ? project.name : "创建项目"}</h2></div><button type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
     {!project ? <form className="qw-planning-seed" onSubmit={create}><div><Sparkles size={20} /><strong>先给 Hermes 一个起点</strong><p>创建草稿后进入持续对话，流程节点不会由前端写死。</p></div><label>项目名称<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={160} autoFocus /></label><label>初始业务目标<textarea value={goal} onChange={(event) => setGoal(event.target.value)} required rows={5} maxLength={4000} /></label>{error && <p className="qw-error" role="alert">{error}</p>}<button className="qw-button primary wide" disabled={busy}>{busy ? "创建会话中…" : "创建并开始需求收敛"}</button></form> : <>
-      <div className="qw-planning-context"><span>草稿项目</span><span>Hermes main_agent</span><span>revision {project.process_revision || 0}</span><span>{blueprintRequestId ? "蓝图待确认" : "需求收敛中"}</span></div>
-      <div className="qw-planning-messages" ref={messagesRef} aria-live="polite">{!messages.length && <div className="qw-chat-empty"><Bot size={24} /><strong>{resumeNeeded ? "上次 AI 生成尚未完成" : "正在把项目名称与描述交给 Hermes"}</strong><span>{resumeNeeded ? "点击下方“继续 AI 生成”，Hermes 会沿用本 Session 的项目背景继续收敛。" : "Hermes 会先判断信息是否足够；不足时直接提出一个关键问题，足够时生成可确认蓝图。"}</span></div>}{messages.map((message) => <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}<p>{message.role === "assistant" ? projectPlanningVisibleAnswer(message.content, { pending: message.pending }) || (message.waitingForClarification ? "请回答下方问题，Hermes 会继续评估。" : message.pending ? "正在检查需求完整度…" : message.failed ? "本轮未完成，请按提示重试。" : "蓝图已生成，请确认派发。") : message.content}</p></article>)}<HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-project-clarification" continuationLabel="回答后，Hermes 会继续检查需求；信息足够时自动生成蓝图。" /></div>
+      <div className="qw-planning-context"><span>草稿项目</span><span>Hermes main_agent</span><span>revision {project.process_revision || 0}</span><span>{blueprintRequestId ? `收敛单 v${latestBlueprintVersion} 待确认` : "需求收敛中"}</span></div>
+      <div className="qw-planning-messages" ref={messagesRef} aria-live="polite">{!messages.length && <div className="qw-chat-empty"><Bot size={24} /><strong>{resumeNeeded ? "上次 AI 生成尚未完成" : "正在把项目名称与描述交给 Hermes"}</strong><span>{resumeNeeded ? "点击下方“继续 AI 生成”，Hermes 会沿用本 Session 的项目背景继续收敛。" : "Hermes 会先判断信息是否足够；不足时直接提出一个关键问题，足够时生成可确认蓝图。"}</span></div>}{messages.map((message) => {
+        const blueprint = message.role === "assistant" ? extractProjectBlueprint(message.content) : null;
+        const blueprintIndex = blueprint ? blueprintMessages.findIndex((item) => item.id === message.id) : -1;
+        const visibleAnswer = message.role === "assistant"
+          ? (blueprint ? projectPlanningNaturalReply(message.content) : projectPlanningVisibleAnswer(message.content, { pending: message.pending }))
+          : message.content;
+        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}<p>{visibleAnswer || (message.waitingForClarification ? "请回答下方问题，Hermes 会继续评估。" : message.pending ? "正在检查需求完整度…" : message.failed ? "本轮未完成，请按提示重试。" : "蓝图已生成，请确认派发。")}</p>{blueprint && <ProjectBlueprintReview blueprint={blueprint} version={blueprintIndex + 1} current={message.id === latestBlueprintMessage?.id} />}</article>;
+      })}<HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-project-clarification" continuationLabel="回答后，Hermes 会继续检查需求；信息足够时自动生成蓝图。" /></div>
       {error && <p className="qw-error compact" role="alert">{error}</p>}
-      <form className="qw-planning-composer" onSubmit={send}><label className="qw-sr-only" htmlFor="project-planning-question">项目需求</label><textarea id="project-planning-question" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={clarification ? "请先回答上方澄清问题…" : "补充目标、范围、角色、日期、验收或依赖…"} disabled={!conversation || busy || !!clarification} /><button className="qw-button primary" aria-label="发送" disabled={!conversation || busy || !!clarification || !question.trim()}><Send size={16} /></button></form>
+      <form className="qw-planning-composer" onSubmit={send}><label className="qw-sr-only" htmlFor="project-planning-question">项目需求</label><textarea id="project-planning-question" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={clarification ? "请先回答上方澄清问题…" : latestBlueprintVersion ? `继续补充或修订收敛单 v${latestBlueprintVersion}，也可以直接粘贴你的流程…` : "补充目标、范围、角色、日期、验收或依赖…"} disabled={!conversation || busy || !!clarification} /><button className="qw-button primary" aria-label="发送" disabled={!conversation || busy || !!clarification || !question.trim()}><Send size={16} /></button></form>
       <footer><button type="button" className="qw-button subtle" disabled={!conversation || busy} onClick={() => send(null, "基于当前项目名称、描述和既有对话，判断能否收敛需求并完成全部字段：能则直接生成完整项目蓝图；不能则继续向我提出最关键的问题，直至需求收敛。")}>{resumeNeeded ? "继续 AI 生成" : blueprintRequestId ? "重新检查蓝图" : "检查并生成蓝图"}</button><button type="button" className="qw-button primary" disabled={!blueprintRequestId || busy} onClick={dispatch}>{busy ? "正在派发…" : "确认并派发项目"}</button></footer>
     </>}
   </section></div>;

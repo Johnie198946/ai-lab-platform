@@ -33,6 +33,8 @@ export const hermesExecutionStep = (event, labels = {}) => {
 
 export const createHermesExecution = (detail, startedAt = Date.now()) => ({
   startedAt,
+  lastActivityAt: startedAt,
+  currentStartedAt: startedAt,
   current: detail,
   elapsedMs: 0,
   steps: [{ signature: "local:start", detail, elapsedMs: 0 }],
@@ -43,10 +45,11 @@ export const updateHermesExecution = (message, event, labels = {}) => {
   if (!detail) return message;
   const execution = message.execution || createHermesExecution(detail);
   const elapsedMs = Math.max(0, Date.now() - execution.startedAt);
+  const activityAt = Date.now();
   const signature = `${event.type}:${event.phase || event.tool || event.reason_code || detail}`;
   const previous = execution.steps.at(-1);
   if (previous?.signature === signature) {
-    return { ...message, execution: { ...execution, current: detail, elapsedMs } };
+    return { ...message, execution: { ...execution, current: detail, elapsedMs, lastActivityAt: activityAt } };
   }
   return {
     ...message,
@@ -54,6 +57,8 @@ export const updateHermesExecution = (message, event, labels = {}) => {
       ...execution,
       current: detail,
       elapsedMs,
+      lastActivityAt: activityAt,
+      currentStartedAt: activityAt,
       steps: [...execution.steps, { signature, detail, elapsedMs }].slice(-8),
     },
   };
@@ -64,21 +69,24 @@ const elapsedLabel = (milliseconds) => `${Math.max(0, Math.round((milliseconds |
 export function HermesExecutionTrace({ execution, pending, waitingForClarification, clock, variant = "task" }) {
   if (!execution) return null;
   const elapsedMs = pending ? Math.max(0, clock - execution.startedAt) : execution.elapsedMs;
+  const inactiveMs = pending ? Math.max(0, clock - (execution.lastActivityAt || execution.startedAt)) : 0;
+  const currentMs = pending ? Math.max(0, clock - (execution.currentStartedAt || execution.startedAt)) : 0;
   let slowNotice = "";
   if (waitingForClarification) {
     slowNotice = "Hermes 已暂停执行，正在等待你的回答。";
-  } else if (pending && elapsedMs >= 45000) {
-    slowNotice = "仍在等待首个输出、技能调用或澄清问题；系统会在 60 秒达到保护时限时停止本轮并允许重试。";
-  } else if (pending && elapsedMs >= 15000) {
+  } else if (pending && inactiveMs >= 45000) {
+    slowNotice = "最近 45 秒没有新的上游事件。若仍无活动，本轮会按保护策略结束并提供重试；已有事件后的总耗时不受 60 秒首活动时限限制。";
+  } else if (pending && inactiveMs >= 15000) {
     slowNotice = variant === "planning"
       ? "Hermes 正在形成下一项澄清问题或完整蓝图；这是模型处理阶段，不是页面卡死。"
       : "模型响应较慢，系统会在首个输出、技能调用或澄清问题前最多等待 60 秒。";
-  } else if (pending && elapsedMs >= 6000) {
+  } else if (pending && inactiveMs >= 6000) {
     slowNotice = variant === "planning" ? "Hermes 正在评估需求缺口，可继续等待。" : "模型正在规划，可继续等待。";
   }
   return <details className="qw-execution-trace" open={pending || undefined}>
-    <summary><span>{execution.current || "执行详情"}</span><time>{elapsedLabel(elapsedMs)}</time></summary>
+    <summary><span>{execution.current || "执行详情"}</span><time title="本轮总耗时">总计 {elapsedLabel(elapsedMs)}</time></summary>
     <ol>{execution.steps.map((step) => <li key={`${step.signature}-${step.elapsedMs}`}><time>{elapsedLabel(step.elapsedMs)}</time><span>{step.detail}</span></li>)}</ol>
+    {pending && !waitingForClarification && <p className="qw-execution-current">当前阶段已持续 {elapsedLabel(currentMs)} · 最近活动距今 {elapsedLabel(inactiveMs)}</p>}
     {slowNotice && <p className="qw-execution-slow">{slowNotice}</p>}
   </details>;
 }

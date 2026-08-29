@@ -7,6 +7,7 @@ import json
 import asyncio
 import os
 import re
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import quote
@@ -3583,9 +3584,41 @@ async def list_task_messages(
         ]
 
 
-_PROJECT_BLUEPRINT_BLOCK = re.compile(
-    r"```project_blueprint\s*\n([\s\S]*?)\n```", re.IGNORECASE
-)
+_PROJECT_BLUEPRINT_BLOCK = re.compile(r"```project_blueprint\b\s*\n([\s\S]*?)\n```", re.IGNORECASE)
+_GENERIC_JSON_BLOCK = re.compile(r"```(?:json)?\s*\n([\s\S]*?)\n```", re.IGNORECASE)
+
+
+def _project_blueprint_from_text(content: str | None) -> dict[str, Any] | None:
+    """Accept the canonical protocol and recover schema-shaped generic JSON safely."""
+    source = str(content or "")
+    candidates = [match.group(1) for match in _PROJECT_BLUEPRINT_BLOCK.finditer(source)]
+    candidates.extend(match.group(1) for match in _GENERIC_JSON_BLOCK.finditer(source))
+    object_start, object_end = source.find("{"), source.rfind("}")
+    if object_start >= 0 and object_end > object_start:
+        candidates.append(source[object_start : object_end + 1])
+    for candidate in candidates:
+        try:
+            value = json.loads(candidate)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if isinstance(value, dict) and isinstance(value.get("stages"), list) and isinstance(value.get("tasks"), list):
+            return value
+    return None
+
+
+def _compact_blueprint_revision_context(blueprint: dict[str, Any]) -> dict[str, Any]:
+    """Keep the full plan contract while bounding large generated document bodies."""
+    compact = deepcopy(blueprint)
+    compact["documents"] = [
+        {
+            **document,
+            "content": str(document.get("content") or "")[:1200],
+            "content_truncated_for_revision": len(str(document.get("content") or "")) > 1200,
+        }
+        for document in compact.get("documents") or []
+        if isinstance(document, dict)
+    ]
+    return compact
 
 
 @router.post("/projects/{project_id}/planning/dispatch")
@@ -3613,15 +3646,12 @@ async def dispatch_project_blueprint(
         )
         if assistant is None:
             raise HTTPException(status_code=404, detail="Hermes blueprint message not found")
-        match = _PROJECT_BLUEPRINT_BLOCK.search(assistant.content or "")
-        if not match:
+        blueprint = _project_blueprint_from_text(assistant.content)
+        if blueprint is None:
             raise HTTPException(status_code=422, detail="Hermes has not produced a project_blueprint yet")
         try:
-            blueprint = json.loads(match.group(1))
-            if not isinstance(blueprint, dict):
-                raise ValueError("blueprint must be an object")
             process = instantiate_project_blueprint(blueprint)
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=f"invalid project blueprint: {exc}") from exc
         next_revision = await _cas_project_process(
             db,
@@ -4063,6 +4093,25 @@ async def stream_task_message(
         project = await _project_for_access(
             db, conversation.project_id, tenant_key, user_id, "project:write"
         )
+        planning_blueprint: dict[str, Any] | None = None
+        planning_blueprint_version = 0
+        if planning_session:
+            planning_messages = (
+                await db.scalars(
+                    select(WorkspaceTaskMessage)
+                    .where(
+                        WorkspaceTaskMessage.tenant_key == tenant_key,
+                        WorkspaceTaskMessage.conversation_id == conversation.id,
+                        WorkspaceTaskMessage.role == "assistant",
+                    )
+                    .order_by(WorkspaceTaskMessage.created_at.asc())
+                )
+            ).all()
+            for planning_message in planning_messages:
+                candidate = _project_blueprint_from_text(planning_message.content)
+                if candidate is not None:
+                    planning_blueprint = candidate
+                    planning_blueprint_version += 1
         if body.trigger == "project_created" and body.request_id != f"project-intake-{project.id}":
             raise HTTPException(
                 status_code=422,
@@ -4260,6 +4309,15 @@ async def stream_task_message(
         )
     )
     if planning_session:
+        revision_context = (
+            json.dumps(
+                _compact_blueprint_revision_context(planning_blueprint),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            if planning_blueprint is not None
+            else "NONE"
+        )
         server_goal = "\n".join([
             "[QuantumWorkspace authenticated project planning session]",
             f"project_id={project.id}",
@@ -4267,12 +4325,16 @@ async def stream_task_message(
             f"project_goal={project.goal}",
             f"desired_outputs={json.dumps(project.desired_outputs or [], ensure_ascii=False)}",
             "You are Hermes main_agent. Converge the full project requirement through natural dialogue before proposing dispatch.",
+            f"current_convergence_sheet_version={planning_blueprint_version}",
+            f"current_convergence_sheet={revision_context}",
+            "If a current convergence sheet exists, the user message is a revision to that sheet. Merge it into the existing plan, preserve every unaffected confirmed fact, and return one complete replacement sheet with the next version. Never start a parallel or unrelated planning flow.",
             "基于上述项目名称、描述和期望输出，确认是否能够收敛需求并完成全部项目字段与任务档案的填写；如是则直接生成相关内容；如否则持续询问用户至需求收敛。",
             "First assess whether the supplied project facts are sufficient to implement the work and populate every material blueprint field: target users and scenarios, in/out scope, functional and non-functional requirements, integrations and data, security/compliance, constraints, roles, milestones/dates, dependencies, deliverables and acceptance evidence.",
             "Never ask the user to repeat a project name, business goal or desired output already present in trusted context. Do not invent a fact merely to fill a blank; optional dates may remain null when they do not constrain planning.",
             "When a material fact is unclear, use the same Hermes clarify capability as the iOS main session and ask exactly one highest-impact question, with useful choices when appropriate. After each answer, reassess; clarify the next material gap or generate the blueprint automatically when sufficient.",
             "Do not force IPD or any fixed stage model. Design stages that fit this project. Every task must belong to one stage and have a responsible role, goal and acceptance criteria.",
             "When information is sufficient, or the user explicitly asks to generate/dispatch, answer with a concise review followed by exactly one fenced project_blueprint JSON block. Do not require an extra user message before generating it.",
+            "Keep the blueprint concise enough for interactive review: do not repeat the same dependency, relation or document prose; each document content should normally stay under 6000 characters. Never emit generic JSON or bare JSON outside the project_blueprint fence.",
             'Schema: {"project_goal":str,"stages":[{"key":str,"name":str,"goal":str,"acceptance_criteria":str[],"start_date":"YYYY-MM-DD"|null,"due_date":"YYYY-MM-DD"|null}],"tasks":[{"key":str,"stage_key":str,"title":str,"description":str,"goal":str,"acceptance_criteria":str[],"role":str,"status":"backlog|todo|in_progress|blocked|in_review|done","priority":"none|urgent|high|medium|low","labels":str[],"development_context":object|null,"start_date":"YYYY-MM-DD"|null,"due_date":"YYYY-MM-DD"|null,"recurrence":{"interval":int,"unit":"day|week|month|year"}|null,"parent_key":str|null,"relations":[{"type":"blocks|blocked_by|related","target_key":str}],"deliverables":str[],"handoff":{"from":str|null,"to":str|null,"completion_definition":str}}],"documents":[{"id":str,"title":str,"content":str,"status":"draft|ready"}]}',
             "Use status backlog for 待立项 and todo for 等待认领. Completion outputs belong in deliverables and handoff, not in comments.",
             "The JSON is a proposal only. The application will require explicit user confirmation before writing any process, cards, employees or documents.",

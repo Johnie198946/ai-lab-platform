@@ -1,20 +1,43 @@
 const BLUEPRINT_FENCE = /```project_blueprint\b/i;
+const GENERIC_JSON_FENCE = /```(?:json)?\s*\n/i;
+
+const isBlueprintShape = (value) => value && typeof value === "object" && !Array.isArray(value)
+  && Array.isArray(value.stages) && Array.isArray(value.tasks);
+
+const parseBlueprintCandidate = (payload) => {
+  try {
+    const value = JSON.parse(payload.trim());
+    return isBlueprintShape(value) ? value : null;
+  } catch {
+    return null;
+  }
+};
+
+const locateBlueprintPayload = (source) => {
+  for (const fence of [BLUEPRINT_FENCE, GENERIC_JSON_FENCE]) {
+    fence.lastIndex = 0;
+    const match = fence.exec(source);
+    if (!match) continue;
+    const payloadStart = match.index + match[0].length;
+    const payloadEnd = source.indexOf("```", payloadStart);
+    if (payloadEnd < 0) return { match, payloadStart, payloadEnd, blueprint: null, partial: true };
+    const blueprint = parseBlueprintCandidate(source.slice(payloadStart, payloadEnd));
+    if (blueprint || fence === BLUEPRINT_FENCE) return { match, payloadStart, payloadEnd, blueprint, partial: false };
+  }
+  const objectStart = source.indexOf("{");
+  const objectEnd = source.lastIndexOf("}");
+  if (objectStart >= 0 && objectEnd > objectStart) {
+    const blueprint = parseBlueprintCandidate(source.slice(objectStart, objectEnd + 1));
+    if (blueprint) return { match: { index: objectStart }, payloadStart: objectStart, payloadEnd: objectEnd + 1, blueprint, partial: false };
+  }
+  return null;
+};
 
 const uniqueText = (values = []) => [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 
 export const extractProjectBlueprint = (content = "") => {
   const source = String(content || "");
-  const match = BLUEPRINT_FENCE.exec(source);
-  if (!match) return null;
-  const payloadStart = match.index + match[0].length;
-  const payloadEnd = source.indexOf("```", payloadStart);
-  if (payloadEnd < 0) return null;
-  try {
-    const blueprint = JSON.parse(source.slice(payloadStart, payloadEnd).trim());
-    return blueprint && typeof blueprint === "object" && !Array.isArray(blueprint) ? blueprint : null;
-  } catch {
-    return null;
-  }
+  return locateBlueprintPayload(source)?.blueprint || null;
 };
 
 export const summarizeProjectBlueprint = (blueprint) => {
@@ -47,12 +70,24 @@ export const summarizeProjectBlueprint = (blueprint) => {
 
 export const projectPlanningVisibleAnswer = (content = "", { pending = false } = {}) => {
   const source = String(content || "");
-  const match = BLUEPRINT_FENCE.exec(source);
-  if (!match) return source.trim();
+  const located = locateBlueprintPayload(source);
+  if (!located) {
+    const likelyBareBlueprint = pending && source.search(/\{\s*"(?:project_goal|stages|tasks)"\s*:/i);
+    if (likelyBareBlueprint >= 0) {
+      return source.slice(0, likelyBareBlueprint).trim() || "项目蓝图正在整理中，结构化协议已隐藏。";
+    }
+    return source.trim();
+  }
 
-  const naturalReply = source.slice(0, match.index).trim();
-  const blueprint = extractProjectBlueprint(source);
+  const naturalReply = source.slice(0, located.match.index).trim();
+  const blueprint = located.blueprint;
   if (blueprint) return [naturalReply, summarizeProjectBlueprint(blueprint)].filter(Boolean).join("\n\n");
   if (naturalReply) return naturalReply;
   return pending ? "项目蓝图正在整理中，结构化协议已隐藏。" : "项目蓝图已返回，正在整理为可读摘要。";
+};
+
+export const projectPlanningNaturalReply = (content = "") => {
+  const source = String(content || "");
+  const located = locateBlueprintPayload(source);
+  return (located ? source.slice(0, located.match.index) : source).trim();
 };

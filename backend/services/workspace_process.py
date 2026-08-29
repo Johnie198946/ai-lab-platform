@@ -146,7 +146,24 @@ def instantiate_project_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
                 dependencies.append({"from_task_id": task["id"], "to_task_id": target_id})
             elif relation_type == "blocked_by":
                 dependencies.append({"from_task_id": target_id, "to_task_id": task["id"]})
-        task["relations"] = normalized_relations
+        seen_relations: set[tuple[str, str]] = set()
+        task["relations"] = []
+        for relation in normalized_relations:
+            relation_key = (relation["type"], relation["target_task_id"])
+            if relation_key in seen_relations:
+                continue
+            seen_relations.add(relation_key)
+            task["relations"].append(relation)
+
+    seen_dependencies: set[tuple[str, str]] = set()
+    unique_dependencies = []
+    for dependency in dependencies:
+        dependency_key = (dependency["from_task_id"], dependency["to_task_id"])
+        if dependency_key[0] == dependency_key[1] or dependency_key in seen_dependencies:
+            continue
+        seen_dependencies.add(dependency_key)
+        unique_dependencies.append(dependency)
+    dependencies = unique_dependencies
 
     if not dependencies:
         dependencies = [

@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { extractProjectBlueprint, projectPlanningVisibleAnswer } from "../src/features/quantum-workspace/projectBlueprintPresentation.js";
+import { composeClarificationResponse, isOtherClarificationChoice, normalizedClarificationChoice } from "../src/features/quantum-workspace/hermesClarification.js";
+import { extractProjectBlueprint, projectPlanningNaturalReply, projectPlanningVisibleAnswer } from "../src/features/quantum-workspace/projectBlueprintPresentation.js";
 
 const hostSource = await readFile(
   new URL("../src/features/quantum-workspace/DashiTaskboardHost.jsx", import.meta.url),
@@ -97,6 +98,14 @@ test("card session renders and submits Hermes clarification instead of waiting s
   assert.match(drawerSource, /submitTaskClarification/);
   assert.match(drawerSource, /clarify_id: clarification\.clarify_id/);
   assert.match(drawerSource, /等待你补充信息/);
+  assert.equal(isOtherClarificationChoice("Other"), true);
+  assert.equal(isOtherClarificationChoice({ label: "其他（请填写）", value: "other" }), true);
+  const choices = ["部署到内网", "Other"].map(normalizedClarificationChoice);
+  assert.equal(composeClarificationResponse(choices, ["部署到内网", "Other"], "需要离线部署"), "部署到内网；其他：需要离线部署");
+  assert.match(clarificationSource, /isOtherClarificationChoice/);
+  assert.match(clarificationSource, /请补充具体信息/);
+  assert.match(clarificationSource, /这段内容会原样交给 Hermes/);
+  assert.match(clarificationSource, /composedResponse/);
 });
 
 test("new projects automatically enter the shared Hermes clarification protocol", () => {
@@ -139,7 +148,8 @@ test("card session exposes safe skill execution progress without chain-of-though
   ]) assert.match(executionSources, new RegExp(eventType));
   assert.match(executionTraceSource, /候选技能/);
   assert.match(executionTraceSource, /模型响应较慢/);
-  assert.match(executionTraceSource, /60 秒达到保护时限/);
+  assert.match(executionTraceSource, /最近活动距今/);
+  assert.match(executionTraceSource, /总耗时不受 60 秒首活动时限限制/);
   assert.doesNotMatch(executionSources, /chain.of.thought|思维链/i);
 });
 
@@ -150,7 +160,8 @@ test("project planning reuses the safe Hermes execution trace", () => {
   assert.match(executionTraceSource, /planning_context/);
   assert.match(executionTraceSource, /候选技能/);
   assert.match(executionTraceSource, /不是页面卡死/);
-  assert.match(executionTraceSource, /60 秒达到保护时限/);
+  assert.match(executionTraceSource, /当前阶段已持续/);
+  assert.match(executionTraceSource, /总耗时不受 60 秒首活动时限限制/);
   assert.doesNotMatch(executionTraceSource, /chain.of.thought|思维链/i);
 });
 
@@ -178,4 +189,24 @@ test("project planning hides blueprint protocol while streaming and renders a na
   assert.match(visible, /关键验收：需求已确认/);
   assert.match(visible, /产品经理、架构师/);
   assert.doesNotMatch(visible, /project_goal|stages|tasks|```|\{|\}/);
+
+  const generic = `蓝图已合并。\n\`\`\`json\n${JSON.stringify(blueprint)}\n\`\`\``;
+  assert.deepEqual(extractProjectBlueprint(generic), blueprint);
+  assert.equal(projectPlanningNaturalReply(generic), "蓝图已合并。");
+  assert.doesNotMatch(projectPlanningVisibleAnswer(generic), /project_goal|```json|\{/);
+
+  const bare = `更新后的完整方案：\n${JSON.stringify(blueprint)}`;
+  assert.deepEqual(extractProjectBlueprint(bare), blueprint);
+  assert.equal(projectPlanningNaturalReply(bare), "更新后的完整方案：");
+  assert.equal(projectPlanningVisibleAnswer('正在整理。\n{"project_goal":"门禁","stages":[', { pending: true }), "正在整理。");
+});
+
+test("project planning treats new user input as a merged convergence revision", () => {
+  assert.match(planningSource, /latestBlueprintVersion/);
+  assert.match(planningSource, /继续补充或修订收敛单/);
+  assert.match(planningSource, /ProjectBlueprintReview/);
+  assert.match(planningSource, /setBlueprintRequestId\(""\)/);
+  assert.match(backendSource, /current_convergence_sheet_version/);
+  assert.match(backendSource, /preserve every unaffected confirmed fact/);
+  assert.match(backendSource, /Never start a parallel or unrelated planning flow/);
 });
