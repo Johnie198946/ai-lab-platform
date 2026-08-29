@@ -16,6 +16,7 @@ const close = (server) => new Promise((resolve, reject) => server.close((error) 
 
 test("QWS mode authenticates through AI Lab and isolates tenant taskboard data", async () => {
   const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "qws-taskboard-test-"));
+  let canonicalRevision = 1;
   const identityServer = createServer((request, response) => {
     const tenant = request.headers.authorization === "Bearer tenant-b" ? "tenant-b" : "tenant-a";
     response.writeHead(200, { "content-type": "application/json" });
@@ -28,14 +29,20 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
         stages: [{ id: "stage-1", name: "需求" }],
         tasks: [{
           id: "task-1", stage_id: "stage-1", title: "Canonical task", summary: "Server owned",
-          status: "BACKLOG", assignee_role: "需求经理", deliverables: ["Evidence"], start_date: null, due_date: null,
+          status: "BACKLOG", assignee_role: "需求经理", deliverables: ["Evidence"],
+          start_date: canonicalRevision > 1 ? "2026-08-31" : null,
+          due_date: canonicalRevision > 1 ? "2026-08-31" : null,
           development_context: { platform: "independent web", devices: ["mobile", "desktop"] },
-          relations: [{ type: "related", target_task_id: "task-2" }],
         }, {
           id: "task-2", stage_id: "stage-1", title: "Runtime task", summary: "Use a branch",
-          status: "TODO", assignee_role: "需求经理", deliverables: [], start_date: null, due_date: null,
+          status: "TODO", assignee_role: "需求经理", deliverables: [],
+          start_date: canonicalRevision > 1 ? "2026-09-01" : null,
+          due_date: canonicalRevision > 1 ? "2026-09-01" : null,
           development_context: { type: "branch", branch: "codex/runtime-task" },
         }],
+        dependencies: canonicalRevision > 1
+          ? [{ from_task_id: "task-1", to_task_id: "task-2" }]
+          : [],
       }));
       return;
     }
@@ -109,7 +116,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       type: "branch",
       branch: "codex/runtime-task",
     });
-    assert.equal(canonicalTask.relations.related.some((task) => task.id === runtimeTask.id), true);
+    assert.equal(runtimeTask.relations.blockedBy.length, 0);
 
     const legacyBacklog = await fetch(`${origin}/api/tasks/${canonicalTask.id}`, {
       method: "PATCH",
@@ -117,6 +124,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       body: JSON.stringify({ version: canonicalTask.version, status: "backlog" }),
     });
     assert.equal(legacyBacklog.status, 200);
+    canonicalRevision = 2;
     const resyncedSession = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
       headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
@@ -127,6 +135,11 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       headers: { cookie: cookieA },
     }).then((response) => response.json());
     assert.equal(tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id).status, "todo");
+    const canonicalAfterResync = tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id);
+    const runtimeAfterResync = tasksAfterResync.tasks.find((task) => task.id === runtimeTask.id);
+    assert.equal(canonicalAfterResync.startDate, "2026-08-31");
+    assert.equal(runtimeAfterResync.dueDate, "2026-09-01");
+    assert.equal(runtimeAfterResync.relations.blockedBy.some((task) => task.id === canonicalTask.id), true);
 
     const invalidSession = await fetch(`${origin}/api/qws/session`, {
       method: "POST",

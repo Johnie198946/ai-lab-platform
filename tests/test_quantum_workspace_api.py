@@ -4,6 +4,7 @@ import atexit
 import asyncio
 import json
 import os
+from datetime import date
 from pathlib import Path
 from tempfile import gettempdir
 from types import SimpleNamespace
@@ -121,6 +122,39 @@ def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     assert process["tasks"][1]["status"] == "BACKLOG"
     assert {item["type"] for item in process["tasks"][1]["relations"]} == {"parent", "blocked_by"}
     assert process["documents"][0]["title"] == "项目说明"
+
+
+def test_hermes_blueprint_default_schedule_follows_dependencies_and_workdays():
+    process = instantiate_project_blueprint({
+        "project_goal": "按依赖自动排期",
+        "stages": [
+            {"key": "design", "name": "设计"},
+            {"key": "ship", "name": "交付"},
+        ],
+        "tasks": [
+            {
+                "key": "design",
+                "stage_key": "design",
+                "title": "完成设计",
+                "estimated_duration_days": 2,
+            },
+            {
+                "key": "ship",
+                "stage_key": "ship",
+                "title": "完成交付",
+                "estimated_duration_days": 1,
+                "relations": [{"type": "blocked_by", "target_key": "design"}],
+            },
+        ],
+    }, schedule_anchor=date(2026, 8, 29))
+    assert process["tasks"][0]["start_date"] == "2026-08-31"
+    assert process["tasks"][0]["due_date"] == "2026-09-01"
+    assert process["tasks"][1]["start_date"] == "2026-09-02"
+    assert process["tasks"][1]["due_date"] == "2026-09-02"
+    assert process["stages"][0]["planned_start_at"] == "2026-08-31"
+    assert process["stages"][1]["planned_finish_at"] == "2026-09-02"
+    assert process["calendar"]["status"] == "SCHEDULED"
+    assert process["calendar"]["schedule_source"] == "SYSTEM_DEFAULT"
 
 
 def test_process_revision_flushes_fk_targets_before_dependencies():

@@ -1784,7 +1784,9 @@ export function TaskDetail({
                     value: "",
                     label: developmentScanLoading
                       ? text("正在扫描 Git…", "Scanning Git…")
-                      : text("未绑定", "Not linked"),
+                      : (currentTask.labels || []).some((label) => label.startsWith("qws-"))
+                        ? text("待项目仓库绑定", "Awaiting project repository")
+                        : text("未绑定", "Not linked"),
                     icon: <BranchIcon color="currentColor" size={14} />,
                   },
                   ...developmentOptions.map((context) => ({

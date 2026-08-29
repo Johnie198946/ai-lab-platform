@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -38,7 +39,90 @@ TASK_SPECS = {
 }
 
 
-def instantiate_project_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
+def _workday(value: date) -> date:
+    while value.weekday() >= 5:
+        value += timedelta(days=1)
+    return value
+
+
+def _add_workdays(value: date, days: int) -> date:
+    current = _workday(value)
+    for _ in range(max(0, days)):
+        current = _workday(current + timedelta(days=1))
+    return current
+
+
+def _parse_plan_date(value: Any, field: str) -> date | None:
+    if value is None or value == "":
+        return None
+    try:
+        return date.fromisoformat(str(value))
+    except ValueError as exc:
+        raise ValueError(f"{field} must use YYYY-MM-DD") from exc
+
+
+def apply_default_schedule(process: dict[str, Any], anchor: date) -> dict[str, Any]:
+    """Fill missing dates deterministically from the dependency DAG."""
+    tasks = process.get("tasks") or []
+    task_by_id = {str(task["id"]): task for task in tasks}
+    predecessors: dict[str, set[str]] = {task_id: set() for task_id in task_by_id}
+    for dependency in process.get("dependencies") or []:
+        source = str(dependency.get("from_task_id") or "")
+        target = str(dependency.get("to_task_id") or "")
+        if source in task_by_id and target in task_by_id and source != target:
+            predecessors[target].add(source)
+
+    pending = set(task_by_id)
+    scheduled: set[str] = set()
+    while pending:
+        ready = [task_id for task_id in task_by_id if task_id in pending and predecessors[task_id] <= scheduled]
+        if not ready:
+            raise ValueError("project blueprint task dependencies must be acyclic")
+        for task_id in ready:
+            task = task_by_id[task_id]
+            duration = max(1, int(task.get("estimated_duration_days") or 1))
+            explicit_start = _parse_plan_date(task.get("start_date") or task.get("planned_start_at"), "task start_date")
+            explicit_due = _parse_plan_date(task.get("due_date") or task.get("planned_finish_at"), "task due_date")
+            predecessor_due = [
+                _parse_plan_date(task_by_id[item].get("due_date"), "predecessor due_date")
+                for item in predecessors[task_id]
+            ]
+            earliest = _workday(anchor)
+            if predecessor_due:
+                earliest = _workday(max(value for value in predecessor_due if value is not None) + timedelta(days=1))
+            start = explicit_start or earliest
+            if start < earliest:
+                raise ValueError("task start_date cannot precede a blocking task")
+            due = explicit_due or _add_workdays(start, duration - 1)
+            if due < start:
+                raise ValueError("task due_date cannot precede start_date")
+            task["start_date"] = task["planned_start_at"] = start.isoformat()
+            task["due_date"] = task["planned_finish_at"] = due.isoformat()
+            task["unscheduled_reason"] = None
+            task["schedule_source"] = "BLUEPRINT" if explicit_start or explicit_due else "SYSTEM_DEFAULT"
+            pending.remove(task_id)
+            scheduled.add(task_id)
+
+    for stage in process.get("stages") or []:
+        stage_tasks = [task for task in tasks if task.get("stage_id") == stage.get("id")]
+        if stage_tasks:
+            stage["planned_start_at"] = min(str(task["start_date"]) for task in stage_tasks)
+            stage["planned_finish_at"] = max(str(task["due_date"]) for task in stage_tasks)
+            stage["unscheduled_reason"] = None
+    process["calendar"] = {
+        "timezone": "Asia/Shanghai",
+        "work_calendar_id": "weekday-default",
+        "non_working_days": ["Saturday", "Sunday"],
+        "status": "SCHEDULED",
+        "schedule_source": "SYSTEM_DEFAULT",
+        "anchor_date": _workday(anchor).isoformat(),
+    }
+    return process
+
+
+def instantiate_project_blueprint(
+    blueprint: dict[str, Any], *, schedule_anchor: date | None = None
+) -> dict[str, Any]:
     """Compile a reviewed Hermes blueprint into the canonical dynamic process."""
     raw_stages = blueprint.get("stages") or []
     raw_tasks = blueprint.get("tasks") or []
@@ -180,7 +264,7 @@ def instantiate_project_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
         },
         "ai-resource": {"id": f"graph_{uuid4().hex}", "view_type": "ai-resource", "source_status": "PLANNED", "nodes": [], "edges": []},
     }
-    return {
+    process = {
         "process_instance_id": process_id,
         "template_id": "hermes-dynamic-project",
         "template_version": "1.0.0",
@@ -195,6 +279,7 @@ def instantiate_project_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
         "graphs": graphs,
         "calendar": {"timezone": "Asia/Shanghai", "work_calendar_id": None, "non_working_days": [], "status": "PLANNED"},
     }
+    return apply_default_schedule(process, schedule_anchor) if schedule_anchor else process
 
 
 def compile_ipd_draft(intake: dict[str, Any], template_version: str) -> dict[str, Any]:

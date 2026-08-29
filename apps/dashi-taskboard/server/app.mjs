@@ -1793,12 +1793,19 @@ export function createTaskboardServer(options = {}) {
       const existingMarkers = new Set(existingTasks.flatMap((item) => item.labels || []));
       const existingTasksByMarker = new Map();
       const cardIdsByQwsTaskId = new Map();
-      const newlyCreatedQwsTaskIds = new Set();
       for (const item of existingTasks) {
         const marker = (item.labels || []).find((label) => label.startsWith("qws-"));
         if (marker) existingTasksByMarker.set(marker, item);
         const qwsTask = (process.tasks || []).find((task) => marker === `qws-${qwsSlug(task.id)}`.slice(0, 64));
         if (qwsTask) cardIdsByQwsTaskId.set(qwsTask.id, item.id);
+      }
+      const desiredRelations = new Map((process.tasks || []).map((task) => [task.id, [...(task.relations || [])]]));
+      for (const dependency of process.dependencies || []) {
+        const targetRelations = desiredRelations.get(dependency.to_task_id);
+        if (!targetRelations) continue;
+        if (!targetRelations.some((relation) => relation.type === "blocked_by" && relation.target_task_id === dependency.from_task_id)) {
+          targetRelations.push({ type: "blocked_by", target_task_id: dependency.from_task_id });
+        }
       }
       const createdRelationKeys = new Set();
       for (const task of process.tasks || []) {
@@ -1815,6 +1822,10 @@ export function createTaskboardServer(options = {}) {
         if (existing) {
           const changes = {};
           if (existing.status !== parsed.status) changes.status = parsed.status;
+          if (!existing.developmentContext && parsed.developmentContext) changes.developmentContext = parsed.developmentContext;
+          if (!existing.startDate && parsed.startDate) changes.startDate = parsed.startDate;
+          if (!existing.dueDate && parsed.dueDate) changes.dueDate = parsed.dueDate;
+          if (!existing.recurrence && parsed.recurrence) changes.recurrence = parsed.recurrence;
           if (existing.assignee.type !== assignee.type
             || existing.assignee.id !== assignee.id
             || existing.assignee.name !== assignee.name
@@ -1834,14 +1845,12 @@ export function createTaskboardServer(options = {}) {
         });
         events.emit("task.created", { task: created });
         cardIdsByQwsTaskId.set(task.id, created.id);
-        newlyCreatedQwsTaskIds.add(task.id);
         existingMarkers.add(marker);
         existingTasksByMarker.set(marker, created);
       }
       for (const task of process.tasks || []) {
-        if (!newlyCreatedQwsTaskIds.has(task.id)) continue;
         const taskId = cardIdsByQwsTaskId.get(task.id);
-        for (const relation of task.relations || []) {
+        for (const relation of desiredRelations.get(task.id) || []) {
           const relatedId = cardIdsByQwsTaskId.get(relation.target_task_id);
           if (!taskId || !relatedId) continue;
           const relationKey = relation.type === "related"
@@ -1849,6 +1858,17 @@ export function createTaskboardServer(options = {}) {
             : `${relation.type}:${taskId}:${relatedId}`;
           if (createdRelationKeys.has(relationKey)) continue;
           const current = database.getTask(taskId);
+          const relationExists = relation.type === "parent"
+            ? current.relations.parent?.id === relatedId
+            : relation.type === "blocked_by"
+              ? current.relations.blockedBy.some((item) => item.id === relatedId)
+              : relation.type === "blocks"
+                ? current.relations.blocks.some((item) => item.id === relatedId)
+                : current.relations.related.some((item) => item.id === relatedId);
+          if (relationExists) {
+            createdRelationKeys.add(relationKey);
+            continue;
+          }
           database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "manual");
           createdRelationKeys.add(relationKey);
         }
