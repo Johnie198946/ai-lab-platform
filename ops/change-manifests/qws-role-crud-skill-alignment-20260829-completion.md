@@ -2,7 +2,7 @@
 
 - task_id: `qws-role-crud-skill-alignment-20260829`
 - objective: 让需求收敛 Prompt 输出角色技能；保证角色与负责人岗位一致；为项目角色提供增删改查；提供可记忆的沉浸式项目空间；让 Dashi 甘特图明确解释同一批任务的阶段、负责人、日期与前后依赖。
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `codex/qws-role-crud-skill-alignment-20260829`
 - worktree: `/private/tmp/ai-lab-qws-role-crud-skill-alignment-20260829`
 
@@ -48,14 +48,15 @@
 
 ## 交付状态与外部系统
 
-- current_status: `TESTED`
-- commit SHA: 未授权/未执行，本任务保持未提交本地变更。
-- GitHub remote/ref/SHA: 未授权/未执行。
-- server_before: 不适用；本任务未授权部署。
-- server_after: 不适用；本任务未授权部署。
-- health_check: 不适用；未部署。
-- functional_check: 本地角色 CRUD 契约、负责人匹配拒绝、Prompt schema、沉浸模式持久化、项目阶段桥接、甘特图图例/任务语义、两套前端构建、Dashi 类型检查与专项 UI 测试通过。
-- rollback_point: 当前 Worktree 基线 `3a9fa60fe8a414f4a07c4cc8af18f52c07581d13`；未产生服务器变更。
+- current_status: `VERIFIED`
+- authorization: 用户明确要求“部署 推送”，并进一步确认将私有源码提交推送到 `origin`（`Johnie198946/ai-lab-platform`）的任务分支并部署该精确 SHA。
+- implementation commit SHA: `e4cb2f0bf9c868c7243f49718b0f156ea13ecb89`。
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/qws-role-crud-skill-alignment-20260829` / `e4cb2f0bf9c868c7243f49718b0f156ea13ecb89`；部署前已通过 `git ls-remote` 核验本地与远端 SHA 一致。最终部署证据提交会继续推送到同一任务分支，生产实现 SHA 保持为上述提交。
+- server_before: `/opt/releases/ai-lab-platform-4556f3056b40.QrGAYu`，`.deployed-sha=4556f3056b4092a561fb4549f1d5cb05e6034ac4`；API `/ready` 与 `/health` 正常，Hermes Bridge `ok/v6.0`，API、Taskboard、PostgreSQL、Redis healthy。
+- server_after: `/opt/releases/ai-lab-platform-e4cb2f0bf9c8.WQvSdo`，`.deployed-sha=e4cb2f0bf9c868c7243f49718b0f156ea13ecb89`；exact-SHA 不可变发布及原子切换成功。
+- health_check: PASS。QuantumWorkspace additive migration 扫描 10 个项目、零待回填、零新 revision；runtime contract audit passed；API `/ready={status:ready}`、`/health={status:ok}`；Hermes Bridge `ok/v6.0`、`streaming=true` 且 systemd active；8 个 Compose 服务运行；公网 `/health` HTTP 200；部署后 5 分钟 API、frontend、Taskboard 关键错误计数为 0。
+- functional_check: PASS。本地角色 CRUD 契约、负责人匹配拒绝、Prompt schema、沉浸模式持久化、项目阶段桥接、甘特图图例/任务语义、两套前端构建、Dashi 类型检查与专项 UI 测试通过；生产 OpenAPI 暴露角色 CRUD 路由；生产 frontend bundle 包含“沉浸工作”；生产 Taskboard bundle 包含“任务排期与前后依赖”；QWS→Dashi `qwsProcess` 阶段桥接源码存在；未认证项目接口返回 401；公网项目 SPA 深链与 `/taskboard/` 均返回 HTTP 200。Chrome 原有生产登录态刷新后跳回登录页，因此未冒用凭据执行生产业务写入。
+- rollback_point: `/opt/releases/ai-lab-platform-4556f3056b40.QrGAYu`，对应 SHA `4556f3056b4092a561fb4549f1d5cb05e6034ac4`；发布脚本失败时会自动恢复，也可使用 exact-SHA 入口显式回退。
 
 ## 风险、未完成项与回滚
 
@@ -64,4 +65,5 @@
 - 沉浸模式会记忆在当前浏览器；进入后保留 44px 项目导航，便于切换 Taskboard、Workflow、Documents 与 AI Resource，并可随时退出。
 - 甘特图仍明确按任务状态分组；项目阶段作为每个任务的上下文展示，避免把“当前状态”和“项目阶段”混为同一个维度。没有 QWS marker 的原生 Dashi 任务会标为 `Taskboard 任务`。
 - 本机 Python 测试依赖存在 `Starlette/httpx` 版本不兼容，需在仓库标准 Python 环境中复跑后端全量测试；本轮 UI 变更没有修改后端逻辑。
-- 尚未 commit、push 或部署；如需放弃本任务，只需移除本独立 Worktree/分支，不影响其他任务。
+- 生产 SSH 握手提示当前连接未使用 post-quantum key exchange；不影响本次 exact-SHA 与脚本 SHA-256 校验，但服务器 OpenSSH 可另行升级评估。
+- 前端和 Taskboard 构建仍有既有大 chunk warning，后续可独立做路由级代码拆分。
