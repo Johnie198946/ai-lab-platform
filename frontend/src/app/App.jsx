@@ -1,21 +1,23 @@
+import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { ProtectedRoute } from "../components/ProtectedRoute";
 import { useAuth } from "../auth/AuthContext";
 import { LoginPage } from "../pages/LoginPage";
-import { OrchestrationPage } from "../pages/OrchestrationPage";
-import { AgentPage } from "../pages/AgentPage";
-import RoleInsight from "../pages/RoleInsight";
-import RoleEngineering from "../pages/RoleEngineering";
-import RoleFounder from "../pages/RoleFounder";
-import RoleMarketing from "../pages/RoleMarketing";
-import RoleSales from "../pages/RoleSales";
-import RoleProduct from "../pages/RoleProduct";
-import ArchitectPage from "../pages/ArchitectWorkbenchPage";
-import AgencyPortalPage from "../pages/AgencyPortalPage";
 import { isShowroomAccount } from "../auth/entryRoute";
-import { QuantumWorkspaceLayout } from "../features/quantum-workspace/QuantumWorkspaceLayout";
-import { WorkspaceHomePage } from "../features/quantum-workspace/WorkspaceHomePage";
-import { ProjectWorkspacePage } from "../features/quantum-workspace/ProjectWorkspacePage";
+
+const OrchestrationPage = lazy(() => import("../pages/OrchestrationPage").then((module) => ({ default: module.OrchestrationPage })));
+const AgentPage = lazy(() => import("../pages/AgentPage").then((module) => ({ default: module.AgentPage })));
+const RoleInsight = lazy(() => import("../pages/RoleInsight"));
+const RoleEngineering = lazy(() => import("../pages/RoleEngineering"));
+const RoleFounder = lazy(() => import("../pages/RoleFounder"));
+const RoleMarketing = lazy(() => import("../pages/RoleMarketing"));
+const RoleSales = lazy(() => import("../pages/RoleSales"));
+const RoleProduct = lazy(() => import("../pages/RoleProduct"));
+const ArchitectPage = lazy(() => import("../pages/ArchitectWorkbenchPage"));
+const AgencyPortalPage = lazy(() => import("../pages/AgencyPortalPage"));
+const QuantumWorkspaceLayout = lazy(() => import("../features/quantum-workspace/QuantumWorkspaceLayout").then((module) => ({ default: module.QuantumWorkspaceLayout })));
+const WorkspaceHomePage = lazy(() => import("../features/quantum-workspace/WorkspaceHomePage").then((module) => ({ default: module.WorkspaceHomePage })));
+const ProjectWorkspacePage = lazy(() => import("../features/quantum-workspace/ProjectWorkspacePage").then((module) => ({ default: module.ProjectWorkspacePage })));
 
 function ShowroomRedirect() {
   const { isAuthenticated, authSession } = useAuth();
@@ -26,7 +28,7 @@ export default function App() {
   const { isAuthenticated, authSession } = useAuth();
 
   return (
-    <Routes>
+    <Suspense fallback={<div className="qw-page-state">正在加载工作区…</div>}><Routes>
       <Route
         path="/"
         element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/agency" : "/home") : "/login"} replace />}
@@ -57,6 +59,6 @@ export default function App() {
         path="*"
         element={<Navigate to={isAuthenticated ? (isShowroomAccount(authSession?.user) ? "/agency" : "/home") : "/login"} replace />}
       />
-    </Routes>
+    </Routes></Suspense>
   );
 }

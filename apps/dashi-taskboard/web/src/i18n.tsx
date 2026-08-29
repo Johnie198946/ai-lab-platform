@@ -46,17 +46,17 @@ const STATUS_LABELS: Record<TaskboardLanguage, Record<TaskStatus, string>> = {
 const PRIORITY_LABELS: Record<TaskboardLanguage, Record<TaskPriority, string>> = {
   zh: {
     none: "无优先级",
-    urgent: "紧急",
-    high: "高",
-    medium: "中",
-    low: "低",
+    urgent: "P0 紧急",
+    high: "P1 高",
+    medium: "P2 中",
+    low: "P3 低",
   },
   en: {
     none: "No priority",
-    urgent: "Urgent",
-    high: "High",
-    medium: "Medium",
-    low: "Low",
+    urgent: "P0 Urgent",
+    high: "P1 High",
+    medium: "P2 Medium",
+    low: "P3 Low",
   },
 };
 

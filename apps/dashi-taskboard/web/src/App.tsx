@@ -547,6 +547,7 @@ function taskToDraft(task: Task): TaskDraft {
     developmentContext: task.developmentContext,
     startDate: task.startDate,
     dueDate: task.dueDate,
+    scheduleLocked: task.scheduleLocked,
     recurrence: task.recurrence,
   };
 }
@@ -715,6 +716,7 @@ export function App() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [archivedTasks, setArchivedTasks] = useState<Task[]>([]);
   const [tasksLoading, setTasksLoading] = useState(false);
+  const [scheduleApplying, setScheduleApplying] = useState(false);
   const [hasLoadedTasks, setHasLoadedTasks] = useState(false);
   const [projectLoadError, setProjectLoadError] = useState<ProjectLoadError | null>(null);
   const [tasksLoadError, setTasksLoadError] = useState<TasksLoadError | null>(null);
@@ -2610,6 +2612,68 @@ export function App() {
     }
   }
 
+  async function applyRecommendedSchedule() {
+    if (!selectedProjectId || selectedProjectId === ALL_PROJECTS_ID || scheduleApplying) return;
+    const priorityRank = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 } as const;
+    const candidates = tasks.filter((task) => (
+      task.projectId === selectedProjectId
+      && task.status === "todo"
+      && task.archivedAt === null
+      && !task.scheduleLocked
+      && task.relations.blockedBy.length === 0
+    )).sort((left, right) => (
+      priorityRank[left.priority] - priorityRank[right.priority]
+      || (left.dueDate || "9999-12-31").localeCompare(right.dueDate || "9999-12-31")
+      || right.relations.blocks.length - left.relations.blocks.length
+      || left.createdAt.localeCompare(right.createdAt)
+      || left.id.localeCompare(right.id)
+    ));
+    const blockedCount = tasks.filter((task) => (
+      task.projectId === selectedProjectId
+      && task.status === "todo"
+      && task.archivedAt === null
+      && task.relations.blockedBy.length > 0
+    )).length;
+    const lockedCount = tasks.filter((task) => (
+      task.projectId === selectedProjectId
+      && task.status === "todo"
+      && task.archivedAt === null
+      && task.scheduleLocked
+    )).length;
+    if (candidates.length === 0) {
+      window.alert(text("当前没有已解除依赖、可以排期的等待认领任务。", "There are no dependency-ready to-do issues to schedule."));
+      return;
+    }
+    const preview = candidates.slice(0, 12).map((task, index) => {
+      const reason = [
+        task.priority === "none" ? text("未定优先级", "no priority") : task.priority.toUpperCase(),
+        task.dueDate ? text(`截止 ${task.dueDate}`, `due ${task.dueDate}`) : null,
+        task.relations.blocks.length ? text(`阻塞 ${task.relations.blocks.length} 项`, `blocks ${task.relations.blocks.length}`) : null,
+      ].filter(Boolean).join(" · ");
+      return `${index + 1}. ${task.externalKey ?? task.identifier} ${task.title}（${reason}）`;
+    }).join("\n");
+    const confirmed = window.confirm(text(
+      `将按“P0→P3、截止日期、关键阻塞数、创建时间”重排 ${candidates.length} 个可执行任务。${blockedCount ? `\n另有 ${blockedCount} 个任务仍被依赖阻塞，不进入本次队列。` : ""}${lockedCount ? `\n另有 ${lockedCount} 个任务已锁定，保持原位。` : ""}\n\n${preview}\n\n确认应用？`,
+      `Reorder ${candidates.length} ready issues by priority, due date, downstream blockers, and creation time.${blockedCount ? `\n${blockedCount} blocked issues will stay out of the ready queue.` : ""}${lockedCount ? `\n${lockedCount} locked issues will stay in place.` : ""}\n\n${preview}\n\nApply this schedule?`,
+    ));
+    if (!confirmed) return;
+    setScheduleApplying(true);
+    setActionError(null);
+    try {
+      const updated: Task[] = [];
+      for (const [index, task] of candidates.entries()) {
+        updated.push(await moveTaskRequest(task, "todo", (index + 1) * 1024));
+      }
+      const byId = new Map(updated.map((task) => [task.id, task]));
+      setTasks((current) => sortTasks(current.map((task) => byId.get(task.id) ?? task)));
+    } catch (error) {
+      setActionError(errorMessage(error));
+      void refreshTasks(selectedProjectId, { quiet: true });
+    } finally {
+      setScheduleApplying(false);
+    }
+  }
+
   async function persistProjectLabel(label: string, projectId = selectedProjectId) {
     setActionError(null);
     try {
@@ -3491,6 +3555,17 @@ export function App() {
             )}
           </div>
           {(boardView === "issues" || boardView === "list" || boardView === "gantt") && <div className="toolbar-tools">
+            {!isAllProjects && !isJiraProject && (
+              <button
+                type="button"
+                className="schedule-assistant-button"
+                disabled={scheduleApplying || tasksLoading}
+                onClick={() => void applyRecommendedSchedule()}
+                title={text("按依赖、优先级、截止日期和影响范围生成可解释顺序", "Create an explainable order from dependencies, priority, due date, and impact")}
+              >
+                {scheduleApplying ? text("排期中…", "Scheduling…") : text("帮我排期", "Schedule for me")}
+              </button>
+            )}
             <div className={`search-field${search ? " has-value" : ""}`} title={text("搜索议题 (/)", "Search issues (/)")}>
               <TaskboardIcon className="search-icon" name="search" />
               <input

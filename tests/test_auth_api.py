@@ -2,7 +2,7 @@
 import asyncio
 import os
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -73,6 +73,19 @@ class TestAuthAPI(unittest.TestCase):
             headers={"Authorization": f"Bearer {_token()}"},
         )
         self.assertEqual(r.status_code, 200)
+
+    def test_signed_super_admin_claim_skips_permission_cold_path(self):
+        import backend.api.auth as auth
+
+        remote_check = AsyncMock(return_value=True)
+        with patch.object(auth, "_is_super_admin", remote_check):
+            r = self.request(
+                "GET",
+                "/api/screens",
+                headers={"Authorization": f"Bearer {_token(is_super_admin=False)}"},
+            )
+        self.assertEqual(r.status_code, 200)
+        remote_check.assert_not_awaited()
 
     def test_protected_fails_closed_when_tenant_resolution_fails(self):
         import backend.api.auth as auth

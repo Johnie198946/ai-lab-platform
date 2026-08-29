@@ -1729,6 +1729,20 @@ export function TaskDetail({
                 onChange={(priority) => void saveTask({ priority }, "priority")}
               />
             </div>
+            <div className="detail-property-row">
+              <span className="detail-property-label">{text("排期锁定", "Schedule lock")}</span>
+              <button
+                type="button"
+                className="detail-property-trigger"
+                disabled={currentTask.source === "jira" || savingProperty === "scheduleLocked"}
+                onClick={() => void saveTask({ scheduleLocked: !currentTask.scheduleLocked }, "scheduleLocked")}
+                title={text("锁定后，“帮我排期”不会移动此任务", "Locked issues are not moved by Schedule for me")}
+              >
+                <span className="task-property-trigger-label">
+                  {currentTask.scheduleLocked ? text("已锁定", "Locked") : text("未锁定", "Unlocked")}
+                </span>
+              </button>
+            </div>
             <div className="detail-property-row assignee-property">
               <span className="detail-property-label">{text("负责人", "Assignee")}</span>
               <TaskPropertyPicker

@@ -668,7 +668,7 @@ function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "version", "projectId", "title", "description", "status", "priority", "labels", "threadId", "threadBinding",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "developmentContext", "startDate", "dueDate", "scheduleLocked", "recurrence",
   ]));
   const version = parseVersion(body.version);
   const threadId = parseThreadId(body.threadId);
@@ -684,6 +684,10 @@ function parseTaskPatch(body) {
   if (body.developmentContext !== undefined) changes.developmentContext = parseDevelopmentContext(body.developmentContext);
   if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
+  if (body.scheduleLocked !== undefined) {
+    if (typeof body.scheduleLocked !== "boolean") throw new ApiError(400, "INVALID_FIELD", "'scheduleLocked' must be a boolean");
+    changes.scheduleLocked = body.scheduleLocked;
+  }
   if (body.recurrence !== undefined) changes.recurrence = parseRecurrence(body.recurrence);
   if (changes.recurrence && body.dueDate === null) {
     throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires 'dueDate'");

@@ -27,11 +27,11 @@
   --danger-soft: #fff0f0;
   --warning: #f0bf00;
   --success: #43bc58;
-  --priority-urgent: #ff7236;
-  --priority-high: #ff7236;
-  --priority-medium: var(--text-tertiary);
-  --priority-low: var(--text-tertiary);
-  --priority-none: var(--text-tertiary);
+  --priority-urgent: #dc2626;
+  --priority-high: #f97316;
+  --priority-medium: #eab308;
+  --priority-low: #3b82f6;
+  --priority-none: #94a3b8;
   --status-backlog: #9e9ea1;
   --status-todo: #9e9ea1;
   --status-progress: #f0bf00;
@@ -1073,6 +1073,22 @@ kbd {
   gap: 5px;
   margin-left: auto;
 }
+
+.schedule-assistant-button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.schedule-assistant-button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 16%, var(--surface)); }
+.schedule-assistant-button:disabled { cursor: wait; opacity: .55; }
 
 .search-field,
 .task-filter-trigger,
@@ -4940,9 +4956,9 @@ kbd {
 .detail-priority-bars i:nth-child(2) { height: 8px; }
 .detail-priority-bars i:nth-child(3) { height: 11px; }
 .detail-priority-bars i.active { background: currentColor; }
-.detail-priority-bars.priority-high { color: #ff7236; }
-.detail-priority-bars.priority-medium { color: var(--warning); }
-.detail-priority-bars.priority-low { color: var(--text-tertiary); }
+.detail-priority-bars.priority-high { color: var(--priority-high); }
+.detail-priority-bars.priority-medium { color: var(--priority-medium); }
+.detail-priority-bars.priority-low { color: var(--priority-low); }
 
 .detail-priority-urgent {
   display: grid;

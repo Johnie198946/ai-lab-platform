@@ -1,4 +1,4 @@
-import { Bot, Check, Send, X } from "lucide-react";
+import { Bot, Check, RefreshCw, Send, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { platformApi } from "../../services/platformApi";
 import { HermesClarificationCard } from "./HermesClarificationCard";
@@ -72,6 +72,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   const [clarificationBusy, setClarificationBusy] = useState(false);
   const [clarificationText, setClarificationText] = useState("");
   const [clarificationSelections, setClarificationSelections] = useState([]);
+  const [contextRefreshing, setContextRefreshing] = useState(false);
   const [error, setError] = useState("");
   const [clock, setClock] = useState(Date.now());
   const messagesRef = useRef(null);
@@ -129,20 +130,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
     setBusy(true);
     setError("");
     try {
-      let activeConversation = conversation;
-      if (refreshCardContext) {
-        const refreshed = await refreshCardContext();
-        setCurrentCardContext(refreshed.cardContext);
-        activeConversation = await platformApi.openTaskConversation({
-          project_id: project.id,
-          task_id: refreshed.task.id,
-          workflow_id: refreshed.task.workflow_id,
-          agent_version: "hermes-current",
-          card_context: refreshed.cardContext,
-        });
-        setConversation(activeConversation);
-        setContextSync(activeConversation.context_sync || null);
-      }
+      const activeConversation = conversation;
       const startedAt = Date.now();
       setClock(startedAt);
       setMessages((current) => [...current, { id: requestId, role: "user", content: text }, { id: `${requestId}-assistant`, role: "assistant", content: "", pending: true, execution: createHermesExecution("正在同步卡片增量", startedAt) }]);
@@ -184,6 +172,29 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, content: "流式连接失败，消息未被冒充为成功。", pending: false, failed: true } : message));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const refreshContext = async () => {
+    if (!refreshCardContext || contextRefreshing || busy) return;
+    setContextRefreshing(true);
+    setError("");
+    try {
+      const refreshed = await refreshCardContext();
+      const activeConversation = await platformApi.openTaskConversation({
+        project_id: project.id,
+        task_id: refreshed.task.id,
+        workflow_id: refreshed.task.workflow_id,
+        agent_version: "hermes-current",
+        card_context: refreshed.cardContext,
+      });
+      setCurrentCardContext(refreshed.cardContext);
+      setConversation(activeConversation);
+      setContextSync(activeConversation.context_sync || null);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setContextRefreshing(false);
     }
   };
 
@@ -246,10 +257,10 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
 
   return (
     <aside className="qw-chat-drawer" aria-label={`${task.title} 任务对话`}>
-      <header><div><span className="qw-eyebrow">AI Lab · AI 员工 Session</span><h3>{task.title}</h3></div><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></header>
+      <header><div><span className="qw-eyebrow">AI Lab · AI 员工 Session</span><h3>{task.title}</h3></div><div className="qw-chat-header-actions"><button type="button" disabled={!refreshCardContext || contextRefreshing || busy} onClick={refreshContext} aria-label="刷新任务上下文" title="仅在卡片内容变化后刷新"><RefreshCw size={16} />{contextRefreshing ? "同步中" : "刷新上下文"}</button><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></div></header>
       <div className="qw-binding">{aiEmployee && <span>{aiEmployee.display_name} · AI 员工 · {aiEmployee.job_title}</span>}<span>task · {task.id.slice(-8)}</span><span>card v{currentCardContext?.task?.version ?? "-"}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span>{contextSync && <span>context v{contextSync.revision} · {contextSync.mode === "full" ? "首次全量" : contextSync.mode === "incremental" ? `增量 +${contextSync.changes_count}` : "已是最新"}</span>}</div>
       <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
-        {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>卡片上下文已绑定到租户 Hermes Session</strong><span>首次同步完整卡片，之后每次发言前只同步增量；要求 AI 回填时会先生成方案，确认后才写入。</span></div>}
+        {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>项目、当前任务和直接依赖已绑定</strong><span>上下文按 revision/hash 留痕；连续交流复用快照，卡片变化后再点“刷新上下文”。要求 AI 回填时会先生成方案，确认后才写入。</span></div>}
         {messages.map((message) => {
           return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : assistantLabel}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} />}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
         })}

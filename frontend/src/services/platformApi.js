@@ -404,6 +404,9 @@ export const platformApi = {
   getProjectProcess(projectId) {
     return request(`/api/v1/projects/${projectId}/process`);
   },
+  getProjectWorkspaceBootstrap(projectId) {
+    return request(`/api/v1/projects/${projectId}/workspace-bootstrap`);
+  },
   dispatchProjectBlueprint(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/planning/dispatch`, { method: "POST", body: payload });
   },

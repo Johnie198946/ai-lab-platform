@@ -787,6 +787,37 @@ async def get_project_process(project_id: str, payload=Depends(require_auth)) ->
         }
 
 
+@router.get("/projects/{project_id}/workspace-bootstrap")
+async def get_project_workspace_bootstrap(
+    project_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    """Return the QWS shell and canonical process with one auth/access pass."""
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
+        try:
+            config_revision, canonical_hash, process = await reconstruct_process_projection(
+                db, project
+            )
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "normalized_projection_drift", "reason": str(exc)},
+            ) from exc
+        return {
+            "project": _project_out(project),
+            "process": {
+                "project_id": project.id,
+                "process_revision": project.process_revision,
+                "config_revision": config_revision,
+                "canonical_hash": canonical_hash,
+                **process,
+            },
+        }
+
+
 @router.post("/projects/{project_id}/ai-employees/ensure")
 async def ensure_project_ai_employees(
     project_id: str, payload=Depends(require_auth)

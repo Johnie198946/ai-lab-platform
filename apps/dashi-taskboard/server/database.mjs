@@ -257,6 +257,7 @@ function taskFromRow(row) {
     developmentContext,
     startDate: row.start_date,
     dueDate: row.due_date,
+    scheduleLocked: row.schedule_locked === 1,
     recurrence: row.recurrence_interval && row.recurrence_unit
       ? { interval: row.recurrence_interval, unit: row.recurrence_unit }
       : null,
@@ -495,6 +496,7 @@ export class TaskboardDatabase {
         worktree_branch TEXT,
         start_date TEXT,
         due_date TEXT,
+        schedule_locked INTEGER NOT NULL DEFAULT 0 CHECK (schedule_locked IN (0, 1)),
         recurrence_interval INTEGER,
         recurrence_unit TEXT,
         external_source TEXT,
@@ -696,6 +698,9 @@ export class TaskboardDatabase {
     }
     if (!taskColumns.some((column) => column.name === "start_date")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN start_date TEXT");
+    }
+    if (!taskColumns.some((column) => column.name === "schedule_locked")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN schedule_locked INTEGER NOT NULL DEFAULT 0 CHECK (schedule_locked IN (0, 1))");
     }
     if (!taskColumns.some((column) => column.name === "recurrence_interval")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN recurrence_interval INTEGER");
@@ -2101,6 +2106,7 @@ export class TaskboardDatabase {
       labels: "labels",
       startDate: "start_date",
       dueDate: "due_date",
+      scheduleLocked: "schedule_locked",
     };
     const assignments = [];
     const values = [];
@@ -2130,7 +2136,7 @@ export class TaskboardDatabase {
         continue;
       }
       assignments.push(`${columns[key]} = ?`);
-      values.push(key === "labels" ? JSON.stringify(value) : value);
+      values.push(key === "labels" ? JSON.stringify(value) : key === "scheduleLocked" ? (value ? 1 : 0) : value);
     }
     if (Object.hasOwn(changes, "status") && changes.status !== current.status) {
       const placementProjectId = projectChanged ? targetProject.id : current.projectId;
@@ -2365,6 +2371,9 @@ export class TaskboardDatabase {
           `).run(task.id);
         }
       } else {
+        if (relationType === "blocks") {
+          this.#assertNoBlockCycle(sourceTaskId, targetTaskId);
+        }
         const existing = this.database.prepare(`
           SELECT 1
           FROM task_relations
@@ -2841,6 +2850,7 @@ export class TaskboardDatabase {
       JOIN tasks ON tasks.id = task_relations.source_task_id
       WHERE task_relations.relation_type = 'blocks'
         AND task_relations.target_task_id = ?
+        AND tasks.status NOT IN ('done', 'canceled')
       ORDER BY tasks.sort_order, tasks.created_at, tasks.id
     `).all(task.id);
     const blocks = this.database.prepare(`
@@ -2849,8 +2859,9 @@ export class TaskboardDatabase {
       JOIN tasks ON tasks.id = task_relations.target_task_id
       WHERE task_relations.relation_type = 'blocks'
         AND task_relations.source_task_id = ?
+        AND ? NOT IN ('done', 'canceled')
       ORDER BY tasks.sort_order, tasks.created_at, tasks.id
-    `).all(task.id);
+    `).all(task.id, task.status);
     const related = this.database.prepare(`
       SELECT tasks.*
       FROM task_relations
@@ -2926,6 +2937,25 @@ export class TaskboardDatabase {
     `).get(parentId, childId);
     if (cycle) {
       throw new ApiError(409, "RELATION_CYCLE", "This parent would create a cycle");
+    }
+  }
+
+  #assertNoBlockCycle(blockerId, blockedId) {
+    const cycle = this.database.prepare(`
+      WITH RECURSIVE downstream(id) AS (
+        SELECT target_task_id
+        FROM task_relations
+        WHERE relation_type = 'blocks' AND source_task_id = ?
+        UNION
+        SELECT task_relations.target_task_id
+        FROM task_relations
+        JOIN downstream ON task_relations.source_task_id = downstream.id
+        WHERE task_relations.relation_type = 'blocks'
+      )
+      SELECT 1 FROM downstream WHERE id = ?
+    `).get(blockedId, blockerId);
+    if (cycle) {
+      throw new ApiError(409, "RELATION_CYCLE", "This dependency would create a blocking cycle");
     }
   }
 

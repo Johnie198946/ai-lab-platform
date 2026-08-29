@@ -81,33 +81,34 @@ function resolveCanonicalTask(dashiTask, qwsTasks) {
   };
 }
 
-function collectDescendants(rootTask, allTasks) {
-  const byParent = new Map();
-  for (const candidate of allTasks || []) {
-    const parentId = candidate.relations?.parent?.id;
-    if (!parentId) continue;
-    byParent.set(parentId, [...(byParent.get(parentId) || []), candidate]);
-  }
-  const descendants = [];
-  const queue = (byParent.get(rootTask.id) || []).map((task) => ({ task, depth: 1 }));
-  const seen = new Set([rootTask.id]);
-  while (queue.length) {
-    const { task, depth } = queue.shift();
-    if (seen.has(task.id)) continue;
-    seen.add(task.id);
-    descendants.push({ ...issueFull(task), depth });
-    for (const child of byParent.get(task.id) || []) queue.push({ task: child, depth: depth + 1 });
-  }
-  return descendants;
+function collectDirectChildren(rootTask, allTasks) {
+  return (allTasks || [])
+    .filter((candidate) => candidate.relations?.parent?.id === rootTask.id)
+    .map((task) => ({ ...issueFull(task), depth: 1 }));
 }
 
 function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTasks, comments, attachments }) {
   const relations = dashiTask.relations || {};
   const tasksById = new Map((allTasks || []).map((item) => [item.id, item]));
   const fullRelation = (item) => issueFull(tasksById.get(item?.id) || item);
+  const directChildren = collectDirectChildren(dashiTask, allTasks);
+  const scopedTaskIds = new Set([
+    dashiTask.id,
+    relations.parent?.id,
+    ...(relations.blockedBy || []).map((item) => item.id),
+    ...(relations.blocks || []).map((item) => item.id),
+    ...(relations.related || []).map((item) => item.id),
+    ...directChildren.map((item) => item.id),
+  ].filter(Boolean));
+  const scopedTasks = (allTasks || []).filter((item) => scopedTaskIds.has(item.id));
   return {
-    schema_version: 1,
-    session_registry: (allTasks || []).map((item) => ({
+    schema_version: 2,
+    binding: {
+      identity: { project_id: project.id, task_id: qwsTask.id, taskboard_task_id: dashiTask.id },
+      default_scope: ["project_goal", "current_task", "acceptance_criteria", "direct_relations", "recent_comments"],
+      comments_limit: 20,
+    },
+    session_registry: scopedTasks.map((item) => ({
       task_id: item.id,
       identifier: item.identifier || null,
       title: item.title || "未命名卡片",
@@ -131,8 +132,8 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
         { id: "qws-summary", source: "qws_summary", content: qwsTask.summary || "" },
         { id: "taskboard-description", source: "taskboard_description", content: dashiTask.description || "" },
       ],
-      sub_issues: collectDescendants(dashiTask, allTasks),
-      comments: (comments || []).map((comment) => ({
+      sub_issues: directChildren,
+      comments: (comments || []).slice(-20).map((comment) => ({
         id: comment.id,
         body: comment.body || "",
         author: { type: comment.authorType, id: comment.authorId, name: comment.authorName },

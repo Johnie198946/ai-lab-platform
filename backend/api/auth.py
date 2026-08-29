@@ -211,7 +211,16 @@ async def require_auth(
         raise HTTPException(status_code=503, detail="租户解析暂不可用") from error
     tenant_key = info["tenant_key"]
     org_id = str(info.get("org_id") or "")
-    is_super = bool(info["is_super_admin"]) or await _is_super_admin(user_id)
+    # Authen already signs this claim into the JWT.  Treat both True and False as
+    # authoritative when the claim is present; the old implementation ignored a
+    # signed False and synchronously called Authen Permission on the first request
+    # after every 60 second cache expiry (up to the full five second timeout).
+    token_super_admin = payload.get("is_super_admin")
+    is_super = bool(info["is_super_admin"]) or (
+        bool(token_super_admin)
+        if "is_super_admin" in payload
+        else await _is_super_admin(user_id)
+    )
     # V2: old knowledge_subscriptions are wallet preferences, never grants.
     # Resolve the server-side effective policy once per request and project it to
     # the legacy visibility ContextVar consumed by the file-backed knowledge API.

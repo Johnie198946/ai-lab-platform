@@ -210,6 +210,7 @@
 .qw-chat-drawer{position:fixed;right:0;top:64px;bottom:0;width:min(420px,100vw);background:#fff;border-left:1px solid var(--qw-line);z-index:60;display:flex;flex-direction:column;box-shadow:-12px 0 32px rgba(20,22,26,.08)}
 .qw-chat-drawer header{padding:18px;display:flex;justify-content:space-between;border-bottom:1px solid var(--qw-line)}
 .qw-chat-drawer header h3{font-size:15px;margin:5px 0 0}
+.qw-chat-header-actions{display:flex;align-items:center;gap:4px}.qw-chat-drawer header .qw-chat-header-actions button:first-child{display:flex;grid-auto-flow:column;gap:6px;font-size:12px}
 .qw-binding{display:flex;gap:5px;flex-wrap:wrap;padding:9px 16px;background:#f5f6f8;border-bottom:1px solid var(--qw-line)}
 .qw-binding span{font-size:8px;background:#fff;border:1px solid var(--qw-line);padding:3px 5px;border-radius:3px}
 .qw-chat-messages{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:10px}

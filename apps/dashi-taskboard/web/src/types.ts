@@ -424,6 +424,7 @@ export interface Task {
   developmentContext: DevelopmentContext | null;
   startDate: string | null;
   dueDate: string | null;
+  scheduleLocked: boolean;
   recurrence: Recurrence | null;
   source: "local" | "jira";
   externalOrigin?: string | null;
@@ -525,6 +526,7 @@ export interface TaskDraft {
   developmentContext: DevelopmentContext | null;
   startDate: string | null;
   dueDate: string | null;
+  scheduleLocked?: boolean;
   recurrence: Recurrence | null;
 }
 

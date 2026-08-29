@@ -36,25 +36,15 @@ export function ProjectWorkspacePage() {
   const load = useCallback(async () => {
     setError("");
     try {
-      const requests = [platformApi.getProject(projectId), platformApi.getProjectProcess(projectId)];
+      const bootstrapRequest = platformApi.getProjectWorkspaceBootstrap(projectId);
+      const requests = [bootstrapRequest];
       if (view === "schedule") requests.push(platformApi.getProjectSchedule(projectId));
       if (view === "graph") requests.push(viewType === "ai-resource" ? platformApi.getProjectResourcePlan(projectId) : platformApi.getProjectGraph(projectId, viewType));
-      const [projectValue, processValue, selectedView] = await Promise.all(requests);
-      setProject(projectValue);
-      setProcess(processValue);
+      const [bootstrap, selectedView] = await Promise.all(requests);
+      setProject(bootstrap.project);
+      setProcess(bootstrap.process);
       setViewData(selectedView ?? null);
-      if (view === "taskboard") {
-        setWorkflowState("SYNCING");
-        try {
-          const workflowValue = await platformApi.listWorkflows();
-          setWorkflows(workflowValue.workflows || workflowValue || []);
-          setWorkflowState("CONNECTED");
-        } catch (reason) {
-          setWorkflows([]);
-          setWorkflowState("UNCONNECTED");
-          setError((current) => current || `canonical workflow 读取失败：${reason.message}`);
-        }
-      }
+      if (view === "taskboard") setWorkflowState("CONNECTED");
     } catch (reason) {
       setError(reason.message);
     } finally {

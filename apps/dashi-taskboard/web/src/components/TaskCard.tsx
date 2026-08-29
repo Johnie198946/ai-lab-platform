@@ -431,7 +431,7 @@ export function TaskCard({
     () => showBody ? taskBodyText(task.description) : "",
     [showBody, task.description],
   );
-  const hasProperties = task.priority !== "none" || task.labels.length > 0 || task.dueDate;
+  const hasProperties = !processingCard || task.labels.length > 0 || task.dueDate;
   const showsProperties = Boolean(projectName)
     || (!processingCard && (hasProperties || showsInlineParticipants || showsConversation));
   const propertyDisabled = savingProperty !== null;
@@ -523,7 +523,7 @@ export function TaskCard({
               <span>{projectName}</span>
             </span>
           )}
-          {!processingCard && task.priority !== "none" && (
+          {!processingCard && (
             <PriorityControl
               task={task}
               disabled={propertyDisabled}

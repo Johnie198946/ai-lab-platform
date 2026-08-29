@@ -902,6 +902,14 @@ test("issues support parent, sub-issue, blocking, and related issue relationship
   const blocker = await createIssue("Blocking issue", "in_progress");
   const related = await createIssue("Related issue");
 
+  const lockedParent = await request(baseUrl, `/api/tasks/${parent.id}`, {
+    method: "PATCH",
+    body: { version: parent.version, scheduleLocked: true },
+  });
+  assert.equal(lockedParent.response.status, 200);
+  assert.equal(lockedParent.body.task.scheduleLocked, true);
+  assert.equal((await latest(parent.id)).scheduleLocked, true);
+
   const parentAdded = await mutateRelation("POST", child, "parent", parent);
   assert.equal(parentAdded.response.status, 200);
   assert.equal(parentAdded.body.task.version, child.version + 1);
@@ -926,6 +934,26 @@ test("issues support parent, sub-issue, blocking, and related issue relationship
   const blocksAdded = await mutateRelation("POST", await latest(parent.id), "blocks", blocker);
   assert.equal(blocksAdded.response.status, 200);
   assert.deepEqual(blocksAdded.body.task.relations.blocks.map((issue) => issue.id), [blocker.id]);
+  assert.deepEqual((await latest(blocker.id)).relations.blockedBy.map((issue) => issue.id), [parent.id]);
+
+  const blockingCycle = await mutateRelation("POST", await latest(blocker.id), "blocks", await latest(parent.id));
+  assert.equal(blockingCycle.response.status, 409);
+  assert.equal(blockingCycle.body.error.code, "RELATION_CYCLE");
+
+  const completedBlocker = await request(baseUrl, `/api/tasks/${parent.id}/move`, {
+    method: "POST",
+    body: { version: (await latest(parent.id)).version, status: "done" },
+  });
+  assert.equal(completedBlocker.response.status, 200);
+  assert.deepEqual(completedBlocker.body.task.relations.blocks, []);
+  assert.deepEqual((await latest(blocker.id)).relations.blockedBy, []);
+
+  const reopenedBlocker = await request(baseUrl, `/api/tasks/${parent.id}/move`, {
+    method: "POST",
+    body: { version: completedBlocker.body.task.version, status: "todo" },
+  });
+  assert.equal(reopenedBlocker.response.status, 200);
+  assert.deepEqual(reopenedBlocker.body.task.relations.blocks.map((issue) => issue.id), [blocker.id]);
   assert.deepEqual((await latest(blocker.id)).relations.blockedBy.map((issue) => issue.id), [parent.id]);
 
   const duplicateBlocks = await mutateRelation(

@@ -104,6 +104,17 @@ def test_project_home_supports_update_and_owner_delete(_reset_database):
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
 
+def test_workspace_bootstrap_returns_project_and_process_in_one_request(_reset_database):
+    client = _reset_database
+    project_id = _create_project(client, "workspace-bootstrap")
+    response = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["project"]["id"] == project_id
+    assert payload["process"]["project_id"] == project_id
+    assert payload["process"]["process_revision"] == payload["project"]["process_revision"]
+
+
 def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     process = instantiate_project_blueprint({
         "project_goal": "交付动态项目",
