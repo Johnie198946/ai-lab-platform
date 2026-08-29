@@ -49,15 +49,15 @@
 - authorization: 用户在当前任务中明确要求“推送 部署”。
 - implementation_commit: `266b40ad967e7cfd34104592b953883575c59ab6`
 - GitHub remote/ref/SHA: `origin refs/heads/codex/qws-planning-convergence-v2-20260829` / `266b40ad967e7cfd34104592b953883575c59ab6`
-- `git ls-remote`: 已核验 implementation commit 为 `266b40ad967e7cfd34104592b953883575c59ab6`；本清单提交推送后将再次核验远端 ref。
+- `git ls-remote`: 已核验 implementation commit `266b40ad967e7cfd34104592b953883575c59ab6` 和已部署提交 `3019e4383accb33e2df47b0a665e773c5e75fd26`；最终清单提交推送后再次核验远端 ref。
 - first_deployment: `/opt/releases/ai-lab-platform-266b40ad967e.5zq6bi`，精确 SHA `266b40ad967e7cfd34104592b953883575c59ab6`。
 - server_before: 首轮部署前为 `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`；部署后检测到并发发布已切换至 `/opt/releases/ai-lab-platform-81bf225f7523.2VMJaj`。
-- server_after: 首轮为 `/opt/releases/ai-lab-platform-266b40ad967e.5zq6bi`；本清单提交将重新精确部署并核验。
-- health_check: 首轮部署 API `/ready` 与 Hermes bridge `/health` 通过；最终部署后待再次核验。
-- functional_check: 本地构建、12/12 专项前端测试、后端解析/去重脚本通过；最终 release 内功能烟测待执行。
+- server_after: `/opt/releases/ai-lab-platform-3019e4383acc.c8tr6s`，`.deployed-sha=3019e4383accb33e2df47b0a665e773c5e75fd26`。
+- health_check: API `/ready` 返回 ready、API `/health` 返回 ok、Hermes bridge `/health` 返回 ok；8 个 Compose 服务均 running，API/Postgres/Redis/Taskboard 为 healthy；部署后 API 日志无 5xx 或 dispatch 500。
+- functional_check: release 容器内蓝图 generic JSON 与 bare JSON 解析通过；重复 `blocks/blocked_by` 编译结果为 1 条 dependency、1 条 workflow edge；生产 bundle 包含 Other 输入、需求收敛单和当前阶段计时文案。未写入生产租户业务数据。
 - rollback_point: 最终部署前的并发发布 `/opt/releases/ai-lab-platform-81bf225f7523.2VMJaj`；首轮部署前基线 `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ` 仍保留。
 
 ## Remaining risks
 
 - 超长历史 Hermes Session 本身仍可能增加模型处理时间；本次已压缩每轮显式回传的历史文档正文并约束后续蓝图大小。
-- 未在生产创建测试项目或写入真实租户数据；最终 release 功能烟测及真实租户端到端五项验收待执行。
+- 未在生产创建测试项目或写入真实租户数据；真实租户端到端五项验收仍建议由用户现有项目覆盖。
