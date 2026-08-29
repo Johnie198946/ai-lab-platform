@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import time
@@ -62,8 +63,10 @@ from backend.services.chat_triage import (
     TriageDecision,
     classify_request,
 )
+from backend.services.feedback import capture_feedback
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
+logger = logging.getLogger(__name__)
 
 _last_hermes_usage: ContextVar[dict[str, Any]] = ContextVar(
     "last_hermes_usage", default={}
@@ -275,6 +278,25 @@ class ChatResponse(BaseModel):
     clarify: Optional[ClarifyPayload] = None
     resolved_agent: Optional[AgentRouteInfo] = None
     delegated_by: Optional[str] = None
+    feedback_receipt: Optional[Dict[str, Any]] = None
+
+
+def _feedback_surface(capabilities: List[str]) -> str:
+    values = {str(item).lower() for item in capabilities}
+    if any("ios" in item for item in values):
+        return "ios"
+    if any("web" in item for item in values):
+        return "web"
+    return "unknown"
+
+
+async def _capture_feedback_safely(*args: Any, **kwargs: Any) -> Any:
+    """Feedback is fail-open and may add at most 750ms to chat."""
+    try:
+        return await asyncio.wait_for(capture_feedback(*args, **kwargs), timeout=0.75)
+    except Exception as exc:
+        logger.warning("feedback_capture_failed: %s", type(exc).__name__)
+        return None
 
 
 def extract_clarify_payload(reasoning: List[ReasoningStep]) -> Optional[ClarifyPayload]:
@@ -735,6 +757,14 @@ def _message_sse(answer: str, *, clarify: ClarifyPayload | None = None) -> Itera
 @router.post("", response_model=ChatResponse)
 async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     """问答接口 — 身份规则优先，其余直接透传 Hermes 并经首屏熔断与 citations 提炼。"""
+    feedback = await _capture_feedback_safely(
+        req.question,
+        auth_payload=payload,
+        request_id=req.request_id,
+        session_id=req.session_id,
+        surface=_feedback_surface(req.client_capabilities),
+    )
+    feedback_payload = feedback.as_dict() if feedback else None
     # 身份话术规则优先：用原始 question 命中即返回固定回答，不调 Hermes（无思维链）
     fixed = match_identity_rule(req.question)
     if fixed:
@@ -745,6 +775,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             session_id=req.session_id,
             reasoning=[],
             citations=extract_citations(fixed),
+            feedback_receipt=feedback_payload,
         )
 
     skill_id = validate_chat_skill(req.skill_id)
@@ -755,13 +786,16 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     )
     if invocation.status == "not_found":
         answer = "未找到当前账号可调用的同名专属 Agent，请从 Agent 选择器确认名称或状态。"
-        return ChatResponse(question=req.question, answer=answer)
+        return ChatResponse(
+            question=req.question, answer=answer, feedback_receipt=feedback_payload
+        )
     if invocation.status == "ambiguous":
         clarify = _invocation_clarify(invocation)
         return ChatResponse(
             question=req.question,
             answer=clarify.question,
             clarify=clarify,
+            feedback_receipt=feedback_payload,
         )
 
     isolated_session_id = _tenant_namespaced_session(
@@ -781,6 +815,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
     cached = await _check_cached_answer(req.question, isolated_session_id)
     if cached is not None and invocation.status != "matched":
+        cached.feedback_receipt = feedback_payload
         return cached
 
     delegated_target = invocation.agent if invocation.status == "matched" else None
@@ -875,6 +910,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
                 delegated=delegated_target is not None,
             ),
             delegated_by="main_agent" if delegated_target is not None else None,
+            feedback_receipt=feedback_payload,
         )
     except Exception as e:
         raise HTTPException(
@@ -975,9 +1011,13 @@ class CancelRequest(BaseModel):
 _streaming_sessions: set[str] = set()
 
 
-def _identity_sse(answer: str) -> Iterator[str]:
+def _identity_sse(
+    answer: str, feedback_receipt: Dict[str, Any] | None = None
+) -> Iterator[str]:
     """身份规则秒回合成 SSE 流：boot → delta → done（契约与真实流一致，零 agent 拉起）。"""
     yield f"data: {json.dumps({'type': 'status', 'phase': 'boot', 'detail': '正在初始化推理引擎…'}, ensure_ascii=False)}\n\n"
+    if feedback_receipt:
+        yield f"data: {json.dumps({'type': 'feedback_receipt', **feedback_receipt}, ensure_ascii=False)}\n\n"
     yield f"data: {json.dumps({'type': 'delta', 'content': answer}, ensure_ascii=False)}\n\n"
     yield f"data: {json.dumps({'type': 'done', 'session_id': '', 'answer': answer}, ensure_ascii=False)}\n\n"
 
@@ -1159,6 +1199,15 @@ async def stream_chat(
     澄清统一由 agent 原生 CLARIFY_GATE 门禁触发（source=bridge），无规则预分诊直出路径。
     身份话术规则秒回：命中即合成 SSE 流直接返回，零 agent 拉起（「你是谁」秒答）。
     """
+    effective_request_id = req.request_id or uuid.uuid4().hex
+    feedback = await _capture_feedback_safely(
+        req.question,
+        auth_payload=payload,
+        request_id=effective_request_id,
+        session_id=req.session_id,
+        surface=_feedback_surface(req.client_capabilities),
+    )
+    feedback_payload = feedback.as_dict() if feedback else None
     effective_knowledge_query = _bounded_knowledge_query(
         knowledge_query or req.question
     )
@@ -1166,7 +1215,7 @@ async def stream_chat(
     fixed = match_identity_rule(req.question)
     if fixed and not trusted_professional_surface:
         return StreamingResponse(
-            _identity_sse(fixed),
+            _identity_sse(fixed, feedback_payload),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -1186,7 +1235,6 @@ async def stream_chat(
     client_context = _validated_client_session_context(
         req.client_session_context, req.session_id
     )
-    effective_request_id = req.request_id or uuid.uuid4().hex
     client_context_capability: str | None = None
     if client_context is not None:
         client_context_capability = mint_client_context_capability(
@@ -1227,6 +1275,11 @@ async def stream_chat(
                 },
                 ensure_ascii=False,
             ) + "\n\n"
+            if feedback_payload:
+                yield "data: " + json.dumps(
+                    {"type": "feedback_receipt", **feedback_payload},
+                    ensure_ascii=False,
+                ) + "\n\n"
 
             source_context = await _resolve_source_context(
                 scope=req.context_scope,

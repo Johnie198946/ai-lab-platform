@@ -670,6 +670,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                         }
                     }
 
+                case .feedbackReceipt(_, _, let message, _):
+                    showToast(message)
+
                 case .agentRoute(let id, let name, _, let delegatedBy):
                     if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         messages[idx].executingAgentId = id

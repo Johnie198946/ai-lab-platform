@@ -551,8 +551,9 @@ public struct ChatResponseDTO: Codable {
     public let clarify: ChatClarifyDTO?
     public let resolvedAgent: ChatAgentRouteDTO?
     public let delegatedBy: String?
+    public let feedbackReceipt: FeedbackReceiptDTO?
 
-    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil, resolvedAgent: ChatAgentRouteDTO? = nil, delegatedBy: String? = nil) {
+    public init(question: String, answer: String, sessionId: String?, reasoning: [ChatReasoningStepDTO], degraded: Bool? = nil, clarify: ChatClarifyDTO? = nil, resolvedAgent: ChatAgentRouteDTO? = nil, delegatedBy: String? = nil, feedbackReceipt: FeedbackReceiptDTO? = nil) {
         self.question = question
         self.answer = answer
         self.sessionId = sessionId
@@ -561,7 +562,15 @@ public struct ChatResponseDTO: Codable {
         self.clarify = clarify
         self.resolvedAgent = resolvedAgent
         self.delegatedBy = delegatedBy
+        self.feedbackReceipt = feedbackReceipt
     }
+}
+
+public struct FeedbackReceiptDTO: Codable, Hashable {
+    public let feedbackId: String
+    public let signalType: String
+    public let message: String
+    public let revocable: Bool
 }
 
 public struct ChatAgentRouteDTO: Codable, Hashable {
@@ -2331,6 +2340,7 @@ public final class APIClient: ObservableObject {
         case clarifyExpired(clarifyId: String?, requestId: String?)
         case clarifyRejected
         case status(phase: String, detail: String)
+        case feedbackReceipt(id: String, signalType: String, message: String, revocable: Bool)
         case agentRoute(id: String, name: String, delegated: Bool, delegatedBy: String?)
         case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String], operation: String?, targetNoteId: String?, targetNoteTitle: String?, targetContentHash: String?)
         case knowledgeActionDraft(KnowledgeActionBlock)
@@ -2379,6 +2389,13 @@ public final class APIClient: ObservableObject {
                 return .status(
                     phase: json["phase"] as? String ?? "",
                     detail: json["detail"] as? String ?? ""
+                )
+            case "feedback_receipt":
+                return .feedbackReceipt(
+                    id: json["feedback_id"] as? String ?? "",
+                    signalType: json["signal_type"] as? String ?? "inferred",
+                    message: json["message"] as? String ?? "已作为产品改进反馈记录；输入‘撤销刚才的反馈’可撤销",
+                    revocable: json["revocable"] as? Bool ?? false
                 )
             case "agent_route":
                 let agent = json["agent"] as? [String: Any] ?? [:]

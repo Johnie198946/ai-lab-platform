@@ -386,6 +386,46 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(delegatedBy, "main_agent")
     }
 
+    func testNonStreamingFeedbackReceiptDecodes() throws {
+        let data = Data("""
+        {
+          "question": "q",
+          "answer": "a",
+          "session_id": "s",
+          "reasoning": [],
+          "feedback_receipt": {
+            "feedback_id": "42",
+            "signal_type": "explicit",
+            "message": "已记录",
+            "revocable": true
+          }
+        }
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let response = try decoder.decode(ChatResponseDTO.self, from: data)
+        XCTAssertEqual(response.feedbackReceipt?.feedbackId, "42")
+        XCTAssertEqual(response.feedbackReceipt?.signalType, "explicit")
+        XCTAssertTrue(response.feedbackReceipt?.revocable == true)
+    }
+
+    func testFeedbackReceiptSSEEventDecodes() throws {
+        let event = try XCTUnwrap(APIClient.StreamEvent.parse([
+            "type": "feedback_receipt",
+            "feedback_id": "42",
+            "signal_type": "explicit",
+            "message": "已作为产品改进反馈记录",
+            "revocable": true,
+        ]))
+        guard case let .feedbackReceipt(id, signalType, message, revocable) = event else {
+            return XCTFail("expected feedbackReceipt event")
+        }
+        XCTAssertEqual(id, "42")
+        XCTAssertEqual(signalType, "explicit")
+        XCTAssertEqual(message, "已作为产品改进反馈记录")
+        XCTAssertTrue(revocable)
+    }
+
     func testNoteDraftSSEEventDecodesForConfirmation() throws {
         let event = try XCTUnwrap(APIClient.StreamEvent.parse([
             "type": "note_draft",

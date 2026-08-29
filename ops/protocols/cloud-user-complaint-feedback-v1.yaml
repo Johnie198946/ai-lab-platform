@@ -1,0 +1,74 @@
+id: cloud-user-complaint-feedback-v1
+version: 1
+status: signed
+purpose: 在不扫描历史聊天、不污染用户记忆的前提下，确定性捕获端侧产品抱怨并每日汇总给平台负责人。
+parties:
+  main_agent:
+    role: scope_owner_and_integrator
+    decision: approve
+    signed_at: "2026-08-29T19:43:25+08:00"
+  supervision:
+    role: privacy_security_reliability_reviewer
+    decision: approve
+    signed_at: "2026-08-29T19:43:25+08:00"
+    evidence: "round-5 DLP probes and feedback tests passed"
+  coder:
+    role: implementation_and_test_reviewer
+    decision: approve
+    signed_at: "2026-08-29T19:43:25+08:00"
+    evidence: "round-5 final diff, DLP probe, tests, and diff-check passed"
+review:
+  required_rounds: 3
+  completed_rounds: 5
+contracts:
+  capture:
+    source: current_user_question_only
+    classifier: deterministic_rules
+    llm_calls_per_message: 0
+    normal_chat_must_continue_on_capture_failure: true
+    receipt_only_after_durable_write: true
+  privacy:
+    raw_message_storage: false
+    sanitized_excerpt_max_chars: 2000
+    inferred_message_storage: forbidden
+    retention_days: 90
+    pii_and_secret_redaction: required
+    identifiers: hmac_sha256
+    wiki_sync: forbidden
+    memory_sync: forbidden
+    training_use: forbidden
+  isolation:
+    tenant_and_user_scoped_content_deduplication: within_90_day_retention_window
+    per_user_rate_limit_is_postgres_atomic: true
+    cross_tenant_feedback_api: forbidden
+    cross_tenant_digest_destination: platform_owner_feishu_only
+  delivery:
+    schedule: "*/10 9-23 * * *"
+    timezone: Asia/Shanghai
+    logical_frequency: once_per_calendar_day
+    durable_ledger: feedback_digest_runs
+    message_payload: aggregate_counts_and_categories_only
+    user_excerpt_delivery: forbidden
+    advisory_lock: required_on_postgresql
+    retry_after_failure: true
+    watermark_advances_only_after_success: true
+    external_delivery_semantics: at_least_once
+    stable_digest_id: required
+    exactly_once_claim: forbidden
+  governance:
+    automatic_conversion_to_product_requirement: forbidden
+    automatic_priority_claim: forbidden
+    full_user_text_in_digest: forbidden
+    revocation_command: 撤销刚才的反馈
+acceptance:
+  backend_full_suite: required
+  ios_receipt_contract_test: required
+  production_database_tables: required
+  positive_and_negative_capture_e2e: required
+  feishu_real_delivery: required
+stop_conditions:
+  - cross_tenant_leak
+  - unsanitized_secret_or_pii
+  - duplicate_daily_delivery
+  - chat_failure_caused_by_feedback_capture
+  - feedback_receipt_without_durable_record
