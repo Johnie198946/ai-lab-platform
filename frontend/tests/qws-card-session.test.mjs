@@ -10,6 +10,14 @@ const drawerSource = await readFile(
   new URL("../src/features/quantum-workspace/TaskChatDrawer.jsx", import.meta.url),
   "utf8",
 );
+const clarificationSource = await readFile(
+  new URL("../src/features/quantum-workspace/HermesClarificationCard.jsx", import.meta.url),
+  "utf8",
+);
+const planningSource = await readFile(
+  new URL("../src/features/quantum-workspace/ProjectPlanningDialog.jsx", import.meta.url),
+  "utf8",
+);
 const backendSource = await readFile(
   new URL("../../backend/api/quantum_workspace.py", import.meta.url),
   "utf8",
@@ -68,7 +76,7 @@ test("card backfill requires confirmation and routes overflow through session in
 test("card session presents and routes through the project AI employee", () => {
   assert.match(backendSource, /_ensure_project_ai_employees/);
   assert.match(backendSource, /"qws_employee"/);
-  assert.match(backendSource, /agent_id=str\(\(conversation\.binding/);
+  assert.match(backendSource, /agent_id=\(None if planning_session else str\(\(conversation\.binding/);
   assert.match(drawerSource, /AI Lab · AI 员工 Session/);
   assert.match(drawerSource, /aiEmployee\.display_name/);
   assert.match(drawerSource, /AI Lab AI 员工/);
@@ -76,10 +84,20 @@ test("card session presents and routes through the project AI employee", () => {
 
 test("card session renders and submits Hermes clarification instead of waiting silently", () => {
   assert.match(drawerSource, /streamEvent\.type === "clarify"/);
-  assert.match(drawerSource, /AI 需要补充信息/);
+  assert.match(clarificationSource, /AI 需要补充信息/);
   assert.match(drawerSource, /submitTaskClarification/);
   assert.match(drawerSource, /clarify_id: clarification\.clarify_id/);
   assert.match(drawerSource, /等待你补充信息/);
+});
+
+test("new projects automatically enter the shared Hermes clarification protocol", () => {
+  assert.match(planningSource, /trigger: "project_created"/);
+  assert.match(planningSource, /project-intake-\$\{project\.id\}/);
+  assert.match(planningSource, /HermesClarificationCard/);
+  assert.match(planningSource, /submitTaskClarification/);
+  assert.match(planningSource, /activeConversation\.binding\?\.session_id/);
+  assert.match(backendSource, /"system" if body\.trigger == "project_created"/);
+  assert.match(backendSource, /use the same Hermes clarify capability as the iOS main session/);
 });
 
 test("card session exposes safe skill execution progress without chain-of-thought", () => {

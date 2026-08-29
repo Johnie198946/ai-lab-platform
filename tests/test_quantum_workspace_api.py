@@ -173,6 +173,80 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert process["documents"][0]["id"] == "brief"
 
 
+def test_new_project_session_automatically_assesses_context_and_preserves_system_origin(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id = _create_project(client, "automatic-intake")
+    opened = client.post("/api/v1/task-conversations", json={
+        "project_id": project_id,
+        "task_id": "project-intake",
+        "workflow_id": None,
+        "agent_version": "hermes-project-planning-v1",
+        "card_context": {
+            "schema_version": 1,
+            "project": {
+                "id": project_id,
+                "name": "automatic-intake",
+                "business_goal": "为制造团队交付可验收的生产管理系统",
+                "desired_outputs": ["项目文档"],
+            },
+            "task": {
+                "dashi_task_id": "project-intake",
+                "qws_task_id": "project-intake",
+                "title": "项目需求收敛与派发",
+                "descriptions": [{"content": "为制造团队交付可验收的生产管理系统"}],
+                "status": "in_progress",
+                "assignee": {"id": "main_agent", "name": "Hermes"},
+                "qws": {"binding_kind": "project_planning", "stage_id": "project-planning"},
+            },
+        },
+    })
+    assert opened.status_code == 201, opened.text
+    captured = {}
+
+    async def fake_chat_stream(req, payload, *, knowledge_query=None, **kwargs):
+        captured["question"] = req.question
+        captured["knowledge_query"] = knowledge_query
+        captured["session_id"] = req.session_id
+        captured["context"] = req.client_session_context
+        captured["trusted_professional_surface"] = kwargs.get("trusted_professional_surface")
+
+        async def events():
+            yield 'data: {"type":"clarify","clarify_id":"clarify-1","question":"首期必须覆盖哪些生产环节？","choices":["排产","报工"]}\n\n'
+            yield 'data: {"type":"done","answer":"已进入需求澄清"}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
+    conversation_id = opened.json()["id"]
+    streamed = client.post(
+        f"/api/v1/task-conversations/{conversation_id}/messages/stream",
+        json={
+            "question": "Assess the project context supplied by the application.",
+            "request_id": f"project-intake-{project_id}",
+            "trigger": "project_created",
+        },
+    )
+    assert streamed.status_code == 200, streamed.text
+    assert '"type":"clarify"' in streamed.text
+    assert "project_name=Quantum Router" in captured["question"]
+    assert "project_goal=交付可验证的新产品方案" in captured["question"]
+    assert "Do not ask the user to repeat" in captured["question"]
+    assert "call clarify" in captured["question"]
+    assert captured["knowledge_query"].startswith("Assess the trusted project name")
+    assert captured["session_id"] == opened.json()["binding"]["session_id"]
+    assert captured["context"] is not None
+    assert captured["trusted_professional_surface"] is True
+    messages = client.get(
+        f"/api/v1/task-conversations/{conversation_id}/messages"
+    ).json()
+    assert [(item["role"], item["event_metadata"].get("kind")) for item in messages] == [
+        ("system", "auto_project_intake"),
+        ("assistant", None),
+    ]
+
+
 def test_readiness_fails_closed_when_database_initialization_failed(_reset_database):
     client = _reset_database
     app.state.db_ready = False

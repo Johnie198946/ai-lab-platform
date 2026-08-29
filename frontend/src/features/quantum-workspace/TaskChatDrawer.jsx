@@ -1,6 +1,7 @@
 import { Bot, Check, Send, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { platformApi } from "../../services/platformApi";
+import { HermesClarificationCard } from "./HermesClarificationCard";
 import { restoreTaskMessages } from "./taskChatMessages.js";
 
 const visibleAssistantContent = (content) => String(content || "").replace(/```task_backfill\s*\n[\s\S]*?\n```/gi, "").trim();
@@ -107,10 +108,6 @@ function BackfillChangeList({ changes }) {
   return <div className="qw-backfill-fields">{rows.map((row) => <div key={row.key}><span>{row.label}</span><p>{row.value}</p></div>)}</div>;
 }
 
-const clarificationChoice = (choice) => typeof choice === "string"
-  ? { label: choice, value: choice }
-  : { label: choice?.label || choice?.value || "选项", value: choice?.value || choice?.label || "" };
-
 export function TaskChatDrawer({ project, process, task, cardContext, refreshCardContext, onClose }) {
   const [conversation, setConversation] = useState(null);
   const [contextSync, setContextSync] = useState(null);
@@ -213,7 +210,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
           setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, content: detail, pending: false, failed: true } : message));
         }
         if (streamEvent.type === "clarify") {
-          setClarification({ ...streamEvent, sessionId: activeConversation.session_id, messageId: `${requestId}-assistant` });
+          setClarification({ ...streamEvent, sessionId: activeConversation.session_id || activeConversation.binding?.session_id, messageId: `${requestId}-assistant` });
           setClarificationText("");
           setClarificationSelections([]);
           setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, waitingForClarification: true, execution: { ...message.execution, current: "等待你补充信息" } } : message));
@@ -307,15 +304,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
           const slowNotice = message.waitingForClarification ? "Hermes 已暂停执行，正在等待你的回答。" : message.pending && elapsedMs >= 20000 ? "模型响应较慢，系统会在首个输出、技能调用或澄清问题前最多等待 60 秒。" : message.pending && elapsedMs >= 8000 ? "模型正在规划，可继续等待。" : "";
           return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : assistantLabel}</small>{message.role === "assistant" && message.execution && <details className="qw-execution-trace" open={message.pending || undefined}><summary><span>{message.execution.current || "执行详情"}</span><time>{elapsedLabel(elapsedMs)}</time></summary><ol>{message.execution.steps.map((step) => <li key={`${step.signature}-${step.elapsedMs}`}><time>{elapsedLabel(step.elapsedMs)}</time><span>{step.detail}</span></li>)}</ol>{slowNotice && <p className="qw-execution-slow">{slowNotice}</p>}</details>}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
         })}
-        {clarification && <section className="qw-clarification" aria-live="assertive" aria-labelledby="qw-clarification-question">
-          <div><small>AI 需要补充信息</small><strong id="qw-clarification-question">{clarification.question}</strong><span>回答后将继续生成字段级回填方案。</span></div>
-          {!!clarification.choices?.length && <div className="qw-clarification-choices">{clarification.choices.map(clarificationChoice).map((choice) => {
-            const selected = clarificationSelections.includes(choice.value);
-            return <button type="button" key={choice.value} aria-pressed={selected} disabled={clarificationBusy} onClick={() => clarification.multi_select ? setClarificationSelections((current) => selected ? current.filter((value) => value !== choice.value) : [...current, choice.value]) : submitClarification(choice.value)}>{selected && <Check size={13} />}{choice.label}</button>;
-          })}</div>}
-          {clarification.multi_select && <button type="button" className="qw-button primary qw-clarification-submit" disabled={clarificationBusy || !clarificationSelections.length} onClick={() => submitClarification()}>提交所选答案</button>}
-          {!clarification.choices?.length && <form onSubmit={(event) => { event.preventDefault(); void submitClarification(); }}><label htmlFor="qw-clarification-response">你的回答</label><textarea id="qw-clarification-response" rows={3} value={clarificationText} onChange={(event) => setClarificationText(event.target.value)} disabled={clarificationBusy} autoFocus /><button type="submit" className="qw-button primary" disabled={clarificationBusy || !clarificationText.trim()}>{clarificationBusy ? "提交中…" : "继续"}</button></form>}
-        </section>}
+        <HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-task-clarification" continuationLabel="回答后将继续生成字段级回填方案。" />
         {proposals.map((proposal) => <section key={proposal.id} className={`qw-backfill-proposal ${proposal.status}`}>
           <div><small>AI 回填方案 · {proposal.status === "proposed" ? "待确认" : proposal.status === "applied" ? "已回填" : "已放弃"}</small><strong>{proposal.summary}</strong></div>
           {Object.keys(proposal.self_changes || {}).length > 0 && <div className="qw-backfill-scope"><span>将写入本卡片</span><BackfillChangeList changes={proposal.self_changes} /></div>}
