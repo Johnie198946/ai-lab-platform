@@ -10,6 +10,36 @@ allocate_release_dir() {
   mktemp -d "$release_root/ai-lab-platform-$short_sha.XXXXXX"
 }
 
+configure_cloud_agent_os_mode() {
+  local unit dropin_dir dropin_file temp_file changed=0
+  for unit in hermes-bridge.service hermes-serve.service hermes-gateway.service; do
+    dropin_dir="/etc/systemd/system/$unit.d"
+    dropin_file="$dropin_dir/agent-os-mode.conf"
+    mkdir -p "$dropin_dir"
+    temp_file="$(mktemp "$dropin_dir/.agent-os-mode.XXXXXX")"
+    printf '%s\n' \
+      '[Service]' \
+      'Environment=AI_LAB_AGENT_OS_MODE=cloud_multi_tenant' > "$temp_file"
+    chmod 0644 "$temp_file"
+    if ! cmp -s "$temp_file" "$dropin_file"; then
+      mv -f "$temp_file" "$dropin_file"
+      changed=1
+    else
+      rm -f "$temp_file"
+    fi
+  done
+  if [ "$changed" -eq 1 ]; then
+    systemctl daemon-reload
+  fi
+}
+
+restart_hermes_runtime() {
+  systemctl restart hermes-serve.service
+  systemctl restart hermes-serve-forward.service
+  systemctl restart hermes-gateway.service
+  systemctl restart hermes-bridge.service
+}
+
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -48,7 +78,8 @@ cleanup() {
     fi
     cd "$CURRENT_DIR"
     docker compose -p "$COMPOSE_PROJECT" up -d --build || true
-    systemctl restart hermes-bridge.service || true
+    configure_cloud_agent_os_mode || true
+    restart_hermes_runtime || true
   fi
   if { [ "$SWITCHED" -eq 0 ] || [ "$rc" -ne 0 ]; } && [ "$RELEASE_VALIDATED" -eq 1 ]; then
     if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
@@ -169,12 +200,13 @@ echo "==> [4b/6] 建立 Hermes Vault 可见性链接"
 VAULT_ROOT="$DATA_TARGET/vault"
 bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
 
-echo "==> [5/6] 原子切换 release 并重启 Hermes Bridge"
+echo "==> [5/6] 原子切换 release 并重启 Hermes runtime"
 LINK_TMP="$APP_LINK.next.$$"
 ln -s "$RELEASE_DIR" "$LINK_TMP"
 mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
-systemctl restart hermes-bridge.service
+configure_cloud_agent_os_mode
+restart_hermes_runtime
 
 echo "==> [6/6] 最终健康检查"
 api_status=""
