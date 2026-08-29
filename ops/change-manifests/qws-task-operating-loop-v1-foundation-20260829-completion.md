@@ -1,7 +1,7 @@
 # QWS 任务运行闭环全阶段启动回执
 
 - task_id: `qws-task-operating-loop-v1-foundation-20260829`
-- status: `TESTED`（提交后更新）
+- status: `PUSHED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828`
 - source_design: `docs/qws-task-operating-loop-v1.md`
@@ -30,8 +30,8 @@
 
 ## 交付状态
 
-- head/local_commit: 待提交
-- remote_sha: 待推送核验
+- head/local_commit: `53061031d5b5b286eba3567f80f1990adb864acb`
+- remote_sha: `53061031d5b5b286eba3567f80f1990adb864acb`（功能提交；最终 manifest 提交随同推送）
 - server_before: 未部署
 - server_after: 未部署
 - health_check: 未执行（无部署授权）
