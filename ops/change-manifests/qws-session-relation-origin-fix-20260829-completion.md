@@ -29,16 +29,16 @@
 
 ## Delivery state
 
-- status: `TESTED`
+- status: `VERIFIED`
 - authorization: 用户在当前任务中明确要求“推送并部署”。
-- local_commit: 未创建。
-- GitHub remote/ref/SHA: 未授权/未执行。
+- local_commit: `cf78a995e4d8ab978aba87515da0b4e50dc5d5d4`。
+- GitHub remote/ref/SHA: `origin/refs/heads/codex/qws-session-relation-origin-fix-20260829` = `cf78a995e4d8ab978aba87515da0b4e50dc5d5d4`，已通过 `git ls-remote` 核验。
 - server_before: `/opt/releases/ai-lab-platform-b6b012cecdaf.Z36Q9m`。
-- server_after: 未授权/未执行。
-- health_check: 生产基线 API、Hermes Bridge、Taskboard 健康；session 请求因关系 origin 约束返回 500。
-- functional_check: 本地 session 关系同步专项测试、类型检查和生产构建通过；生产修复尚未部署验证。
-- rollback_point: 不适用（未部署）。
+- server_after: `/opt/releases/ai-lab-platform-cf78a995e4d8.vaItLj`，`.deployed-sha` = `cf78a995e4d8ab978aba87515da0b4e50dc5d5d4`。
+- health_check: API `/ready` 返回 ready；Hermes Bridge `:9118/health` 返回 ok；Taskboard 容器为 healthy。
+- functional_check: 生产 Taskboard 镜像内 session 关系专项测试 1/1 passed，部署后同类 constraint error 计数为 0；本地类型检查和生产构建通过。
+- rollback_point: `/opt/releases/ai-lab-platform-b6b012cecdaf.Z36Q9m`。
 
 ## Remaining risks
 
-- 修复部署前，包含任务关系的项目仍会在首次 session 同步时返回 500。
+- 尚未使用真实用户浏览器会话再次点击目标项目；生产容器内已覆盖同一路径并通过。
