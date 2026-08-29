@@ -1335,9 +1335,7 @@ async def save_project_resource_plan(
         process["resource_plan"] = plan
         next_revision = await _cas_project_process(
             db,
-            project_id=project.id,
-            tenant_key=tenant_key,
-            user_id=user_id,
+            project=project,
             expected_revision=body.expected_revision,
             process=process,
         )
@@ -1393,9 +1391,7 @@ async def recommend_project_resource_plan(
         process["resource_plan"] = plan
         next_revision = await _cas_project_process(
             db,
-            project_id=project.id,
-            tenant_key=tenant_key,
-            user_id=user_id,
+            project=project,
             expected_revision=body.expected_revision,
             process=process,
         )
@@ -1429,7 +1425,8 @@ async def generate_project_simulation_dataset(
         datasets = [item for item in plan["scenario_twin"].get("datasets", []) if item.get("id") != dataset["id"]]
         plan["scenario_twin"]["datasets"] = [dataset, *datasets][:50]
         digest = hashlib.sha256(json.dumps(dataset, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-        catalog_id = f"ds_{hashlib.sha256(f'{project.id}:{dataset['id']}'.encode()).hexdigest()[:32]}"
+        catalog_key = f"{project.id}:{dataset['id']}"
+        catalog_id = f"ds_{hashlib.sha256(catalog_key.encode()).hexdigest()[:32]}"
         catalog = await db.scalar(select(WorkspaceDataset).where(WorkspaceDataset.id == catalog_id))
         if catalog is None:
             catalog = WorkspaceDataset(
@@ -1456,9 +1453,7 @@ async def generate_project_simulation_dataset(
         process["resource_plan"] = plan
         next_revision = await _cas_project_process(
             db,
-            project_id=project.id,
-            tenant_key=tenant_key,
-            user_id=user_id,
+            project=project,
             expected_revision=body.expected_revision,
             process=process,
         )
@@ -2835,6 +2830,9 @@ async def _sync_card_session_registry(
     task: dict[str, Any],
     card_context: dict[str, Any] | None,
 ) -> WorkspaceCardSessionRegistry:
+    project_id = project.id
+    project_process_revision = project.process_revision
+    project_process_snapshot = project.process_snapshot or {}
     raw_sessions = (card_context or {}).get("session_registry")
     sessions = raw_sessions if isinstance(raw_sessions, list) else []
     card = (card_context or {}).get("task")
@@ -2856,12 +2854,12 @@ async def _sync_card_session_registry(
     current: WorkspaceCardSessionRegistry | None = None
     process_tasks = {
         str(item.get("id")): item
-        for item in (project.process_snapshot or {}).get("tasks", [])
+        for item in project_process_snapshot.get("tasks", [])
         if isinstance(item, dict) and item.get("id")
     }
     process_stages = {
         str(item.get("id")): item
-        for item in (project.process_snapshot or {}).get("stages", [])
+        for item in project_process_snapshot.get("stages", [])
         if isinstance(item, dict) and item.get("id")
     }
     for item in sessions[:2000]:
@@ -2882,13 +2880,13 @@ async def _sync_card_session_registry(
         profile = _task_registry_profile(
             profile_source,
             stage=process_stages.get(str(canonical.get("stage_id") or "")),
-            process_revision=project.process_revision,
+            process_revision=project_process_revision,
         )
         row = await db.scalar(
             select(WorkspaceCardSessionRegistry).where(
                 WorkspaceCardSessionRegistry.tenant_key == tenant_key,
                 WorkspaceCardSessionRegistry.user_id == user_id,
-                WorkspaceCardSessionRegistry.project_id == project.id,
+                WorkspaceCardSessionRegistry.project_id == project_id,
                 WorkspaceCardSessionRegistry.task_id == task_id,
             )
         )
@@ -2897,7 +2895,7 @@ async def _sync_card_session_registry(
                 id=f"cardsession_{uuid4().hex}",
                 tenant_key=tenant_key,
                 user_id=user_id,
-                project_id=project.id,
+                project_id=project_id,
                 task_id=task_id,
                 identifier=(str(item.get("identifier"))[:80] if item.get("identifier") else None),
                 title=title,
@@ -2928,7 +2926,20 @@ async def _sync_card_session_registry(
             current = row
     if current is None:
         raise HTTPException(status_code=422, detail="current card is missing from session registry")
-    await db.flush()
+    try:
+        await db.flush()
+    except IntegrityError:
+        await db.rollback()
+        current = await db.scalar(
+            select(WorkspaceCardSessionRegistry).where(
+                WorkspaceCardSessionRegistry.tenant_key == tenant_key,
+                WorkspaceCardSessionRegistry.user_id == user_id,
+                WorkspaceCardSessionRegistry.project_id == project_id,
+                WorkspaceCardSessionRegistry.task_id == task["id"],
+            )
+        )
+        if current is None:
+            raise
     return current
 
 
@@ -3313,6 +3324,7 @@ async def open_task_conversation(
             db, body.project_id, tenant_key, user_id, "project:write"
         )
         project_record_id = project.id
+        project_process_revision = project.process_revision
         process = project.process_snapshot or {}
         task = next(
             (item for item in process.get("tasks", []) if item["id"] == body.task_id),
@@ -3450,7 +3462,7 @@ async def open_task_conversation(
             "user_id": user_id,
             "project_id": project_record_id,
             "process_instance_id": process.get("process_instance_id"),
-            "process_revision": project.process_revision,
+            "process_revision": project_process_revision,
             "stage_id": task["stage_id"],
             "task_id": task["id"],
             "workflow_id": task.get("workflow_id"),
