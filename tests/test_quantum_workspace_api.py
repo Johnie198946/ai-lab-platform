@@ -1126,6 +1126,69 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
     assert duplicate.json()["detail"] == "workflow already binds another project task"
 
 
+def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relation(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "operating-loop")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    source = process["tasks"][0]
+    target = process["tasks"][1]
+
+    lease = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/execution-lease",
+        json={
+            "expected_revision": 1,
+            "expected_task_revision": 1,
+            "session_id": "session-primary",
+            "actor_id": "hermes-agent",
+            "ttl_seconds": 900,
+        },
+    )
+    assert lease.status_code == 200, lease.text
+    assert lease.json()["process_revision"] == 2
+    assert lease.json()["task_revision"] == 2
+    assert lease.json()["lease"]["session_id"] == "session-primary"
+
+    context = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/context-pack"
+    )
+    assert context.status_code == 200, context.text
+    assert context.json()["identity"]["execution_lease"]["session_id"] == "session-primary"
+    assert "full_chat_history" in context.json()["exclusions"]
+
+    proposal = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-proposals",
+        json={
+            "expected_revision": 2,
+            "expected_task_revision": 2,
+            "target_task_id": target["id"],
+            "relation_type": "related",
+            "reason": "共享同一验收证据",
+            "evidence_refs": ["artifact://evidence"],
+            "confidence": 0.91,
+            "impact": {"execution": "continue", "scope": "none"},
+        },
+    )
+    assert proposal.status_code == 201, proposal.text
+    assert proposal.json()["process_revision"] == 3
+    assert proposal.json()["task_revision"] == 3
+    assert proposal.json()["proposal"]["status"] == "PROPOSED"
+    assert proposal.json()["proposal"]["requires_user_confirmation"] is True
+
+    conflicting_lease = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/execution-lease",
+        json={
+            "expected_revision": 3,
+            "expected_task_revision": 3,
+            "session_id": "session-other",
+            "actor_id": "other-agent",
+            "ttl_seconds": 900,
+        },
+    )
+    assert conflicting_lease.status_code == 409
+    assert conflicting_lease.json()["detail"]["error"] == "execution_lease_conflict"
+
+
+
 def test_task_state_machine_rejects_terminal_rollback_and_missing_reason(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "state-machine")

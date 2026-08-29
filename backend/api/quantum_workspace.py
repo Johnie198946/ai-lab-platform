@@ -68,6 +68,12 @@ from backend.services.workspace_process import (
     persist_process_revision,
     reconstruct_process_projection,
 )
+from backend.services.task_operating_loop import (
+    acquire_execution_lease,
+    build_task_context_pack,
+    create_relation_proposal,
+    initialize_task_contract,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
 
@@ -165,6 +171,25 @@ class CreateProjectTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=4000)
     assignee_role: str | None = Field(default=None, max_length=160)
+
+
+class AcquireTaskLeaseRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    session_id: str = Field(min_length=1, max_length=100)
+    actor_id: str = Field(min_length=1, max_length=100)
+    ttl_seconds: int = Field(default=900, ge=60, le=3600)
+
+
+class ProposeTaskRelationRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    target_task_id: str = Field(min_length=1, max_length=40)
+    relation_type: Literal["related", "blocks", "blocked_by", "duplicate", "overlaps", "parent", "child"]
+    reason: str = Field(min_length=3, max_length=2000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+    confidence: float = Field(ge=0, le=1)
+    impact: dict[str, str] = Field(default_factory=dict)
 
 
 class BindTaskWorkflowRequest(BaseModel):
@@ -1768,7 +1793,7 @@ async def create_project_task(
         stage = next((item for item in stages if item["id"] == body.stage_id), None)
         if stage is None:
             raise HTTPException(status_code=404, detail="project stage not found")
-        task = {
+        task = initialize_task_contract({
             "id": f"tsk_{uuid4().hex}",
             "stage_id": stage["id"],
             "title": body.title.strip(),
@@ -1790,7 +1815,7 @@ async def create_project_task(
             "evidence_refs": [],
             "risk": "LOW",
             "created_by": user_id,
-        }
+        })
         tasks = [dict(item) for item in process.get("tasks", [])]
         tasks.append(task)
         _aggregate_stage(stage, [item for item in tasks if item["stage_id"] == stage["id"]])
@@ -1834,6 +1859,111 @@ async def create_project_task(
             "task": task,
             "stage": stage,
         }
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/execution-lease")
+async def acquire_project_task_execution_lease(
+    project_id: str,
+    task_id: str,
+    body: AcquireTaskLeaseRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        try:
+            lease = acquire_execution_lease(
+                task,
+                expected_task_revision=body.expected_task_revision,
+                session_id=body.session_id,
+                actor_id=body.actor_id,
+                ttl_seconds=body.ttl_seconds,
+            )
+        except ValueError as exc:
+            reason, _, current = str(exc).partition(":")
+            raise HTTPException(status_code=409, detail={"error": reason, "current": current or None}) from exc
+        process["tasks"] = tasks
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "lease": lease}
+
+
+@router.get("/projects/{project_id}/tasks/{task_id}/context-pack")
+async def get_project_task_context_pack(
+    project_id: str,
+    task_id: str,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        process = project.process_snapshot or {}
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        related_ids = {
+            str(relation.get("target_id") or relation.get("target_task_id"))
+            for relation in task.get("relations") or []
+            if relation.get("target_id") or relation.get("target_task_id")
+        }
+        related = [item for item in tasks if item.get("id") in related_ids]
+        return build_task_context_pack(
+            task, project_id=project.id, process_revision=project.process_revision, related_tasks=related
+        )
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/relation-proposals", status_code=201)
+async def propose_project_task_relation(
+    project_id: str,
+    task_id: str,
+    body: ProposeTaskRelationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        if int(task.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
+        try:
+            proposal = create_relation_proposal(
+                {**process, "tasks": tasks},
+                source_task_id=task_id,
+                target_task_id=body.target_task_id,
+                relation_type=body.relation_type,
+                reason=body.reason,
+                evidence_refs=body.evidence_refs,
+                confidence=body.confidence,
+                impact=body.impact,
+                proposed_by=user_id,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        proposals = list(process.get("relation_proposals") or [])
+        proposals.append(proposal)
+        task["relation_proposal_ids"] = [*(task.get("relation_proposal_ids") or []), proposal["id"]]
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
+        process["tasks"] = tasks
+        process["relation_proposals"] = proposals
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "proposal": proposal}
 
 
 @router.put("/projects/{project_id}/tasks/{task_id}/workflow")
