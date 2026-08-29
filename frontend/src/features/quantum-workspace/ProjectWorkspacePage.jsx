@@ -1,4 +1,4 @@
-import { ChevronLeft, FileText, GitBranch, LayoutDashboard, Route } from "lucide-react";
+import { ChevronLeft, ChevronsDown, ChevronsUp, FileText, GitBranch, LayoutDashboard, Route } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
@@ -31,7 +31,16 @@ export function ProjectWorkspacePage() {
   const [dialogError, setDialogError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [immersive, setImmersive] = useState(() => {
+    try { return window.localStorage.getItem("qws-project-immersive") === "true"; } catch { return false; }
+  });
   const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/documents") ? "documents" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("qw-project-immersive", immersive);
+    try { window.localStorage.setItem("qws-project-immersive", String(immersive)); } catch {}
+    return () => document.documentElement.classList.remove("qw-project-immersive");
+  }, [immersive]);
 
   const load = useCallback(async () => {
     setError("");
@@ -130,6 +139,39 @@ export function ProjectWorkspacePage() {
       setDialogError(reason.status === 409 ? "项目 revision 已变化，请关闭后重试。" : reason.message);
       if (reason.status === 409) await load();
     } finally { setDialogBusy(false); }
+  };
+
+  const createRole = async (roleDraft) => {
+    try {
+      const result = await platformApi.createProjectRole(projectId, { expected_revision: process.process_revision, ...roleDraft });
+      await load();
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新角色，请重新保存。" : reason.message);
+    }
+  };
+
+  const updateRole = async (roleId, roleDraft) => {
+    try {
+      const result = await platformApi.updateProjectRole(projectId, roleId, { expected_revision: process.process_revision, ...roleDraft });
+      await load();
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新角色，请重新保存。" : reason.message);
+    }
+  };
+
+  const deleteRole = async (roleId) => {
+    try {
+      const result = await platformApi.deleteProjectRole(projectId, roleId, { expected_revision: process.process_revision });
+      await load();
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新角色，请重新删除。" : reason.message);
+    }
   };
 
   const createAndBindWorkflow = async (task) => {
@@ -231,29 +273,43 @@ export function ProjectWorkspacePage() {
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;
   if (!project || !process) return <div className="qw-page-state error">{error || "项目不可用"}<Link to="/home">返回 Home</Link></div>;
   return (
-    <div className="qw-project-page">
+    <div className={`qw-project-page${immersive ? " is-immersive" : ""}`}>
       <div className="qw-project-header">
         <div className="qw-project-title"><Link to="/home" aria-label="返回 Home"><ChevronLeft size={18} /></Link><div><span className="qw-eyebrow">Project · {project.id.slice(-8)}</span><h1>{project.name}</h1><p>{project.goal}</p></div></div>
-        <div className="qw-revision"><span>process revision</span><strong>{process.process_revision}</strong></div>
+        <div className="qw-project-actions">
+          <button type="button" className="qw-immersive-toggle" onClick={() => setImmersive(true)} aria-label="折叠项目导航并进入沉浸工作模式" title="折叠顶部区域，进入沉浸工作"><ChevronsUp size={16} /><span>沉浸工作</span></button>
+          <div className="qw-revision"><span>process revision</span><strong>{process.process_revision}</strong></div>
+        </div>
       </div>
       <div className="qw-project-sticky">
+        <div className="qw-immersive-bar" aria-label="沉浸式项目导航">
+          <Link to="/home" aria-label="返回 Home"><ChevronLeft size={16} /></Link>
+          <strong title={project.name}>{project.name}</strong>
+          <nav aria-label="项目视图切换">
+            <NavLink to={`/projects/${projectId}/taskboard`} aria-label="Taskboard" title="Taskboard"><LayoutDashboard size={16} /></NavLink>
+            <NavLink to={`/projects/${projectId}/graph/workflow`} aria-label="Workflow" title="Workflow"><GitBranch size={16} /></NavLink>
+            <NavLink to={`/projects/${projectId}/documents`} aria-label="Documents" title="Documents"><FileText size={16} /></NavLink>
+            <NavLink to={`/projects/${projectId}/graph/ai-resource`} aria-label="AI Resource" title="AI Resource"><Route size={16} /></NavLink>
+          </nav>
+          <button type="button" onClick={() => setImmersive(false)} aria-label="展开完整项目导航" title="退出沉浸工作"><ChevronsDown size={16} /><span>退出沉浸</span></button>
+        </div>
         <div className="qw-view-tabs">
           <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
           <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
           <NavLink to={`/projects/${projectId}/documents`}><FileText size={15} />Documents</NavLink>
           <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
         </div>
-        <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
+        <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} onCreateRole={createRole} onUpdateRole={updateRole} onDeleteRole={deleteRole} />
       </div>
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />}
+      {view === "taskboard" && <DashiTaskboardHost project={project} process={process} onOpenTaskChat={setSelectedTaskSession} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "documents" && <ProjectDocuments projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />}
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} process={process} onSave={saveWorkflowGraph} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
       {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} onClose={() => setSelectedTaskSession(null)} />}
-      {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
-      {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
+      {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} roles={process.roles || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
+      {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} roles={process.roles || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
       {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}
     </div>
   );

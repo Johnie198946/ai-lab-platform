@@ -107,13 +107,17 @@ def test_project_home_supports_update_and_owner_delete(_reset_database):
 def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     process = instantiate_project_blueprint({
         "project_goal": "交付动态项目",
+        "roles": [
+            {"key": "researcher", "name": "研究员", "description": "验证用户问题", "responsibilities": ["完成用户研究"], "skills": ["用户访谈", "证据归纳"]},
+            {"key": "delivery", "name": "开发负责人", "description": "完成产品交付", "responsibilities": ["实现与发布"], "skills": ["系统设计", "持续交付"]},
+        ],
         "stages": [
             {"key": "discover", "name": "发现", "goal": "验证问题", "acceptance_criteria": ["完成访谈"]},
             {"key": "ship", "name": "交付", "goal": "发布成果", "acceptance_criteria": ["验收通过"]},
         ],
         "tasks": [
-            {"key": "research", "stage_key": "discover", "title": "用户研究", "description": "访谈目标用户", "role": "研究员", "status": "todo", "priority": "high", "labels": ["需求"], "acceptance_criteria": ["5 份访谈"], "deliverables": ["访谈报告"], "handoff": {"to": "开发负责人", "completion_definition": "报告评审通过"}},
-            {"key": "build", "stage_key": "ship", "title": "完成交付", "description": "实现并交付", "role": "开发负责人", "status": "backlog", "priority": "urgent", "parent_key": "research", "relations": [{"type": "blocked_by", "target_key": "research"}], "deliverables": ["发布包"]},
+            {"key": "research", "stage_key": "discover", "title": "用户研究", "description": "访谈目标用户", "role_key": "researcher", "role": "研究员", "status": "todo", "priority": "high", "labels": ["需求"], "acceptance_criteria": ["5 份访谈"], "deliverables": ["访谈报告"], "handoff": {"to": "开发负责人", "completion_definition": "报告评审通过"}},
+            {"key": "build", "stage_key": "ship", "title": "完成交付", "description": "实现并交付", "role_key": "delivery", "role": "开发负责人", "status": "backlog", "priority": "urgent", "parent_key": "research", "relations": [{"type": "blocked_by", "target_key": "research"}], "deliverables": ["发布包"]},
         ],
         "documents": [{"id": "brief", "title": "项目说明", "content": "# 项目说明", "status": "ready"}],
     })
@@ -122,6 +126,8 @@ def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     assert process["tasks"][1]["status"] == "BACKLOG"
     assert {item["type"] for item in process["tasks"][1]["relations"]} == {"parent", "blocked_by"}
     assert process["documents"][0]["title"] == "项目说明"
+    assert process["roles"][0]["skills"] == ["用户访谈", "证据归纳"]
+    assert process["tasks"][0]["role_id"] == process["roles"][0]["id"]
 
 
 def test_hermes_blueprint_default_schedule_follows_dependencies_and_workdays():
@@ -273,6 +279,34 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert registry.task_profile["acceptance_criteria"] == ["成果可阅读"]
     assert registry.task_profile["stage"]["name"] == "交付"
 
+    roles_payload = client.get(f"/api/v1/projects/{project_id}/roles").json()
+    assert all(role["assignee_id"] for role in roles_payload["roles"])
+    created_role = client.post(f"/api/v1/projects/{project_id}/roles", json={
+        "expected_revision": roles_payload["process_revision"],
+        "name": "项目观察员",
+        "description": "只读观察项目风险",
+        "responsibilities": ["汇总风险，不替代责任人决策"],
+        "skills": ["风险识别", "状态分析"],
+        "assignee_id": None,
+    })
+    assert created_role.status_code == 201, created_role.text
+    role_id = created_role.json()["role"]["id"]
+    role_after_create = client.get(f"/api/v1/projects/{project_id}/roles").json()
+    assert next(role for role in role_after_create["roles"] if role["id"] == role_id)["assignee_id"] is None
+    mismatched = client.put(f"/api/v1/projects/{project_id}/roles/{role_id}", json={
+        "expected_revision": created_role.json()["process_revision"],
+        "name": "项目观察员",
+        "description": "",
+        "responsibilities": [],
+        "skills": ["风险识别"],
+        "assignee_id": roles_payload["roles"][0]["assignee_id"],
+    })
+    assert mismatched.status_code == 422
+    deleted_role = client.request("DELETE", f"/api/v1/projects/{project_id}/roles/{role_id}", json={
+        "expected_revision": created_role.json()["process_revision"],
+    })
+    assert deleted_role.status_code == 200, deleted_role.text
+
     deleted = client.delete(f"/api/v1/projects/{project_id}")
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
@@ -363,6 +397,8 @@ def test_new_project_session_automatically_assesses_context_and_preserves_system
     assert "project_goal=交付可验证的新产品方案" in captured["question"]
     assert "不要要求用户重复" in captured["knowledge_query"]
     assert "调用 clarify" in captured["question"]
+    assert '"roles":[{"key":str' in captured["question"]
+    assert '"skills":str[]' in captured["question"]
     assert "持续询问用户至需求收敛" in captured["knowledge_query"]
     assert captured["session_id"] == opened.json()["binding"]["session_id"]
     assert captured["context"] is not None

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Gantt, type GanttStatic, type Task as GanttTask } from "dhtmlx-gantt";
 import "../vendor/dhtmlxgantt.css";
-import type { Task, TaskDraft } from "../types";
+import type { HostContext, Task, TaskDraft } from "../types";
 import type { TaskCardPresentation } from "../taskConversations";
 import { useTaskboardI18n } from "../i18n";
 import { LinearIcon } from "./LinearIcon";
@@ -28,10 +28,14 @@ interface TaskboardGanttTask extends GanttTask {
   taskboardAssigneeInitial: string;
   taskboardGroup: boolean;
   taskboardCount: number;
+  taskboardStageName: string;
+  taskboardScheduleLabel: string;
+  taskboardDependencyLabel: string;
 }
 
 interface GanttViewProps {
   tasks: Task[];
+  qwsProcess?: HostContext["qwsProcess"];
   presentations: Record<string, TaskCardPresentation>;
   hasActiveFilters: boolean;
   zoom: GanttZoom;
@@ -39,6 +43,16 @@ interface GanttViewProps {
   todayRequest: number;
   onOpenTask: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
+}
+
+function qwsTaskContext(task: Task, qwsProcess: HostContext["qwsProcess"]) {
+  if (!qwsProcess) return null;
+  const marker = task.labels.find((label) => qwsProcess.tasks.some((item) => item.marker === label));
+  if (!marker) return null;
+  const mapping = qwsProcess.tasks.find((item) => item.marker === marker);
+  if (!mapping) return null;
+  const stage = qwsProcess.stages.find((item) => item.id === mapping.stageId);
+  return { stageName: stage?.name || "未分阶段", assigneeRole: mapping.assigneeRole };
 }
 
 let pendingDetailViewport: { projectId: string; x: number; y: number } | null = null;
@@ -106,7 +120,7 @@ function dateCellClass(date: Date) {
   return classes.join(" ");
 }
 
-export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCompleted, todayRequest, onOpenTask, onUpdate }: GanttViewProps) {
+export function GanttView({ tasks, qwsProcess, presentations, hasActiveFilters, zoom, hideCompleted, todayRequest, onOpenTask, onUpdate }: GanttViewProps) {
   const { language, locale, text } = useTaskboardI18n();
   const i18nRef = useRef({ language, locale, text });
   const containerRef = useRef<HTMLDivElement>(null);
@@ -128,6 +142,16 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
   const visibleTasks = useMemo(
     () => hideCompleted ? tasks.filter((task) => task.status !== "done" && task.status !== "canceled") : tasks,
     [hideCompleted, tasks],
+  );
+  const visibleTaskIds = useMemo(() => new Set(visibleTasks.map((task) => task.id)), [visibleTasks]);
+  const scheduledTaskCount = useMemo(() => visibleTasks.filter((task) => task.startDate && task.dueDate).length, [visibleTasks]);
+  const dependencyCount = useMemo(() => visibleTasks.reduce(
+    (count, task) => count + task.relations.blocks.filter((relation) => visibleTaskIds.has(relation.id)).length,
+    0,
+  ), [visibleTaskIds, visibleTasks]);
+  const qwsLinkedCount = useMemo(
+    () => visibleTasks.filter((task) => qwsTaskContext(task, qwsProcess)).length,
+    [qwsProcess, visibleTasks],
   );
   useEffect(() => {
     const container = containerRef.current;
@@ -160,9 +184,9 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
         template: (item) => {
           const task = item as TaskboardGanttTask;
           if (task.taskboardGroup) {
-            return `<div class="gantt-grid-group"><strong>${escapeHtml(task.taskboardTitle)}</strong><span>${task.taskboardCount}</span></div>`;
+            return `<div class="gantt-grid-group"><strong>${escapeHtml(i18nRef.current.text("按状态", "By status"))} · ${escapeHtml(task.taskboardTitle)}</strong><span>${task.taskboardCount}</span></div>`;
           }
-          return `<div class="gantt-grid-issue"><strong>${escapeHtml(task.taskboardTitle)}</strong>${task.taskboardUnread ? `<i class="task-unread-dot" aria-label="${escapeHtml(i18nRef.current.text("有未读更新", "Unread updates"))}"></i>` : ""}</div>`;
+          return `<div class="gantt-grid-issue"><div><strong>${escapeHtml(task.taskboardTitle)}</strong><small><span>${escapeHtml(task.taskboardStageName)}</span><span>${escapeHtml(task.taskboardAssigneeName)}</span><span>${escapeHtml(task.taskboardScheduleLabel)}</span>${task.taskboardDependencyLabel ? `<span class="is-dependency">${escapeHtml(task.taskboardDependencyLabel)}</span>` : ""}</small></div>${task.taskboardUnread ? `<i class="task-unread-dot" aria-label="${escapeHtml(i18nRef.current.text("有未读更新", "Unread updates"))}"></i>` : ""}</div>`;
         },
       },
     ];
@@ -190,7 +214,8 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
         : task.taskboardAssigneeAvatarUrl
         ? `<img src="${escapeHtml(task.taskboardAssigneeAvatarUrl)}" alt="">`
         : `<span>${escapeHtml(task.taskboardAssigneeInitial)}</span>`;
-      return `<span class="gantt-bar-content"><i class="gantt-bar-assignee${task.taskboardAssigneeType === "agent" ? " is-agent" : ""}" title="${escapeHtml(task.taskboardAssigneeName)}">${avatar}</i><span class="gantt-bar-copy"><strong>${escapeHtml(task.taskboardTitle)}</strong><small>${dateLabel}</small></span></span>`;
+      const relationship = task.taskboardDependencyLabel ? ` · ${task.taskboardDependencyLabel}` : "";
+      return `<span class="gantt-bar-content" title="${escapeHtml(`${task.taskboardTitle} · ${task.taskboardStageName} · ${task.taskboardAssigneeName}${relationship}`)}"><span class="gantt-bar-copy"><strong>${escapeHtml(task.taskboardTitle)}</strong><small>${dateLabel}</small></span><i class="gantt-bar-assignee${task.taskboardAssigneeType === "agent" ? " is-agent" : ""}" title="${escapeHtml(task.taskboardAssigneeName)}">${avatar}</i></span>`;
     };
     const rowClass = (item: GanttTask) => {
       const task = item as TaskboardGanttTask;
@@ -408,11 +433,24 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
         taskboardAssigneeInitial: "",
         taskboardGroup: true,
         taskboardCount: groupTasks.length,
+        taskboardStageName: "",
+        taskboardScheduleLabel: "",
+        taskboardDependencyLabel: "",
       } as TaskboardGanttTask);
 
       for (const task of groupTasks) {
         const isScheduled = Boolean(task.startDate && task.dueDate);
         const itemProgress = taskProgress(task, presentations[task.id]);
+        const qwsContext = qwsTaskContext(task, qwsProcess);
+        const blockedByCount = task.relations.blockedBy.filter((relation) => visibleTaskIds.has(relation.id)).length;
+        const blocksCount = task.relations.blocks.filter((relation) => visibleTaskIds.has(relation.id)).length;
+        const scheduleLabel = isScheduled
+          ? `${ganttDate(localDate(task.startDate!), i18nRef.current.locale)}—${ganttDate(localDate(task.dueDate!), i18nRef.current.locale)}`
+          : i18nRef.current.text("未排期", "Unscheduled");
+        const dependencyLabel = [
+          blockedByCount ? i18nRef.current.text(`前置 ${blockedByCount}`, `${blockedByCount} predecessor`) : "",
+          blocksCount ? i18nRef.current.text(`后续 ${blocksCount}`, `${blocksCount} successor`) : "",
+        ].filter(Boolean).join(" · ");
         data.push({
           id: task.id,
           parent: groupId,
@@ -433,6 +471,9 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
           taskboardAssigneeInitial: Array.from(task.assignee.name.trim())[0] ?? "·",
           taskboardGroup: false,
           taskboardCount: 0,
+          taskboardStageName: qwsContext?.stageName || i18nRef.current.text("Taskboard 任务", "Taskboard issue"),
+          taskboardScheduleLabel: scheduleLabel,
+          taskboardDependencyLabel: dependencyLabel,
         } as TaskboardGanttTask);
       }
     }
@@ -473,7 +514,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
     }
     if (restoredViewport) pendingDetailViewport = null;
     hasParsedDataRef.current = true;
-  }, [presentations, visibleTasks]);
+  }, [presentations, qwsProcess, visibleTaskIds, visibleTasks]);
 
   useEffect(() => {
     ganttRef.current?.ext.zoom.setLevel(zoom);
@@ -498,6 +539,18 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
 
   return (
     <div className="gantt-view">
+      <section className="gantt-context" aria-label={text("甘特图说明", "Gantt explanation")}>
+        <div className="gantt-context-heading">
+          <div><strong>{text("任务排期与前后依赖", "Task schedule and dependencies")}</strong><span>{text("这里展示的是前面任务看板中的同一批任务；双击任一行可打开原任务卡。", "This is the same set of issues from the taskboard; double-click a row to open the original issue.")}</span></div>
+          <p><b>{visibleTasks.length}</b>{text(" 项任务", " issues")}<i /> <b>{scheduledTaskCount}</b>{text(" 项已排期", " scheduled")}<i /> <b>{dependencyCount}</b>{text(" 条依赖", " dependencies")} {qwsLinkedCount > 0 && <><i /> <b>{qwsLinkedCount}</b>{text(" 项已关联项目阶段", " linked to project stages")}</>}</p>
+        </div>
+        <div className="gantt-legend" aria-label={text("图例", "Legend")}>
+          <span><i className="is-bar" />{text("横条：任务起止时间", "Bar: task duration")}</span>
+          <span><i className="is-link" />{text("箭头：前置任务 → 后续任务", "Arrow: predecessor → successor")}</span>
+          <span><i className="is-today" />{text("蓝线：今天", "Blue line: today")}</span>
+          <span>{text("左侧按状态分组，并显示项目阶段、负责人和日期", "Rows are grouped by status and show stage, owner, and dates")}</span>
+        </div>
+      </section>
       <div className="gantt-canvas-shell">
         <div className="gantt-canvas" ref={containerRef} />
         {todayMarkerLeft !== null && (

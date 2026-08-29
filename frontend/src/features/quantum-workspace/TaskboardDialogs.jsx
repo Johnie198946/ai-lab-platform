@@ -1,7 +1,7 @@
 import { Link2, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
-export function NewProjectTaskDialog({ stages, busy, error, onClose, onSubmit }) {
+export function NewProjectTaskDialog({ stages, roles = [], busy, error, onClose, onSubmit }) {
   const [form, setForm] = useState({ stage_id: stages[0]?.id || "", title: "", summary: "", assignee_role: "" });
 
   const submit = (event) => {
@@ -15,7 +15,7 @@ export function NewProjectTaskDialog({ stages, busy, error, onClose, onSubmit })
       <label>所属阶段<select value={form.stage_id} onChange={(event) => setForm((current) => ({ ...current, stage_id: event.target.value }))} required>{stages.map((stage) => <option value={stage.id} key={stage.id}>{stage.name}</option>)}</select></label>
       <label>任务名称<input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} required maxLength={160} autoFocus /></label>
       <label>任务说明<textarea value={form.summary} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} required rows={4} maxLength={4000} /></label>
-      <label>负责角色<input value={form.assignee_role} onChange={(event) => setForm((current) => ({ ...current, assignee_role: event.target.value }))} maxLength={160} placeholder="可稍后分配" /></label>
+      <label>负责角色<select value={form.assignee_role} onChange={(event) => setForm((current) => ({ ...current, assignee_role: event.target.value }))}><option value="">待分配</option>{roles.map((role) => <option key={role.id} value={role.name}>{role.name}</option>)}</select></label>
       <p className="qw-note">新任务先进入 TODO / PLAN，不会自动创建或执行 Workflow。</p>
       {error && <p className="qw-error">{error}</p>}
       <div className="qw-actions"><button type="button" className="qw-button ghost" onClick={onClose}>取消</button><button className="qw-button primary" disabled={busy || !form.stage_id || !form.title.trim() || !form.summary.trim()}><Plus size={15} />{busy ? "创建中…" : "创建任务"}</button></div>
@@ -23,7 +23,7 @@ export function NewProjectTaskDialog({ stages, busy, error, onClose, onSubmit })
   </div>;
 }
 
-export function EditProjectTaskDialog({ task, stages, busy, error, onClose, onSubmit }) {
+export function EditProjectTaskDialog({ task, stages, roles = [], busy, error, onClose, onSubmit }) {
   const [form, setForm] = useState({ stage_id: task.stage_id || stages[0]?.id || "", title: task.title || "", summary: task.summary || "", assignee_role: task.assignee_role || "" });
   const submit = (event) => { event.preventDefault(); onSubmit({ ...form, title: form.title.trim(), summary: form.summary.trim(), assignee_role: form.assignee_role.trim() || null }); };
   return <div className="qw-modal" role="dialog" aria-modal="true" aria-labelledby="qw-edit-task-title">
@@ -32,7 +32,7 @@ export function EditProjectTaskDialog({ task, stages, busy, error, onClose, onSu
       <label>所属阶段<select value={form.stage_id} onChange={(event) => setForm((current) => ({ ...current, stage_id: event.target.value }))} required>{stages.map((stage) => <option value={stage.id} key={stage.id}>{stage.name}</option>)}</select></label>
       <label>任务名称<input value={form.title} onChange={(event) => setForm((current) => ({ ...current, title: event.target.value }))} required maxLength={160} autoFocus /></label>
       <label>任务说明<textarea value={form.summary} onChange={(event) => setForm((current) => ({ ...current, summary: event.target.value }))} required rows={4} maxLength={4000} /></label>
-      <label>负责角色<input value={form.assignee_role} onChange={(event) => setForm((current) => ({ ...current, assignee_role: event.target.value }))} maxLength={160} /></label>
+      <label>负责角色<select value={form.assignee_role} onChange={(event) => setForm((current) => ({ ...current, assignee_role: event.target.value }))}><option value="">待分配</option>{roles.map((role) => <option key={role.id} value={role.name}>{role.name}</option>)}</select></label>
       <p className="qw-note">保存只更新 ProjectProcess 任务卡片，不会自动执行 Workflow。</p>
       {error && <p className="qw-error">{error}</p>}
       <div className="qw-actions"><button type="button" className="qw-button ghost" onClick={onClose}>取消</button><button className="qw-button primary" disabled={busy || !form.title.trim() || !form.summary.trim()}>{busy ? "保存中…" : "保存修改"}</button></div>

@@ -404,6 +404,18 @@ export const platformApi = {
   getProjectProcess(projectId) {
     return request(`/api/v1/projects/${projectId}/process`);
   },
+  listProjectRoles(projectId) {
+    return request(`/api/v1/projects/${projectId}/roles`);
+  },
+  createProjectRole(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/roles`, { method: "POST", body: payload });
+  },
+  updateProjectRole(projectId, roleId, payload) {
+    return request(`/api/v1/projects/${projectId}/roles/${encodeURIComponent(roleId)}`, { method: "PUT", body: payload });
+  },
+  deleteProjectRole(projectId, roleId, payload) {
+    return request(`/api/v1/projects/${projectId}/roles/${encodeURIComponent(roleId)}`, { method: "DELETE", body: payload });
+  },
   dispatchProjectBlueprint(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/planning/dispatch`, { method: "POST", body: payload });
   },

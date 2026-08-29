@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import date, timedelta
+import hashlib
 from typing import Any
 from uuid import uuid4
 
@@ -131,6 +132,42 @@ def instantiate_project_blueprint(
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise ValueError("project blueprint requires at least one task")
 
+    raw_roles = blueprint.get("roles") or []
+    if not isinstance(raw_roles, list):
+        raise ValueError("project blueprint roles must be a list")
+    has_declared_roles = bool(raw_roles)
+    role_ids: dict[str, str] = {}
+    role_names: dict[str, dict[str, Any]] = {}
+    roles: list[dict[str, Any]] = []
+    for index, item in enumerate(raw_roles):
+        if not isinstance(item, dict):
+            raise ValueError("project blueprint role must be an object")
+        key = str(item.get("key") or f"role-{index + 1}").strip()
+        name = str(item.get("name") or "").strip()
+        if not name or key in role_ids or name in role_names:
+            raise ValueError("project blueprint role names and keys must be unique")
+        responsibilities = list(dict.fromkeys(
+            str(value).strip() for value in item.get("responsibilities") or [] if str(value).strip()
+        ))
+        skills = list(dict.fromkeys(
+            str(value).strip() for value in item.get("skills") or [] if str(value).strip()
+        ))
+        if not responsibilities or not skills:
+            raise ValueError("each declared project role requires responsibilities and skills")
+        role = {
+            "id": f"role_{uuid4().hex}",
+            "blueprint_key": key,
+            "name": name,
+            "description": str(item.get("description") or "").strip(),
+            "responsibilities": responsibilities,
+            "skills": skills,
+            "assignee_id": None,
+            "source_status": "REVIEWED_CONFIGURATION",
+        }
+        role_ids[key] = role["id"]
+        role_names[name] = role
+        roles.append(role)
+
     stage_ids: dict[str, str] = {}
     stages: list[dict[str, Any]] = []
     for index, item in enumerate(raw_stages):
@@ -175,6 +212,25 @@ def instantiate_project_blueprint(
         task_id = f"tsk_{uuid4().hex}"
         task_ids[key] = task_id
         raw_status = str(item.get("status") or "todo").lower()
+        role_key = str(item.get("role_key") or "").strip()
+        role_name = str(item.get("role") or "").strip()
+        if role_key:
+            matched_role = next((role for role in roles if role.get("blueprint_key") == role_key), None)
+            if matched_role is None:
+                raise ValueError("project blueprint task role_key must reference a declared role")
+            if role_name and role_name != matched_role["name"]:
+                raise ValueError("project blueprint task role must match its declared role_key")
+            role_name = matched_role["name"]
+        elif has_declared_roles and role_name not in role_names:
+            raise ValueError("project blueprint task role must reference a declared role")
+        if role_name and role_name not in role_names:
+            implicit = {
+                "id": f"role_{uuid4().hex}", "blueprint_key": None, "name": role_name,
+                "description": "", "responsibilities": [], "skills": [], "assignee_id": None,
+                "source_status": "LEGACY_INFERRED",
+            }
+            role_names[role_name] = implicit
+            roles.append(implicit)
         tasks.append({
             "id": task_id,
             "blueprint_key": key,
@@ -188,7 +244,8 @@ def instantiate_project_blueprint(
             "status_source": "REVIEWED_CONFIGURATION",
             "priority": str(item.get("priority") or "none").lower(),
             "assignee_id": None,
-            "assignee_role": str(item.get("role") or "").strip() or None,
+            "role_id": role_names.get(role_name, {}).get("id"),
+            "assignee_role": role_name or None,
             "labels": list(dict.fromkeys(str(value).strip() for value in item.get("labels") or [] if str(value).strip())),
             "development_context": item.get("development_context"),
             "planned_start_at": item.get("start_date"),
@@ -272,6 +329,7 @@ def instantiate_project_blueprint(
         "status": "ACTIVE",
         "stages": stages,
         "gates": [],
+        "roles": roles,
         "tasks": tasks,
         "dependencies": dependencies,
         "documents": list(blueprint.get("documents") or []),

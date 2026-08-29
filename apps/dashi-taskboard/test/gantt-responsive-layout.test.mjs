@@ -39,3 +39,32 @@ test("gantt title grid yields usable timeline space at compact widths", () => {
   assert.match(ganttSource, /const ratio = compact \? 0\.44 : medium \? 0\.34 : 0\.3/);
   assert.match(cssBlock(".gantt-toolbar-controls"), /flex: 0 0 auto/);
 });
+
+test("gantt explains that it is the taskboard schedule and exposes its visual grammar", () => {
+  assert.match(ganttSource, /任务排期与前后依赖/);
+  assert.match(ganttSource, /前面任务看板中的同一批任务/);
+  assert.match(ganttSource, /横条：任务起止时间/);
+  assert.match(ganttSource, /箭头：前置任务 → 后续任务/);
+  assert.match(ganttSource, /左侧按状态分组，并显示项目阶段、负责人和日期/);
+  assert.match(styles, /\.gantt-context/);
+  assert.match(styles, /\.gantt-legend/);
+});
+
+test("gantt rows connect canonical project stages, owners, dates, and dependencies", () => {
+  assert.match(ganttSource, /qwsTaskContext/);
+  assert.match(ganttSource, /taskboardStageName/);
+  assert.match(ganttSource, /taskboardAssigneeName/);
+  assert.match(ganttSource, /taskboardScheduleLabel/);
+  assert.match(ganttSource, /taskboardDependencyLabel/);
+  assert.match(ganttSource, /按状态/);
+  assert.match(ganttSource, /前置 \$\{blockedByCount\}/);
+  assert.match(ganttSource, /后续 \$\{blocksCount\}/);
+});
+
+test("short gantt bars prioritize the task title over the assignee avatar", () => {
+  const titleIndex = ganttSource.indexOf('<span class="gantt-bar-copy">');
+  const avatarIndex = ganttSource.indexOf('<i class="gantt-bar-assignee');
+  assert.ok(titleIndex > 0 && avatarIndex > titleIndex);
+  assert.match(styles, /@container \(max-width: 138px\)/);
+  assert.match(styles, /\.gantt-bar-assignee \{ display: none; \}/);
+});

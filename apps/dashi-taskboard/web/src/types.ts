@@ -513,6 +513,10 @@ export interface HostContext {
     completed: number;
     total: number;
   };
+  qwsProcess?: {
+    stages: Array<{ id: string; name: string; order: number }>;
+    tasks: Array<{ marker: string; stageId: string; assigneeRole: string }>;
+  };
 }
 
 export interface TaskDraft {

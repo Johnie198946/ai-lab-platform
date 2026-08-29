@@ -3700,6 +3700,7 @@ export function App() {
           <Suspense fallback={<div className="board-view-loading">{text("正在打开甘特图…", "Opening Gantt…")}</div>}>
             <GanttView
               tasks={filteredTasks}
+              qwsProcess={hostContext?.qwsProcess}
               presentations={taskPresentations}
               hasActiveFilters={hasActiveTaskFilters}
               zoom={ganttZoom}

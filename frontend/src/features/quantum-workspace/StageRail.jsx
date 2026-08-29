@@ -1,4 +1,4 @@
-import { Bot, CalendarDays, CheckCircle2, ChevronRight, Layers3, ShieldCheck, Sparkles, UserRound, UsersRound, X } from "lucide-react";
+import { AlertTriangle, Bot, CalendarDays, CheckCircle2, ChevronRight, Layers3, Pencil, Plus, Save, ShieldCheck, Sparkles, Trash2, UserRound, UsersRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildStageRail } from "./quantumProjection";
 
@@ -16,7 +16,10 @@ const displayDate = (value) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "日期待确认" : new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" }).format(date);
 };
-const ownerOf = (item) => item.assignee_id || item.assignee_role || "待分配";
+const ownerOf = (item, employeeById = new Map()) => {
+  const employee = employeeById.get(item.assignee_id);
+  return employee ? `${employee.display_name} · ${employee.job_title}` : item.assignee_role || "待分配";
+};
 
 const baseAgentPresentation = {
   main_agent: { label: "通用执行基座", skills: ["项目统筹", "需求澄清", "跨角色协同"] },
@@ -33,16 +36,33 @@ function buildRoleOverview(process, stages) {
   const employeeById = new Map(employees.map((employee) => [employee.employee_id, employee]));
   const employeeByRole = new Map(employees.map((employee) => [employee.job_title, employee]));
   const roles = new Map();
-  const ensureRole = (name) => {
+  const roleById = new Map();
+  const ensureRole = (name, definition = null) => {
     if (!name || name === "待分配") return null;
-    if (!roles.has(name)) roles.set(name, { name, tasks: [], gates: [], stageIds: new Set(), employee: employeeByRole.get(name) || null });
+    if (!roles.has(name)) {
+      const role = {
+        id: definition?.id || `derived:${name}`,
+        name,
+        description: definition?.description || "",
+        responsibilities: uniqueText(definition?.responsibilities || []),
+        configuredSkills: uniqueText(definition?.skills || []),
+        assignee_id: definition?.assignee_id || null,
+        source_status: definition?.source_status || "LEGACY_INFERRED",
+        tasks: [], gates: [], stageIds: new Set(),
+        employee: employeeById.get(definition?.assignee_id) || employeeByRole.get(name) || null,
+      };
+      roles.set(name, role);
+      if (definition?.id) roleById.set(definition.id, role);
+    }
     return roles.get(name);
   };
+
+  (Array.isArray(process.roles) ? process.roles : []).forEach((definition) => ensureRole(definition?.name, definition));
 
   stages.forEach((stage) => {
     stage.tasks.forEach((task) => {
       const employee = employeeById.get(task.assignee_id) || null;
-      const role = ensureRole(task.assignee_role || employee?.job_title || task.assignee_id);
+      const role = roleById.get(task.role_id) || ensureRole(employee?.job_title || task.assignee_role);
       if (!role) return;
       role.employee ||= employee;
       role.tasks.push({ ...task, stageName: stage.name });
@@ -64,17 +84,32 @@ function buildRoleOverview(process, stages) {
       ...role,
       stages: [...role.stageIds].map((id) => stageById.get(id)).filter(Boolean),
       baseLabel: base?.label || (role.gates.length ? "流程评审角色" : "能力基座待配置"),
-      skills: uniqueText([...(base?.skills || []), ...gateSkills]),
+      skills: uniqueText([...role.configuredSkills, ...(base?.skills || []), ...gateSkills]),
       capabilityVersions: uniqueText(capabilityVersions),
     };
   }).sort((left, right) => (left.stages[0]?.order ?? 999) - (right.stages[0]?.order ?? 999) || left.name.localeCompare(right.name, "zh-CN"));
 }
 
-function RoleOverviewDialog({ process, stages, onClose }) {
+const roleFormOf = (role = null) => ({
+  name: role?.name || "",
+  description: role?.description || "",
+  responsibilities: (role?.responsibilities || []).join("\n"),
+  skills: (role?.configuredSkills || role?.skills || []).join("\n"),
+  assignee_id: role?.assignee_id || "",
+});
+const linesOf = (value) => uniqueText(String(value || "").split(/[\n,，]/));
+
+function RoleOverviewDialog({ process, stages, onClose, onCreate, onUpdate, onDelete }) {
   const dialogRef = useRef(null);
   const roles = useMemo(() => buildRoleOverview(process, stages), [process, stages]);
-  const [selectedRoleName, setSelectedRoleName] = useState(() => roles[0]?.name || "");
-  const selectedRole = roles.find((role) => role.name === selectedRoleName) || roles[0];
+  const employees = Array.isArray(process.ai_employees) ? process.ai_employees : [];
+  const [selectedRoleId, setSelectedRoleId] = useState(() => roles[0]?.id || "");
+  const [editorMode, setEditorMode] = useState("view");
+  const [form, setForm] = useState(() => roleFormOf());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState(false);
+  const selectedRole = roles.find((role) => role.id === selectedRoleId) || roles[0];
   const taskCount = roles.reduce((total, role) => total + role.tasks.length, 0);
   const gateCount = roles.reduce((total, role) => total + role.gates.length, 0);
 
@@ -95,6 +130,42 @@ function RoleOverviewDialog({ process, stages, onClose }) {
     return () => window.removeEventListener("keydown", handleEscape);
   }, [onClose]);
 
+  useEffect(() => {
+    if (!selectedRole && roles[0]) setSelectedRoleId(roles[0].id);
+  }, [roles, selectedRole]);
+
+  const chooseRole = (role) => {
+    setSelectedRoleId(role.id);
+    setEditorMode("view");
+    setDeleteConfirm(false);
+    setError("");
+  };
+  const beginEdit = () => { setForm(roleFormOf(selectedRole)); setEditorMode("edit"); setDeleteConfirm(false); setError(""); };
+  const beginCreate = () => { setForm(roleFormOf()); setEditorMode("create"); setDeleteConfirm(false); setError(""); };
+  const submit = async (event) => {
+    event.preventDefault();
+    const payload = {
+      name: form.name.trim(), description: form.description.trim(),
+      responsibilities: linesOf(form.responsibilities), skills: linesOf(form.skills),
+      assignee_id: form.assignee_id || null,
+    };
+    if (!payload.name) { setError("角色名称不能为空。"); return; }
+    if (!payload.skills.length) { setError("请至少配置一项角色技能。"); return; }
+    setBusy(true); setError("");
+    try {
+      const result = editorMode === "create" ? await onCreate(payload) : await onUpdate(selectedRole.id, payload);
+      setSelectedRoleId(result?.role?.id || selectedRole?.id || "");
+      setEditorMode("view");
+    } catch (reason) { setError(reason.message); }
+    finally { setBusy(false); }
+  };
+  const remove = async () => {
+    setBusy(true); setError("");
+    try { await onDelete(selectedRole.id); setSelectedRoleId(""); setEditorMode("view"); setDeleteConfirm(false); }
+    catch (reason) { setError(reason.message); }
+    finally { setBusy(false); }
+  };
+
   return (
     <dialog
       ref={dialogRef}
@@ -110,34 +181,53 @@ function RoleOverviewDialog({ process, stages, onClose }) {
             <h2 id="qw-role-dialog-title">项目角色全景</h2>
             <p>从当前项目流程中汇总角色、责任边界、交接关系与已配置能力。</p>
           </div>
-          <button type="button" onClick={onClose} aria-label="关闭项目角色全景" autoFocus><X size={18} /></button>
+          <div className="qw-role-head-actions"><button type="button" className="primary" onClick={beginCreate}><Plus size={15} />新增角色</button><button type="button" onClick={onClose} aria-label="关闭项目角色全景" autoFocus><X size={18} /></button></div>
         </header>
         <div className="qw-role-dialog-metrics" aria-label="角色全景统计">
           <span><UsersRound size={16} /><strong>{roles.length}</strong>个角色</span>
           <span><CheckCircle2 size={16} /><strong>{taskCount}</strong>项责任任务</span>
           <span><ShieldCheck size={16} /><strong>{gateCount}</strong>个评审节点</span>
         </div>
-        {!selectedRole ? <p className="qw-role-dialog-empty">当前流程尚未配置责任角色。</p> : <div className="qw-role-dialog-body">
+        {!selectedRole && editorMode === "view" ? <p className="qw-role-dialog-empty">当前流程尚未配置责任角色。点击“新增角色”开始配置。</p> : <div className="qw-role-dialog-body">
           <nav className="qw-role-directory" aria-label="项目角色目录">
             {roles.map((role) => {
-              const active = role.name === selectedRole.name;
-              return <button key={role.name} type="button" className={active ? "active" : ""} aria-current={active ? "true" : undefined} onClick={() => setSelectedRoleName(role.name)}>
+              const active = role.id === selectedRole?.id;
+              return <button key={role.id} type="button" className={active ? "active" : ""} aria-current={active ? "true" : undefined} onClick={() => chooseRole(role)}>
                 <span className="qw-role-avatar">{role.employee ? <Bot size={16} /> : <UserRound size={16} />}</span>
                 <span><strong>{role.name}</strong><small>{role.employee ? `${role.employee.display_name} · AI 员工` : role.baseLabel}</small></span>
                 <em>{role.tasks.length + role.gates.length}</em>
               </button>;
             })}
           </nav>
-          <section className="qw-role-profile" aria-live="polite">
+          {editorMode !== "view" ? <section className="qw-role-editor" aria-live="polite">
+            <header><div><span className="qw-eyebrow">{editorMode === "create" ? "Create role" : "Edit role"}</span><h3>{editorMode === "create" ? "新增项目角色" : `编辑 ${selectedRole?.name}`}</h3><p>负责人选择后，角色名称将自动使用该员工的岗位，确保角色与负责人一致。</p></div><button type="button" onClick={() => setEditorMode("view")} aria-label="取消编辑"><X size={17} /></button></header>
+            <form onSubmit={submit}>
+              <div className="qw-role-form-grid">
+                <label>负责人<select value={form.assignee_id} onChange={(event) => { const employee = employees.find((item) => item.employee_id === event.target.value); setForm((current) => ({ ...current, assignee_id: event.target.value, name: employee?.job_title || current.name })); }}><option value="">暂不分配</option>{employees.map((employee) => <option key={employee.employee_id} value={employee.employee_id}>{employee.display_name} · {employee.job_title}</option>)}</select><small>仅展示本项目 AI 员工</small></label>
+                <label>角色名称<input value={form.name} readOnly={!!form.assignee_id} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} maxLength={160} required /><small>{form.assignee_id ? "已与负责人岗位锁定" : "未分配负责人时可自定义"}</small></label>
+              </div>
+              <label>角色说明<textarea value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} maxLength={2000} rows={3} placeholder="说明该角色存在的目的和不负责的范围" /></label>
+              <label>责任边界<textarea value={form.responsibilities} onChange={(event) => setForm((current) => ({ ...current, responsibilities: event.target.value }))} rows={5} placeholder="每行一项，例如：负责发布包与回滚方案；不负责功能需求决策" /></label>
+              <label>技能与能力<span className="required">必填</span><textarea value={form.skills} onChange={(event) => setForm((current) => ({ ...current, skills: event.target.value }))} rows={5} placeholder="每行一项，例如：CI/CD、灰度发布、回滚演练" required /></label>
+              {error && <p className="qw-role-form-error" role="alert">{error}</p>}
+              <footer><button type="button" onClick={() => setEditorMode("view")} disabled={busy}>取消</button><button type="submit" className="primary" disabled={busy}><Save size={14} />{busy ? "保存中…" : "保存角色"}</button></footer>
+            </form>
+          </section> : <section className="qw-role-profile" aria-live="polite">
             <header>
               <div className="qw-role-avatar large">{selectedRole.employee ? <Bot size={21} /> : <UserRound size={21} />}</div>
-              <div><span>{selectedRole.employee ? "AI EMPLOYEE" : "PROCESS ROLE"}</span><h3>{selectedRole.name}</h3><p>{selectedRole.employee ? `${selectedRole.employee.display_name} · ${selectedRole.baseLabel}` : selectedRole.baseLabel}</p></div>
+              <div><span>{selectedRole.employee ? "AI EMPLOYEE" : "PROCESS ROLE"}</span><h3>{selectedRole.name}</h3><p>{selectedRole.employee ? `${selectedRole.employee.display_name} · ${selectedRole.name}` : "负责人待分配"}</p></div>
+              <div className="qw-role-profile-actions"><button type="button" onClick={beginEdit}><Pencil size={14} />编辑</button><button type="button" className="danger" onClick={() => setDeleteConfirm(true)}><Trash2 size={14} />删除</button></div>
             </header>
+            {selectedRole.description && <p className="qw-role-description">{selectedRole.description}</p>}
+            {selectedRole.employee && selectedRole.employee.job_title !== selectedRole.name && <p className="qw-role-mismatch"><AlertTriangle size={14} />负责人岗位与角色不匹配，请重新选择负责人。</p>}
+            {deleteConfirm && <div className="qw-role-delete-confirm" role="alert"><AlertTriangle size={16} /><span><strong>确认删除“{selectedRole.name}”？</strong><small>关联任务和评审节点会被设为待分配。</small></span><button type="button" onClick={() => setDeleteConfirm(false)} disabled={busy}>取消</button><button type="button" className="danger" onClick={remove} disabled={busy}>{busy ? "删除中…" : "确认删除"}</button></div>}
+            {error && <p className="qw-role-form-error" role="alert">{error}</p>}
             <div className="qw-role-stage-strip"><Layers3 size={14} /><span>涉及阶段</span>{selectedRole.stages.map((stage) => <i key={stage.id}>{stage.name}</i>)}</div>
             <div className="qw-role-profile-grid">
               <section className="qw-role-responsibilities">
                 <h4>责任边界 <span>{selectedRole.tasks.length + selectedRole.gates.length}</span></h4>
                 <div>
+                  {selectedRole.responsibilities.map((item) => <article key={`defined:${item}`} className="defined"><div><CheckCircle2 size={14} /><strong>{item}</strong><span>角色定义</span></div></article>)}
                   {selectedRole.tasks.map((task) => <article key={task.id}>
                     <div><CheckCircle2 size={14} /><strong>{task.title}</strong><span>{task.stageName}</span></div>
                     <p>{task.summary || "按任务卡片要求完成工作与验收。"}</p>
@@ -169,15 +259,15 @@ function RoleOverviewDialog({ process, stages, onClose }) {
                 </section>
               </aside>
             </div>
-          </section>
+          </section>}
         </div>}
       </div>
     </dialog>
   );
 }
 
-function StageDetail({ stage, index, onClose }) {
-  const owners = [...new Set(stage.tasks.map(ownerOf).filter((owner) => owner !== "待分配"))];
+function StageDetail({ stage, index, onClose, employeeById }) {
+  const owners = [...new Set(stage.tasks.map((task) => ownerOf(task, employeeById)).filter((owner) => owner !== "待分配"))];
   return (
     <section id={`qw-stage-detail-${stage.id}`} className="qw-stage-detail" aria-label={`${stage.name}阶段详情`}>
       <header>
@@ -212,7 +302,7 @@ function StageDetail({ stage, index, onClose }) {
         <section>
           <h3>责任分工</h3>
           <div className="qw-stage-owner-list">
-            {stage.tasks.map((task) => <div key={task.id}><UserRound size={14} /><span><strong>{ownerOf(task)}</strong><small>{task.title}</small></span></div>)}
+            {stage.tasks.map((task) => <div key={task.id}><UserRound size={14} /><span><strong>{ownerOf(task, employeeById)}</strong><small>{task.title}</small></span></div>)}
             {stage.gates.map((gate) => <div key={gate.id}><ShieldCheck size={14} /><span><strong>{gate.responsible_role || "待分配"}</strong><small>{gate.node_type} · {gate.name}</small></span></div>)}
             {!stage.tasks.length && !stage.gates.length && <p className="qw-stage-empty">暂无责任分工。</p>}
           </div>
@@ -222,8 +312,9 @@ function StageDetail({ stage, index, onClose }) {
   );
 }
 
-export function StageRail({ process, selectedStageId, onSelect }) {
+export function StageRail({ process, selectedStageId, onSelect, onCreateRole, onUpdateRole, onDeleteRole }) {
   const stages = buildStageRail(process);
+  const employeeById = useMemo(() => new Map((process.ai_employees || []).map((employee) => [employee.employee_id, employee])), [process.ai_employees]);
   const [roleOverviewOpen, setRoleOverviewOpen] = useState(false);
   const roleCount = useMemo(() => buildRoleOverview(process, stages).length, [process, stages]);
   const selectedIndex = stages.findIndex((stage) => stage.id === selectedStageId);
@@ -237,7 +328,7 @@ export function StageRail({ process, selectedStageId, onSelect }) {
       </div>
       <nav className="qw-stage-rail" aria-label="IPD 项目流程">
         {stages.map((stage, index) => {
-          const ownerCount = new Set(stage.tasks.map(ownerOf).filter((owner) => owner !== "待分配")).size;
+          const ownerCount = new Set(stage.tasks.map((task) => ownerOf(task, employeeById)).filter((owner) => owner !== "待分配")).size;
           const active = selectedStageId === stage.id;
           return (
             <button
@@ -257,8 +348,8 @@ export function StageRail({ process, selectedStageId, onSelect }) {
           );
         })}
       </nav>
-      {selectedStage && <StageDetail stage={selectedStage} index={selectedIndex} onClose={() => onSelect?.(null)} />}
-      {roleOverviewOpen && <RoleOverviewDialog process={process} stages={stages} onClose={() => setRoleOverviewOpen(false)} />}
+      {selectedStage && <StageDetail stage={selectedStage} index={selectedIndex} employeeById={employeeById} onClose={() => onSelect?.(null)} />}
+      {roleOverviewOpen && <RoleOverviewDialog process={process} stages={stages} onClose={() => setRoleOverviewOpen(false)} onCreate={onCreateRole} onUpdate={onUpdateRole} onDelete={onDeleteRole} />}
     </div>
   );
 }

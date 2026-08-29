@@ -86,6 +86,24 @@ test("project process explorer is sticky and rendered on the Dashi taskboard vie
   assert.match(styles, /\.qw-project-sticky\{position:sticky;top:64px/);
 });
 
+test("project workspace supports a remembered compact immersive mode", () => {
+  assert.match(pageSource, /qws-project-immersive/);
+  assert.match(pageSource, /折叠项目导航并进入沉浸工作模式/);
+  assert.match(pageSource, /className="qw-immersive-bar"/);
+  assert.match(pageSource, /展开完整项目导航/);
+  assert.match(styles, /:root\.qw-project-immersive \.qw-header\{display:none\}/);
+  assert.match(styles, /\.qw-project-page\.is-immersive \.qw-stage-explorer\{display:none\}/);
+  assert.match(styles, /\.qw-project-page\.is-immersive \.qw-immersive-bar\{display:flex\}/);
+});
+
+test("taskboard host shares canonical project stages with the embedded schedule", async () => {
+  const hostSource = await readFile(new URL("../src/features/quantum-workspace/DashiTaskboardHost.jsx", import.meta.url), "utf8");
+  assert.match(pageSource, /<DashiTaskboardHost project=\{project\} process=\{process\}/);
+  assert.match(hostSource, /qwsProcess:/);
+  assert.match(hostSource, /marker: taskMarker\(task\.id\)/);
+  assert.match(hostSource, /stageId: task\.stage_id/);
+});
+
 test("each stage projection includes its real tasks and responsibility fields", () => {
   const [stage] = buildStageRail({
     stages: [{ id: "s1", name: "概念", order: 0 }],
@@ -96,7 +114,19 @@ test("each stage projection includes its real tasks and responsibility fields", 
   assert.equal(stage.gates[0].responsible_role, "技术评审组");
   assert.match(railSource, /阶段任务与内容/);
   assert.match(railSource, /责任分工/);
-  assert.match(railSource, /assignee_id \|\| item\.assignee_role \|\| "待分配"/);
+  assert.match(railSource, /employeeById\.get\(item\.assignee_id\)/);
+  assert.match(railSource, /employee\.display_name.*employee\.job_title/);
+});
+
+test("role panorama exposes skill-aware CRUD and locks assignee to its job title", () => {
+  assert.match(railSource, /新增项目角色/);
+  assert.match(railSource, /技能与能力/);
+  assert.match(railSource, /name: employee\?\.job_title/);
+  assert.match(railSource, /readOnly=\{!!form\.assignee_id\}/);
+  assert.match(pageSource, /createProjectRole/);
+  assert.match(pageSource, /updateProjectRole/);
+  assert.match(pageSource, /deleteProjectRole/);
+  assert.match(apiSource, /projects\/\$\{projectId\}\/roles/);
 });
 
 test("stage nodes expose keyboard-friendly expanded state and explicit close control", () => {

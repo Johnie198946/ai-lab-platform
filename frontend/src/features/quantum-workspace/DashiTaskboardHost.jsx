@@ -183,7 +183,7 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
   };
 }
 
-export function DashiTaskboardHost({ project, onOpenTaskChat }) {
+export function DashiTaskboardHost({ project, process, onOpenTaskChat }) {
   const { authSession } = useAuth();
   const user = authSession?.user || {};
   const tenant = safeSlug(user.tenant_key || user.user_id || "default");
@@ -282,6 +282,14 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
             projectId: dashiProjectId,
             workspacePath: "/workspace",
             projects: [{ id: project.id, name: project.name, projectKind: "local", hostId: "local", workspacePath: "/workspace" }],
+            qwsProcess: {
+              stages: (process?.stages || []).map((stage) => ({ id: stage.id, name: stage.name, order: stage.order ?? 0 })),
+              tasks: (process?.tasks || []).map((task) => ({
+                marker: taskMarker(task.id),
+                stageId: task.stage_id,
+                assigneeRole: task.assignee_role || "",
+              })),
+            },
           },
         }, window.location.origin);
         postTheme();
@@ -319,7 +327,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       mediaQuery?.removeEventListener?.("change", handleThemeChange);
       themeObserver?.disconnect();
     };
-  }, [dashiProjectId, loadTaskSession, onOpenTaskChat, openArchitect, project, user]);
+  }, [dashiProjectId, loadTaskSession, onOpenTaskChat, openArchitect, process, project, user]);
 
   const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">
