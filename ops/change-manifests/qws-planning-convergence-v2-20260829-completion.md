@@ -45,18 +45,19 @@
 
 ## Delivery state
 
-- status: `TESTED`
-- local_commit: 未授权/未执行
-- GitHub remote/ref/SHA: 未授权/未执行
-- `git ls-remote`: 未执行；本任务未请求 push
-- server_before: `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`
-- server_after: 未授权/未部署
-- health_check: 当前生产 `GET http://127.0.0.1:8000/ready` 返回 `{"status":"ready","version":"0.8.0"}`；仅作为部署前基线
-- functional_check: 本地专项功能检查通过；生产新功能未部署，未执行生产功能验证
-- rollback_point: 不适用（本任务未部署）；当前生产基线为 `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`
+- status: `DEPLOYED`
+- authorization: 用户在当前任务中明确要求“推送 部署”。
+- implementation_commit: `266b40ad967e7cfd34104592b953883575c59ab6`
+- GitHub remote/ref/SHA: `origin refs/heads/codex/qws-planning-convergence-v2-20260829` / `266b40ad967e7cfd34104592b953883575c59ab6`
+- `git ls-remote`: 已核验 implementation commit 为 `266b40ad967e7cfd34104592b953883575c59ab6`；本清单提交推送后将再次核验远端 ref。
+- first_deployment: `/opt/releases/ai-lab-platform-266b40ad967e.5zq6bi`，精确 SHA `266b40ad967e7cfd34104592b953883575c59ab6`。
+- server_before: 首轮部署前为 `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`；部署后检测到并发发布已切换至 `/opt/releases/ai-lab-platform-81bf225f7523.2VMJaj`。
+- server_after: 首轮为 `/opt/releases/ai-lab-platform-266b40ad967e.5zq6bi`；本清单提交将重新精确部署并核验。
+- health_check: 首轮部署 API `/ready` 与 Hermes bridge `/health` 通过；最终部署后待再次核验。
+- functional_check: 本地构建、12/12 专项前端测试、后端解析/去重脚本通过；最终 release 内功能烟测待执行。
+- rollback_point: 最终部署前的并发发布 `/opt/releases/ai-lab-platform-81bf225f7523.2VMJaj`；首轮部署前基线 `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ` 仍保留。
 
 ## Remaining risks
 
-- 变更尚未提交、推送或部署；生产仍会保留截图中的旧行为，直到用户明确授权后续发布。
 - 超长历史 Hermes Session 本身仍可能增加模型处理时间；本次已压缩每轮显式回传的历史文档正文并约束后续蓝图大小。
-- 部署后应使用真实租户项目执行：Other 自定义回答、蓝图 v1→v2 合并、generic/bare JSON 隐藏、重复依赖 dispatch、总耗时/当前阶段计时五项验收。
+- 未在生产创建测试项目或写入真实租户数据；最终 release 功能烟测及真实租户端到端五项验收待执行。
