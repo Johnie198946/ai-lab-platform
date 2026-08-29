@@ -34,19 +34,19 @@
 
 ## Delivery state
 
-- status: `PUSHED`
+- status: `VERIFIED`
 - authorization: 用户在当前任务中明确要求“部署推送”。
 - local_commit: `f1f5cb654a4c7254aecd41d84f3a623dcafa7abc`。
 - GitHub remote/ref/SHA: `origin/refs/heads/codex/qws-taskboard-session-context-fix-20260829` = `f1f5cb654a4c7254aecd41d84f3a623dcafa7abc`。
 - `git ls-remote`: 已执行并确认远端 SHA 与本地实现 commit 一致。
 - server_before: `/opt/releases/ai-lab-platform-e12c117b4694.rTaIDX`
-- server_after: 未执行；部署前发现当前 release 目录被另一条 `aea38743fc9a34e5811134db415a43f50636d24c` 登录/随机用户名分支原地改写，且该分支与本次 QWS 基线互非祖先，等待用户确认保留/回退策略。
-- health_check: 部署前探测 `http://127.0.0.1:8000/ready` 返回 404；未将其误报为健康。
-- functional_check: 本地专项集成、构建和类型检查通过；生产新版本未验证。
-- rollback_point: 未建立新回滚点（部署尚未开始）；当前运行路径为 `/opt/releases/ai-lab-platform-e12c117b4694.rTaIDX`，其中 `.deployed-sha` 显示 `aea38743fc9a34e5811134db415a43f50636d24c`。
+- server_after: `/opt/releases/ai-lab-platform-48305c33595c.rULlCY`，`.deployed-sha` = `48305c33595cd8c5e9dc9a65cd7df328d0d836ad`。
+- health_check: API `/ready` 返回 `{"status":"ready","version":"0.8.0"}`；Hermes Bridge `:9118/health` 返回 `{"status":"ok","service":"hermes-bridge","version":"v6.0"...}`；Taskboard 容器为 `healthy`。
+- functional_check: 已部署 Taskboard 镜像内执行 `node --test test/qws-integration.test.mjs`，1/1 passed；本地专项集成、类型检查及两端构建也已通过。
+- rollback_point: `/opt/releases/ai-lab-platform-e12c117b4694.rTaIDX`（部署前该目录 `.deployed-sha` 为 `aea38743fc9a34e5811134db415a43f50636d24c`）。
 
 ## Remaining risks
 
 - 生产租户已有第一张部分同步卡片；修复部署后再次打开项目会通过稳定 QWS marker 复用该卡片并补齐其余卡片，无需删除现有数据。
 - 全量 Dashi 测试存在既有进程未退出问题；本次相关专项测试、类型检查和两端构建均已通过。
-- 若直接精确部署本次提交，会回退现网的开发者登录/随机用户名补丁；若合并该补丁，则属于认证与部署配置的范围扩展，需用户明确确认后执行。
+- 用户再次明确要求“部署”后，本次按已推送 session 修复分支执行精确部署，未合并不属于本任务范围的开发者登录/随机用户名认证补丁。
