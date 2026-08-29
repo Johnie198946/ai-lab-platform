@@ -53,6 +53,12 @@ services:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       # Authen 统一认证（与认证服务共享的 HS256 密钥；配置后 API 强制 Bearer JWT）
       AUTHEN_JWT_SECRET: ${AUTHEN_JWT_SECRET:-}
+      # 开发者免短信登录（生产默认关闭；启用时必须配置独立固定账号/验证码）
+      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-false}
+      DEV_LOGIN_PHONE: ${DEV_LOGIN_PHONE:-}
+      DEV_LOGIN_CODE: ${DEV_LOGIN_CODE:-}
+      DEV_LOGIN_USER_ID: ${DEV_LOGIN_USER_ID:-dev-user}
+      DEV_LOGIN_USERNAME: ${DEV_LOGIN_USERNAME:-小团子开发者}
       # Authen 认证服务（宿主机 systemd，经 host.docker.internal 访问）
       AUTHEN_BASE: http://host.docker.internal:8001
       AUTHEN_USER_URL: http://host.docker.internal:8003

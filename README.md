@@ -111,6 +111,7 @@ bash scripts/update.sh   # 拉取最新代码 + 重建 + 健康检查
 - 平台 API **全部要求 `Authorization: Bearer <Authen JWT>`**（HS256 共享密钥 AUTHEN_JWT_SECRET 本地验签）；/health、/api/v1/register 开放
 - 登录: `POST http://120.24.248.58:8001/api/v1/auth/login` body `{"identifier":"admin","password":"..."}` → access_token
 - 集成代码: `backend/api/auth.py`（require_auth 依赖）+ main.py 路由保护
+- 开发者免短信登录：服务端 `.env` 显式设置 `DEV_LOGIN_ENABLED=true` 后，使用账号 `13800138000`、固定验证码 `246810`；该入口默认关闭，仅 Debug iOS 构建显示。
 
 ### 订阅制多租户（0.7.0）
 - **隔离模型**: 普通用户默认空知识库；订阅知识分类后才可见；超管可见全部

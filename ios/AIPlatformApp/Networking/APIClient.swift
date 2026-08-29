@@ -2026,4 +2026,23 @@ public final class APIClient: ObservableObject {
             )
         )
     }
+
+    /// POST /api/v1/dev-login：仅开发环境启用的免短信登录。
+    public func developerLogin(phone: String, verificationCode: String) async throws -> RegisterResponseDTO {
+        struct DevLoginBody: Encodable {
+            let phone: String
+            let verificationCode: String
+
+            enum CodingKeys: String, CodingKey {
+                case phone
+                case verificationCode = "verification_code"
+            }
+        }
+        return try await request(
+            RegisterResponseDTO.self,
+            path: "dev-login",
+            method: "POST",
+            body: DevLoginBody(phone: phone, verificationCode: verificationCode)
+        )
+    }
 }

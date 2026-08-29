@@ -62,6 +62,9 @@ public struct LoginView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
 
                                 phoneLoginSection
+#if DEBUG
+                                developerLoginSection
+#endif
                                 thirdPartyChannelsSection
                             }
                             .padding(AppTheme.Spacing.xxl)
@@ -276,6 +279,18 @@ public struct LoginView: View {
             }
         }
     }
+
+#if DEBUG
+    private var developerLoginSection: some View {
+        Button(action: performDeveloperLogin) {
+            Label("开发者免短信登录", systemImage: "wrench.and.screwdriver")
+                .font(AppTheme.Typography.label)
+        }
+        .buttonStyle(.bordered)
+        .tint(AppTheme.Colors.primary)
+        .frame(maxWidth: .infinity)
+    }
+#endif
     
     private var guestModeSection: some View {
         Button(action: {
@@ -330,20 +345,67 @@ public struct LoginView: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         #endif
     }
-    
+
+#if DEBUG
+    private func performDeveloperLogin() {
+        guard !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+
+        Task { @MainActor in
+            do {
+                let response = try await APIClient.shared.developerLogin(
+                    phone: "13800138000",
+                    verificationCode: "246810"
+                )
+                guard let token = response.token, !token.isEmpty else {
+                    throw APIError.server(0, "开发者登录未返回访问凭证")
+                }
+                APIClient.shared.saveToken(token)
+                let profile = try? await APIClient.shared.fetchMe()
+                isLoading = false
+                appState.isDevMode = true
+                appState.isLoggedIn = true
+                appState.isGuestMode = false
+                applyAuthenticatedProfile(profile)
+            } catch {
+                isLoading = false
+                errorMessage = "开发者登录失败：\(error.localizedDescription)；请确认服务端已启用 DEV_LOGIN_ENABLED"
+            }
+        }
+    }
+#endif
+
+    private func applyAuthenticatedProfile(_ profile: ProfileDTO?) {
+        withAnimation(.spring()) {
+            if let profile,
+               !profile.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                appState.currentProfile = TenantProfile(
+                    name: profile.username,
+                    tenantId: profile.tenantKey,
+                    role: profile.isSuperAdmin ? .masterAdmin : .tenantAdmin,
+                    avatarUrl: profile.avatarUrl
+                )
+            } else {
+                appState.currentProfile = MockData.tenantProfile
+            }
+        }
+    }
+
     private func performPhoneLogin() {
         guard !isLoading else { return }
         isLoading = true
         errorMessage = nil
 
         // 手机号表单 → register 契约桥接（开发态占位；生产需真实邮箱/密码表单，见开发总结）
-        let username = phoneNumber
+        let username = CuteChineseUsernameGenerator.make()
         let email = "\(phoneNumber)@ailab.quantum"
         let password = smsCode
         let code = smsCode
 
         Task { @MainActor in
             var isDev = false
+            var fetchedProfile: ProfileDTO?
             // 1. 真实注册（后端内建兜底：注册失败自动回退登录，返回平台 JWT）
             do {
                 let resp = try await APIClient.shared.register(
@@ -368,6 +430,7 @@ public struct LoginView: View {
             // 2. 探测 /me 判定开发态（dev 载荷 tenant_key=demo）或连接失败
             do {
                 let profile = try await APIClient.shared.fetchMe()
+                fetchedProfile = profile
                 if profile.tenantKey == "demo" || profile.username == "dev" {
                     isDev = true
                 }
@@ -380,11 +443,9 @@ public struct LoginView: View {
             UINotificationFeedbackGenerator().notificationOccurred(.success)
             #endif
             appState.isDevMode = isDev
-            withAnimation(.spring()) {
-                appState.isLoggedIn = true
-                appState.isGuestMode = false
-                appState.currentProfile = MockData.tenantProfile
-            }
+            appState.isLoggedIn = true
+            appState.isGuestMode = false
+            applyAuthenticatedProfile(fetchedProfile)
         }
     }
     

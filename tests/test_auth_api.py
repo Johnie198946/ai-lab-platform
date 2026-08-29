@@ -129,6 +129,42 @@ class TestAuthAPI(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 401)
 
+    def test_dev_login_is_disabled_by_default(self):
+        with patch.dict(os.environ, {"DEV_LOGIN_ENABLED": "false"}, clear=False):
+            r = self.request(
+                "POST",
+                "/api/v1/dev-login",
+                json={"phone": "13800138000", "verification_code": "246810"},
+            )
+        self.assertEqual(r.status_code, 404)
+
+    def test_dev_login_issues_token_when_explicitly_enabled(self):
+        import backend.api.register as register
+
+        async def fake_provision(user_id):
+            self.assertEqual(user_id, "dev-user")
+            return "u-dev-user"
+
+        with patch.dict(
+            os.environ,
+            {
+                "DEV_LOGIN_ENABLED": "true",
+                "DEV_LOGIN_PHONE": "13800138000",
+                "DEV_LOGIN_CODE": "246810",
+                "DEV_LOGIN_USER_ID": "dev-user",
+                "DEV_LOGIN_USERNAME": "小团子开发者",
+            },
+            clear=False,
+        ), patch.object(register, "_provision_tenant", fake_provision):
+            r = self.request(
+                "POST",
+                "/api/v1/dev-login",
+                json={"phone": "13800138000", "verification_code": "246810"},
+            )
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(r.json()["token"])
+        self.assertEqual(r.json()["tenant_key"], "u-dev-user")
+
 
 if __name__ == "__main__":
     unittest.main()

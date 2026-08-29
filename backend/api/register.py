@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hmac
 import os
 from typing import Optional
 
@@ -36,6 +37,11 @@ class AdminCreateUserRequest(BaseModel):
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
     categories: Optional[list[str]] = None  # 初始订阅分类
+
+
+class DevLoginRequest(BaseModel):
+    phone: str
+    verification_code: str
 
 
 async def _provision_tenant(user_id: str) -> str:
@@ -101,7 +107,7 @@ async def register(body: RegisterRequest):
     return {"success": True, "message": "注册成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
 
 
-def _issue_jwt(user_id: str) -> str:
+def _issue_jwt(user_id: str, username: str = "") -> str:
     """签发平台 JWT（与 Authen 同 secret/算法，sub=user_id，供 require_auth 校验）。"""
     from datetime import datetime, timedelta, timezone
 
@@ -113,12 +119,36 @@ def _issue_jwt(user_id: str) -> str:
     return jwt.encode(
         {
             "sub": user_id,
-            "username": "",
+            "username": username,
             "exp": datetime.now(timezone.utc) + timedelta(hours=12),
         },
         secret,
         algorithm="HS256",
     )
+
+
+@router.post("/dev-login")
+async def dev_login(body: DevLoginRequest):
+    """开发环境免短信登录；生产环境必须显式开启并配置独立账号与验证码。"""
+    if os.environ.get("DEV_LOGIN_ENABLED", "false").strip().lower() != "true":
+        raise HTTPException(status_code=404, detail="开发者登录未启用")
+
+    expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
+    expected_code = os.environ.get("DEV_LOGIN_CODE", "").strip()
+    if not expected_phone or not expected_code:
+        raise HTTPException(status_code=503, detail="开发者登录配置不完整")
+    if not hmac.compare_digest(body.phone.strip(), expected_phone) or not hmac.compare_digest(
+        body.verification_code.strip(), expected_code
+    ):
+        raise HTTPException(status_code=401, detail="开发者账号或验证码错误")
+
+    user_id = os.environ.get("DEV_LOGIN_USER_ID", "dev-user").strip() or "dev-user"
+    username = os.environ.get("DEV_LOGIN_USERNAME", "小团子开发者").strip() or "小团子开发者"
+    tenant_key = await _provision_tenant(user_id)
+    token = _issue_jwt(user_id, username)
+    if not token:
+        raise HTTPException(status_code=503, detail="服务端未配置 AUTHEN_JWT_SECRET")
+    return {"success": True, "message": "开发者登录成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
 
 
 @router.post("/admin/users")

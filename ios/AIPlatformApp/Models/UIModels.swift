@@ -57,6 +57,16 @@ public struct TenantProfile: Identifiable, Codable, Sendable, Hashable {
     }
 }
 
+/// 为没有设置昵称的新用户生成一个轻量、友好的中文显示名。
+public enum CuteChineseUsernameGenerator {
+    private static let prefixes = ["软糖", "团团", "棉花", "桃桃", "星星", "柚柚", "糯米", "小鹿"]
+    private static let suffixes = ["同学", "兔", "熊", "云", "芽", "酱", "果", "星"]
+
+    public static func make() -> String {
+        "\(prefixes.randomElement()!)\(suffixes.randomElement()!)"
+    }
+}
+
 // MARK: - Chat & Messages
 public enum MessageRole: String, Codable, Sendable {
     case user = "user"
@@ -995,14 +1005,16 @@ public final class AppState: ObservableObject {
 // MARK: - Comprehensive Mock Data Set
 public enum MockData {
     
-    public static let tenantProfile = TenantProfile(
-        name: "陈工 (研发中台)",
-        tenantId: "xFusion_MO_Tenant",
-        role: .tenantAdmin,
-        concurrencyLimit: 5,
-        tokenQuotaUsage: 0.68,
-        isVipLane: false
-    )
+    public static var tenantProfile: TenantProfile {
+        TenantProfile(
+            name: CuteChineseUsernameGenerator.make(),
+            tenantId: "xFusion_MO_Tenant",
+            role: .tenantAdmin,
+            concurrencyLimit: 5,
+            tokenQuotaUsage: 0.68,
+            isVipLane: false
+        )
+    }
     
     public static let adminProfile = TenantProfile(
         name: "SuperAdmin (Sovereign)",
