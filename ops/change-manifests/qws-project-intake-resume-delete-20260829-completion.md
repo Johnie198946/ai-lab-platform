@@ -2,7 +2,7 @@
 
 - task_id: `qws-project-intake-resume-delete-20260829`
 - objective: 修复项目初始化中断后不可续办、项目删除 500、Hermes planning Session 被身份快捷回答误路由的问题，并在项目派发时建立供每张任务卡片 Session 阅读的结构化任务档案。
-- status: `TESTED`
+- status: `VERIFIED`
 
 ## Git preflight
 
@@ -41,17 +41,17 @@
 
 ## Delivery evidence
 
-- delivery authorization: 用户已于 2026-08-29 明确要求“部署 推送”；提交、推送与生产部署正在执行。
-- commit SHA: 待生成。
-- GitHub remote/ref/SHA: 待推送并以 `git ls-remote` 核验。
+- delivery authorization: 用户已于 2026-08-29 明确要求“部署 推送”；实现提交、推送与生产部署已经完成并验证。
+- implementation commit SHA: `9ff9947ce34b1fce5d00380c718817e4eac82f02`。
+- GitHub remote/ref/SHA: `origin refs/heads/codex/qws-project-intake-resume-delete-20260829`，`git ls-remote` 返回 `9ff9947ce34b1fce5d00380c718817e4eac82f02`；completion record commit 将随后推送并按同样方式复核，最终 SHA 记录在标准完成通报中。
 - server_before: `/opt/releases/ai-lab-platform-8e29a260f79c.3gFan0`，`.deployed-sha=8e29a260f79ca4a9fcdd6dd6cf0d89ea9302e347`。
-- server_after: 待部署后记录。
-- health_check: 本地构建、语法和目标测试通过；生产只读日志用于定位删除与路由问题。
-- functional_check: 自动路由、不可变修订后删除、任务档案派发、幂等迁移和续办 UI 契约均由测试覆盖；未修改生产业务数据。
-- rollback_point: 部署前版本 `8e29a260f79ca4a9fcdd6dd6cf0d89ea9302e347`；部署前将再次核验当前 release。
+- server_after: implementation release `/opt/releases/ai-lab-platform-9ff9947ce34b.jxRFbL`，`.deployed-sha=9ff9947ce34b1fce5d00380c718817e4eac82f02`；仅追加本 manifest 的 completion record commit 也将部署，最终 release/SHA 记录在标准完成通报中。
+- health_check: `GET /health` 返回 `{"status":"ok","version":"0.8.0"}`；`GET /ready` 返回 `{"status":"ready","version":"0.8.0"}`；Hermes Bridge v6 `status=ok, streaming=true` 且 systemd `active`；Compose 8 个服务均 running；生产近 5 分钟 `Traceback|CRITICAL|Unhandled exception` 计数为 0。
+- functional_check: `/home=200`；未认证 `/api/v1/projects=401`；数据库 `workspace_card_session_registry.task_profile json NOT NULL DEFAULT '{}'` 存在；生产后端包含专业 surface 路由保护、逻辑删除和 Session 档案播种；生产前端产物包含 `继续 AI 生成`、`AI 生成未完成`、`上次 AI 生成尚未完成` 与 `删除中`；未修改生产业务数据。
+- rollback_point: `/opt/releases/ai-lab-platform-8e29a260f79c.3gFan0`，SHA `8e29a260f79ca4a9fcdd6dd6cf0d89ea9302e347`。
 
 ## Remaining risks
 
 - 现有并发打开同一卡片 Session 的 registry 唯一键竞态仍可能返回 500，属于既有基线问题，建议独立修复。
 - AI Resource 推荐接口仍有既有 `_cas_project_process` 调用签名错误，与本任务路径无关。
-- 推送与部署验证尚在执行，完成后以远端 SHA、服务器版本和检查结果更新本 manifest。
+- 两个既有基线失败仍未纳入本任务；completion record commit 不改变运行代码，其最终远端 SHA 与部署 SHA 在标准完成通报中给出。
