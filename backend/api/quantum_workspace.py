@@ -444,6 +444,7 @@ def _parse_sse_event(frame: str) -> dict[str, Any] | None:
 
 
 def _project_out(project: WorkspaceProject) -> dict[str, Any]:
+    task_count = len((project.process_snapshot or {}).get("tasks") or [])
     return {
         "id": project.id,
         "tenant_id": project.tenant_key,
@@ -457,7 +458,8 @@ def _project_out(project: WorkspaceProject) -> dict[str, Any]:
         "truth_mode": project.truth_mode,
         "process_revision": project.process_revision,
         "current_stage": None,
-        "task_count": len((project.process_snapshot or {}).get("tasks") or []),
+        "task_count": task_count,
+        "planning_state": "dispatched" if task_count else "needs_planning",
         "created_at": project.created_at,
         "updated_at": project.updated_at,
     }
@@ -481,7 +483,11 @@ async def delete_project(project_id: str, payload=Depends(require_auth)):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_owner(db, project_id, tenant_key, user_id)
-        await db.delete(project)
+        # Process/configuration revisions are deliberately append-only. A project
+        # delete therefore tombstones the aggregate instead of cascading through
+        # immutable audit facts (which PostgreSQL correctly rejects).
+        project.status = "deleted"
+        project.updated_at = datetime.now(timezone.utc)
         await db.commit()
     return None
 
@@ -515,6 +521,7 @@ async def _project_for_owner(
             WorkspaceProject.id == project_id,
             WorkspaceProject.tenant_key == tenant_key,
             WorkspaceProject.owner_user_id == owner_user_id,
+            WorkspaceProject.status != "deleted",
         )
     )
     if project is None:
@@ -533,6 +540,7 @@ async def _project_for_access(
         select(WorkspaceProject).where(
             WorkspaceProject.id == project_id,
             WorkspaceProject.tenant_key == tenant_key,
+            WorkspaceProject.status != "deleted",
         )
     )
     if project is None:
@@ -713,6 +721,7 @@ async def list_projects(payload=Depends(require_auth)) -> list[dict[str, Any]]:
                 )
                 .where(
                     WorkspaceProject.tenant_key == tenant_key,
+                    WorkspaceProject.status != "deleted",
                     or_(
                         WorkspaceProject.owner_user_id == user_id,
                         WorkspaceProjectMember.id.is_not(None),
@@ -2706,6 +2715,116 @@ def _normalize_self_changes(value: Any) -> dict[str, Any]:
     return result
 
 
+def _task_registry_profile(
+    task: dict[str, Any],
+    *,
+    stage: dict[str, Any] | None = None,
+    process_revision: int = 0,
+) -> dict[str, Any]:
+    """Keep the cross-session task directory useful without copying chat history."""
+    status = str(task.get("status") or "TODO")[:24]
+    raw_progress = task.get("progress")
+    if isinstance(raw_progress, (int, float)):
+        progress = max(0, min(100, int(raw_progress)))
+    else:
+        progress = 100 if status.upper() == "DONE" else 0
+    acceptance = [
+        str(value)[:2000]
+        for value in (task.get("acceptance_criteria") or [])[:50]
+        if str(value).strip()
+    ]
+    return {
+        "schema_version": 1,
+        "task_id": str(task.get("id") or "")[:40],
+        "title": str(task.get("title") or "")[:240],
+        "description": str(task.get("summary") or task.get("description") or "")[:20_000],
+        "goal": str(task.get("goal") or task.get("summary") or task.get("description") or "")[:10_000],
+        "current_state": status,
+        "progress": progress,
+        "acceptance_criteria": acceptance,
+        "stage": {
+            "id": str((stage or {}).get("id") or task.get("stage_id") or "")[:48],
+            "name": str((stage or {}).get("name") or "")[:240],
+            "goal": str((stage or {}).get("goal") or "")[:4000],
+        },
+        "priority": str(task.get("priority") or "none")[:24],
+        "assignee": {
+            "id": task.get("assignee_id"),
+            "role": task.get("assignee_role"),
+        },
+        "labels": [str(value)[:100] for value in (task.get("labels") or [])[:50]],
+        "development_context": task.get("development_context"),
+        "start_date": task.get("start_date") or task.get("planned_start_at"),
+        "due_date": task.get("due_date") or task.get("planned_finish_at"),
+        "recurrence": task.get("recurrence"),
+        "relations": list(task.get("relations") or [])[:200],
+        "deliverables": [
+            str(value)[:2000] for value in (task.get("deliverables") or [])[:100]
+        ],
+        "handoff": task.get("handoff") or {},
+        "workflow_id": task.get("workflow_id"),
+        "workflow_status": task.get("workflow_status") or "UNCONNECTED",
+        "risk": task.get("risk"),
+        "process_revision": process_revision,
+    }
+
+
+async def _seed_project_session_registry(
+    db,
+    *,
+    project: WorkspaceProject,
+    tenant_key: str,
+    user_id: str,
+    process: dict[str, Any],
+    process_revision: int,
+) -> None:
+    """Create the complete task-to-session responsibility map at dispatch time."""
+    stages = {str(item.get("id")): item for item in process.get("stages") or []}
+    existing = {
+        row.task_id: row
+        for row in (
+            await db.scalars(
+                select(WorkspaceCardSessionRegistry).where(
+                    WorkspaceCardSessionRegistry.tenant_key == tenant_key,
+                    WorkspaceCardSessionRegistry.user_id == user_id,
+                    WorkspaceCardSessionRegistry.project_id == project.id,
+                )
+            )
+        ).all()
+    }
+    for task in process.get("tasks") or []:
+        task_id = str(task.get("id") or "")[:40]
+        title = str(task.get("title") or "").strip()[:240]
+        if not task_id or not title:
+            continue
+        profile = _task_registry_profile(
+            task,
+            stage=stages.get(str(task.get("stage_id") or "")),
+            process_revision=process_revision,
+        )
+        responsibility = str(task.get("goal") or task.get("summary") or title)[:100_000]
+        row = existing.get(task_id)
+        if row is None:
+            db.add(
+                WorkspaceCardSessionRegistry(
+                    id=f"cardsession_{uuid4().hex}",
+                    tenant_key=tenant_key,
+                    user_id=user_id,
+                    project_id=project.id,
+                    task_id=task_id,
+                    title=title,
+                    responsibility=responsibility,
+                    task_profile=profile,
+                    status=str(task.get("status") or "TODO")[:24],
+                )
+            )
+            continue
+        row.title = title
+        row.responsibility = responsibility
+        row.task_profile = profile
+        row.status = str(task.get("status") or row.status or "TODO")[:24]
+
+
 async def _sync_card_session_registry(
     db,
     *,
@@ -2734,6 +2853,16 @@ async def _sync_card_session_registry(
             },
         ]
     current: WorkspaceCardSessionRegistry | None = None
+    process_tasks = {
+        str(item.get("id")): item
+        for item in (project.process_snapshot or {}).get("tasks", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    process_stages = {
+        str(item.get("id")): item
+        for item in (project.process_snapshot or {}).get("stages", [])
+        if isinstance(item, dict) and item.get("id")
+    }
     for item in sessions[:2000]:
         if not isinstance(item, dict):
             continue
@@ -2741,6 +2870,19 @@ async def _sync_card_session_registry(
         title = str(item.get("title") or "").strip()[:240]
         if not task_id or not title:
             continue
+        canonical = process_tasks.get(task_id) or (task if task_id == task.get("id") else {})
+        profile_source = {
+            **canonical,
+            "id": task_id,
+            "title": title,
+            "summary": item.get("responsibility") or canonical.get("summary"),
+            "status": item.get("status") or canonical.get("status"),
+        }
+        profile = _task_registry_profile(
+            profile_source,
+            stage=process_stages.get(str(canonical.get("stage_id") or "")),
+            process_revision=project.process_revision,
+        )
         row = await db.scalar(
             select(WorkspaceCardSessionRegistry).where(
                 WorkspaceCardSessionRegistry.tenant_key == tenant_key,
@@ -2759,6 +2901,7 @@ async def _sync_card_session_registry(
                 identifier=(str(item.get("identifier"))[:80] if item.get("identifier") else None),
                 title=title,
                 responsibility=str(item.get("responsibility") or title)[:100_000],
+                task_profile=profile,
                 status=(str(item.get("status"))[:24] if item.get("status") else None),
                 card_version=(
                     int(item["card_version"])
@@ -2773,6 +2916,7 @@ async def _sync_card_session_registry(
             )
             row.title = title
             row.responsibility = str(item.get("responsibility") or title)[:100_000]
+            row.task_profile = profile
             row.status = str(item.get("status"))[:24] if item.get("status") else None
             row.card_version = (
                 int(item["card_version"])
@@ -2829,6 +2973,7 @@ async def _decorate_card_context_with_sessions(
                 "identifier": row.identifier,
                 "title": row.title,
                 "responsibility": row.responsibility,
+                "task_profile": row.task_profile or {},
                 "status": row.status,
                 "conversation_opened": row.conversation_id is not None,
                 "is_current": row.id == current.id,
@@ -3488,6 +3633,14 @@ async def dispatch_project_blueprint(
         employees = await _ensure_project_ai_employees(
             db, project=project, tenant_key=tenant_key, user_id=user_id
         )
+        await _seed_project_session_registry(
+            db,
+            project=project,
+            tenant_key=tenant_key,
+            user_id=user_id,
+            process=process,
+            process_revision=next_revision,
+        )
         db.add(WorkspaceAuditEvent(
             id=f"audit_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
             actor_user_id=user_id, event_type="project.blueprint.dispatched",
@@ -3901,12 +4054,11 @@ async def stream_task_message(
         effective_question = body.question
         if body.trigger == "project_created":
             effective_question = (
-                "Assess the trusted project name, business goal and desired outputs already attached "
-                "to this Session. Do not ask the user to repeat those facts. Decide whether they are "
-                "sufficient to implement the project and fill a complete dynamic delivery blueprint. "
-                "If a material fact is missing, call clarify with exactly one highest-impact question "
-                "and useful choices when appropriate. If the facts are sufficient, produce the complete "
-                "project_blueprint immediately without asking for another confirmation."
+                "项目名称、项目描述与期望输出已经作为可信背景附在本 Session。基于该背景，"
+                "确认是否能够收敛需求，并完成项目流程、阶段、任务、角色、任务目标、进展现状、"
+                "验收标准、日期、依赖、交付物和项目文档的填写；如是则直接生成相关内容；"
+                "如否，调用 clarify 每次询问一个最高影响问题，持续询问用户至需求收敛。"
+                "不要要求用户重复已经提供的项目名称或描述。"
             )
         project = await _project_for_access(
             db, conversation.project_id, tenant_key, user_id, "project:write"
@@ -4115,6 +4267,7 @@ async def stream_task_message(
             f"project_goal={project.goal}",
             f"desired_outputs={json.dumps(project.desired_outputs or [], ensure_ascii=False)}",
             "You are Hermes main_agent. Converge the full project requirement through natural dialogue before proposing dispatch.",
+            "基于上述项目名称、描述和期望输出，确认是否能够收敛需求并完成全部项目字段与任务档案的填写；如是则直接生成相关内容；如否则持续询问用户至需求收敛。",
             "First assess whether the supplied project facts are sufficient to implement the work and populate every material blueprint field: target users and scenarios, in/out scope, functional and non-functional requirements, integrations and data, security/compliance, constraints, roles, milestones/dates, dependencies, deliverables and acceptance evidence.",
             "Never ask the user to repeat a project name, business goal or desired output already present in trusted context. Do not invent a fact merely to fill a blank; optional dates may remain null when they do not constrain planning.",
             "When a material fact is unclear, use the same Hermes clarify capability as the iOS main session and ask exactly one highest-impact question, with useful choices when appropriate. After each answer, reassess; clarify the next material gap or generate the blueprint automatically when sufficient.",

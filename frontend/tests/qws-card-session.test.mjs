@@ -18,6 +18,10 @@ const planningSource = await readFile(
   new URL("../src/features/quantum-workspace/ProjectPlanningDialog.jsx", import.meta.url),
   "utf8",
 );
+const homeSource = await readFile(
+  new URL("../src/features/quantum-workspace/WorkspaceHomePage.jsx", import.meta.url),
+  "utf8",
+);
 const backendSource = await readFile(
   new URL("../../backend/api/quantum_workspace.py", import.meta.url),
   "utf8",
@@ -98,6 +102,25 @@ test("new projects automatically enter the shared Hermes clarification protocol"
   assert.match(planningSource, /activeConversation\.binding\?\.session_id/);
   assert.match(backendSource, /"system" if body\.trigger == "project_created"/);
   assert.match(backendSource, /use the same Hermes clarify capability as the iOS main session/);
+  assert.match(backendSource, /持续询问用户至需求收敛/);
+});
+
+test("unfinished project planning can be resumed and deletion has explicit progress", () => {
+  assert.match(homeSource, /继续 AI 生成/);
+  assert.match(homeSource, /planning_state === "dispatched"/);
+  assert.match(homeSource, /deletingProjectId/);
+  assert.match(homeSource, /删除中…/);
+  assert.match(planningSource, /resumeNeeded/);
+  assert.match(planningSource, /上次 AI 生成尚未完成/);
+});
+
+test("dispatch persists a structured task contract for every card session", () => {
+  assert.match(backendSource, /_seed_project_session_registry/);
+  assert.match(backendSource, /_task_registry_profile/);
+  for (const field of ["goal", "current_state", "progress", "acceptance_criteria", "deliverables", "handoff"]) {
+    assert.match(backendSource, new RegExp(`"${field}"`));
+  }
+  assert.match(backendSource, /"task_profile": row\.task_profile/);
 });
 
 test("card session exposes safe skill execution progress without chain-of-thought", () => {

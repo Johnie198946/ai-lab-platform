@@ -308,6 +308,29 @@ def _install_immutable_guards(connection) -> None:
             )
 
 
+def _ensure_card_session_registry_profile(connection) -> None:
+    """Add the structured task contract without rewriting existing session rows."""
+    table = "workspace_card_session_registry"
+    if table not in set(inspect(connection).get_table_names()):
+        return
+    columns = {column["name"] for column in inspect(connection).get_columns(table)}
+    if "task_profile" in columns:
+        return
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(
+            "ALTER TABLE workspace_card_session_registry "
+            "ADD COLUMN task_profile JSON NOT NULL DEFAULT '{}'::json"
+        )
+        return
+    if connection.dialect.name == "sqlite":
+        connection.exec_driver_sql(
+            "ALTER TABLE workspace_card_session_registry "
+            "ADD COLUMN task_profile JSON NOT NULL DEFAULT '{}'"
+        )
+        return
+    raise RuntimeError(f"unsupported migration dialect: {connection.dialect.name}")
+
+
 def _backfill_project_config_and_owner(connection, row: dict[str, Any]) -> str:
     project_id = str(row["id"])
     config = {
@@ -481,6 +504,7 @@ def migrate_workspace_schema(
     else:
         raise RuntimeError(f"unsupported migration dialect: {connection.dialect.name}")
     _verify_conversation_fks(connection)
+    _ensure_card_session_registry_profile(connection)
     _install_immutable_guards(connection)
 
     if fail_after_backfill:

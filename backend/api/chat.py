@@ -1164,7 +1164,7 @@ async def stream_chat(
     )
     # 身份规则秒回快速通道：避免全量拉起 agent（11s → <1s）
     fixed = match_identity_rule(req.question)
-    if fixed:
+    if fixed and not trusted_professional_surface:
         return StreamingResponse(
             _identity_sse(fixed),
             media_type="text/event-stream",

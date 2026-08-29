@@ -108,6 +108,34 @@ def test_trusted_task_surface_keeps_skills_eligible_without_affecting_casual_cha
     assert casual_turn.route_class == "CASUAL"
 
 
+@pytest.mark.asyncio
+async def test_trusted_professional_surface_bypasses_identity_shortcut(monkeypatch):
+    import backend.api.chat as chat_mod
+
+    async def fake_policy(_payload):
+        return SimpleNamespace(policy_version="v1")
+
+    monkeypatch.setattr(chat_mod, "match_identity_rule", lambda _question: "固定身份回答")
+    monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
+
+    trusted = await chat_mod.stream_chat(
+        StreamRequest(question="You are Hermes main_agent. Plan this project.", session_id="planning"),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+        trusted_professional_surface=True,
+    )
+    first = await anext(trusted.body_iterator)
+    assert '"phase": "context"' in first
+    assert "固定身份回答" not in first
+    await trusted.body_iterator.aclose()
+
+    public = await chat_mod.stream_chat(
+        StreamRequest(question="你是谁", session_id="public"),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+    )
+    public_body = "".join([frame async for frame in public.body_iterator])
+    assert "固定身份回答" in public_body
+
+
 def test_api_goal_budget_respects_hermes_bridge_contract():
     import backend.api.chat as chat_mod
     from scripts import hermes_bridge

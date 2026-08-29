@@ -27,6 +27,7 @@ export function WorkspaceHomePage() {
   const [error, setError] = useState("");
   const [planningProject, setPlanningProject] = useState(undefined);
   const [editingProject, setEditingProject] = useState(null);
+  const [deletingProjectId, setDeletingProjectId] = useState("");
   const location = useLocation();
 
   const load = () => Promise.all([platformApi.listProjects(), platformApi.listProjectTemplates()])
@@ -36,9 +37,11 @@ export function WorkspaceHomePage() {
   useEffect(() => { void load(); }, []);
 
   const removeProject = async (project) => {
-    if (!window.confirm(`永久删除项目“${project.name}”及其流程、会话和任务绑定？此操作不可撤销。`)) return;
+    if (!window.confirm(`删除项目“${project.name}”并从工作区移除？任务和会话将不可继续访问；不可变审计修订会按合规要求保留。`)) return;
+    setDeletingProjectId(project.id); setError("");
     try { await platformApi.deleteProject(project.id); await load(); }
     catch (reason) { setError(reason.message); }
+    finally { setDeletingProjectId(""); }
   };
 
   const showTemplatesOnly = location.pathname === "/templates";
@@ -49,7 +52,7 @@ export function WorkspaceHomePage() {
         <button className="qw-button primary" onClick={() => setPlanningProject(null)} disabled={!templates.length}><Plus size={16} /> 新建项目</button>
       </section>
 
-      {error && <p className="qw-error">{error}</p>}
+      {error && <p className="qw-error" role="alert">{error}</p>}
       {!showTemplatesOnly && (
         <section className="qw-section">
           <div className="qw-section-head"><div><span className="qw-eyebrow">Projects</span><h2>我的项目</h2></div><span>{projects.length} 个</span></div>
@@ -59,10 +62,10 @@ export function WorkspaceHomePage() {
               <Link className="qw-project-card-main" to={`/projects/${project.id}/taskboard`}>
                 <div className="qw-project-icon"><Boxes size={18} /></div>
                 <div><h3>{project.name}</h3><p>{project.goal}</p></div>
-                <div className="qw-project-meta"><span><Clock3 size={14} /> revision {project.process_revision}</span><span>{project.task_count} tasks</span></div>
+                <div className="qw-project-meta"><span><Clock3 size={14} /> revision {project.process_revision}</span><span>{project.task_count} tasks</span><span>{project.planning_state === "dispatched" ? "项目已派发" : "AI 生成未完成"}</span></div>
                 <ArrowRight className="qw-card-arrow" size={18} />
               </Link>
-              <div className="qw-project-actions"><button type="button" onClick={() => setPlanningProject(project)}><Sparkles size={13} />AI 收敛</button><button type="button" onClick={() => setEditingProject(project)}><Pencil size={13} />编辑</button><button type="button" className="danger" onClick={() => removeProject(project)}><Trash2 size={13} />删除</button></div>
+              <div className="qw-project-actions"><button type="button" onClick={() => setPlanningProject(project)}><Sparkles size={13} />{project.planning_state === "dispatched" ? "AI 优化" : "继续 AI 生成"}</button><button type="button" onClick={() => setEditingProject(project)}><Pencil size={13} />编辑</button><button type="button" className="danger" disabled={deletingProjectId === project.id} onClick={() => removeProject(project)}><Trash2 size={13} />{deletingProjectId === project.id ? "删除中…" : "删除"}</button></div>
               </article>
             ))}</div>
           ) : <div className="qw-empty"><ShieldCheck size={22} /><strong>还没有项目</strong><span>创建草稿并与 Hermes 完整沟通，确认后再派发。</span></div>}

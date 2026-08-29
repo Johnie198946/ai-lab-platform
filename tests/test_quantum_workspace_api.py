@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 TEST_DB = Path(gettempdir()) / f"quantum_workspace_test_{os.getpid()}.db"
@@ -31,6 +32,7 @@ from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
     WorkspaceBusinessIntake,
+    WorkspaceCardSessionRegistry,
     WorkspaceProcessDraft,
     WorkspaceTaskConversation,
     WorkspaceTaskMessage,
@@ -172,6 +174,27 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert process["tasks"][0]["title"] == "完成交付"
     assert process["documents"][0]["id"] == "brief"
 
+    async def task_registry_profile():
+        async with SessionLocal() as db:
+            return await db.scalar(
+                select(WorkspaceCardSessionRegistry).where(
+                    WorkspaceCardSessionRegistry.project_id == project_id,
+                    WorkspaceCardSessionRegistry.task_id == process["tasks"][0]["id"],
+                )
+            )
+
+    registry = asyncio.run(task_registry_profile())
+    assert registry is not None
+    assert registry.task_profile["goal"] == "完成项目成果"
+    assert registry.task_profile["current_state"] == "TODO"
+    assert registry.task_profile["progress"] == 0
+    assert registry.task_profile["acceptance_criteria"] == ["成果可阅读"]
+    assert registry.task_profile["stage"]["name"] == "交付"
+
+    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    assert deleted.status_code == 204, deleted.text
+    assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
+
 
 def test_new_project_session_automatically_assesses_context_and_preserves_system_origin(
     _reset_database, monkeypatch
@@ -232,9 +255,9 @@ def test_new_project_session_automatically_assesses_context_and_preserves_system
     assert '"type":"clarify"' in streamed.text
     assert "project_name=Quantum Router" in captured["question"]
     assert "project_goal=交付可验证的新产品方案" in captured["question"]
-    assert "Do not ask the user to repeat" in captured["question"]
-    assert "call clarify" in captured["question"]
-    assert captured["knowledge_query"].startswith("Assess the trusted project name")
+    assert "不要要求用户重复" in captured["knowledge_query"]
+    assert "调用 clarify" in captured["question"]
+    assert "持续询问用户至需求收敛" in captured["knowledge_query"]
     assert captured["session_id"] == opened.json()["binding"]["session_id"]
     assert captured["context"] is not None
     assert captured["trusted_professional_surface"] is True

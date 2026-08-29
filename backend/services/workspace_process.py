@@ -100,6 +100,7 @@ def instantiate_project_blueprint(blueprint: dict[str, Any]) -> dict[str, Any]:
             "goal": str(item.get("goal") or "").strip(),
             "acceptance_criteria": list(item.get("acceptance_criteria") or []),
             "status": status_map.get(raw_status, "TODO"),
+            "progress": 100 if status_map.get(raw_status, "TODO") == "DONE" else 0,
             "status_source": "REVIEWED_CONFIGURATION",
             "priority": str(item.get("priority") or "none").lower(),
             "assignee_id": None,

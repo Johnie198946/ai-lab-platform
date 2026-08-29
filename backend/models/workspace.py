@@ -495,7 +495,7 @@ class WorkspaceTaskMessage(Base):
 
 
 class WorkspaceCardSessionRegistry(Base):
-    """Tenant/user scoped directory of card sessions and their responsibility."""
+    """Tenant/user scoped directory of card sessions and their task contract."""
 
     __tablename__ = "workspace_card_session_registry"
     __table_args__ = (
@@ -521,6 +521,7 @@ class WorkspaceCardSessionRegistry(Base):
     identifier: Mapped[str | None] = mapped_column(String(80), nullable=True)
     title: Mapped[str] = mapped_column(String(240), nullable=False)
     responsibility: Mapped[str] = mapped_column(Text, nullable=False)
+    task_profile: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     status: Mapped[str | None] = mapped_column(String(24), nullable=True)
     card_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

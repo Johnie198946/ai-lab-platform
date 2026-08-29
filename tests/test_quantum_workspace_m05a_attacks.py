@@ -6,7 +6,10 @@ import sqlite3
 import pytest
 from sqlalchemy import create_engine, inspect, text
 
-from backend.services.workspace_migration import migrate_workspace_schema
+from backend.services.workspace_migration import (
+    _ensure_card_session_registry_profile,
+    migrate_workspace_schema,
+)
 
 
 def _snapshot(task_id: str = "shared-task") -> dict:
@@ -22,6 +25,22 @@ def _snapshot(task_id: str = "shared-task") -> dict:
         "dependencies": [],
         "graphs": {},
     }
+
+
+def test_card_session_registry_additive_profile_migration(tmp_path):
+    path = tmp_path / "session-profile.db"
+    engine = create_engine(f"sqlite:///{path}")
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE workspace_card_session_registry "
+            "(id VARCHAR(48) PRIMARY KEY, title VARCHAR(240) NOT NULL)"
+        )
+        _ensure_card_session_registry_profile(connection)
+        _ensure_card_session_registry_profile(connection)
+        columns = {item["name"] for item in inspect(connection).get_columns(
+            "workspace_card_session_registry"
+        )}
+    assert "task_profile" in columns
 
 
 def _legacy_db(path, projects: list[tuple], conversations: list[tuple] = ()) -> None:
