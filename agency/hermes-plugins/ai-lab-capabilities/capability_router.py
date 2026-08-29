@@ -809,14 +809,16 @@ def _candidate_context(
         selected["invoke"] = {
             "tool": "delegate_task",
             "arguments": {
-                "goal": query[:4000],
-                "context": (
-                    f"AI_LAB_AGENCY_SPECIALIST={slug}\n"
-                    "You are an isolated child Agent. First call "
-                    f'agency_agents_load with arguments {{"agent":"{slug}"}}. '
-                    "Use the loaded specialist instructions to complete the goal. "
-                    "Return a non-empty final result and do not delegate again."
-                ),
+                "tasks": [{
+                    "goal": query[:4000],
+                    "context": (
+                        f"AI_LAB_AGENCY_SPECIALIST={slug}\n"
+                        "You are an isolated child Agent. First call "
+                        f'agency_agents_load with arguments {{"agent":"{slug}"}}. '
+                        "Use the loaded specialist instructions to complete the goal. "
+                        "Return a non-empty final result and do not delegate again."
+                    ),
+                }],
             },
         }
         prefix = (
@@ -851,11 +853,11 @@ def _candidate_context(
         if len(context) <= max_context_chars:
             return context
         if professional_only:
-            goal = compact[0]["invoke"]["arguments"]["goal"]
+            goal = compact[0]["invoke"]["arguments"]["tasks"][0]["goal"]
             overflow = len(context) - max_context_chars
             shorter = goal[: max(512, len(goal) - overflow - 64)]
             if len(shorter) < len(goal):
-                compact[0]["invoke"]["arguments"]["goal"] = shorter
+                compact[0]["invoke"]["arguments"]["tasks"][0]["goal"] = shorter
                 continue
             return None
         compact.pop()
@@ -964,6 +966,8 @@ def _local_professional_context(query: str, state: dict[str, Any]) -> str:
             if selected_skill else None
         ),
         "loaded_skill": None,
+        "skill_result_hash": None,
+        "skill_failure_code": None,
         "agency_decision": "CALL" if selected_agency else "SKIP",
         "requested_agent": (
             str(selected_agency.get("id") or "").removeprefix("agency:")
@@ -971,6 +975,12 @@ def _local_professional_context(query: str, state: dict[str, Any]) -> str:
         ),
         "receipt": None,
         "main_adopted": False,
+        "original_request": query,
+        "expected_delegate_args": (
+            selected_agency.get("invoke", {}).get("arguments")
+            if selected_agency else None
+        ),
+        "failure_code": None,
     })
     plan: list[dict[str, Any]] = []
     if selected_skill:
@@ -979,9 +989,10 @@ def _local_professional_context(query: str, state: dict[str, Any]) -> str:
         plan.append({"phase": "agency", "invoke": selected_agency.get("invoke")})
     return (
         "[LOCAL_SINGLE_TENANT_AGENT_OS — trusted local policy]\n"
-        "Hermes is the only runtime. Follow this ordered plan exactly. First load the selected "
-        "Skill with native skill_view and wait for its real result. Then, only when the Agency "
-        "decision is CALL, invoke native delegate_task with the exact arguments below and wait "
+        "Hermes is the only runtime. The trusted runtime executes the selected Skill phase with "
+        "native skill_view before this model call and appends its verified result below. Never "
+        "simulate or reload that phase. Then, only when the Agency decision is CALL, invoke native "
+        "delegate_task with the exact arguments below and wait "
         "for its terminal result. Do not simulate child completion or invent receipts. The final "
         "answer must materially use the child result. Internal names and receipts stay hidden "
         "unless the user asks for diagnostics.\nPlan: "
@@ -1007,7 +1018,9 @@ def _local_wrapper_args(value: Any) -> dict[str, Any] | None:
     return None
 
 
-def _effective_local_tool(tool_name: str, args: dict[str, Any]) -> str:
+def _effective_local_call(
+    tool_name: str, args: dict[str, Any]
+) -> tuple[str, dict[str, Any]]:
     current_tool = str(tool_name or "").strip()
     current_args = args
     for _depth in range(_LOCAL_WRAPPER_MAX_DEPTH):
@@ -1016,17 +1029,21 @@ def _effective_local_tool(tool_name: str, args: dict[str, Any]) -> str:
         nested_tool = str(current_args.get("name") or "").strip()
         nested_args = _local_wrapper_args(current_args.get("arguments"))
         if not nested_tool or nested_args is None:
-            return _LOCAL_UNRESOLVED_WRAPPER
+            return _LOCAL_UNRESOLVED_WRAPPER, {}
         current_tool = nested_tool
         current_args = nested_args
     if current_tool == "tool_call":
-        return _LOCAL_UNRESOLVED_WRAPPER
+        return _LOCAL_UNRESOLVED_WRAPPER, {}
     if current_tool == "ai_lab_execute":
         capability = str(current_args.get("capability") or "").strip()
         if capability.startswith("agency_agent:"):
-            return "delegate_task"
-        return f"ai_lab_execute:{capability}"
-    return current_tool
+            return "delegate_task", current_args
+        return f"ai_lab_execute:{capability}", current_args
+    return current_tool, current_args
+
+
+def _effective_local_tool(tool_name: str, args: dict[str, Any]) -> str:
+    return _effective_local_call(tool_name, args)[0]
 
 
 def _principal_denial(tool_name: str, args: dict[str, Any], state: dict[str, Any]) -> dict[str, str] | None:
@@ -1318,6 +1335,17 @@ def _summary_adopted(response_text: str, summary: str) -> bool:
     return len(response_tokens & material) >= required
 
 
+def _verification_failure(
+    session_id: str,
+    state: dict[str, Any],
+    code: str,
+    message: str,
+) -> str:
+    state["failure_code"] = code
+    logger.warning("LOCAL_AGENT_OS_BLOCK code=%s session_id=%s", code, session_id)
+    return f"未通过本地 Agent OS 执行验证：{message}（{code}）"
+
+
 def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: Any) -> str:
     del kwargs
     with _LOCAL_STATE_LOCK:
@@ -1328,7 +1356,13 @@ def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: An
             state.get("skill_decision") == "SELECT"
             and state.get("loaded_skill") != state.get("requested_skill")
         ):
-            return "未通过本地 Agent OS 执行验证：所选 Skill 未被真实读取，已阻止发布未经验证的结果。"
+            code = str(state.get("skill_failure_code") or "SKILL_RESULT_MISSING")
+            return _verification_failure(
+                session_id,
+                state,
+                code,
+                "所选 Skill 未获得真实成功回执，已阻止发布未经验证的结果。",
+            )
         if state.get("agency_decision") != "CALL":
             state["main_adopted"] = True
             return response_text
@@ -1340,7 +1374,13 @@ def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: An
         state["receipt"] = receipt
         _log_local_receipt(session_id, receipt)
         if receipt.get("verifier") != "pass":
-            return "未通过本地 Agent OS 执行验证：专业子任务没有可验证的成功回执，已阻止发布伪执行结果。"
+            code = str(state.get("failure_code") or "DELEGATION_RECEIPT_MISSING")
+            return _verification_failure(
+                session_id,
+                state,
+                code,
+                "专业子任务没有可验证的成功回执，已阻止发布伪执行结果。",
+            )
         summary = str(receipt.get("result") or "").strip()
         if not _summary_adopted(response_text, summary):
             state["main_adopted"] = True
@@ -1416,13 +1456,97 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
     return result
 
 
+def _verified_skill_payload(result: Any, requested_skill: str) -> dict[str, Any] | None:
+    payload = result
+    if isinstance(result, str):
+        try:
+            payload = json.loads(result)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("success") is not True:
+        return None
+    if str(payload.get("name") or "").strip() != requested_skill:
+        return None
+    if not str(payload.get("content") or "").strip():
+        return None
+    return payload
+
+
+def _pre_llm_with_runtime_skill(
+    ctx: Any,
+    user_message: str = "",
+    **kwargs: Any,
+) -> dict[str, Any] | None:
+    """Execute the selected Skill deterministically before the model sees the turn."""
+
+    result = _pre_llm_call(user_message, **kwargs)
+    if not result or not _LOCAL_ENABLED:
+        return result
+    session_id = str(kwargs.get("session_id") or "")
+    with _LOCAL_STATE_LOCK:
+        state = _LOCAL_TURN_STATES.get(session_id)
+        requested = str((state or {}).get("requested_skill") or "")
+        should_load = bool(
+            state
+            and state.get("route_class") == "PROFESSIONAL_TASK"
+            and state.get("skill_decision") == "SELECT"
+            and not state.get("adoption_continuation")
+            and requested
+        )
+    if not should_load:
+        return result
+    try:
+        raw = ctx.dispatch_tool(
+            "skill_view",
+            {"name": requested},
+            session_id=session_id,
+            task_id=str(kwargs.get("turn_id") or kwargs.get("task_id") or ""),
+        )
+    except Exception as exc:
+        logger.warning("LOCAL_AGENT_OS_SKILL_RECEIPT code=SKILL_CALL_FAILED error=%s", exc)
+        with _LOCAL_STATE_LOCK:
+            if state is not None:
+                state["skill_failure_code"] = "SKILL_CALL_FAILED"
+        return result
+    payload = _verified_skill_payload(raw, requested)
+    if payload is None:
+        logger.warning(
+            "LOCAL_AGENT_OS_SKILL_RECEIPT code=SKILL_RESULT_FAILED requested_skill=%s",
+            requested,
+        )
+        with _LOCAL_STATE_LOCK:
+            if state is not None:
+                state["skill_failure_code"] = "SKILL_RESULT_FAILED"
+        return result
+    content = str(payload["content"])
+    result_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+    with _LOCAL_STATE_LOCK:
+        if state is not None:
+            state["loaded_skill"] = requested
+            state["skill_result_hash"] = result_hash
+            state["skill_failure_code"] = None
+    logger.info(
+        "LOCAL_AGENT_OS_SKILL_RECEIPT verifier=pass requested_skill=%s result_hash=%s",
+        requested,
+        result_hash,
+    )
+    result["context"] = (
+        str(result.get("context") or "")
+        + "\n[RUNTIME_VERIFIED_SKILL_RESULT — trusted native tool result]\n"
+        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    )
+    return result
+
+
 def _pre_tool_call(
     tool_name: str,
     args: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> dict[str, str] | None:
     args = args or {}
-    effective_tool = _effective_local_tool(tool_name, args)
+    effective_tool, effective_args = _effective_local_call(tool_name, args)
     session_id = str(kwargs.get("session_id") or "")
     with _LOCAL_STATE_LOCK:
         local_state = _LOCAL_TURN_STATES.get(session_id)
@@ -1459,6 +1583,26 @@ def _pre_tool_call(
                 "message": (
                     "Local Agent OS blocked delegate_task: first call skill_view "
                     "for the selected Skill and wait for its successful result."
+                ),
+            }
+        if (
+            effective_tool == "delegate_task"
+            and local_state.get("route_class") == "PROFESSIONAL_TASK"
+            and local_state.get("agency_decision") == "CALL"
+            and effective_args != local_state.get("expected_delegate_args")
+        ):
+            with _LOCAL_STATE_LOCK:
+                local_state["failure_code"] = "DELEGATE_SCHEMA_INVALID"
+            logger.warning(
+                "LOCAL_AGENT_OS_BLOCK code=DELEGATE_SCHEMA_INVALID session_id=%s",
+                session_id,
+            )
+            return {
+                "action": "block",
+                "message": (
+                    "Local Agent OS blocked delegate_task: use the exact native "
+                    "tasks[] arguments from the verified plan. "
+                    "[DELEGATE_SCHEMA_INVALID]"
                 ),
             }
     turn_key = str(
@@ -1519,12 +1663,21 @@ def _post_tool_call(
     **kwargs: Any,
 ) -> None:
     session_id = str(kwargs.get("session_id") or "")
-    if tool_name == "skill_view" and _result_succeeded(result):
+    if tool_name == "skill_view":
         loaded_skill = str((args or {}).get("name") or "").strip()
+        payload = _verified_skill_payload(result, loaded_skill)
         with _LOCAL_STATE_LOCK:
             state = _LOCAL_TURN_STATES.get(session_id)
             if state is not None and loaded_skill == state.get("requested_skill"):
-                state["loaded_skill"] = loaded_skill
+                if payload is not None:
+                    content = str(payload["content"])
+                    state["loaded_skill"] = loaded_skill
+                    state["skill_result_hash"] = hashlib.sha256(
+                        content.encode("utf-8")
+                    ).hexdigest()
+                    state["skill_failure_code"] = None
+                else:
+                    state["skill_failure_code"] = "SKILL_RESULT_FAILED"
     capability_id = _capability_id_for_call(tool_name, args or {})
     if not capability_id:
         return
@@ -1632,7 +1785,11 @@ def install(ctx: Any) -> None:
     )
     _extend_tool_search()
     _compact_skill_manifest()
-    ctx.register_hook("pre_llm_call", _pre_llm_call)
+
+    def pre_llm_with_runtime_skill(user_message: str = "", **kwargs: Any):
+        return _pre_llm_with_runtime_skill(ctx, user_message, **kwargs)
+
+    ctx.register_hook("pre_llm_call", pre_llm_with_runtime_skill)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
     if _LOCAL_ENABLED:

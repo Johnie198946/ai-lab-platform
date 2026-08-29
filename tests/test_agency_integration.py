@@ -506,8 +506,10 @@ def test_capability_hook_uses_only_exact_agency_slugs_for_professional_turn(monk
     cards = json.loads(result["context"].split("Candidates: ", 1)[1])
     assert len(cards) == 1
     assert cards[0]["invoke"]["tool"] == "delegate_task"
-    assert cards[0]["invoke"]["arguments"]["goal"] == "调研企业 AI 市场"
-    delegate_context = cards[0]["invoke"]["arguments"]["context"]
+    tasks = cards[0]["invoke"]["arguments"]["tasks"]
+    assert len(tasks) == 1
+    assert tasks[0]["goal"] == "调研企业 AI 市场"
+    delegate_context = tasks[0]["context"]
     assert "AI_LAB_AGENCY_SPECIALIST=trend-researcher" in delegate_context
     assert "agency_agents_load" in delegate_context
     assert '{"agent":"trend-researcher"}' in delegate_context
@@ -536,7 +538,7 @@ def test_professional_candidate_survives_long_user_task(monkeypatch):
     assert len(result["context"]) <= router.MAX_PROFESSIONAL_INJECTED_CHARS
     cards = json.loads(result["context"].split("Candidates: ", 1)[1])
     assert cards[0]["invoke"]["tool"] == "delegate_task"
-    assert cards[0]["invoke"]["arguments"]["goal"]
+    assert cards[0]["invoke"]["arguments"]["tasks"][0]["goal"]
 
 
 def test_capability_router_extends_existing_tool_search_contract(monkeypatch):

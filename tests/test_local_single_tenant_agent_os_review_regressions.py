@@ -73,8 +73,11 @@ def test_delegate_wrappers_cannot_bypass_skill_first_gate(monkeypatch):
         sender_id="local-owner",
     )
 
+    expected_args = router._LOCAL_TURN_STATES[
+        "wrapper-skill-gate-parent"
+    ]["expected_delegate_args"]
     calls = [
-        ("tool_call", {"name": "delegate_task", "arguments": {"goal": "研究市场"}}),
+        ("tool_call", {"name": "delegate_task", "arguments": expected_args}),
         (
             "ai_lab_execute",
             {"capability": "agency_agent:trend-researcher", "goal": "研究市场"},
@@ -92,12 +95,21 @@ def test_delegate_wrappers_cannot_bypass_skill_first_gate(monkeypatch):
     router._post_tool_call(
         "skill_view",
         {"name": "business-model-research"},
-        json.dumps({"success": True}),
+        json.dumps({
+            "success": True,
+            "name": "business-model-research",
+            "content": "verified skill instructions",
+        }),
         session_id="wrapper-skill-gate-parent",
     )
-    for tool_name, args in calls:
-        assert router._pre_tool_call(
-            tool_name,
-            args,
-            session_id="wrapper-skill-gate-parent",
-        ) is None
+    assert router._pre_tool_call(
+        calls[0][0],
+        calls[0][1],
+        session_id="wrapper-skill-gate-parent",
+    ) is None
+    legacy = router._pre_tool_call(
+        calls[1][0],
+        calls[1][1],
+        session_id="wrapper-skill-gate-parent",
+    )
+    assert legacy and "DELEGATE_SCHEMA_INVALID" in legacy["message"]

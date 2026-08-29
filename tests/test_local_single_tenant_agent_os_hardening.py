@@ -135,10 +135,13 @@ def test_delegate_task_is_blocked_until_selected_skill_really_loads(monkeypatch)
     )
     assert pre_result is not None
     assert pre_result["defer_streaming"] is True
+    expected_args = router._LOCAL_TURN_STATES["skill-gate-parent"][
+        "expected_delegate_args"
+    ]
 
     blocked = router._pre_tool_call(
         "delegate_task",
-        {"goal": "研究企业 AI 市场"},
+        expected_args,
         session_id="skill-gate-parent",
     )
     assert blocked and blocked["action"] == "block"
@@ -147,12 +150,16 @@ def test_delegate_task_is_blocked_until_selected_skill_really_loads(monkeypatch)
     router._post_tool_call(
         "skill_view",
         {"name": "business-model-research"},
-        json.dumps({"success": True}),
+        json.dumps({
+            "success": True,
+            "name": "business-model-research",
+            "content": "verified skill instructions",
+        }),
         session_id="skill-gate-parent",
     )
     assert router._pre_tool_call(
         "delegate_task",
-        {"goal": "研究企业 AI 市场"},
+        expected_args,
         session_id="skill-gate-parent",
     ) is None
 

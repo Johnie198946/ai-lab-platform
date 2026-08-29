@@ -25,6 +25,7 @@ class LocalPluginContext:
     def __init__(self):
         self.tools = {}
         self.hooks = {}
+        self.dispatched = []
 
     def register_tool(self, *, name, schema, handler, **metadata):
         self.tools[name] = {"schema": schema, "handler": handler, **metadata}
@@ -32,8 +33,16 @@ class LocalPluginContext:
     def register_hook(self, name, callback):
         self.hooks[name] = callback
 
-    def dispatch_tool(self, name, args):
-        return {"tool": name, "args": args}
+    def dispatch_tool(self, name, args, **kwargs):
+        self.dispatched.append((name, args, kwargs))
+        if name == "skill_view":
+            return json.dumps({
+                "success": True,
+                "name": args["name"],
+                "content": "# Verified skill\nUse evidence and preserve the original URL.",
+                "readiness_status": "available",
+            })
+        return json.dumps({"success": False, "error": "unexpected_tool"})
 
 
 def load_router():
@@ -96,6 +105,81 @@ def test_default_profile_registers_local_agent_os_lifecycle():
     }
 
 
+def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(monkeypatch):
+    plugin, router = load_router()
+    router._INSTALLED = False
+    router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
+    context = LocalPluginContext()
+    plugin.register(context)
+    original = "请研究这篇文章并核验来源：https://example.com/report?a=1&b=2"
+
+    result = context.hooks["pre_llm_call"](
+        original,
+        session_id="runtime-skill-parent",
+        turn_id="runtime-skill-turn",
+        platform="feishu",
+        sender_id="owner-open-id",
+    )
+
+    assert result is not None
+    assert context.dispatched[0][0:2] == (
+        "skill_view",
+        {"name": "business-model-research"},
+    )
+    state = router._LOCAL_TURN_STATES["runtime-skill-parent"]
+    assert state["loaded_skill"] == "business-model-research"
+    assert state["skill_result_hash"] == hashlib.sha256(
+        "# Verified skill\nUse evidence and preserve the original URL.".encode()
+    ).hexdigest()
+    assert "RUNTIME_VERIFIED_SKILL_RESULT" in result["context"]
+    raw_plan = result["context"].split("Plan: ", 1)[1].split(
+        "\n[RUNTIME_VERIFIED_SKILL_RESULT", 1
+    )[0]
+    plan = json.loads(raw_plan)
+    delegate_args = plan[1]["invoke"]["arguments"]
+    assert delegate_args == state["expected_delegate_args"]
+    assert delegate_args["tasks"][0]["goal"] == original
+    assert router._pre_tool_call(
+        "delegate_task", delegate_args, session_id="runtime-skill-parent"
+    ) is None
+
+    invalid = router._pre_tool_call(
+        "delegate_task",
+        {"goal": original},
+        session_id="runtime-skill-parent",
+    )
+    assert invalid and "DELEGATE_SCHEMA_INVALID" in invalid["message"]
+
+
+def test_runtime_skill_failure_has_structured_reason_code(monkeypatch):
+    plugin, router = load_router()
+    router._INSTALLED = False
+    router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
+    context = LocalPluginContext()
+    context.dispatch_tool = lambda *_args, **_kwargs: json.dumps({
+        "success": False,
+        "error": "skill unavailable",
+    })
+    plugin.register(context)
+    context.hooks["pre_llm_call"](
+        "请研究 https://example.com/report",
+        session_id="runtime-skill-failure",
+        turn_id="runtime-skill-failure-turn",
+        platform="feishu",
+        sender_id="owner-open-id",
+    )
+
+    blocked = context.hooks["transform_llm_output"](
+        "未经验证的回答",
+        session_id="runtime-skill-failure",
+    )
+    assert "SKILL_RESULT_FAILED" in blocked
+
+
 def test_local_professional_turn_requires_native_skill_then_delegation(monkeypatch):
     _, router = load_router()
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
@@ -118,6 +202,9 @@ def test_local_professional_turn_requires_native_skill_then_delegation(monkeypat
     assert state["requested_skill"] == "business-model-research"
     assert state["agency_decision"] == "CALL"
     assert state["requested_agent"] == "trend-researcher"
+    assert state["expected_delegate_args"]["tasks"][0]["goal"] == (
+        "请系统调研企业 AI 市场并给出有证据的专业报告"
+    )
 
 
 def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
