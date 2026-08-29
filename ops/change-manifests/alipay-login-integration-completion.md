@@ -13,6 +13,8 @@
   - ios/project.yml
   - .env.example
   - docker-compose.yml
+  - scripts/migrate_quantum_workspace.py
+  - scripts/link_release_vault.sh
 - git_inventory:
   - status_before: codex/showroom-visitor-session-v17 with unrelated pre-existing modifications and untracked files; no files were reverted or stashed.
   - branch_before: codex/showroom-visitor-session-v17
@@ -25,15 +27,16 @@
   - `pytest -q tests/test_startup_guard.py tests/test_me_api.py`: 6 passed
   - `git diff --check`: passed
   - `xcodebuild ... -derivedDataPath /tmp/ai-lab-alipay-derived`: Swift compilation reached build, but asset catalog failed because no simulator runtime is available in this environment; not a source compile failure.
-- status: TESTED
-- commit_sha: not committed (user did not request commit)
-- remote_sha: not applicable; no push authorized or performed
-- server_before: not inspected/changed
-- server_after: not applicable; no deployment performed
-- health_check: not applicable; no deployment performed
-- functional_check: not run against real支付宝/Authen credentials
-- rollback_point: restore the listed files from the pre-task working tree; unrelated user changes remain untouched.
+- status: PUSHED
+- commit_sha: 3457008cfda6afa4b8c17a335dae32794cec4735
+- remote_sha: origin/codex/showroom-visitor-session-v17 = 3457008cfda6afa4b8c17a335dae32794cec4735 (git ls-remote verified)
+- server_before: `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`, deployed SHA `e16ae95caecd8927693a87b6f92167e6d0c7557fce41ade3b34b48f84628c56c`
+- server_after: rollback restored `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`, deployed SHA `c6e11853342f5911fed6282cddfa30535006fd86`
+- health_check: rollback service `/ready` and `/health` returned HTTP 200; Hermes bridge `/health` returned HTTP 200
+- functional_check: new Alipay routes were not verified remotely because immutable release readiness timed out and the deployment script rolled back; old release remains active
+- rollback_point: `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ` (automatically restored by update.sh)
 - remaining_risks:
   - Authen must expose `/api/v1/auth/capabilities`, `/api/v1/auth/oauth/alipay/authorize`, and `/api/v1/auth/oauth/alipay` and be configured with支付宝 credentials.
   - `AUTH_PUBLIC_BASE_URL` must be a public HTTPS URL and `quantum` must match the iOS callback configuration.
   - Real-device SDK/provider testing is still required; no production credentials were added.
+  - Server deployment remains pending: update.sh timed out its 30-second `/ready` window during new release startup and automatically rolled back.
