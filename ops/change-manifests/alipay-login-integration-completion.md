@@ -1,0 +1,39 @@
+# Completion Manifest
+
+- task_id: alipay-login-integration
+- objective: 将 iOS 支付宝按钮从占位登录接入后端 OAuth 启动/一次性票据兑换流程，并加入回调 Scheme 与后端路由。
+- change_files:
+  - backend/api/external_auth.py
+  - backend/models/external_auth.py
+  - backend/main.py
+  - backend/db.py
+  - ios/AIPlatformApp/Views/Auth/LoginView.swift
+  - ios/AIPlatformApp/Networking/APIClient.swift
+  - ios/AIPlatformApp/Info.plist
+  - ios/project.yml
+  - .env.example
+  - docker-compose.yml
+- git_inventory:
+  - status_before: codex/showroom-visitor-session-v17 with unrelated pre-existing modifications and untracked files; no files were reverted or stashed.
+  - branch_before: codex/showroom-visitor-session-v17
+  - head_before: 70aa5cb42eec9637c18ac24bfed00ed822d2c198
+  - remote: origin https://github.com/Johnie198946/ai-lab-platform.git
+  - worktree: /Users/dengzhaoyu/Documents/AI Lab/ai-lab-platform-showroom
+- tests:
+  - `python3 -m compileall -q backend/api/external_auth.py backend/models/external_auth.py backend/main.py backend/db.py`: passed
+  - `python3 -c 'import backend.main'`: passed
+  - `pytest -q tests/test_startup_guard.py tests/test_me_api.py`: 6 passed
+  - `git diff --check`: passed
+  - `xcodebuild ... -derivedDataPath /tmp/ai-lab-alipay-derived`: Swift compilation reached build, but asset catalog failed because no simulator runtime is available in this environment; not a source compile failure.
+- status: TESTED
+- commit_sha: not committed (user did not request commit)
+- remote_sha: not applicable; no push authorized or performed
+- server_before: not inspected/changed
+- server_after: not applicable; no deployment performed
+- health_check: not applicable; no deployment performed
+- functional_check: not run against real支付宝/Authen credentials
+- rollback_point: restore the listed files from the pre-task working tree; unrelated user changes remain untouched.
+- remaining_risks:
+  - Authen must expose `/api/v1/auth/capabilities`, `/api/v1/auth/oauth/alipay/authorize`, and `/api/v1/auth/oauth/alipay` and be configured with支付宝 credentials.
+  - `AUTH_PUBLIC_BASE_URL` must be a public HTTPS URL and `quantum` must match the iOS callback configuration.
+  - Real-device SDK/provider testing is still required; no production credentials were added.

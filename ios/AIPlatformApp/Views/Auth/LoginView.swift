@@ -8,6 +8,10 @@
 //
 
 import SwiftUI
+import AuthenticationServices
+#if os(iOS)
+import UIKit
+#endif
 
 public struct LoginView: View {
     @EnvironmentObject private var appState: AppState
@@ -19,6 +23,7 @@ public struct LoginView: View {
     @State private var countdownSeconds: Int = 60
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
+    @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
     
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
@@ -239,7 +244,7 @@ public struct LoginView: View {
                 .buttonStyle(SoftButtonStyle())
                 
                 // Alipay Button
-                Button(action: { handleThirdPartyAuth(provider: "Alipay") }) {
+                Button(action: { handleThirdPartyAuth(provider: "alipay") }) {
                     VStack(spacing: AppTheme.Spacing.xs) {
                         Circle()
                             .fill(AppTheme.Colors.thirdPartyAlipay.opacity(0.12))
@@ -392,10 +397,92 @@ public struct LoginView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
-        withAnimation(.spring()) {
-            appState.isLoggedIn = true
-            appState.isGuestMode = false
-            appState.currentProfile = MockData.tenantProfile
+        guard !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+        Task { @MainActor in
+            do {
+                let start = try await APIClient.shared.startOAuth(provider: provider)
+                let ticket = try await oauthCoordinator.authenticate(url: start.authorizationUrl)
+                let response = try await APIClient.shared.completeOAuth(ticket: ticket)
+                APIClient.shared.saveToken(response.token)
+                _ = try? await APIClient.shared.fetchMe()
+                isLoading = false
+                withAnimation(.spring()) {
+                    appState.isLoggedIn = true
+                    appState.isGuestMode = false
+                    appState.currentProfile = MockData.tenantProfile
+                }
+            } catch OAuthSessionCoordinatorError.cancelled {
+                isLoading = false
+            } catch {
+                isLoading = false
+                errorMessage = "第三方登录失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+private enum OAuthSessionCoordinatorError: LocalizedError {
+    case invalidCallback
+    case cancelled
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidCallback: return "支付宝回调无效"
+        case .cancelled: return "用户取消登录"
+        }
+    }
+}
+
+@MainActor
+private final class OAuthSessionCoordinator: NSObject, ObservableObject, ASWebAuthenticationPresentationContextProviding {
+    private var session: ASWebAuthenticationSession?
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        #if os(iOS)
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: { $0.isKeyWindow }) ?? ASPresentationAnchor()
+        #else
+        return ASPresentationAnchor()
+        #endif
+    }
+
+    func authenticate(url: URL) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            let authSession = ASWebAuthenticationSession(
+                url: url,
+                callbackURLScheme: "quantum"
+            ) { [weak self] callbackURL, error in
+                self?.session = nil
+                if let error {
+                    if let authError = error as? ASWebAuthenticationSessionError,
+                       authError.code == .canceledLogin {
+                        continuation.resume(throwing: OAuthSessionCoordinatorError.cancelled)
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
+                    return
+                }
+                guard let callbackURL,
+                      let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+                      let ticket = components.queryItems?.first(where: { $0.name == "oauth_ticket" })?.value,
+                      !ticket.isEmpty else {
+                    continuation.resume(throwing: OAuthSessionCoordinatorError.invalidCallback)
+                    return
+                }
+                continuation.resume(returning: ticket)
+            }
+            authSession.presentationContextProvider = self
+            authSession.prefersEphemeralWebBrowserSession = false
+            self.session = authSession
+            guard authSession.start() else {
+                self.session = nil
+                continuation.resume(throwing: OAuthSessionCoordinatorError.invalidCallback)
+                return
+            }
         }
     }
 }

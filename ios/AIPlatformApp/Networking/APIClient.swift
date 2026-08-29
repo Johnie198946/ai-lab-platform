@@ -381,6 +381,18 @@ public struct RegisterResponseDTO: Codable {
     public let token: String?
 }
 
+public struct OAuthStartDTO: Codable {
+    public let authorizationUrl: URL
+}
+
+public struct LoginSessionDTO: Codable {
+    public let success: Bool
+    public let token: String
+    public let userId: String
+    public let tenantKey: String
+    public let isNewUser: Bool?
+}
+
 /// GET /api/v1/topology 单节点（后端基线 Agent 注册表唯一真值来源）
 public struct TopologyNodeDTO: Codable, Identifiable, Hashable {
     public let id: String
@@ -2024,6 +2036,35 @@ public final class APIClient: ObservableObject {
                 password: password,
                 verificationCode: verificationCode
             )
+        )
+    }
+
+    /// Starts a provider OAuth flow. The server owns provider secrets and OAuth state.
+    public func startOAuth(provider: String) async throws -> OAuthStartDTO {
+        let url = baseURL
+            .appendingPathComponent("api/v1/auth/oauth")
+            .appendingPathComponent(provider)
+            .appendingPathComponent("start")
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "client", value: "ios")]
+        guard let requestURL = components?.url else { throw APIError.invalidURL }
+        request.url = requestURL
+        let data = try await perform(request, session: session, canRetry: false, reauthOn401: false)
+        do { return try decoder.decode(OAuthStartDTO.self, from: data) }
+        catch { throw APIError.decoding(error.localizedDescription) }
+    }
+
+    /// Exchanges the short-lived server ticket for this app's own JWT.
+    public func completeOAuth(ticket: String) async throws -> LoginSessionDTO {
+        struct Body: Encodable { let ticket: String }
+        return try await request(
+            LoginSessionDTO.self,
+            path: "auth/oauth/complete",
+            method: "POST",
+            body: Body(ticket: ticket)
         )
     }
 }

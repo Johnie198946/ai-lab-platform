@@ -14,6 +14,7 @@ from backend.api.tasks import router as tasks_router
 from backend.api.knowledge import router as knowledge_router
 from backend.api.chat import router as chat_router
 from backend.api.register import router as register_router
+from backend.api.external_auth import router as external_auth_router
 from backend.api.catalog import router as catalog_router
 from backend.api.me import router as me_router
 from backend.api.auth import require_auth, check_dev_visibility_guard
@@ -120,6 +121,8 @@ app.include_router(chat_router, dependencies=[Depends(require_auth)])
 app.include_router(orchestration_router, dependencies=[Depends(require_auth)])
 # 注册（/register 公开；/admin/users 端点自带超管校验）
 app.include_router(register_router)
+# 手机号、微信、支付宝 OAuth 登录（公开启动/回调，完成接口返回平台 JWT）
+app.include_router(external_auth_router)
 # 目录 / 订阅管理 / 当前用户
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
 app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
