@@ -1,0 +1,31 @@
+# Agency Agent OS routing fix completion
+
+- task_id: agency-agent-os-routing-20260829
+- status: TESTED
+- branch: main
+- worktree: /Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828
+- base_head: d24765ec37da55de0238cf5252e5ca7c6f87b841
+- scope:
+  - agency/hermes-plugins/ai-lab-capabilities/capability_router.py
+  - tests/test_agency_abstention.py
+- changes:
+  - Recognize Agent OS, Hermes single-runtime, control-plane, delegation receipt, and Main Adoption architecture intent.
+  - Prefer Multi-Agent Systems Architect for that intent.
+  - Hard-exclude UI/UX/interface/visual designer identities when no interface intent is present.
+  - Abstain when the only candidate is a UI specialist.
+  - Add two regression tests for specialist choice and abstention.
+- tests:
+  - `python3 -m pytest -q tests/test_agency_abstention.py`: 5 passed in the specialist's isolated environment.
+  - `PYTHONPATH=. .venv/bin/pytest -q`: 784 passed, 2 skipped, 10 warnings in the repository-standard environment.
+  - `python3 -m py_compile agency/hermes-plugins/ai-lab-capabilities/capability_router.py tests/test_agency_abstention.py`: passed.
+  - `git diff --check`: passed.
+- local_commit: same commit that contains this manifest (`fix(router): prefer multi-agent architect for Agent OS audits`)
+- remote_sha: not pushed
+- server_before: not applicable
+- server_after: not deployed
+- health_check: not applicable
+- functional_check: targeted routing regression tests passed
+- rollback_point: base_head d24765ec37da55de0238cf5252e5ca7c6f87b841
+- remaining_risks:
+  - The passing full suite still reports 10 dependency deprecation warnings that are outside this change.
+  - No GitHub push or deployment was authorized or performed.

@@ -106,3 +106,47 @@ def test_professional_router_requires_positive_task_fit() -> None:
         capabilities=[_agency("title-only", "Title Only", "", "", 1.0)],
         professional_only=True,
     ) is None
+
+
+def test_agent_os_architecture_audit_never_routes_to_ui_designer() -> None:
+    router = _router()
+    query = (
+        "体检本体生产是否使用 Agent OS，审计 Hermes 单一 Runtime、控制面、"
+        "delegation receipt 和 Main adoption 是否违背设计。"
+    )
+    ui = _agency(
+        "ui-designer",
+        "UI Designer",
+        "UI architecture, visual design systems, component libraries and interface specialist",
+        "design review system design audit " * 20,
+        0.82,
+    )
+    multi_agent = _agency(
+        "multi-agent-systems-architect",
+        "Multi-Agent Systems Architect",
+        "Systems architect for multi-agent coordination, governance and failure recovery",
+        "Agent OS runtime control plane delegation receipts Main adoption trust governance",
+        0.82,
+    )
+
+    cards = router.recommend(query, capabilities=[ui, multi_agent], stats={})
+    assert cards[0]["id"] == "agency:multi-agent-systems-architect"
+    assert "agency:ui-designer" not in {card["id"] for card in cards}
+
+
+def test_agent_os_architecture_audit_abstains_when_only_ui_candidate_exists() -> None:
+    router = _router()
+    context = router._candidate_context(
+        "审计 Agent OS 控制面、委派回执和 Main adoption 是否符合单一运行时设计",
+        capabilities=[
+            _agency(
+                "ui-designer",
+                "UI Designer",
+                "UI architecture, visual design systems and interface specialist",
+                "architecture design audit " * 20,
+                0.82,
+            )
+        ],
+        professional_only=True,
+    )
+    assert context is None

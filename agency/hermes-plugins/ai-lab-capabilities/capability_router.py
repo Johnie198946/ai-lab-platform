@@ -127,6 +127,14 @@ _PROFESSIONAL_WORDS = {
     "expert", "senior", "specialist", "professional", "strategist",
     "architect", "analyst", "audit", "production", "holistic",
 }
+
+_AGENT_OS_ARCH_RE = re.compile(
+    r"(?:agent\s*os|agent运行时|agent\s*runtime|单一(?:hermes\s*)?runtime|"
+    r"单一运行时|控制面|control\s*plane|委派|delegation|child\s*agent|"
+    r"canonical\s*receipt|结果回执|main\s*adoption|main采用|专业路由|"
+    r"multi-agent|多agent|多智能体|agent编排|agent治理|agent架构)",
+    re.I,
+)
 _AGENCY_DOMAIN_RULES: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
     (
         re.compile(r"(?:产品|mvp|用户故事|路线图|product|roadmap|user stor)", re.I),
@@ -137,8 +145,27 @@ _AGENCY_DOMAIN_RULES: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
         frozenset({"research", "analyst", "analysis", "evidence", "investigation"}),
     ),
     (
-        re.compile(r"(?:系统架构|企业架构|权限|多租户|部署|architecture|security|backend)", re.I),
-        frozenset({"architect", "architecture", "backend", "security", "enterprise", "systems"}),
+        re.compile(
+            r"(?:agent\s*os|agent运行时|agent\s*runtime|单一(?:hermes\s*)?runtime|"
+            r"单一运行时|控制面|control\s*plane|委派|delegation|child\s*agent|"
+            r"canonical\s*receipt|结果回执|main\s*adoption|main采用|专业路由|"
+            r"multi-agent|多agent|多智能体|agent编排|agent治理|agent架构|"
+            r"系统架构|企业架构|权限|多租户|部署|architecture|security|backend)",
+            re.I,
+        ),
+        frozenset(
+            {
+                "architect",
+                "architecture",
+                "backend",
+                "security",
+                "enterprise",
+                "multi-agent",
+                "governance",
+                "trust",
+                "orchestration",
+            }
+        ),
     ),
 )
 
@@ -154,6 +181,7 @@ _PRODUCT_DELIVERY_NEGATION_RE = re.compile(
 _AGENCY_DOMAIN_PREFERRED: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
     (_AGENCY_DOMAIN_RULES[0][0], frozenset({"agency:product-manager"})),
     (_AGENCY_DOMAIN_RULES[1][0], frozenset({"agency:research-synthesist"})),
+    (_AGENT_OS_ARCH_RE, frozenset({"agency:multi-agent-systems-architect"})),
     (
         _AGENCY_DOMAIN_RULES[2][0],
         frozenset(
@@ -245,6 +273,15 @@ def _agency_domain_matches(query: str, capability: dict[str, Any]) -> bool:
         str(capability.get(key) or "")
         for key in ("name", "description", "domain")
     )
+    if _AGENT_OS_ARCH_RE.search(query or "") and not re.search(
+        r"界面|交互|用户体验|视觉|可用性|\b(?:ux|ui)\b", query or "", re.I
+    ):
+        identity_lower = identity.casefold()
+        if any(
+            term in identity_lower
+            for term in ("ui designer", "ux designer", "interface designer", "visual designer")
+        ):
+            return False
     identity_tokens = _tokens(identity)
     for task_pattern, allowed_identity_tokens in _AGENCY_DOMAIN_RULES:
         if task_pattern.search(query or ""):
@@ -504,21 +541,29 @@ def _scope_alignment(capability: dict[str, Any], query: str) -> float:
             return -0.08
 
     technical_architecture = bool(
-        "架构" in text
-        and re.search(
-            r"多租户|agent平台|任务队列|状态持久化|可观测性|故障恢复|容量规划",
-            text,
-            re.I,
+        _AGENT_OS_ARCH_RE.search(text)
+        or (
+            "架构" in text
+            and re.search(
+                r"多租户|agent平台|任务队列|状态持久化|可观测性|故障恢复|容量规划",
+                text,
+                re.I,
+            )
         )
     )
     interface_intent = bool(re.search(r"界面|交互|用户体验|视觉|可用性|\b(?:ux|ui)\b", text, re.I))
     if technical_architecture and not interface_intent:
-        if any(term in name for term in ("ux ", "ui ", "interface", "xr ")):
-            return -0.18
+        if any(
+            term in name
+            for term in ("ux ", "ui ", "ui designer", "interface", "visual", "xr ")
+        ):
+            return -0.40
         if "multi-agent systems architect" in name:
-            return 0.16
+            return 0.24
+        if "master plan architect" in name:
+            return 0.12
         if any(term in name for term in ("backend architect", "software architect")):
-            return 0.08
+            return 0.06
     return 0.0
 
 
