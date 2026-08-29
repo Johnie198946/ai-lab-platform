@@ -42,6 +42,13 @@ class LocalPluginContext:
                 "content": "# Verified skill\nUse evidence and preserve the original URL.",
                 "readiness_status": "available",
             })
+        if name == "delegate_task":
+            return json.dumps({
+                "status": "dispatched",
+                "mode": "background",
+                "delegation_id": "deleg-runtime-test",
+                "count": 1,
+            })
         return json.dumps({"success": False, "error": "unexpected_tool"})
 
 
@@ -134,6 +141,10 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
         "# Verified skill\nUse evidence and preserve the original URL.".encode()
     ).hexdigest()
     assert "RUNTIME_VERIFIED_SKILL_RESULT" in result["context"]
+    assert "RUNTIME_VERIFIED_DELEGATION_DISPATCH" in result["context"]
+    assert context.dispatched[1][0] == "delegate_task"
+    assert state["delegation_dispatched"] is True
+    assert state["dispatch_delegation_id"] == "deleg-runtime-test"
     raw_plan = result["context"].split("Plan: ", 1)[1].split(
         "\n[RUNTIME_VERIFIED_SKILL_RESULT", 1
     )[0]
@@ -141,16 +152,15 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
     delegate_args = plan[1]["invoke"]["arguments"]
     assert delegate_args == state["expected_delegate_args"]
     assert delegate_args["tasks"][0]["goal"] == original
-    assert router._pre_tool_call(
+    duplicate = router._pre_tool_call(
         "delegate_task", delegate_args, session_id="runtime-skill-parent"
-    ) is None
-
-    invalid = router._pre_tool_call(
-        "delegate_task",
-        {"goal": original},
+    )
+    assert duplicate and "already dispatched" in duplicate["message"]
+    started = router._transform_llm_output(
+        "我自行研究得到的未经 child 验证结果",
         session_id="runtime-skill-parent",
     )
-    assert invalid and "DELEGATE_SCHEMA_INVALID" in invalid["message"]
+    assert started.startswith("已启动专业研究")
 
 
 def test_runtime_skill_failure_has_structured_reason_code(monkeypatch):
