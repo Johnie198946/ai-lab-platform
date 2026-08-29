@@ -1,7 +1,7 @@
 ---
 title: Agent OS 确定性 Skill 执行修复
 task_id: agent-os-deterministic-skill-execution-20260829
-status: PLUGIN_VERIFIED_FEISHU_INBOUND_PENDING
+status: VERIFIED
 date: 2026-08-29
 tags:
   - ops/change-manifest
@@ -85,8 +85,24 @@ tags:
 - Producer / recomputed result SHA-256：`6bcf23b9da0a48f2a5b4b37224b6c54a2469f3d6a4d89e55230a5236f06995df`
 - Main 最终回答通过 canonical receipt 与 adoption gate。
 
-> [!warning] 剩余验收边界
-> CLI/本地 Runtime 与 `platform=feishu` 回归测试均通过，但 Hermes 没有官方“伪造飞书入站消息”测试入口。必须由用户在真实飞书会话再发一条 URL，随后回读该 Feishu session 的 Skill receipt、delegation、child load、result hash 与最终回复，才能把状态提升为完整 Feishu inbound `VERIFIED`。手工 `hermes send` 只能证明出站投递，不能冒充入站 Agent E2E。
+## 真实 Feishu inbound E2E
+
+- Feishu session：`20260828_160247_f1b7d69b`
+- 用户消息 ID：`219034`
+- 原始 URL 保真：通过
+- Runtime Skill receipt：`evidence-first-content-research`，`verifier=pass`
+- 原生 delegate tool call：`219035`
+- Delegation：`deleg_a30c7ace`
+- Child session：`20260829_211156_fffd87`
+- Child 真实 Agency load：`research-synthesist`，`success=true`
+- Child terminal state：`completed`
+- Producer / recomputed result SHA-256：`6cea3cb5b1c1feb22ed4825a0abbed11e8c54bc9e3466b3ac0115fdc0d8aabef`
+- 初始飞书回复：真实启动状态，30 字
+- 最终 canonical receipt：`verifier=pass`，真实 delegation ID 正确
+- 最终飞书回复：`219082`，3757 字，已发送至原 DM chat
+
+> [!success] 最终判定
+> Mac、服务器 active plugin、CLI Runtime、真实 Feishu 入站、Skill receipt、Agency child、producer hash、canonical receipt 与 Main adoption 全部通过；本任务状态提升为 `VERIFIED`。
 
 > [!warning] 完成边界
 > 只有 GitHub SHA、本机与服务器插件 hash、Gateway 重启、真实飞书链接任务及 canonical delegation receipt 全部核验后，状态才可提升为 `VERIFIED`。
