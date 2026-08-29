@@ -1,0 +1,261 @@
+{
+  "schema_version": "1.0",
+  "source": "docs/qws-task-operating-loop-v1.md",
+  "source_sha256": "5cda65f883351fe7d426ec50349e341f530d64548d0bef855fd32744d42e776b",
+  "compile_status": "READY",
+  "strategy": "P0_TO_P3",
+  "phase_count": 4,
+  "task_count": 23,
+  "phases": [
+    {
+      "id": "P0",
+      "name": "先修理解与事实合同",
+      "depends_on": [],
+      "tasks": [
+        {
+          "id": "work_4620fa9d25",
+          "title": "标题生成/校验；卡片去任务号和内部 UUID",
+          "status": "TODO",
+          "acceptance": [
+            "标题生成/校验；卡片去任务号和内部 UUID具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_5260cc726a",
+          "title": "拆分 `请你决策` 与 `等你验收`",
+          "status": "TODO",
+          "acceptance": [
+            "拆分 `请你决策` 与 `等你验收`具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_b5ca69d0dc",
+          "title": "baseline/forecast/actual",
+          "status": "TODO",
+          "acceptance": [
+            "baseline/forecast/actual具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_d847ee03b8",
+          "title": "Handoff Capsule + Context Pack v1",
+          "status": "TODO",
+          "acceptance": [
+            "Handoff Capsule + Context Pack v1具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_b553424d49",
+          "title": "relation proposal、环检测、revision CAS",
+          "status": "TODO",
+          "acceptance": [
+            "relation proposal、环检测、revision CAS具备可验证的主路径与证据"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P1",
+      "name": "去重与合并",
+      "depends_on": [
+        "P0"
+      ],
+      "tasks": [
+        {
+          "id": "work_34d56471b0",
+          "title": "创建时/认领时相似检查",
+          "status": "TODO",
+          "acceptance": [
+            "创建时/认领时相似检查具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_b41f2fba32",
+          "title": "Merge Preview、MERGED 重定向与撤销",
+          "status": "TODO",
+          "acceptance": [
+            "Merge Preview、MERGED 重定向与撤销具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_9f60728e5b",
+          "title": "Challenge Review",
+          "status": "TODO",
+          "acceptance": [
+            "Challenge Review具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_25fec0c807",
+          "title": "权限过滤的 Relation Digest",
+          "status": "TODO",
+          "acceptance": [
+            "权限过滤的 Relation Digest具备可验证的主路径与证据"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P2",
+      "name": "文档和自动化闭环",
+      "depends_on": [
+        "P1"
+      ],
+      "tasks": [
+        {
+          "id": "work_0e63c36a50",
+          "title": "Obsidian-like Markdown 文档体验",
+          "status": "TODO",
+          "acceptance": [
+            "Obsidian-like Markdown 文档体验具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_a3f7a179a9",
+          "title": "Automation 向导、run、报告与 recommendation",
+          "status": "TODO",
+          "acceptance": [
+            "Automation 向导、run、报告与 recommendation具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_60527c223a",
+          "title": "novelty 聚类、预算、熔断",
+          "status": "TODO",
+          "acceptance": [
+            "novelty 聚类、预算、熔断具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_015804ba5e",
+          "title": "采纳/拒绝反馈回流",
+          "status": "TODO",
+          "acceptance": [
+            "采纳/拒绝反馈回流具备可验证的主路径与证据"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "P3",
+      "name": "校准与自治升级",
+      "depends_on": [
+        "P2"
+      ],
+      "tasks": [
+        {
+          "id": "work_9b630dafcf",
+          "title": "用真实任务校准重复阈值和 ETA",
+          "status": "TODO",
+          "acceptance": [
+            "用真实任务校准重复阈值和 ETA具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_147b7cb651",
+          "title": "按项目开放 L2/L3 自动化",
+          "status": "TODO",
+          "acceptance": [
+            "按项目开放 L2/L3 自动化具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_c4b29b4f3b",
+          "title": "仪表盘观察重复拦截准确率、交接恢复率、ETA 偏差、推荐采纳率、cron 噪声率",
+          "status": "TODO",
+          "acceptance": [
+            "仪表盘观察重复拦截准确率、交接恢复率、ETA 偏差、推荐采纳率、cron 噪声率具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_440c2de814",
+          "title": "新 Session 首次正确行动率",
+          "status": "TODO",
+          "acceptance": [
+            "新 Session 首次正确行动率具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_12cd8680a3",
+          "title": "交接后重复工作率",
+          "status": "TODO",
+          "acceptance": [
+            "交接后重复工作率具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_2b4cc814c1",
+          "title": "forecast P50/P80 校准误差",
+          "status": "TODO",
+          "acceptance": [
+            "forecast P50/P80 校准误差具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_c3f974d47f",
+          "title": "重复提醒精确率与用户撤销率",
+          "status": "TODO",
+          "acceptance": [
+            "重复提醒精确率与用户撤销率具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_f3359ddf9f",
+          "title": "推荐采纳率，而非推荐数量",
+          "status": "TODO",
+          "acceptance": [
+            "推荐采纳率，而非推荐数量具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_bbb83168a0",
+          "title": "被 Challenge Review 修改或避免的高风险任务数",
+          "status": "TODO",
+          "acceptance": [
+            "被 Challenge Review 修改或避免的高风险任务数具备可验证的主路径与证据"
+          ]
+        },
+        {
+          "id": "work_851f2b8ec9",
+          "title": "每个完成任务的上下文 token 与人工打断次数",
+          "status": "TODO",
+          "acceptance": [
+            "每个完成任务的上下文 token 与人工打断次数具备可验证的主路径与证据"
+          ]
+        }
+      ]
+    }
+  ],
+  "product_decisions": [
+    {
+      "id": "work_632085571c",
+      "question": "是否同意“任务卡是事实源，Session 只是执行容器”",
+      "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"
+    },
+    {
+      "id": "work_9a923794ae",
+      "question": "是否新增 `请你决策`，不再用 `等你确认` 混合两种语义",
+      "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"
+    },
+    {
+      "id": "work_8cdc5cc7bf",
+      "question": "合并是否坚持“先预览、可撤销、原卡保留重定向”",
+      "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"
+    },
+    {
+      "id": "work_f19647a4ae",
+      "question": "默认自动化级别是否定为 L1（只生成等待认领推荐）",
+      "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"
+    },
+    {
+      "id": "work_0d06bf7323",
+      "question": "项目文档是否走 Obsidian-like 体验兼容层，而非整仓 fork",
+      "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"
+    },
+    {
+      "id": "work_6e5acb5707",
+      "question": "Challenge Review 的硬门禁范围是否至少包含安全、权限、删除、发布、成本超限和跨任务影响",
+      "status": "APPROVED_BY_IMPLEMENTATION_DIRECTIVE"
+    }
+  ]
+}
