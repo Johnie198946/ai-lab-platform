@@ -2,7 +2,7 @@
 
 - task_id: `qws-project-auto-clarification-20260829`
 - objective: 创建项目后自动把服务端可信的项目名称、描述和期望输出交给 Hermes；由 Hermes 判断需求是否足够，缺失时复用 iOS 同源 clarify 协议逐项澄清，充分时直接生成待确认蓝图；同时体检 Mac/服务器 Hermes 技能偏离。
-- status: `TESTED`
+- status: `VERIFIED`
 
 ## Git preflight
 
@@ -53,16 +53,16 @@
 
 ## Delivery evidence
 
-- commit SHA: 用户已授权，提交与交付执行中。
-- GitHub remote/ref/SHA: 用户已授权，推送与远端核验执行中。
+- implementation commit SHA: `29c1f81ec875a7610e963ffd87b5a42482165623`。
+- GitHub remote/ref/SHA: `origin refs/heads/codex/qws-project-auto-clarification-20260829 = 29c1f81ec875a7610e963ffd87b5a42482165623`，已由 `git ls-remote` 核验；清单证据提交完成后将再次核验分支 HEAD。
 - server_before: 只读体检时 `/opt/releases/ai-lab-platform-5a236834ea26.zWfrTX`，`.deployed-sha=5a236834ea2694f577a23941bb3e073b6ff73d4e`；API、Bridge 和 Compose 健康。
-- server_after: 用户已授权，部署执行中。
-- health_check: 本地目标测试和构建通过；生产仅进行了只读 Bridge/技能体检。
-- functional_check: 协议级自动首轮和 clarify 测试通过；未以生产用户身份创建测试项目。
-- rollback_point: 代码基线 `5a236834ea2694f577a23941bb3e073b6ff73d4e`；服务器未变更，继续使用当前 release。
+- server_after: 首轮发布 `/opt/releases/ai-lab-platform-29c1f81ec875.w47ta0`，`.deployed-sha=29c1f81ec875a7610e963ffd87b5a42482165623`；证据提交发布后以最终分支 HEAD 再次核验。
+- health_check: API `/health={status:ok}`、`/ready={status:ready}`；Hermes Bridge `v6.0`、`streaming=true`、systemd `active`；公网 HTTPS `/health` 正常、`/home=200`；8 个 Compose 服务均 running，API/Postgres/Redis/Taskboard healthy；部署后 5 分钟关键服务日志中 Traceback、HTTP 5xx、tenant session、INVALID_HOST 命中数为 0。
+- functional_check: 生产 OpenAPI 同时包含 `/api/v1/task-conversations/{conversation_id}/messages/stream` 与 `project_created`；部署后端包含 `auto_project_intake` 和受限 `project_created` 处理；前端生产 bundle 同时包含“正在把项目名称与描述交给 Hermes”和“AI 需要补充信息”；匿名访问 `/api/v1/projects` 返回 401，鉴权边界有效。未创建或修改生产业务数据。
+- rollback_point: `/opt/releases/ai-lab-platform-5a236834ea26.zWfrTX`，对应 `5a236834ea2694f577a23941bb3e073b6ff73d4e`；发布脚本已输出并保留该不可变 release。
 
 ## Remaining risks
 
 - 服务器 Hermes 核心 capability router 与 Mac、仓库均不同；虽然本场景依赖的 SSE/client context/clarify 可用，Skill 候选排序仍可能与 Mac 有差异，建议作为独立插件收敛任务处理。
 - 自动评估对旧的空历史 planning Session 同样生效；已有历史 Session 不会被自动插入重复首轮。
-- 用户已明确授权 push 与部署；最终状态以远端 SHA、服务器版本、健康检查和功能检查结果为准。
+- 完整 API 测试仍有两个既有基线失败（resource-plan 旧参数、并发 Session registry 竞态），与本次自动澄清路径无关；目标测试、前端契约测试与构建均通过。
