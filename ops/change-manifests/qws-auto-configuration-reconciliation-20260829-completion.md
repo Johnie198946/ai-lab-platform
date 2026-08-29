@@ -1,7 +1,7 @@
 ---
 title: QWS 自动配置与历史卡片投影修复
 task_id: qws-auto-configuration-reconciliation-20260829
-status: TESTED
+status: VERIFIED
 date: 2026-08-29
 tags:
   - ops/change-manifest
@@ -59,12 +59,27 @@ tags:
 
 - branch: `main`
 - base: `36dacfe5b383574552382939a3f4d34a55b8b6f1`
-- implementation_commit: 待提交
-- remote_sha: 待推送核验
+- implementation_commit: `b3d73318439621157181c18f506ef0fc86e61b4f`
+- remote_sha: `b3d73318439621157181c18f506ef0fc86e61b4f`，已通过 `git ls-remote` 核验
 - server_before: `/opt/releases/ai-lab-platform-b1445428932f.xMgazL`
-- server_after: 待部署
-- rollback_point: 待部署前建立
-- production_backfill: 待执行
+- server_after: `/opt/releases/ai-lab-platform-b3d733184396.gAU1WB`，`.deployed-sha=b3d73318439621157181c18f506ef0fc86e61b4f`
+- rollback_point: `/opt/releases/ai-lab-platform-b1445428932f.xMgazL`
+- PostgreSQL backup: `/opt/ai-lab-platform/backups/pre-qws-reconcile-20260829-213522.dump`
+- Taskboard backup: `/opt/ai-lab-platform/backups/pre-qws-reconcile-taskboard-20260829-213522.sqlite`
+- production_backfill: 项目 revision `1 → 2`；使用项目 owner JWT 和真实 `/api/qws/session` 路径完成 reconciliation
+
+## 生产验收收据
+
+- QWS calendar：`SCHEDULED`，工作日历 `weekday-default`，锚点 `2026-08-31`。
+- QWS-7：`start_date=2026-09-04`、`due_date=2026-09-04`、`schedule_source=SYSTEM_DEFAULT`。
+- Taskboard QWS-7：开始/截止日期均为 `2026-09-04`，版本提升至 `5`。
+- Taskboard 关系：已建立 `QWS-6 blocks QWS-7`；因此 QWS-7 `blocked_by=QWS-6`，`blocks` 为空。
+- 全项目依赖与父子关系共写入 10 条，原先 `task_relations=0` 的历史缺口已消除。
+- 部署 Taskboard 资产 `index-YcmzGf6Z.js` 包含“待项目仓库绑定”。
+- API `/ready`、Bridge `/health`、Taskboard/PostgreSQL/Redis 容器健康；公网 `/health` 返回 `ok/0.8.0`。
+
+> [!warning] 开发上下文边界
+> 当前项目未绑定真实代码仓库，因此没有伪造 branch/worktree。QWS 卡片明确显示“待项目仓库绑定”；项目接入仓库后，合法运行时上下文会由同一 reconciliation 路径补齐。
 
 ## 验收要求
 
