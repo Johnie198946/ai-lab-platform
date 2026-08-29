@@ -31,8 +31,8 @@
 
 - status: `DEPLOYED`
 - code commit SHA: `a89b689`。
-- manifest commit SHA: 本文件所在后续提交；以最终 `git rev-parse HEAD` 与远端核验记录为准。
-- GitHub remote/ref/SHA: 待 push 与 `git ls-remote` 核验后填写。
+- manifest initial commit SHA: `e0f53fbfba8c9b35f15275b45caa0ee8b3797e82`。
+- GitHub remote/ref/SHA: `origin` / `refs/heads/codex/alipay-login-session-fix-20260829` / `e0f53fbfba8c9b35f15275b45caa0ee8b3797e82`；已由 `git ls-remote` 核对与当时本地 HEAD 一致。最终清单更新提交的远端 SHA 在完成通报中记录。
 
 ## 部署记录
 
