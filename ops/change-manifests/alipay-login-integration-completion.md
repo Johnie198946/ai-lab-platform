@@ -28,8 +28,8 @@
   - `git diff --check`: passed
   - `xcodebuild ... -derivedDataPath /tmp/ai-lab-alipay-derived`: Swift compilation reached build, but asset catalog failed because no simulator runtime is available in this environment; not a source compile failure.
 - status: PUSHED
-- commit_sha: 3457008cfda6afa4b8c17a335dae32794cec4735
-- remote_sha: origin/codex/showroom-visitor-session-v17 = 3457008cfda6afa4b8c17a335dae32794cec4735 (git ls-remote verified)
+- commit_sha: 64a4f1a0a65e989169510c2557b67f35307a2896
+- remote_sha: origin/codex/showroom-visitor-session-v17 = 64a4f1a0a65e989169510c2557b67f35307a2896 (git ls-remote verified)
 - server_before: `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`, deployed SHA `e16ae95caecd8927693a87b6f92167e6d0c7557fce41ade3b34b48f84628c56c`
 - server_after: rollback restored `/opt/releases/ai-lab-platform-c6e11853342f.olUAbJ`, deployed SHA `c6e11853342f5911fed6282cddfa30535006fd86`
 - health_check: rollback service `/ready` and `/health` returned HTTP 200; Hermes bridge `/health` returned HTTP 200
