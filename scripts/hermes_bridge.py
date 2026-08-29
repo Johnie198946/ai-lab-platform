@@ -49,12 +49,21 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 import uvicorn
 
-# 仓库根追加到 sys.path（不插 0 位）：仓库 tools/ 无 Hermes 网关模块，
-# 若插在最前会遮蔽 venv site-packages 的 Hermes tools（managed_tool_gateway/
-# clarify_gateway）与 run_agent，导致进程内 agent 构建失败。
-# append 后：tools/hermes_cli/run_agent 解析到已安装 hermes_agent 0.19.0，
-# backend 包仍可从仓库根解析（仅仓库持有）。
+# Hermes 与本仓库都包含顶级 ``tools`` 包。Python 总把当前工作目录
+# 放在普通 PYTHONPATH 前，因此仅 append 仓库根仍会在从仓库 cwd 启动时
+# 解析到错误的 tools。必须在任何 backend 导入前固定 Hermes 源码根；
+# 仓库根仍只 append，供仅仓库持有的 backend 包解析。
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_HERMES_SOURCE_ROOT = Path(
+    os.environ.get("HERMES_AGENT_ROOT")
+    or Path(os.environ.get("HERMES_HOME") or Path.home() / ".hermes") / "hermes-agent"
+).resolve()
+if _HERMES_SOURCE_ROOT.is_dir():
+    try:
+        sys.path.remove(str(_HERMES_SOURCE_ROOT))
+    except ValueError:
+        pass
+    sys.path.insert(0, str(_HERMES_SOURCE_ROOT))
 if str(_REPO_ROOT) not in sys.path:
     sys.path.append(str(_REPO_ROOT))
 
@@ -111,7 +120,12 @@ STATE_DB = os.environ.get(
     "HERMES_STATE_DB",
     str(Path.home() / ".hermes" / "state.db")
 )
-MAPPING_FILE = Path("/opt/ai-lab-platform/data/session_mappings.json")
+MAPPING_FILE = Path(
+    os.environ.get(
+        "HERMES_MAPPING_FILE",
+        "/opt/ai-lab-platform/data/session_mappings.json",
+    )
+)
 # 消费水位线持久化文件（user_id -> 已投递最大消息 id），供断点 0ms 回读判定
 WATERMARK_FILE = Path(
     os.environ.get(
@@ -1288,6 +1302,12 @@ def _tenant_skill_read_tool(args: dict[str, Any], **_kwargs) -> str:
     content = read_sandbox_skill(sandbox, name)
     if not content:
         return json.dumps({"success": False, "error": "skill_not_found"})
+    if isinstance(route, dict):
+        route["decision"] = {
+            "status": "selected",
+            "requested_skill": name,
+            "loaded_skill": name,
+        }
     return json.dumps(
         {"success": True, "name": name, "instructions": content},
         ensure_ascii=False,
@@ -3810,37 +3830,55 @@ _AGENCY_TOOL_LINE_RE = re.compile(
     r"['\"]([a-z0-9][a-z0-9_-]{0,99})['\"]",
     re.IGNORECASE | re.MULTILINE,
 )
+_AGENCY_RESULT_LINE_RE = re.compile(
+    r"^\d{2}:\d{2}:\d{2}\s+result\s+\|\s+agency_agents_load\s+ok\b"
+    r"[^\n]*['\"]success['\"]\s*:\s*true"
+    r"[^\n]*['\"]slug['\"]\s*:\s*"
+    r"['\"]([a-z0-9][a-z0-9_-]{0,99})['\"]",
+    re.IGNORECASE | re.MULTILINE,
+)
 _DELEGATE_STATUSES = frozenset(
     {"completed", "failed", "error", "timeout", "cancelled", "dispatched", "unknown"}
 )
 
 
-def _verified_delegation_transcript(value: Any) -> tuple[str | None, str | None]:
-    """Return (delegation_id, loaded_slug) only for a bounded Hermes transcript."""
+def _delegation_transcript_details(
+    value: Any,
+) -> tuple[str | None, str | None, str | None]:
+    """Return bounded (delegation_id, called_slug, successful_slug) evidence."""
     raw = str(value or "").strip()
     if not raw:
-        return None, None
+        return None, None, None
     home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
     root = home / "cache/delegation/live"
     try:
         resolved_root = root.resolve(strict=True)
         path = Path(raw).resolve(strict=True)
         if path.parent.parent != resolved_root or path.name != "task-0.log":
-            return None, None
+            return None, None, None
         if path.stat().st_size > 1_000_000:
-            return None, None
+            return None, None, None
     except (OSError, RuntimeError):
-        return None, None
+        return None, None, None
     delegation_id = path.parent.name
     if _DELEGATION_ID_FULL_RE.fullmatch(delegation_id) is None:
-        return None, None
+        return None, None, None
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return None, None
-    loaded_slugs = set(_AGENCY_TOOL_LINE_RE.findall(text))
-    loaded_slug = next(iter(loaded_slugs)) if len(loaded_slugs) == 1 else None
-    return delegation_id, loaded_slug
+        return None, None, None
+    called_slugs = set(_AGENCY_TOOL_LINE_RE.findall(text))
+    successful_slugs = set(_AGENCY_RESULT_LINE_RE.findall(text))
+    called_slug = next(iter(called_slugs)) if len(called_slugs) == 1 else None
+    effective_slugs = called_slugs & successful_slugs
+    successful_slug = next(iter(effective_slugs)) if len(effective_slugs) == 1 else None
+    return delegation_id, called_slug, successful_slug
+
+
+def _verified_delegation_transcript(value: Any) -> tuple[str | None, str | None]:
+    """Return only successful effective-load evidence for deferred tool receipts."""
+    delegation_id, _called_slug, successful_slug = _delegation_transcript_details(value)
+    return delegation_id, successful_slug
 
 
 def _emit_delegate_receipt(
@@ -3875,8 +3913,24 @@ def _emit_delegate_receipt(
     if not isinstance(child, dict):
         child = {}
     raw_status = str(child.get("status") or payload.get("status") or "unknown")
-    status = raw_status if raw_status in _DELEGATE_STATUSES else "unknown"
     summary = str(child.get("summary") or "").strip()
+    exit_reason = str(child.get("exit_reason") or "").strip()
+    summary_is_failure = summary.lower().startswith(("no reply:", "(empty)"))
+    terminal_success = bool(
+        raw_status == "completed"
+        and exit_reason == "completed"
+        and summary
+        and not summary_is_failure
+    )
+    if raw_status == "completed" and not terminal_success:
+        # Hermes intentionally labels a non-empty max-iteration response as
+        # ``completed``. Agent OS has a stricter contract: only a genuinely
+        # completed child with a usable summary may cross the verification
+        # gate. This also rejects the SessionDB failure sentinel observed in
+        # real concurrent Bridge runs.
+        status = "failed"
+    else:
+        status = raw_status if raw_status in _DELEGATE_STATUSES else "unknown"
     trace = child.get("tool_trace") if isinstance(child.get("tool_trace"), list) else []
     trace_reports_load = any(
         isinstance(item, dict)
@@ -3884,27 +3938,36 @@ def _emit_delegate_receipt(
         and item.get("status") == "ok"
         for item in trace
     )
-
     payload_id = str(payload.get("delegation_id") or "").strip()
     delegation_id = (
         payload_id if _DELEGATION_ID_FULL_RE.fullmatch(payload_id) is not None else None
     )
-    transcript_id, loaded_slug = _verified_delegation_transcript(
-        child.get("live_transcript")
+    transcript_value = child.get("live_transcript")
+    transcript_id, called_slug, successful_slug = _delegation_transcript_details(
+        transcript_value
     )
+    if not trace_reports_load:
+        verified_id, verified_slug = _verified_delegation_transcript(transcript_value)
+        transcript_id = verified_id or transcript_id
+        successful_slug = verified_slug or successful_slug
+    loaded_slug = called_slug if trace_reports_load else successful_slug
     ids_match = not payload_id or payload_id == transcript_id
     if transcript_id is not None:
         delegation_id = transcript_id if ids_match else None
+    verification_source = (
+        "direct_trace+transcript"
+        if trace_reports_load and called_slug
+        else "deferred_trace+transcript" if successful_slug else None
+    )
     agency_loaded = bool(
-        trace_reports_load and route_target and loaded_slug == route_target
+        verification_source and route_target and loaded_slug == route_target
     )
     delegated = bool(delegation_id or child)
     verified = bool(
         transcript_id
         and ids_match
         and delegated
-        and status == "completed"
-        and summary
+        and terminal_success
         and agency_loaded
     )
 
@@ -3916,8 +3979,23 @@ def _emit_delegate_receipt(
         "delegation_id": delegation_id,
         "result_hash": hashlib.sha256(summary.encode()).hexdigest() if verified else None,
         "agency_loaded": agency_loaded,
+        "verification_source": verification_source,
         "verifier": "pass" if verified else "fail",
     })
+
+
+def _tenant_base_toolsets(allowed_tools: set[str]) -> set[str]:
+    """Return only tenant-authorized stateful toolsets."""
+    requested = {"clarify"}
+    requested.update({"memory", "session_search"} & allowed_tools)
+    return requested
+
+
+def _routing_user_goal(goal: str) -> str:
+    marker = "【用户问题】"
+    if marker in (goal or ""):
+        return goal.split(marker, 1)[1].strip()
+    return (goal or "").strip()
 
 
 def _build_in_process_agent(
@@ -3940,11 +4018,6 @@ def _build_in_process_agent(
     - clarify_callback → clarify_gateway 注册 + clarify 事件 + 阻塞等待解锁
     """
     _build_t0 = time.monotonic()  # 延迟打点：构建入口
-    from hermes_cli.config import load_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
-    from hermes_cli.tools_config import _get_platform_tools
-    from hermes_cli.fallback_config import get_fallback_chain
-    from hermes_cli.oneshot import _create_session_db_for_oneshot
     from run_agent import AIAgent
 
     cfg = _get_cached_config()  # 常驻单例：0ms 读盘
@@ -3997,7 +4070,7 @@ def _build_in_process_agent(
         pinned_skills.add(agent_id[6:])
     if tenant_skill_enabled:
         skill_candidates = rank_skill_candidates(
-            goal,
+            _routing_user_goal(goal),
             _routed_skill_catalog(sandbox),
             limit=5,
         )
@@ -4046,7 +4119,7 @@ def _build_in_process_agent(
         if "knowledge_workspace" not in toolsets_list:
             toolsets_list.append("knowledge_workspace")
     if allowed_tools:
-        requested_toolsets = {"clarify", "memory", "session_search"}
+        requested_toolsets = _tenant_base_toolsets(allowed_tools)
         if network_tool_requested:
             requested_toolsets.add("web")
         if tenant_skill_enabled:
@@ -4165,6 +4238,12 @@ def _build_in_process_agent(
         if function_name == "skill_manage":
             _tenantize_created_skill(function_args, sandbox)
 
+    # Hermes multi-session gateways use a ContextVar for request-local cwd.
+    # Bind it before AIAgent builds the base prompt and tool/context surfaces.
+    from agent.runtime_cwd import set_session_cwd
+
+    set_session_cwd(str(sandbox.root))
+
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
     # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
     agent = AIAgent(
@@ -4176,6 +4255,11 @@ def _build_in_process_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
+        # The Bridge injects a server-owned tenant prompt below. Loading the
+        # host profile's MEMORY/USER files or workspace AGENTS.md here would
+        # cross the tenant boundary and can expose operator-only context.
+        skip_context_files=True,
+        skip_memory=True,
         session_id=hermes_sid,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
@@ -4290,6 +4374,15 @@ def _run_agent_sync(
     agent = None
     session_db = None
     try:
+        # This SSE request is finite: once ``done`` is emitted there is no
+        # Hermes gateway consumer that can re-enter a detached child result.
+        # Declaring that capability boundary makes Hermes' native
+        # ``delegate_task`` execute synchronously and return the real child
+        # terminal result in this same parent turn instead of returning only a
+        # background dispatch handle that outlives agent/session_db cleanup.
+        from gateway.session_context import declare_stateless_channel
+
+        declare_stateless_channel()
         _knowledge_tool_context.value = {
             "capability": knowledge_capability,
             "scopes": list((knowledge_claims or {}).get("scopes") or []),

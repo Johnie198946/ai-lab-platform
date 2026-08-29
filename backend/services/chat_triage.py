@@ -30,6 +30,15 @@ _SOCIAL_RE = re.compile(
     r"how are you|tell me a joke)",
     re.IGNORECASE,
 )
+_DIRECT_RESPONSE_RE = re.compile(
+    r"^(?:(?:做个|进行|来个)?测试[:：，,\s]*)?"
+    r"(?:你)?(?:只)?(?:回答|回复)(?:我)?\s*(?:ok|yes|no|收到|好的|[0-9])"
+    r"[！!。,.，\s]*$|"
+    r"^不要解释[，,\s]*(?:只)?输出\s*(?:[a-z0-9_-]{1,16}|[\u4e00-\u9fff]{1,8})"
+    r"[！!。,.，\s]*$|"
+    r"^按你(?:的)?建议(?:做|执行)[！!。,.，\s]*$",
+    re.IGNORECASE,
+)
 _PROFESSIONAL_ACTION_RE = re.compile(
     r"(?:调研|研究|审计|诊断|排查|评估|分析|设计|制定|规划|开发|实现|搭建|"
     r"重构|优化|测试|验证|部署|迁移|复盘|建模|撰写|制作|生成|整理并保存|"
@@ -135,6 +144,8 @@ def classify_request(
         )
     if not text:
         return TriageDecision(GENERAL_QA, 0.55, "empty_or_ambiguous", evidence)
+    if _DIRECT_RESPONSE_RE.fullmatch(text):
+        return TriageDecision(GENERAL_QA, 0.99, "direct_response", ())
     if not _URL_RE.search(text) and (
         _CASUAL_RE.fullmatch(text) or _SOCIAL_RE.search(text)
     ):

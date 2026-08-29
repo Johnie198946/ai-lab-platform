@@ -14,10 +14,15 @@ Hermes keeps its self-growing behaviour without an ever-growing prompt.
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
+import logging
 import math
 import os
+import sqlite3
 import re
+import sys
 import tempfile
 import threading
 from pathlib import Path
@@ -33,11 +38,33 @@ _INSTALLED = False
 _STATS_LOCK = threading.Lock()
 _WEB_POLICY_LOCK = threading.Lock()
 _WEB_RESEARCH_TURNS: dict[str, int] = {}
+_LOCAL_STATE_LOCK = threading.RLock()
+_LOCAL_TURN_STATES: dict[str, dict[str, Any]] = {}
+_GATEWAY_IDENTITIES: dict[tuple[str, str, str], str] = {}
+_LOCAL_ENABLED = True
+logger = logging.getLogger(__name__)
+
+_LOCAL_OWNER_PLATFORMS = {"cli", "desktop", "local", "hermes-desktop"}
+_LOCAL_SAFE_TOOLS = {
+    "agency_agents_load",
+    "clarify",
+    "delegate_task",
+    "skill_view",
+    "skills_list",
+    "text_to_speech",
+    "tool_describe",
+    "tool_search",
+    "web_extract",
+    "web_search",
+}
 
 _LATIN_RE = re.compile(r"[a-z0-9][a-z0-9+.#_-]*", re.I)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
 _TRIAGE_MARKER_RE = re.compile(
     r'^<<AI_LAB_TRIAGE class="(CASUAL|GENERAL_QA|PROFESSIONAL_TASK)" agency="([01])">>\s*'
+)
+_ASYNC_COMPLETION_RE = re.compile(
+    r"^\[ASYNC DELEGATION BATCH COMPLETE [—-] (deleg_[A-Za-z0-9]+)\]"
 )
 
 # Small domain glossary, not a role catalog.  It fixes CJK recall while the
@@ -65,7 +92,23 @@ _ALIASES: dict[str, tuple[str, ...]] = {
     "财务": ("finance", "financial"),
     "法律": ("legal", "compliance"),
     "内容": ("content", "copywriting", "editorial"),
-    "设计": ("design", "designer", "ux", "ui"),
+    # Generic "design" is not evidence of an interface task. UX/UI terms are
+    # added only by explicit interface markers below; otherwise requests such
+    # as "设计系统架构" are incorrectly routed to UX specialists.
+    "设计": ("design", "designer"),
+    "界面": ("interface", "ui", "ux"),
+    "交互": ("interaction", "ux", "user-experience"),
+    "用户体验": ("user-experience", "ux", "usability"),
+    "视觉": ("visual", "ui", "design-system"),
+    "多租户": ("multi-tenant", "tenancy", "isolation"),
+    "agent平台": ("multi-agent", "systems", "platform", "orchestration"),
+    "任务队列": ("task-queue", "queue", "orchestration"),
+    "状态持久化": ("state", "persistence", "database"),
+    "可观测性": ("observability", "telemetry", "monitoring"),
+    "故障恢复": ("fault", "recovery", "reliability"),
+    "容量规划": ("capacity", "scalability", "planning"),
+    "路线图": ("roadmap", "lifecycle", "product"),
+    "核心痛点": ("pain-point", "discovery", "product"),
     "指标": ("metric", "metrics", "kpi", "measurement"),
     "风险": ("risk", "scenario", "assumption"),
     "方案": ("plan", "strategy", "roadmap"),
@@ -84,6 +127,44 @@ _PROFESSIONAL_WORDS = {
     "expert", "senior", "specialist", "professional", "strategist",
     "architect", "analyst", "audit", "production", "holistic",
 }
+_AGENCY_DOMAIN_RULES: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
+    (
+        re.compile(r"(?:产品|mvp|用户故事|路线图|product|roadmap|user stor)", re.I),
+        frozenset({"product", "manager", "requirements"}),
+    ),
+    (
+        re.compile(r"(?:研究|调研|核实|证据|链接|research|evidence|analysis|https?://)", re.I),
+        frozenset({"research", "analyst", "analysis", "evidence", "investigation"}),
+    ),
+    (
+        re.compile(r"(?:系统架构|企业架构|权限|多租户|部署|architecture|security|backend)", re.I),
+        frozenset({"architect", "architecture", "backend", "security", "enterprise", "systems"}),
+    ),
+)
+
+_PRICING_INTENT_RE = re.compile(r"(?:pricing|price|套餐|定价|支付意愿|价格实验)", re.I)
+_PRODUCT_DELIVERY_RE = re.compile(
+    r"(?:mvp|roadmap|路线图|用户故事|产品策略|核心痛点)", re.I
+)
+_PRODUCT_DELIVERY_NEGATION_RE = re.compile(
+    r"(?:不做|不需要|不包含).{0,12}(?:mvp|roadmap|路线图|用户故事|产品策略)",
+    re.I,
+)
+
+_AGENCY_DOMAIN_PREFERRED: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
+    (_AGENCY_DOMAIN_RULES[0][0], frozenset({"agency:product-manager"})),
+    (_AGENCY_DOMAIN_RULES[1][0], frozenset({"agency:research-synthesist"})),
+    (
+        _AGENCY_DOMAIN_RULES[2][0],
+        frozenset(
+            {
+                "agency:backend-architect",
+                "agency:security-architect",
+                "agency:master-plan-architect",
+            }
+        ),
+    ),
+)
 
 _CASUAL_RE = re.compile(
     r"^(?:hi|hello|hey|你好|您好|在吗|谢谢|多谢|好的|收到|晚安|早安)[！!。,.，\s]*$",
@@ -91,6 +172,25 @@ _CASUAL_RE = re.compile(
 )
 _GENERAL_QA_RE = re.compile(
     r"^(?:请)?(?:解释|介绍|告诉我|说说|什么是|为什么|how|what|why|explain)\b",
+    re.I,
+)
+_DIRECT_RESPONSE_RE = re.compile(
+    r"^(?:(?:做个|进行|来个)?测试[:：，,\s]*)?"
+    r"(?:你)?(?:只)?(?:回答|回复)(?:我)?\s*(?:ok|yes|no|收到|好的|[0-9])"
+    r"[！!。,.，\s]*$|"
+    r"^不要解释[，,\s]*(?:只)?输出\s*(?:[a-z0-9_-]{1,16}|[\u4e00-\u9fff]{1,8})"
+    r"[！!。,.，\s]*$|"
+    r"^按你(?:的)?建议(?:做|执行)[！!。,.，\s]*$",
+    re.I,
+)
+_SIMPLE_EXPLANATION_RE = re.compile(
+    r"^(?:请)?(?:快速|简单|简要|一句话).{0,8}(?:解释|介绍|说明|告诉我)",
+    re.I,
+)
+_HIGH_ACTION_RE = re.compile(
+    r"(?:研究|调研|设计|开发|修复|部署|发布|审计|实现|搭建|重构|迁移|"
+    r"做一份|生成|创建|修改|build|create|research|design|develop|implement|"
+    r"deploy|audit|refactor|migrate)",
     re.I,
 )
 _TASK_RE = re.compile(
@@ -135,6 +235,39 @@ def _tokens(text: str) -> set[str]:
     if "icp" in tokens:
         tokens.update(("customer", "segment", "audience", "positioning"))
     return {token for token in tokens if token}
+
+
+def _agency_domain_matches(query: str, capability: dict[str, Any]) -> bool:
+    """Apply a semantic identity gate before noisy body-text scoring."""
+    if capability.get("kind") != "agency_agent":
+        return True
+    identity = " ".join(
+        str(capability.get(key) or "")
+        for key in ("name", "description", "domain")
+    )
+    identity_tokens = _tokens(identity)
+    for task_pattern, allowed_identity_tokens in _AGENCY_DOMAIN_RULES:
+        if task_pattern.search(query or ""):
+            return bool(identity_tokens & allowed_identity_tokens)
+    generic = _PROFESSIONAL_WORDS | {
+        "professional", "review", "analysis", "plan", "strategy",
+        "design", "execute", "execution", "specialist",
+    }
+    query_tokens = _tokens(query) - generic
+    return bool(query_tokens & (identity_tokens - generic))
+
+
+def _agency_domain_priority(query: str, capability: dict[str, Any]) -> int:
+    capability_id = str(capability.get("id") or "")
+    if _PRICING_INTENT_RE.search(query or "") and (
+        _PRODUCT_DELIVERY_NEGATION_RE.search(query or "")
+        or not _PRODUCT_DELIVERY_RE.search(query or "")
+    ):
+        return int(capability_id == "agency:pricing-analyst")
+    for task_pattern, preferred_ids in _AGENCY_DOMAIN_PREFERRED:
+        if task_pattern.search(query or ""):
+            return int(capability_id in preferred_ids)
+    return 0
 
 
 def _task_depth(query: str) -> float:
@@ -241,9 +374,18 @@ def _skill_route_class(query: str) -> str:
     text = (query or "").strip()
     if not text or _CASUAL_RE.fullmatch(text):
         return "CASUAL"
-    if _GENERAL_QA_RE.search(text) and not _TASK_RE.search(text):
+    if _DIRECT_RESPONSE_RE.fullmatch(text):
         return "GENERAL_QA"
-    return "PROFESSIONAL_TASK"
+    if (
+        _GENERAL_QA_RE.search(text) or _SIMPLE_EXPLANATION_RE.search(text)
+    ) and not _HIGH_ACTION_RE.search(text):
+        return "GENERAL_QA"
+    professional = bool(
+        _HIGH_ACTION_RE.search(text)
+        or (_TASK_RE.search(text) and _PROFESSIONAL_TASK_RE.search(text))
+        or (_TASK_RE.search(text) and len(text) >= 120)
+    )
+    return "PROFESSIONAL_TASK" if professional else "GENERAL_QA"
 
 
 def _govern_skill(skill: dict[str, Any]) -> dict[str, Any]:
@@ -343,6 +485,43 @@ def _history_prior(capability_id: str, stats: dict[str, dict[str, Any]]) -> floa
     return (successes + 2.0) / (calls + 4.0)
 
 
+def _scope_alignment(capability: dict[str, Any], query: str) -> float:
+    """Reward whole-task ownership and penalize a narrow keyword hijack."""
+    text = (query or "").casefold()
+    name = str(capability.get("name") or "").casefold()
+
+    pricing_only = bool(
+        re.search(r"(?:只|仅).{0,12}(?:定价|套餐|价格)|不做.{0,8}路线图", text)
+    )
+    lifecycle_markers = (
+        "产品策略", "目标客户", "核心痛点", "mvp", "路线图", "验收指标", "生命周期"
+    )
+    lifecycle_scope = sum(marker in text for marker in lifecycle_markers) >= 3
+    if lifecycle_scope and not pricing_only:
+        if "product manager" in name:
+            return 0.16
+        if "pricing analyst" in name:
+            return -0.08
+
+    technical_architecture = bool(
+        "架构" in text
+        and re.search(
+            r"多租户|agent平台|任务队列|状态持久化|可观测性|故障恢复|容量规划",
+            text,
+            re.I,
+        )
+    )
+    interface_intent = bool(re.search(r"界面|交互|用户体验|视觉|可用性|\b(?:ux|ui)\b", text, re.I))
+    if technical_architecture and not interface_intent:
+        if any(term in name for term in ("ux ", "ui ", "interface", "xr ")):
+            return -0.18
+        if "multi-agent systems architect" in name:
+            return 0.16
+        if any(term in name for term in ("backend architect", "software architect")):
+            return 0.08
+    return 0.0
+
+
 def _score_capability(
     capability: dict[str, Any],
     query: str,
@@ -412,6 +591,7 @@ def _score_capability(
     if capability.get("kind") == "skill":
         requested_level = "professional" if _PROFESSIONAL_TASK_RE.search(query) else "simple"
         level_bonus = 0.08 if capability.get("skill_level") == requested_level else -0.06
+    scope_alignment = _scope_alignment(capability, query)
 
     score = (
         lexical * 0.43
@@ -421,6 +601,7 @@ def _score_capability(
         + title_fit * 0.10
         + trigger_fit * 0.18
         + level_bonus
+        + scope_alignment
         + 0.08
         - cost
         - mismatch
@@ -435,6 +616,7 @@ def _score_capability(
         "mismatch_penalty": round(mismatch, 3),
         "trigger_fit": round(trigger_fit, 3),
         "level_bonus": round(level_bonus, 3),
+        "scope_alignment": round(scope_alignment, 3),
     }
     return max(0.0, min(1.0, score)), factors
 
@@ -458,10 +640,18 @@ def recommend(
     history = stats if stats is not None else _load_stats()
     ranked: list[tuple[float, dict[str, Any], dict[str, float]]] = []
     for capability in inventory:
+        if not _agency_domain_matches(query, capability):
+            continue
         score, factors = _score_capability(capability, query, history)
         if score > 0.12:
             ranked.append((score, capability, factors))
-    ranked.sort(key=lambda item: (-item[0], item[1]["id"]))
+    ranked.sort(
+        key=lambda item: (
+            -item[0],
+            -_agency_domain_priority(query, item[1]),
+            item[1]["id"],
+        )
+    )
 
     cards = []
     category_counts: dict[str, int] = {}
@@ -503,7 +693,22 @@ def _candidate_context(
     capabilities: Iterable[dict[str, Any]] | None = None,
     professional_only: bool = False,
 ) -> str | None:
-    if capabilities is None:
+    if professional_only:
+        agency_pool = (
+            _agency_capabilities()
+            if capabilities is None
+            else [
+                capability
+                for capability in capabilities
+                if capability.get("kind") == "agency_agent"
+            ]
+        )
+        cards = recommend(
+            query,
+            limit=MAX_CANDIDATES,
+            capabilities=agency_pool,
+        )
+    elif capabilities is None:
         cards = recommend(query, limit=MAX_CANDIDATES)
     else:
         cards = recommend(
@@ -513,6 +718,21 @@ def _candidate_context(
         )
     if not cards:
         return None
+    if professional_only:
+        top = cards[0]
+        factors = top.get("factors") if isinstance(top.get("factors"), dict) else {}
+        task_fit = float(factors.get("task_fit") or 0.0)
+        if float(top.get("fit") or 0.0) < 28.0 or task_fit <= 0.0:
+            return None
+        if len(cards) > 1:
+            margin = float(top.get("fit") or 0.0) - float(cards[1].get("fit") or 0.0)
+            strong_signal = bool(
+                float(factors.get("trigger_fit") or 0.0) >= 0.25
+                or float(factors.get("title_fit") or 0.0) >= 0.25
+                or float(factors.get("scope_alignment") or 0.0) >= 0.08
+            )
+            if margin < 2.0 and not strong_signal:
+                return None
     compact = [
         {
             "id": card["id"],
@@ -557,7 +777,9 @@ def _candidate_context(
         prefix = (
             "[Agency specialist selection — internal routing metadata]\n"
             "The server classified this as professional work and granted Agency routing. "
-            "You MUST call the native delegate_task tool with the exact arguments shown "
+            "First complete the 0/1 tenant Skill decision required by the system prompt. "
+            "If a candidate matches, call tenant_skill_read and wait for its result. "
+            "After that, you MUST call the native delegate_task tool with the exact arguments shown "
             "below and wait for its terminal result; loading the specialist in the parent "
             "does not count as delegation. Never add a division prefix or invent a slug. "
             "Do not expose internal capability names unless asked.\nCandidates: "
@@ -595,7 +817,494 @@ def _candidate_context(
     return None
 
 
-def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, str] | None:
+def _routing_query(user_message: str) -> str:
+    """Route on the raw user question, never on server-added policy prefixes."""
+    marker = "【用户问题】"
+    if marker in (user_message or ""):
+        return user_message.split(marker, 1)[1].strip()
+    return (user_message or "").strip()
+
+
+def _plain_value(value: Any) -> str:
+    raw = getattr(value, "value", value)
+    return str(raw or "").strip().casefold()
+
+
+def _identity_key(platform: str, sender_id: str, message: str) -> tuple[str, str, str]:
+    digest = hashlib.sha256((message or "").encode("utf-8")).hexdigest()
+    return platform.casefold(), sender_id.strip(), digest
+
+
+def _configured_owner(platform: str, sender_id: str) -> bool:
+    configured = {
+        value.strip()
+        for value in os.environ.get("AI_LAB_LOCAL_OWNER_IDS", "").split(",")
+        if value.strip()
+    }
+    return sender_id in configured or f"{platform}:{sender_id}" in configured
+
+
+def _pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> None:
+    event = event or kwargs.get("event")
+    source = getattr(event, "source", None)
+    if source is None:
+        return None
+    platform = _plain_value(getattr(source, "platform", ""))
+    sender_id = str(getattr(source, "user_id", "") or "").strip()
+    chat_type = _plain_value(getattr(source, "chat_type", ""))
+    message = str(getattr(event, "text", "") or "")
+    if platform in _LOCAL_OWNER_PLATFORMS or _configured_owner(platform, sender_id):
+        principal = "local_owner"
+    elif not sender_id:
+        principal = "untrusted_sender"
+    elif chat_type in {"group", "channel", "room", "topic"}:
+        principal = "group_member"
+    else:
+        principal = "approved_user"
+    with _LOCAL_STATE_LOCK:
+        _GATEWAY_IDENTITIES[_identity_key(platform, sender_id, message)] = principal
+        while len(_GATEWAY_IDENTITIES) > 256:
+            _GATEWAY_IDENTITIES.pop(next(iter(_GATEWAY_IDENTITIES)))
+    return None
+
+
+def _resolve_principal(platform: str, sender_id: str, message: str) -> str:
+    platform = platform.casefold()
+    sender_id = sender_id.strip()
+    with _LOCAL_STATE_LOCK:
+        hinted = _GATEWAY_IDENTITIES.pop(
+            _identity_key(platform, sender_id, message),
+            None,
+        )
+    if hinted:
+        return hinted
+    if platform in _LOCAL_OWNER_PLATFORMS or _configured_owner(platform, sender_id):
+        return "local_owner"
+    if not sender_id:
+        return "untrusted_sender"
+    return "approved_user"
+
+
+def _selected_skill(query: str) -> dict[str, Any] | None:
+    cards = recommend(query, capabilities=_skill_capabilities(), limit=1)
+    return next(
+        (card for card in cards if str(card.get("id") or "").startswith("skill:")),
+        None,
+    )
+
+
+def _selected_agency(query: str) -> dict[str, Any] | None:
+    context = _candidate_context(
+        query,
+        capabilities=_agency_capabilities(),
+        professional_only=True,
+    )
+    if not context or "Candidates: " not in context:
+        return None
+    try:
+        cards = json.loads(context.split("Candidates: ", 1)[1])
+    except (TypeError, ValueError):
+        return None
+    return cards[0] if isinstance(cards, list) and cards else None
+
+
+def _local_professional_context(query: str, state: dict[str, Any]) -> str:
+    selected_skill = _selected_skill(query)
+    selected_agency = _selected_agency(query)
+    state.update({
+        "route_class": "PROFESSIONAL_TASK",
+        "skill_decision": "SELECT" if selected_skill else "NONE",
+        "requested_skill": (
+            str(selected_skill.get("id") or "").removeprefix("skill:")
+            if selected_skill else None
+        ),
+        "loaded_skill": None,
+        "agency_decision": "CALL" if selected_agency else "SKIP",
+        "requested_agent": (
+            str(selected_agency.get("id") or "").removeprefix("agency:")
+            if selected_agency else None
+        ),
+        "receipt": None,
+        "main_adopted": False,
+    })
+    plan: list[dict[str, Any]] = []
+    if selected_skill:
+        plan.append({"phase": "skill", "invoke": selected_skill.get("invoke")})
+    if selected_agency:
+        plan.append({"phase": "agency", "invoke": selected_agency.get("invoke")})
+    return (
+        "[LOCAL_SINGLE_TENANT_AGENT_OS — trusted local policy]\n"
+        "Hermes is the only runtime. Follow this ordered plan exactly. First load the selected "
+        "Skill with native skill_view and wait for its real result. Then, only when the Agency "
+        "decision is CALL, invoke native delegate_task with the exact arguments below and wait "
+        "for its terminal result. Do not simulate child completion or invent receipts. The final "
+        "answer must materially use the child result. Internal names and receipts stay hidden "
+        "unless the user asks for diagnostics.\nPlan: "
+        + json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
+_LOCAL_UNRESOLVED_WRAPPER = "__local_wrapper_unresolved__"
+_LOCAL_WRAPPER_MAX_DEPTH = 8
+
+
+def _local_wrapper_args(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
+
+
+def _effective_local_tool(tool_name: str, args: dict[str, Any]) -> str:
+    current_tool = str(tool_name or "").strip()
+    current_args = args
+    for _depth in range(_LOCAL_WRAPPER_MAX_DEPTH):
+        if current_tool != "tool_call":
+            break
+        nested_tool = str(current_args.get("name") or "").strip()
+        nested_args = _local_wrapper_args(current_args.get("arguments"))
+        if not nested_tool or nested_args is None:
+            return _LOCAL_UNRESOLVED_WRAPPER
+        current_tool = nested_tool
+        current_args = nested_args
+    if current_tool == "tool_call":
+        return _LOCAL_UNRESOLVED_WRAPPER
+    if current_tool == "ai_lab_execute":
+        capability = str(current_args.get("capability") or "").strip()
+        if capability.startswith("agency_agent:"):
+            return "delegate_task"
+        return f"ai_lab_execute:{capability}"
+    return current_tool
+
+
+def _principal_denial(tool_name: str, args: dict[str, Any], state: dict[str, Any]) -> dict[str, str] | None:
+    principal = str(state.get("principal") or "untrusted_sender")
+    if principal == "local_owner":
+        return None
+    effective = _effective_local_tool(tool_name, args)
+    allowed = {"clarify"} if principal == "untrusted_sender" else _LOCAL_SAFE_TOOLS
+    if effective in allowed:
+        return None
+    return {
+        "action": "block",
+        "message": (
+            f"Local Agent OS denied {effective!r} for principal {principal!r}. "
+            "This channel is limited to safe Q&A, web research, Skill reads, and scoped delegation."
+        ),
+    }
+
+
+def _subagent_start(parent_session_id: str = "", child_session_id: str = "", **kwargs: Any) -> None:
+    del kwargs
+    if not parent_session_id or not child_session_id:
+        return None
+    with _LOCAL_STATE_LOCK:
+        parent = _LOCAL_TURN_STATES.get(parent_session_id)
+        if parent is not None:
+            _LOCAL_TURN_STATES[child_session_id] = {
+                "principal": parent.get("principal", "untrusted_sender"),
+                "route_class": "CHILD",
+                "parent_session_id": parent_session_id,
+            }
+    return None
+
+
+def _loaded_agency_from_history(history: Any) -> str | None:
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("tool_name") or item.get("name") or item.get("tool") or "")
+        if name != "agency_agents_load":
+            continue
+        status = str(item.get("status") or "ok").casefold()
+        if status in {"error", "failed", "failure", "cancelled"}:
+            continue
+        raw = item.get("tool_input") or item.get("args") or item.get("input") or {}
+        if not isinstance(raw, dict):
+            continue
+        targets = raw.get("targets") if isinstance(raw.get("targets"), dict) else raw
+        loaded = str(targets.get("agent") or targets.get("slug") or "").strip()
+        if loaded:
+            return loaded
+    return None
+
+
+def _loaded_agency_from_db(child_session_id: str) -> str | None:
+    """Read the actual successful Agency load from Hermes' canonical session DB."""
+    if not child_session_id:
+        return None
+    db_path = _hermes_home() / "state.db"
+    if not db_path.is_file():
+        return None
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{db_path}?mode=ro", uri=True, timeout=5
+        )
+        rows = connection.execute(
+            """
+            SELECT content
+            FROM messages
+            WHERE session_id = ? AND tool_name = 'agency_agents_load'
+            ORDER BY id
+            """,
+            (child_session_id,),
+        ).fetchall()
+        for (content,) in rows:
+            try:
+                payload = json.loads(content or "{}")
+            except (TypeError, ValueError):
+                continue
+            agent = payload.get("agent") if isinstance(payload, dict) else None
+            if payload.get("success") is True and isinstance(agent, dict):
+                loaded = str(agent.get("slug") or "").strip()
+                if loaded:
+                    return loaded
+    except (OSError, sqlite3.Error):
+        return None
+    finally:
+        if connection is not None:
+            connection.close()
+    return None
+
+
+def _canonical_local_receipt(
+    parent_session_id: str,
+    requested_agent: str,
+    delegation_id: str = "",
+) -> dict[str, Any] | None:
+    if not parent_session_id or not requested_agent:
+        return None
+    hermes_home = Path(
+        os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+    ).expanduser()
+    db_path = hermes_home / "state.db"
+    if not db_path.is_file():
+        return None
+    connection: sqlite3.Connection | None = None
+    try:
+        connection = sqlite3.connect(
+            f"file:{db_path}?mode=ro",
+            uri=True,
+            timeout=5,
+        )
+        connection.row_factory = sqlite3.Row
+        rows = connection.execute(
+            """
+            SELECT delegation_id, dispatched_at, completed_at, task_json, result_json
+            FROM async_delegations
+            WHERE parent_session_id = ? AND state = 'completed'
+            ORDER BY completed_at DESC
+            LIMIT 8
+            """,
+            (parent_session_id,),
+        ).fetchall()
+        marker = f"AI_LAB_AGENCY_SPECIALIST={requested_agent}"
+        for row in rows:
+            if delegation_id and str(row["delegation_id"] or "") != delegation_id:
+                continue
+            task = json.loads(row["task_json"] or "{}")
+            task_marker_present = marker in str(task.get("context") or "")
+            result_payload = json.loads(row["result_json"] or "{}")
+            results = result_payload.get("results") or []
+            if len(results) != 1 or not isinstance(results[0], dict):
+                continue
+            result = results[0]
+            terminal_state = str(result.get("status") or "").casefold()
+            summary = str(result.get("summary") or "").strip()
+            if terminal_state not in {"completed", "succeeded", "success"} or not summary:
+                continue
+            expected_hash = str(result.get("result_hash") or "").strip().casefold()
+            actual_hash = hashlib.sha256(summary.encode("utf-8")).hexdigest()
+            if not expected_hash or not hmac.compare_digest(expected_hash, actual_hash):
+                continue
+            trace_loaded = False
+            for trace in result.get("tool_trace") or []:
+                if not isinstance(trace, dict):
+                    continue
+                input_summary = trace.get("input_summary") or {}
+                targets = input_summary.get("targets") or {}
+                if (
+                    trace.get("tool") == "agency_agents_load"
+                    and str(trace.get("status") or "").casefold() == "ok"
+                    and str(targets.get("agent") or "").strip() == requested_agent
+                ):
+                    trace_loaded = True
+                    break
+            child_session_id = str(result.get("child_session_id") or "").strip()
+            if trace_loaded and child_session_id:
+                loaded_agent = requested_agent
+            else:
+                loaded_agent = None
+            if loaded_agent != requested_agent:
+                children = connection.execute(
+                    """
+                    SELECT id
+                    FROM sessions
+                    WHERE parent_session_id = ?
+                      AND started_at >= ?
+                      AND started_at <= ?
+                    ORDER BY started_at
+                    """,
+                    (
+                        parent_session_id,
+                        float(row["dispatched_at"] or 0) - 2,
+                        float(row["completed_at"] or 0) + 2,
+                    ),
+                ).fetchall()
+                if len(children) != 1:
+                    continue
+                child_session_id = str(children[0]["id"] or "")
+                loads = connection.execute(
+                    """
+                    SELECT content
+                    FROM messages
+                    WHERE session_id = ? AND tool_name = 'agency_agents_load'
+                    ORDER BY id
+                    """,
+                    (child_session_id,),
+                ).fetchall()
+                loaded_agent = None
+                for load in loads:
+                    try:
+                        payload = json.loads(load["content"] or "{}")
+                    except (TypeError, ValueError):
+                        continue
+                    agent = payload.get("agent") if isinstance(payload, dict) else None
+                    if payload.get("success") is True and isinstance(agent, dict):
+                        loaded_agent = str(agent.get("slug") or "").strip()
+                        if loaded_agent == requested_agent:
+                            break
+                if loaded_agent != requested_agent:
+                    continue
+            return {
+                "verifier": "pass",
+                "delegation_id": str(row["delegation_id"] or ""),
+                "child_session_id": child_session_id,
+                "terminal_state": terminal_state,
+                "requested_agent": requested_agent,
+                "loaded_agent": loaded_agent,
+                "result_hash": actual_hash,
+                "result": summary,
+            }
+    except (OSError, sqlite3.Error, TypeError, ValueError) as exc:
+        logger.warning("local_agent_os canonical receipt lookup failed: %s", exc)
+    finally:
+        if connection is not None:
+            connection.close()
+    return None
+
+
+def _log_local_receipt(parent_session_id: str, receipt: dict[str, Any]) -> None:
+    safe = {
+        key: receipt.get(key)
+        for key in (
+            "verifier",
+            "delegation_id",
+            "child_session_id",
+            "terminal_state",
+            "requested_agent",
+            "loaded_agent",
+            "result_hash",
+        )
+    }
+    safe["parent_session_id"] = parent_session_id
+    logger.info(
+        "LOCAL_AGENT_OS_RECEIPT %s",
+        json.dumps(safe, ensure_ascii=False, separators=(",", ":")),
+    )
+
+
+def _subagent_stop(
+    parent_session_id: str = "",
+    child_session_id: str = "",
+    child_status: str = "",
+    child_summary: str = "",
+    tool_call_history: Any = None,
+    **kwargs: Any,
+) -> None:
+    status = str(child_status or kwargs.get("status") or "").casefold()
+    summary = str(child_summary or kwargs.get("summary") or kwargs.get("result") or "").strip()
+    with _LOCAL_STATE_LOCK:
+        state = _LOCAL_TURN_STATES.get(parent_session_id)
+        if state is None or state.get("agency_decision") != "CALL":
+            return None
+        requested = str(state.get("requested_agent") or "")
+        loaded = _loaded_agency_from_history(
+            tool_call_history or kwargs.get("tool_history")
+        ) or _loaded_agency_from_db(child_session_id)
+        valid = bool(
+            child_session_id
+            and child_session_id != parent_session_id
+            and status in {"completed", "succeeded", "success"}
+            and summary
+            and requested
+            and loaded == requested
+        )
+        state["receipt"] = {
+            "verifier": "pass" if valid else "fail",
+            "delegation_id": str(kwargs.get("delegation_id") or child_session_id),
+            "child_session_id": child_session_id,
+            "terminal_state": status,
+            "requested_agent": requested,
+            "loaded_agent": loaded,
+            "result_hash": hashlib.sha256(summary.encode("utf-8")).hexdigest() if summary else None,
+            "result": summary if valid else None,
+        }
+        receipt = dict(state["receipt"])
+    _log_local_receipt(parent_session_id, receipt)
+    return None
+
+
+def _summary_adopted(response_text: str, summary: str) -> bool:
+    response_tokens = _tokens(response_text)
+    summary_tokens = _tokens(summary)
+    material = {token for token in summary_tokens if len(token) >= 2}
+    if not material:
+        return summary.strip() in response_text
+    required = min(3, max(1, len(material) // 8))
+    return len(response_tokens & material) >= required
+
+
+def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: Any) -> str:
+    del kwargs
+    with _LOCAL_STATE_LOCK:
+        state = _LOCAL_TURN_STATES.get(session_id)
+        if not state or state.get("route_class") != "PROFESSIONAL_TASK":
+            return response_text
+        if (
+            state.get("skill_decision") == "SELECT"
+            and state.get("loaded_skill") != state.get("requested_skill")
+        ):
+            return "未通过本地 Agent OS 执行验证：所选 Skill 未被真实读取，已阻止发布未经验证的结果。"
+        if state.get("agency_decision") != "CALL":
+            state["main_adopted"] = True
+            return response_text
+        receipt = _canonical_local_receipt(
+            session_id,
+            str(state.get("requested_agent") or ""),
+            str(state.get("completion_delegation_id") or ""),
+        ) or {}
+        state["receipt"] = receipt
+        _log_local_receipt(session_id, receipt)
+        if receipt.get("verifier") != "pass":
+            return "未通过本地 Agent OS 执行验证：专业子任务没有可验证的成功回执，已阻止发布伪执行结果。"
+        summary = str(receipt.get("result") or "").strip()
+        if not _summary_adopted(response_text, summary):
+            state["main_adopted"] = True
+            return summary
+        state["main_adopted"] = True
+        return response_text
+
+
+def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | None:
     turn_key = str(
         kwargs.get("turn_id") or kwargs.get("task_id") or kwargs.get("session_id") or ""
     )
@@ -609,17 +1318,57 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, str] | Non
         route_class, agency_enabled = marker.groups()
         if route_class != "PROFESSIONAL_TASK" or agency_enabled != "1":
             return None
-        query = _TRIAGE_MARKER_RE.sub("", user_message, count=1)
+        query = _routing_query(
+            _TRIAGE_MARKER_RE.sub("", user_message, count=1)
+        )
         context = _candidate_context(
             query,
             capabilities=_agency_capabilities(),
             professional_only=True,
         )
         return {"context": context} if context else None
-    if _skill_route_class(user_message) in {"CASUAL", "GENERAL_QA"}:
+    if not _LOCAL_ENABLED:
+        if _skill_route_class(user_message) in {"CASUAL", "GENERAL_QA"}:
+            return None
+        context = _candidate_context(user_message)
+        return {"context": context} if context else None
+    session_id = str(kwargs.get("session_id") or "")
+    with _LOCAL_STATE_LOCK:
+        existing_state = _LOCAL_TURN_STATES.get(session_id)
+    completion = _ASYNC_COMPLETION_RE.match(user_message or "")
+    if existing_state and completion:
+        delegation_id = completion.group(1)
+        with _LOCAL_STATE_LOCK:
+            existing_state["adoption_continuation"] = True
+            existing_state["completion_delegation_id"] = delegation_id
+        return {
+            "context": (
+                "This is a Hermes delegation-completion continuation, not a new task. "
+                "Do not select another Skill, load another Agency specialist, or call "
+                "delegate_task again. Synthesize the completed child result; the final "
+                "hook independently verifies the canonical receipt and producer hash."
+            ),
+            "defer_streaming": True,
+        }
+    if existing_state and existing_state.get("route_class") == "CHILD":
         return None
-    context = _candidate_context(user_message)
-    return {"context": context} if context else None
+    route_class = _skill_route_class(user_message)
+    platform = _plain_value(kwargs.get("platform"))
+    sender_id = str(kwargs.get("sender_id") or "").strip()
+    state = {
+        "principal": _resolve_principal(platform, sender_id, user_message),
+        "route_class": route_class,
+    }
+    if session_id:
+        with _LOCAL_STATE_LOCK:
+            _LOCAL_TURN_STATES[session_id] = state
+    if route_class in {"CASUAL", "GENERAL_QA"}:
+        return None
+    context = _local_professional_context(_routing_query(user_message), state)
+    result: dict[str, Any] = {"context": context}
+    if state.get("agency_decision") == "CALL":
+        result["defer_streaming"] = True
+    return result
 
 
 def _pre_tool_call(
@@ -627,9 +1376,48 @@ def _pre_tool_call(
     args: dict[str, Any] | None = None,
     **kwargs: Any,
 ) -> dict[str, str] | None:
-    del args
+    args = args or {}
+    effective_tool = _effective_local_tool(tool_name, args)
+    session_id = str(kwargs.get("session_id") or "")
+    with _LOCAL_STATE_LOCK:
+        local_state = _LOCAL_TURN_STATES.get(session_id)
+    if local_state is not None:
+        if effective_tool == _LOCAL_UNRESOLVED_WRAPPER:
+            return {
+                "action": "block",
+                "message": (
+                    "Local Agent OS blocked an unresolved or over-deep tool wrapper. "
+                    "Use a direct, well-formed tool invocation."
+                ),
+            }
+        denial = _principal_denial(tool_name, args, local_state)
+        if denial is not None:
+            return denial
+        if effective_tool == "delegate_task" and local_state.get("adoption_continuation"):
+            return {
+                "action": "block",
+                "message": (
+                    "Delegation completion is an adoption continuation; recursive "
+                    "delegate_task is forbidden. Synthesize the completed child result."
+                ),
+            }
+        if (
+            effective_tool == "delegate_task"
+            and local_state.get("route_class") == "PROFESSIONAL_TASK"
+            and local_state.get("agency_decision") == "CALL"
+            and local_state.get("skill_decision") == "SELECT"
+            and local_state.get("loaded_skill")
+            != local_state.get("requested_skill")
+        ):
+            return {
+                "action": "block",
+                "message": (
+                    "Local Agent OS blocked delegate_task: first call skill_view "
+                    "for the selected Skill and wait for its successful result."
+                ),
+            }
     turn_key = str(
-        kwargs.get("turn_id") or kwargs.get("task_id") or kwargs.get("session_id") or ""
+        kwargs.get("turn_id") or kwargs.get("task_id") or session_id or ""
     )
     if not turn_key:
         return None
@@ -685,7 +1473,13 @@ def _post_tool_call(
     duration_ms: int = 0,
     **kwargs: Any,
 ) -> None:
-    del kwargs
+    session_id = str(kwargs.get("session_id") or "")
+    if tool_name == "skill_view" and _result_succeeded(result):
+        loaded_skill = str((args or {}).get("name") or "").strip()
+        with _LOCAL_STATE_LOCK:
+            state = _LOCAL_TURN_STATES.get(session_id)
+            if state is not None and loaded_skill == state.get("requested_skill"):
+                state["loaded_skill"] = loaded_skill
     capability_id = _capability_id_for_call(tool_name, args or {})
     if not capability_id:
         return
@@ -768,30 +1562,37 @@ def _extend_tool_search() -> None:
 
 
 def _compact_skill_manifest() -> None:
-    # Hermes' system prompt resolver intentionally reaches through run_agent;
-    # patch both references so this works in CLI and gateway construction.
+    # Never import run_agent from plugin discovery: run_agent itself waits for
+    # discovery to finish, so a reverse import deadlocks CLI/gateway startup.
     try:
         import agent.prompt_builder as prompt_builder
 
         prompt_builder.build_skills_system_prompt = _compact_skills_prompt
     except Exception:
         pass
-    try:
-        import run_agent
-
-        run_agent.build_skills_system_prompt = _compact_skills_prompt
-    except Exception:
-        pass
+    run_agent_module = sys.modules.get("run_agent")
+    if run_agent_module is not None:
+        run_agent_module.build_skills_system_prompt = _compact_skills_prompt
 
 
 def install(ctx: Any) -> None:
     """Attach the router to Hermes' existing search, prompt, and hook lifecycle."""
-    global _INSTALLED
+    global _INSTALLED, _LOCAL_ENABLED
     if _INSTALLED:
         return
+    mode = os.environ.get("AI_LAB_AGENT_OS_MODE", "").strip().casefold()
+    profile_name = str(getattr(ctx, "profile_name", "") or "").strip().casefold()
+    _LOCAL_ENABLED = mode == "local_single_tenant" or (
+        mode != "cloud_multi_tenant" and profile_name in {"default", "local"}
+    )
     _extend_tool_search()
     _compact_skill_manifest()
     ctx.register_hook("pre_llm_call", _pre_llm_call)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
+    if _LOCAL_ENABLED:
+        ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
+        ctx.register_hook("subagent_start", _subagent_start)
+        ctx.register_hook("subagent_stop", _subagent_stop)
+        ctx.register_hook("transform_llm_output", _transform_llm_output)
     _INSTALLED = True

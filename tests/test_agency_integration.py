@@ -8,13 +8,17 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 from backend.api.orchestration import _agency_agent_config
 from scripts.hermes_bridge import (
     _apply_triage_toolset_policy,
+    _build_in_process_agent,
     _emit_delegate_receipt,
     _emit_tool_start,
     _include_available_toolsets,
     _request_triage,
+    _run_agent_sync,
     _triage_route_marker,
 )
 
@@ -150,6 +154,85 @@ def test_capability_router_understands_chinese_and_prefers_professional_depth():
     assert "pricing" in router._tokens("给出定价假设")
 
 
+def test_capability_router_distinguishes_system_architecture_from_ux_architecture():
+    router = load_capability_router()
+    inventory = [
+        {
+            "id": "agency:ux-architect",
+            "kind": "agency_agent",
+            "name": "UX Architect",
+            "description": "Technical architecture and UX specialist for interface foundations.",
+            "domain": "Design",
+            "_search_text": "CSS design systems interaction patterns and user experience.",
+            "depth": 0.82,
+            "cost": 0.10,
+        },
+        {
+            "id": "agency:multi-agent-systems-architect",
+            "kind": "agency_agent",
+            "name": "Multi-Agent Systems Architect",
+            "description": "Systems architect for multi-agent AI platform coordination and governance.",
+            "domain": "Engineering",
+            "_search_text": (
+                "multi-tenant isolation task queues state persistence observability "
+                "fault recovery capacity planning and architecture tradeoffs"
+            ),
+            "depth": 0.82,
+            "cost": 0.10,
+        },
+    ]
+    system_prompt = (
+        "请设计一个生产级多租户Agent平台架构，覆盖身份隔离、任务队列、状态持久化、"
+        "可观测性、故障恢复和容量规划，并给出关键技术取舍。"
+    )
+    assert router.recommend(system_prompt, capabilities=inventory, stats={})[0]["id"] == (
+        "agency:multi-agent-systems-architect"
+    )
+
+    ux_prompt = "请设计移动端操作台的信息架构、交互流程、视觉层级和可用性测试。"
+    assert router.recommend(ux_prompt, capabilities=inventory, stats={})[0]["id"] == (
+        "agency:ux-architect"
+    )
+
+
+def test_capability_router_distinguishes_product_strategy_from_pricing_analysis():
+    router = load_capability_router()
+    inventory = [
+        {
+            "id": "agency:pricing-analyst",
+            "kind": "agency_agent",
+            "name": "Pricing Analyst",
+            "description": "Pricing research, packaging, willingness-to-pay and price experiments.",
+            "domain": "Product",
+            "_search_text": "pricing assumptions tiers monetization and revenue analysis",
+            "depth": 0.82,
+            "cost": 0.10,
+        },
+        {
+            "id": "agency:product-manager",
+            "kind": "agency_agent",
+            "name": "Product Manager",
+            "description": "Holistic product leader for discovery, strategy and roadmap.",
+            "domain": "Product",
+            "_search_text": "target customer pain points MVP roadmap metrics lifecycle pricing",
+            "depth": 0.82,
+            "cost": 0.10,
+        },
+    ]
+    strategy_prompt = (
+        "请为AI质量检测SaaS制定完整产品策略：定义目标客户、核心痛点、MVP范围、"
+        "定价假设、12个月路线图与可量化验收指标。"
+    )
+    assert router.recommend(strategy_prompt, capabilities=inventory, stats={})[0]["id"] == (
+        "agency:product-manager"
+    )
+
+    pricing_prompt = "只分析这款SaaS的定价、套餐、支付意愿和价格实验，不做产品路线图。"
+    assert router.recommend(pricing_prompt, capabilities=inventory, stats={})[0]["id"] == (
+        "agency:pricing-analyst"
+    )
+
+
 def test_capability_router_keeps_context_bounded_and_can_choose_direct_answer():
     router = load_capability_router()
     inventory = [router._direct_capability()]
@@ -233,6 +316,27 @@ def test_mac_native_triage_keeps_chat_and_general_qa_direct():
     assert router._pre_llm_call("你好") is None
     assert router._skill_route_class("什么是 API") == "GENERAL_QA"
     assert router._pre_llm_call("什么是 API") is None
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "做个测试：你回答我OK",
+        "只回复收到",
+        "回答 yes",
+        "不要解释，只输出1",
+        "按你建议做",
+        "简单解释一下什么是 API",
+    ],
+)
+def test_mac_native_direct_response_and_simple_qa_never_enter_agent_os(question):
+    router = load_capability_router()
+    assert router._skill_route_class(question) in {"CASUAL", "GENERAL_QA"}
+    assert router._pre_llm_call(question, session_id="fast-path") is None
+    assert router._LOCAL_TURN_STATES["fast-path"]["route_class"] in {
+        "CASUAL",
+        "GENERAL_QA",
+    }
 
 
 def test_mac_native_link_research_shortlists_governed_skill(monkeypatch):
@@ -568,6 +672,7 @@ def test_completed_delegate_emits_verified_sanitized_receipt(tmp_path, monkeypat
         {
             "results": [{
                 "status": "completed",
+                "exit_reason": "completed",
                 "summary": summary,
                 "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
                 "live_transcript": str(transcript),
@@ -583,6 +688,7 @@ def test_completed_delegate_emits_verified_sanitized_receipt(tmp_path, monkeypat
         "delegation_id": "deleg_69468205",
         "result_hash": hashlib.sha256(summary.encode()).hexdigest(),
         "agency_loaded": True,
+        "verification_source": "direct_trace+transcript",
         "verifier": "pass",
     }
     assert "private user task" not in json.dumps(event)
@@ -651,6 +757,16 @@ def test_delegate_receipt_rejects_dispatch_empty_result_or_slug_mismatch(tmp_pat
                 "live_transcript": str(valid),
             }],
         },
+        {
+            "delegation_id": "deleg_abcd",
+            "results": [{
+                "status": "completed",
+                "exit_reason": "max_iterations",
+                "summary": "No reply: session storage could not be written",
+                "tool_trace": [{"tool": "agency_agents_load", "status": "ok"}],
+                "live_transcript": str(valid),
+            }],
+        },
     ):
         events: queue.Queue = queue.Queue()
         _emit_delegate_receipt(
@@ -662,3 +778,106 @@ def test_delegate_receipt_rejects_dispatch_empty_result_or_slug_mismatch(tmp_pat
         event = events.get_nowait()
         assert event["verifier"] == "fail"
         assert event.get("delegation_id") != "../../private"
+
+
+def test_bridge_declares_finite_session_before_running_agent(monkeypatch, tmp_path):
+    """A finite Bridge request must force delegate_task onto its sync path."""
+    observed: dict[str, bool] = {"async_delivery_supported": True}
+    gateway = types.ModuleType("gateway")
+    gateway.__path__ = []
+    session_context = types.ModuleType("gateway.session_context")
+
+    def declare_stateless_channel():
+        observed["async_delivery_supported"] = False
+
+    setattr(session_context, "declare_stateless_channel", declare_stateless_channel)
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", session_context)
+
+    class FakeAgent:
+        session_id = "parent-session"
+
+        def run_conversation(self, _goal):
+            return {"final_response": "done"}
+
+        def close(self):
+            observed["agent_closed"] = True
+
+    class FakeSessionDB:
+        def close(self):
+            observed["db_closed"] = True
+
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._build_in_process_agent",
+        lambda *_args, **_kwargs: (FakeAgent(), FakeSessionDB(), {"triage": None}),
+    )
+    monkeypatch.setattr("scripts.hermes_bridge._update_session_mapping", lambda *_: None)
+
+    events: queue.Queue = queue.Queue()
+    sandbox = types.SimpleNamespace(state_db=tmp_path / "state.db")
+    _run_agent_sync(
+        "professional task",
+        "client-session",
+        None,
+        events,
+        [None],
+        agent_config={},
+        sandbox=sandbox,
+    )
+
+    assert observed["async_delivery_supported"] is False
+    assert observed["agent_closed"] is True
+    assert observed["db_closed"] is True
+    assert events.get_nowait()["type"] == "status"
+    assert events.get_nowait()["type"] == "done"
+
+
+def test_bridge_agent_disables_host_profile_and_project_context(monkeypatch, tmp_path):
+    """Tenant agents must not inherit host MEMORY/USER/AGENTS context."""
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    run_agent = types.ModuleType("run_agent")
+    setattr(run_agent, "AIAgent", FakeAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", run_agent)
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._get_cached_config",
+        lambda: {"model": {"default": "test-model"}},
+    )
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._get_cached_runtime",
+        lambda _cfg: {"provider": "test", "api_key": "test", "base_url": None},
+    )
+    monkeypatch.setattr("scripts.hermes_bridge._get_cached_fallback", lambda _cfg: None)
+    monkeypatch.setattr("scripts.hermes_bridge._get_cached_tools", lambda _cfg: set())
+    monkeypatch.setattr("scripts.hermes_bridge._resolve_dynamic_toolsets", lambda *_: [])
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._create_sandbox_session_db",
+        lambda _sandbox: object(),
+    )
+    monkeypatch.setattr("scripts.hermes_bridge.persist_agent_snapshot", lambda *_: None)
+    monkeypatch.setattr(
+        "agent.runtime_cwd.set_session_cwd",
+        lambda value: captured.__setitem__("session_cwd", value),
+    )
+
+    sandbox = types.SimpleNamespace(
+        root=tmp_path / "tenant-root",
+        state_db=tmp_path / "state.db",
+        hermes_home=tmp_path / "hermes-home",
+    )
+    _build_in_process_agent(
+        "tenant request",
+        "client-session",
+        None,
+        queue.Queue(),
+        agent_config={},
+        sandbox=sandbox,
+    )
+
+    assert captured["skip_context_files"] is True
+    assert captured["skip_memory"] is True
+    assert captured["session_cwd"] == str(sandbox.root)
