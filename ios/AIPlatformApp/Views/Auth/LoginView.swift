@@ -341,6 +341,12 @@ public struct LoginView: View {
         isLoading = true
         errorMessage = nil
 
+        // 开发者账号直接走免短信接口，避免误调用真实短信注册流程。
+        if phoneNumber == "13800138000" && smsCode == "246810" {
+            performDeveloperLogin()
+            return
+        }
+
         // 手机号表单 → register 契约桥接（开发态占位；生产需真实邮箱/密码表单，见开发总结）
         let username = phoneNumber
         let email = "\(phoneNumber)@ailab.quantum"
@@ -389,6 +395,39 @@ public struct LoginView: View {
                 appState.isLoggedIn = true
                 appState.isGuestMode = false
                 appState.currentProfile = MockData.tenantProfile
+            }
+        }
+    }
+
+    private func performDeveloperLogin() {
+        Task { @MainActor in
+            do {
+                let response = try await APIClient.shared.developerLogin(
+                    phone: "13800138000",
+                    verificationCode: "246810"
+                )
+                guard let token = response.token, !token.isEmpty else {
+                    throw APIError.server(0, "开发者登录未返回访问凭证")
+                }
+                APIClient.shared.saveToken(token)
+                let profile = try? await APIClient.shared.fetchMe()
+                isLoading = false
+                appState.isDevMode = true
+                withAnimation(.spring()) {
+                    appState.isLoggedIn = true
+                    appState.isGuestMode = false
+                    if let profile, !profile.username.isEmpty {
+                        appState.currentProfile = TenantProfile(
+                            name: profile.username,
+                            tenantId: profile.tenantKey,
+                            role: profile.isSuperAdmin ? .masterAdmin : .tenantAdmin,
+                            avatarUrl: profile.avatarUrl
+                        )
+                    }
+                }
+            } catch {
+                isLoading = false
+                errorMessage = "开发者登录失败：\(error.localizedDescription)"
             }
         }
     }
