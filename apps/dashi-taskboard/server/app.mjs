@@ -1757,7 +1757,7 @@ export function createTaskboardServer(options = {}) {
     };
     const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
     const employeesByRole = new Map(aiEmployees.map((item) => [item.job_title, item]));
-    const statusMap = { BACKLOG: "backlog", TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", IN_REVIEW: "in_review", DONE: "done" };
+    const statusMap = { BACKLOG: "todo", TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "blocked", IN_REVIEW: "in_review", DONE: "done" };
     const plannedTasks = new Map();
     for (const task of process.tasks || []) {
       const stage = stages.get(task.stage_id);
@@ -1775,7 +1775,7 @@ export function createTaskboardServer(options = {}) {
           task.handoff?.completion_definition ? `完成/转交判定：${task.handoff.completion_definition}` : "",
           qwsBusinessContextDescription(task.development_context),
         ].filter(Boolean).join("\n\n"),
-        status: statusMap[task.status] || "backlog",
+        status: statusMap[String(task.status || "").toUpperCase()] || "todo",
         priority: ["none", "urgent", "high", "medium", "low"].includes(task.priority) ? task.priority : "none",
         labels: [`qws-${qwsSlug(task.id)}`.slice(0, 64), ...(task.labels || [])].slice(0, 20),
         developmentContext: qwsRuntimeDevelopmentContext(task.development_context),
@@ -1791,17 +1791,18 @@ export function createTaskboardServer(options = {}) {
       }
       const existingTasks = database.listTasks({ projectId, archived: "false" });
       const existingMarkers = new Set(existingTasks.flatMap((item) => item.labels || []));
+      const existingTasksByMarker = new Map();
       const cardIdsByQwsTaskId = new Map();
       const newlyCreatedQwsTaskIds = new Set();
       for (const item of existingTasks) {
         const marker = (item.labels || []).find((label) => label.startsWith("qws-"));
+        if (marker) existingTasksByMarker.set(marker, item);
         const qwsTask = (process.tasks || []).find((task) => marker === `qws-${qwsSlug(task.id)}`.slice(0, 64));
         if (qwsTask) cardIdsByQwsTaskId.set(qwsTask.id, item.id);
       }
       const createdRelationKeys = new Set();
       for (const task of process.tasks || []) {
         const marker = `qws-${qwsSlug(task.id)}`.slice(0, 64);
-        if (existingMarkers.has(marker)) continue;
         const employee = employeesByRole.get(task.assignee_role);
         const assignee = employee ? {
           type: "agent",
@@ -1810,6 +1811,22 @@ export function createTaskboardServer(options = {}) {
           avatarUrl: null,
         } : actor;
         const parsed = plannedTasks.get(task.id);
+        const existing = existingTasksByMarker.get(marker);
+        if (existing) {
+          const changes = {};
+          if (existing.status !== parsed.status) changes.status = parsed.status;
+          if (existing.assignee.type !== assignee.type
+            || existing.assignee.id !== assignee.id
+            || existing.assignee.name !== assignee.name
+            || existing.assignee.avatarUrl !== assignee.avatarUrl) {
+            changes.assignee = assignee;
+          }
+          if (Object.keys(changes).length > 0) {
+            const updated = database.updateTask(existing.id, existing.version, changes, null, null, actor);
+            events.emit("task.updated", { task: updated });
+          }
+          continue;
+        }
         const created = database.createTask({
           ...parsed,
           actor,
@@ -1819,6 +1836,7 @@ export function createTaskboardServer(options = {}) {
         cardIdsByQwsTaskId.set(task.id, created.id);
         newlyCreatedQwsTaskIds.add(task.id);
         existingMarkers.add(marker);
+        existingTasksByMarker.set(marker, created);
       }
       for (const task of process.tasks || []) {
         if (!newlyCreatedQwsTaskIds.has(task.id)) continue;
