@@ -156,6 +156,9 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
         session_id="runtime-skill-parent",
     )
     assert blocked_other and "DELEGATION_REQUIRED" in blocked_other["message"]
+    assert json.dumps(
+        delegate_args, ensure_ascii=False, separators=(",", ":")
+    ) in blocked_other["message"]
     assert router._pre_tool_call(
         "delegate_task", delegate_args, session_id="runtime-skill-parent"
     ) is None
@@ -207,6 +210,31 @@ def test_runtime_skill_failure_has_structured_reason_code(monkeypatch):
         session_id="runtime-skill-failure",
     )
     assert "SKILL_RESULT_FAILED" in blocked
+
+
+def test_runtime_skill_context_stays_below_hook_spill_limit(monkeypatch):
+    plugin, router = load_router()
+    router._INSTALLED = False
+    router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
+    context = LocalPluginContext()
+    context.dispatch_tool = lambda name, args, **_kwargs: json.dumps({
+        "success": True,
+        "name": args["name"],
+        "content": "A" * 12000,
+    })
+    plugin.register(context)
+    result = context.hooks["pre_llm_call"](
+        "请研究 https://example.com/report",
+        session_id="runtime-skill-spill",
+        turn_id="runtime-skill-spill-turn",
+        platform="feishu",
+        sender_id="owner-open-id",
+    )
+    assert result is not None
+    assert len(result["context"]) < 10000
+    assert '"content_truncated":true' in result["context"]
 
 
 def test_local_professional_turn_requires_native_skill_then_delegation(monkeypatch):

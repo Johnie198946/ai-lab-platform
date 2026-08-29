@@ -32,6 +32,7 @@ tags:
 - `delegate_task` 计划统一为单任务 `tasks[]`；运行时拒绝任何与计划不完全一致的参数。
 - Runtime 在 Skill 回执通过后只允许原生 `delegate_task`；网页、文件及其他工具在 dispatch 前均返回 `DELEGATION_REQUIRED`。
 - `post_tool_call` 只在真实 `delegate_task` 返回 `status=dispatched` 与 delegation ID 后放行初始启动状态，并阻止重复委派。
+- Skill 注入采用 4k head/tail 可审计摘要并携带完整正文 SHA-256，保证整个 hook context 小于 Hermes 10k spill 阈值；硬门错误直接返回可复制的 exact `tasks[]` JSON。
 - 若 child 尚未结束，Main 只能返回“已启动专业研究”；不得把 Main 自行检索内容冒充 child 结果。
 - 原始用户请求（含 URL 与查询参数）作为 child `goal` 保真传递；状态中独立保存 `original_request`。
 - 增加结构化失败码：
@@ -40,7 +41,7 @@ tags:
   - `SKILL_RESULT_MISSING`
   - `DELEGATE_SCHEMA_INVALID`
   - `DELEGATION_RECEIPT_MISSING`
-- 插件版本：`1.4.9`。
+- 插件版本：`1.4.10`。
 
 ## 文件
 
@@ -53,8 +54,8 @@ tags:
 
 ## 验收
 
-- Agent OS / Agency 定向门禁：`61 passed, 2 warnings`。
-- 后端全量门禁：`822 passed, 2 skipped, 10 warnings`。
+- Agent OS / Agency 定向门禁：`62 passed, 2 warnings`。
+- 后端全量门禁：`823 passed, 2 skipped, 10 warnings`。
 - 原始 URL 保真回归：通过。
 - Runtime Skill 成功回执及正文 hash：通过。
 - 旧式 `{goal, context}` 委派参数拒绝：通过。

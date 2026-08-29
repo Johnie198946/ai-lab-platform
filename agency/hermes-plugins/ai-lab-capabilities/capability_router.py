@@ -1561,10 +1561,21 @@ def _pre_llm_with_runtime_skill(
         requested,
         result_hash,
     )
+    if len(content) > 4000:
+        injected_content = content[:3400] + "\n...[runtime excerpt]...\n" + content[-500:]
+    else:
+        injected_content = content
+    injected_payload = {
+        "success": True,
+        "name": requested,
+        "content": injected_content,
+        "content_truncated": len(injected_content) != len(content),
+        "full_content_sha256": result_hash,
+    }
     result["context"] = (
         str(result.get("context") or "")
         + "\n[RUNTIME_VERIFIED_SKILL_RESULT — trusted native tool result]\n"
-        + json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        + json.dumps(injected_payload, ensure_ascii=False, separators=(",", ":"))
         + "\nThe Skill phase is complete. Before any other tool, call native delegate_task "
         "with the exact tasks[] arguments in the plan."
     )
@@ -1636,11 +1647,16 @@ def _pre_tool_call(
                 "LOCAL_AGENT_OS_BLOCK code=DELEGATE_SCHEMA_INVALID session_id=%s",
                 session_id,
             )
+            expected_text = json.dumps(
+                local_state.get("expected_delegate_args") or {},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
             return {
                 "action": "block",
                 "message": (
-                    "Local Agent OS blocked delegate_task: use the exact native "
-                    "tasks[] arguments from the verified plan. "
+                    "Local Agent OS blocked delegate_task: copy these exact native "
+                    f"arguments without additions or rewrites: {expected_text} "
                     "[DELEGATE_SCHEMA_INVALID]"
                 ),
             }
@@ -1655,11 +1671,17 @@ def _pre_tool_call(
             )
             and effective_tool != "delegate_task"
         ):
+            expected_text = json.dumps(
+                local_state.get("expected_delegate_args") or {},
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
             return {
                 "action": "block",
                 "message": (
-                    "Local Agent OS requires native delegate_task with the exact "
-                    "tasks[] plan before any other tool. [DELEGATION_REQUIRED]"
+                    "Local Agent OS requires delegate_task before any other tool. "
+                    f"Copy these exact arguments: {expected_text} "
+                    "[DELEGATION_REQUIRED]"
                 ),
             }
     turn_key = str(
