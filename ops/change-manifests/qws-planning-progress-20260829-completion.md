@@ -54,17 +54,17 @@
 
 ## 交付状态
 
-- current_status: `TESTED`
-- commit_sha: 未授权/未执行。
-- github_remote_ref_sha: 未授权 push，未执行 `git ls-remote`。
+- current_status: `DEPLOYED`
+- commit_sha: 实现提交 `e339694c37729f275732ddcca998e176db1fb1e9`；本文件所在的后续提交为 completion evidence commit。
+- github_remote_ref_sha: `origin/refs/heads/codex/qws-planning-progress-20260829 = e339694c37729f275732ddcca998e176db1fb1e9`，已通过 `git ls-remote` 核验；completion evidence commit 将继续推送到同一 ref 并在对话完成通报记录最终 SHA。
 - server_before: 生产记录版本 `db0493efa86cec590fbd7e46c6f3aa3bbfe03582`，release `/opt/releases/ai-lab-platform-db0493efa86c.CkPrpM`。
-- server_after: 未授权部署，保持不变。
-- health_check: 未部署；本地语法、目标测试和前端构建通过。
-- functional_check: 本地验证规划会话消费安全执行事件、慢响应提示、60 秒保护提示、错误恢复、自然语言蓝图呈现、卡片会话复用，以及带任务依赖的 dispatch 成功路径。
-- rollback_point: 当前生产 SHA `db0493efa86cec590fbd7e46c6f3aa3bbfe03582` / release `/opt/releases/ai-lab-platform-db0493efa86c.CkPrpM`；本任务尚未部署，无需回滚。
+- server_after: 实现 release `/opt/releases/ai-lab-platform-e339694c3772.xdj5Rn`，`.deployed-sha=e339694c37729f275732ddcca998e176db1fb1e9`；completion evidence commit 将按相同不可变发布流程精确同步并在对话完成通报记录最终 release/SHA。
+- health_check: API `/ready={status:ready,version:0.8.0}`、公网 HTTPS `/health={status:ok,version:0.8.0}`、Hermes Bridge `status=ok/version=v6.0/streaming=true`；API、frontend、taskboard、PostgreSQL、Redis 和三个 Worker 共 8 个服务 running；运行契约审计通过。
+- functional_check: 本地验证规划会话进度、自然语言蓝图呈现及带 `blocked_by` 依赖的 dispatch 200；生产失败事务无残留，部署后近 10 分钟 dispatch 500/`ForeignKeyViolationError` 计数为 0。未擅自创建生产测试项目，需用户对原项目执行一次真实重试后才能升级为 `VERIFIED`。
+- rollback_point: `/opt/releases/ai-lab-platform-db0493efa86c.CkPrpM`，SHA `db0493efa86cec590fbd7e46c6f3aa3bbfe03582`。
 
 ## 风险与未完成项
 
 - 当前只减少“等待不确定性”，模型首个业务动作本身约 16 秒的延迟仍来自 Hermes Agent 构建与模型需求评估；后续可依据新增 `first_activity_ms` 做线上分位监控。
 - 本机 Starlette/httpx 测试依赖不匹配，完整 API 套件需在项目标准容器/CI 依赖中复核。
-- 未提交、未推送、未部署，需用户明确授权后执行。
+- 已推送并部署；尚未执行用户真实项目的 authenticated dispatch 重试，因此状态保持 `DEPLOYED` 而非 `VERIFIED`。
