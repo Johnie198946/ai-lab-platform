@@ -30,6 +30,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
           id: "task-1", stage_id: "stage-1", title: "Canonical task", summary: "Server owned",
           status: "TODO", assignee_role: "需求经理", deliverables: ["Evidence"], start_date: null, due_date: null,
           development_context: { platform: "independent web", devices: ["mobile", "desktop"] },
+          relations: [{ type: "related", target_task_id: "task-2" }],
         }, {
           id: "task-2", stage_id: "stage-1", title: "Runtime task", summary: "Use a branch",
           status: "TODO", assignee_role: "需求经理", deliverables: [], start_date: null, due_date: null,
@@ -107,6 +108,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       type: "branch",
       branch: "codex/runtime-task",
     });
+    assert.equal(canonicalTask.relations.related.some((task) => task.id === runtimeTask.id), true);
 
     const invalidSession = await fetch(`${origin}/api/qws/session`, {
       method: "POST",

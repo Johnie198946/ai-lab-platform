@@ -1831,7 +1831,7 @@ export function createTaskboardServer(options = {}) {
             : `${relation.type}:${taskId}:${relatedId}`;
           if (createdRelationKeys.has(relationKey)) continue;
           const current = database.getTask(taskId);
-          database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "qws-blueprint");
+          database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "manual");
           createdRelationKeys.add(relationKey);
         }
       }
