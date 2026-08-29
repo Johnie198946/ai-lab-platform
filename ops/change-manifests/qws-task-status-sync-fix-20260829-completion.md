@@ -30,16 +30,16 @@
 
 ## Delivery state
 
-- status: `TESTED`
+- status: `DEPLOYED`
 - authorization: 用户在当前任务中明确要求“部署 推送”。
-- local_commit: 未创建。
-- GitHub remote/ref/SHA: 未授权/未执行。
-- server_before: `/opt/releases/ai-lab-platform-74015fc1c3b7.gE202S`。
-- server_after: 未授权/未执行。
-- health_check: 当前生产 API、Hermes Bridge 与 Taskboard 健康。
-- functional_check: 本地专项 session 测试、类型检查与生产构建通过；尚未在生产目标项目验证。
-- rollback_point: 不适用（未部署）。
+- local_commit: `3d0ef50d419088d46a1e72426b3ad04856753950`。
+- GitHub remote/ref/SHA: `origin/refs/heads/codex/qws-task-status-sync-fix-20260829` = `3d0ef50d419088d46a1e72426b3ad04856753950`，已通过 `git ls-remote` 核验。
+- server_before: `/opt/releases/ai-lab-platform-d24765ec37da.mwoeaL`，部署前 `.deployed-sha` 为 `aea38743fc9a34e5811134db415a43f50636d24c`。
+- server_after: `/opt/releases/ai-lab-platform-3d0ef50d4190.jKOlDd`，`.deployed-sha` = `3d0ef50d419088d46a1e72426b3ad04856753950`。
+- health_check: API `/ready` 返回 ready；Hermes Bridge `:9118/health` 返回 ok；Taskboard 容器为 healthy。
+- functional_check: 生产 Taskboard 镜像内状态投影与历史迁移专项测试 1/1 passed；目标项目只读检查仍为 `backlog: 6`，等待用户真实登录态刷新触发 session。
+- rollback_point: `/opt/releases/ai-lab-platform-d24765ec37da.mwoeaL`。
 
 ## Remaining risks
 
-- 生产目标项目的 6 张历史卡片在修复部署并再次打开 session 前仍保持 `backlog`。
+- 生产目标项目的 6 张历史卡片仍保持 `backlog`；安全策略禁止伪造用户 JWT 代为触发，用户刷新/重新打开项目后会由真实 session 自动迁移。
