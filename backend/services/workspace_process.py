@@ -438,6 +438,11 @@ async def persist_process_revision(
                 )
             )
 
+    # SQLAlchemy does not have ORM relationships between these immutable fact
+    # rows, so a later query-triggered autoflush may otherwise insert dependency
+    # rows before their composite FK targets. Persist each FK layer explicitly.
+    await db.flush()
+
     for position, stage in enumerate(process.get("stages", [])):
         db.add(
             WorkspaceStage(
@@ -448,6 +453,8 @@ async def persist_process_revision(
                 facts=stage,
             )
         )
+    await db.flush()
+
     for position, task in enumerate(process.get("tasks", [])):
         db.add(
             WorkspaceTaskRevision(
@@ -471,6 +478,8 @@ async def persist_process_revision(
                 facts=gate,
             )
         )
+    await db.flush()
+
     for position, dependency in enumerate(process.get("dependencies", [])):
         db.add(
             WorkspaceTaskDependency(
@@ -482,6 +491,7 @@ async def persist_process_revision(
                 position=position,
             )
         )
+    await db.flush()
     return record
 
 

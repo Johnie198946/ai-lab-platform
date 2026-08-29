@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 from tempfile import gettempdir
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -27,7 +28,7 @@ from backend.api.quantum_workspace import (  # noqa: E402
     _apply_taskboard_backfill,
     _parse_backfill_block,
 )
-from backend.services.workspace_process import instantiate_project_blueprint  # noqa: E402
+from backend.services.workspace_process import instantiate_project_blueprint, persist_process_revision  # noqa: E402
 from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
@@ -122,6 +123,49 @@ def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     assert process["documents"][0]["title"] == "项目说明"
 
 
+def test_process_revision_flushes_fk_targets_before_dependencies():
+    class ScalarRows:
+        def all(self):
+            return []
+
+    class FlushProbe:
+        def __init__(self):
+            self.added = []
+            self.flushes = []
+
+        async def scalar(self, _statement):
+            return SimpleNamespace(id="cfgrev_test")
+
+        async def scalars(self, _statement):
+            return ScalarRows()
+
+        def add(self, row):
+            self.added.append(row)
+
+        async def flush(self):
+            self.flushes.append(tuple(type(row).__name__ for row in self.added))
+
+    probe = FlushProbe()
+    process = instantiate_project_blueprint({
+        "project_goal": "验证外键写入顺序",
+        "stages": [{"key": "delivery", "name": "交付", "goal": "完成"}],
+        "tasks": [
+            {"key": "first", "stage_key": "delivery", "title": "前置任务", "role": "负责人"},
+            {"key": "second", "stage_key": "delivery", "title": "后续任务", "role": "负责人", "relations": [{"type": "blocked_by", "target_key": "first"}]},
+        ],
+    })
+    asyncio.run(persist_process_revision(
+        probe,
+        project=SimpleNamespace(id="project_test", tenant_key="tenant-a"),
+        process=process,
+        revision=1,
+    ))
+
+    dependency_flush = next(index for index, rows in enumerate(probe.flushes) if "WorkspaceTaskDependency" in rows)
+    task_revision_flush = next(index for index, rows in enumerate(probe.flushes) if "WorkspaceTaskRevision" in rows)
+    assert task_revision_flush < dependency_flush
+
+
 def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database):
     client = _reset_database
     project_id = _create_project(client, "planning-dispatch")
@@ -147,7 +191,10 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     blueprint = {
         "project_goal": "交付项目",
         "stages": [{"key": "delivery", "name": "交付", "goal": "完成", "acceptance_criteria": ["通过验收"]}],
-        "tasks": [{"key": "deliver", "stage_key": "delivery", "title": "完成交付", "description": "完成项目成果", "role": "交付负责人", "status": "todo", "priority": "high", "acceptance_criteria": ["成果可阅读"], "deliverables": ["交付说明"]}],
+        "tasks": [
+            {"key": "deliver", "stage_key": "delivery", "title": "完成交付", "description": "完成项目成果", "role": "交付负责人", "status": "todo", "priority": "high", "acceptance_criteria": ["成果可阅读"], "deliverables": ["交付说明"]},
+            {"key": "review", "stage_key": "delivery", "title": "验收交付", "description": "验收项目成果", "role": "验收负责人", "status": "backlog", "priority": "medium", "relations": [{"type": "blocked_by", "target_key": "deliver"}]},
+        ],
         "documents": [{"id": "brief", "title": "项目说明", "content": "# 项目说明", "status": "ready"}],
     }
 
@@ -169,9 +216,10 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     })
     assert dispatched.status_code == 200, dispatched.text
     assert dispatched.json()["stage_count"] == 1
-    assert dispatched.json()["task_count"] == 1
+    assert dispatched.json()["task_count"] == 2
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     assert process["tasks"][0]["title"] == "完成交付"
+    assert len(process["dependencies"]) == 1
     assert process["documents"][0]["id"] == "brief"
 
     async def task_registry_profile():
@@ -252,6 +300,7 @@ def test_new_project_session_automatically_assesses_context_and_preserves_system
         },
     )
     assert streamed.status_code == 200, streamed.text
+    assert '"phase": "planning_context"' in streamed.text
     assert '"type":"clarify"' in streamed.text
     assert "project_name=Quantum Router" in captured["question"]
     assert "project_goal=交付可验证的新产品方案" in captured["question"]

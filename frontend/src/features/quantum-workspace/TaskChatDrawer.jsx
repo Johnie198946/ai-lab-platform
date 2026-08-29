@@ -2,59 +2,10 @@ import { Bot, Check, Send, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { platformApi } from "../../services/platformApi";
 import { HermesClarificationCard } from "./HermesClarificationCard";
+import { createHermesExecution, HermesExecutionTrace, updateHermesExecution } from "./HermesExecutionTrace";
 import { restoreTaskMessages } from "./taskChatMessages.js";
 
 const visibleAssistantContent = (content) => String(content || "").replace(/```task_backfill\s*\n[\s\S]*?\n```/gi, "").trim();
-
-const executionStep = (event) => {
-  if (event.type === "status") {
-    const phaseLabels = {
-      context: "正在同步卡片上下文与权限",
-      boot: "正在启动租户 Hermes",
-      reasoning: "Hermes 正在理解任务",
-      delegate: event.detail || "正在调用专属 Agent",
-    };
-    return phaseLabels[event.phase] || event.detail || "AI 正在处理";
-  }
-  if (event.type === "triage_route") {
-    return event.route_class === "PROFESSIONAL_TASK"
-      ? "已识别为任务操作，租户技能可以参与"
-      : "该问题可直接回答，未启用任务技能";
-  }
-  if (event.type === "capability_route") {
-    const candidates = (event.skill_candidates || []).map((item) => item.name).filter(Boolean);
-    if (candidates.length) return `候选技能：${candidates.join("、")}`;
-    if ((event.selected_capabilities || []).includes("tenant_skills")) return "租户技能已开放，正在选择是否调用";
-    return "本轮未选择技能能力";
-  }
-  if (event.type === "tool_start") return event.label || `正在调用 ${event.tool || "AI 能力"}`;
-  if (event.type === "tool_complete") return `${event.tool || "AI 能力"} 已返回`;
-  if (event.type === "agent_route") return `已连接 ${event.agent?.name || event.agent?.id || "Hermes Agent"}`;
-  return "";
-};
-
-const updateExecution = (message, event) => {
-  const detail = executionStep(event);
-  if (!detail) return message;
-  const execution = message.execution || { startedAt: Date.now(), steps: [] };
-  const elapsedMs = Math.max(0, Date.now() - execution.startedAt);
-  const signature = `${event.type}:${event.phase || event.tool || event.reason_code || detail}`;
-  const previous = execution.steps.at(-1);
-  if (previous?.signature === signature) {
-    return { ...message, execution: { ...execution, current: detail, elapsedMs } };
-  }
-  return {
-    ...message,
-    execution: {
-      ...execution,
-      current: detail,
-      elapsedMs,
-      steps: [...execution.steps, { signature, detail, elapsedMs }].slice(-8),
-    },
-  };
-};
-
-const elapsedLabel = (milliseconds) => `${Math.max(0, Math.round((milliseconds || 0) / 1000))}s`;
 
 const FIELD_LABELS = {
   title: "议题标题",
@@ -194,9 +145,9 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       }
       const startedAt = Date.now();
       setClock(startedAt);
-      setMessages((current) => [...current, { id: requestId, role: "user", content: text }, { id: `${requestId}-assistant`, role: "assistant", content: "", pending: true, execution: { startedAt, current: "正在同步卡片增量", elapsedMs: 0, steps: [{ signature: "local:context", detail: "正在同步卡片增量", elapsedMs: 0 }] } }]);
+      setMessages((current) => [...current, { id: requestId, role: "user", content: text }, { id: `${requestId}-assistant`, role: "assistant", content: "", pending: true, execution: createHermesExecution("正在同步卡片增量", startedAt) }]);
       const finalEvent = await platformApi.streamTaskMessage(activeConversation.id, { question: text, request_id: requestId }, (streamEvent) => {
-        setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? updateExecution(message, streamEvent) : message));
+        setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? updateHermesExecution(message, streamEvent, { context: "正在同步卡片上下文与权限", reasoning: "Hermes 正在理解任务", professional: "已识别为任务操作，租户技能可以参与" }) : message));
         if (streamEvent.type === "delta" && streamEvent.content) {
           setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, content: `${message.content}${streamEvent.content}` } : message));
         }
@@ -300,9 +251,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
         {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>卡片上下文已绑定到租户 Hermes Session</strong><span>首次同步完整卡片，之后每次发言前只同步增量；要求 AI 回填时会先生成方案，确认后才写入。</span></div>}
         {messages.map((message) => {
-          const elapsedMs = message.execution ? (message.pending ? clock - message.execution.startedAt : message.execution.elapsedMs) : 0;
-          const slowNotice = message.waitingForClarification ? "Hermes 已暂停执行，正在等待你的回答。" : message.pending && elapsedMs >= 20000 ? "模型响应较慢，系统会在首个输出、技能调用或澄清问题前最多等待 60 秒。" : message.pending && elapsedMs >= 8000 ? "模型正在规划，可继续等待。" : "";
-          return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : assistantLabel}</small>{message.role === "assistant" && message.execution && <details className="qw-execution-trace" open={message.pending || undefined}><summary><span>{message.execution.current || "执行详情"}</span><time>{elapsedLabel(elapsedMs)}</time></summary><ol>{message.execution.steps.map((step) => <li key={`${step.signature}-${step.elapsedMs}`}><time>{elapsedLabel(step.elapsedMs)}</time><span>{step.detail}</span></li>)}</ol>{slowNotice && <p className="qw-execution-slow">{slowNotice}</p>}</details>}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
+          return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : assistantLabel}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} />}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
         })}
         <HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-task-clarification" continuationLabel="回答后将继续生成字段级回填方案。" />
         {proposals.map((proposal) => <section key={proposal.id} className={`qw-backfill-proposal ${proposal.status}`}>

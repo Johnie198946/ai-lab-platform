@@ -4366,6 +4366,8 @@ async def stream_task_message(
                     )
 
         try:
+            if planning_session:
+                yield f"data: {json.dumps({'type': 'status', 'phase': 'planning_context', 'detail': '项目名称与描述已绑定，正在检查需求空白'}, ensure_ascii=False)}\n\n"
             async for chunk in upstream.body_iterator:
                 text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
                 buffer += text

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { extractProjectBlueprint, projectPlanningVisibleAnswer } from "../src/features/quantum-workspace/projectBlueprintPresentation.js";
 
 const hostSource = await readFile(
   new URL("../src/features/quantum-workspace/DashiTaskboardHost.jsx", import.meta.url),
@@ -16,6 +17,10 @@ const clarificationSource = await readFile(
 );
 const planningSource = await readFile(
   new URL("../src/features/quantum-workspace/ProjectPlanningDialog.jsx", import.meta.url),
+  "utf8",
+);
+const executionTraceSource = await readFile(
+  new URL("../src/features/quantum-workspace/HermesExecutionTrace.jsx", import.meta.url),
   "utf8",
 );
 const homeSource = await readFile(
@@ -124,15 +129,53 @@ test("dispatch persists a structured task contract for every card session", () =
 });
 
 test("card session exposes safe skill execution progress without chain-of-thought", () => {
+  const executionSources = `${drawerSource}\n${executionTraceSource}`;
   for (const eventType of [
     "status",
     "triage_route",
     "capability_route",
     "tool_start",
     "tool_complete",
-  ]) assert.match(drawerSource, new RegExp(eventType));
-  assert.match(drawerSource, /候选技能/);
-  assert.match(drawerSource, /模型响应较慢/);
-  assert.match(drawerSource, /最多等待 60 秒/);
-  assert.doesNotMatch(drawerSource, /chain.of.thought|思维链/i);
+  ]) assert.match(executionSources, new RegExp(eventType));
+  assert.match(executionTraceSource, /候选技能/);
+  assert.match(executionTraceSource, /模型响应较慢/);
+  assert.match(executionTraceSource, /60 秒达到保护时限/);
+  assert.doesNotMatch(executionSources, /chain.of.thought|思维链/i);
+});
+
+test("project planning reuses the safe Hermes execution trace", () => {
+  assert.match(planningSource, /HermesExecutionTrace/);
+  assert.match(planningSource, /updateHermesExecution/);
+  assert.match(planningSource, /variant="planning"/);
+  assert.match(executionTraceSource, /planning_context/);
+  assert.match(executionTraceSource, /候选技能/);
+  assert.match(executionTraceSource, /不是页面卡死/);
+  assert.match(executionTraceSource, /60 秒达到保护时限/);
+  assert.doesNotMatch(executionTraceSource, /chain.of.thought|思维链/i);
+});
+
+test("project planning hides blueprint protocol while streaming and renders a natural summary", () => {
+  const partial = "方案已收敛。\n```project_blueprint\n{\"project_goal\":\"建设人脸识别门禁\",\"stages\":[";
+  assert.equal(projectPlanningVisibleAnswer(partial, { pending: true }), "方案已收敛。");
+  assert.doesNotMatch(projectPlanningVisibleAnswer(partial, { pending: true }), /project_goal|stages|```/);
+
+  const blueprint = {
+    project_goal: "建设人脸识别门禁",
+    stages: [{ key: "plan", name: "方案设计", acceptance_criteria: ["需求已确认"] }, { key: "delivery", name: "开发交付" }],
+    tasks: [
+      { key: "T1", stage_key: "plan", title: "确认业务需求", role: "产品经理", deliverables: ["需求说明书"] },
+      { key: "T2", stage_key: "delivery", title: "设计系统架构", role: "架构师", deliverables: ["架构图"] },
+    ],
+    documents: [{ id: "D1", title: "项目实施方案" }],
+  };
+  const completed = `蓝图可供确认。\n\`\`\`project_blueprint\n${JSON.stringify(blueprint)}\n\`\`\``;
+  assert.deepEqual(extractProjectBlueprint(completed), blueprint);
+  const visible = projectPlanningVisibleAnswer(completed);
+  assert.match(visible, /项目蓝图已经整理完成，共 2 个阶段、2 项任务和 1 份项目文档/);
+  assert.match(visible, /项目目标：建设人脸识别门禁/);
+  assert.match(visible, /执行流程：方案设计 → 开发交付/);
+  assert.match(visible, /1\. 方案设计：确认业务需求/);
+  assert.match(visible, /关键验收：需求已确认/);
+  assert.match(visible, /产品经理、架构师/);
+  assert.doesNotMatch(visible, /project_goal|stages|tasks|```|\{|\}/);
 });

@@ -1400,6 +1400,12 @@ async def stream_chat(
                     "tool_complete",
                     "clarify",
                 }:
+                    if not first_activity_seen:
+                        print(
+                            f"[chat-stream] first_activity_ms="
+                            f"{(time.perf_counter() - started) * 1000.0:.1f} "
+                            f"type={event.get('type')} session={isolated_session_id[:32]}"
+                        )
                     first_activity_seen = True
                 if event and event.get("type") == "knowledge_action_draft":
                     event = await _authorize_knowledge_action_event(
