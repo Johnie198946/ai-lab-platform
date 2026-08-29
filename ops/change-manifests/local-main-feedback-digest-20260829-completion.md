@@ -1,7 +1,7 @@
 ---
 title: 本地 Main 抱怨日报投递
 task_id: local-main-feedback-digest-20260829
-status: SIGNED_PENDING_DEPLOYMENT
+status: DEPLOYED_VERIFIED
 date: 2026-08-29
 tags:
   - ops/change-manifest
@@ -49,19 +49,25 @@ protocol: cloud-user-complaint-feedback-v1@2
 - [x] `hermes send --help` 确认 `--to`、`--subject`、`--file -`、`--json` 参数
 - [x] v2 增量三轮复签：`main_agent / supervision / coder = APPROVE`
 - [x] 功能提交 `6ca549ad2305280bf04e706828ab21f24d30a697` 已进入 GitHub `main`
-- [ ] 统一 SHA 生产部署
-- [ ] 本地 Cron 建立
+- [x] 统一 SHA `97bb8ad824f00ff41cdfc787dc989670ddf0d044` 生产部署
+- [x] 本地 script-only Cron `df09ebff170c` 建立：`*/10 9-23 * * *`、`no_agent=true`
+- [x] Cron 手动触发：Gateway 记录 `empty stdout — silent run`，空数据不误发
 - [x] 本地 `hermes send` 飞书实发并按 message ID 回读：目标与正文完全匹配
 - [x] `~/.hermes/scripts/local_feedback_digest.py` 与提交脚本 SHA-256 一致
+- [x] 生产 `feedback_events` / `feedback_digest_runs.payload_content` 回读通过
+- [x] 生产 QWS 容器回归：`1 passed`
+- [x] 合成正样本有 receipt/row，普通知识问题无 receipt/row
+- [x] 真实摘要 `feedback-2026-08-29` 经飞书消息 API 回读：目标、聚合计数匹配，无合成原文或测试标识
+- [x] 合成验收数据清理后：测试事件 `0`、测试摘要账本 `0`、全表事件 `0`
 
 ## 交付状态
 
 - 分支：`main`
 - 基线：`71cde6d99a32bd7836fff62e1626c92687642d66`
 - GitHub 推送：`6ca549ad2305280bf04e706828ab21f24d30a697` 已推送
-- 云端部署：待完成
-- 本地计划：待部署和真实飞书收件验收
-- 回滚点：部署前创建
+- 云端部署：`97bb8ad824f00ff41cdfc787dc989670ddf0d044`
+- 本地计划：Cron `df09ebff170c`，已启用；成功摘要由本地 Hermes 飞书通道投递
+- 回滚点：release `ai-lab-platform-8698796649dd.JYJAdD`；PostgreSQL 备份 `backups/pre-97bb8ad-20260829-203055.dump`
 
 ## 权限与风险
 
