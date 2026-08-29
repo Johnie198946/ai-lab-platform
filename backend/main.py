@@ -155,6 +155,12 @@ async def health():
     return {"status": "ok", "version": "0.8.0"}
 
 
+@app.get("/ready")
+async def ready():
+    """Readiness probe used by the immutable release deployer."""
+    return {"status": "ready", "version": "0.8.0"}
+
+
 # 自动生成 OpenAPI schema
 def custom_openapi():
     if app.openapi_schema:
