@@ -205,7 +205,13 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       },
       body: JSON.stringify({ project_id: project.id }),
     });
-    if (!sessionResponse.ok) throw new Error("Dashi 无法验证 AI Lab 登录会话");
+    if (!sessionResponse.ok) {
+      const payload = await sessionResponse.json().catch(() => ({}));
+      const message = payload?.error?.message || payload?.message || payload?.detail;
+      throw new Error(typeof message === "string" && message.trim()
+        ? `Dashi 项目同步失败：${message}`
+        : `Dashi 项目同步失败（HTTP ${sessionResponse.status}）`);
+    }
     const session = await sessionResponse.json();
     if (session.taskboard_project_id !== dashiProjectId) throw new Error("Dashi 返回了不一致的租户项目绑定");
     return session;

@@ -1729,6 +1729,23 @@ export function createTaskboardServer(options = {}) {
       .replace(/^-|-$/g, "").slice(0, maxLength) || fallback;
   }
 
+  function qwsRuntimeDevelopmentContext(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (value.type === "branch" && typeof value.branch === "string") return value;
+    if (value.type === "worktree" && typeof value.path === "string") return value;
+    return null;
+  }
+
+  function qwsBusinessContextDescription(value) {
+    if (value === null || value === undefined || qwsRuntimeDevelopmentContext(value)) return "";
+    if (typeof value === "string") return value.trim() ? `开发上下文：${value.trim()}` : "";
+    try {
+      return `开发上下文（业务）：\n${JSON.stringify(value, null, 2)}`;
+    } catch {
+      return "开发上下文（业务）：已由 QuantumWorkspace 绑定，请在卡片 AI Session 中查看。";
+    }
+  }
+
   function syncQwsProject(resources, identity, project, process, aiEmployees = []) {
     const tenant = qwsSlug(identity.tenant_key || identity.user_id || "default");
     const projectId = `qws-${tenant}-${qwsSlug(project.id)}`.slice(0, 64).replace(/-$/, "");
@@ -1738,6 +1755,35 @@ export function createTaskboardServer(options = {}) {
       name: String(identity.username || "QWS 用户").slice(0, 120),
       avatarUrl: identity.avatar_url || null,
     };
+    const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
+    const employeesByRole = new Map(aiEmployees.map((item) => [item.job_title, item]));
+    const statusMap = { BACKLOG: "backlog", TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", IN_REVIEW: "in_review", DONE: "done" };
+    const plannedTasks = new Map();
+    for (const task of process.tasks || []) {
+      const stage = stages.get(task.stage_id);
+      plannedTasks.set(task.id, parseTaskCreate({
+        projectId,
+        title: task.title,
+        description: [
+          task.summary,
+          task.goal ? `任务目标：${task.goal}` : "",
+          ...(task.acceptance_criteria || []).map((item) => `验收标准：${item}`),
+          stage?.name ? `QWS 阶段：${stage.name}` : "",
+          ...(task.deliverables || []).map((item) => `交付物：${item}`),
+          task.handoff?.from ? `承接自：${task.handoff.from}` : "",
+          task.handoff?.to ? `转交至：${task.handoff.to}` : "",
+          task.handoff?.completion_definition ? `完成/转交判定：${task.handoff.completion_definition}` : "",
+          qwsBusinessContextDescription(task.development_context),
+        ].filter(Boolean).join("\n\n"),
+        status: statusMap[task.status] || "backlog",
+        priority: ["none", "urgent", "high", "medium", "low"].includes(task.priority) ? task.priority : "none",
+        labels: [`qws-${qwsSlug(task.id)}`.slice(0, 64), ...(task.labels || [])].slice(0, 20),
+        developmentContext: qwsRuntimeDevelopmentContext(task.development_context),
+        startDate: task.start_date || null,
+        dueDate: task.due_date || null,
+        recurrence: task.due_date ? (task.recurrence || null) : null,
+      }));
+    }
     requestScope.run(resources, () => {
       if (!database.listProjects().some((item) => item.id === projectId)) {
         const created = database.createProject({ id: projectId, name: project.name, workspacePath: "/workspace" });
@@ -1752,14 +1798,10 @@ export function createTaskboardServer(options = {}) {
         const qwsTask = (process.tasks || []).find((task) => marker === `qws-${qwsSlug(task.id)}`.slice(0, 64));
         if (qwsTask) cardIdsByQwsTaskId.set(qwsTask.id, item.id);
       }
-      const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
-      const employeesByRole = new Map(aiEmployees.map((item) => [item.job_title, item]));
-      const statusMap = { BACKLOG: "backlog", TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "backlog", IN_REVIEW: "in_review", DONE: "done" };
       const createdRelationKeys = new Set();
       for (const task of process.tasks || []) {
         const marker = `qws-${qwsSlug(task.id)}`.slice(0, 64);
         if (existingMarkers.has(marker)) continue;
-        const stage = stages.get(task.stage_id);
         const employee = employeesByRole.get(task.assignee_role);
         const assignee = employee ? {
           type: "agent",
@@ -1767,27 +1809,7 @@ export function createTaskboardServer(options = {}) {
           name: `${employee.display_name} · AI 员工 · ${employee.job_title}`.slice(0, 120),
           avatarUrl: null,
         } : actor;
-        const parsed = parseTaskCreate({
-          projectId,
-          title: task.title,
-          description: [
-            task.summary,
-            task.goal ? `任务目标：${task.goal}` : "",
-            ...(task.acceptance_criteria || []).map((item) => `验收标准：${item}`),
-            stage?.name ? `QWS 阶段：${stage.name}` : "",
-            ...(task.deliverables || []).map((item) => `交付物：${item}`),
-            task.handoff?.from ? `承接自：${task.handoff.from}` : "",
-            task.handoff?.to ? `转交至：${task.handoff.to}` : "",
-            task.handoff?.completion_definition ? `完成/转交判定：${task.handoff.completion_definition}` : "",
-          ].filter(Boolean).join("\n\n"),
-          status: statusMap[task.status] || "backlog",
-          priority: ["none", "urgent", "high", "medium", "low"].includes(task.priority) ? task.priority : "none",
-          labels: [marker, ...(task.labels || [])].slice(0, 20),
-          developmentContext: task.development_context || null,
-          startDate: task.start_date || null,
-          dueDate: task.due_date || null,
-          recurrence: task.due_date ? (task.recurrence || null) : null,
-        });
+        const parsed = plannedTasks.get(task.id);
         const created = database.createTask({
           ...parsed,
           actor,

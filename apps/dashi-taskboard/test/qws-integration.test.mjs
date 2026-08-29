@@ -29,6 +29,11 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
         tasks: [{
           id: "task-1", stage_id: "stage-1", title: "Canonical task", summary: "Server owned",
           status: "TODO", assignee_role: "需求经理", deliverables: ["Evidence"], start_date: null, due_date: null,
+          development_context: { platform: "independent web", devices: ["mobile", "desktop"] },
+        }, {
+          id: "task-2", stage_id: "stage-1", title: "Runtime task", summary: "Use a branch",
+          status: "TODO", assignee_role: "需求经理", deliverables: [], start_date: null, due_date: null,
+          development_context: { type: "branch", branch: "codex/runtime-task" },
         }],
       }));
       return;
@@ -38,6 +43,27 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
         employee_id: "a".repeat(32), agent_id: "a".repeat(32), display_name: "林知远",
         job_title: "需求经理", base_agent_id: "knowledge", project_id: "prj-sync", is_ai: true,
       }] }));
+      return;
+    }
+    if (request.url === "/api/v1/projects/prj-invalid") {
+      response.end(JSON.stringify({ id: "prj-invalid", name: "Invalid project" }));
+      return;
+    }
+    if (request.url === "/api/v1/projects/prj-invalid/process") {
+      response.end(JSON.stringify({
+        stages: [{ id: "stage-1", name: "需求" }],
+        tasks: [{
+          id: "valid-first", stage_id: "stage-1", title: "Would be partial", status: "TODO",
+          start_date: null, due_date: null,
+        }, {
+          id: "invalid-second", stage_id: "stage-1", title: "Invalid date", status: "TODO",
+          start_date: null, due_date: "tomorrow",
+        }],
+      }));
+      return;
+    }
+    if (request.url === "/api/v1/projects/prj-invalid/ai-employees/ensure") {
+      response.end(JSON.stringify({ ai_employees: [] }));
       return;
     }
     response.end(JSON.stringify({ tenant_key: tenant, user_id: `${tenant}-user`, username: tenant }));
@@ -64,15 +90,38 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     assert.equal(sessionPayload.taskboard_project_id, "qws-tenant-a-prj-sync");
     const cookieA = sessionA.headers.get("set-cookie").split(";", 1)[0];
     const tasksA = await fetch(`${origin}/api/tasks?projectId=qws-tenant-a-prj-sync&archived=false`, { headers: { cookie: cookieA } }).then((response) => response.json());
-    assert.equal(tasksA.tasks.length, 1);
-    assert.equal(tasksA.tasks[0].title, "Canonical task");
-    assert.deepEqual(tasksA.tasks[0].labels, ["qws-task-1"]);
-    assert.deepEqual(tasksA.tasks[0].assignee, {
+    assert.equal(tasksA.tasks.length, 2);
+    const canonicalTask = tasksA.tasks.find((task) => task.title === "Canonical task");
+    const runtimeTask = tasksA.tasks.find((task) => task.title === "Runtime task");
+    assert.deepEqual(canonicalTask.labels, ["qws-task-1"]);
+    assert.deepEqual(canonicalTask.assignee, {
       type: "agent",
       id: "a".repeat(32),
       name: "林知远 · AI 员工 · 需求经理",
       avatarUrl: null,
     });
+    assert.match(canonicalTask.description, /开发上下文（业务）/);
+    assert.match(canonicalTask.description, /independent web/);
+    assert.equal(canonicalTask.developmentContext, null);
+    assert.deepEqual(runtimeTask.developmentContext, {
+      type: "branch",
+      branch: "codex/runtime-task",
+    });
+
+    const invalidSession = await fetch(`${origin}/api/qws/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
+      body: JSON.stringify({ project_id: "prj-invalid" }),
+    });
+    assert.equal(invalidSession.status, 400);
+    const projectsAfterInvalidSync = await fetch(`${origin}/api/projects`, {
+      headers: { cookie: cookieA },
+    }).then((response) => response.json());
+    assert.equal(
+      projectsAfterInvalidSync.projects.some((project) => project.id === "qws-tenant-a-prj-invalid"),
+      false,
+      "all task payloads must be validated before the project or its first task is written",
+    );
 
     const sessionB = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
