@@ -2916,11 +2916,6 @@ async def acquire_project_task_execution_lease(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
-        if task.get("status") != "TODO":
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "task_not_runnable", "status": task.get("status")},
-            )
         candidates = find_duplicate_candidates(
             {**task, "project_id": project_id},
             [{**item, "project_id": project_id} for item in tasks],

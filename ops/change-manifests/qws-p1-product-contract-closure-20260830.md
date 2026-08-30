@@ -32,11 +32,11 @@
 
 ### 3. 执行租约与 fencing
 
-- 初次 acquire 仅允许 `TODO`；heartbeat 仅允许同 session、同 epoch、未过期 ACTIVE lease。
+- 初次 acquire 仅允许 `TODO`，并在同一次 CAS 中原子写入 lease 与 `TODO → IN_PROGRESS`；heartbeat 仅允许同 session、同 epoch、同认证主体、未过期 ACTIVE lease。
 - lease `actor_id` 由认证主体服务端派生，不采用客户端自报身份。
 - Agent/service/未知非交互主体的任务状态、Challenge 创建、Relation Proposal、Card Summary、Feedback Interpretation/Resolution、Delivery Manifest 创建均要求当前 session + lease epoch + actor 匹配。
 - Challenge 打开后暂停并立即失效旧 lease；解决后回 `TODO`，不得复用旧 epoch。
-- 新增 expired `IN_PROGRESS` lease 原子 reclaim：仅过期后可回收到 `TODO` 并以更高 epoch 重新领取；活跃 lease 不可抢占。
+- 新增 expired `IN_PROGRESS` lease 原子 reclaim：仅过期后可直接生成更高 epoch 并保持 `IN_PROGRESS`；活跃 lease 不可抢占。
 
 ### 4. QWS 关系唯一真源与 Taskboard 投影
 

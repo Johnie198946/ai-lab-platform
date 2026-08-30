@@ -674,8 +674,6 @@ def acquire_execution_lease(
     """CAS-acquire a new lease epoch; renewals use heartbeat_execution_lease."""
     now = now or utc_now()
     current_revision = int(task.get("task_revision") or 1)
-    if task.get("status") != "TODO":
-        raise ValueError(f"task_status_not_claimable:{task.get('status')}")
     if current_revision != expected_task_revision:
         raise ValueError(f"task_revision_conflict:{current_revision}")
     current = task.get("execution_lease") or {}
@@ -687,6 +685,8 @@ def acquire_execution_lease(
         and expires_at > now
     ):
         raise ValueError(f"execution_lease_conflict:{current.get('session_id')}")
+    if task.get("status") != "TODO":
+        raise ValueError(f"task_status_not_claimable:{task.get('status')}")
 
     next_revision = current_revision + 1
     lease_epoch = int(current.get("lease_epoch") or 0) + 1
@@ -700,6 +700,14 @@ def acquire_execution_lease(
         "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
         "task_revision": next_revision,
     }
+    task["status"] = "IN_PROGRESS"
+    task.setdefault("status_history", []).append({
+        "from": "TODO",
+        "to": "IN_PROGRESS",
+        "reason": "execution_lease_acquired",
+        "actor_id": actor_id,
+        "at": now.isoformat(),
+    })
     task["execution_lease"] = lease
     task["primary_session_id"] = session_id
     task["task_revision"] = next_revision

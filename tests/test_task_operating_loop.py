@@ -90,9 +90,6 @@ def test_lease_heartbeat_requires_same_session_epoch_and_active_task() -> None:
     lease = acquire_execution_lease(
         current, expected_task_revision=1, session_id="session-a", actor_id="agent-a"
     )
-    transition_task(
-        current, to_status="IN_PROGRESS", actor_id="agent-a", reason="claimed"
-    )
     renewed = heartbeat_execution_lease(
         current,
         expected_task_revision=current["task_revision"],
@@ -124,12 +121,9 @@ def test_expired_in_progress_lease_can_be_reclaimed_with_new_epoch() -> None:
         item, expected_task_revision=1, session_id="session-old",
         actor_id="agent:old", ttl_seconds=60, now=current_time,
     )
-    transition_task(
-        item, to_status="IN_PROGRESS", actor_id="agent:old",
-    )
     reclaimed = reclaim_expired_execution_lease(
         item,
-        expected_task_revision=3,
+        expected_task_revision=2,
         session_id="session-new",
         actor_id="agent:new",
         ttl_seconds=300,
@@ -138,8 +132,8 @@ def test_expired_in_progress_lease_can_be_reclaimed_with_new_epoch() -> None:
     assert first["lease_epoch"] == 1
     assert reclaimed["lease_epoch"] == 2
     assert reclaimed["session_id"] == "session-new"
-    assert item["status"] == "TODO"
-    assert item["task_revision"] == 4
+    assert item["status"] == "IN_PROGRESS"
+    assert item["task_revision"] == 3
 
 
 def test_relation_proposal_detects_dependency_cycle() -> None:
