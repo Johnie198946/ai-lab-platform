@@ -225,6 +225,7 @@ class WorkspaceBusinessIntake(Base):
         UniqueConstraint(
             "tenant_key", "project_id", "request_id", name="uq_workspace_intake_project_request"
         ),
+        UniqueConstraint("project_id", "revision", name="uq_workspace_intake_revision"),
     )
 
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
@@ -240,6 +241,56 @@ class WorkspaceBusinessIntake(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class WorkspaceArtifact(Base):
+    """Stable project delivery identity; content lives in immutable versions."""
+
+    __tablename__ = "workspace_artifacts"
+    __table_args__ = (
+        UniqueConstraint("project_id", "artifact_key", name="uq_workspace_artifact_key"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str | None] = mapped_column(String(40), nullable=True, index=True)
+    artifact_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    title: Mapped[str] = mapped_column(String(240), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="DRAFT")
+    current_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class WorkspaceArtifactVersion(Base):
+    """Immutable, hash-addressed artifact version."""
+
+    __tablename__ = "workspace_artifact_versions"
+    __table_args__ = (
+        UniqueConstraint("artifact_id", "version", name="uq_workspace_artifact_version"),
+        UniqueConstraint("artifact_id", "sha256", name="uq_workspace_artifact_hash"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    artifact_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_artifacts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    storage_ref: Mapped[str] = mapped_column(Text, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(120), nullable=False)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    lineage: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    verification: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class WorkspaceProcessDraft(Base):
@@ -599,6 +650,8 @@ _IMMUTABLE_REVISION_MODELS = (
     WorkspaceTaskRevision,
     WorkspaceGate,
     WorkspaceTaskDependency,
+    WorkspaceBusinessIntake,
+    WorkspaceArtifactVersion,
 )
 
 

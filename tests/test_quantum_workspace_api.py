@@ -646,6 +646,96 @@ def test_business_intake_draft_requires_review_and_applies_atomically(_reset_dat
     assert mismatched_replay.status_code == 409
 
 
+def test_intake_revisions_and_artifact_registry_are_immutable_and_versioned(
+    _reset_database,
+):
+    client = _reset_database
+    project_id = _create_project(client, "intake-artifacts")
+    base_intake = {
+        "business_goal": "交付可验收系统",
+        "customers_and_scenarios": "项目负责人在任务看板中验收交付",
+        "product_scope": "任务闭环",
+        "product_form": "software",
+        "innovation_level": "major_upgrade",
+        "tailoring_level": "standard",
+        "requirements_and_evidence": "原始需求与验收记录",
+        "desired_deliverables": ["设计文档", "测试报告"],
+        "target_finish_at": "2027-03-31T00:00:00Z",
+        "raw_input": "用户最初输入的原文",
+        "methodology": "先事实合同，再自动化",
+        "constraints": ["Hermes 是唯一 Runtime"],
+        "source_refs": ["session://initial"],
+    }
+    initial = client.post(
+        f"/api/v1/projects/{project_id}/business-intakes",
+        json={**base_intake, "request_id": "intake-revision-initial", "revision_type": "INITIAL"},
+    )
+    clarification = client.post(
+        f"/api/v1/projects/{project_id}/business-intakes",
+        json={
+            **base_intake,
+            "request_id": "intake-revision-clarify",
+            "revision_type": "CLARIFICATION",
+            "requirements_and_evidence": "补充图文反馈验收要求",
+        },
+    )
+    assert initial.status_code == clarification.status_code == 201
+    assert initial.json()["revision"] == 1
+    assert clarification.json()["revision"] == 2
+    revisions = client.get(f"/api/v1/projects/{project_id}/business-intakes").json()
+    assert [item["revision_type"] for item in revisions] == ["INITIAL", "CLARIFICATION"]
+    duplicate_initial = client.post(
+        f"/api/v1/projects/{project_id}/business-intakes",
+        json={**base_intake, "request_id": "intake-revision-invalid", "revision_type": "INITIAL"},
+    )
+    assert duplicate_initial.status_code == 409
+
+    created = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "design.qws-loop",
+            "title": "QWS 任务闭环设计",
+            "artifact_type": "document",
+        },
+    )
+    assert created.status_code == 201, created.text
+    artifact_id = created.json()["id"]
+    repeated = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "design.qws-loop",
+            "title": "QWS 任务闭环设计",
+            "artifact_type": "document",
+        },
+    )
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == artifact_id
+    version_payload = {
+        "storage_ref": "repo://docs/qws-task-operating-loop-v1.md",
+        "sha256": "a" * 64,
+        "media_type": "text/markdown",
+        "size_bytes": 1024,
+        "lineage": {"commit": "abc123"},
+        "verification": {"verified": True, "test_ref": "test://design-compile"},
+    }
+    version = client.post(
+        f"/api/v1/projects/{project_id}/artifacts/{artifact_id}/versions",
+        json=version_payload,
+    )
+    replay = client.post(
+        f"/api/v1/projects/{project_id}/artifacts/{artifact_id}/versions",
+        json=version_payload,
+    )
+    assert version.status_code == 201, version.text
+    assert replay.status_code == 200
+    assert version.json()["id"] == replay.json()["id"]
+    versions = client.get(
+        f"/api/v1/projects/{project_id}/artifacts/{artifact_id}/versions"
+    ).json()
+    assert len(versions) == 1
+    assert versions[0]["verification"]["verified"] is True
+
+
 def test_taskboard_backfill_uses_trusted_internal_host(monkeypatch):
     requests = []
 

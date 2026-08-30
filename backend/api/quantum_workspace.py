@@ -30,6 +30,8 @@ from backend.api.chat import (
 from backend.db import SessionLocal
 from backend.models.workspace import (
     WorkspaceApprovalDecision,
+    WorkspaceArtifact,
+    WorkspaceArtifactVersion,
     WorkspaceAuditEvent,
     WorkspaceBusinessIntake,
     WorkspaceGate,
@@ -152,6 +154,27 @@ class BusinessIntakeRequest(BaseModel):
     requirements_and_evidence: str = Field(min_length=1, max_length=8000)
     desired_deliverables: list[str] = Field(min_length=1, max_length=40)
     target_finish_at: datetime
+    revision_type: Literal["INITIAL", "CLARIFICATION", "CHANGE_REQUEST"] = "INITIAL"
+    raw_input: str | None = Field(default=None, max_length=50000)
+    methodology: str | None = Field(default=None, max_length=12000)
+    constraints: list[str] = Field(default_factory=list, max_length=40)
+    source_refs: list[str] = Field(default_factory=list, max_length=40)
+
+
+class CreateArtifactRequest(BaseModel):
+    artifact_key: str = Field(min_length=1, max_length=120, pattern=r"^[A-Za-z0-9._:-]+$")
+    title: str = Field(min_length=1, max_length=240)
+    artifact_type: Literal["document", "code", "design", "report", "dataset", "deployment", "test_report", "other"]
+    task_id: str | None = Field(default=None, max_length=40)
+
+
+class RegisterArtifactVersionRequest(BaseModel):
+    storage_ref: str = Field(min_length=1, max_length=4000)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    media_type: str = Field(min_length=1, max_length=120)
+    size_bytes: int | None = Field(default=None, ge=0)
+    lineage: dict[str, Any] = Field(default_factory=dict)
+    verification: dict[str, Any] = Field(default_factory=dict)
 
 
 class GenerateDraftRequest(BaseModel):
@@ -948,6 +971,26 @@ async def ensure_project_ai_employees(
         return {"project_id": project.id, "ai_employees": employees}
 
 
+@router.get("/projects/{project_id}/business-intakes")
+async def list_business_intakes(
+    project_id: str, payload=Depends(require_auth)
+) -> list[dict[str, Any]]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        revisions = (
+            await db.scalars(
+                select(WorkspaceBusinessIntake)
+                .where(
+                    WorkspaceBusinessIntake.tenant_key == tenant_key,
+                    WorkspaceBusinessIntake.project_id == project_id,
+                )
+                .order_by(WorkspaceBusinessIntake.revision)
+            )
+        ).all()
+        return [_intake_out(item) for item in revisions]
+
+
 @router.post("/projects/{project_id}/business-intakes")
 async def create_business_intake(
     project_id: str,
@@ -978,12 +1021,26 @@ async def create_business_intake(
                 status_code=200,
                 content=_intake_out(existing),
             )
+        latest_revision = await db.scalar(
+            select(func.max(WorkspaceBusinessIntake.revision)).where(
+                WorkspaceBusinessIntake.tenant_key == tenant_key,
+                WorkspaceBusinessIntake.project_id == project_record_id,
+            )
+        )
+        next_intake_revision = int(latest_revision or 0) + 1
+        if next_intake_revision == 1 and body.revision_type != "INITIAL":
+            raise HTTPException(status_code=409, detail="first intake revision must be INITIAL")
+        if next_intake_revision > 1 and body.revision_type == "INITIAL":
+            raise HTTPException(
+                status_code=409,
+                detail="INITIAL intake is immutable; append a clarification or change request",
+            )
         intake = WorkspaceBusinessIntake(
             id=f"intake_{uuid4().hex}",
             tenant_key=tenant_key,
             project_id=project_id,
             request_id=body.request_id,
-            revision=1,
+            revision=next_intake_revision,
             status="submitted",
             payload=intake_payload,
         )
@@ -1009,6 +1066,187 @@ async def create_business_intake(
             return JSONResponse(status_code=200, content=_intake_out(existing))
         await db.refresh(intake)
         return JSONResponse(status_code=201, content=_intake_out(intake))
+
+
+def _artifact_version_out(version: WorkspaceArtifactVersion) -> dict[str, Any]:
+    return {
+        "id": version.id,
+        "artifact_id": version.artifact_id,
+        "version": version.version,
+        "storage_ref": version.storage_ref,
+        "sha256": version.sha256,
+        "media_type": version.media_type,
+        "size_bytes": version.size_bytes,
+        "lineage": version.lineage or {},
+        "verification": version.verification or {},
+        "created_by": version.created_by,
+        "created_at": version.created_at,
+    }
+
+
+def _artifact_out(artifact: WorkspaceArtifact) -> dict[str, Any]:
+    return {
+        "id": artifact.id,
+        "project_id": artifact.project_id,
+        "task_id": artifact.task_id,
+        "artifact_key": artifact.artifact_key,
+        "title": artifact.title,
+        "artifact_type": artifact.artifact_type,
+        "status": artifact.status,
+        "current_version": artifact.current_version,
+        "created_by": artifact.created_by,
+        "created_at": artifact.created_at,
+        "updated_at": artifact.updated_at,
+    }
+
+
+@router.post("/projects/{project_id}/artifacts", status_code=201)
+async def create_project_artifact(
+    project_id: str, body: CreateArtifactRequest, payload=Depends(require_auth)
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        existing = await db.scalar(
+            select(WorkspaceArtifact).where(
+                WorkspaceArtifact.tenant_key == tenant_key,
+                WorkspaceArtifact.project_id == project_id,
+                WorkspaceArtifact.artifact_key == body.artifact_key,
+            )
+        )
+        if existing is not None:
+            same = (
+                existing.title == body.title
+                and existing.artifact_type == body.artifact_type
+                and existing.task_id == body.task_id
+            )
+            if not same:
+                raise HTTPException(status_code=409, detail="artifact_key already binds different metadata")
+            return JSONResponse(status_code=200, content=json.loads(json.dumps(_artifact_out(existing), default=str)))
+        artifact = WorkspaceArtifact(
+            id=f"artifact_{uuid4().hex}",
+            tenant_key=tenant_key,
+            project_id=project_id,
+            task_id=body.task_id,
+            artifact_key=body.artifact_key,
+            title=body.title,
+            artifact_type=body.artifact_type,
+            status="DRAFT",
+            current_version=0,
+            created_by=user_id,
+        )
+        db.add(artifact)
+        await db.commit()
+        await db.refresh(artifact)
+        return _artifact_out(artifact)
+
+
+@router.get("/projects/{project_id}/artifacts")
+async def list_project_artifacts(project_id: str, payload=Depends(require_auth)) -> list[dict[str, Any]]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        artifacts = (
+            await db.scalars(
+                select(WorkspaceArtifact)
+                .where(
+                    WorkspaceArtifact.tenant_key == tenant_key,
+                    WorkspaceArtifact.project_id == project_id,
+                )
+                .order_by(WorkspaceArtifact.created_at, WorkspaceArtifact.id)
+            )
+        ).all()
+        return [_artifact_out(item) for item in artifacts]
+
+
+@router.post("/projects/{project_id}/artifacts/{artifact_id}/versions", status_code=201)
+async def register_project_artifact_version(
+    project_id: str, artifact_id: str, body: RegisterArtifactVersionRequest,
+    payload=Depends(require_auth),
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        artifact = await db.scalar(
+            select(WorkspaceArtifact).where(
+                WorkspaceArtifact.id == artifact_id,
+                WorkspaceArtifact.tenant_key == tenant_key,
+                WorkspaceArtifact.project_id == project_id,
+            )
+        )
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        existing = await db.scalar(
+            select(WorkspaceArtifactVersion).where(
+                WorkspaceArtifactVersion.artifact_id == artifact.id,
+                WorkspaceArtifactVersion.sha256 == body.sha256,
+            )
+        )
+        if existing is not None:
+            return JSONResponse(
+                status_code=200,
+                content=json.loads(json.dumps(_artifact_version_out(existing), default=str)),
+            )
+        next_version = int(artifact.current_version or 0) + 1
+        version = WorkspaceArtifactVersion(
+            id=f"artver_{uuid4().hex}",
+            artifact_id=artifact.id,
+            version=next_version,
+            storage_ref=body.storage_ref,
+            sha256=body.sha256,
+            media_type=body.media_type,
+            size_bytes=body.size_bytes,
+            lineage=body.lineage,
+            verification=body.verification,
+            created_by=user_id,
+        )
+        artifact.current_version = next_version
+        artifact.status = "VERIFIED" if body.verification.get("verified") is True else "REGISTERED"
+        db.add(version)
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            replay = await db.scalar(
+                select(WorkspaceArtifactVersion).where(
+                    WorkspaceArtifactVersion.artifact_id == artifact_id,
+                    WorkspaceArtifactVersion.sha256 == body.sha256,
+                )
+            )
+            if replay is None:
+                raise HTTPException(status_code=409, detail="artifact version conflict")
+            return JSONResponse(
+                status_code=200,
+                content=json.loads(json.dumps(_artifact_version_out(replay), default=str)),
+            )
+        await db.refresh(version)
+        return _artifact_version_out(version)
+
+
+@router.get("/projects/{project_id}/artifacts/{artifact_id}/versions")
+async def list_project_artifact_versions(
+    project_id: str, artifact_id: str, payload=Depends(require_auth)
+) -> list[dict[str, Any]]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        artifact = await db.scalar(
+            select(WorkspaceArtifact.id).where(
+                WorkspaceArtifact.id == artifact_id,
+                WorkspaceArtifact.tenant_key == tenant_key,
+                WorkspaceArtifact.project_id == project_id,
+            )
+        )
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="artifact not found")
+        versions = (
+            await db.scalars(
+                select(WorkspaceArtifactVersion)
+                .where(WorkspaceArtifactVersion.artifact_id == artifact_id)
+                .order_by(WorkspaceArtifactVersion.version)
+            )
+        ).all()
+        return [_artifact_version_out(item) for item in versions]
 
 
 @router.post("/projects/{project_id}/process-drafts/generate")
