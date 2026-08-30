@@ -211,6 +211,14 @@ async def require_auth(
                 audience=AUTHEN_JWT_AUDIENCE,
                 issuer=AUTHEN_JWT_ISSUER,
             )
+        else:
+            # Compatibility mode accepts both legacy tokens without provenance
+            # and new platform tokens that carry aud/iss. python-jose otherwise
+            # rejects a token containing aud when no expected audience is passed.
+            decode_kwargs["options"] = {
+                "verify_aud": False,
+                "verify_iss": False,
+            }
         payload = jwt.decode(
             credentials.credentials,
             AUTHEN_JWT_SECRET,

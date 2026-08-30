@@ -71,3 +71,23 @@ def test_require_auth_accepts_only_strict_access_token(monkeypatch):
     payload = asyncio.run(auth.require_auth(_credentials(_token())))
     assert payload["sub"] == "user-1"
     assert payload["token_use"] == "access"
+
+
+def test_compatibility_mode_accepts_provenance_bearing_access_token(monkeypatch):
+    monkeypatch.setattr(auth, "AUTHEN_JWT_SECRET", SECRET)
+    monkeypatch.setattr(auth, "AUTHEN_JWT_STRICT_PROVENANCE", False)
+
+    async def fake_resolver(user_id):
+        return {
+            "tenant_key": "tenant-1",
+            "org_id": "org-1",
+            "is_super_admin": False,
+        }
+
+    async def fake_super_admin(_user_id):
+        return False
+
+    monkeypatch.setattr(auth, "tenant_resolver", fake_resolver)
+    monkeypatch.setattr(auth, "_is_super_admin", fake_super_admin)
+    payload = asyncio.run(auth.require_auth(_credentials(_token())))
+    assert payload["sub"] == "user-1"

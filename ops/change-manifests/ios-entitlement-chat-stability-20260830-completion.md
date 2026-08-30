@@ -24,11 +24,12 @@
 - 普通聊天不再无条件上传全部本地笔记；仅 local/combined 模式携带有界快照。
 - Bridge 增加原子 session Run 预占，连接状态不再改变任务治理截止时间。
 - 登录 capability 初始 fail-closed 并显示明确原因；修复开发者登录签发与验签读取不同 JWT secret 快照的问题。
+- 补充平台自签 JWT 的严格来源合同（`iss`、`aud`、`token_use=access`），覆盖开发、短信和 OAuth 登录；兼容模式显式关闭 audience/issuer 验证以继续接受旧 Token。
 
 ## Validation
 
 - backend focused tests: `70 passed`（auth/subscription/policy/bridge/chat stream）。
-- backend full suite on latest `main`: `1024 passed, 2 skipped, 10 warnings`。
+- backend full suite after strict JWT fix: `1025 passed, 2 skipped, 10 warnings`。
 - iOS XCTest: `45 passed`；新增 runtime entitlement DTO 与 partial-content pending 回归测试。
 - iOS final XCTest on latest `main`: `45 passed`。
 - simulator device: `AIPlatform Preview`, iOS 26.1, UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`。
@@ -39,9 +40,9 @@
 
 - local_commit: `bf4b077` (`fix ios chat lifecycle and entitlement visibility`)
 - remote_sha: resolved by post-push `git ls-remote`; exact remote receipt is reported with this manifest in the delivery response.
-- server_before: `NOT_TOUCHED`
-- server_after: `NOT_TOUCHED`
-- production_deployment: `NOT_AUTHORIZED`
+- server_before: `/opt/releases/ai-lab-platform-ea28e677b054.qWS2xA`; `.deployed-sha=ea28e677b05403b304a44f06fc67cae19f694fb4`。
+- server_after: `PENDING_AUTH_FIX_DEPLOYMENT`
+- production_deployment: `AUTHORIZED_FOR_SIMULATOR_ACCEPTANCE`
 - simulator_before: app was installed from an earlier build on `AIPlatform Preview`.
 - simulator_after: final Debug build installed and launched; bundle container and process verified; login card visual acceptance passed.
 - rollback_point: `base_sha 4fbfe17d554096354e6cae2eb58a51fef6e75523`

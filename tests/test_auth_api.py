@@ -182,8 +182,21 @@ class TestAuthAPI(unittest.TestCase):
         self.assertEqual(r.json()["tenant_key"], "u-dev-user")
         from jose import jwt as jose_jwt
         import backend.api.auth as auth
-        claims = jose_jwt.decode(token, auth.AUTHEN_JWT_SECRET, algorithms=["HS256"])
+        claims = jose_jwt.decode(
+            token,
+            auth.AUTHEN_JWT_SECRET,
+            algorithms=["HS256"],
+            audience=auth.AUTHEN_JWT_AUDIENCE,
+            issuer=auth.AUTHEN_JWT_ISSUER,
+        )
         self.assertEqual(claims["sub"], "dev-user")
+        self.assertEqual(claims["token_use"], "access")
+        protected = self.request(
+            "GET",
+            "/api/screens",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(protected.status_code, 200, protected.text)
 
 
 if __name__ == "__main__":

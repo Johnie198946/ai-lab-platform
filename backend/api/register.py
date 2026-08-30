@@ -138,6 +138,9 @@ def _issue_jwt(
         {
             "sub": user_id,
             "username": username,
+            "iss": auth_api.AUTHEN_JWT_ISSUER,
+            "aud": auth_api.AUTHEN_JWT_AUDIENCE,
+            "token_use": "access",
             "principal_type": "human",
             "amr": [auth_method],
             "auth_time": int(now.timestamp()),
