@@ -37,6 +37,7 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self._old_private_status = subscriptions.tenant_private_knowledge_status
         self.calls: list[tuple[str, str, dict]] = []
         self.super_admin = False
+        self.org_id = "11111111-1111-1111-1111-111111111111"
         self.base_status = {
             "status": "building",
             "document_count": 0,
@@ -50,7 +51,7 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         async def resolver(_user_id):
             return {
                 "tenant_key": "tenant-a",
-                "org_id": "11111111-1111-1111-1111-111111111111",
+                "org_id": self.org_id,
                 "is_super_admin": self.super_admin,
                 "categories": set(),
             }
@@ -109,6 +110,13 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self.assertEqual(response.json()["plans"][0]["name"], "Pro")
         center_call = next(call for call in self.calls if call[1].endswith("subscription-center"))
         self.assertIn("11111111-1111-1111-1111-111111111111", center_call[1])
+
+    def test_personal_account_uses_public_subscription_organization(self):
+        self.org_id = ""
+        response = self.request("GET", "/api/v1/subscription-center")
+        self.assertEqual(response.status_code, 200, response.text)
+        center_call = next(call for call in self.calls if call[1].endswith("subscription-center"))
+        self.assertIn(self.subscriptions.PERSONAL_PUBLIC_ORG_ID, center_call[1])
 
     def test_requester_and_organization_cannot_be_spoofed(self):
         response = self.request(

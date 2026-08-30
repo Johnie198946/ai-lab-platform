@@ -13,7 +13,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.api.auth import require_auth
+from backend.api.auth import PERSONAL_PUBLIC_ORG_ID, require_auth
 from backend.api import knowledge
 from backend.services.knowledge_catalog import (
     base_knowledge_status,
@@ -60,7 +60,7 @@ def _error(
 
 
 def _org(payload: dict[str, Any]) -> str:
-    org_id = str(payload.get("org_id") or "").strip()
+    org_id = str(payload.get("org_id") or PERSONAL_PUBLIC_ORG_ID).strip()
     if not org_id:
         raise _error(
             409,

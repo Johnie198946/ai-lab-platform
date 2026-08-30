@@ -16,6 +16,9 @@ public struct SettingsView: View {
     @State private var cloudAgents: [TenantAgentDTO] = []
     @State private var cloudSkills: [TenantSkillDTO] = []
     @State private var subscriptionSummary: SubscriptionCenterResponse? = nil
+    @State private var skillPendingDeletion: TenantSkillDTO?
+    @State private var isDeletingSkill = false
+    @State private var skillDeletionFeedback: SkillDeletionFeedback?
 
     public init() {}
 
@@ -71,6 +74,30 @@ public struct SettingsView: View {
                     cloudSkills = skills
                 }
                 subscriptionSummary = try? await api.fetchSubscriptionCenter()
+            }
+            .confirmationDialog(
+                "删除技能「\(skillPendingDeletion?.name ?? "")」？",
+                isPresented: Binding(
+                    get: { skillPendingDeletion != nil },
+                    set: { if !$0 { skillPendingDeletion = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("确认删除", role: .destructive) {
+                    guard let skill = skillPendingDeletion else { return }
+                    skillPendingDeletion = nil
+                    Task { await deleteSkill(skill) }
+                }
+                Button("取消", role: .cancel) { skillPendingDeletion = nil }
+            } message: {
+                Text("删除后会从当前个人工作空间的 Hermes 技能库移除，无法撤销。")
+            }
+            .alert(item: $skillDeletionFeedback) { feedback in
+                Alert(
+                    title: Text(feedback.succeeded ? "技能已删除" : "删除失败"),
+                    message: Text(feedback.message),
+                    dismissButton: .default(Text("知道了"))
+                )
             }
         }
     }
@@ -286,7 +313,8 @@ public struct SettingsView: View {
                         responsibility: skill.description.isEmpty ? "租户专属技能" : skill.description,
                         createdAt: skill.createdAt ?? "",
                         accent: AppTheme.Colors.quantumCyan,
-                        onDelete: {}
+                        deleteDisabled: isDeletingSkill,
+                        onDelete: { skillPendingDeletion = skill }
                     )
                 }
             }
@@ -321,7 +349,14 @@ public struct SettingsView: View {
     }
 
     /// 云端真实记录卡：名称 / 职责 / 创建时间 + 删除。
-    private func artifactRow(name: String, responsibility: String, createdAt: String, accent: Color, onDelete: @escaping () -> Void) -> some View {
+    private func artifactRow(
+        name: String,
+        responsibility: String,
+        createdAt: String,
+        accent: Color,
+        deleteDisabled: Bool = false,
+        onDelete: @escaping () -> Void
+    ) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle()
@@ -335,9 +370,12 @@ public struct SettingsView: View {
                 Button(action: onDelete) {
                     Image(systemName: "trash")
                         .font(.system(size: 12))
-                            .foregroundColor(AppTheme.Icons.tertiary)
+                        .foregroundColor(AppTheme.Icons.tertiary)
+                        .minimumTouchTarget()
                 }
                 .buttonStyle(SoftButtonStyle())
+                .disabled(deleteDisabled)
+                .accessibilityLabel("删除 \(name)")
             }
             Text(responsibility)
                 .font(.system(size: 12))
@@ -352,6 +390,44 @@ public struct SettingsView: View {
         .padding(AppTheme.Spacing.sm)
         .background(AppTheme.Colors.secondaryBackground)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+    }
+
+    @MainActor
+    private func deleteSkill(_ skill: TenantSkillDTO) async {
+        guard !isDeletingSkill else { return }
+        isDeletingSkill = true
+        defer { isDeletingSkill = false }
+        do {
+            try await APIClient.shared.deleteTenantSkill(name: skill.name)
+            let refreshed = try await APIClient.shared.fetchTenantSkills(ownedOnly: true)
+            guard !refreshed.contains(where: { $0.name == skill.name }) else {
+                throw SkillDeletionError.notVerified
+            }
+            cloudSkills = refreshed
+            skillDeletionFeedback = SkillDeletionFeedback(
+                succeeded: true,
+                message: "「\(skill.name)」已从当前个人工作空间移除。"
+            )
+        } catch {
+            skillDeletionFeedback = SkillDeletionFeedback(
+                succeeded: false,
+                message: error.localizedDescription
+            )
+        }
+    }
+
+    private struct SkillDeletionFeedback: Identifiable {
+        let id = UUID()
+        let succeeded: Bool
+        let message: String
+    }
+
+    private enum SkillDeletionError: LocalizedError {
+        case notVerified
+
+        var errorDescription: String? {
+            "服务端未确认技能已删除，请稍后重试。"
+        }
     }
 
     // MARK: - 5. 账号操作

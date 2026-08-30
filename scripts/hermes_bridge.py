@@ -79,6 +79,7 @@ from backend.services.client_context_capability import (  # noqa: E402
 )
 from backend.services.tenant_hermes_sandbox import (  # noqa: E402
     TenantHermesSandbox,
+    delete_sandbox_skill,
     ensure_tenant_sandbox,
     list_sandbox_skills,
     persist_agent_snapshot,
@@ -5526,6 +5527,38 @@ async def list_skills(
         "tenant_namespace": sandbox.tenant_namespace,
         "template_version": sandbox.template_version,
     }
+
+
+@app.delete("/v1/skills/{name}")
+async def delete_skill(
+    name: str,
+    x_knowledge_capability: str = Header(default=""),
+):
+    """Delete only a custom Skill in the signed tenant sandbox."""
+    try:
+        claims = verify_capability(x_knowledge_capability)
+    except KnowledgeScopeDenied as exc:
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied") from exc
+    if str(claims.get("entry_point") or "") != "skills":
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    sandbox = _tenant_sandbox_from_claims(
+        subject_id=str(claims.get("subject_id") or "skills"),
+        knowledge_claims=claims,
+        client_claims=None,
+    )
+    try:
+        deleted = delete_sandbox_skill(sandbox, name)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="tenant_skill_not_found")
+    remaining = _routed_skill_catalog(sandbox)
+    if any(
+        item.get("scope") == "tenant" and item.get("name") == name
+        for item in remaining
+    ):
+        raise HTTPException(status_code=500, detail="tenant_skill_delete_not_verified")
+    return {"deleted": True, "name": name}
 
 
 @app.get("/health")

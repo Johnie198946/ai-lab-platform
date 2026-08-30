@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -9,10 +10,11 @@ from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
 from backend.api.chat import _resolve_chat_policy
-from backend.services.hermes_sandbox_catalog import fetch_skill_catalog
+from backend.services.hermes_sandbox_catalog import delete_tenant_skill, fetch_skill_catalog
 from backend.services.skill_router import build_skill_tree
 
 router = APIRouter(prefix="/api/v1", tags=["skills"])
+_SAFE_SKILL_NAME = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 
 
 class TenantSkillOut(BaseModel):
@@ -74,3 +76,25 @@ async def list_tenant_skills(
         skills=skills,
         tree=build_skill_tree([skill.model_dump() for skill in skills]),
     )
+
+
+@router.delete("/skills/{name}")
+async def delete_owned_tenant_skill(
+    name: str,
+    payload: Dict[str, Any] = Depends(require_auth),
+) -> Dict[str, Any]:
+    if not _SAFE_SKILL_NAME.fullmatch(name):
+        raise HTTPException(status_code=400, detail="invalid_skill_name")
+    policy = await _resolve_chat_policy(payload)
+    user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
+    try:
+        result = await delete_tenant_skill(policy, user_id=user_id, name=name)
+    except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", 502)
+        if status == 404:
+            raise HTTPException(status_code=404, detail="tenant_skill_not_found") from exc
+        raise HTTPException(status_code=502, detail="Hermes sandbox delete unavailable") from exc
+    remaining = await _bridge_skill_entries(payload)
+    if any(skill.category == "tenant" and skill.name == name for skill in remaining):
+        raise HTTPException(status_code=502, detail="tenant_skill_delete_not_verified")
+    return result

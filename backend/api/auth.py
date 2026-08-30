@@ -37,6 +37,9 @@ AUTHEN_JWT_ALGORITHM = "HS256"
 AUTHEN_PERMISSION_URL = os.environ.get(
     "AUTHEN_PERMISSION_URL", "http://host.docker.internal:8004"
 )
+PERSONAL_PUBLIC_ORG_ID = os.environ.get(
+    "AUTHEN_PERSONAL_PUBLIC_ORG_ID", "00000000-0000-0000-0000-000000000001"
+).strip()
 
 security = HTTPBearer(auto_error=False)
 
@@ -104,7 +107,7 @@ async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
                     ).scalar_one_or_none()
                     row = TenantMapping(
                         user_id=user_id,
-                        org_id="",
+                        org_id=PERSONAL_PUBLIC_ORG_ID,
                         tenant_key=(
                             _derived_tenant_key_v2(user_id)
                             if legacy_owner
@@ -112,6 +115,11 @@ async def _default_resolve_tenant(user_id: str) -> Dict[str, Any]:
                         ),
                     )
                     db.add(row)
+                    await db.commit()
+                elif not str(row.org_id or "").strip() and PERSONAL_PUBLIC_ORG_ID:
+                    # Keep the per-user tenant/data boundary. The shared organization
+                    # is only the billing and entitlement owner for personal accounts.
+                    row.org_id = PERSONAL_PUBLIC_ORG_ID
                     await db.commit()
                 subs = (
                     await db.execute(

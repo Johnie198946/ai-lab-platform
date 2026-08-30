@@ -235,6 +235,25 @@ def read_sandbox_skill(
     return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
 
 
+def delete_sandbox_skill(sandbox: TenantHermesSandbox, name: str) -> bool:
+    """Delete one tenant-owned custom Skill without touching templates."""
+    if not _SAFE_SKILL_NAME.fullmatch(name):
+        raise ValueError("invalid_skill_name")
+    target = sandbox.custom_skills / name
+    skill_md = target / "SKILL.md"
+    if target.is_symlink() or not skill_md.is_file() or skill_md.is_symlink():
+        return False
+    try:
+        target.resolve().relative_to(sandbox.custom_skills.resolve())
+    except ValueError as exc:
+        raise ValueError("invalid_skill_path") from exc
+    with _path_lock(target):
+        if target.is_symlink() or not skill_md.is_file() or skill_md.is_symlink():
+            return False
+        shutil.rmtree(target)
+    return True
+
+
 def list_sandbox_skills(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for scope, root in (

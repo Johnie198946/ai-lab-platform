@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.api.auth import (
+    PERSONAL_PUBLIC_ORG_ID,
     _default_resolve_tenant,
     _derived_tenant_key,
     _derived_tenant_key_v2,
@@ -56,6 +57,20 @@ def test_first_user_keeps_legacy_and_second_collision_gets_v2(tenant_db):
     second = run(_default_resolve_tenant("e2e-user-b"))
     assert first["tenant_key"] == "u-e2e-user"
     assert second["tenant_key"] == _derived_tenant_key_v2("e2e-user-b")
+    assert first["org_id"] == PERSONAL_PUBLIC_ORG_ID
+    assert second["org_id"] == PERSONAL_PUBLIC_ORG_ID
+
+
+def test_existing_personal_mapping_gets_public_subscription_org(tenant_db):
+    async def seed():
+        async with tenant_db() as db:
+            db.add(TenantMapping(user_id="personal-user", org_id="", tenant_key="u-personal"))
+            await db.commit()
+
+    run(seed())
+    resolved = run(_default_resolve_tenant("personal-user"))
+    assert resolved["tenant_key"] == "u-personal"
+    assert resolved["org_id"] == PERSONAL_PUBLIC_ORG_ID
 
 
 def test_concurrent_first_resolution_splits_legacy_collision(tenant_db):

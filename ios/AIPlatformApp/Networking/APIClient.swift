@@ -1762,6 +1762,20 @@ public final class APIClient: ObservableObject {
         _ = try await perform(request, session: session, canRetry: false)
     }
 
+    /// DELETE /api/v1/skills/{name}：仅删除当前认证租户的自制 Skill。
+    public func deleteTenantSkill(name: String) async throws {
+        let url = baseURL
+            .appendingPathComponent("api/v1/skills")
+            .appendingPathComponent(name)
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        _ = try await perform(request, session: session, canRetry: false)
+    }
+
     public func startAgentEvaluation(agentId: String, requestId: String) async throws -> AgentEvaluationRunDTO {
         struct Body: Encodable {
             let requestId: String
