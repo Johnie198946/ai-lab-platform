@@ -73,6 +73,8 @@ from backend.services.task_operating_loop import (
     build_task_context_pack,
     create_relation_proposal,
     initialize_task_contract,
+    transition_task,
+    update_card_summary,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
@@ -161,8 +163,23 @@ class ApplyDraftRequest(BaseModel):
 
 class UpdateTaskRequest(BaseModel):
     expected_revision: int = Field(ge=0)
-    status: Literal["TODO", "IN_PROGRESS", "BLOCKED", "PAUSED", "DONE"]
+    status: Literal[
+        "WAITING_CLAIM", "TODO", "IN_PROGRESS", "DECISION_REQUIRED",
+        "ACCEPTANCE_REVIEW", "DONE", "BLOCKED", "PAUSED", "CANCELLED",
+    ]
     reason: str | None = Field(default=None, min_length=3, max_length=500)
+
+
+class UpdateTaskCardSummaryRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    purpose: str | None = Field(default=None, max_length=4000)
+    approach: str | None = Field(default=None, max_length=4000)
+    progress: str | None = Field(default=None, max_length=4000)
+    key_points: list[str] | None = Field(default=None, max_length=20)
+    blockers: list[str] | None = Field(default=None, max_length=20)
+    next_action: str | None = Field(default=None, max_length=2000)
+    eta: str | None = Field(default=None, max_length=80)
+    source_refs: list[str] | None = Field(default=None, max_length=20)
 
 
 class CreateProjectTaskRequest(BaseModel):
@@ -1798,7 +1815,7 @@ async def create_project_task(
             "stage_id": stage["id"],
             "title": body.title.strip(),
             "summary": body.summary.strip(),
-            "status": "TODO",
+            "status": "WAITING_CLAIM",
             "status_source": "PLANNED",
             "assignee_id": None,
             "assignee_role": (body.assignee_role or "").strip() or None,
@@ -1828,7 +1845,7 @@ async def create_project_task(
                 "type": "task",
                 "label": task["title"],
                 "status": "UNCONNECTED",
-                "task_status": "TODO",
+                "task_status": "WAITING_CLAIM",
                 "stage_id": stage["id"],
             },
         ]
@@ -1839,7 +1856,7 @@ async def create_project_task(
                 "id": task["id"],
                 "type": "task",
                 "label": task["title"],
-                "task_status": "TODO",
+                "task_status": "WAITING_CLAIM",
             },
         ]
         graphs["workflow"] = workflow_graph
@@ -2070,6 +2087,29 @@ async def bind_project_task_workflow(
         }
 
 
+@router.patch("/projects/{project_id}/tasks/{task_id}/card-summary")
+async def update_project_task_card_summary(
+    project_id: str,
+    task_id: str,
+    body: UpdateTaskCardSummaryRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = dict(project.process_snapshot or {})
+        tasks = [dict(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        update_card_summary(task, actor_id=f"user:{user_id}", **body.model_dump(exclude={"expected_revision"}))
+        process["tasks"] = tasks
+        next_revision = await _cas_project_process(db, project=project, expected_revision=body.expected_revision, process=process)
+        return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "card_summary": task["card_summary"]}
+
+
 @router.get("/projects/{project_id}/tasks/{task_id}")
 async def get_project_task(
     project_id: str,
@@ -2126,32 +2166,20 @@ async def update_project_task(
                 "task": task,
                 "stage": stage,
             }
-        if body.status not in TASK_TRANSITIONS.get(current_status, set()):
-            raise HTTPException(
-                status_code=409,
-                detail={
-                    "error": "illegal_task_transition",
-                    "from": current_status,
-                    "to": body.status,
-                },
+        try:
+            transition_task(
+                task,
+                to_status=body.status,
+                actor_id=f"user:{user_id}",
+                reason=body.reason or "explicit taskboard action",
             )
-        if body.status in {"BLOCKED", "PAUSED"} and not body.reason:
+        except ValueError as exc:
+            error, _, detail = str(exc).partition(":")
+            status_code = 422 if error in {"invalid_task_status", "transition_reason_required"} else 409
             raise HTTPException(
-                status_code=422,
-                detail="reason is required when blocking or pausing a task",
-            )
-        task["status"] = body.status
-        task["status_source"] = "PLANNED"
-        task["status_history"] = [
-            *(task.get("status_history") or []),
-            {
-                "from": current_status,
-                "to": body.status,
-                "reason": body.reason or "explicit taskboard action",
-                "actor_user_id": user_id,
-                "at": datetime.now().astimezone().isoformat(),
-            },
-        ]
+                status_code=status_code,
+                detail={"error": error, "from": current_status, "to": body.status, "detail": detail or None},
+            ) from exc
         _aggregate_stage(stage, [item for item in tasks if item["stage_id"] == stage["id"]])
         graphs = dict(process.get("graphs") or {})
         workflow_graph = dict(graphs.get("workflow") or {})

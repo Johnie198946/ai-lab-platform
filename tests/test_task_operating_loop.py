@@ -10,6 +10,8 @@ from backend.services.task_operating_loop import (
     create_handoff_capsule,
     create_relation_proposal,
     initialize_task_contract,
+    transition_task,
+    update_card_summary,
 )
 
 
@@ -99,3 +101,41 @@ def test_relation_proposal_detects_dependency_cycle() -> None:
     )
     assert proposal["status"] == "PROPOSED"
     assert proposal["requires_user_confirmation"] is True
+
+
+def test_task_state_machine_and_card_summary_are_audited() -> None:
+    current = initialize_task_contract({
+        "id": "task-state",
+        "title": "完善任务闭环",
+        "summary": "形成可验收结果",
+        "status": "WAITING_CLAIM",
+    })
+    transition_task(current, to_status="TODO", actor_id="user:user-a")
+    transition_task(current, to_status="IN_PROGRESS", actor_id="agent:hermes")
+    transition_task(current, to_status="ACCEPTANCE_REVIEW", actor_id="agent:hermes")
+    transition_task(current, to_status="DONE", actor_id="user:user-a", reason="验收通过")
+    assert current["status"] == "DONE"
+    assert [item["to"] for item in current["status_history"]] == [
+        "TODO", "IN_PROGRESS", "ACCEPTANCE_REVIEW", "DONE"
+    ]
+    update_card_summary(
+        current,
+        actor_id="agent:hermes",
+        approach="先建立状态合同，再补齐验收",
+        progress="已完成状态机",
+        key_points=["状态可追踪", "交接不依赖聊天"],
+        next_action="接入反馈批次",
+        source_refs=["run://state-1"],
+    )
+    assert current["card_summary"]["progress"] == "已完成状态机"
+    assert current["card_summary"]["source_refs"] == ["run://state-1"]
+    assert current["task_revision"] == 6
+
+
+def test_task_state_machine_rejects_unsafe_shortcuts() -> None:
+    current = initialize_task_contract({"id": "task-guard", "status": "WAITING_CLAIM"})
+    with pytest.raises(ValueError, match="illegal_task_transition"):
+        transition_task(current, to_status="DONE", actor_id="agent:hermes")
+    transition_task(current, to_status="TODO", actor_id="user:user-a")
+    with pytest.raises(ValueError, match="transition_reason_required"):
+        transition_task(current, to_status="BLOCKED", actor_id="agent:hermes")

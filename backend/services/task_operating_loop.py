@@ -16,6 +16,35 @@ DIRECTIONAL_RELATIONS = {"blocks", "blocked_by", "parent", "child"}
 SYMMETRIC_RELATIONS = {"related", "duplicate", "overlaps"}
 RELATION_TYPES = DIRECTIONAL_RELATIONS | SYMMETRIC_RELATIONS
 
+# User-facing states.  Lease ownership remains an execution fact, not a
+# separate board column.  Legacy states are accepted only as read-compatible
+# aliases by the API layer; new tasks use this vocabulary.
+TASK_STATUSES = {
+    "WAITING_CLAIM",
+    "TODO",
+    "IN_PROGRESS",
+    "DECISION_REQUIRED",
+    "ACCEPTANCE_REVIEW",
+    "DONE",
+    "BLOCKED",
+    "PAUSED",
+    "CANCELLED",
+    "MERGED",
+}
+
+TASK_TRANSITIONS: dict[str, set[str]] = {
+    "WAITING_CLAIM": {"TODO", "CANCELLED"},
+    "TODO": {"IN_PROGRESS", "BLOCKED", "PAUSED", "CANCELLED"},
+    "IN_PROGRESS": {"DECISION_REQUIRED", "ACCEPTANCE_REVIEW", "BLOCKED", "PAUSED", "CANCELLED"},
+    "DECISION_REQUIRED": {"TODO", "IN_PROGRESS", "CANCELLED"},
+    "ACCEPTANCE_REVIEW": {"DONE", "IN_PROGRESS", "CANCELLED"},
+    "BLOCKED": {"TODO", "IN_PROGRESS", "PAUSED", "CANCELLED"},
+    "PAUSED": {"TODO", "IN_PROGRESS", "BLOCKED", "CANCELLED"},
+    "DONE": {"IN_PROGRESS"},  # reopen creates a new execution run
+    "CANCELLED": set(),
+    "MERGED": set(),
+}
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -30,6 +59,21 @@ def initialize_task_contract(task: dict[str, Any], *, task_revision: int = 1) ->
     normalized.setdefault("decisions", [])
     normalized.setdefault("handoffs", [])
     normalized.setdefault("relation_proposal_ids", [])
+    normalized.setdefault("card_summary", {
+        "purpose": normalized.get("summary") or normalized.get("title") or "",
+        "approach": "",
+        "progress": "尚未开始",
+        "key_points": [],
+        "blockers": [],
+        "next_action": "",
+        "eta": None,
+        "updated_at": None,
+        "source_refs": [],
+    })
+    normalized.setdefault("status_history", [])
+    normalized.setdefault("feedback", [])
+    normalized.setdefault("feedback_batches", [])
+    normalized.setdefault("artifacts", [])
     normalized.setdefault("schedule", {
         "baseline_start_at": normalized.get("planned_start_at") or normalized.get("start_date"),
         "baseline_finish_at": normalized.get("planned_finish_at") or normalized.get("due_date"),
@@ -46,6 +90,63 @@ def initialize_task_contract(task: dict[str, Any], *, task_revision: int = 1) ->
         "task_revision": task_revision,
     })
     return normalized
+
+
+def transition_task(
+    task: dict[str, Any],
+    *,
+    to_status: str,
+    actor_id: str,
+    reason: str | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Apply one audited state transition to a task copy in memory."""
+    if to_status not in TASK_STATUSES:
+        raise ValueError("invalid_task_status")
+    current = str(task.get("status") or "WAITING_CLAIM")
+    if to_status == current:
+        return task
+    if to_status not in TASK_TRANSITIONS.get(current, set()):
+        raise ValueError(f"illegal_task_transition:{current}:{to_status}")
+    if to_status in {"BLOCKED", "PAUSED", "DECISION_REQUIRED"} and not (reason or "").strip():
+        raise ValueError("transition_reason_required")
+    now = now or utc_now()
+    task["status"] = to_status
+    task["status_source"] = "USER" if actor_id.startswith("user") else "AGENT"
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    task["status_history"] = [
+        *(task.get("status_history") or []),
+        {"from": current, "to": to_status, "reason": reason or "", "actor_id": actor_id, "at": now.isoformat()},
+    ][-100:]
+    return task
+
+
+def update_card_summary(
+    task: dict[str, Any],
+    *,
+    actor_id: str,
+    purpose: str | None = None,
+    approach: str | None = None,
+    progress: str | None = None,
+    key_points: list[str] | None = None,
+    blockers: list[str] | None = None,
+    next_action: str | None = None,
+    eta: str | None = None,
+    source_refs: list[str] | None = None,
+) -> dict[str, Any]:
+    """Update only the compact card projection; conversation history stays out."""
+    current = dict(task.get("card_summary") or {})
+    values = {"purpose": purpose, "approach": approach, "progress": progress,
+              "key_points": key_points, "blockers": blockers, "next_action": next_action,
+              "eta": eta, "source_refs": source_refs}
+    for key, value in values.items():
+        if value is not None:
+            current[key] = value[:20] if isinstance(value, list) else value
+    current["updated_at"] = utc_now().isoformat()
+    current["updated_by"] = actor_id
+    task["card_summary"] = current
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return task
 
 
 def _parse_time(value: str | None) -> datetime | None:
