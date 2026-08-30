@@ -1,7 +1,7 @@
 ---
 title: QWS P2 与 P3 校准基础交付回执
 date: 2026-08-30
-status: IMPLEMENTED_VERIFIED_NOT_DEPLOYED
+status: DEPLOYED_VERIFIED
 tags:
   - qws
   - change-manifest
@@ -12,7 +12,7 @@ tags:
 # QWS P2 与 P3 校准基础交付回执
 
 > [!success] 结论
-> P2 六项已实现并通过本地完整门禁；P3 已实现指标采集、校准提案、按项目 L1/L2/L3 门禁、Final Project Distillation 与候选知识生命周期治理，但真实校准结论必须等待生产样本。本回执不表示已部署。
+> P2 六项与 P3 合同/治理能力已按精确实现 SHA `f3dcfb1693985fb61e2bae92e3bb1df594117860` 部署并完成生产回读；真实校准结论仍必须等待生产样本，不因部署而伪造“已校准”。
 
 ## 真源与边界
 
@@ -66,9 +66,22 @@ tags:
 
 ## RYG
 
-- **Green**：P2 六项本地实现与测试；P0/P1 既有生产状态未被降级。
+- **Green**：P2 六项与 P3 合同/治理能力已部署；API、Frontend、Hermes Runtime、schema、源码哈希和运行契约均已回读。
 - **Amber**：P3 九项事件采集/指标合同已实现但等待真实生产样本；不宣称已校准。备份物理清理由基础设施保留策略执行，不伪称即时擦除。
-- **Red / TODO**：尚未部署本变更；L2/L3 不会在真实样本门禁通过前启用。
+- **Red / TODO**：L2/L3 不会在真实样本门禁通过前启用；尚未使用受控生产测试身份执行完整认证态写入 E2E。
+
+## 生产部署收据
+
+- implementation SHA：`f3dcfb1693985fb61e2bae92e3bb1df594117860`。
+- 初始生产 Release：`/opt/releases/ai-lab-platform-f3dcfb169398.1PxZS4`。
+- 回滚点：`/opt/releases/ai-lab-platform-4d1dff53e673.LURAH4`。
+- additive migration：通过；`workspace_knowledge_candidates`、`workspace_delivery_manifests`、`workspace_artifact_versions` 均已回读。
+- `/ready`：HTTP 200；Frontend：HTTP 200；Hermes Bridge/Gateway/Serve：`active`。
+- Runtime contract audit：通过；`wiki/raw/knowledge/tools` 均解析到持久 Vault。
+- 关键 QWS 源码 SHA-256：服务器与 Git 对象逐项一致。
+- OpenAPI：Automation、Distillation、Governance、Project Close 路由均存在。
+- 近 10 分钟 API 日志：无 `Traceback`、HTTP 500 或 `ERROR`。
+- 认证边界：匿名项目访问 HTTP 401；未创建或借用真实用户凭据。
 
 ## 费用 A/B 轨
 
