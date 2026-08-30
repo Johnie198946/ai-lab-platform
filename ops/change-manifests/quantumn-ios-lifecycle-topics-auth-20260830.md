@@ -51,8 +51,12 @@ status: VERIFIED
 - 本地代码：已实现并通过门禁。
 - Git commit / push：`acc68281e200ba1d442d05d7b5daf7c637e002ef` 已推送并核验。
 - server_before：`/opt/releases/ai-lab-platform-6fc4e43b1a3c.8qZ8s8`
-- server_after：`/opt/releases/ai-lab-platform-acc68281e200.ijYWRu`
-- deployed SHA：`acc68281e200ba1d442d05d7b5daf7c637e002ef`
+- initial server_after：`/opt/releases/ai-lab-platform-acc68281e200.ijYWRu`
+- final current release：`/opt/releases/ai-lab-platform-71e1e9e99077.r8Yb59`
+- final deployed SHA：`71e1e9e990774c7b1caf17fdf5dbb465a302ed7e`（包含 implementation commit `acc6828…`）
 - health：API `ready 0.8.0`；Hermes Bridge `ok v6.0`。
-- rollback point：`/opt/releases/ai-lab-platform-6fc4e43b1a3c.8qZ8s8`
+- trusted rollback point：`/opt/releases/ai-lab-platform-acc68281e200.ijYWRu`
 - TestFlight / App Store：未执行。
+
+> [!warning] 部署真源治理
+> 验收期间曾被并行流程切到仅存在于服务器、GitHub 无对象的 `6d883483afce93207f461748abb2cdfeb36c7bec`。未将其作为可信发布；生产已恢复到 GitHub `main` 的 `71e1e9e990774c7b1caf17fdf5dbb465a302ed7e`，并重新完成 SHA、健康、TLS 与 timer 核验。
