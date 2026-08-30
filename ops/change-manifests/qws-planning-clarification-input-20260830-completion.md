@@ -46,11 +46,12 @@
 - authorization: 用户在当前任务中明确要求“部署 推送”。
 - implementation commit: `09b482b7e070e79670f73b79c59d88505b37f00e`；合入发布时最新 `origin/main@50c3799f95dbf5a593f4ffa78c164a824e9f12e0` 后的首轮部署提交为 `6d883483afce93207f461748abb2cdfeb36c7bec`。
 - GitHub remote/ref/SHA: `origin/refs/heads/codex/qws-planning-clarification-input-20260830` 首轮核验为 `6d883483afce93207f461748abb2cdfeb36c7bec`，与本地一致；最终证据提交及 `git ls-remote` 结果记录在完成通报。
+- 并发发布协调: 首轮证据部署后发现另一任务已发布 `71e1e9e990774c7b1caf17fdf5dbb465a302ed7e`，且远端 `main` 已推进至 `c915d16302d4c2d28ef81ec151c69926d57419a2`。已确认 `71e1e9e` 是 `c915d16` 的祖先；随后将完整 `origin/main@c915d16` 合入本任务分支再执行最终推送和部署，避免生产环境停留在缺少并发任务提交的版本。最终合入 SHA、release 与远端核验记录在完成通报。
 - server_before: `/opt/releases/ai-lab-platform-50c3799f95db.EHPbBC`，`.deployed-sha=50c3799f95dbf5a593f4ffa78c164a824e9f12e0`；部署前 API `/ready`、Hermes Bridge `/health`、API 与 Taskboard 容器均健康。
 - server_after: 首轮实现 release `/opt/releases/ai-lab-platform-6d883483afce.diONvb`，`.deployed-sha=6d883483afce93207f461748abb2cdfeb36c7bec`；最终证据 release 与 SHA 记录在完成通报。
 - health_check: 首轮发布后 API `/ready` 返回 `{"status":"ready","version":"0.8.0"}`，公网前端 `/health` 返回 `{"status":"ok","version":"0.8.0"}`，Hermes Bridge `/health` 返回 `ok`/`v6.0`，API 与 Taskboard 均为 `running healthy`，`hermes-bridge.service=active`；最近 10 分钟 API/Bridge error 扫描无本次发布错误。Bridge 重启窗口曾短暂 connection refused，部署脚本重试后恢复且独立复核持续通过。
 - functional_check: 部分通过。生产 frontend 容器构建产物已检出“补充回答（也可以完全自行输入）”和“本轮已结束，蓝图尚未完成”；当前 release 的 `scripts/hermes_bridge.py` 已检出 `PROJECT_PLANNING_CLARIFY_TIMEOUT_SECONDS` 最短 180 秒逻辑；本地专项测试和生产构建均通过。真实登录态浏览器验收受现有 HTTPS 安全页/浏览器会话占用限制阻塞，未绕过安全页、未伪造用户凭据，也未向生产项目写入测试数据，因此不标记为 `VERIFIED`。
-- rollback_point: `/opt/releases/ai-lab-platform-50c3799f95db.EHPbBC`，对应 `.deployed-sha=50c3799f95dbf5a593f4ffa78c164a824e9f12e0`，release 保留可供原子切回。
+- rollback_point: 首轮部署的原始回滚点 `/opt/releases/ai-lab-platform-50c3799f95db.EHPbBC` 保留；并发协调时确认另一任务 release `/opt/releases/ai-lab-platform-71e1e9e99077.r8Yb59` 对应 `.deployed-sha=71e1e9e990774c7b1caf17fdf5dbb465a302ed7e`，可在需保留并发任务成果而撤回本任务时作为优先回滚点。最终部署脚本产生的即时回滚点记录在完成通报。
 
 ## 风险与未完成项
 
