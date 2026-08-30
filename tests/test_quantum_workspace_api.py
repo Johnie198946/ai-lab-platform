@@ -130,6 +130,42 @@ def test_workspace_bootstrap_returns_project_and_process_in_one_request(_reset_d
     assert payload["process"]["process_revision"] == payload["project"]["process_revision"]
 
 
+def test_project_role_update_persists_revision_and_revalidates(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "role-revision")
+    before = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap").json()
+    process = before["process"]
+    old_role = next(task["assignee_role"] for task in process["tasks"] if task.get("assignee_role"))
+    updated = client.put(
+        f"/api/v1/projects/{project_id}/roles/{old_role}",
+        json={
+            "expected_revision": process["process_revision"],
+            "name": "项目总负责人",
+            "description": "统筹关键交付与跨角色决策",
+            "decision_rights": ["确认关键 Gate"],
+            "collaboration_boundaries": ["不替代专业验收人"],
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["process_revision"] == process["process_revision"] + 1
+    assert payload["role"]["name"] == "项目总负责人"
+    assert payload["validation"]["operation"] == "ROLE_UPDATE"
+
+    after = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap").json()["process"]
+    assert after["process_revision"] == payload["process_revision"]
+    assert any(task.get("assignee_role") == "项目总负责人" for task in after["tasks"])
+    assert after["role_profiles"]["项目总负责人"]["description"] == "统筹关键交付与跨角色决策"
+    assert old_role not in after["role_profiles"]
+
+    validation = client.post(
+        f"/api/v1/projects/{project_id}/consistency/validate",
+        json={"operation": "AUTOMATION_PREFLIGHT"},
+    )
+    assert validation.status_code == 200
+    assert validation.json()["project_id"] == project_id
+
+
 def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     process = instantiate_project_blueprint({
         "project_goal": "交付动态项目",
@@ -1619,6 +1655,14 @@ def test_workflow_designer_persists_configured_nodes_edges_and_rejects_stale_rev
     assert configured["data"]["data_sources"] == ["客户档案", "历史访谈"]
     assert configured["data"]["devices"] == ["会议室", "浏览器"]
     assert configured["data"]["deliverables"] == ["需求定义", "评审结论"]
+    assert {ref["kind"] for refs in configured["data"]["resource_refs"].values() for ref in refs} == {"tool", "data", "environment"}
+    persisted_process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    resource_ids = {item["id"] for item in persisted_process["resource_entities"]}
+    assert all(
+        ref["resource_id"] in resource_ids
+        for refs in configured["data"]["resource_refs"].values()
+        for ref in refs
+    )
 
     reloaded = client.get(f"/api/v1/projects/{project_id}/graphs/workflow")
     assert reloaded.status_code == 200

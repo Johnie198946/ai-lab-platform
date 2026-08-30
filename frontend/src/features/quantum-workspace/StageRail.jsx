@@ -1,4 +1,4 @@
-import { Bot, CalendarDays, CheckCircle2, ChevronRight, Layers3, ShieldCheck, Sparkles, UserRound, UsersRound, X } from "lucide-react";
+import { Bot, CalendarDays, CheckCircle2, ChevronRight, Edit3, Layers3, Save, ShieldCheck, Sparkles, UserRound, UsersRound, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildStageRail } from "./quantumProjection";
 
@@ -62,6 +62,7 @@ function buildRoleOverview(process, stages) {
     const capabilityVersions = role.tasks.flatMap((task) => (task.agent_candidates || []).map((candidate) => candidate.capability_version));
     return {
       ...role,
+      profile: process.role_profiles?.[role.name] || {},
       stages: [...role.stageIds].map((id) => stageById.get(id)).filter(Boolean),
       baseLabel: base?.label || (role.gates.length ? "流程评审角色" : "能力基座待配置"),
       skills: uniqueText([...(base?.skills || []), ...gateSkills]),
@@ -70,13 +71,47 @@ function buildRoleOverview(process, stages) {
   }).sort((left, right) => (left.stages[0]?.order ?? 999) - (right.stages[0]?.order ?? 999) || left.name.localeCompare(right.name, "zh-CN"));
 }
 
-function RoleOverviewDialog({ process, stages, onClose }) {
+function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
   const dialogRef = useRef(null);
   const roles = useMemo(() => buildRoleOverview(process, stages), [process, stages]);
   const [selectedRoleName, setSelectedRoleName] = useState(() => roles[0]?.name || "");
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({ name: "", description: "", responsibilities: "", decision_rights: "" });
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const [validation, setValidation] = useState(null);
   const selectedRole = roles.find((role) => role.name === selectedRoleName) || roles[0];
   const taskCount = roles.reduce((total, role) => total + role.tasks.length, 0);
   const gateCount = roles.reduce((total, role) => total + role.gates.length, 0);
+
+  const beginEdit = () => {
+    const profile = selectedRole?.profile || {};
+    setDraft({
+      name: selectedRole.name,
+      description: profile.description || selectedRole.baseLabel || "",
+      responsibilities: (profile.responsibilities || selectedRole.tasks.map((task) => task.title)).join("\n"),
+      decision_rights: (profile.decision_rights || selectedRole.gates.map((gate) => gate.name)).join("\n"),
+    });
+    setSaveError("");
+    setEditing(true);
+  };
+
+  const saveRole = async (event) => {
+    event.preventDefault();
+    if (!draft.name.trim() || !selectedRole || saving) return;
+    setSaving(true); setSaveError("");
+    try {
+      const result = await onSaveRole(selectedRole.name, {
+        name: draft.name.trim(),
+        description: draft.description.trim(),
+        responsibilities: draft.responsibilities.split("\n").map((item) => item.trim()).filter(Boolean),
+        decision_rights: draft.decision_rights.split("\n").map((item) => item.trim()).filter(Boolean),
+      });
+      setSelectedRoleName(result.role.name);
+      setEditing(false);
+      setValidation(result.validation);
+    } catch (reason) { setSaveError(reason.message); } finally { setSaving(false); }
+  };
 
   useEffect(() => {
     const dialog = dialogRef.current;
@@ -131,8 +166,17 @@ function RoleOverviewDialog({ process, stages, onClose }) {
           <section className="qw-role-profile" aria-live="polite">
             <header>
               <div className="qw-role-avatar large">{selectedRole.employee ? <Bot size={21} /> : <UserRound size={21} />}</div>
-              <div><span>{selectedRole.employee ? "AI EMPLOYEE" : "PROCESS ROLE"}</span><h3>{selectedRole.name}</h3><p>{selectedRole.employee ? `${selectedRole.employee.display_name} · ${selectedRole.baseLabel}` : selectedRole.baseLabel}</p></div>
+              <div><span>{selectedRole.employee ? "AI EMPLOYEE" : "PROCESS ROLE"}{selectedRole.profile?.source === "USER_EDITED" ? " · USER EDITED" : " · AI PROPOSED"}</span><h3>{selectedRole.name}</h3><p>{selectedRole.profile?.description || (selectedRole.employee ? `${selectedRole.employee.display_name} · ${selectedRole.baseLabel}` : selectedRole.baseLabel)}</p></div>
+              <button type="button" className="qw-role-edit-button" onClick={beginEdit}><Edit3 size={14} />编辑角色</button>
             </header>
+            {editing && <form className="qw-role-editor" onSubmit={saveRole}>
+              <label>角色名称<input value={draft.name} maxLength={160} onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))} autoFocus /></label>
+              <label>角色说明<textarea rows="2" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} /></label>
+              <label>责任边界（每行一项）<textarea rows="4" value={draft.responsibilities} onChange={(event) => setDraft((current) => ({ ...current, responsibilities: event.target.value }))} /></label>
+              <label>决策权限（每行一项）<textarea rows="3" value={draft.decision_rights} onChange={(event) => setDraft((current) => ({ ...current, decision_rights: event.target.value }))} /></label>
+              {saveError && <p role="alert">{saveError}</p>}
+              <div><button type="button" onClick={() => setEditing(false)}>取消</button><button type="submit" disabled={saving || !draft.name.trim()}><Save size={14} />{saving ? "保存并校验中…" : "保存并全局校验"}</button></div>
+            </form>}
             <div className="qw-role-stage-strip"><Layers3 size={14} /><span>涉及阶段</span>{selectedRole.stages.map((stage) => <i key={stage.id}>{stage.name}</i>)}</div>
             <div className="qw-role-profile-grid">
               <section className="qw-role-responsibilities">
@@ -170,6 +214,11 @@ function RoleOverviewDialog({ process, stages, onClose }) {
               </aside>
             </div>
           </section>
+        </div>}
+        {validation && <div className="qw-consistency-popup" role="alertdialog" aria-label="项目一致性校验结果">
+          <section><header><ShieldCheck size={18} /><div><strong>{validation.blocking ? "发现自动执行阻断项" : validation.counts.error || validation.counts.warning ? "修改已保存，发现待修正项" : "修改已保存且校验通过"}</strong><small>不会撤销刚才的角色编辑 · Error 限制相关任务，Critical 暂停全局 Automation 副作用</small></div></header>
+          {!!validation.issues?.length && <ul>{validation.issues.slice(0, 8).map((issue) => <li key={`${issue.code}-${issue.scope}`} className={issue.severity.toLowerCase()}><b>{issue.severity}</b><span><strong>{issue.title}</strong><small>{issue.detail} · 建议：{issue.repair}</small></span></li>)}</ul>}
+          <button type="button" onClick={() => setValidation(null)}>知道了</button></section>
         </div>}
       </div>
     </dialog>
@@ -222,7 +271,7 @@ function StageDetail({ stage, index, onClose }) {
   );
 }
 
-export function StageRail({ process, selectedStageId, onSelect }) {
+export function StageRail({ process, selectedStageId, onSelect, onSaveRole }) {
   const stages = buildStageRail(process);
   const [roleOverviewOpen, setRoleOverviewOpen] = useState(false);
   const roleCount = useMemo(() => buildRoleOverview(process, stages).length, [process, stages]);
@@ -258,7 +307,7 @@ export function StageRail({ process, selectedStageId, onSelect }) {
         })}
       </nav>
       {selectedStage && <StageDetail stage={selectedStage} index={selectedIndex} onClose={() => onSelect?.(null)} />}
-      {roleOverviewOpen && <RoleOverviewDialog process={process} stages={stages} onClose={() => setRoleOverviewOpen(false)} />}
+      {roleOverviewOpen && <RoleOverviewDialog process={process} stages={stages} onClose={() => setRoleOverviewOpen(false)} onSaveRole={onSaveRole} />}
     </div>
   );
 }

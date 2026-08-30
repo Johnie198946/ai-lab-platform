@@ -15,6 +15,7 @@ import {
 import {
   ApiError,
   addTaskRelation,
+  applyProjectSchedule,
   archiveTask as archiveTaskRequest,
   createProjectLabel as createProjectLabelRequest,
   createProject as createProjectRequest,
@@ -2469,6 +2470,24 @@ export function App() {
       return;
     }
 
+    const unfinishedBlockers = task.relations.blockedBy.filter((blocker) => blocker.status !== "done");
+    const lifecycleRank: Record<TaskStatus, number> = { backlog: 0, todo: 1, in_progress: 2, blocked: 2, in_review: 3, done: 4, canceled: 4 };
+    const skipsLifecycle = lifecycleRank[status] > lifecycleRank[task.status] + 1;
+    if (task.status !== status && (["in_progress", "in_review", "done"] as TaskStatus[]).includes(status) && (unfinishedBlockers.length || skipsLifecycle)) {
+      const warnings = [
+        unfinishedBlockers.length ? textRef.current(`前置任务尚未完成：${unfinishedBlockers.map((item) => item.title).join("、")}`, `Unfinished prerequisites: ${unfinishedBlockers.map((item) => item.title).join(", ")}`) : null,
+        skipsLifecycle ? textRef.current(`本次移动会跳过生命周期阶段（${task.status} → ${status}）`, `This move skips lifecycle stages (${task.status} → ${status})`) : null,
+      ].filter(Boolean).join("\n");
+      const proceed = window.confirm(textRef.current(
+        `一致性校验发现风险：\n${warnings}\n\n继续移动只代表人工覆盖；Automation 仍会在执行前阻止未满足依赖的任务。是否继续？`,
+        `Consistency validation found risks:\n${warnings}\n\nContinuing is a manual override. Automation will still block issues with unmet dependencies. Continue?`,
+      ));
+      if (!proceed) {
+        setDropTarget(null); setDraggedTaskId(null); setDraggedTaskHeight(0);
+        return;
+      }
+    }
+
     const destination = tasks.filter((candidate) => (
       candidate.projectId === task.projectId
       && candidate.status === status
@@ -2615,59 +2634,87 @@ export function App() {
   async function applyRecommendedSchedule() {
     if (!selectedProjectId || selectedProjectId === ALL_PROJECTS_ID || scheduleApplying) return;
     const priorityRank = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 } as const;
-    const candidates = tasks.filter((task) => (
-      task.projectId === selectedProjectId
-      && task.status === "todo"
-      && task.archivedAt === null
-      && !task.scheduleLocked
-      && task.relations.blockedBy.length === 0
-    )).sort((left, right) => (
-      priorityRank[left.priority] - priorityRank[right.priority]
-      || (left.dueDate || "9999-12-31").localeCompare(right.dueDate || "9999-12-31")
-      || right.relations.blocks.length - left.relations.blocks.length
-      || left.createdAt.localeCompare(right.createdAt)
-      || left.id.localeCompare(right.id)
-    ));
-    const blockedCount = tasks.filter((task) => (
-      task.projectId === selectedProjectId
-      && task.status === "todo"
-      && task.archivedAt === null
-      && task.relations.blockedBy.length > 0
-    )).length;
-    const lockedCount = tasks.filter((task) => (
-      task.projectId === selectedProjectId
-      && task.status === "todo"
-      && task.archivedAt === null
-      && task.scheduleLocked
-    )).length;
+    const projectTasks = tasks.filter((task) => task.projectId === selectedProjectId && task.archivedAt === null);
+    const unlocked = projectTasks.filter((task) => task.status === "todo" && !task.scheduleLocked);
+    const unlockedIds = new Set(unlocked.map((task) => task.id));
+    const candidates = unlocked.filter((task) => task.relations.blockedBy.every((blocker) => (
+      blocker.status === "done" || unlockedIds.has(blocker.id)
+    )));
+    const blockedCount = unlocked.length - candidates.length;
+    const lockedCount = projectTasks.filter((task) => task.status === "todo" && task.scheduleLocked).length;
     if (candidates.length === 0) {
-      window.alert(text("当前没有已解除依赖、可以排期的等待认领任务。", "There are no dependency-ready to-do issues to schedule."));
+      window.alert(text("当前没有依赖可解、可以排期的等待认领任务。", "There are no dependency-ready to-do issues to schedule."));
       return;
     }
-    const preview = candidates.slice(0, 12).map((task, index) => {
+
+    const candidateById = new Map(candidates.map((task) => [task.id, task]));
+    const remaining = new Set(candidates.map((task) => task.id));
+    const ordered: Task[] = [];
+    while (remaining.size) {
+      const ready = [...remaining].map((id) => candidateById.get(id)!).filter((task) => (
+        task.relations.blockedBy.every((blocker) => blocker.status === "done" || !remaining.has(blocker.id))
+      )).sort((left, right) => (
+        priorityRank[left.priority] - priorityRank[right.priority]
+        || (left.dueDate || "9999-12-31").localeCompare(right.dueDate || "9999-12-31")
+        || right.relations.blocks.length - left.relations.blocks.length
+        || left.createdAt.localeCompare(right.createdAt)
+        || left.id.localeCompare(right.id)
+      ));
+      if (!ready.length) break;
+      for (const task of ready) {
+        ordered.push(task);
+        remaining.delete(task.id);
+      }
+    }
+    const cycleCount = remaining.size;
+    const isoDate = (date: Date) => date.toISOString().slice(0, 10);
+    const addDays = (value: Date, days: number) => {
+      const next = new Date(value);
+      next.setUTCDate(next.getUTCDate() + days);
+      return next;
+    };
+    let cursor = new Date();
+    cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), cursor.getUTCDate()));
+    const plan = ordered.map((task, index) => {
+      const duration = task.priority === "urgent" ? 1 : task.priority === "high" ? 2 : task.priority === "medium" ? 3 : 4;
+      const startDate = isoDate(cursor);
+      const calculatedDue = isoDate(addDays(cursor, duration - 1));
+      const dueDate = task.dueDate && task.dueDate >= startDate ? task.dueDate : calculatedDue;
+      cursor = addDays(new Date(`${dueDate}T00:00:00Z`), 1);
       const reason = [
         task.priority === "none" ? text("未定优先级", "no priority") : task.priority.toUpperCase(),
-        task.dueDate ? text(`截止 ${task.dueDate}`, `due ${task.dueDate}`) : null,
-        task.relations.blocks.length ? text(`阻塞 ${task.relations.blocks.length} 项`, `blocks ${task.relations.blocks.length}`) : null,
-      ].filter(Boolean).join(" · ");
-      return `${index + 1}. ${task.externalKey ?? task.identifier} ${task.title}（${reason}）`;
-    }).join("\n");
+        task.relations.blockedBy.length ? text(`承接 ${task.relations.blockedBy.length} 项依赖`, `${task.relations.blockedBy.length} dependencies`) : text("无前置依赖", "no prerequisites"),
+        task.dueDate ? text(`保留截止 ${task.dueDate}`, `keeps due ${task.dueDate}`) : text(`估算 ${duration} 天`, `${duration} day estimate`),
+      ].join(" · ");
+      return { task, index, startDate, dueDate, reason };
+    });
+    const preview = plan.slice(0, 12).map((item) => (
+      `${item.index + 1}. ${item.task.externalKey ?? item.task.identifier} ${item.task.title}\n   ${item.startDate} → ${item.dueDate}（${item.reason}）`
+    )).join("\n");
     const confirmed = window.confirm(text(
-      `将按“P0→P3、截止日期、关键阻塞数、创建时间”重排 ${candidates.length} 个可执行任务。${blockedCount ? `\n另有 ${blockedCount} 个任务仍被依赖阻塞，不进入本次队列。` : ""}${lockedCount ? `\n另有 ${lockedCount} 个任务已锁定，保持原位。` : ""}\n\n${preview}\n\n确认应用？`,
-      `Reorder ${candidates.length} ready issues by priority, due date, downstream blockers, and creation time.${blockedCount ? `\n${blockedCount} blocked issues will stay out of the ready queue.` : ""}${lockedCount ? `\n${lockedCount} locked issues will stay in place.` : ""}\n\n${preview}\n\nApply this schedule?`,
+      `将为 ${plan.length} 个任务写入真实开始/截止日期，并按“依赖拓扑 → 优先级 → 截止日期 → 下游影响”重排。${blockedCount ? `\n${blockedCount} 个外部依赖未完成的任务不进入本次方案。` : ""}${cycleCount ? `\n${cycleCount} 个循环依赖任务不进入本次方案。` : ""}${lockedCount ? `\n${lockedCount} 个已锁定任务保持原日期和位置。` : ""}\n\n${preview}\n\n确认应用？应用后可在卡片日期与 Gantt 查看。`,
+      `Write real start/due dates for ${plan.length} issues and reorder by dependency topology, priority, due date, and downstream impact.${blockedCount ? `\n${blockedCount} issues with unfinished external dependencies are excluded.` : ""}${cycleCount ? `\n${cycleCount} cyclic issues are excluded.` : ""}${lockedCount ? `\n${lockedCount} locked issues keep their dates and positions.` : ""}\n\n${preview}\n\nApply? Results are visible on issue dates and the Gantt view.`,
     ));
     if (!confirmed) return;
     setScheduleApplying(true);
     setActionError(null);
     try {
-      const updated: Task[] = [];
-      for (const [index, task] of candidates.entries()) {
-        updated.push(await moveTaskRequest(task, "todo", (index + 1) * 1024));
-      }
+      const result = await applyProjectSchedule(selectedProjectId, plan.map((item) => ({
+        id: item.task.id,
+        version: item.task.version,
+        startDate: item.startDate,
+        dueDate: item.dueDate,
+        sortOrder: (item.index + 1) * 1024,
+      })));
+      const updated = result.tasks;
       const byId = new Map(updated.map((task) => [task.id, task]));
       setTasks((current) => sortTasks(current.map((task) => byId.get(task.id) ?? task)));
+      window.alert(text(
+        `排期方案 v${result.receipt.revision} 已原子应用：${result.applied} 个任务已写入日期并更新顺序。回执 ${result.receipt.id}（${result.appliedAt}）。请在卡片日期或 Gantt 查看；后续编辑不会自动覆盖本次结果。`,
+        `Schedule v${result.receipt.revision} applied atomically: ${result.applied} issues now have dates and updated order. Receipt ${result.receipt.id} (${result.appliedAt}). Review issue dates or Gantt; later edits will not silently overwrite this result.`,
+      ));
     } catch (error) {
-      setActionError(errorMessage(error));
+      setActionError(text(`排期未应用（事务已回滚），已重新同步：${errorMessage(error)}`, `The schedule was not applied (the transaction was rolled back). The board was refreshed: ${errorMessage(error)}`));
       void refreshTasks(selectedProjectId, { quiet: true });
     } finally {
       setScheduleApplying(false);

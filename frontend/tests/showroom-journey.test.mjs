@@ -64,7 +64,8 @@ test('immutable deployment audits the release before switching the live symlink'
   const vaultLinks = updateScript.indexOf(
     'bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"',
   );
-  const bridgeRestart = updateScript.indexOf('systemctl restart hermes-bridge.service', switchLink);
+  const runtimeRestart = updateScript.indexOf('restart_hermes_runtime', switchLink);
+  const bridgeRestartDefinition = updateScript.indexOf('systemctl restart hermes-bridge.service');
   const finalApiHealth = updateScript.lastIndexOf(
     'api_status="$(curl -fsS --max-time 5 http://127.0.0.1:8000/ready || true)"',
   );
@@ -73,8 +74,8 @@ test('immutable deployment audits the release before switching the live symlink'
   );
   assert.ok(migration >= 0 && restart > migration && health > restart);
   assert.ok(runtimeDirs > health && matrixLink > runtimeDirs && audit > matrixLink);
-  assert.ok(marker > audit && vaultLinks > marker && switchLink > vaultLinks && bridgeRestart > switchLink);
-  assert.ok(finalApiHealth > bridgeRestart && finalBridgeHealth > finalApiHealth);
+  assert.ok(marker > audit && vaultLinks > marker && switchLink > vaultLinks && runtimeRestart > switchLink);
+  assert.ok(bridgeRestartDefinition >= 0 && finalApiHealth > runtimeRestart && finalBridgeHealth > finalApiHealth);
   assert.ok(vaultLinks >= 0);
   assert.ok(cleanupTrap >= 0 && tarballAllocation > cleanupTrap && releaseAllocation > cleanupTrap);
   assert.match(updateScript, /\[ "\$#" -ne 1 \]/);

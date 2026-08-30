@@ -174,13 +174,14 @@ export function ProjectAutomationMenu({
         </span>
       </div>
       <div className="project-automation-switch">
-        <span>{text("自动认领开关", "Auto-claim")}</span>
+        <span>{text("自动认领开关", "Auto-claim")}{disabled && <small>{pending ? text("正在读取配置", "Loading settings") : unavailableReason || text("请先配置可用模型", "Configure an available model first")}</small>}</span>
         <button
           type="button"
           className={`board-setting-switch${draft.enabledByUser ? " is-on" : ""}`}
           role="switch"
           aria-checked={draft.enabledByUser}
           disabled={disabled}
+          title={disabled ? (unavailableReason || text("请先配置可用模型", "Configure an available model first")) : undefined}
           onClick={() => submitChange({
             ...draft,
             enabledByUser: !draft.enabledByUser,

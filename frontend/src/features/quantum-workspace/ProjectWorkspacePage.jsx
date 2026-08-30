@@ -219,6 +219,20 @@ export function ProjectWorkspacePage() {
     resource_plan: resourcePlan,
   });
 
+  const saveProjectRole = async (roleName, draft) => {
+    try {
+      const result = await platformApi.updateProjectRole(projectId, roleName, {
+        expected_revision: process.process_revision,
+        ...draft,
+      });
+      await load();
+      return result;
+    } catch (reason) {
+      if (reason.status === 409) await load();
+      throw new Error(reason.status === 409 ? "项目 revision 已变化，已刷新，请基于最新角色重试。" : reason.message);
+    }
+  };
+
   if (loading) return <div className="qw-page-state">正在读取项目真源…</div>;
   if (!project || !process) return <div className="qw-page-state error">{error || "项目不可用"}<Link to="/home">返回 Home</Link></div>;
   return (
@@ -235,7 +249,7 @@ export function ProjectWorkspacePage() {
           <NavLink to={`/projects/${projectId}/automation`}><Zap size={15} />Automation</NavLink>
           <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
         </div>
-        <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
+        <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} onSaveRole={saveProjectRole} />
       </div>
       {error && <p className="qw-error page">{error}</p>}
       {view === "taskboard" && <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />}

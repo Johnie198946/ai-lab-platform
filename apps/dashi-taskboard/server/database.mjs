@@ -577,6 +577,19 @@ export class TaskboardDatabase {
         updated_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS project_schedule_revisions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        revision INTEGER NOT NULL CHECK (revision > 0),
+        status TEXT NOT NULL CHECK (status IN ('applied')),
+        entries_json TEXT NOT NULL,
+        actor_json TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(project_id, revision)
+      );
+      CREATE INDEX IF NOT EXISTS idx_project_schedule_revisions_project
+        ON project_schedule_revisions(project_id, revision DESC);
+
       CREATE TABLE IF NOT EXISTS project_readme_attachments (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -2195,6 +2208,75 @@ export class TaskboardDatabase {
       throw error;
     }
     return this.getTask(current.id);
+  }
+
+  applySchedule(projectId, entries, actor) {
+    const timestamp = now();
+    const scheduledIds = [];
+    let receipt;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const entry of entries) {
+        const current = this.#requireTask(entry.id);
+        this.#requireVersion(current, entry.version);
+        if (current.projectId !== projectId) {
+          throw new ApiError(409, "SCHEDULE_PROJECT_MISMATCH", "Scheduled issue belongs to another project");
+        }
+        if (current.archivedAt !== null || current.status !== "todo" || current.scheduleLocked) {
+          throw new ApiError(409, "SCHEDULE_TASK_INELIGIBLE", "Archived, non-todo, or locked issues cannot be scheduled");
+        }
+        const result = this.database.prepare(`
+          UPDATE tasks
+          SET start_date = ?, due_date = ?, sort_order = ?, version = version + 1, updated_at = ?
+          WHERE id = ? AND version = ?
+        `).run(entry.startDate, entry.dueDate, entry.sortOrder, timestamp, current.id, entry.version);
+        if (result.changes !== 1) this.#throwMissingOrConflict(current.id, entry.version);
+        this.#recordTaskActivity(current.id, actor, taskFieldChanges(current, {
+          startDate: entry.startDate,
+          dueDate: entry.dueDate,
+          sortOrder: entry.sortOrder,
+        }), timestamp);
+        scheduledIds.push(current.id);
+      }
+      this.database.prepare("UPDATE projects SET updated_at = ? WHERE id = ?").run(timestamp, projectId);
+      const previous = this.database.prepare(`
+        SELECT COALESCE(MAX(revision), 0) AS revision
+        FROM project_schedule_revisions WHERE project_id = ?
+      `).get(projectId);
+      const revision = Number(previous.revision) + 1;
+      const receiptId = randomUUID();
+      this.database.prepare(`
+        INSERT INTO project_schedule_revisions (
+          id, project_id, revision, status, entries_json, actor_json, created_at
+        ) VALUES (?, ?, ?, 'applied', ?, ?, ?)
+      `).run(receiptId, projectId, revision, JSON.stringify(entries), JSON.stringify(actor), timestamp);
+      receipt = { id: receiptId, projectId, revision, status: "applied", entries, actor, createdAt: timestamp };
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return { tasks: scheduledIds.map((id) => this.getTask(id)), receipt };
+  }
+
+  getLatestSchedule(projectId) {
+    if (!this.getProject(projectId)) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+    }
+    const row = this.database.prepare(`
+      SELECT id, project_id, revision, status, entries_json, actor_json, created_at
+      FROM project_schedule_revisions WHERE project_id = ?
+      ORDER BY revision DESC LIMIT 1
+    `).get(projectId);
+    return row ? {
+      id: row.id,
+      projectId: row.project_id,
+      revision: row.revision,
+      status: row.status,
+      entries: JSON.parse(row.entries_json),
+      actor: JSON.parse(row.actor_json),
+      createdAt: row.created_at,
+    } : null;
   }
 
   moveTask(id, version, status, sortOrder, threadId, threadBinding, actor) {

@@ -750,6 +750,46 @@ test("project and task CRUD flow", async () => {
   assert.equal(restoredWebsiteProject.issueCount, 1);
 });
 
+test("project schedule applies dates and order atomically", async () => {
+  const baseUrl = await startServer();
+  const create = async (title) => (await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title, description: title, status: "todo", priority: "medium", labels: [] },
+  })).body.task;
+  const first = await create("First scheduled issue");
+  const second = await create("Second scheduled issue");
+  const entries = [
+    { id: first.id, version: first.version, startDate: "2026-09-01", dueDate: "2026-09-02", sortOrder: 1024 },
+    { id: second.id, version: second.version, startDate: "2026-09-03", dueDate: "2026-09-05", sortOrder: 2048 },
+  ];
+
+  const rejected = await request(baseUrl, `/api/projects/${first.projectId}/schedule`, {
+    method: "POST",
+    body: { entries: [entries[0], { ...entries[1], version: 999 }] },
+  });
+  assert.equal(rejected.response.status, 409);
+  const unchanged = await request(baseUrl, `/api/tasks/${first.id}`);
+  assert.equal(unchanged.body.task.startDate, null, "a stale row rolls back every schedule row");
+  assert.equal(unchanged.body.task.version, first.version);
+
+  const applied = await request(baseUrl, `/api/projects/${first.projectId}/schedule`, {
+    method: "POST",
+    body: { entries },
+  });
+  assert.equal(applied.response.status, 200);
+  assert.equal(applied.body.applied, 2);
+  assert.equal(applied.body.receipt.revision, 1);
+  assert.equal(applied.body.receipt.status, "applied");
+  assert.deepEqual(applied.body.tasks.map((task) => [task.startDate, task.dueDate, task.sortOrder]), [
+    ["2026-09-01", "2026-09-02", 1024],
+    ["2026-09-03", "2026-09-05", 2048],
+  ]);
+  const latest = await request(baseUrl, `/api/projects/${first.projectId}/schedule`);
+  assert.equal(latest.body.schedule.id, applied.body.receipt.id);
+  assert.equal(latest.body.schedule.revision, 1);
+  assert.deepEqual(latest.body.schedule.entries, entries);
+});
+
 test("moving a task updates its status and sort order", async () => {
   const baseUrl = await startServer();
   const createResult = await request(baseUrl, "/api/tasks", {

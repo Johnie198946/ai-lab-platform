@@ -211,6 +211,21 @@ class SaveAutomationRuleRequest(BaseModel):
     rule: dict[str, Any]
 
 
+class UpdateProjectRoleRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    name: str = Field(min_length=1, max_length=160)
+    description: str = Field(default="", max_length=2000)
+    responsibilities: list[str] = Field(default_factory=list, max_length=40)
+    decision_rights: list[str] = Field(default_factory=list, max_length=40)
+    collaboration_boundaries: list[str] = Field(default_factory=list, max_length=40)
+
+
+class ValidateProjectConsistencyRequest(BaseModel):
+    operation: Literal["EDIT", "MOVE", "AUTOMATION_PREFLIGHT"] = "EDIT"
+    task_id: str | None = Field(default=None, max_length=120)
+    target_status: str | None = Field(default=None, max_length=40)
+
+
 class RunAutomationRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     rule_id: str = Field(min_length=1, max_length=120)
@@ -2089,6 +2104,254 @@ async def _cas_project_process(
     return next_revision
 
 
+def _project_consistency_report(
+    process: dict[str, Any],
+    *,
+    operation: str = "EDIT",
+    task_id: str | None = None,
+    target_status: str | None = None,
+) -> dict[str, Any]:
+    """Validate cross-projection invariants without undoing user-authored edits."""
+    stages = {str(item.get("id")): item for item in process.get("stages") or [] if item.get("id")}
+    tasks = {str(item.get("id")): item for item in process.get("tasks") or [] if item.get("id")}
+    issues: list[dict[str, Any]] = []
+
+    def add(code: str, severity: str, scope: str, title: str, detail: str, repair: str) -> None:
+        issues.append({
+            "code": code,
+            "severity": severity,
+            "scope": scope,
+            "title": title,
+            "detail": detail,
+            "repair": repair,
+            "blocking": severity == "CRITICAL" or (
+                severity == "ERROR"
+                and operation == "AUTOMATION_PREFLIGHT"
+                and (not task_id or scope.startswith(f"task:{task_id}"))
+            ),
+        })
+
+    for task in tasks.values():
+        current_id = str(task.get("id"))
+        if str(task.get("stage_id") or "") not in stages:
+            add("TASK_STAGE_MISSING", "CRITICAL", f"task:{current_id}", "任务引用了不存在的阶段", str(task.get("title") or current_id), "重新选择有效阶段")
+        start = task.get("planned_start_at") or task.get("start_date")
+        finish = task.get("planned_finish_at") or task.get("due_date")
+        if start and finish and str(start) > str(finish):
+            add("SCHEDULE_RANGE_INVALID", "CRITICAL", f"task:{current_id}", "任务结束日期早于开始日期", str(task.get("title") or current_id), "修正排期日期")
+        if not task.get("assignee_role"):
+            add("TASK_ROLE_MISSING", "WARNING", f"task:{current_id}", "任务尚未配置负责角色", str(task.get("title") or current_id), "从项目角色中选择负责人")
+        if not task.get("deliverables"):
+            add("DELIVERABLE_MISSING", "WARNING", f"task:{current_id}", "任务缺少交付物", str(task.get("title") or current_id), "由 Hermes 生成或人工补充交付物")
+        if not task.get("acceptance_criteria"):
+            add("ACCEPTANCE_MISSING", "WARNING", f"task:{current_id}", "任务缺少验收标准", str(task.get("title") or current_id), "由 Hermes 生成或人工补充验收标准")
+
+    dependency_pairs: list[tuple[str, str]] = []
+    for dependency in process.get("dependencies") or []:
+        source = str(dependency.get("from_task_id") or "")
+        target = str(dependency.get("to_task_id") or "")
+        if source not in tasks or target not in tasks:
+            add("DEPENDENCY_TARGET_MISSING", "CRITICAL", "process:dependencies", "依赖关系引用了不存在的任务", f"{source or '?'} → {target or '?'}", "删除失效关系或恢复任务")
+            continue
+        dependency_pairs.append((source, target))
+
+    adjacency: dict[str, list[str]] = {key: [] for key in tasks}
+    for source, target in dependency_pairs:
+        adjacency[source].append(target)
+    visited: set[str] = set()
+    active: set[str] = set()
+
+    def cyclic(node: str) -> bool:
+        if node in active:
+            return True
+        if node in visited:
+            return False
+        active.add(node)
+        found = any(cyclic(child) for child in adjacency.get(node, []))
+        active.remove(node)
+        visited.add(node)
+        return found
+
+    if any(cyclic(node) for node in tasks):
+        add("DEPENDENCY_CYCLE", "CRITICAL", "process:dependencies", "任务依赖形成循环", "循环依赖会使排期和自动化无法确定执行顺序", "解除至少一条循环依赖")
+
+    effective_status = str(target_status or "").upper()
+    if operation in {"MOVE", "AUTOMATION_PREFLIGHT"}:
+        inspected = [tasks[task_id]] if task_id and task_id in tasks else list(tasks.values())
+        for task in inspected:
+            current_id = str(task.get("id"))
+            status = effective_status or str(task.get("status") or "").upper()
+            if status not in {"IN_PROGRESS", "IN_REVIEW", "DONE"}:
+                continue
+            unfinished = [
+                tasks[source] for source, target in dependency_pairs
+                if target == current_id and str(tasks[source].get("status") or "").upper() != "DONE"
+            ]
+            if unfinished:
+                add(
+                    "PREDECESSOR_NOT_DONE", "CRITICAL", f"task:{current_id}",
+                    "前置任务尚未完成",
+                    f"{task.get('title') or current_id} 仍依赖：" + "、".join(str(item.get("title") or item.get("id")) for item in unfinished),
+                    "完成前置任务，或人工调整依赖后再执行",
+                )
+
+    workflow = (process.get("graphs") or {}).get("workflow") or {}
+    known_roles = {
+        str(item.get("assignee_role") or "").strip() for item in tasks.values()
+        if str(item.get("assignee_role") or "").strip()
+    } | {
+        str(item.get("responsible_role") or "").strip() for item in process.get("gates") or []
+        if str(item.get("responsible_role") or "").strip()
+    }
+    resource_ids = {
+        str(item.get("id")) for item in process.get("resource_entities") or []
+        if isinstance(item, dict) and item.get("id")
+    }
+    for node in workflow.get("nodes") or []:
+        data = node.get("data") or {}
+        scope = f"task:{data.get('task_id')}:workflow:{node.get('id')}" if data.get("task_id") else f"workflow:{node.get('id')}"
+        for participant in data.get("participants") or []:
+            if str(participant).strip() and str(participant).strip() not in known_roles:
+                add("WORKFLOW_ROLE_ORPHAN", "ERROR", scope, "Workflow 参与角色未在项目职责中使用", str(participant), "选择现有角色或为该角色分配任务/Gate")
+        raw_refs = data.get("resource_refs")
+        refs: dict[str, Any] = raw_refs if isinstance(raw_refs, dict) else {}
+        for field in ("tools", "data_sources", "devices"):
+            names = data.get(field) or []
+            raw_field_refs = refs.get(field)
+            field_refs = raw_field_refs if isinstance(raw_field_refs, list) else []
+            if names and not field_refs:
+                add("WORKFLOW_RESOURCE_UNBOUND", "ERROR", scope, "Workflow 资源尚未绑定实体", f"{node.get('id')} · {field}", "重新保存 Workflow 以绑定 AI Resource 实体")
+            for ref in field_refs:
+                resource_id = str(ref.get("resource_id") or "") if isinstance(ref, dict) else ""
+                if resource_id not in resource_ids:
+                    add("WORKFLOW_RESOURCE_ORPHAN", "ERROR", scope, "Workflow 引用了不存在的 AI Resource", resource_id or field, "重新选择资源或恢复对应 AI Resource")
+
+    counts = {
+        "critical": sum(item["severity"] == "CRITICAL" for item in issues),
+        "error": sum(item["severity"] == "ERROR" for item in issues),
+        "warning": sum(item["severity"] == "WARNING" for item in issues),
+        "info": sum(item["severity"] == "INFO" for item in issues),
+    }
+    blocking = counts["critical"] > 0 or any(item["blocking"] for item in issues)
+    return {
+        "status": "BLOCKED" if blocking else "REVIEW" if counts["error"] or counts["warning"] else "PASS",
+        "blocking": blocking,
+        "operation": operation,
+        "counts": counts,
+        "issues": issues,
+    }
+
+
+@router.post("/projects/{project_id}/consistency/validate")
+async def validate_project_consistency(
+    project_id: str,
+    body: ValidateProjectConsistencyRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            **_project_consistency_report(
+                project.process_snapshot or {},
+                operation=body.operation,
+                task_id=body.task_id,
+                target_status=body.target_status,
+            ),
+        }
+
+
+@router.put("/projects/{project_id}/roles/{role_name}")
+async def update_project_role(
+    project_id: str,
+    role_name: str,
+    body: UpdateProjectRoleRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    old_name = role_name.strip()
+    new_name = body.name.strip()
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        process = deepcopy(project.process_snapshot or {})
+        referenced_roles = {
+            str(item.get("assignee_role") or "").strip() for item in process.get("tasks") or []
+        } | {
+            str(item.get("responsible_role") or "").strip() for item in process.get("gates") or []
+        }
+        if old_name not in referenced_roles:
+            raise HTTPException(status_code=404, detail="project_role_not_found")
+        if new_name != old_name and new_name in referenced_roles:
+            raise HTTPException(status_code=409, detail="project_role_name_conflict")
+
+        changed = {"tasks": 0, "gates": 0, "workflow_nodes": 0, "handoffs": 0, "employees": 0}
+        for task in process.get("tasks") or []:
+            if task.get("assignee_role") == old_name:
+                task["assignee_role"] = new_name
+                changed["tasks"] += 1
+            handoff = task.get("handoff")
+            if isinstance(handoff, dict):
+                for key in ("from", "to"):
+                    if handoff.get(key) == old_name:
+                        handoff[key] = new_name
+                        changed["handoffs"] += 1
+        for gate in process.get("gates") or []:
+            if gate.get("responsible_role") == old_name:
+                gate["responsible_role"] = new_name
+                changed["gates"] += 1
+        workflow = (process.get("graphs") or {}).get("workflow") or {}
+        for node in workflow.get("nodes") or []:
+            data = node.get("data") or {}
+            participants = data.get("participants") or []
+            replaced = [new_name if item == old_name else item for item in participants]
+            if replaced != participants:
+                data["participants"] = replaced
+                changed["workflow_nodes"] += 1
+        profiles = process.setdefault("role_profiles", {})
+        profile = dict(profiles.pop(old_name, {}) or {})
+        profile.update({
+            "name": new_name,
+            "description": body.description.strip(),
+            "responsibilities": list(dict.fromkeys(item.strip() for item in body.responsibilities if item.strip())),
+            "decision_rights": list(dict.fromkeys(item.strip() for item in body.decision_rights if item.strip())),
+            "collaboration_boundaries": list(dict.fromkeys(item.strip() for item in body.collaboration_boundaries if item.strip())),
+            "source": "USER_EDITED",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        profiles[new_name] = profile
+
+        employees = (await db.scalars(select(TenantAgentModel).where(
+            TenantAgentModel.tenant_id == tenant_key,
+            TenantAgentModel.owner_user_id == user_id,
+            TenantAgentModel.is_active.is_(True),
+        ))).all()
+        for employee in employees:
+            manifest = deepcopy(employee.composition_manifest or {})
+            metadata = manifest.get("qws_employee")
+            if not isinstance(metadata, dict) or metadata.get("project_id") != project.id or metadata.get("job_title") != old_name:
+                continue
+            metadata["job_title"] = new_name
+            employee.composition_manifest = manifest
+            employee.custom_name = f"{metadata.get('display_name') or 'AI 员工'} · {new_name}"
+            changed["employees"] += 1
+
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process, commit=False,
+        )
+        await db.commit()
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "role": profile,
+            "changed": changed,
+            "validation": _project_consistency_report(process, operation="ROLE_UPDATE"),
+        }
+
+
 @router.get("/projects/{project_id}/schedule")
 async def get_project_schedule(
     project_id: str,
@@ -2470,6 +2733,75 @@ def _workflow_text_list(value: Any, *, limit: int = 40) -> list[str]:
     ))
 
 
+def _workflow_resource_registry(process: dict[str, Any]) -> tuple[dict[tuple[str, str], dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Project-local resource identities shared by AI Resource and Workflow."""
+    by_name: dict[tuple[str, str], dict[str, Any]] = {}
+    by_id: dict[str, dict[str, Any]] = {}
+
+    def register(kind: str, resource_id: Any, name: Any, source: str) -> None:
+        normalized_name = str(name or "").strip()
+        normalized_id = str(resource_id or "").strip()
+        if not normalized_name or not normalized_id:
+            return
+        entity = {"id": normalized_id[:120], "kind": kind, "name": normalized_name[:240], "source": source}
+        by_id[entity["id"]] = entity
+        by_name[(kind, normalized_name.casefold())] = entity
+
+    for entity in process.get("resource_entities") or []:
+        if isinstance(entity, dict) and entity.get("source") == "workflow_custom":
+            register(str(entity.get("kind") or "tool"), entity.get("id"), entity.get("name"), "workflow_custom")
+
+    raw_plan = process.get("resource_plan")
+    plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else {}
+    for item in plan.get("systems") or []:
+        if isinstance(item, dict):
+            register("tool", item.get("id"), item.get("name"), "ai_resource.systems")
+    twin = plan.get("scenario_twin") if isinstance(plan.get("scenario_twin"), dict) else {}
+    for item in twin.get("systems") or []:
+        if isinstance(item, dict):
+            register("tool", item.get("id"), item.get("name"), "ai_resource.scenario_twin.systems")
+    for item in twin.get("datasets") or []:
+        if isinstance(item, dict):
+            register("data", item.get("id"), item.get("name"), "ai_resource.scenario_twin.datasets")
+    model_registry = plan.get("model_registry") if isinstance(plan.get("model_registry"), dict) else {}
+    for item in model_registry.get("models") or []:
+        if isinstance(item, dict):
+            register("tool", item.get("id"), item.get("name"), "ai_resource.model_registry")
+    topology = plan.get("topology") if isinstance(plan.get("topology"), dict) else {}
+    for item in topology.get("nodes") or []:
+        if isinstance(item, dict):
+            register("environment", item.get("id"), item.get("label") or item.get("name"), "ai_resource.topology")
+    for key, value in (plan.get("infrastructure") or {}).items():
+        if isinstance(value, dict) and any(item not in (None, "", 0, "待配置", "待选型") for item in value.values()):
+            register("environment", f"infrastructure-{key}", key.replace("_", " "), "ai_resource.infrastructure")
+    for key, kind in (("tools", "tool"), ("datasets", "data"), ("data_sources", "data"), ("devices", "environment"), ("environments", "environment")):
+        for index, item in enumerate(plan.get(key) or []):
+            if isinstance(item, dict):
+                register(kind, item.get("id") or f"{key}-{index + 1}", item.get("name") or item.get("title"), f"ai_resource.{key}")
+
+    return by_name, by_id
+
+
+def _bind_workflow_resource_refs(
+    data: dict[str, Any],
+    by_name: dict[tuple[str, str], dict[str, Any]],
+    by_id: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    refs: dict[str, list[dict[str, Any]]] = {}
+    for field, kind in (("tools", "tool"), ("data_sources", "data"), ("devices", "environment")):
+        field_refs = []
+        for name in _workflow_text_list(data.get(field)):
+            entity = by_name.get((kind, name.casefold()))
+            if entity is None:
+                digest = hashlib.sha256(f"{kind}\0{name.casefold()}".encode()).hexdigest()[:16]
+                entity = {"id": f"custom-{kind}-{digest}", "kind": kind, "name": name, "source": "workflow_custom"}
+                by_id[entity["id"]] = entity
+                by_name[(kind, name.casefold())] = entity
+            field_refs.append({"resource_id": entity["id"], "kind": kind, "name": entity["name"]})
+        refs[field] = field_refs
+    return refs
+
+
 @router.put("/projects/{project_id}/graphs/workflow")
 async def save_project_workflow_graph(
     project_id: str,
@@ -2495,6 +2827,7 @@ async def save_project_workflow_graph(
         stage_ids = {str(stage.get("id")) for stage in process.get("stages", [])}
         existing_graph = dict((process.get("graphs") or {}).get("workflow") or {})
         allowed_kinds = {"trigger", "action", "decision", "approval", "deliverable"}
+        resource_by_name, resource_by_id = _workflow_resource_registry(process)
         nodes: list[dict[str, Any]] = []
         node_ids: set[str] = set()
         for raw_node in body.nodes:
@@ -2504,7 +2837,8 @@ async def save_project_workflow_graph(
                 raise HTTPException(status_code=422, detail="workflow node ids must be unique")
             if stage_id not in stage_ids:
                 raise HTTPException(status_code=422, detail="workflow node stage is invalid")
-            raw_data = raw_node.get("data") if isinstance(raw_node.get("data"), dict) else {}
+            raw_data_value = raw_node.get("data")
+            raw_data: dict[str, Any] = raw_data_value if isinstance(raw_data_value, dict) else {}
             kind = str(raw_data.get("kind") or "action").strip().lower()
             if kind not in allowed_kinds:
                 raise HTTPException(status_code=422, detail="workflow node kind is invalid")
@@ -2527,6 +2861,7 @@ async def save_project_workflow_graph(
                     "tools": _workflow_text_list(raw_data.get("tools")),
                     "data_sources": _workflow_text_list(raw_data.get("data_sources")),
                     "devices": _workflow_text_list(raw_data.get("devices")),
+                    "resource_refs": _bind_workflow_resource_refs(raw_data, resource_by_name, resource_by_id),
                     "deliverables": _workflow_text_list(raw_data.get("deliverables")),
                     "acceptance_criteria": _workflow_text_list(raw_data.get("acceptance_criteria")),
                     "condition": str(raw_data.get("condition") or "").strip()[:1000],
@@ -2569,6 +2904,7 @@ async def save_project_workflow_graph(
         graphs = dict(process.get("graphs") or {})
         graphs["workflow"] = workflow_graph
         process["graphs"] = graphs
+        process["resource_entities"] = sorted(resource_by_id.values(), key=lambda item: (item["kind"], item["id"]))
         next_revision = await _cas_project_process(
             db,
             project=project,
@@ -6550,6 +6886,22 @@ async def create_project_automation_run(
                 "project_id": project.id, "process_revision": project.process_revision,
                 "run": started["run"], "idempotent_replay": True,
             }
+        for candidate in body.candidates:
+            candidate_task_id = str(candidate.get("task_id") or candidate.get("id") or "").strip() or None
+            known_task = candidate_task_id and any(
+                str(item.get("id")) == candidate_task_id for item in process.get("tasks") or []
+            )
+            preflight = _project_consistency_report(
+                process,
+                operation="AUTOMATION_PREFLIGHT",
+                task_id=candidate_task_id if known_task else None,
+                target_status="IN_PROGRESS" if known_task else None,
+            )
+            if preflight["blocking"]:
+                raise HTTPException(status_code=409, detail={
+                    "error": "automation_preflight_blocked",
+                    "validation": preflight,
+                })
         latest_rule = max(
             (item for item in process.get("automation_rules") or [] if item.get("id") == body.rule_id),
             key=lambda item: int(item.get("version") or 0),

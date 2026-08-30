@@ -354,7 +354,7 @@ function AssigneeControl({
 }) {
   const { text } = useTaskboardI18n();
   const displayIdentifier = task.externalKey ?? task.identifier;
-  const options = [task.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const options = [...participants, task.assignee, currentUser, CODEX_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));

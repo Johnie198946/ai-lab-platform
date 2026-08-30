@@ -1149,7 +1149,13 @@ async function applyTaskboardAutomationPolicy(
   if (todoPayload && !Array.isArray(todoPayload.tasks)) {
     throw new Error("Taskboard todo check returned invalid JSON");
   }
-  const hasTodo = todoPayload ? todoPayload.tasks.length > 0 : null;
+  const readyTasks = todoPayload
+    ? todoPayload.tasks.filter((task) => (
+        !task.relations?.blockedBy?.some((blocker) => blocker.status !== "done")
+      ))
+    : null;
+  const blockedTodoCount = todoPayload ? todoPayload.tasks.length - readyTasks.length : 0;
+  const hasTodo = readyTasks ? readyTasks.length > 0 : null;
   const quota = request.quotaAware && hasTodo !== false
     ? await readCodexQuotaStatus(request.model)
     : null;
@@ -1178,7 +1184,7 @@ async function applyTaskboardAutomationPolicy(
   if (result?.error === "not-found") {
     return { operation, hasTodo, ...(quota ? { quota } : {}) };
   }
-  return { ...result, operation, hasTodo, ...(quota ? { quota } : {}) };
+  return { ...result, operation, hasTodo, blockedTodoCount, ...(quota ? { quota } : {}) };
 }
 
 function storedAutomationPolicy(request) {

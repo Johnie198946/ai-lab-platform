@@ -154,7 +154,11 @@ export function IssueListView({
                               onChange={(event) => void onUpdate(task, { assigneeTarget: event.target.value as AssigneeTarget }).catch(() => {})}
                             >
                               <option value="current-user">{currentUser.name}</option>
-                              {isProjectEmployee && <option value={assigneeTarget}>{task.assignee.name}</option>}
+                              {task.participants.filter((actor) => actor.type === "agent").map((actor) => {
+                                const target = assigneeTargetForActor(actor, currentUser);
+                                return target ? <option key={target} value={target}>{actor.name}</option> : null;
+                              })}
+                              {isProjectEmployee && !task.participants.some((actor) => assigneeTargetForActor(actor, currentUser) === assigneeTarget) && <option value={assigneeTarget}>{task.assignee.name}</option>}
                               <option value="codex-agent">AI Lab AI 员工</option>
                             </select>
                           </label>

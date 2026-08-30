@@ -47,10 +47,14 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       return;
     }
     if (request.url === "/api/v1/projects/prj-sync/ai-employees/ensure") {
-      response.end(JSON.stringify({ ai_employees: [{
-        employee_id: "a".repeat(32), agent_id: "a".repeat(32), display_name: "林知远",
-        job_title: "需求经理", base_agent_id: "knowledge", project_id: "prj-sync", is_ai: true,
-      }] }));
+      response.end(JSON.stringify({ ai_employees: [
+        { employee_id: "a".repeat(32), agent_id: "a".repeat(32), display_name: "林知远", job_title: "需求经理", base_agent_id: "knowledge", project_id: "prj-sync", is_ai: true },
+        { employee_id: "b".repeat(32), agent_id: "b".repeat(32), display_name: "周砚", job_title: "产品经理", base_agent_id: "main_agent", project_id: "prj-sync", is_ai: true },
+        { employee_id: "c".repeat(32), agent_id: "c".repeat(32), display_name: "许澄", job_title: "技术负责人", base_agent_id: "coder", project_id: "prj-sync", is_ai: true },
+        { employee_id: "d".repeat(32), agent_id: "d".repeat(32), display_name: "程野", job_title: "测试经理", base_agent_id: "supervision", project_id: "prj-sync", is_ai: true },
+        { employee_id: "e".repeat(32), agent_id: "e".repeat(32), display_name: "沈星", job_title: "交付经理", base_agent_id: "main_agent", project_id: "prj-sync", is_ai: true },
+        { employee_id: "f".repeat(32), agent_id: "f".repeat(32), display_name: "陆川", job_title: "评审人", base_agent_id: "supervision", project_id: "prj-sync", is_ai: true },
+      ] }));
       return;
     }
     if (request.url === "/api/v1/projects/prj-invalid") {
@@ -111,6 +115,14 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     assert.match(canonicalTask.description, /开发上下文（业务）/);
     assert.match(canonicalTask.description, /independent web/);
     assert.equal(canonicalTask.developmentContext, null);
+    assert.equal(canonicalTask.participants.filter((actor) => actor.type === "agent").length, 6);
+    assert.deepEqual(
+      canonicalTask.participants.filter((actor) => actor.type === "agent").map((actor) => actor.name),
+      [
+        "林知远 · AI 员工 · 需求经理", "周砚 · AI 员工 · 产品经理", "许澄 · AI 员工 · 技术负责人",
+        "程野 · AI 员工 · 测试经理", "沈星 · AI 员工 · 交付经理", "陆川 · AI 员工 · 评审人",
+      ],
+    );
     assert.equal(canonicalTask.status, "todo", "dispatched QWS backlog tasks belong in the visible waiting-for-claim lane");
     assert.deepEqual(runtimeTask.developmentContext, {
       type: "branch",

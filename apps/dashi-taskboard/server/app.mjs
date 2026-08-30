@@ -635,6 +635,27 @@ function resolveAssignee(target, actor, aiEmployees = []) {
   return actor;
 }
 
+function withProjectAiEmployees(task, employees = []) {
+  if (!task) return task;
+  if (employees.length === 0) return task;
+  const participants = [...(task.participants || [])];
+  const seen = new Set(participants.map((candidate) => `${candidate.type}:${candidate.id}`));
+  for (const employee of employees) {
+    const candidate = {
+      type: "agent",
+      id: employee.employee_id,
+      name: `${employee.display_name} · AI 员工 · ${employee.job_title}`.slice(0, 120),
+      avatarUrl: null,
+    };
+    const key = `${candidate.type}:${candidate.id}`;
+    if (!seen.has(key)) {
+      participants.push(candidate);
+      seen.add(key);
+    }
+  }
+  return { ...task, participants };
+}
+
 function parseTaskCreate(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
@@ -2956,6 +2977,45 @@ export function createTaskboardServer(options = {}) {
         return methodNotAllowed(response, ["GET", "PUT"]);
       }
 
+      const projectScheduleRoute = pathname.match(/^\/api\/projects\/([^/]+)\/schedule$/);
+      if (projectScheduleRoute) {
+        assertNoQuery(url.searchParams, `${request.method} /api/projects/:id/schedule`);
+        const projectId = validateProjectId(decodeRouteSegment(projectScheduleRoute[1], "Project id"));
+        if (request.method === "GET") {
+          return sendJson(response, 200, { schedule: database.getLatestSchedule(projectId) });
+        }
+        if (request.method !== "POST") return methodNotAllowed(response, ["GET", "POST"]);
+        const body = await readJson(request);
+        assertPlainObject(body);
+        assertAllowedKeys(body, new Set(["entries"]));
+        if (!Array.isArray(body.entries) || body.entries.length < 1 || body.entries.length > 500) {
+          throw new ApiError(400, "INVALID_FIELD", "'entries' must contain 1 to 500 schedule rows");
+        }
+        const ids = new Set();
+        const entries = body.entries.map((raw) => {
+          assertPlainObject(raw);
+          assertAllowedKeys(raw, new Set(["id", "version", "startDate", "dueDate", "sortOrder"]));
+          const entry = {
+            id: stringField(raw.id, "id", { required: true, maxLength: 120 }),
+            version: parseVersion(raw.version),
+            startDate: parseDueDate(raw.startDate, "startDate"),
+            dueDate: parseDueDate(raw.dueDate, "dueDate"),
+            sortOrder: parseSortOrder(raw.sortOrder),
+          };
+          if (!entry.startDate || !entry.dueDate || entry.startDate > entry.dueDate) {
+            throw new ApiError(400, "INVALID_FIELD", "Schedule dates are required and startDate must not exceed dueDate");
+          }
+          if (ids.has(entry.id)) throw new ApiError(400, "INVALID_FIELD", "Schedule rows must have unique task ids");
+          ids.add(entry.id);
+          return entry;
+        });
+        const applied = database.applySchedule(projectId, entries, actorFromRequest(request));
+        const tasks = applied.tasks
+          .map((task) => withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []));
+        for (const task of tasks) events.emit("task.updated", { task });
+        return sendJson(response, 200, { tasks, receipt: applied.receipt, applied: tasks.length, appliedAt: applied.receipt.createdAt });
+      }
+
       const developmentContextsRoute = pathname.match(/^\/api\/projects\/([^/]+)\/development-contexts$/);
       if (developmentContextsRoute) {
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
@@ -3015,7 +3075,7 @@ export function createTaskboardServer(options = {}) {
         if (request.method === "GET") {
           const filters = parseTaskFilters(url.searchParams);
           if (!filters.projectId || filters.projectId === JIRA_PROJECT_ID) await jira.sync();
-          return sendJson(response, 200, { tasks: database.listTasks(filters) });
+          return sendJson(response, 200, { tasks: database.listTasks(filters).map((task) => withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || [])) });
         }
         if (request.method === "POST") {
           const actor = actorFromRequest(request);
@@ -3038,7 +3098,7 @@ export function createTaskboardServer(options = {}) {
             ),
           });
           events.emit("task.created", { task });
-          return sendJson(response, 201, { task });
+          return sendJson(response, 201, { task: withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []) });
         }
         return methodNotAllowed(response, ["GET", "POST"]);
       }
@@ -3414,7 +3474,7 @@ export function createTaskboardServer(options = {}) {
           }
           const task = database.getTask(id);
           if (!task) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
-          return sendJson(response, 200, { task });
+          return sendJson(response, 200, { task: withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []) });
         }
         if (!action && request.method === "PATCH") {
           const actor = actorFromRequest(request);
@@ -3485,7 +3545,7 @@ export function createTaskboardServer(options = {}) {
             throw error;
           }
           events.emit("task.updated", { task });
-          return sendJson(response, 200, { task });
+          return sendJson(response, 200, { task: withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []) });
         }
         if (!action && request.method === "DELETE") {
           const current = database.getTask(id);
@@ -3530,7 +3590,7 @@ export function createTaskboardServer(options = {}) {
             actorFromRequest(request),
           );
           events.emit("task.moved", { task });
-          return sendJson(response, 200, { task });
+          return sendJson(response, 200, { task: withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []) });
         }
         if (action === "archive" && request.method === "POST") {
           const current = database.getTask(id);
@@ -3548,7 +3608,7 @@ export function createTaskboardServer(options = {}) {
             actorFromRequest(request),
           );
           events.emit("task.archived", { task });
-          return sendJson(response, 200, { task });
+          return sendJson(response, 200, { task: withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []) });
         }
         if (action === "restore" && request.method === "POST") {
           const current = database.getTask(id);
@@ -3566,7 +3626,7 @@ export function createTaskboardServer(options = {}) {
             actorFromRequest(request),
           );
           events.emit("task.restored", { task });
-          return sendJson(response, 200, { task });
+          return sendJson(response, 200, { task: withProjectAiEmployees(task, qwsSessionFromRequest(request)?.aiEmployees || []) });
         }
         return methodNotAllowed(response, action ? ["POST"] : ["GET", "PATCH", "DELETE"]);
       }

@@ -578,6 +578,16 @@ export async function createTask(projectId: string, draft: TaskDraft, threadId?:
   return data.task;
 }
 
+export async function applyProjectSchedule(
+  projectId: string,
+  entries: Array<{ id: string; version: number; startDate: string; dueDate: string; sortOrder: number }>,
+): Promise<{ tasks: Task[]; applied: number; appliedAt: string; receipt: { id: string; projectId: string; revision: number; status: "applied"; createdAt: string } }> {
+  return request(`/api/projects/${encodeURIComponent(projectId)}/schedule`, {
+    method: "POST",
+    body: JSON.stringify({ entries }),
+  });
+}
+
 export async function updateTask(task: Task, draft: TaskDraft, threadId?: string): Promise<Task> {
   const data = await request<{ task: Task }>(`/api/tasks/${encodeURIComponent(task.id)}`, {
     method: "PATCH",

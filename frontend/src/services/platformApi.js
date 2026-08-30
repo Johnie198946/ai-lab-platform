@@ -452,6 +452,12 @@ export const platformApi = {
   getProjectSchedule(projectId) {
     return request(`/api/v1/projects/${projectId}/schedule`);
   },
+  validateProjectConsistency(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/consistency/validate`, { method: "POST", body: payload });
+  },
+  updateProjectRole(projectId, roleName, payload) {
+    return request(`/api/v1/projects/${projectId}/roles/${encodeURIComponent(roleName)}`, { method: "PUT", body: payload });
+  },
   getProjectGraph(projectId, viewType) {
     return request(`/api/v1/projects/${projectId}/graphs/${viewType}`);
   },

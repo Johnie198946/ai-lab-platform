@@ -52,7 +52,7 @@ const parseList = (value) => [...new Set(String(value || "").split(/[,，、\n]/
 function WorkflowNode({ data, selected }) {
   const meta = kindMeta[data.kind] || kindMeta.action;
   const Icon = meta.icon;
-  const configured = [data.participants, data.tools, data.data_sources, data.devices, data.deliverables]
+  const configured = [data.participants, data.tools, data.data_sources, data.devices, data.deliverables, data.acceptance_criteria]
     .filter((items) => items?.length).length;
   return <article className={`qw-workflow-node kind-${meta.tone} ${selected ? "selected" : ""}`}>
     <Handle type="target" position={Position.Left} className="qw-workflow-handle" />
@@ -61,7 +61,7 @@ function WorkflowNode({ data, selected }) {
     <p>{data.description || meta.description}</p>
     <footer>
       <span><UsersRound size={11} />{data.participants?.[0] || executionModeLabel[data.execution_mode] || "待配置"}</span>
-      <span className={configured >= 3 ? "ready" : ""}>{configured >= 3 ? <Check size={11} /> : <Sparkles size={11} />}{configured}/5</span>
+      <span className={configured >= 4 ? "ready" : ""}>{configured >= 4 ? <Check size={11} /> : <Sparkles size={11} />}{configured}/6</span>
     </footer>
     <Handle type="source" position={Position.Right} className="qw-workflow-handle" />
   </article>;
@@ -69,8 +69,36 @@ function WorkflowNode({ data, selected }) {
 
 const nodeTypes = { workflow_step: WorkflowNode };
 
+const resourceNames = (value) => Array.isArray(value)
+  ? value.map((item) => typeof item === "string" ? item : item?.name || item?.title || item?.label || item?.id).filter(Boolean)
+  : [];
+
+function resourceDefaults(process) {
+  const plan = process.resource_plan || {};
+  const twin = plan.scenario_twin || {};
+  const infrastructure = plan.infrastructure || {};
+  const configuredInfrastructure = Object.entries(infrastructure)
+    .filter(([, value]) => value && typeof value === "object" && Object.values(value).some((item) => ![null, "", 0, "待配置", "待选型"].includes(item)))
+    .map(([key]) => key.replaceAll("_", " "));
+  return {
+    tools: textList([
+      ...resourceNames(plan.tools), ...resourceNames(plan.services), ...resourceNames(plan.systems),
+      ...resourceNames(twin.systems), ...resourceNames(plan.model_registry?.models),
+    ]),
+    dataSources: textList([
+      ...resourceNames(plan.datasets), ...resourceNames(plan.data_sources), ...resourceNames(plan.data),
+      ...resourceNames(twin.datasets),
+    ]),
+    devices: textList([
+      ...resourceNames(plan.environments), ...resourceNames(plan.devices),
+      ...resourceNames(plan.topology?.nodes), ...configuredInfrastructure,
+    ]),
+  };
+}
+
 function initialCanvas(graph, process) {
   const taskById = new Map((process.tasks || []).map((task) => [task.id, task]));
+  const linkedResources = resourceDefaults(process);
   const stageIndexes = new Map();
   const nodes = (graph.nodes || []).map((rawNode) => {
     const task = taskById.get(rawNode.id) || taskById.get(rawNode.data?.task_id);
@@ -91,9 +119,10 @@ function initialCanvas(graph, process) {
         description: data.description || task?.summary || "",
         execution_mode: data.execution_mode || (task?.assignee_id ? "ai" : "human_ai"),
         participants: textList(data.participants?.length ? data.participants : [task?.assignee_role]),
-        tools: textList(data.tools),
-        data_sources: textList(data.data_sources),
-        devices: textList(data.devices),
+        tools: textList(data.tools?.length ? data.tools : linkedResources.tools),
+        data_sources: textList(data.data_sources?.length ? data.data_sources : linkedResources.dataSources),
+        devices: textList(data.devices?.length ? data.devices : linkedResources.devices),
+        resource_refs: data.resource_refs || {},
         deliverables: textList(data.deliverables?.length ? data.deliverables : task?.deliverables),
         acceptance_criteria: textList(data.acceptance_criteria?.length ? data.acceptance_criteria : task?.acceptance_criteria),
         condition: data.condition || "",
@@ -266,7 +295,7 @@ export function ProjectGraph({ graph, process, onSave }) {
 
   return <section className="qw-graph qw-workflow-designer">
     <header className="qw-workflow-designer-head">
-      <div><span className="qw-eyebrow">Project workflow studio</span><h2>Workflow 编排</h2><p>像 n8n 一样连接步骤，并为每个节点配置人、工具、数据、设备与交付物。</p></div>
+      <div><span className="qw-eyebrow">Project workflow studio</span><h2>Workflow 编排</h2><p>每个节点完整配置角色、工具、数据、设备环境、交付物与验收标准；资源字段与 AI Resource 共用项目真源。</p></div>
       <div className="qw-graph-actions">
         <span className={`qw-workflow-save-state ${saveError ? "error" : saved ? "saved" : dirty ? "dirty" : ""}`}>{saveError ? "保存失败" : saving ? "保存中…" : saved ? "已保存" : dirty ? "有未保存修改" : `Revision ${graph.process_revision}`}</span>
         <button className="qw-button primary" type="button" onClick={saveGraph} disabled={saving || !dirty}><Save size={14} />{saving ? "保存中…" : "保存 Workflow"}</button>
@@ -322,9 +351,9 @@ export function ProjectGraph({ graph, process, onSave }) {
           <label className="qw-workflow-field"><span>步骤说明</span><textarea rows={3} value={selectedNode.data.description || ""} onChange={(event) => updateNodeData("description", event.target.value)} placeholder="说明这一步做什么、何时完成" /></label>
           <label className="qw-workflow-field"><span>执行方式</span><select value={selectedNode.data.execution_mode || "human_ai"} onChange={(event) => updateNodeData("execution_mode", event.target.value)}><option value="human_ai">人机协同</option><option value="human">人工执行</option><option value="ai">AI 自动执行</option></select></label>
           <ListField icon={UsersRound} label="参与角色" value={selectedNode.data.participants} placeholder="需求经理、业务负责人" onChange={(value) => updateNodeData("participants", value)} />
-          <ListField icon={Wrench} label="工具" value={selectedNode.data.tools} placeholder="访谈模板、CRM、浏览器" onChange={(value) => updateNodeData("tools", value)} />
-          <ListField icon={Database} label="输入数据" value={selectedNode.data.data_sources} placeholder="客户档案、历史访谈、需求池" onChange={(value) => updateNodeData("data_sources", value)} />
-          <ListField icon={HardDrive} label="设备 / 环境" value={selectedNode.data.devices} placeholder="移动端、会议室、测试环境" onChange={(value) => updateNodeData("devices", value)} />
+          <ListField icon={Wrench} label="工具 · AI Resource 联动" value={selectedNode.data.tools} placeholder="从 AI Resource 继承，也可补充" onChange={(value) => updateNodeData("tools", value)} />
+          <ListField icon={Database} label="输入数据 · AI Resource 联动" value={selectedNode.data.data_sources} placeholder="从数据集与数据源继承，也可补充" onChange={(value) => updateNodeData("data_sources", value)} />
+          <ListField icon={HardDrive} label="设备 / 环境 · AI Resource 联动" value={selectedNode.data.devices} placeholder="从部署资源继承，也可补充" onChange={(value) => updateNodeData("devices", value)} />
           <ListField icon={PackageCheck} label="交付物" value={selectedNode.data.deliverables} placeholder="需求定义、访谈纪要、评审结论" onChange={(value) => updateNodeData("deliverables", value)} />
           <ListField icon={ShieldCheck} label="验收标准" value={selectedNode.data.acceptance_criteria} placeholder="业务负责人确认、字段覆盖完整" onChange={(value) => updateNodeData("acceptance_criteria", value)} />
           {selectedNode.data.kind === "decision" && <label className="qw-workflow-field"><span><GitBranch size={13} />分支条件</span><textarea rows={2} value={selectedNode.data.condition || ""} onChange={(event) => updateNodeData("condition", event.target.value)} placeholder="例如：需求信息是否完整？" /></label>}
