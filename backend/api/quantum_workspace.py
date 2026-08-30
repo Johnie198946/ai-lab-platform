@@ -9,7 +9,7 @@ import os
 import re
 from copy import deepcopy
 from datetime import datetime, timezone
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -70,9 +70,16 @@ from backend.services.workspace_process import (
 )
 from backend.services.task_operating_loop import (
     acquire_execution_lease,
+    add_feedback,
+    apply_feedback_acceptance,
+    apply_feedback_action,
     build_task_context_pack,
+    create_feedback_batch,
     create_relation_proposal,
     initialize_task_contract,
+    record_feedback_interpretation,
+    submit_feedback_batch,
+    submit_feedback_resolution,
     transition_task,
     update_card_summary,
 )
@@ -180,6 +187,49 @@ class UpdateTaskCardSummaryRequest(BaseModel):
     next_action: str | None = Field(default=None, max_length=2000)
     eta: str | None = Field(default=None, max_length=80)
     source_refs: list[str] | None = Field(default=None, max_length=20)
+
+
+class ExpectedRevisionRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+
+
+class CreateFeedbackBatchRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    title: str = Field(default="本轮反馈", min_length=1, max_length=160)
+
+
+class AddFeedbackRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    feedback_type: Literal["bug", "ui_deviation", "requirement_change", "question", "suggestion", "content_change", "other"]
+    severity: Literal["blocking", "high", "normal", "low"] = "normal"
+    content: str = Field(min_length=1, max_length=12000)
+    expected_behavior: str = Field(default="", max_length=4000)
+    target: dict[str, Any] = Field(default_factory=dict)
+    attachments: list[dict[str, Any]] = Field(default_factory=list, max_length=20)
+
+
+class FeedbackInterpretationRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    interpretation: str = Field(min_length=1, max_length=8000)
+    confidence: float = Field(ge=0, le=1)
+
+
+class FeedbackActionRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    action: Literal["accept_understanding", "misunderstood", "needs_information", "record_only", "upgrade_requirement"]
+    note: str = Field(default="", max_length=4000)
+
+
+class FeedbackResolutionRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    summary: str = Field(min_length=1, max_length=8000)
+    evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
+class FeedbackAcceptanceRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    action: Literal["accept_resolution", "reopen", "reject_resolution"]
+    note: str = Field(default="", max_length=4000)
 
 
 class CreateProjectTaskRequest(BaseModel):
@@ -1786,6 +1836,31 @@ async def save_project_workflow_graph(
         }
 
 
+async def _task_contract_for_update(
+    db, *, project_id: str, tenant_key: str, user_id: str,
+    expected_revision: int, task_id: str,
+):
+    project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+    if project.process_revision != expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": "project_revision_conflict", "server_revision": project.process_revision},
+        )
+    process = dict(project.process_snapshot or {})
+    tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+    task = next((item for item in tasks if item.get("id") == task_id), None)
+    if task is None:
+        raise HTTPException(status_code=404, detail="project task not found")
+    return project, process, tasks, task
+
+
+async def _save_task_contract(db, *, project, process, tasks, expected_revision: int) -> int:
+    process["tasks"] = tasks
+    return await _cas_project_process(
+        db, project=project, expected_revision=expected_revision, process=process
+    )
+
+
 @router.post("/projects/{project_id}/tasks", status_code=201)
 async def create_project_task(
     project_id: str,
@@ -2085,6 +2160,184 @@ async def bind_project_task_workflow(
             "process_revision": next_revision,
             "task": task,
         }
+
+
+def _raise_feedback_error(exc: ValueError) -> NoReturn:
+    error = str(exc)
+    invalid = error.startswith("invalid_") or error in {"empty_feedback_batch"}
+    raise HTTPException(
+        status_code=422 if invalid else 409,
+        detail={"error": error},
+    ) from exc
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback-batches", status_code=201)
+async def create_project_task_feedback_batch(
+    project_id: str, task_id: str, body: CreateFeedbackBatchRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            batch = create_feedback_batch(task, actor_id=f"user:{user_id}", title=body.title)
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "batch": batch}
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback-batches/{batch_id}/items", status_code=201)
+async def add_project_task_feedback(
+    project_id: str, task_id: str, batch_id: str, body: AddFeedbackRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            feedback = add_feedback(
+                task, batch_id=batch_id, actor_id=f"user:{user_id}",
+                **body.model_dump(exclude={"expected_revision"}),
+            )
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "feedback": feedback}
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback-batches/{batch_id}/submit")
+async def submit_project_task_feedback_batch(
+    project_id: str, task_id: str, batch_id: str, body: ExpectedRevisionRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            batch = submit_feedback_batch(task, batch_id=batch_id, actor_id=f"user:{user_id}")
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "batch": batch}
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback/{feedback_id}/interpretation")
+async def interpret_project_task_feedback(
+    project_id: str, task_id: str, feedback_id: str,
+    body: FeedbackInterpretationRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            feedback = record_feedback_interpretation(
+                task, feedback_id=feedback_id, actor_id=f"agent:{user_id}",
+                interpretation=body.interpretation, confidence=body.confidence,
+            )
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "feedback": feedback}
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback/{feedback_id}/understanding-action")
+async def act_on_project_task_feedback_understanding(
+    project_id: str, task_id: str, feedback_id: str,
+    body: FeedbackActionRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            feedback = apply_feedback_action(
+                task, feedback_id=feedback_id, actor_id=f"user:{user_id}",
+                action=body.action, note=body.note,
+            )
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "feedback": feedback, "task_status": task["status"]}
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback/{feedback_id}/resolution")
+async def resolve_project_task_feedback(
+    project_id: str, task_id: str, feedback_id: str,
+    body: FeedbackResolutionRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            feedback = submit_feedback_resolution(
+                task, feedback_id=feedback_id, actor_id=f"agent:{user_id}",
+                summary=body.summary, evidence_refs=body.evidence_refs,
+            )
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "feedback": feedback}
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/feedback/{feedback_id}/acceptance")
+async def accept_project_task_feedback_resolution(
+    project_id: str, task_id: str, feedback_id: str,
+    body: FeedbackAcceptanceRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        try:
+            feedback = apply_feedback_acceptance(
+                task, feedback_id=feedback_id, actor_id=f"user:{user_id}",
+                action=body.action, note=body.note,
+            )
+        except ValueError as exc:
+            _raise_feedback_error(exc)
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {"project_id": project.id, "process_revision": revision, "feedback": feedback, "task_status": task["status"]}
 
 
 @router.patch("/projects/{project_id}/tasks/{task_id}/card-summary")

@@ -45,6 +45,17 @@ TASK_TRANSITIONS: dict[str, set[str]] = {
     "MERGED": set(),
 }
 
+FEEDBACK_TYPES = {
+    "bug", "ui_deviation", "requirement_change", "question",
+    "suggestion", "content_change", "other",
+}
+FEEDBACK_SEVERITIES = {"blocking", "high", "normal", "low"}
+FEEDBACK_ACTIONS = {
+    "accept_understanding", "misunderstood", "needs_information",
+    "record_only", "upgrade_requirement",
+}
+FEEDBACK_ACCEPTANCE_ACTIONS = {"accept_resolution", "reopen", "reject_resolution"}
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
@@ -147,6 +158,210 @@ def update_card_summary(
     task["card_summary"] = current
     task["task_revision"] = int(task.get("task_revision") or 1) + 1
     return task
+
+
+def _feedback_item(task: dict[str, Any], feedback_id: str) -> dict[str, Any]:
+    item = next(
+        (row for row in task.get("feedback") or [] if row.get("id") == feedback_id),
+        None,
+    )
+    if item is None:
+        raise ValueError("feedback_not_found")
+    return item
+
+
+def create_feedback_batch(
+    task: dict[str, Any], *, actor_id: str, title: str = "本轮反馈"
+) -> dict[str, Any]:
+    """Open a batch so comments can be submitted without repeated interrupts."""
+    if any(item.get("status") == "OPEN" for item in task.get("feedback_batches") or []):
+        raise ValueError("open_feedback_batch_exists")
+    batch = {
+        "id": f"fbatch_{uuid4().hex}",
+        "title": title,
+        "status": "OPEN",
+        "feedback_ids": [],
+        "created_by": actor_id,
+        "created_at": utc_now().isoformat(),
+        "submitted_at": None,
+    }
+    task.setdefault("feedback_batches", []).append(batch)
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return batch
+
+
+def add_feedback(
+    task: dict[str, Any], *, batch_id: str, actor_id: str,
+    feedback_type: str, severity: str, content: str,
+    expected_behavior: str = "", target: dict[str, Any] | None = None,
+    attachments: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    if feedback_type not in FEEDBACK_TYPES:
+        raise ValueError("invalid_feedback_type")
+    if severity not in FEEDBACK_SEVERITIES:
+        raise ValueError("invalid_feedback_severity")
+    batch = next(
+        (item for item in task.get("feedback_batches") or [] if item.get("id") == batch_id),
+        None,
+    )
+    if batch is None:
+        raise ValueError("feedback_batch_not_found")
+    if batch.get("status") != "OPEN":
+        raise ValueError("feedback_batch_closed")
+    attachment_rows = [{
+        "id": item.get("id") or f"att_{uuid4().hex}",
+        "file_name": item.get("file_name"),
+        "mime_type": item.get("mime_type"),
+        "storage_ref": item.get("storage_ref"),
+        "sha256": item.get("sha256"),
+        "scan_status": item.get("scan_status") or "PENDING",
+        "extraction_status": item.get("extraction_status") or "PENDING",
+    } for item in (attachments or [])[:20]]
+    feedback = {
+        "id": f"fb_{uuid4().hex}",
+        "batch_id": batch_id,
+        "task_revision": int(task.get("task_revision") or 1),
+        "type": feedback_type,
+        "severity": severity,
+        "content": content,
+        "expected_behavior": expected_behavior,
+        "target": target or {},
+        "attachments": attachment_rows,
+        "status": "PENDING_ANALYSIS",
+        "ai_interpretation": None,
+        "resolution": None,
+        "created_by": actor_id,
+        "created_at": utc_now().isoformat(),
+    }
+    task.setdefault("feedback", []).append(feedback)
+    batch["feedback_ids"].append(feedback["id"])
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return feedback
+
+
+def submit_feedback_batch(
+    task: dict[str, Any], *, batch_id: str, actor_id: str
+) -> dict[str, Any]:
+    batch = next(
+        (item for item in task.get("feedback_batches") or [] if item.get("id") == batch_id),
+        None,
+    )
+    if batch is None:
+        raise ValueError("feedback_batch_not_found")
+    if batch.get("status") != "OPEN":
+        raise ValueError("feedback_batch_closed")
+    if not batch.get("feedback_ids"):
+        raise ValueError("empty_feedback_batch")
+    batch.update({
+        "status": "SUBMITTED",
+        "submitted_by": actor_id,
+        "submitted_at": utc_now().isoformat(),
+    })
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return batch
+
+
+def record_feedback_interpretation(
+    task: dict[str, Any], *, feedback_id: str, interpretation: str,
+    confidence: float, actor_id: str,
+) -> dict[str, Any]:
+    feedback = _feedback_item(task, feedback_id)
+    feedback.update({
+        "ai_interpretation": interpretation,
+        "ai_confidence": max(0.0, min(float(confidence), 1.0)),
+        "status": "AWAITING_UNDERSTANDING_CONFIRMATION",
+        "interpreted_by": actor_id,
+        "interpreted_at": utc_now().isoformat(),
+    })
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return feedback
+
+
+def apply_feedback_action(
+    task: dict[str, Any], *, feedback_id: str, action: str,
+    actor_id: str, note: str = "",
+) -> dict[str, Any]:
+    if action not in FEEDBACK_ACTIONS:
+        raise ValueError("invalid_feedback_action")
+    feedback = _feedback_item(task, feedback_id)
+    status_by_action = {
+        "accept_understanding": "ACCEPTED",
+        "misunderstood": "PENDING_ANALYSIS",
+        "needs_information": "NEEDS_INFORMATION",
+        "record_only": "RECORDED_ONLY",
+        "upgrade_requirement": "DECISION_REQUIRED",
+    }
+    feedback.update({
+        "status": status_by_action[action],
+        "understanding_action": action,
+        "understanding_note": note,
+        "understanding_confirmed_by": actor_id,
+        "understanding_confirmed_at": utc_now().isoformat(),
+    })
+    if action == "upgrade_requirement" and task.get("status") == "IN_PROGRESS":
+        transition_task(
+            task, to_status="DECISION_REQUIRED", actor_id=actor_id,
+            reason=note or "反馈升级为需求变更",
+        )
+    else:
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return feedback
+
+
+def submit_feedback_resolution(
+    task: dict[str, Any], *, feedback_id: str, summary: str,
+    evidence_refs: list[str], actor_id: str,
+) -> dict[str, Any]:
+    feedback = _feedback_item(task, feedback_id)
+    if feedback.get("status") not in {"ACCEPTED", "PROCESSING", "REOPENED"}:
+        raise ValueError("feedback_not_resolvable")
+    feedback.update({
+        "status": "AWAITING_ACCEPTANCE",
+        "resolution": {
+            "summary": summary,
+            "evidence_refs": evidence_refs[:20],
+            "submitted_by": actor_id,
+            "submitted_at": utc_now().isoformat(),
+        },
+    })
+    task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return feedback
+
+
+def apply_feedback_acceptance(
+    task: dict[str, Any], *, feedback_id: str, action: str,
+    actor_id: str, note: str = "",
+) -> dict[str, Any]:
+    if action not in FEEDBACK_ACCEPTANCE_ACTIONS:
+        raise ValueError("invalid_feedback_acceptance_action")
+    feedback = _feedback_item(task, feedback_id)
+    if feedback.get("status") != "AWAITING_ACCEPTANCE":
+        raise ValueError("feedback_not_awaiting_acceptance")
+    status_by_action = {
+        "accept_resolution": "RESOLVED",
+        "reopen": "REOPENED",
+        "reject_resolution": "DECISION_REQUIRED",
+    }
+    feedback.update({
+        "status": status_by_action[action],
+        "acceptance_action": action,
+        "acceptance_note": note,
+        "accepted_by": actor_id,
+        "accepted_at": utc_now().isoformat(),
+    })
+    if action == "reopen" and task.get("status") in {"ACCEPTANCE_REVIEW", "DONE"}:
+        transition_task(
+            task, to_status="IN_PROGRESS", actor_id=actor_id,
+            reason=note or "反馈仍有问题，重新打开",
+        )
+    elif action == "reject_resolution" and task.get("status") == "IN_PROGRESS":
+        transition_task(
+            task, to_status="DECISION_REQUIRED", actor_id=actor_id,
+            reason=note or "不同意反馈处理结果",
+        )
+    else:
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return feedback
 
 
 def _parse_time(value: str | None) -> datetime | None:
