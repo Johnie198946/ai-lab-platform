@@ -5,6 +5,7 @@ import asyncio
 import json
 import os
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -45,7 +46,8 @@ def client():
         "user_id": "owner-a",
         "sub": "owner-a",
         "principal_type": "human",
-        "amr": ["test_interactive"],
+        "amr": ["pwd"],
+        "auth_time": int(datetime.now(timezone.utc).timestamp()),
         "is_super_admin": False,
     }
     with TestClient(app) as test_client:
@@ -303,7 +305,8 @@ def _auth(user_id: str, tenant: str = "tenant-a") -> None:
         "user_id": user_id,
         "sub": user_id,
         "principal_type": "human",
-        "amr": ["test_interactive"],
+        "amr": ["pwd"],
+        "auth_time": int(datetime.now(timezone.utc).timestamp()),
         "is_super_admin": False,
     }
 
@@ -718,7 +721,8 @@ def test_project_write_member_edits_task_and_persists_normalized_revision(client
         "user_id": "writer-a",
         "sub": "writer-a",
         "principal_type": "human",
-        "amr": ["test_interactive"],
+        "amr": ["pwd"],
+        "auth_time": int(datetime.now(timezone.utc).timestamp()),
         "is_super_admin": False,
     }
     edited = client.put(

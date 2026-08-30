@@ -2125,8 +2125,17 @@ def _project_consistency_report(
     target_status: str | None = None,
 ) -> dict[str, Any]:
     """Validate cross-projection invariants without undoing user-authored edits."""
-    stages = {str(item.get("id")): item for item in process.get("stages") or [] if item.get("id")}
-    tasks = {str(item.get("id")): item for item in process.get("tasks") or [] if item.get("id")}
+    raw_stages = [item for item in process.get("stages") or [] if isinstance(item, dict)]
+    raw_tasks = [item for item in process.get("tasks") or [] if isinstance(item, dict)]
+    stages = {str(item.get("id")): item for item in raw_stages if item.get("id")}
+    tasks: dict[str, dict[str, Any]] = {}
+    task_id_counts: dict[str, int] = {}
+    for item in raw_tasks:
+        current_id = str(item.get("id") or "").strip()
+        if not current_id:
+            continue
+        task_id_counts[current_id] = task_id_counts.get(current_id, 0) + 1
+        tasks.setdefault(current_id, item)
     issues: list[dict[str, Any]] = []
 
     def add(code: str, severity: str, scope: str, title: str, detail: str, repair: str) -> None:
@@ -2143,6 +2152,15 @@ def _project_consistency_report(
                 and (not task_id or scope.startswith(f"task:{task_id}"))
             ),
         })
+
+    for duplicate_id, count in sorted(task_id_counts.items()):
+        if count > 1:
+            add(
+                "DUPLICATE_TASK_ID", "CRITICAL", f"task:{duplicate_id}",
+                "任务 ID 重复",
+                f"{duplicate_id} 出现 {count} 次；依赖、排期和自动化无法确定目标任务",
+                "为重复任务分配唯一 ID，并修正相关依赖引用",
+            )
 
     for task in tasks.values():
         current_id = str(task.get("id"))
@@ -2161,6 +2179,9 @@ def _project_consistency_report(
 
     dependency_pairs: list[tuple[str, str]] = []
     for dependency in process.get("dependencies") or []:
+        if not isinstance(dependency, dict):
+            add("DEPENDENCY_DATA_INVALID", "CRITICAL", "process:dependencies", "依赖数据格式无效", repr(dependency)[:200], "修复为包含 from_task_id 与 to_task_id 的对象")
+            continue
         source = str(dependency.get("from_task_id") or "")
         target = str(dependency.get("to_task_id") or "")
         if source not in tasks or target not in tasks:
@@ -2208,20 +2229,35 @@ def _project_consistency_report(
                     "完成前置任务，或人工调整依赖后再执行",
                 )
 
-    workflow = (process.get("graphs") or {}).get("workflow") or {}
+    raw_graphs = process.get("graphs")
+    graphs = raw_graphs if isinstance(raw_graphs, dict) else {}
+    raw_workflow = graphs.get("workflow")
+    workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
     known_roles = {
         str(item.get("assignee_role") or "").strip() for item in tasks.values()
         if str(item.get("assignee_role") or "").strip()
     } | {
         str(item.get("responsible_role") or "").strip() for item in process.get("gates") or []
-        if str(item.get("responsible_role") or "").strip()
+        if isinstance(item, dict) and str(item.get("responsible_role") or "").strip()
     }
     resource_ids = {
         str(item.get("id")) for item in process.get("resource_entities") or []
         if isinstance(item, dict) and item.get("id")
     }
     for node in workflow.get("nodes") or []:
-        data = node.get("data") or {}
+        if not isinstance(node, dict):
+            add("WORKFLOW_NODE_INVALID", "CRITICAL", "workflow:unknown", "Workflow 节点格式无效", repr(node)[:200], "修复为包含 id 与 data 的对象")
+            continue
+        raw_data = node.get("data")
+        if raw_data is not None and not isinstance(raw_data, dict):
+            add(
+                "WORKFLOW_NODE_DATA_INVALID", "CRITICAL", f"workflow:{node.get('id')}",
+                "Workflow 节点 data 格式无效",
+                f"节点 {node.get('id') or '?'} 的 data 必须是对象",
+                "将 data 修复为结构化对象后再执行自动化",
+            )
+            continue
+        data = raw_data or {}
         scope = f"task:{data.get('task_id')}:workflow:{node.get('id')}" if data.get("task_id") else f"workflow:{node.get('id')}"
         for participant in data.get("participants") or []:
             if str(participant).strip() and str(participant).strip() not in known_roles:
@@ -2316,9 +2352,16 @@ async def update_project_role(
             if gate.get("responsible_role") == old_name:
                 gate["responsible_role"] = new_name
                 changed["gates"] += 1
-        workflow = (process.get("graphs") or {}).get("workflow") or {}
+        raw_graphs = process.get("graphs")
+        graphs = raw_graphs if isinstance(raw_graphs, dict) else {}
+        raw_workflow = graphs.get("workflow")
+        workflow = raw_workflow if isinstance(raw_workflow, dict) else {}
         for node in workflow.get("nodes") or []:
-            data = node.get("data") or {}
+            if not isinstance(node, dict):
+                continue
+            data = node.get("data")
+            if not isinstance(data, dict):
+                continue
             participants = data.get("participants") or []
             replaced = [new_name if item == old_name else item for item in participants]
             if replaced != participants:
