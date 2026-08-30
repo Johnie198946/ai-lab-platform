@@ -57,6 +57,9 @@ _LOCAL_SAFE_TOOLS = {
     "web_extract",
     "web_search",
 }
+_VAULT_READ_TOOLS = frozenset({"read_file", "search_files"})
+_VAULT_OWNER_AUX_READ_TOOLS = frozenset({"session_search"})
+_DEFAULT_VAULT_ROOT = Path.home() / "Desktop" / "AI Lab" / "AI Lab"
 
 _LATIN_RE = re.compile(r"[a-z0-9][a-z0-9+.#_-]*", re.I)
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]+")
@@ -888,7 +891,70 @@ def _configured_owner(platform: str, sender_id: str) -> bool:
         for value in os.environ.get("AI_LAB_LOCAL_OWNER_IDS", "").split(",")
         if value.strip()
     }
+    if platform.casefold() in {"feishu", "lark"}:
+        configured.update(
+            value.strip()
+            for value in os.environ.get("FEISHU_CODE_WRITE_OWNER_IDS", "").split(",")
+            if value.strip()
+        )
     return sender_id in configured or f"{platform}:{sender_id}" in configured
+
+
+def _configured_vault_roots() -> tuple[Path, ...]:
+    raw = os.environ.get("OBSIDIAN_VAULT_PATH", "").strip()
+    candidates = [Path(raw).expanduser()] if raw else [_DEFAULT_VAULT_ROOT]
+    roots: list[Path] = []
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve(strict=True)
+        except OSError:
+            continue
+        if resolved.is_dir() and resolved not in roots:
+            roots.append(resolved)
+    return tuple(roots)
+
+
+def _vault_owner_context() -> str:
+    roots = _configured_vault_roots()
+    rendered = ", ".join(str(root) for root in roots) or "<vault unavailable>"
+    return (
+        "[Scoped local knowledge access — trusted policy] This verified Feishu owner "
+        "has read-only vault access. Use read_file/search_files only with concrete absolute "
+        f"paths inside: {rendered}. Writes, terminal execution, and paths outside these roots "
+        "remain forbidden. Do not guess a shorter AI LAB path."
+    )
+
+
+def _vault_path_denial(tool_name: str, args: dict[str, Any]) -> dict[str, str] | None:
+    raw_path = str(args.get("path") or "").strip()
+    if not raw_path:
+        return {
+            "action": "block",
+            "message": (
+                f"Scoped vault read blocked {tool_name}: provide a concrete absolute path "
+                "inside the configured Vault root. [VAULT_PATH_REQUIRED]"
+            ),
+        }
+    candidate = Path(raw_path).expanduser()
+    if not candidate.is_absolute():
+        return {
+            "action": "block",
+            "message": "Scoped vault read requires an absolute path. [VAULT_PATH_REQUIRED]",
+        }
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return {
+            "action": "block",
+            "message": "Scoped vault path could not be resolved. [VAULT_PATH_INVALID]",
+        }
+    for root in _configured_vault_roots():
+        if resolved == root or root in resolved.parents:
+            return None
+    return {
+        "action": "block",
+        "message": "Scoped vault read denied a path outside the configured Vault. [VAULT_PATH_DENIED]",
+    }
 
 
 def _pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> None:
@@ -900,8 +966,10 @@ def _pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> None:
     sender_id = str(getattr(source, "user_id", "") or "").strip()
     chat_type = _plain_value(getattr(source, "chat_type", ""))
     message = str(getattr(event, "text", "") or "")
-    if platform in _LOCAL_OWNER_PLATFORMS or _configured_owner(platform, sender_id):
+    if platform in _LOCAL_OWNER_PLATFORMS:
         principal = "local_owner"
+    elif _configured_owner(platform, sender_id):
+        principal = "vault_owner"
     elif not sender_id:
         principal = "untrusted_sender"
     elif chat_type in {"group", "channel", "room", "topic"}:
@@ -925,8 +993,10 @@ def _resolve_principal(platform: str, sender_id: str, message: str) -> str:
         )
     if hinted:
         return hinted
-    if platform in _LOCAL_OWNER_PLATFORMS or _configured_owner(platform, sender_id):
+    if platform in _LOCAL_OWNER_PLATFORMS:
         return "local_owner"
+    if _configured_owner(platform, sender_id):
+        return "vault_owner"
     if not sender_id:
         return "untrusted_sender"
     return "approved_user"
@@ -1053,15 +1123,23 @@ def _principal_denial(tool_name: str, args: dict[str, Any], state: dict[str, Any
     principal = str(state.get("principal") or "untrusted_sender")
     if principal == "local_owner":
         return None
-    effective = _effective_local_tool(tool_name, args)
-    allowed = {"clarify"} if principal == "untrusted_sender" else _LOCAL_SAFE_TOOLS
-    if effective in allowed:
-        return None
+    effective, effective_args = _effective_local_call(tool_name, args)
+    if principal == "vault_owner":
+        if effective in _VAULT_READ_TOOLS:
+            return _vault_path_denial(effective, effective_args)
+        if effective in _VAULT_OWNER_AUX_READ_TOOLS or effective in _LOCAL_SAFE_TOOLS:
+            return None
+        allowed_description = "safe Q&A, web research, Skill reads, scoped delegation, and Vault reads"
+    else:
+        allowed = {"clarify"} if principal == "untrusted_sender" else _LOCAL_SAFE_TOOLS
+        if effective in allowed:
+            return None
+        allowed_description = "safe Q&A, web research, Skill reads, and scoped delegation"
     return {
         "action": "block",
         "message": (
             f"Local Agent OS denied {effective!r} for principal {principal!r}. "
-            "This channel is limited to safe Q&A, web research, Skill reads, and scoped delegation."
+            f"This channel is limited to {allowed_description}."
         ),
     }
 
@@ -1453,16 +1531,30 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
     route_class = _skill_route_class(user_message)
     platform = _plain_value(kwargs.get("platform"))
     sender_id = str(kwargs.get("sender_id") or "").strip()
+    principal = _resolve_principal(platform, sender_id, user_message)
+    if (
+        not sender_id
+        and existing_state
+        and existing_state.get("principal") in {
+            "local_owner", "vault_owner", "approved_user", "group_member"
+        }
+    ):
+        principal = str(existing_state["principal"])
     state = {
-        "principal": _resolve_principal(platform, sender_id, user_message),
+        "principal": principal,
         "route_class": route_class,
+        "platform": platform,
+        "sender_id": sender_id or str((existing_state or {}).get("sender_id") or ""),
     }
     if session_id:
         with _LOCAL_STATE_LOCK:
             _LOCAL_TURN_STATES[session_id] = state
+    vault_context = _vault_owner_context() if principal == "vault_owner" else ""
     if route_class in {"CASUAL", "GENERAL_QA"}:
-        return None
+        return {"context": vault_context} if vault_context else None
     context = _local_professional_context(_routing_query(user_message), state)
+    if vault_context:
+        context = f"{context}\n{vault_context}"
     result: dict[str, Any] = {"context": context}
     if state.get("agency_decision") == "CALL":
         result["defer_streaming"] = True
@@ -1670,6 +1762,10 @@ def _pre_tool_call(
                 or local_state.get("loaded_skill") == local_state.get("requested_skill")
             )
             and effective_tool != "delegate_task"
+            and not (
+                local_state.get("principal") == "vault_owner"
+                and effective_tool in (_VAULT_READ_TOOLS | _VAULT_OWNER_AUX_READ_TOOLS)
+            )
         ):
             expected_text = json.dumps(
                 local_state.get("expected_delegate_args") or {},
