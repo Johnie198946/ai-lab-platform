@@ -1,15 +1,15 @@
 # QWS 蓝图协议可见化与规划终态门禁 — Completion Receipt
 
 - task_id: `qws-blueprint-protocol-visible-20260830`
-- status: `TESTED`
+- status: `DEPLOYED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828`
 - base_head: `30604a103aa531ad84b800843c9e5ae4dff8380c`
 - remote_sha_at_start: `30604a103aa531ad84b800843c9e5ae4dff8380c`
-- local_commit: `THIS_COMMIT`
-- remote_sha: `N/A`（尚未获得 push 授权）
-- server_before: `N/A`
-- server_after: `N/A`（尚未获得部署授权）
+- implementation_commit: `6d6164082d3647d2df24b14015efb7b0bc40956c`
+- remote_main_at_deploy: `d71521c182df018716ca58dab0e71780f4f69787`
+- server_before: `/opt/releases/ai-lab-platform-30604a103aa5.Qnq1xk`，`.deployed-sha=30604a103aa531ad84b800843c9e5ae4dff8380c`
+- server_after: `/opt/releases/ai-lab-platform-d71521c182df.uulyV8`，`.deployed-sha=d71521c182df018716ca58dab0e71780f4f69787`
 - rollback_point: `30604a103aa531ad84b800843c9e5ae4dff8380c`
 
 ## Scope
@@ -58,12 +58,21 @@
 - Planning repair requests use resumable Hermes Session context (`client_session_context=None`).
 - Streaming protocol remains visible while ordinary assistant prose is not misclassified.
 
+## Production verification
+
+- GitHub `origin/main=d71521c182df018716ca58dab0e71780f4f69787`; implementation commit `6d61640` is a verified ancestor.
+- Production `backend/api/quantum_workspace.py` SHA-256 is `b59b9aa5f251dc833fd8fe46e85213d8cbe5eb1ac6e67c4514b8cad9f37aad1f`, identical to Git commit `d71521c`.
+- API `/ready=ready/0.8.0`, `/health=ok/0.8.0`; Hermes Bridge `/health=ok/v6.0/streaming=true`; frontend HTTPS returns `200`.
+- API, frontend, planning/workflow/agent-evaluation workers are running; API is healthy; PostgreSQL, Redis and Taskboard are healthy.
+- Recursively fetched 78 served frontend assets; actual production chunks contain `planning_incomplete`, `蓝图未通过完整性校验`, and `实时草稿 · 可能不完整`.
+- Production API container compiler check: parseable-but-invalid blueprint is rejected; valid blueprint compiles to one stage and one task.
+- Post-deploy API logs (10-minute window): `0` traceback, `0` HTTP 5xx, `0` planning-incomplete error logs.
+
 ## Governance / concurrency
 
 The worktree concurrently contains unrelated changes in `backend/api/chat.py`, `scripts/hermes_bridge.py`, iOS files, `tests/test_chat_stream_api.py`, and `tests/test_hermes_bridge.py`. They are not task files and must not be staged or committed with this change.
 
 ## Remaining risks
 
-- No authenticated browser E2E against the production planning flow has been performed yet.
-- Production push/deployment and post-deploy functional replay require explicit authorization.
+- No authenticated browser E2E completing a real production planning conversation was performed; online verification covered exact source/runtime hashes, served UI contracts, compiler behavior, health and logs.
 - The unrelated Showroom deployment-order assertion remains failing outside this task scope.
