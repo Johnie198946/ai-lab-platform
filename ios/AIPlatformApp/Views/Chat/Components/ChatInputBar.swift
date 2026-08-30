@@ -193,8 +193,9 @@ public struct ChatInputBar: View {
         }
         .buttonStyle(.plain)
         .onLongPressGesture(
-            minimumDuration: 0,
-            maximumDistance: 80,
+            // Let a real vertical drag escape the press recognizer so the chat can scroll.
+            minimumDuration: 0.18,
+            maximumDistance: 16,
             pressing: updateVoicePressState,
             perform: {}
         )

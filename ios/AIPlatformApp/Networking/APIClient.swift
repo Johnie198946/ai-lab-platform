@@ -1283,8 +1283,13 @@ public enum KeychainStore {
         SecItemDelete(base as CFDictionary)
         var attributes = base
         attributes[kSecValueData as String] = data
+        // 登录凭证需要跨进程重启保留，同时不随 iCloud/设备迁移导出。
+        attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(attributes as CFDictionary, nil)
-        if status == errSecSuccess { return true }
+        if status == errSecSuccess {
+            UserDefaults.standard.removeObject(forKey: "auth.jwt.fallback")
+            return true
+        }
         // 模拟器/无 keychain 环境兜底到 UserDefaults
         UserDefaults.standard.set(value, forKey: "auth.jwt.fallback")
         return false
@@ -1737,6 +1742,10 @@ public final class APIClient: ObservableObject {
     /// POST /api/v1/tenant-agents：创建租户私有 Agent 切片（base_agent_id 限基线 4 个）
     public func createTenantAgent(_ body: TenantAgentCreateDTO) async throws -> TenantAgentDTO {
         try await request(TenantAgentDTO.self, path: "tenant-agents", method: "POST", body: body)
+    }
+
+    public func updateTenantAgent(id: String, body: TenantAgentCreateDTO) async throws -> TenantAgentDTO {
+        try await request(TenantAgentDTO.self, path: "tenant-agents/\(encodedPath(id))", method: "PATCH", body: body)
     }
 
     /// DELETE /api/v1/tenant-agents/{id}：删除租户切片（204 无响应体）
@@ -2501,7 +2510,9 @@ public final class APIClient: ObservableObject {
 
     /// POST /api/chat/stream：URLSession.bytes 逐行消费 SSE 事件流（真实流式）
     /// - Parameter quotedContext: 引用历史消息上下文（若有）
-    /// - Returns: AsyncThrowingStream 事件流；客户端断连/取消时自动 POST /api/chat/stream/cancel 回收服务端
+    /// - Returns: AsyncThrowingStream 事件流。传输层取消只会断开订阅；不会取消服务端 Run。
+    ///   服务端 Bridge 会将断开的 Run detach 后继续执行，调用方需通过 status 恢复。
+    ///   只有明确的用户取消操作才应调用 ``cancelStream``。
     public func chatStream(
         question: String,
         requestId: String? = nil,
@@ -2584,13 +2595,10 @@ public final class APIClient: ObservableObject {
 
             continuation.onTermination = { @Sendable termination in
                 consumeTask.cancel()
-                // 仅用户主动取消时 interrupt；网络异常采用 detach + status 回读，避免误杀
-                // 已经生成到最终确认单的 Agent。
-                if case .cancelled = termination {
-                    Task { @MainActor in
-                        try? await self.cancelStream(sessionId: sessionId, agentId: agentId)
-                    }
-                }
+                // AsyncSequence 的 .cancelled 同时覆盖 SwiftUI owner 释放、Tab/scene
+                // 生命周期变化和真正的用户取消，不能据此推断用户意图。这里只断开
+                // URLSession；Bridge 会 detach worker，结果由 status 端点恢复。
+                _ = termination
             }
         }
     }

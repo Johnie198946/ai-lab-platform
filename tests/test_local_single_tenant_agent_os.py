@@ -310,6 +310,131 @@ def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
     assert child_denied and child_denied["action"] == "block"
 
 
+def test_feishu_write_owner_gets_scoped_vault_read_not_full_local_owner(
+    monkeypatch, tmp_path
+):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    router._GATEWAY_IDENTITIES.clear()
+    monkeypatch.setenv("FEISHU_CODE_WRITE_OWNER_IDS", "ou_owner")
+    monkeypatch.delenv("AI_LAB_LOCAL_OWNER_IDS", raising=False)
+    vault = tmp_path / "AI Lab"
+    wiki = vault / "wiki"
+    wiki.mkdir(parents=True)
+    note = wiki / "Quantumn.md"
+    note.write_text("# Quantumn", encoding="utf-8")
+    outside = tmp_path / "secret.txt"
+    outside.write_text("secret", encoding="utf-8")
+    escape = wiki / "escape.md"
+    escape.symlink_to(outside)
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
+
+    source = types.SimpleNamespace(
+        platform=types.SimpleNamespace(value="feishu"),
+        user_id="ou_owner",
+        chat_id="owner-dm",
+        chat_type="dm",
+    )
+    event = types.SimpleNamespace(source=source, text="读取本地知识库")
+    router._pre_gateway_dispatch(event=event)
+    injected = router._pre_llm_call(
+        event.text,
+        session_id="owner-vault-session",
+        turn_id="owner-vault-turn",
+        platform="feishu",
+        sender_id="ou_owner",
+    )
+    state = router._LOCAL_TURN_STATES["owner-vault-session"]
+    assert state["principal"] == "vault_owner"
+    assert injected and str(vault.resolve()) in injected["context"]
+    assert router._pre_tool_call(
+        "search_files", {"path": str(vault)}, session_id="owner-vault-session"
+    ) is None
+    assert router._pre_tool_call(
+        "read_file", {"path": str(note)}, session_id="owner-vault-session"
+    ) is None
+    assert router._pre_tool_call(
+        "session_search", {"query": "Quantumn"}, session_id="owner-vault-session"
+    ) is None
+
+    for path in (outside, escape):
+        denied = router._pre_tool_call(
+            "read_file", {"path": str(path)}, session_id="owner-vault-session"
+        )
+        assert denied and "VAULT_PATH_DENIED" in denied["message"]
+    wrapped_escape = router._pre_tool_call(
+        "tool_call",
+        {"name": "read_file", "arguments": {"path": str(escape)}},
+        session_id="owner-vault-session",
+    )
+    assert wrapped_escape and "VAULT_PATH_DENIED" in wrapped_escape["message"]
+    missing = router._pre_tool_call(
+        "search_files", {}, session_id="owner-vault-session"
+    )
+    assert missing and "VAULT_PATH_REQUIRED" in missing["message"]
+    relative = router._pre_tool_call(
+        "search_files", {"path": "wiki"}, session_id="owner-vault-session"
+    )
+    assert relative and "VAULT_PATH_REQUIRED" in relative["message"]
+    for tool_name, args in (
+        ("write_file", {"path": str(note), "content": "overwrite"}),
+        ("terminal", {"command": "pwd"}),
+    ):
+        denied = router._pre_tool_call(
+            tool_name, args, session_id="owner-vault-session"
+        )
+        assert denied and denied["action"] == "block"
+
+
+def test_missing_sender_internal_turn_inherits_verified_vault_owner(monkeypatch, tmp_path):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    router._GATEWAY_IDENTITIES.clear()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+    monkeypatch.setenv("FEISHU_CODE_WRITE_OWNER_IDS", "ou_owner")
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
+
+    first = router._pre_llm_call(
+        "什么是本地知识库",
+        session_id="owner-continuation",
+        turn_id="owner-continuation-1",
+        platform="feishu",
+        sender_id="ou_owner",
+    )
+    assert first and str(vault.resolve()) in first["context"]
+    second = router._pre_llm_call(
+        "继续读取",
+        session_id="owner-continuation",
+        turn_id="owner-continuation-2",
+        platform="feishu",
+        sender_id="",
+    )
+    assert router._LOCAL_TURN_STATES["owner-continuation"]["principal"] == "vault_owner"
+    assert second and str(vault.resolve()) in second["context"]
+
+
+def test_non_owner_feishu_user_cannot_read_local_vault(monkeypatch, tmp_path):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
+    monkeypatch.setenv("FEISHU_CODE_WRITE_OWNER_IDS", "ou_owner")
+    router._LOCAL_TURN_STATES["non-owner"] = {
+        "principal": "approved_user",
+        "route_class": "GENERAL_QA",
+    }
+    denied = router._pre_tool_call(
+        "read_file", {"path": str(vault / "note.md")}, session_id="non-owner"
+    )
+    assert denied and denied["action"] == "block"
+
+
 def test_local_in_memory_receipt_is_diagnostic_only(monkeypatch):
     _, router = load_router()
     router._LOCAL_TURN_STATES.clear()

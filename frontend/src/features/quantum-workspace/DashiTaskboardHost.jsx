@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import { platformApi } from "../../services/platformApi";
+import { buildTaskboardRelationProjection, groupCanonicalRelations, qwsTaskMarker } from "./relationProjection.js";
 import "./DashiTaskboardHost.css";
 
 const safeSlug = (value) => String(value || "qws").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "qws";
-const taskMarker = (taskId) => `qws-${safeSlug(taskId)}`.slice(0, 64);
+
 
 function resolveDashiTheme() {
   const explicitTheme = document.documentElement.dataset.theme;
@@ -49,21 +50,10 @@ const issueSummary = (issue) => issue ? {
   archived_at: issue.archivedAt || null,
 } : null;
 
-const issueFull = (issue) => issue ? {
-  ...issueSummary(issue),
-  description: issue.description || "",
-  labels: issue.labels || [],
-  development_context: issue.developmentContext || null,
-  start_date: issue.startDate || null,
-  due_date: issue.dueDate || null,
-  recurrence: issue.recurrence || null,
-  version: issue.version ?? null,
-  updated_at: issue.updatedAt || null,
-} : null;
 
 function resolveCanonicalTask(dashiTask, qwsTasks) {
   const labels = new Set(dashiTask.labels || []);
-  const markerMatches = (qwsTasks || []).filter((item) => labels.has(taskMarker(item.id)));
+  const markerMatches = (qwsTasks || []).filter((item) => labels.has(qwsTaskMarker(item.id)));
   if (markerMatches.length > 1) throw new Error("该卡片绑定了多个 QWS 任务，无法安全打开 AI Session。");
   const titleMatches = (qwsTasks || []).filter((item) => item.title?.trim() === dashiTask.title?.trim());
   const canonical = markerMatches[0] || (titleMatches.length === 1 ? titleMatches[0] : null);
@@ -75,32 +65,22 @@ function resolveCanonicalTask(dashiTask, qwsTasks) {
     status: dashiTask.status,
     assignee_role: canonical?.assignee_role || dashiTask.assignee?.name || null,
     deliverables: canonical?.deliverables || [],
+    acceptance_criteria: canonical?.acceptance_criteria || [],
+    labels: canonical?.labels || dashiTask.labels || [],
+    due_date: canonical?.due_date || dashiTask.dueDate || null,
     stage_id: canonical?.stage_id || "taskboard-card",
     workflow_id: canonical?.workflow_id || null,
+    canonical_status: canonical?.status || null,
+    task_revision: canonical?.task_revision || 1,
+    challenge_reviews: canonical?.challenge_reviews || [],
+    delivery_manifest: canonical?.delivery_manifest || null,
     binding_kind: "taskboard_card",
   };
 }
 
-function collectDirectChildren(rootTask, allTasks) {
-  return (allTasks || [])
-    .filter((candidate) => candidate.relations?.parent?.id === rootTask.id)
-    .map((task) => ({ ...issueFull(task), depth: 1 }));
-}
 
-function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTasks, comments, attachments }) {
-  const relations = dashiTask.relations || {};
-  const tasksById = new Map((allTasks || []).map((item) => [item.id, item]));
-  const fullRelation = (item) => issueFull(tasksById.get(item?.id) || item);
-  const directChildren = collectDirectChildren(dashiTask, allTasks);
-  const scopedTaskIds = new Set([
-    dashiTask.id,
-    relations.parent?.id,
-    ...(relations.blockedBy || []).map((item) => item.id),
-    ...(relations.blocks || []).map((item) => item.id),
-    ...(relations.related || []).map((item) => item.id),
-    ...directChildren.map((item) => item.id),
-  ].filter(Boolean));
-  const scopedTasks = (allTasks || []).filter((item) => scopedTaskIds.has(item.id));
+function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, comments, attachments, relationProjection }) {
+  const canonicalRelations = groupCanonicalRelations(relationProjection.canonical_entries);
   return {
     schema_version: 2,
     binding: {
@@ -108,14 +88,14 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
       default_scope: ["project_goal", "current_task", "acceptance_criteria", "direct_relations", "recent_comments"],
       comments_limit: 20,
     },
-    session_registry: scopedTasks.map((item) => ({
-      task_id: item.id,
-      identifier: item.identifier || null,
-      title: item.title || "未命名卡片",
-      responsibility: item.description?.trim() || item.title || "未定义任务职责",
-      status: item.status || null,
-      card_version: item.version ?? null,
-    })),
+    session_registry: [{
+      task_id: dashiTask.id,
+      identifier: dashiTask.identifier || null,
+      title: dashiTask.title || "未命名卡片",
+      responsibility: dashiTask.description?.trim() || dashiTask.title || "未定义任务职责",
+      status: dashiTask.status || null,
+      card_version: dashiTask.version ?? null,
+    }],
     project: {
       id: project.id,
       name: project.name,
@@ -127,12 +107,12 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
       dashi_task_id: dashiTask.id,
       identifier: dashiTask.identifier || null,
       title: dashiTask.title || qwsTask.title,
-      parent_issue: fullRelation(relations.parent),
+      parent_issue: null,
       descriptions: [
         { id: "qws-summary", source: "qws_summary", content: qwsTask.summary || "" },
         { id: "taskboard-description", source: "taskboard_description", content: dashiTask.description || "" },
       ],
-      sub_issues: directChildren,
+      sub_issues: [],
       comments: (comments || []).slice(-20).map((comment) => ({
         id: comment.id,
         body: comment.body || "",
@@ -163,11 +143,8 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, allTask
       start_date: dashiTask.startDate || null,
       due_date: dashiTask.dueDate || null,
       recurrence: dashiTask.recurrence || null,
-      related_issues: {
-        blocked_by: (relations.blockedBy || []).map(fullRelation),
-        blocks: (relations.blocks || []).map(fullRelation),
-        related: (relations.related || []).map(fullRelation),
-      },
+      related_issues: canonicalRelations,
+      relation_projection: relationProjection,
       qws: {
         binding_kind: qwsTask.binding_kind || "canonical_task",
         canonical_task_id: qwsTask.canonical_task_id || null,
@@ -242,17 +219,34 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       platformApi.getProjectProcess(project.id),
     ]);
     const dashiTask = taskPayload.task;
-    const qwsTask = resolveCanonicalTask(dashiTask, latestProcess.tasks || []);
+    const qwsTasks = latestProcess.tasks || [];
+    const qwsTask = resolveCanonicalTask(dashiTask, qwsTasks);
+    if (!qwsTask.canonical_task_id) throw new Error("该 Taskboard 卡片尚未绑定 QWS canonical task，不能建立执行上下文。");
+    const [relationDigest, manifests] = await Promise.all([
+      platformApi.getProjectTaskRelationDigest(project.id, qwsTask.canonical_task_id),
+      platformApi.getProjectTaskDeliveryManifests(project.id, qwsTask.canonical_task_id),
+    ]);
+    const relationProjection = buildTaskboardRelationProjection({
+      digest: relationDigest,
+      dashiTask,
+      allTasks: tasksPayload.tasks || [],
+      qwsTasks,
+    });
     return {
-      task: qwsTask,
+      task: {
+        ...qwsTask,
+        process_revision: latestProcess.process_revision || project.process_revision || 1,
+        delivery_manifest: manifests.find((item) => item.status === "READY") || manifests.at(-1) || null,
+        relation_projection: relationProjection,
+      },
       cardContext: buildCardContext({
         project,
         dashiProjectId,
         dashiTask,
         qwsTask,
-        allTasks: tasksPayload.tasks || [],
         comments: commentsPayload.comments || [],
         attachments: attachmentsPayload.attachments || [],
+        relationProjection,
       }),
     };
   }, [dashiProjectId, project, user]);

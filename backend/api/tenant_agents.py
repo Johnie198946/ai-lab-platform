@@ -42,6 +42,15 @@ router = APIRouter(prefix="/api/v1", tags=["tenant-agents"])
 
 # 基线 4 大 profile（与 agent_registry 唯一真值来源保持一致，杜绝硬编码漂移）
 BASELINE_AGENT_IDS: frozenset[str] = frozenset(agent_ids())
+INTERACTIVE_AMR = frozenset({"password", "webauthn", "mfa", "oauth_browser", "test_interactive"})
+
+
+def _require_interactive_human(payload: Dict[str, Any]) -> None:
+    if str(payload.get("principal_type") or "").lower() != "human":
+        raise HTTPException(status_code=403, detail="authenticated human principal required")
+    amr = {str(item).lower() for item in (payload.get("amr") or [])}
+    if not amr.intersection(INTERACTIVE_AMR):
+        raise HTTPException(status_code=403, detail="interactive human authentication required")
 
 
 class TenantAgentCreate(BaseModel):
@@ -135,6 +144,7 @@ async def create_tenant_agent(
     body: TenantAgentCreate, payload: Dict[str, Any] = Depends(require_auth)
 ) -> TenantAgentOut:
     """创建租户私有 Agent 切片（base_agent_id 已由 Pydantic 校验为基线 4 个）。"""
+    _require_interactive_human(payload)
     tenant_id = _tenant_id()
     visible = current_visibility.get()
     requested = set(body.subscribed_knowledge_packs)
@@ -174,6 +184,43 @@ async def create_tenant_agent(
 async def get_agent_capabilities(payload: Dict[str, Any] = Depends(require_auth)):
     """Platform capability catalog; data access remains tenant scoped."""
     return capability_catalog()
+
+
+@router.patch("/tenant-agents/{agent_id}", response_model=TenantAgentOut)
+async def update_tenant_agent(
+    agent_id: str,
+    body: TenantAgentCreate,
+    payload: Dict[str, Any] = Depends(require_auth),
+) -> TenantAgentOut:
+    """Update only an owned slice; tenant and owner never come from the client."""
+    _require_interactive_human(payload)
+    tenant_id = _tenant_id()
+    owner = str(payload.get("user_id") or payload.get("sub") or "")
+    visible = current_visibility.get()
+    requested = set(body.subscribed_knowledge_packs)
+    if visible is not None and not requested.issubset(set(visible)):
+        raise HTTPException(status_code=403, detail={"code": "knowledge_scope_denied", "message": "套餐或知识权限已变化"})
+    async with SessionLocal() as db:
+        row = (await db.execute(select(TenantAgentModel).where(TenantAgentModel.id == agent_id))).scalar_one_or_none()
+        if row is None or row.tenant_id != tenant_id or row.owner_user_id != owner:
+            raise HTTPException(status_code=404, detail="切片不存在")
+        safe_tools = [tool for tool in body.allowed_tools if tool in SAFE_GLOBAL_TOOLS]
+        safe_agents = [item for item in body.capability_agent_ids if item in CAPABILITY_AGENT_IDS]
+        row.base_agent_id = body.base_agent_id
+        row.custom_name = body.custom_name
+        row.private_prompt_delta = body.private_prompt_delta
+        row.subscribed_knowledge_packs = body.subscribed_knowledge_packs
+        row.custom_avatar = body.custom_avatar
+        row.is_active = body.is_active
+        row.composition_manifest = {
+            "allowed_tools": safe_tools or list(SAFE_GLOBAL_TOOLS),
+            "capability_agent_ids": safe_agents or [body.base_agent_id],
+            "allow_network": bool(body.allow_network),
+            "delegation": {"max_concurrent_children": 3, "max_spawn_depth": 1},
+        }
+        await db.commit()
+        await db.refresh(row)
+        return _to_out(row)
 
 
 def _evaluation_out(run: AgentEvaluationRun, events: list[AgentEvaluationEvent] | None = None):
@@ -365,7 +412,8 @@ def _sandbox_skill_agents(
 async def delete_tenant_agent(
     agent_id: str, payload: Dict[str, Any] = Depends(require_auth)
 ) -> None:
-    """删除当前租户的切片（跨租户删除一律 404，不泄露存在性）。"""
+    """删除当前租户中由当前交互式人类拥有的切片。"""
+    _require_interactive_human(payload)
     tenant_id = _tenant_id()
     async with SessionLocal() as db:
         row = (
@@ -377,7 +425,7 @@ async def delete_tenant_agent(
         if (
             row is None
             or row.tenant_id != tenant_id
-            or (row.visibility == "private" and row.owner_user_id != owner_user_id)
+            or row.owner_user_id != owner_user_id
         ):
             raise HTTPException(status_code=404, detail="切片不存在")
         await db.delete(row)

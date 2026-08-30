@@ -14,6 +14,8 @@ public struct ClarifyCard: View {
     public let block: ClarifyBlock
     public var onSubmit: ((String) -> Void)? = nil
     public var onRecover: (() -> Void)? = nil
+    public var onDraftChange: (([String], String) -> Void)? = nil
+    public var onExpand: (() -> Void)? = nil
 
     @State private var selectedIDs: Set<String> = []
     @State private var customText: String = ""
@@ -21,14 +23,30 @@ public struct ClarifyCard: View {
     public init(
         block: ClarifyBlock,
         onSubmit: ((String) -> Void)? = nil,
-        onRecover: (() -> Void)? = nil
+        onRecover: (() -> Void)? = nil,
+        onDraftChange: (([String], String) -> Void)? = nil,
+        onExpand: (() -> Void)? = nil
     ) {
         self.block = block
         self.onSubmit = onSubmit
         self.onRecover = onRecover
+        self.onDraftChange = onDraftChange
+        self.onExpand = onExpand
+        _selectedIDs = State(initialValue: Set(block.draftSelectionIDs))
+        _customText = State(initialValue: block.draftCustomText)
     }
 
     public var body: some View {
+        Group {
+            if block.isCollapsed && !block.isSubmitted {
+                collapsedView
+            } else {
+                expandedView
+            }
+        }
+    }
+
+    private var expandedView: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             headerView
             if block.submissionState == .expired {
@@ -47,6 +65,48 @@ public struct ClarifyCard: View {
         }
         .padding(AppTheme.Spacing.xl)
         .quantumCard()
+        .onChange(of: selectedIDs) { _, value in
+            onDraftChange?(Array(value).sorted(), customText)
+        }
+        .onChange(of: customText) { _, value in
+            onDraftChange?(Array(selectedIDs).sorted(), value)
+        }
+    }
+
+    private var collapsedView: some View {
+        Button(action: { onExpand?() }) {
+            HStack(spacing: AppTheme.Spacing.md) {
+                Image(systemName: "slider.horizontal.3")
+                    .foregroundStyle(AppTheme.Icons.intelligence)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("需求确认已收起")
+                        .font(AppTheme.Typography.supporting.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text(draftSummary)
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Label("继续填写", systemImage: "chevron.down")
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                    .foregroundStyle(AppTheme.Icons.interactive)
+            }
+            .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+            .padding(.horizontal, AppTheme.Spacing.md)
+        }
+        .buttonStyle(SoftButtonStyle())
+        .quantumCard()
+        .accessibilityHint("展开并恢复之前的选择和输入")
+    }
+
+    private var draftSummary: String {
+        let labels = block.draftSelectionIDs.compactMap { id in
+            block.choices.first(where: { $0.id == id })?.label
+        }
+        if !labels.isEmpty { return "已保留：\(labels.joined(separator: "、"))" }
+        if !block.draftCustomText.isEmpty { return "已保留输入：\(block.draftCustomText)" }
+        return "可随时继续，当前进度已保留"
     }
 
     private var submittingView: some View {

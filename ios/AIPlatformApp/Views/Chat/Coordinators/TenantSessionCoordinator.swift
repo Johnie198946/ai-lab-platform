@@ -45,6 +45,8 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var animationTasks: [String: Task<Void, Never>] = [:]
     private var nextContextScope: ChatContextScopeDTO? = nil
     private var accountCancellable: AnyCancellable?
+    /// Avoid synchronous SQLite rehydration every time SwiftUI merely presents the same Tab again.
+    private var loadedSessionId: String? = nil
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
         self.sessionManager = sessionManager ?? SessionManager.shared
@@ -68,8 +70,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         inflight = nil
         pendingQueue.removeAll()
         messages.removeAll()
+        loadedSessionId = nil
         if appState?.isLoggedIn == true {
-            restoreActiveSession()
+            restoreActiveSession(force: true)
         }
     }
 
@@ -101,12 +104,92 @@ public final class TenantSessionCoordinator: ObservableObject {
         )
     }
 
-    public func restoreActiveSession() {
+    public func restoreActiveSession(force: Bool = false) {
         let sid = sessionManager.activeSessionID()
+        guard force || loadedSessionId != sid else { return }
         applyHistoryPage(sessionManager.latestPage(for: sid), isLatest: true, startsAtBottom: true)
+        loadedSessionId = sid
         self.quotedContext = nil
         appState?.selectedAgentId = sessionManager.agentId(for: sid)
         appState?.selectedAgentName = sessionManager.agentName(for: sid)
+    }
+
+    public func updateClarifyDraft(messageId: String, selectionIDs: [String], customText: String) {
+        updateClarify(messageId: messageId) { block in
+            block.draftSelectionIDs = selectionIDs
+            block.draftCustomText = customText
+        }
+    }
+
+    public func setClarifyCollapsed(messageId: String, collapsed: Bool) {
+        updateClarify(messageId: messageId) { $0.isCollapsed = collapsed }
+    }
+
+    public func collapseActiveClarify() {
+        guard let message = messages.last(where: { $0.clarifyBlock?.isSubmitted == false }),
+              message.clarifyBlock?.isCollapsed == false else { return }
+        setClarifyCollapsed(messageId: message.id, collapsed: true)
+    }
+
+    private func updateClarify(messageId: String, mutate: (inout ClarifyBlock) -> Void) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
+              let blockIndex = messages[messageIndex].blocks.firstIndex(where: {
+                  if case .clarify = $0 { return true }; return false
+              }), case .clarify(var block) = messages[messageIndex].blocks[blockIndex] else { return }
+        mutate(&block)
+        messages[messageIndex].blocks[blockIndex] = .clarify(block)
+        commitSession()
+    }
+
+    /// 回前台、重建 ChatView 或切回会话时，仅对账既有 server-side Run。
+    /// 不重发原问题；running 进入 status monitor，只有明确 not_found/timeout 才允许用户重跑。
+    public func reconcileActiveRun() {
+        guard !isGenerating, APIClient.shared.currentToken() != nil else { return }
+        let sid = sessionManager.activeSessionID()
+        guard let outputIndex = messages.lastIndex(where: {
+            $0.clarifyBlock == nil && ($0.role == .interrupted || $0.pending || $0.isStreaming)
+        }) else { return }
+        let outputId = messages[outputIndex].id
+        guard let userMessage = messages[..<outputIndex].last(where: { $0.role == .user })
+            ?? sessionManager.previousUserMessage(before: outputId, sessionId: sid) else { return }
+        let agentId = sessionManager.agentId(for: sid)
+        let taskEpoch = tenantEpoch
+        statusPollTask?.cancel()
+        statusPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let status = try await APIClient.shared.fetchChatStatus(
+                    sessionId: sid, consume: true, agentId: agentId
+                )
+                guard self.tenantEpoch == taskEpoch,
+                      self.sessionManager.activeSessionID() == sid else { return }
+                if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                    self.applyRecoveredAnswer(answer, outputMessageId: outputId)
+                    return
+                }
+                if status.status == "running" {
+                    let req = InFlightRequest(
+                        id: outputId, sessionId: sid, text: userMessage.content,
+                        quote: userMessage.quotedContext, agentId: agentId
+                    )
+                    self.inflight = req
+                    self.isGenerating = true
+                    self.streamOutputMessageIds[req.id] = outputId
+                    if let idx = self.messages.firstIndex(where: { $0.id == outputId }) {
+                        self.messages[idx].role = .assistant
+                        self.messages[idx].pending = true
+                        self.messages[idx].isStreaming = true
+                    }
+                    self.commitSession()
+                    self.startRecoveredRunMonitor(
+                        requestId: req.id, sessionId: sid,
+                        agentId: agentId, outputMessageId: outputId
+                    )
+                }
+            } catch {
+                // 网络不确定时保持可恢复标记，绝不创建第二个 Run。
+            }
+        }
     }
 
     /// 冷启动/回前台时以服务端为准恢复 Clarify；不启动新推理。
@@ -204,8 +287,36 @@ public final class TenantSessionCoordinator: ObservableObject {
         liveProgress = nil
 
         sessionManager.switchTo(sessionId)
-        restoreActiveSession()
+        restoreActiveSession(force: true)
         refreshQuickCommands()
+    }
+
+    public func startTargetedTopic(from message: ChatMessage) {
+        let parentId = sessionManager.activeSessionID()
+        let topic = sessionManager.startTopic(parentSessionId: parentId, sourceMessage: message)
+        if topic.state == .queued {
+            showToast("并行话题已满（最多 3 个），已加入队列")
+            return
+        }
+        switchSession(to: topic.sessionId)
+        quotedContext = sessionManager.topicQuote(for: topic.sessionId)
+        showToast("已开启针对性话题，引用上下文已保留")
+    }
+
+    public func openTopic(_ topic: TopicSessionMetadata) {
+        guard topic.state != .queued else {
+            showToast("该话题仍在队列中")
+            return
+        }
+        switchSession(to: topic.sessionId)
+        if messages.isEmpty { quotedContext = sessionManager.topicQuote(for: topic.sessionId) }
+    }
+
+    public func endCurrentTopic() {
+        let sessionId = sessionManager.activeSessionID()
+        guard sessionManager.topicSessions[sessionId]?.state == .active else { return }
+        sessionManager.markTopicEnding(sessionId)
+        sendMessage(text: "请结束当前针对性话题：基于本话题完整上下文生成可确认的 knowledge_action_v1 知识操作草案。必须返回 knowledge_action_draft，由用户确认后再通过 /me/knowledge-notes 同步；不要直接写入知识库。")
     }
 
     public func newSession(agentId: String? = nil, agentName: String? = nil) {
@@ -230,7 +341,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             agentId: resolvedAgentId, agentName: resolvedAgentName
         )
         sessionManager.switchTo(newId)
-        restoreActiveSession()
+        restoreActiveSession(force: true)
         refreshQuickCommands()
     }
 
@@ -510,16 +621,20 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
+        var handedOffToStatusRecovery = false
         defer {
             let outputId = self.outputMessageId(for: req)
             self.drainDeltaBuffer(messageId: outputId)
             self.finalizeReasoningDuration(for: outputId)
             self.commitSession()
-            // 💡 仅当当前请求仍为活跃请求时复位 isGenerating，避免异步延迟派发误杀新流
-            if self.inflight?.id == req.id && self.tenantEpoch == taskEpoch {
+            // 交给 status monitor 后仍是同一个活跃 Run，不能被流任务的 defer 清掉。
+            if !handedOffToStatusRecovery,
+               self.inflight?.id == req.id && self.tenantEpoch == taskEpoch {
                 self.isGenerating = false
             }
-            self.streamOutputMessageIds.removeValue(forKey: req.id)
+            if !handedOffToStatusRecovery {
+                self.streamOutputMessageIds.removeValue(forKey: req.id)
+            }
         }
         if demoMode {
             await appendDemoReply(req: req)
@@ -758,53 +873,73 @@ public final class TenantSessionCoordinator: ObservableObject {
             let outputId = outputMessageId(for: req)
             drainDeltaBuffer(messageId: outputId)
 
-            // 断流只回读同一个 Hermes Run，绝不以原始问题发起第二次完整推理。
-            if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-                if messages[idx].content.isEmpty && messages[idx].clarifyBlock == nil {
-                    if let status = try? await APIClient.shared.fetchChatStatus(sessionId: req.sessionId, consume: true, agentId: req.agentId),
-                       let ans = status.answer, !ans.isEmpty {
-                        messages[idx].content = ans
-                    } else {
-                        messages[idx].content = "连接暂时中断，正在后台继续。返回本页后会恢复同一任务。"
-                        messages[idx].degraded = true
-                    }
-                }
-                messages[idx].pending = false
-                messages[idx].isStreaming = false
-            }
-
-            finalizeReasoningDuration(for: outputId)
-            commitSession()
-            finishGeneration()
+            // 流自然结束但没有终态（包括 busy SSE）时，只对账同一个 server-side Run。
+            handedOffToStatusRecovery = await recoverAfterStreamEnd(req, outputMessageId: outputId)
+            if !handedOffToStatusRecovery { finishGeneration() }
         } catch {
             guard self.tenantEpoch == taskEpoch else { return }
             let outputId = outputMessageId(for: req)
             drainDeltaBuffer(messageId: outputId)
+            // 网络断开只 detach。running 必须恢复 monitor，绝不能以 regenerate 覆盖旧 user key。
+            handedOffToStatusRecovery = await recoverAfterStreamEnd(req, outputMessageId: outputId)
+            if !handedOffToStatusRecovery { finishGeneration() }
+        }
+    }
 
-            // SSE 异常不能清空已生成内容，更不能用原始需求另起一个非流式 Agent。
-            // 先回读后台结果；未完成时保留现有上下文并给出明确恢复入口。
-            if let status = try? await APIClient.shared.fetchChatStatus(
-                sessionId: req.sessionId,
-                consume: true,
-                agentId: req.agentId
-            ), status.status == "completed", let answer = status.answer, !answer.isEmpty {
-                if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-                    messages[idx].content = answer
-                    messages[idx].pending = false
-                    messages[idx].isStreaming = false
+    /// SSE 结束后的唯一恢复路径：completed 回填；running 追踪；不确定状态保留恢复入口。
+    @discardableResult
+    private func recoverAfterStreamEnd(_ req: InFlightRequest, outputMessageId: String) async -> Bool {
+        do {
+            let status = try await APIClient.shared.fetchChatStatus(
+                sessionId: req.sessionId, consume: true, agentId: req.agentId
+            )
+            if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                return false
+            }
+            if status.status == "running" {
+                if let idx = messages.firstIndex(where: { $0.id == outputMessageId }) {
+                    if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        messages[idx].content = "连接暂时中断，正在后台继续。返回本页后会恢复同一任务。"
+                    }
+                    messages[idx].pending = true
+                    messages[idx].isStreaming = true
                     messages[idx].degraded = false
                 }
-            } else if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-                if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    messages[idx].content = "连接暂时中断，已保留当前需求确认进度。请点击重新生成继续。"
-                }
-                messages[idx].pending = false
-                messages[idx].isStreaming = false
-                messages[idx].degraded = false
+                streamOutputMessageIds[req.id] = outputMessageId
+                startRecoveredRunMonitor(
+                    requestId: req.id, sessionId: req.sessionId,
+                    agentId: req.agentId, outputMessageId: outputMessageId
+                )
+                commitSession()
+                return true
             }
-            commitSession()
-            finishGeneration()
+        } catch {
+            // 状态查询也断网：持久化 interrupted，回前台后 reconcileActiveRun 再对账。
         }
+        if let idx = messages.firstIndex(where: { $0.id == outputMessageId }) {
+            if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                messages[idx].content = "连接暂时中断，已保留当前任务。请稍后返回本页恢复。"
+            }
+            messages[idx].role = .interrupted
+            messages[idx].pending = false
+            messages[idx].isStreaming = false
+            messages[idx].degraded = false
+        }
+        commitSession()
+        return false
+    }
+
+    private func applyRecoveredAnswer(_ answer: String, outputMessageId: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == outputMessageId }) else { return }
+        messages[idx].role = .assistant
+        messages[idx].content = answer
+        messages[idx].pending = false
+        messages[idx].isStreaming = false
+        messages[idx].degraded = false
+        messages[idx].blocks = []
+        finalizeReasoningDuration(for: outputMessageId)
+        commitSession()
     }
 
     private func runInFlight(_ req: InFlightRequest, taskEpoch: Int) async {
@@ -1225,7 +1360,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var attempts = 0
-            while attempts < 90 && !Task.isCancelled {
+            // Bridge watchdog 的服务端上限为 720s；monitor 覆盖完整窗口，避免长调研在 3 分钟处假中断。
+            while attempts < 360 && !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled else { return }
                 do {
@@ -1336,7 +1472,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     self.showToast("原任务仍在后台运行，已恢复跟踪")
                     return
                 }
-                guard ["timeout", "not_found"].contains(status.status) else {
+                guard Self.statusAllowsRegenerate(status.status) else {
                     self.showToast("服务端状态尚未收敛，未重复执行")
                     return
                 }
@@ -1546,56 +1682,102 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     public func cancelInFlight() {
+        guard let req = inflight else { return }
+        // 显式停止是唯一会触发 Bridge cancel/interrupt 的客户端路径。
+        tenantEpoch += 1
         currentChatTask?.cancel()
+        currentChatTask = nil
+        stopStatusPolling()
+        markCancelled(req: req)
+        Task {
+            try? await APIClient.shared.cancelStream(
+                sessionId: req.sessionId, agentId: req.agentId
+            )
+        }
     }
 
     public func cancelQueued(_ id: String) {
         pendingQueue.removeAll { $0.id == id }
     }
 
-    /// 重新生成（完整工作流 v2）：
-    /// 1) 先从服务器探测该会话是否已产生完整答案（断点重续语义：会话可能已在后台完成，
-    ///    status 端点 consume 模式可直接取回最终正文，无需重新烧 token）
-    /// 2) 若确实未完成/无答案 → 携带用户原句 + 引用上下文全量重跑
+    nonisolated static func statusAllowsRegenerate(_ status: String) -> Bool {
+        ["timeout", "not_found"].contains(status)
+    }
+
+    /// 重新生成先对账 server-side Run：completed 回填，running 恢复同一 request 的 monitor；
+    /// 只有 Bridge 明确返回 timeout/not_found 时才携带 regenerate=true 创建新 Run。
     public func retryMessage(_ messageId: String) {
         guard !isGenerating else { return }
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         let sid = sessionManager.activeSessionID()
         let visibleUser = messages[..<idx].last(where: { $0.role == .user })
-        guard let userMessage = visibleUser ?? sessionManager.previousUserMessage(before: messageId, sessionId: sid) else { return }
-        let userPrompt = userMessage.content
-        let quote = userMessage.quotedContext
+        guard let userMessage = visibleUser
+            ?? sessionManager.previousUserMessage(before: messageId, sessionId: sid) else { return }
+        let agentId = sessionManager.agentId(for: sid)
 
-        // 未登录/无有效 token：断点探测与重跑均需认证，先给出明确提示（不无声硬跳登录页）
         guard APIClient.shared.currentToken() != nil else {
             showToast("需要登录后继续会话，请先登录")
             return
         }
 
-        // 先探测服务器：断点重续优先（避免重复烧 token + 完整上下文回显）
-        let probeTask = Task { @MainActor in
-            if !sid.isEmpty {
-                if let status = try? await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true, agentId: appState?.selectedAgentId),
-                   status.status == "completed",
-                   let answer = status.answer, !answer.isEmpty {
-                    // 断点续接命中：直接用服务器已完成的答案回填（保留全部上下文）
-                    messages[idx].content = answer
-                    messages[idx].pending = false
-                    messages[idx].isStreaming = false
-                    messages[idx].degraded = false
-                    finalizeReasoningDuration(for: messageId)
-                    commitSession()
+        isGenerating = true // 防止重复点击并发探测/重跑
+        statusPollTask?.cancel()
+        statusPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let status = try await APIClient.shared.fetchChatStatus(
+                    sessionId: sid, consume: true, agentId: agentId
+                )
+                guard !Task.isCancelled else { return }
+                if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                    self.applyRecoveredAnswer(answer, outputMessageId: messageId)
+                    self.isGenerating = false
                     return
                 }
+                if status.status == "running" {
+                    let req = InFlightRequest(
+                        id: messageId, sessionId: sid, text: userMessage.content,
+                        quote: userMessage.quotedContext, agentId: agentId
+                    )
+                    self.inflight = req
+                    self.streamOutputMessageIds[req.id] = messageId
+                    if let currentIdx = self.messages.firstIndex(where: { $0.id == messageId }) {
+                        self.messages[currentIdx].role = .assistant
+                        self.messages[currentIdx].pending = true
+                        self.messages[currentIdx].isStreaming = true
+                        self.messages[currentIdx].degraded = false
+                    }
+                    self.commitSession()
+                    self.startRecoveredRunMonitor(
+                        requestId: req.id, sessionId: sid,
+                        agentId: agentId, outputMessageId: messageId
+                    )
+                    self.showToast("原任务仍在后台运行，已恢复跟踪")
+                    return
+                }
+                guard Self.statusAllowsRegenerate(status.status) else {
+                    self.isGenerating = false
+                    self.showToast("服务端状态尚未收敛，未重复执行")
+                    return
+                }
+            } catch {
+                self.isGenerating = false
+                self.showToast("无法确认服务器状态，未重复执行")
+                return
             }
-            // 未命中断点 → 全量重跑（携带上下文 + regenerate 标志，服务端作废旧 run 后全新执行）
-            sessionManager.truncateMessages(from: messageId, sessionId: sid)
-            messages.removeSubrange(idx...)
-            hasNewerMessages = false
-            isLatestPage = true
-            startGeneration(text: userPrompt, quote: quote, regenerate: true)
+
+            // 仅服务端明确无可恢复 Run 时才重跑，避免覆盖 detached run 的 user key。
+            self.isGenerating = false
+            self.sessionManager.truncateMessages(from: messageId, sessionId: sid)
+            if let currentIdx = self.messages.firstIndex(where: { $0.id == messageId }) {
+                self.messages.removeSubrange(currentIdx...)
+            }
+            self.hasNewerMessages = false
+            self.isLatestPage = true
+            self.startGeneration(
+                text: userMessage.content, quote: userMessage.quotedContext, regenerate: true
+            )
         }
-        _ = probeTask
     }
 
     public func retryCurrentInFlight() {
@@ -1886,6 +2068,10 @@ public final class TenantSessionCoordinator: ObservableObject {
             self.commitSession()
             if let message = result.message { self.showToast(message) }
             else if result.state == .synced { self.showToast("知识操作已应用并同步") }
+            if result.state == .synced,
+               self.sessionManager.topicSessions[self.sessionManager.activeSessionID()]?.state == .ending {
+                self.sessionManager.finishTopic(self.sessionManager.activeSessionID())
+            }
         }
     }
 

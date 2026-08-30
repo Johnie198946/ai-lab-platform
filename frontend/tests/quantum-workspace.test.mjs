@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   buildBoardColumns,
@@ -11,6 +12,7 @@ import {
 import { workflowIdFromSearch } from "../src/architectContract.js";
 import { parseSseFrame, splitSseFrames } from "../src/services/sseFrames.js";
 import { restoreTaskMessages } from "../src/features/quantum-workspace/taskChatMessages.js";
+import { buildTaskboardRelationProjection, groupCanonicalRelations, qwsTaskMarker } from "../src/features/quantum-workspace/relationProjection.js";
 
 const process = {
   process_revision: 4,
@@ -125,4 +127,42 @@ test("queued LIVE claims stay PLAN until a provider run receipt exists", () => {
 test("QuantumWorkspace opens a specifically requested canonical workflow", () => {
   assert.equal(workflowIdFromSearch("?workflow_id=wf_abc-123"), "wf_abc-123");
   assert.equal(workflowIdFromSearch("?workflow_id=../../bad"), "");
+});
+
+test("QWS relation snapshot is canonical and Taskboard drift never replaces it", () => {
+  const digest = {
+    canonical_source: "QWS_PROCESS_SNAPSHOT",
+    canonical_source_hash: "a".repeat(64),
+    external_projection_mode: "READ_ONLY_CONSUMER_REQUIRED",
+    entries: [{ relation_type: "blocks", effective_task_id: "qws-target", title: "目标" }],
+  };
+  const qwsTasks = [{ id: "qws-target" }, { id: "qws-extra" }];
+  const dashiTarget = { id: "d-target", labels: [qwsTaskMarker("qws-target")] };
+  const dashiExtra = { id: "d-extra", labels: [qwsTaskMarker("qws-extra")] };
+  const projection = buildTaskboardRelationProjection({
+    digest,
+    qwsTasks,
+    dashiTask: { id: "d-root", relations: { blocks: [dashiTarget], related: [dashiExtra] } },
+    allTasks: [dashiTarget, dashiExtra],
+  });
+  assert.equal(projection.status, "DRIFT");
+  assert.equal(projection.canonical_hash, "a".repeat(64));
+  assert.equal(projection.taskboard_mode, "READ_ONLY_CONSUMER_REQUIRED");
+  assert.deepEqual(projection.extra_in_taskboard, ["related:qws-extra"]);
+  assert.equal(groupCanonicalRelations(projection.canonical_entries).blocks[0].effective_task_id, "qws-target");
+  assert.equal(groupCanonicalRelations(projection.canonical_entries).related.length, 0);
+});
+
+test("task drawer exposes server-backed Challenge decisions and relation drift", () => {
+  const drawer = readFileSync(new URL("../src/features/quantum-workspace/TaskChatDrawer.jsx", import.meta.url), "utf8");
+  const api = readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  assert.match(drawer, /TaskGovernancePanel/);
+  assert.match(drawer, /填写决策理由（必填）/);
+  assert.match(drawer, /Taskboard 投影/);
+  assert.match(drawer, /字段级合并预览/);
+  assert.match(drawer, /验收通过/);
+  assert.match(api, /resolveProjectTaskChallenge/);
+  assert.match(api, /createProjectTaskMergePreview/);
+  assert.match(api, /decideProjectTaskDeliveryManifest/);
+  assert.match(api, /challenge-reviews\/\$\{reviewId\}\/decision/);
 });

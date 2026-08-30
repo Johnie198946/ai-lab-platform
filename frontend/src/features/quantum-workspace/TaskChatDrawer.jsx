@@ -59,10 +59,151 @@ function BackfillChangeList({ changes }) {
   return <div className="qw-backfill-fields">{rows.map((row) => <div key={row.key}><span>{row.label}</span><p>{row.value}</p></div>)}</div>;
 }
 
+function TaskGovernancePanel({ project, task, onResolved }) {
+  const review = (task?.challenge_reviews || []).find((item) => item.status === "OPEN");
+  const options = review?.decision_brief?.options || review?.alternatives || [];
+  const [selectedOptionId, setSelectedOptionId] = useState(options[0]?.id || "");
+  const [rationale, setRationale] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [duplicateCandidates, setDuplicateCandidates] = useState([]);
+  const [mergePreview, setMergePreview] = useState(null);
+  const [fieldChoices, setFieldChoices] = useState({});
+  const [manifestNote, setManifestNote] = useState("");
+  const projection = task?.relation_projection;
+
+  useEffect(() => {
+    setSelectedOptionId(options[0]?.id || "");
+    setRationale("");
+    setError("");
+  }, [review?.id]);
+
+  const resolveReview = async () => {
+    const option = options.find((item) => item.id === selectedOptionId);
+    if (!review || !option || !rationale.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await platformApi.resolveProjectTaskChallenge(project.id, task.canonical_task_id, review.id, {
+        request_id: `ui-${crypto.randomUUID()}`,
+        expected_revision: task.process_revision,
+        expected_task_revision: task.task_revision,
+        selected_option_id: option.id,
+        resolution: option.resolution,
+        rationale: rationale.trim(),
+      });
+      await onResolved?.();
+    } catch (reason) {
+      setError(reason.message || "决策提交失败");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const checkDuplicates = async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await platformApi.checkProjectTaskDuplicates(project.id, {
+        task_id: task.canonical_task_id, title: task.title, summary: task.summary || task.title,
+        acceptance_criteria: task.acceptance_criteria || [], deliverables: task.deliverables || [],
+        assignee_role: task.assignee_role, due_date: task.due_date, labels: task.labels || [], trigger: "CREATE",
+      });
+      setDuplicateCandidates(result.candidates || []);
+    } catch (reason) {
+      setError(reason.message || "重复检查失败");
+    } finally { setBusy(false); }
+  };
+
+  const previewMerge = async (candidate) => {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await platformApi.createProjectTaskMergePreview(project.id, task.canonical_task_id, {
+        request_id: `ui-${crypto.randomUUID()}`, expected_revision: task.process_revision,
+        secondary_task_id: candidate.target_task_id, expected_primary_revision: task.task_revision,
+        expected_secondary_revision: candidate.target_task_revision,
+      });
+      const preview = { ...result.merge, process_revision: result.process_revision };
+      setMergePreview(preview);
+      setFieldChoices(Object.fromEntries((preview.conflicts || []).map((item) => [item.field, "primary"])));
+    } catch (reason) {
+      setError(reason.message || "合并预览失败");
+    } finally { setBusy(false); }
+  };
+
+  const applyMerge = async () => {
+    if (!mergePreview || mergePreview.blockers?.length) return;
+    setBusy(true);
+    setError("");
+    try {
+      await platformApi.applyProjectTaskMerge(project.id, mergePreview.id, {
+        request_id: `ui-${crypto.randomUUID()}`, expected_revision: mergePreview.process_revision,
+        field_choices: fieldChoices,
+      });
+      setMergePreview(null);
+      setDuplicateCandidates([]);
+      await onResolved?.();
+    } catch (reason) {
+      setError(reason.message || "合并失败");
+    } finally { setBusy(false); }
+  };
+
+  const decideManifest = async (decision) => {
+    if (task.delivery_manifest?.status !== "READY" || !manifestNote.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await platformApi.decideProjectTaskDeliveryManifest(
+        project.id, task.canonical_task_id, task.delivery_manifest.id,
+        { expected_revision: task.process_revision, decision, note: manifestNote.trim() },
+      );
+      await onResolved?.();
+    } catch (reason) {
+      setError(reason.message || "验收决策失败");
+    } finally { setBusy(false); }
+  };
+
+  if (!review && !projection && !task?.delivery_manifest) return null;
+  return (
+    <section className="qw-task-governance" aria-label="任务治理">
+      <div><strong>治理状态</strong><span>{task.canonical_status || "—"}</span></div>
+      {projection && <div><span>关系真源：QWS</span><span>Taskboard 投影：{projection.status === "ALIGNED" ? "一致" : projection.status === "DRIFT" ? "存在漂移" : "待校验"}</span></div>}
+      {task.delivery_manifest && <div><span>交付清单</span><span>{task.delivery_manifest.status}</span></div>}
+      {task.delivery_manifest?.status === "READY" && <div className="qw-task-decision">
+        <textarea value={manifestNote} onChange={(event) => setManifestNote(event.target.value)} placeholder="填写验收意见（必填）" rows={2} disabled={busy} />
+        <div><button type="button" onClick={() => decideManifest("REWORK")} disabled={busy || !manifestNote.trim()}>退回返工</button><button type="button" onClick={() => decideManifest("ACCEPT")} disabled={busy || !manifestNote.trim()}>验收通过</button></div>
+      </div>}
+      <div className="qw-task-duplicate">
+        <button type="button" onClick={checkDuplicates} disabled={busy}>检查重复任务</button>
+        {duplicateCandidates.map((candidate) => <button type="button" key={candidate.target_task_id} onClick={() => previewMerge(candidate)} disabled={busy}>{candidate.target_title} · {(candidate.score * 100).toFixed(0)}%</button>)}
+      </div>
+      {mergePreview && <div className="qw-task-decision">
+        <strong>字段级合并预览</strong>
+        {(mergePreview.conflicts || []).map((conflict) => <label key={conflict.field}>{conflict.field}<select value={fieldChoices[conflict.field] || "primary"} onChange={(event) => setFieldChoices((current) => ({ ...current, [conflict.field]: event.target.value }))}>{conflict.allowed_choices.map((choice) => <option key={choice} value={choice}>{choice === "primary" ? "保留当前任务" : choice === "secondary" ? "使用来源任务" : "合并两边"}</option>)}</select></label>)}
+        {mergePreview.blockers?.length > 0 && <p className="qw-error">存在活跃执行租约，暂不能合并。</p>}
+        <button type="button" onClick={applyMerge} disabled={busy || mergePreview.blockers?.length}>确认合并</button>
+      </div>}
+      {review && (
+        <div className="qw-task-decision">
+          <strong>{review.decision_brief?.question || review.question || "需要你的决策"}</strong>
+          <select value={selectedOptionId} onChange={(event) => setSelectedOptionId(event.target.value)} disabled={busy}>
+            {options.map((option) => <option key={option.id} value={option.id}>{option.label} · 代价：{option.cost}</option>)}
+          </select>
+          <textarea value={rationale} onChange={(event) => setRationale(event.target.value)} placeholder="填写决策理由（必填）" rows={2} disabled={busy} />
+          <button type="button" onClick={resolveReview} disabled={busy || !selectedOptionId || !rationale.trim()}>{busy ? "提交中…" : "确认决策"}</button>
+          {error && <p className="qw-error">{error}</p>}
+        </div>
+      )}
+    </section>
+  );
+}
+
 export function TaskChatDrawer({ project, process, task, cardContext, refreshCardContext, onClose }) {
   const [conversation, setConversation] = useState(null);
   const [contextSync, setContextSync] = useState(null);
   const [currentCardContext, setCurrentCardContext] = useState(cardContext);
+  const [governanceTask, setGovernanceTask] = useState(task);
   const [messages, setMessages] = useState([]);
   const [proposals, setProposals] = useState([]);
   const [question, setQuestion] = useState("");
@@ -189,6 +330,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
         card_context: refreshed.cardContext,
       });
       setCurrentCardContext(refreshed.cardContext);
+      setGovernanceTask(refreshed.task);
       setConversation(activeConversation);
       setContextSync(activeConversation.context_sync || null);
     } catch (reason) {
@@ -230,6 +372,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       const applied = await platformApi.applyTaskBackfillProposal(conversation.id, proposal.id);
       const refreshed = await refreshCardContext();
       setCurrentCardContext(refreshed.cardContext);
+      setGovernanceTask(refreshed.task);
       const completed = await platformApi.completeTaskBackfillProposal(conversation.id, proposal.id, refreshed.cardContext, applied.applied_evidence);
       setContextSync(completed.context_sync || contextSync);
       setProposals((current) => current.map((item) => item.id === proposal.id ? completed : item));
@@ -259,6 +402,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
     <aside className="qw-chat-drawer" aria-label={`${task.title} 任务对话`}>
       <header><div><span className="qw-eyebrow">AI Lab · AI 员工 Session</span><h3>{task.title}</h3></div><div className="qw-chat-header-actions"><button type="button" disabled={!refreshCardContext || contextRefreshing || busy} onClick={refreshContext} aria-label="刷新任务上下文" title="仅在卡片内容变化后刷新"><RefreshCw size={16} />{contextRefreshing ? "同步中" : "刷新上下文"}</button><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></div></header>
       <div className="qw-binding">{aiEmployee && <span>{aiEmployee.display_name} · AI 员工 · {aiEmployee.job_title}</span>}<span>task · {task.id.slice(-8)}</span><span>card v{currentCardContext?.task?.version ?? "-"}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span>{contextSync && <span>context v{contextSync.revision} · {contextSync.mode === "full" ? "首次全量" : contextSync.mode === "incremental" ? `增量 +${contextSync.changes_count}` : "已是最新"}</span>}</div>
+      <TaskGovernancePanel project={project} task={governanceTask} onResolved={refreshContext} />
       <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
         {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>项目、当前任务和直接依赖已绑定</strong><span>上下文按 revision/hash 留痕；连续交流复用快照，卡片变化后再点“刷新上下文”。要求 AI 回填时会先生成方案，确认后才写入。</span></div>}
         {messages.map((message) => {

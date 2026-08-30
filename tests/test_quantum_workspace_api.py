@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -24,9 +27,12 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB}"
 os.environ.setdefault("AUTHEN_DEV_MODE", "true")
 
 from backend.main import app  # noqa: E402
+import backend.api.quantum_workspace as qws_api  # noqa: E402
 from backend.api.auth import require_auth  # noqa: E402
 from backend.api.quantum_workspace import (  # noqa: E402
     _apply_taskboard_backfill,
+    _enforce_agent_lease_fence,
+    _enforce_qws_relation_backfill_contract,
     _parse_backfill_block,
 )
 from backend.services.workspace_process import instantiate_project_blueprint, persist_process_revision  # noqa: E402
@@ -47,6 +53,8 @@ def _reset_database():
         "tenant_key": "tenant-a",
         "user_id": "user-a",
         "sub": "user-a",
+        "principal_type": "human",
+        "amr": ["test_interactive"],
         "is_super_admin": False,
     }
     with TestClient(app) as client:
@@ -99,7 +107,10 @@ def test_project_home_supports_update_and_owner_delete(_reset_database):
     assert updated.status_code == 200
     assert updated.json()["name"] == "新项目名"
     assert updated.json()["desired_outputs"] == ["项目文档"]
-    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    deleted = client.delete(
+        f"/api/v1/projects/{project_id}",
+        headers={"X-QWS-Confirm-Project-Id": project_id},
+    )
     assert deleted.status_code == 204
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
@@ -284,7 +295,10 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert registry.task_profile["acceptance_criteria"] == ["成果可阅读"]
     assert registry.task_profile["stage"]["name"] == "交付"
 
-    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    deleted = client.delete(
+        f"/api/v1/projects/{project_id}",
+        headers={"X-QWS-Confirm-Project-Id": project_id},
+    )
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
@@ -1284,6 +1298,146 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
     assert duplicate.json()["detail"] == "workflow already binds another project task"
 
 
+def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "merge-loop")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    primary, secondary = process["tasks"][:2]
+    source_artifact = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "merge.source.evidence",
+            "title": "来源任务证据",
+            "artifact_type": "document",
+            "task_id": secondary["id"],
+        },
+    )
+    assert source_artifact.status_code == 201
+
+    preview_response = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
+        json={
+            "request_id": "merge-preview-0001",
+            "expected_revision": 1,
+            "secondary_task_id": secondary["id"],
+            "expected_primary_revision": 1,
+            "expected_secondary_revision": 1,
+        },
+    )
+    assert preview_response.status_code == 201, preview_response.text
+    preview = preview_response.json()["merge"]
+    preview_replay = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
+        json={
+            "request_id": "merge-preview-0001",
+            "expected_revision": 1,
+            "secondary_task_id": secondary["id"],
+            "expected_primary_revision": 1,
+            "expected_secondary_revision": 1,
+        },
+    )
+    assert preview_replay.status_code == 200
+    assert preview_replay.json()["merge"]["id"] == preview["id"]
+    choices = {
+        item["field"]: ("union" if "union" in item["allowed_choices"] else "primary")
+        for item in preview["conflicts"]
+    }
+    applied = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
+        json={"request_id": "merge-apply-0001", "expected_revision": 2, "field_choices": choices},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["merge"]["status"] == "APPLIED"
+    assert applied.json()["secondary_task"]["status"] == "MERGED"
+    assert applied.json()["secondary_task"]["redirect_to_task_id"] == primary["id"]
+    merged_task = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{secondary['id']}"
+    )
+    assert merged_task.status_code == 200
+    assert merged_task.json()["redirect"]["task_id"] == primary["id"]
+    workflow_graph = client.get(
+        f"/api/v1/projects/{project_id}/graphs/workflow"
+    ).json()
+    merged_node = next(node for node in workflow_graph["nodes"] if node["id"] == secondary["id"])
+    assert merged_node["task_status"] == "MERGED"
+    blocked_update = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{secondary['id']}/card-summary",
+        json={"expected_revision": 3, "progress": "不应写入"},
+    )
+    assert blocked_update.status_code == 409
+    assert blocked_update.json()["detail"]["error"] == "merged_task_is_read_only"
+    blocked_artifact = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "merge.source.after",
+            "title": "不应写入来源任务",
+            "artifact_type": "document",
+            "task_id": secondary["id"],
+        },
+    )
+    assert blocked_artifact.status_code == 409
+    blocked_version = client.post(
+        f"/api/v1/projects/{project_id}/artifacts/{source_artifact.json()['id']}/versions",
+        json={
+            "storage_ref": "repo://merge/blocked.md",
+            "sha256": "c" * 64,
+            "media_type": "text/markdown",
+            "verification": {"verified": True},
+        },
+    )
+    assert blocked_version.status_code == 409
+    blocked_conversation = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": secondary["id"],
+            "workflow_id": secondary.get("workflow_id"),
+            "agent_version": "hermes-current",
+        },
+    )
+    assert blocked_conversation.status_code == 409
+    assert blocked_conversation.json()["detail"]["error"] == "merged_task_is_read_only"
+    artifacts = client.get(f"/api/v1/projects/{project_id}/artifacts").json()
+    merged_artifact = next(item for item in artifacts if item["artifact_key"] == "merge.source.evidence")
+    assert merged_artifact["source_task_id"] == secondary["id"]
+    assert merged_artifact["effective_task_id"] == primary["id"]
+    manifests = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{primary['id']}/delivery-manifests"
+    )
+    assert manifests.status_code == 200
+    assert manifests.json() == []
+    replayed = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
+        json={"request_id": "merge-apply-0001", "expected_revision": 2, "field_choices": choices},
+    )
+    assert replayed.status_code == 200
+    assert replayed.json()["process_revision"] == 3
+    drifted_apply = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
+        json={"request_id": "merge-apply-drift", "expected_revision": 2, "field_choices": choices},
+    )
+    assert drifted_apply.status_code == 409
+
+    reverted = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
+        json={"request_id": "merge-revert-0001", "expected_revision": 3},
+    )
+    assert reverted.status_code == 200, reverted.text
+    assert reverted.json()["merge"]["status"] == "REVERTED"
+    assert reverted.json()["secondary_task"]["status"] == secondary["status"]
+    assert "redirect_to_task_id" not in reverted.json()["secondary_task"]
+    restored_task = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{secondary['id']}"
+    ).json()
+    assert "redirect" not in restored_task
+    replayed_revert = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
+        json={"request_id": "merge-revert-0001", "expected_revision": 3},
+    )
+    assert replayed_revert.status_code == 200
+    assert replayed_revert.json()["process_revision"] == 4
+
+
 def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relation(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "operating-loop")
@@ -1310,8 +1464,18 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/context-pack"
     )
     assert context.status_code == 200, context.text
-    assert context.json()["identity"]["execution_lease"]["session_id"] == "session-primary"
-    assert "full_chat_history" in context.json()["exclusions"]
+    context_payload = context.json()
+    assert context_payload["identity"]["execution_lease"]["session_id"] == "session-primary"
+    assert "full_chat_history" in context_payload["exclusions"]
+    assert "relations" not in context_payload
+    assert context_payload["relation_digest"]["schema_version"] == "qws.relation-digest.v1"
+    digest = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-digest"
+    )
+    assert digest.status_code == 200, digest.text
+    digest_payload = digest.json()
+    assert digest_payload["entries"] == context_payload["relation_digest"]["entries"]
+    assert digest_payload["exclusions"] == context_payload["relation_digest"]["exclusions"]
 
     proposal = client.post(
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-proposals",
@@ -1344,6 +1508,209 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
     )
     assert conflicting_lease.status_code == 409
     assert conflicting_lease.json()["detail"]["error"] == "execution_lease_conflict"
+
+    confirmed = client.post(
+        f"/api/v1/projects/{project_id}/relation-proposals/{proposal.json()['proposal']['id']}/decision",
+        json={
+            "request_id": "relation-confirm-0001",
+            "expected_revision": 3,
+            "expected_task_revision": 3,
+            "decision": "CONFIRM",
+            "reason": "用户确认关联",
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["process_revision"] == 4
+    assert confirmed.json()["task_revision"] == 4
+    assert confirmed.json()["proposal"]["status"] == "CONFIRMED"
+    replayed_confirmation = client.post(
+        f"/api/v1/projects/{project_id}/relation-proposals/{proposal.json()['proposal']['id']}/decision",
+        json={
+            "request_id": "relation-confirm-0001",
+            "expected_revision": 3,
+            "expected_task_revision": 3,
+            "decision": "CONFIRM",
+            "reason": "用户确认关联",
+        },
+    )
+    assert replayed_confirmation.status_code == 200
+    assert replayed_confirmation.json()["process_revision"] == 4
+    confirmed_digest = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-digest"
+    )
+    assert confirmed_digest.status_code == 200
+    assert any(
+        item.get("effective_task_id") == target["id"] and item.get("relation_type") == "related"
+        for item in confirmed_digest.json()["entries"]
+    )
+
+
+def test_execution_lease_heartbeat_requires_same_session_and_epoch(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "lease-heartbeat")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    acquired = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease",
+        json={
+            "expected_revision": 1, "expected_task_revision": 1,
+            "session_id": "session-a", "actor_id": "agent-a", "ttl_seconds": 900,
+        },
+    )
+    assert acquired.status_code == 200, acquired.text
+    epoch = acquired.json()["lease"]["lease_epoch"]
+    renewed = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease/heartbeat",
+        json={
+            "expected_revision": 2, "expected_task_revision": 2,
+            "session_id": "session-a", "lease_epoch": epoch, "ttl_seconds": 900,
+        },
+    )
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["process_revision"] == 3
+    assert renewed.json()["lease"]["lease_epoch"] == epoch
+    wrong_epoch = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease/heartbeat",
+        json={
+            "expected_revision": 3, "expected_task_revision": 3,
+            "session_id": "session-a", "lease_epoch": epoch + 1, "ttl_seconds": 900,
+        },
+    )
+    assert wrong_epoch.status_code == 409
+    assert wrong_epoch.json()["detail"]["error"] == "execution_lease_epoch_conflict"
+
+
+def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "challenge-review")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    task = process["tasks"][0]
+    request = {
+        "request_id": "challenge-create-0001", "expected_revision": 1,
+        "expected_task_revision": 1, "agreed": ["目标合理"],
+        "challenges": ["未经授权将直接发布生产"],
+        "impacts": {"security": "可能泄露数据", "no_action": "继续阻断发布"},
+        "evidence": [{"kind": "FACT", "statement": "没有部署授权", "source_refs": [f"task:{task['id']}@1"]}],
+        "alternatives": [
+            {"id": "keep", "label": "保留原方案", "cost": "高风险", "resolution": "PROCEED"},
+            {"id": "experiment", "label": "先做沙盒实验", "cost": "增加一天", "resolution": "EXPERIMENT"},
+        ],
+        "conclusion": "EXPERIMENT", "decision_key": "production_release_strategy",
+        "question": "是否先做沙盒实验？",
+        "risk_categories": ["security", "production_publish"], "reversible": False,
+    }
+    created = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews", json=request
+    )
+    assert created.status_code == 201, created.text
+    review = created.json()["challenge_review"]
+    assert review["gate_level"] == "HARD"
+    assert review["decision_brief"]["status"] == "OPEN"
+    assert created.json()["process_revision"] == 2
+    assert created.json()["task_revision"] == 2
+    assert client.get(f"/api/v1/projects/{project_id}/tasks/{task['id']}").json()["status"] == "DECISION_REQUIRED"
+    replayed_create = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews", json=request
+    )
+    assert replayed_create.status_code == 200
+    assert replayed_create.json()["challenge_review"]["id"] == review["id"]
+    drifted_create = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews",
+        json={**request, "question": "另一个问题"},
+    )
+    assert drifted_create.status_code == 409
+    blocked_lease = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease",
+        json={"expected_revision": 2, "expected_task_revision": 2, "session_id": "blocked", "actor_id": "agent", "ttl_seconds": 60},
+    )
+    assert blocked_lease.status_code == 409
+    bypass = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}",
+        json={"expected_revision": 2, "status": "TODO", "reason": "尝试绕过 Challenge"},
+    )
+    assert bypass.status_code == 409
+    assert bypass.json()["detail"]["error"] == "open_challenge_decision_required"
+    decision_request = {
+        "request_id": "challenge-decision-0001", "expected_revision": 2,
+        "expected_task_revision": 2, "selected_option_id": "experiment",
+        "resolution": "EXPERIMENT", "rationale": "先验证再申请发布授权",
+    }
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
+        "principal_type": "agent", "is_super_admin": False,
+    }
+    agent_resolution = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json=decision_request,
+    )
+    assert agent_resolution.status_code == 403
+    assert agent_resolution.json()["detail"] == "authenticated human principal required"
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
+        "principal_type": "human", "amr": ["test_interactive"], "is_super_admin": False,
+    }
+    resolved = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json=decision_request,
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["process_revision"] == 3
+    assert resolved.json()["task_revision"] == 3
+    assert resolved.json()["decision"]["status"] == "CONFIRMED"
+    replayed_resolution = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json=decision_request,
+    )
+    assert replayed_resolution.status_code == 200
+    assert replayed_resolution.json()["process_revision"] == 3
+    drifted_resolution = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json={**decision_request, "rationale": "不同理由"},
+    )
+    assert drifted_resolution.status_code == 409
+    restored = client.get(f"/api/v1/projects/{project_id}/tasks/{task['id']}").json()
+    assert restored["status"] == "TODO"
+    assert restored["challenge_reviews"][0]["decision_brief"]["status"] == "RESOLVED"
+    late_create_replay = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews", json=request
+    )
+    assert late_create_replay.status_code == 200
+    assert late_create_replay.json()["process_revision"] == 2
+    assert late_create_replay.json()["task_revision"] == 2
+    assert late_create_replay.json()["challenge_review"]["status"] == "OPEN"
+    assert late_create_replay.json()["challenge_review"]["decision_brief"]["status"] == "OPEN"
+
+
+def test_challenge_cas_conflict_rereads_identical_committed_request(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "challenge-race")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    request = {
+        "request_id": "challenge-race-0001", "expected_revision": 1,
+        "expected_task_revision": 1, "agreed": ["目标合理"],
+        "challenges": ["直接发布生产缺少授权"], "impacts": {"security": "发布风险"},
+        "evidence": [{"kind": "FACT", "statement": "无发布授权", "source_refs": [f"task:{task['id']}@1"]}],
+        "alternatives": [
+            {"id": "keep", "label": "保留", "cost": "高风险", "resolution": "PROCEED"},
+            {"id": "sandbox", "label": "沙盒", "cost": "一天", "resolution": "EXPERIMENT"},
+        ],
+        "conclusion": "EXPERIMENT", "decision_key": "production_release_strategy",
+        "question": "是否先做沙盒？",
+        "risk_categories": ["production_publish"], "reversible": False,
+    }
+    original = qws_api._cas_project_process
+
+    async def committed_winner_then_conflict(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise HTTPException(status_code=409, detail="simulated concurrent winner")
+
+    monkeypatch.setattr(qws_api, "_cas_project_process", committed_winner_then_conflict)
+    url = f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews"
+    response = client.post(url, json=request)
+    assert response.status_code == 200
+    assert response.json()["process_revision"] == 2
+    assert response.json()["challenge_review"]["request_id"] == request["request_id"]
 
 
 
@@ -2039,3 +2406,55 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
     ).json()
     assert messages[-1]["event_metadata"]["terminal_type"] == "error"
+
+
+def test_qws_canonical_relation_backfill_is_fail_closed() -> None:
+    snapshot = {
+        "task": {
+            "relation_projection": {
+                "canonical_source": "QWS_PROCESS_SNAPSHOT",
+                "taskboard_mode": "READ_ONLY_CONSUMER_REQUIRED",
+            }
+        }
+    }
+    _enforce_qws_relation_backfill_contract(snapshot, {"description": "safe"})
+    with pytest.raises(HTTPException, match="QWS canonical relations") as relation_error:
+        _enforce_qws_relation_backfill_contract(
+            snapshot,
+            {"relationChanges": {"add": [{"type": "blocks", "target_task_id": "t2"}]}},
+        )
+    assert relation_error.value.status_code == 409
+    with pytest.raises(HTTPException, match="QWS canonical relations"):
+        _enforce_qws_relation_backfill_contract(
+            snapshot,
+            {"createIssues": [{"title": "child", "relation": "sub_issue"}]},
+        )
+
+
+def test_agent_task_writes_require_current_lease_epoch() -> None:
+    task = {
+        "execution_lease": {
+            "status": "ACTIVE",
+            "session_id": "session-new",
+            "lease_epoch": 4,
+            "actor_id": "agent:agent-a",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+    }
+    payload = {"principal_type": "agent", "sub": "agent-a"}
+    _enforce_agent_lease_fence(task, payload, session_id="session-new", lease_epoch=4)
+    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+        _enforce_agent_lease_fence(task, payload, session_id="session-old", lease_epoch=3)
+    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+        _enforce_agent_lease_fence(task, {}, session_id="session-new", lease_epoch=4)
+    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+        _enforce_agent_lease_fence(
+            task, {"principal_type": "agent", "sub": "agent-b"},
+            session_id="session-new", lease_epoch=4,
+        )
+    _enforce_agent_lease_fence(
+        task,
+        {"principal_type": "human", "sub": "user-a", "amr": ["test_interactive"]},
+        session_id=None,
+        lease_epoch=None,
+    )

@@ -27,6 +27,16 @@ public enum UserRole: String, Codable, Sendable, CaseIterable {
     }
 }
 
+public enum CuteDisplayNames {
+    private static let names = ["棉花糖小兔", "奶油小熊", "星星布丁", "云朵团子", "桃桃软糖", "月亮小鹿"]
+
+    public static func name(for userID: String) -> String {
+        guard !userID.isEmpty else { return names[0] }
+        let value = userID.utf8.reduce(0) { ($0 &* 31) &+ Int($1) }
+        return names[abs(value) % names.count]
+    }
+}
+
 public struct TenantProfile: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public var name: String
@@ -221,6 +231,10 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
     /// 已提交标记：提交后禁用重复点选，并记录最终选择文本
     public var isSubmitted: Bool
     public var submittedSelection: String
+    /// 客户端交互草稿随消息落盘；收起、切会话或冷启动均不会丢失。
+    public var draftSelectionIDs: [String]
+    public var draftCustomText: String
+    public var isCollapsed: Bool
 
     public init(
         id: String = UUID().uuidString,
@@ -236,7 +250,10 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
         submitLabel: String = "确认选择",
         source: String = "bridge",
         isSubmitted: Bool = false,
-        submittedSelection: String = ""
+        submittedSelection: String = "",
+        draftSelectionIDs: [String] = [],
+        draftCustomText: String = "",
+        isCollapsed: Bool = false
     ) {
         self.id = id
         self.clarifyId = clarifyId
@@ -252,6 +269,9 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
         self.source = source
         self.isSubmitted = isSubmitted
         self.submittedSelection = submittedSelection
+        self.draftSelectionIDs = draftSelectionIDs
+        self.draftCustomText = draftCustomText
+        self.isCollapsed = isCollapsed
     }
 
     /// 提交结果回填（由 ChatView 在用户点选确认后调用，防重复提交）
@@ -662,6 +682,10 @@ public struct PersistedClarify: Codable, Sendable {
     public let source: String
     public let isSubmitted: Bool
     public let submittedSelection: String
+    public let draftSelectionIDs: [String]?
+    public let draftSelectionLabels: [String]?
+    public let draftCustomText: String?
+    public let isCollapsed: Bool?
 
     public init(_ block: ClarifyBlock) {
         id = block.id
@@ -678,10 +702,16 @@ public struct PersistedClarify: Codable, Sendable {
         source = block.source
         isSubmitted = block.isSubmitted
         submittedSelection = block.submittedSelection
+        draftSelectionIDs = block.draftSelectionIDs
+        draftSelectionLabels = block.draftSelectionIDs.compactMap { id in
+            block.choices.first(where: { $0.id == id })?.label
+        }
+        draftCustomText = block.draftCustomText
+        isCollapsed = block.isCollapsed
     }
 
     public func toClarifyBlock(defaultSessionId: String) -> ClarifyBlock {
-        ClarifyBlock(
+        var block = ClarifyBlock(
             id: id,
             clarifyId: clarifyId,
             requestId: requestId,
@@ -695,8 +725,44 @@ public struct PersistedClarify: Codable, Sendable {
             submitLabel: submitLabel,
             source: source,
             isSubmitted: isSubmitted,
-            submittedSelection: submittedSelection
+            submittedSelection: submittedSelection,
+            draftSelectionIDs: [],
+            draftCustomText: draftCustomText ?? "",
+            isCollapsed: isCollapsed ?? false
         )
+        if let draftSelectionLabels {
+            block.draftSelectionIDs = block.choices.filter { draftSelectionLabels.contains($0.label) }.map(\.id)
+        } else {
+            // Backward compatibility for snapshots written before labels were persisted.
+            block.draftSelectionIDs = draftSelectionIDs ?? []
+        }
+        return block
+    }
+}
+
+public enum TopicSessionState: String, Codable, Sendable, Hashable {
+    case active, queued, ending, ended
+}
+
+/// Existing chat session metadata for a focused thread. This is not a second runtime.
+public struct TopicSessionMetadata: Codable, Sendable, Hashable, Identifiable {
+    public var id: String { sessionId }
+    public let sessionId: String
+    public let parentSessionId: String
+    public let sourceMessageId: String
+    public let sourceText: String
+    public let sourceBlockSummary: String?
+    public let createdAt: Date
+    public var state: TopicSessionState
+
+    public init(sessionId: String, parentSessionId: String, sourceMessageId: String, sourceText: String, sourceBlockSummary: String?, createdAt: Date = Date(), state: TopicSessionState) {
+        self.sessionId = sessionId
+        self.parentSessionId = parentSessionId
+        self.sourceMessageId = sourceMessageId
+        self.sourceText = sourceText
+        self.sourceBlockSummary = sourceBlockSummary
+        self.createdAt = createdAt
+        self.state = state
     }
 }
 
@@ -734,6 +800,7 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var sessionAgentIds: [String: String] = [:]
     @Published public private(set) var sessionAgentNames: [String: String] = [:]
     @Published public private(set) var sessionMessageCounts: [String: Int] = [:]
+    @Published public private(set) var topicSessions: [String: TopicSessionMetadata] = [:]
 
     private var store: ChatHistoryStore
     private var accountFingerprint = "unconfigured"
@@ -770,6 +837,7 @@ public final class SessionManager: ObservableObject {
         sessionAgentIds.removeAll()
         sessionAgentNames.removeAll()
         sessionMessageCounts.removeAll()
+        topicSessions.removeAll()
         persistedFingerprints.removeAll()
         activeSessionId = nil
         loadMetadata()
@@ -784,6 +852,7 @@ public final class SessionManager: ObservableObject {
         sessionAgentIds.removeAll()
         sessionAgentNames.removeAll()
         sessionMessageCounts.removeAll()
+        topicSessions.removeAll()
         persistedFingerprints.removeAll()
         activeSessionId = nil
         accountFingerprint = "unconfigured"
@@ -810,6 +879,9 @@ public final class SessionManager: ObservableObject {
         sessionAgentIds = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentId) })
         sessionAgentNames = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentName) })
         sessionMessageCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.messageCount) })
+        topicSessions = Dictionary(uniqueKeysWithValues: summaries.compactMap { summary in
+            summary.topic.map { ($0.sessionId, $0) }
+        })
         activeSessionId = summaries.first?.id
     }
 
@@ -836,6 +908,65 @@ public final class SessionManager: ObservableObject {
         return id
     }
 
+    public static let maximumActiveTopics = 3
+
+    @discardableResult
+    public func startTopic(parentSessionId: String, sourceMessage: ChatMessage) -> TopicSessionMetadata {
+        let previousSessionId = activeSessionId
+        let activeCount = topicSessions.values.filter { $0.state == .active || $0.state == .ending }.count
+        let id = createSession(agentId: agentId(for: parentSessionId), agentName: agentName(for: parentSessionId))
+        let quote = sourceMessage.quoteContext
+        let topic = TopicSessionMetadata(
+            sessionId: id,
+            parentSessionId: parentSessionId,
+            sourceMessageId: sourceMessage.id,
+            sourceText: quote.text,
+            sourceBlockSummary: quote.blockSummary,
+            state: activeCount < Self.maximumActiveTopics ? .active : .queued
+        )
+        topicSessions[id] = topic
+        try? store.updateTopic(topic)
+        // createSession owns the normal session lifecycle and temporarily selects it;
+        // restore the caller so the coordinator performs the only visible switch.
+        if let previousSessionId { activeSessionId = previousSessionId }
+        return topic
+    }
+
+    public var visibleTopics: [TopicSessionMetadata] {
+        topicSessions.values
+            .filter { $0.state != .ended }
+            .sorted { $0.createdAt < $1.createdAt }
+    }
+
+    public func markTopicEnding(_ sessionId: String) {
+        guard var topic = topicSessions[sessionId], topic.state == .active else { return }
+        topic.state = .ending
+        topicSessions[sessionId] = topic
+        try? store.updateTopic(topic)
+    }
+
+    public func finishTopic(_ sessionId: String) {
+        guard var topic = topicSessions[sessionId] else { return }
+        topic.state = .ended
+        topicSessions[sessionId] = topic
+        try? store.updateTopic(topic)
+        promoteNextTopicIfNeeded()
+    }
+
+    private func promoteNextTopicIfNeeded() {
+        let occupied = topicSessions.values.filter { $0.state == .active || $0.state == .ending }.count
+        guard occupied < Self.maximumActiveTopics,
+              var next = topicSessions.values.filter({ $0.state == .queued }).min(by: { $0.createdAt < $1.createdAt }) else { return }
+        next.state = .active
+        topicSessions[next.sessionId] = next
+        try? store.updateTopic(next)
+    }
+
+    public func topicQuote(for sessionId: String) -> QuotedContext? {
+        guard let topic = topicSessions[sessionId] else { return nil }
+        return QuotedContext(text: topic.sourceText, blockSummary: topic.sourceBlockSummary)
+    }
+
     public func switchTo(_ id: String) {
         if sessionTitles[id] == nil {
             try? store.createSession(id: id, agentId: "main_agent", agentName: "Main 智能编排")
@@ -845,6 +976,7 @@ public final class SessionManager: ObservableObject {
     }
 
     public func deleteSession(_ id: String) {
+        let removedTopicOccupied = topicSessions[id].map { $0.state == .active || $0.state == .ending } ?? false
         try? store.delete(id)
         sessions.removeValue(forKey: id)
         sessionTitles.removeValue(forKey: id)
@@ -852,11 +984,13 @@ public final class SessionManager: ObservableObject {
         sessionAgentIds.removeValue(forKey: id)
         sessionAgentNames.removeValue(forKey: id)
         sessionMessageCounts.removeValue(forKey: id)
+        topicSessions.removeValue(forKey: id)
         persistedFingerprints.removeValue(forKey: id)
         if activeSessionId == id {
             activeSessionId = latestSessionID()
             if activeSessionId == nil { _ = createSession() }
         }
+        if removedTopicOccupied { promoteNextTopicIfNeeded() }
     }
 
     /// 按 updatedAt 倒序的会话 id 列表（供抽屉排序）。
@@ -1415,6 +1549,7 @@ public final class AppState: ObservableObject {
     @Published public var pendingChatContextScope: ChatContextScopeDTO? = nil
     @Published public var pendingWorkflowId: String? = nil
     @Published public var pendingKnowledgeNavigation: KnowledgeNavigationTarget? = nil
+    @Published public var pendingTopicSessionId: String? = nil
     /// 内存会话级 session_id（不持久化磁盘；404/401 清重发；账号切换清空）
     @Published public var chatSessionId: String? = nil
     /// 开发态（后端 dev 载荷 / 连接失败）→ 顶部导航栏下「开发模式·免鉴权」蓝 banner

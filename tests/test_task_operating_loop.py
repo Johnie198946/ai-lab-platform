@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -9,13 +9,22 @@ from backend.services.task_operating_loop import (
     acquire_execution_lease,
     apply_feedback_acceptance,
     apply_feedback_action,
+    apply_task_merge,
+    build_relation_digest,
     build_task_context_pack,
+    create_challenge_review,
     create_feedback_batch,
     create_handoff_capsule,
+    create_merge_preview,
     create_relation_proposal,
     find_duplicate_candidates,
+    heartbeat_execution_lease,
     initialize_task_contract,
     record_feedback_interpretation,
+    reclaim_expired_execution_lease,
+    relation_state_hash,
+    revert_task_merge,
+    resolve_challenge_review,
     submit_feedback_batch,
     submit_feedback_resolution,
     transition_task,
@@ -44,6 +53,7 @@ def test_task_contract_lease_handoff_and_context_pack() -> None:
     )
     assert current["task_revision"] == 2
     assert lease["session_id"] == "session-a"
+    assert lease["lease_epoch"] == 1
 
     with pytest.raises(ValueError, match="task_revision_conflict"):
         acquire_execution_lease(
@@ -73,6 +83,57 @@ def test_task_contract_lease_handoff_and_context_pack() -> None:
     assert context["current_state"]["next_action"] == "验证 API"
     assert len(context["relations"]) == 3
     assert "full_chat_history" in context["exclusions"]
+
+
+def test_lease_heartbeat_requires_same_session_epoch_and_active_task() -> None:
+    current = task("lease-heartbeat")
+    lease = acquire_execution_lease(
+        current, expected_task_revision=1, session_id="session-a", actor_id="agent-a"
+    )
+    renewed = heartbeat_execution_lease(
+        current,
+        expected_task_revision=current["task_revision"],
+        session_id="session-a",
+        lease_epoch=lease["lease_epoch"],
+    )
+    assert renewed["lease_epoch"] == lease["lease_epoch"]
+    with pytest.raises(ValueError, match="execution_lease_session_conflict"):
+        heartbeat_execution_lease(
+            current,
+            expected_task_revision=current["task_revision"],
+            session_id="session-b",
+            lease_epoch=lease["lease_epoch"],
+        )
+    current["execution_lease"]["status"] = "SUSPENDED"
+    with pytest.raises(ValueError, match="execution_lease_not_active"):
+        heartbeat_execution_lease(
+            current,
+            expected_task_revision=current["task_revision"],
+            session_id="session-a",
+            lease_epoch=lease["lease_epoch"],
+        )
+
+
+def test_expired_in_progress_lease_can_be_reclaimed_with_new_epoch() -> None:
+    current_time = datetime(2026, 8, 30, 8, 0, tzinfo=timezone.utc)
+    item = task("Recover abandoned run")
+    first = acquire_execution_lease(
+        item, expected_task_revision=1, session_id="session-old",
+        actor_id="agent:old", ttl_seconds=60, now=current_time,
+    )
+    reclaimed = reclaim_expired_execution_lease(
+        item,
+        expected_task_revision=2,
+        session_id="session-new",
+        actor_id="agent:new",
+        ttl_seconds=300,
+        now=current_time + timedelta(seconds=61),
+    )
+    assert first["lease_epoch"] == 1
+    assert reclaimed["lease_epoch"] == 2
+    assert reclaimed["session_id"] == "session-new"
+    assert item["status"] == "IN_PROGRESS"
+    assert item["task_revision"] == 3
 
 
 def test_relation_proposal_detects_dependency_cycle() -> None:
@@ -255,3 +316,341 @@ def test_duplicate_candidates_use_multi_field_evidence() -> None:
     assert candidates[0]["target_task_id"] == "b"
     assert candidates[0]["classification"] == "STRONG_DUPLICATE"
     assert all(item["target_task_id"] != "c" for item in candidates)
+
+
+def test_merge_preview_apply_redirect_and_revert_preserve_facts() -> None:
+    primary = initialize_task_contract({
+        "id": "primary", "title": "完成发布包", "summary": "生成发布包",
+        "status": "TODO", "deliverables": ["安装包"],
+        "feedback": [{"id": "feedback-primary"}],
+    })
+    secondary = initialize_task_contract({
+        "id": "secondary", "title": "交付发布包", "summary": "生成并验证发布包",
+        "status": "WAITING_CLAIM", "deliverables": ["回滚说明"],
+        "feedback": [{"id": "feedback-secondary"}],
+        "artifacts": [{"id": "artifact-secondary"}],
+    })
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    assert preview["status"] == "PREVIEW"
+    assert {item["field"] for item in preview["conflicts"]} >= {"title", "summary", "deliverables"}
+    choices = {
+        item["field"]: ("union" if "union" in item["allowed_choices"] else "primary")
+        for item in preview["conflicts"]
+    }
+    apply_task_merge(
+        preview, primary, secondary, field_choices=choices, actor_id="user:user-a"
+    )
+    assert preview["status"] == "APPLIED"
+    assert primary["deliverables"] == ["安装包", "回滚说明"]
+    assert primary["feedback"] == [{"id": "feedback-primary"}]
+    assert primary["artifacts"] == []
+    assert secondary["feedback"] == [{"id": "feedback-secondary"}]
+    assert secondary["artifacts"] == [{"id": "artifact-secondary"}]
+    assert secondary["status"] == "MERGED"
+    assert secondary["redirect_to_task_id"] == "primary"
+
+    revert_task_merge(preview, primary, secondary, actor_id="user:user-a")
+    assert preview["status"] == "REVERTED"
+    assert primary["deliverables"] == ["安装包"]
+    assert secondary["status"] == "WAITING_CLAIM"
+    assert "redirect_to_task_id" not in secondary
+    assert primary["task_revision"] == 3
+    assert secondary["task_revision"] == 3
+
+
+def test_merge_revert_rejects_post_merge_changes() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    secondary["title"] = "另一个标题"
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    choices = {item["field"]: "primary" for item in preview["conflicts"]}
+    apply_task_merge(preview, primary, secondary, field_choices=choices, actor_id="user:user-a")
+    primary["task_revision"] += 1
+    with pytest.raises(ValueError, match="primary_changed_after_merge"):
+        revert_task_merge(preview, primary, secondary, actor_id="user:user-a")
+
+
+def test_active_execution_lease_blocks_merge_apply() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    primary["execution_lease"] = {"expires_at": "2099-01-01T00:00:00+00:00"}
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    assert preview["blockers"] == [
+        {"task_id": "primary", "reason": "active_execution_lease"}
+    ]
+    with pytest.raises(ValueError, match="active_execution_lease_blocks_merge"):
+        apply_task_merge(
+            preview, primary, secondary, field_choices={}, actor_id="user:user-a"
+        )
+
+
+def test_merge_requires_explicit_choice_for_every_conflict() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    secondary["title"] = "冲突标题"
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    with pytest.raises(ValueError, match="merge_choice_required:title"):
+        apply_task_merge(
+            preview, primary, secondary, field_choices={}, actor_id="user:user-a"
+        )
+    assert preview["status"] == "PREVIEW"
+    assert secondary["status"] == "TODO"
+
+
+def test_merge_rejects_cross_project_and_hash_detects_unrevisioned_edit() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    primary["project_id"], secondary["project_id"] = "project-a", "project-b"
+    with pytest.raises(ValueError, match="cross_project_merge_forbidden"):
+        create_merge_preview(primary, secondary, created_by="user:user-a")
+
+    secondary["project_id"] = "project-a"
+    secondary["title"] = "冲突标题"
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    choices = {item["field"]: "primary" for item in preview["conflicts"]}
+    apply_task_merge(preview, primary, secondary, field_choices=choices, actor_id="user:user-a")
+    primary["title"] = "合并后的未递增 revision 修改"
+    with pytest.raises(ValueError, match="primary_changed_after_merge"):
+        revert_task_merge(preview, primary, secondary, actor_id="user:user-a")
+
+
+def test_merge_snapshot_excludes_feedback_attachment_storage_refs() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    secondary["feedback"] = [{
+        "id": "feedback-secret",
+        "attachments": [{"storage_ref": "private://secret"}],
+    }]
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    assert "private://secret" not in str(preview["snapshots"])
+
+
+def test_relation_digest_filters_permissions_and_private_facts() -> None:
+    source = task("source")
+    visible = task("visible")
+    visible.update({
+        "title": "可见依赖",
+        "card_summary": {
+            **visible["card_summary"],
+            "purpose": "交付安全评审",
+            "progress": "评审中",
+            "next_action": "提交证据",
+            "key_points": [{"private_note": "嵌套秘密"}],
+        },
+        "evidence_refs": [
+            {"artifact_id": "artifact-safe", "storage_ref": "private://must-not-leak"},
+            "private://secret-evidence",
+        ],
+        "feedback": [{"content": "不应进入摘要", "attachments": [{"storage_ref": "private://secret"}]}],
+        "decisions": [
+            {"id": "decision-1", "status": "APPROVED", "summary": "采用方案 A", "related_task_ids": ["source"], "private_note": "不披露"},
+            {"id": "decision-unconfirmed", "summary": "未经确认的秘密", "related_task_ids": ["source"]},
+        ],
+    })
+    restricted = task("restricted")
+    restricted.update({"title": "机密任务标题", "summary": "机密内容"})
+    source["relations"] = [
+        {"id": "rel-visible", "type": "blocked_by", "target_task_id": "visible", "release_condition": "安全证据通过"},
+        {"id": "rel-private", "type": "related", "target_task_id": "restricted"},
+    ]
+    process = {
+        "tasks": [source, visible, restricted],
+        "relation_proposals": [{
+            "id": "unconfirmed", "source_task_id": "source", "target_task_id": "restricted",
+            "proposed_type": "overlaps", "status": "PROPOSED",
+        }],
+    }
+    digest = build_relation_digest(
+        source, process, readable_task_ids={"source", "visible"}
+    )
+    assert digest["canonical_source"] == "QWS_PROCESS_SNAPSHOT"
+    assert digest["external_projection_mode"] == "READ_ONLY_CONSUMER"
+    assert digest["canonical_source_hash"] == relation_state_hash(process)
+    unconfirmed_hash = digest["canonical_source_hash"]
+    process["relation_proposals"].append({
+        "id": "another-unconfirmed", "source_task_id": "source",
+        "target_task_id": "visible", "proposed_type": "related", "status": "PROPOSED",
+    })
+    assert relation_state_hash(process) == unconfirmed_hash
+    reordered = {
+        **process,
+        "tasks": list(reversed(process["tasks"])),
+        "relation_proposals": list(reversed(process["relation_proposals"])),
+    }
+    assert relation_state_hash(reordered) == relation_state_hash(process)
+    readable = next(item for item in digest["entries"] if not item["restricted"])
+    private = next(item for item in digest["entries"] if item["restricted"])
+    assert readable["title"] == "可见依赖"
+    assert readable["release_condition"] == "安全证据通过"
+    assert readable["artifact_refs"] == [{"artifact_id": "artifact-safe"}]
+    assert readable["decisions"] == [{"id": "decision-1", "summary": "采用方案 A", "status": "APPROVED"}]
+    assert private == {
+        "restricted": True, "label": "受限依赖",
+    }
+    serialized = str(digest)
+    assert "机密任务标题" not in serialized
+    assert "private://secret" not in serialized
+    assert "private://secret-evidence" not in serialized
+    assert "private://must-not-leak" not in serialized
+    assert "不应进入摘要" not in serialized
+    assert "未经确认的秘密" not in serialized
+    assert "嵌套秘密" not in serialized
+    assert all(item.get("relation_id") != "unconfirmed" for item in digest["entries"])
+
+
+def test_relation_digest_reverses_incoming_edges_and_honors_context_limit() -> None:
+    source = task("source")
+    parent = task("parent")
+    blocker = task("blocker")
+    extra = task("extra")
+    parent["relations"] = [{"id": "rel-parent", "type": "parent", "target_task_id": "source"}]
+    process = {
+        "tasks": [source, parent, blocker, extra],
+        "relation_proposals": [
+            {"id": "rel-block", "source_task_id": "blocker", "target_task_id": "source", "proposed_type": "blocks", "status": "CONFIRMED"},
+            {"id": "rel-extra", "source_task_id": "source", "target_task_id": "extra", "proposed_type": "related", "status": "CONFIRMED"},
+        ],
+    }
+    digest = build_relation_digest(
+        source, process, readable_task_ids={"source", "parent", "blocker", "extra"},
+        max_entries=2, summary_token_budget=200,
+    )
+    assert len(digest["entries"]) == 2
+    assert [(item["effective_task_id"], item["relation_type"]) for item in digest["entries"]] == [
+        ("parent", "child"), ("blocker", "blocked_by"),
+    ]
+
+
+def test_hard_challenge_builds_decision_brief_and_blocks_claim_until_resolved() -> None:
+    item = task("challenge")
+    acquire_execution_lease(
+        item, session_id="running", actor_id="agent", ttl_seconds=900,
+        expected_task_revision=1,
+    )
+    review = create_challenge_review(
+        item, actor_id="hermes-agent", agreed=["目标合理"], challenges=["会直接发布生产"],
+        impacts={"security": "可能泄露", "no_action": "继续阻断发布"},
+        evidence=[{"kind": "FACT", "statement": "缺少发布授权", "source_refs": ["task:requirements@1"]}],
+        alternatives=[
+            {"id": "keep", "label": "保留方案", "cost": "高风险", "resolution": "PROCEED"},
+            {"id": "experiment", "label": "先做沙盒实验", "cost": "增加一天", "resolution": "EXPERIMENT"},
+        ],
+        conclusion="EXPERIMENT", decision_key="execution_strategy", question="是否先做沙盒实验？",
+        risk_categories=["production_publish", "security"], reversible=False,
+    )
+    assert review["gate_level"] == "HARD"
+    assert review["decision_brief"]["question"] == "是否先做沙盒实验？"
+    assert item["status"] == "DECISION_REQUIRED"
+    assert item["execution_lease"]["status"] == "SUSPENDED"
+    assert item["execution_lease"]["expires_at"] == review["created_at"]
+    with pytest.raises(ValueError, match="task_status_not_claimable"):
+        acquire_execution_lease(
+            item, session_id="s", actor_id="a", ttl_seconds=60,
+            expected_task_revision=item["task_revision"],
+        )
+    decision = resolve_challenge_review(
+        item, review_id=review["id"], selected_option_id="experiment",
+        resolution="EXPERIMENT", rationale="先验证再发布", actor_id="user:user-a",
+    )
+    assert decision["status"] == "CONFIRMED"
+    assert item["status"] == "TODO"
+    assert review["decision_brief"]["status"] == "RESOLVED"
+
+
+def test_reversible_notice_records_without_blocking_task() -> None:
+    item = task("notice")
+    review = create_challenge_review(
+        item, actor_id="hermes-agent", agreed=["可优化"], challenges=["文案可更简洁"],
+        impacts={"experience": "轻微改善"}, evidence=[{"kind": "INFERENCE", "statement": "可能更易读"}],
+        alternatives=[
+            {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
+            {"id": "edit", "label": "小改", "cost": "很低", "resolution": "MODIFY"},
+        ],
+        conclusion="ACCEPT", decision_key="execution_strategy", question="是否继续？", risk_categories=["reversible_optimization"],
+        reversible=True,
+    )
+    assert review["gate_level"] == "NOTICE"
+    assert review["decision_brief"] is None
+    assert item["status"] == "TODO"
+
+    experience = task("experience")
+    experience_review = create_challenge_review(
+        experience, actor_id="agent", agreed=["目标清晰"],
+        challenges=["界面可做轻微优化"], impacts={"experience": "可逆微调"},
+        evidence=[{"kind": "INFERENCE", "statement": "可能改善体验", "source_refs": []}],
+        alternatives=[
+            {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
+            {"id": "edit", "label": "微调", "cost": "很低", "resolution": "MODIFY"},
+        ],
+        conclusion="ACCEPT", decision_key="execution_strategy", question="是否按原计划继续？",
+        risk_categories=["experience"], reversible=True,
+    )
+    assert experience_review["gate_level"] == "SOFT"
+    assert experience_review["requires_user_decision"] is True
+    assert experience["status"] == "DECISION_REQUIRED"
+
+
+def test_challenge_fact_requires_safe_source_and_exactly_one_question() -> None:
+    def invoke(item: dict, evidence: list[dict], question: str) -> dict:
+        return create_challenge_review(
+            item,
+            actor_id="agent", agreed=["目标清晰"], challenges=["需要确认事实"],
+            impacts={}, evidence=evidence, alternatives=[
+                {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
+                {"id": "edit", "label": "调整", "cost": "低", "resolution": "MODIFY"},
+            ], conclusion="ACCEPT", decision_key="execution_strategy", question=question, risk_categories=[], reversible=True,
+        )
+
+    with pytest.raises(ValueError, match="challenge_fact_source_ref_required"):
+        invoke(task("missing-source"), [{"kind": "FACT", "statement": "事实"}], "是否继续？")
+    with pytest.raises(ValueError, match="challenge_source_ref_invalid"):
+        invoke(
+            task("unsafe-source"),
+            [{"kind": "FACT", "statement": "事实", "source_refs": ["private://secret"]}],
+            "是否继续？",
+        )
+    with pytest.raises(ValueError, match="challenge_requires_one_question"):
+        invoke(
+            task("many-questions"),
+            [{"kind": "FACT", "statement": "事实", "source_refs": ["task:source"]}],
+            "是否继续？是否修改？",
+        )
+
+
+def test_hard_risk_keywords_are_server_detected_and_option_action_must_match() -> None:
+    item = task("detected-risk")
+    review = create_challenge_review(
+        item, actor_id="hermes-agent", agreed=["目标明确"],
+        challenges=["将不可逆删除生产数据"], impacts={"no_action": "保留数据"},
+        evidence=[{"kind": "TO_VERIFY", "statement": "备份状态未知"}],
+        alternatives=[
+            {"id": "delete", "label": "直接删除", "cost": "不可逆", "resolution": "PROCEED"},
+            {"id": "backup", "label": "先备份", "cost": "增加时间", "resolution": "MODIFY"},
+        ],
+        conclusion="MODIFY", decision_key="execution_strategy", question="是否先备份？", risk_categories=[], reversible=True,
+    )
+    assert review["gate_level"] == "HARD"
+    assert "irreversible_delete" in review["detected_risk_categories"]
+    with pytest.raises(ValueError, match="challenge_option_resolution_mismatch"):
+        resolve_challenge_review(
+            item, review_id=review["id"], selected_option_id="backup",
+            resolution="PROCEED", rationale="动作与选项冲突", actor_id="user:user-a",
+        )
+
+
+def test_open_challenge_blocks_merge_state_escape() -> None:
+    primary = task("primary")
+    secondary = task("secondary")
+    preview = create_merge_preview(primary, secondary, created_by="human")
+    create_challenge_review(
+        secondary, actor_id="agent", agreed=["目标一致"],
+        challenges=["直接删除历史"], impacts={"no_action": "保留历史"},
+        evidence=[{
+            "kind": "FACT", "statement": "任务保存历史",
+            "source_refs": ["task:secondary@1"],
+        }],
+        alternatives=[
+            {"id": "keep", "label": "保留", "cost": "低", "resolution": "PROCEED"},
+            {"id": "cancel", "label": "取消", "cost": "延期", "resolution": "CANCEL"},
+        ],
+        conclusion="REJECT", decision_key="merge_history_policy",
+        question="是否保留任务历史？", risk_categories=["irreversible_delete"],
+        reversible=False,
+    )
+    with pytest.raises(ValueError, match="open_challenge_decision_required"):
+        apply_task_merge(preview, primary, secondary, field_choices={}, actor_id="human")

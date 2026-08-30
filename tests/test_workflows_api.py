@@ -20,7 +20,12 @@ os.environ.setdefault("AUTHEN_JWT_SECRET", "test-secret")
 
 def token(sub: str) -> str:
     return jose_jwt.encode(
-        {"sub": sub, "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        {
+            "sub": sub,
+            "principal_type": "human",
+            "amr": ["test_interactive"],
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        },
         "test-secret",
         algorithm="HS256",
     )

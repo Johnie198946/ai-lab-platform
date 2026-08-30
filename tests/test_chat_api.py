@@ -19,6 +19,8 @@ def auth_headers() -> dict:
         {
             "sub": "1",
             "username": "tester",
+            "principal_type": "human",
+            "amr": ["test_interactive"],
             "exp": datetime.now(timezone.utc) + timedelta(hours=1),
         },
         "test-secret",

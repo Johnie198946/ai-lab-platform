@@ -18,8 +18,9 @@ public struct AIPlatformApp: App {
 
     public init() {
         let arguments = ProcessInfo.processInfo.arguments
+        let hasPersistedSession = !(KeychainStore.load() ?? "").isEmpty
         _appState = StateObject(wrappedValue: AppState(
-            isLoggedIn: arguments.contains("-autoLogin"),
+            isLoggedIn: arguments.contains("-autoLogin") || hasPersistedSession,
             activeTab: arguments.contains("-knowledgeTab") ? 2 : 0
         ))
     }
@@ -68,7 +69,10 @@ public struct AppRootCoordinatorView: View {
             }
         }
         .task(id: appState.isLoggedIn) {
-            if appState.isLoggedIn { await workflowActivities.bootstrap() }
+            if appState.isLoggedIn {
+                await restorePersistedSession()
+                if appState.isLoggedIn { await workflowActivities.bootstrap() }
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active {
@@ -76,6 +80,34 @@ public struct AppRootCoordinatorView: View {
             } else if phase == .background {
                 workflowActivities.pauseForBackground()
             }
+        }
+    }
+
+    /// Keychain 是进程重启后的登录态真值；`/me` 继续沿用现有 Bearer JWT
+    /// 契约恢复租户资料。瞬时网络失败不清除本地会话，401 则由统一重登链路处理。
+    @MainActor
+    private func restorePersistedSession() async {
+        guard let token = apiClient.currentToken(), !token.isEmpty else { return }
+        do {
+            let profile = try await apiClient.fetchMe()
+            let displayName = profile.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? CuteDisplayNames.name(for: profile.userId)
+                : profile.username
+            appState.currentTenantKey = profile.tenantKey
+            appState.currentUserId = profile.userId
+            appState.currentProfile = TenantProfile(
+                id: profile.userId,
+                name: displayName,
+                tenantId: profile.tenantKey,
+                role: .tenantMember,
+                avatarUrl: profile.avatarUrl,
+                concurrencyLimit: 5,
+                tokenQuotaUsage: 0,
+                isVipLane: false
+            )
+            appState.isGuestMode = false
+        } catch {
+            // APIClient 会把真实 401 汇入 needsReauth；离线/超时保留 Keychain 登录态。
         }
     }
 }

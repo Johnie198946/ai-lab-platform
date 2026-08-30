@@ -74,14 +74,22 @@ from backend.services.workspace_process import (
 from backend.services.task_operating_loop import (
     acquire_execution_lease,
     add_feedback,
+    apply_task_merge,
     apply_feedback_acceptance,
     apply_feedback_action,
+    build_relation_digest,
     build_task_context_pack,
+    create_challenge_review,
     create_feedback_batch,
+    create_merge_preview,
     create_relation_proposal,
     find_duplicate_candidates,
+    heartbeat_execution_lease,
     initialize_task_contract,
     record_feedback_interpretation,
+    reclaim_expired_execution_lease,
+    revert_task_merge,
+    resolve_challenge_review,
     submit_feedback_batch,
     submit_feedback_resolution,
     transition_task,
@@ -168,6 +176,8 @@ class CreateArtifactRequest(BaseModel):
     title: str = Field(min_length=1, max_length=240)
     artifact_type: Literal["document", "code", "design", "report", "dataset", "deployment", "test_report", "other"]
     task_id: str | None = Field(default=None, max_length=40)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class RegisterArtifactVersionRequest(BaseModel):
@@ -177,6 +187,8 @@ class RegisterArtifactVersionRequest(BaseModel):
     size_bytes: int | None = Field(default=None, ge=0)
     lineage: dict[str, Any] = Field(default_factory=dict)
     verification: dict[str, Any] = Field(default_factory=dict)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class BuildDeliveryManifestRequest(BaseModel):
@@ -185,6 +197,8 @@ class BuildDeliveryManifestRequest(BaseModel):
     artifact_version_ids: list[str] = Field(min_length=1, max_length=50)
     acceptance_evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
     summary: str = Field(min_length=1, max_length=8000)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class DecideDeliveryManifestRequest(BaseModel):
@@ -214,6 +228,8 @@ class UpdateTaskRequest(BaseModel):
         "ACCEPTANCE_REVIEW", "DONE", "BLOCKED", "PAUSED", "CANCELLED",
     ]
     reason: str | None = Field(default=None, min_length=3, max_length=500)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class UpdateTaskCardSummaryRequest(BaseModel):
@@ -226,6 +242,8 @@ class UpdateTaskCardSummaryRequest(BaseModel):
     next_action: str | None = Field(default=None, max_length=2000)
     eta: str | None = Field(default=None, max_length=80)
     source_refs: list[str] | None = Field(default=None, max_length=20)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class ExpectedRevisionRequest(BaseModel):
@@ -251,6 +269,8 @@ class FeedbackInterpretationRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     interpretation: str = Field(min_length=1, max_length=8000)
     confidence: float = Field(ge=0, le=1)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class FeedbackActionRequest(BaseModel):
@@ -263,6 +283,8 @@ class FeedbackResolutionRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     summary: str = Field(min_length=1, max_length=8000)
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class FeedbackAcceptanceRequest(BaseModel):
@@ -288,6 +310,14 @@ class AcquireTaskLeaseRequest(BaseModel):
     duplicate_override_reason: str | None = Field(default=None, min_length=3, max_length=1000)
 
 
+class HeartbeatTaskLeaseRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    session_id: str = Field(min_length=1, max_length=100)
+    lease_epoch: int = Field(ge=1)
+    ttl_seconds: int = Field(default=900, ge=60, le=3600)
+
+
 class CheckTaskDuplicatesRequest(BaseModel):
     task_id: str | None = Field(default=None, max_length=40)
     title: str = Field(min_length=1, max_length=160)
@@ -300,6 +330,25 @@ class CheckTaskDuplicatesRequest(BaseModel):
     trigger: Literal["CREATE", "CLAIM"] = "CREATE"
 
 
+class CreateMergePreviewRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    secondary_task_id: str = Field(min_length=1, max_length=40)
+    expected_primary_revision: int = Field(ge=1)
+    expected_secondary_revision: int = Field(ge=1)
+
+
+class ApplyTaskMergeRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    field_choices: dict[str, Literal["primary", "secondary", "union"]]
+
+
+class RevertTaskMergeRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+
+
 class ProposeTaskRelationRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     expected_task_revision: int = Field(ge=1)
@@ -309,11 +358,69 @@ class ProposeTaskRelationRequest(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
     confidence: float = Field(ge=0, le=1)
     impact: dict[str, str] = Field(default_factory=dict)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
+
+
+class DecideTaskRelationRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    decision: Literal["CONFIRM", "REJECT"]
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+class ChallengeEvidenceRequest(BaseModel):
+    kind: Literal["FACT", "INFERENCE", "TO_VERIFY"]
+    statement: str = Field(min_length=1, max_length=2000)
+    source_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ChallengeOptionRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    cost: str = Field(min_length=1, max_length=1000)
+    resolution: Literal["PROCEED", "MODIFY", "EXPERIMENT", "CANCEL"]
+
+
+class CreateChallengeReviewRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    agreed: list[str] = Field(default_factory=list, max_length=20)
+    challenges: list[str] = Field(min_length=1, max_length=20)
+    impacts: dict[str, str] = Field(default_factory=dict)
+    evidence: list[ChallengeEvidenceRequest] = Field(min_length=1, max_length=30)
+    alternatives: list[ChallengeOptionRequest] = Field(min_length=2, max_length=5)
+    conclusion: Literal["ACCEPT", "MODIFY", "REJECT", "EXPERIMENT"]
+    decision_key: str = Field(pattern=r"^[a-z][a-z0-9_.-]{2,79}$")
+    question: str = Field(min_length=1, max_length=1000)
+    risk_categories: list[Literal[
+        "security", "permission", "irreversible_delete", "legal", "data_leak",
+        "fact_contract_conflict", "production_publish", "budget_exceeded", "cross_task_impact",
+        "architecture", "scope", "cost", "experience", "maintenance", "dependency",
+        "reversible_optimization",
+    ]] = Field(default_factory=list, max_length=20)
+    reversible: bool
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
+
+
+class ResolveChallengeReviewRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    selected_option_id: str = Field(min_length=1, max_length=80)
+    resolution: Literal["PROCEED", "MODIFY", "EXPERIMENT", "CANCEL"]
+    rationale: str = Field(min_length=1, max_length=2000)
 
 
 class BindTaskWorkflowRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     workflow_id: str = Field(min_length=1, max_length=48)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class EditProjectTaskRequest(BaseModel):
@@ -322,6 +429,8 @@ class EditProjectTaskRequest(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     summary: str = Field(min_length=1, max_length=4000)
     assignee_role: str | None = Field(default=None, max_length=160)
+    session_id: str | None = Field(default=None, min_length=1, max_length=120)
+    lease_epoch: int | None = Field(default=None, ge=1)
 
 
 class SaveWorkflowGraphRequest(BaseModel):
@@ -630,10 +739,13 @@ async def update_project(project_id: str, body: UpdateProjectRequest, payload=De
 
 
 @router.delete("/projects/{project_id}", status_code=204)
-async def delete_project(project_id: str, payload=Depends(require_auth)):
+async def delete_project(project_id: str, request: Request, payload=Depends(require_auth)):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
+        _require_interactive_human(payload)
         project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if request.headers.get("X-QWS-Confirm-Project-Id") != project_id:
+            raise HTTPException(status_code=409, detail="explicit project deletion confirmation required")
         # Process/configuration revisions are deliberately append-only. A project
         # delete therefore tombstones the aggregate instead of cascading through
         # immutable audit facts (which PostgreSQL correctly rejects).
@@ -725,6 +837,45 @@ async def _project_for_access(
     )
     if not allowed:
         raise HTTPException(status_code=403, detail=f"{required_scope} scope required")
+    return project
+
+
+INTERACTIVE_HUMAN_AMR = {"pwd", "mfa", "passkey", "sms", "oidc", "oauth", "test_interactive"}
+
+
+def _require_interactive_human(payload: dict[str, Any]) -> None:
+    if str(payload.get("principal_type") or "").lower() != "human":
+        raise HTTPException(status_code=403, detail="authenticated human principal required")
+    amr = {str(item).lower() for item in (payload.get("amr") or [])}
+    if not amr.intersection(INTERACTIVE_HUMAN_AMR):
+        raise HTTPException(status_code=403, detail="interactive human authentication required")
+
+
+async def _project_for_human_approval(
+    db, project_id: str, tenant_key: str, user_id: str, payload: dict[str, Any]
+) -> WorkspaceProject:
+    _require_interactive_human(payload)
+    project = await db.scalar(
+        select(WorkspaceProject).where(
+            WorkspaceProject.id == project_id,
+            WorkspaceProject.tenant_key == tenant_key,
+            WorkspaceProject.status != "deleted",
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if project.owner_user_id == user_id:
+        return project
+    member = await db.scalar(
+        select(WorkspaceProjectMember).where(
+            WorkspaceProjectMember.project_id == project.id,
+            WorkspaceProjectMember.tenant_key == tenant_key,
+            WorkspaceProjectMember.user_id == user_id,
+            WorkspaceProjectMember.status == "ACTIVE",
+        )
+    )
+    if member is None or "gate:approve" not in set(member.scopes or []):
+        raise HTTPException(status_code=403, detail="gate:approve scope required")
     return project
 
 
@@ -1135,7 +1286,7 @@ async def create_project_artifact(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
         existing = await db.scalar(
             select(WorkspaceArtifact).where(
                 WorkspaceArtifact.tenant_key == tenant_key,
@@ -1152,6 +1303,17 @@ async def create_project_artifact(
             if not same:
                 raise HTTPException(status_code=409, detail="artifact_key already binds different metadata")
             return JSONResponse(status_code=200, content=json.loads(json.dumps(_artifact_out(existing), default=str)))
+        if body.task_id:
+            task = next(
+                (item for item in (project.process_snapshot or {}).get("tasks", []) if item.get("id") == body.task_id),
+                None,
+            )
+            if task is None:
+                raise HTTPException(status_code=422, detail="artifact task does not belong to project")
+            _ensure_task_writable(task)
+            _enforce_agent_lease_fence(
+                task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+            )
         artifact = WorkspaceArtifact(
             id=f"artifact_{uuid4().hex}",
             tenant_key=tenant_key,
@@ -1174,7 +1336,7 @@ async def create_project_artifact(
 async def list_project_artifacts(project_id: str, payload=Depends(require_auth)) -> list[dict[str, Any]]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
         artifacts = (
             await db.scalars(
                 select(WorkspaceArtifact)
@@ -1185,7 +1347,18 @@ async def list_project_artifacts(project_id: str, payload=Depends(require_auth))
                 .order_by(WorkspaceArtifact.created_at, WorkspaceArtifact.id)
             )
         ).all()
-        return [_artifact_out(item) for item in artifacts]
+        redirects = {
+            item["id"]: item.get("redirect_to_task_id")
+            for item in (project.process_snapshot or {}).get("tasks", [])
+            if item.get("status") == "MERGED" and item.get("redirect_to_task_id")
+        }
+        result = []
+        for item in artifacts:
+            output = _artifact_out(item)
+            output["source_task_id"] = item.task_id
+            output["effective_task_id"] = redirects.get(item.task_id, item.task_id)
+            result.append(output)
+        return result
 
 
 @router.post("/projects/{project_id}/artifacts/{artifact_id}/versions", status_code=201)
@@ -1195,7 +1368,7 @@ async def register_project_artifact_version(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
         artifact = await db.scalar(
             select(WorkspaceArtifact).where(
                 WorkspaceArtifact.id == artifact_id,
@@ -1215,6 +1388,17 @@ async def register_project_artifact_version(
             return JSONResponse(
                 status_code=200,
                 content=json.loads(json.dumps(_artifact_version_out(existing), default=str)),
+            )
+        if artifact.task_id:
+            task = next(
+                (item for item in (project.process_snapshot or {}).get("tasks", []) if item.get("id") == artifact.task_id),
+                None,
+            )
+            if task is None:
+                raise HTTPException(status_code=409, detail="artifact task is no longer available")
+            _ensure_task_writable(task)
+            _enforce_agent_lease_fence(
+                task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
             )
         next_version = int(artifact.current_version or 0) + 1
         version = WorkspaceArtifactVersion(
@@ -1293,6 +1477,37 @@ def _manifest_out(manifest: WorkspaceDeliveryManifest) -> dict[str, Any]:
     }
 
 
+@router.get("/projects/{project_id}/tasks/{task_id}/delivery-manifests")
+async def list_task_delivery_manifests(
+    project_id: str, task_id: str, payload=Depends(require_auth),
+) -> list[dict[str, Any]]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        tasks = (project.process_snapshot or {}).get("tasks", [])
+        source_ids = {
+            item["id"] for item in tasks
+            if item.get("id") == task_id or item.get("redirect_to_task_id") == task_id
+        }
+        if not source_ids:
+            raise HTTPException(status_code=404, detail="project task not found")
+        manifests = (
+            await db.scalars(
+                select(WorkspaceDeliveryManifest)
+                .where(
+                    WorkspaceDeliveryManifest.tenant_key == tenant_key,
+                    WorkspaceDeliveryManifest.project_id == project_id,
+                    WorkspaceDeliveryManifest.task_id.in_(source_ids),
+                )
+                .order_by(WorkspaceDeliveryManifest.created_at, WorkspaceDeliveryManifest.revision)
+            )
+        ).all()
+        return [
+            {**_manifest_out(item), "source_task_id": item.task_id, "effective_task_id": task_id}
+            for item in manifests
+        ]
+
+
 @router.post("/projects/{project_id}/tasks/{task_id}/delivery-manifests", status_code=201)
 async def build_task_delivery_manifest(
     project_id: str, task_id: str, body: BuildDeliveryManifestRequest,
@@ -1303,6 +1518,9 @@ async def build_task_delivery_manifest(
         project, _, _, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
             expected_revision=body.expected_revision, task_id=task_id,
+        )
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
         )
         if int(task.get("task_revision") or 1) != body.expected_task_revision:
             raise HTTPException(status_code=409, detail="task revision conflict")
@@ -1378,6 +1596,7 @@ async def decide_task_delivery_manifest(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
+        await _project_for_human_approval(db, project_id, tenant_key, user_id, payload)
         project, process, tasks, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
             expected_revision=body.expected_revision, task_id=task_id,
@@ -1685,18 +1904,19 @@ def _aggregate_stage(stage: dict[str, Any], tasks: list[dict[str, Any]]) -> None
         stage["progress"] = 0
         return
     statuses = {task["status"] for task in tasks}
-    if statuses == {"DONE"}:
+    completed_statuses = {"DONE", "MERGED"}
+    if statuses <= completed_statuses:
         stage["status"] = "DONE"
     elif "BLOCKED" in statuses:
         stage["status"] = "BLOCKED"
-    elif "IN_PROGRESS" in statuses or "DONE" in statuses:
+    elif "IN_PROGRESS" in statuses or statuses & completed_statuses:
         stage["status"] = "IN_PROGRESS"
     elif "PAUSED" in statuses:
         stage["status"] = "PAUSED"
     else:
         stage["status"] = "NOT_STARTED"
     stage["progress"] = round(
-        sum(1 for task in tasks if task["status"] == "DONE") / len(tasks) * 100
+        sum(1 for task in tasks if task["status"] in completed_statuses) / len(tasks) * 100
     )
 
 
@@ -1708,12 +1928,14 @@ async def _cas_project_process(
     process: dict[str, Any],
     commit: bool = True,
 ) -> int:
+    project_id = project.id
+    tenant_key = project.tenant_key
     next_revision = expected_revision + 1
     result = await db.execute(
         update(WorkspaceProject)
         .where(
-            WorkspaceProject.id == project.id,
-            WorkspaceProject.tenant_key == project.tenant_key,
+            WorkspaceProject.id == project_id,
+            WorkspaceProject.tenant_key == tenant_key,
             WorkspaceProject.process_revision == expected_revision,
         )
         .values(
@@ -1727,8 +1949,8 @@ async def _cas_project_process(
         await db.rollback()
         server_revision = await db.scalar(
             select(WorkspaceProject.process_revision).where(
-                WorkspaceProject.id == project.id,
-                WorkspaceProject.tenant_key == project.tenant_key,
+                WorkspaceProject.id == project_id,
+                WorkspaceProject.tenant_key == tenant_key,
             )
         )
         raise HTTPException(
@@ -2245,6 +2467,127 @@ async def save_project_workflow_graph(
         }
 
 
+def _readable_task_ids(
+    tasks: list[dict[str, Any]], *, project_id: str
+) -> set[str]:
+    """Project RBAC is the current task-read boundary; foreign targets stay restricted."""
+    return {
+        str(task["id"])
+        for task in tasks
+        if task.get("project_id") in {None, project_id}
+    }
+
+
+async def _validate_challenge_evidence_refs(
+    db, *, project: WorkspaceProject, process: dict[str, Any],
+    evidence: list[ChallengeEvidenceRequest],
+) -> None:
+    tasks = {str(item.get("id")): item for item in process.get("tasks") or [] if item.get("id")}
+    for item in evidence:
+        for raw_ref in item.source_refs:
+            if not re.fullmatch(
+                r"(?:artifact|artifact_version|task|decision|intake|manifest):[A-Za-z0-9_.-]+(?:@[1-9][0-9]*)?",
+                raw_ref,
+            ):
+                raise HTTPException(status_code=422, detail={
+                    "error": "invalid_challenge_source_ref", "source_ref": raw_ref,
+                })
+            kind, raw_identity = raw_ref.split(":", 1)
+            identity, _, revision_text = raw_identity.partition("@")
+            exists = False
+            if kind == "task":
+                task = tasks.get(identity)
+                exists = task is not None and (
+                    not revision_text or int(task.get("task_revision") or 1) == int(revision_text)
+                )
+            elif kind == "artifact":
+                exists = await db.scalar(select(WorkspaceArtifact.id).where(
+                    WorkspaceArtifact.id == identity,
+                    WorkspaceArtifact.project_id == project.id,
+                    WorkspaceArtifact.tenant_key == project.tenant_key,
+                )) is not None
+            elif kind == "artifact_version":
+                exists = await db.scalar(
+                    select(WorkspaceArtifactVersion.id)
+                    .join(WorkspaceArtifact, WorkspaceArtifact.id == WorkspaceArtifactVersion.artifact_id)
+                    .where(
+                        WorkspaceArtifactVersion.id == identity,
+                        WorkspaceArtifact.project_id == project.id,
+                        WorkspaceArtifact.tenant_key == project.tenant_key,
+                    )
+                ) is not None
+            elif kind == "intake":
+                exists = await db.scalar(select(WorkspaceBusinessIntake.id).where(
+                    WorkspaceBusinessIntake.id == identity,
+                    WorkspaceBusinessIntake.project_id == project.id,
+                    WorkspaceBusinessIntake.tenant_key == project.tenant_key,
+                )) is not None
+            elif kind == "manifest":
+                exists = await db.scalar(select(WorkspaceDeliveryManifest.id).where(
+                    WorkspaceDeliveryManifest.id == identity,
+                    WorkspaceDeliveryManifest.project_id == project.id,
+                    WorkspaceDeliveryManifest.tenant_key == project.tenant_key,
+                )) is not None
+            elif kind == "decision":
+                exists = await db.scalar(select(WorkspaceApprovalDecision.id).where(
+                    WorkspaceApprovalDecision.id == identity,
+                    WorkspaceApprovalDecision.project_id == project.id,
+                    WorkspaceApprovalDecision.tenant_key == project.tenant_key,
+                )) is not None
+                if not exists:
+                    exists = any(
+                        ((review.get("decision") or {}).get("id") == identity)
+                        for task in tasks.values()
+                        for review in task.get("challenge_reviews") or []
+                    )
+            if not exists:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"challenge evidence source not found: {raw_ref}",
+                )
+
+
+def _ensure_task_writable(task: dict[str, Any]) -> None:
+    if task.get("status") == "MERGED":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "merged_task_is_read_only",
+                "redirect_to_task_id": task.get("redirect_to_task_id"),
+            },
+        )
+
+
+def _lease_actor_id(payload: dict[str, Any]) -> str:
+    principal_type = str(payload.get("principal_type") or "unknown").lower()
+    principal_id = str(payload.get("sub") or payload.get("user_id") or "unknown")
+    return f"{principal_type}:{principal_id}"
+
+
+def _enforce_agent_lease_fence(
+    task: dict[str, Any], payload: dict[str, Any], *,
+    session_id: str | None, lease_epoch: int | None,
+) -> None:
+    principal_type = str(payload.get("principal_type") or "").lower()
+    amr = {str(item).lower() for item in (payload.get("amr") or [])}
+    if principal_type == "human" and bool(amr & INTERACTIVE_HUMAN_AMR):
+        return
+    lease = task.get("execution_lease") or {}
+    try:
+        expires_at = datetime.fromisoformat(str(lease.get("expires_at") or "").replace("Z", "+00:00"))
+    except ValueError:
+        expires_at = datetime.min.replace(tzinfo=timezone.utc)
+    if (
+        not session_id or lease_epoch is None
+        or lease.get("status") != "ACTIVE"
+        or lease.get("session_id") != session_id
+        or int(lease.get("lease_epoch") or 0) != lease_epoch
+        or lease.get("actor_id") != _lease_actor_id(payload)
+        or expires_at <= datetime.now(timezone.utc)
+    ):
+        raise HTTPException(status_code=409, detail="execution_lease_fence_required")
+
+
 async def _task_contract_for_update(
     db, *, project_id: str, tenant_key: str, user_id: str,
     expected_revision: int, task_id: str,
@@ -2260,6 +2603,7 @@ async def _task_contract_for_update(
     task = next((item for item in tasks if item.get("id") == task_id), None)
     if task is None:
         raise HTTPException(status_code=404, detail="project task not found")
+    _ensure_task_writable(task)
     return project, process, tasks, task
 
 
@@ -2297,6 +2641,170 @@ async def check_project_task_duplicates(
             "candidates": candidates,
             "thresholds": {"strong": 0.90, "review": 0.75, "calibration": "PENDING_REAL_DATA"},
         }
+
+
+def _sync_task_status_projections(
+    process: dict[str, Any], tasks: list[dict[str, Any]], task_ids: set[str]
+) -> None:
+    statuses = {item["id"]: item.get("status") for item in tasks if item.get("id") in task_ids}
+    stages = [dict(item) for item in process.get("stages") or []]
+    affected_stages = {
+        item.get("stage_id") for item in tasks if item.get("id") in task_ids
+    }
+    for stage in stages:
+        if stage.get("id") in affected_stages:
+            _aggregate_stage(stage, [item for item in tasks if item.get("stage_id") == stage.get("id")])
+    graphs = dict(process.get("graphs") or {})
+    for graph_name in ("workflow", "ai-resource"):
+        graph = dict(graphs.get(graph_name) or {})
+        graph["nodes"] = [
+            {**node, "task_status": statuses[node["id"]]}
+            if node.get("id") in statuses else node
+            for node in graph.get("nodes") or []
+        ]
+        graphs[graph_name] = graph
+    process["stages"] = stages
+    process["graphs"] = graphs
+
+
+@router.post("/projects/{project_id}/tasks/{primary_task_id}/merge-previews", status_code=201)
+async def create_project_task_merge_preview(
+    project_id: str, primary_task_id: str, body: CreateMergePreviewRequest,
+    payload=Depends(require_auth),
+) -> Any:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
+        existing = next(
+            (item for item in process.get("task_merges") or [] if item.get("preview_request_id") == body.request_id),
+            None,
+        )
+        if existing is not None:
+            if (
+                existing.get("primary_task_id") != primary_task_id
+                or existing.get("secondary_task_id") != body.secondary_task_id
+                or existing.get("primary_revision") != body.expected_primary_revision
+                or existing.get("secondary_revision") != body.expected_secondary_revision
+            ):
+                raise HTTPException(status_code=409, detail="request_id binds different merge preview inputs")
+            return JSONResponse(status_code=200, content={
+                "project_id": project_id, "process_revision": project.process_revision, "merge": existing,
+            })
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        primary = next((item for item in tasks if item.get("id") == primary_task_id), None)
+        secondary = next((item for item in tasks if item.get("id") == body.secondary_task_id), None)
+        if primary is None or secondary is None:
+            raise HTTPException(status_code=404, detail="merge task not found")
+        if int(primary["task_revision"]) != body.expected_primary_revision or int(secondary["task_revision"]) != body.expected_secondary_revision:
+            raise HTTPException(status_code=409, detail="task revision conflict")
+        try:
+            preview = create_merge_preview(primary, secondary, created_by=f"user:{user_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        preview["preview_request_id"] = body.request_id
+        process["tasks"] = tasks
+        process["task_merges"] = [*(process.get("task_merges") or []), preview]
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project_id, "process_revision": revision, "merge": preview}
+
+
+@router.post("/projects/{project_id}/task-merges/{merge_id}/apply")
+async def apply_project_task_merge(
+    project_id: str, merge_id: str, body: ApplyTaskMergeRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_human_approval(
+            db, project_id, tenant_key, user_id, payload
+        )
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        merges = [dict(item) for item in process.get("task_merges") or []]
+        merge = next((item for item in merges if item.get("id") == merge_id), None)
+        if merge is None:
+            raise HTTPException(status_code=404, detail="merge preview not found")
+        if merge.get("status") == "APPLIED":
+            if (
+                merge.get("apply_request_id") != body.request_id
+                or merge.get("field_choices") != body.field_choices
+            ):
+                raise HTTPException(status_code=409, detail="apply request replay payload drift")
+            primary = next(item for item in tasks if item.get("id") == merge["primary_task_id"])
+            secondary = next(item for item in tasks if item.get("id") == merge["secondary_task_id"])
+            return {"project_id": project_id, "process_revision": project.process_revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
+        primary = next((item for item in tasks if item.get("id") == merge["primary_task_id"]), None)
+        secondary = next((item for item in tasks if item.get("id") == merge["secondary_task_id"]), None)
+        if primary is None or secondary is None:
+            raise HTTPException(status_code=409, detail="merge task missing")
+        try:
+            apply_task_merge(
+                merge, primary, secondary, field_choices=body.field_choices,
+                actor_id=f"user:{user_id}",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        merge["apply_request_id"] = body.request_id
+        process["tasks"] = tasks
+        process["task_merges"] = merges
+        _sync_task_status_projections(
+            process, tasks, {primary["id"], secondary["id"]}
+        )
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project_id, "process_revision": revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+
+
+@router.post("/projects/{project_id}/task-merges/{merge_id}/revert")
+async def revert_project_task_merge(
+    project_id: str, merge_id: str, body: RevertTaskMergeRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_human_approval(
+            db, project_id, tenant_key, user_id, payload
+        )
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        merges = [dict(item) for item in process.get("task_merges") or []]
+        merge = next((item for item in merges if item.get("id") == merge_id), None)
+        if merge is None:
+            raise HTTPException(status_code=404, detail="merge not found")
+        if merge.get("status") == "REVERTED":
+            if merge.get("revert_request_id") != body.request_id:
+                raise HTTPException(status_code=409, detail="revert request replay payload drift")
+            primary = next(item for item in tasks if item.get("id") == merge["primary_task_id"])
+            secondary = next(item for item in tasks if item.get("id") == merge["secondary_task_id"])
+            return {"project_id": project_id, "process_revision": project.process_revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
+        primary = next((item for item in tasks if item.get("id") == merge["primary_task_id"]), None)
+        secondary = next((item for item in tasks if item.get("id") == merge["secondary_task_id"]), None)
+        if primary is None or secondary is None:
+            raise HTTPException(status_code=409, detail="merge task missing")
+        try:
+            revert_task_merge(merge, primary, secondary, actor_id=f"user:{user_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        merge["revert_request_id"] = body.request_id
+        process["tasks"] = tasks
+        process["task_merges"] = merges
+        _sync_task_status_projections(
+            process, tasks, {primary["id"], secondary["id"]}
+        )
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project_id, "process_revision": revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
 
 
 @router.post("/projects/{project_id}/tasks", status_code=201)
@@ -2408,11 +2916,6 @@ async def acquire_project_task_execution_lease(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
-        if task.get("status") != "TODO":
-            raise HTTPException(
-                status_code=409,
-                detail={"error": "task_not_runnable", "status": task.get("status")},
-            )
         candidates = find_duplicate_candidates(
             {**task, "project_id": project_id},
             [{**item, "project_id": project_id} for item in tasks],
@@ -2439,7 +2942,7 @@ async def acquire_project_task_execution_lease(
                 task,
                 expected_task_revision=body.expected_task_revision,
                 session_id=body.session_id,
-                actor_id=body.actor_id,
+                actor_id=_lease_actor_id(payload),
                 ttl_seconds=body.ttl_seconds,
             )
         except ValueError as exc:
@@ -2452,6 +2955,116 @@ async def acquire_project_task_execution_lease(
         return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "lease": lease}
 
 
+@router.post("/projects/{project_id}/tasks/{task_id}/execution-lease/heartbeat")
+async def heartbeat_project_task_execution_lease(
+    project_id: str, task_id: str, body: HeartbeatTaskLeaseRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:write"
+        )
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "project_revision_conflict",
+                    "server_revision": project.process_revision,
+                },
+            )
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
+        try:
+            lease = heartbeat_execution_lease(
+                task,
+                expected_task_revision=body.expected_task_revision,
+                session_id=body.session_id,
+                lease_epoch=body.lease_epoch,
+                ttl_seconds=body.ttl_seconds,
+            )
+        except ValueError as exc:
+            reason, _, current = str(exc).partition(":")
+            raise HTTPException(
+                status_code=409,
+                detail={"error": reason, "current": current or None},
+            ) from exc
+        process["tasks"] = tasks
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "task_revision": task["task_revision"],
+            "lease": lease,
+        }
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/execution-lease/reclaim")
+async def reclaim_project_task_execution_lease(
+    project_id: str, task_id: str, body: AcquireTaskLeaseRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        try:
+            lease = reclaim_expired_execution_lease(
+                task,
+                expected_task_revision=body.expected_task_revision,
+                session_id=body.session_id,
+                actor_id=_lease_actor_id(payload),
+                ttl_seconds=body.ttl_seconds,
+            )
+        except ValueError as exc:
+            reason, _, current = str(exc).partition(":")
+            raise HTTPException(status_code=409, detail={"error": reason, "current": current or None}) from exc
+        process["tasks"] = tasks
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "task_revision": task["task_revision"],
+            "lease": lease,
+        }
+
+
+@router.get("/projects/{project_id}/tasks/{task_id}/relation-digest")
+async def get_project_task_relation_digest(
+    project_id: str, task_id: str, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        readable_ids = _readable_task_ids(tasks, project_id=project.id)
+        if task is None or task_id not in readable_ids:
+            raise HTTPException(status_code=404, detail="project task not found")
+        return build_relation_digest(
+            task, {**process, "tasks": tasks}, readable_task_ids=readable_ids
+        )
+
+
 @router.get("/projects/{project_id}/tasks/{task_id}/context-pack")
 async def get_project_task_context_pack(
     project_id: str,
@@ -2461,20 +3074,218 @@ async def get_project_task_context_pack(
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
-        process = project.process_snapshot or {}
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        readable_ids = _readable_task_ids(tasks, project_id=project.id)
+        if task is None or task_id not in readable_ids:
+            raise HTTPException(status_code=404, detail="project task not found")
+        digest = build_relation_digest(
+            task, {**process, "tasks": tasks}, readable_task_ids=readable_ids,
+            max_entries=3, summary_token_budget=200,
+        )
+        context = build_task_context_pack(
+            task, project_id=project.id, process_revision=project.process_revision
+        )
+        context.pop("relations", None)
+        context["relation_digest"] = digest
+        return context
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/challenge-reviews", status_code=201)
+async def create_project_task_challenge_review(
+    project_id: str, task_id: str, body: CreateChallengeReviewRequest,
+    payload=Depends(require_auth),
+) -> Any:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
         tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
-        related_ids = {
-            str(relation.get("target_id") or relation.get("target_task_id"))
-            for relation in task.get("relations") or []
-            if relation.get("target_id") or relation.get("target_task_id")
-        }
-        related = [item for item in tasks if item.get("id") in related_ids]
-        return build_task_context_pack(
-            task, project_id=project.id, process_revision=project.process_revision, related_tasks=related
+        payload_binding = body.model_dump(exclude={"expected_revision", "expected_task_revision"})
+        receipt = (process.get("challenge_create_receipts") or {}).get(body.request_id)
+        if receipt is not None:
+            if receipt.get("request_payload") != payload_binding:
+                raise HTTPException(status_code=409, detail="challenge request replay payload drift")
+            return JSONResponse(status_code=200, content=receipt["response"])
+        replay = next(
+            (item for item in task.get("challenge_reviews") or [] if item.get("request_id") == body.request_id), None
         )
+        if replay is not None:
+            if replay.get("request_payload") != payload_binding:
+                raise HTTPException(status_code=409, detail="challenge request replay payload drift")
+            return JSONResponse(status_code=200, content={
+                "project_id": project.id,
+                "process_revision": project.process_revision,
+                "task_revision": task["task_revision"], "challenge_review": replay,
+            })
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        _ensure_task_writable(task)
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
+        if task.get("status") not in {"TODO", "IN_PROGRESS"}:
+            raise HTTPException(status_code=409, detail="challenge_review_requires_active_task")
+        if int(task.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
+        await _validate_challenge_evidence_refs(
+            db, project=project, process=process, evidence=body.evidence
+        )
+        try:
+            review = create_challenge_review(
+                task, actor_id=f"user:{user_id}", agreed=body.agreed,
+                challenges=body.challenges, impacts=body.impacts,
+                evidence=[item.model_dump() for item in body.evidence],
+                alternatives=[item.model_dump(exclude_none=True) for item in body.alternatives],
+                conclusion=body.conclusion, decision_key=body.decision_key,
+                question=body.question,
+                risk_categories=body.risk_categories, reversible=body.reversible,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        review["request_id"] = body.request_id
+        review["request_payload"] = payload_binding
+        review["result_process_revision"] = body.expected_revision + 1
+        review["result_task_revision"] = task["task_revision"]
+        create_response = {
+            "project_id": project_id,
+            "process_revision": body.expected_revision + 1,
+            "task_revision": task["task_revision"],
+            "challenge_review": json.loads(json.dumps(review)),
+        }
+        receipts = dict(process.get("challenge_create_receipts") or {})
+        receipts[body.request_id] = {
+            "request_payload": payload_binding,
+            "response": create_response,
+        }
+        process["challenge_create_receipts"] = dict(list(receipts.items())[-200:])
+        process["tasks"] = tasks
+        _sync_task_status_projections(process, tasks, {task_id})
+        try:
+            await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process
+            )
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            latest = await db.scalar(select(WorkspaceProject).where(
+                WorkspaceProject.id == project_id, WorkspaceProject.tenant_key == tenant_key,
+            ))
+            latest_task = next(
+                (item for item in (latest.process_snapshot or {}).get("tasks", []) if item.get("id") == task_id),
+                None,
+            ) if latest else None
+            persisted = next(
+                (item for item in (latest_task or {}).get("challenge_reviews") or [] if item.get("request_id") == body.request_id),
+                None,
+            )
+            persisted_receipt = (
+                ((latest.process_snapshot or {}).get("challenge_create_receipts") or {}).get(body.request_id)
+                if latest else None
+            )
+            if persisted_receipt is not None and persisted_receipt.get("request_payload") == payload_binding:
+                return JSONResponse(status_code=200, content=persisted_receipt["response"])
+            if (
+                latest is not None
+                and latest_task is not None
+                and persisted is not None
+                and persisted.get("request_payload") == payload_binding
+            ):
+                return JSONResponse(status_code=200, content={
+                    "project_id": project_id,
+                    "process_revision": latest.process_revision,
+                    "task_revision": latest_task["task_revision"],
+                    "challenge_review": persisted,
+                })
+            raise
+        return create_response
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/challenge-reviews/{review_id}/decision")
+async def resolve_project_task_challenge_review(
+    project_id: str, task_id: str, review_id: str,
+    body: ResolveChallengeReviewRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_human_approval(
+            db, project_id, tenant_key, user_id, payload
+        )
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        review = next(
+            (item for item in task.get("challenge_reviews") or [] if item.get("id") == review_id), None
+        )
+        if review is None:
+            raise HTTPException(status_code=404, detail="challenge review not found")
+        payload_binding = body.model_dump(exclude={"expected_revision", "expected_task_revision"})
+        existing = review.get("decision")
+        if existing is not None:
+            if existing.get("request_id") != body.request_id or existing.get("request_payload") != payload_binding:
+                raise HTTPException(status_code=409, detail="challenge decision replay payload drift")
+            return {
+                "project_id": project.id,
+                "process_revision": existing["result_process_revision"],
+                "task_revision": existing["result_task_revision"], "decision": existing,
+            }
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        if int(task.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
+        try:
+            decision = resolve_challenge_review(
+                task, review_id=review_id, selected_option_id=body.selected_option_id,
+                resolution=body.resolution, rationale=body.rationale,
+                actor_id=f"user:{user_id}",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        decision["request_id"] = body.request_id
+        decision["request_payload"] = payload_binding
+        decision["result_process_revision"] = body.expected_revision + 1
+        decision["result_task_revision"] = task["task_revision"]
+        process["tasks"] = tasks
+        _sync_task_status_projections(process, tasks, {task_id})
+        try:
+            next_revision = await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process
+            )
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            latest = await db.scalar(select(WorkspaceProject).where(
+                WorkspaceProject.id == project_id, WorkspaceProject.tenant_key == tenant_key,
+            ))
+            latest_task = next(
+                (item for item in (latest.process_snapshot or {}).get("tasks", []) if item.get("id") == task_id),
+                None,
+            ) if latest else None
+            latest_review = next(
+                (item for item in (latest_task or {}).get("challenge_reviews") or [] if item.get("id") == review_id),
+                None,
+            )
+            persisted = (latest_review or {}).get("decision")
+            if (
+                persisted is not None and persisted.get("request_id") == body.request_id
+                and persisted.get("request_payload") == payload_binding
+            ):
+                return {
+                    "project_id": project_id,
+                    "process_revision": persisted["result_process_revision"],
+                    "task_revision": persisted["result_task_revision"], "decision": persisted,
+                }
+            raise
+        return {
+            "project_id": project_id, "process_revision": next_revision,
+            "task_revision": task["task_revision"], "decision": decision,
+        }
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/relation-proposals", status_code=201)
@@ -2494,6 +3305,10 @@ async def propose_project_task_relation(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
         if int(task.get("task_revision") or 1) != body.expected_task_revision:
             raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
         try:
@@ -2522,6 +3337,89 @@ async def propose_project_task_relation(
         return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "proposal": proposal}
 
 
+@router.post("/projects/{project_id}/relation-proposals/{proposal_id}/decision")
+async def decide_project_task_relation(
+    project_id: str,
+    proposal_id: str,
+    body: DecideTaskRelationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_human_approval(
+            db, project_id, tenant_key, user_id, payload
+        )
+        process = dict(project.process_snapshot or {})
+        proposals = list(process.get("relation_proposals") or [])
+        proposal = next((item for item in proposals if item.get("id") == proposal_id), None)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="relation proposal not found")
+        final_status = "CONFIRMED" if body.decision == "CONFIRM" else "REJECTED"
+        if proposal.get("status") in {"CONFIRMED", "REJECTED"}:
+            if (
+                proposal.get("decision_request_id") == body.request_id
+                and proposal.get("status") == final_status
+                and proposal.get("decision_reason") == body.reason
+            ):
+                return {
+                    "project_id": project.id,
+                    "process_revision": project.process_revision,
+                    "task_revision": proposal.get("source_task_revision"),
+                    "proposal": proposal,
+                }
+            raise HTTPException(status_code=409, detail="relation decision replay payload drift")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        source = next((item for item in tasks if item.get("id") == proposal.get("source_task_id")), None)
+        target = next((item for item in tasks if item.get("id") == proposal.get("target_task_id")), None)
+        if source is None or target is None:
+            raise HTTPException(status_code=409, detail="relation proposal task missing")
+        _ensure_task_writable(source)
+        _ensure_task_writable(target)
+        if int(source.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": source.get("task_revision")})
+        decided_at = datetime.now(timezone.utc).isoformat()
+        source["task_revision"] = int(source.get("task_revision") or 1) + 1
+        if final_status == "CONFIRMED":
+            canonical_relation = {
+                "id": f"relation:{proposal['id']}",
+                "proposal_id": proposal["id"],
+                "target_task_id": target["id"],
+                "type": proposal.get("proposed_type") or "related",
+                "reason": proposal.get("reason"),
+                "evidence_refs": proposal.get("evidence_refs") or [],
+                "status": "CONFIRMED",
+                "confirmed_by": user_id,
+                "confirmed_at": decided_at,
+            }
+            source["relations"] = [
+                item for item in (source.get("relations") or [])
+                if item.get("proposal_id") != proposal["id"]
+            ] + [canonical_relation]
+            target["task_revision"] = int(target.get("task_revision") or 1) + 1
+        proposal.update({
+            "status": final_status,
+            "decision": body.decision,
+            "decision_reason": body.reason,
+            "decision_request_id": body.request_id,
+            "decided_by": user_id,
+            "decided_at": decided_at,
+            "source_task_revision": source["task_revision"],
+        })
+        process["tasks"] = tasks
+        process["relation_proposals"] = proposals
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "task_revision": source["task_revision"],
+            "proposal": proposal,
+        }
+
+
 @router.put("/projects/{project_id}/tasks/{task_id}/workflow")
 async def bind_project_task_workflow(
     project_id: str,
@@ -2530,6 +3428,7 @@ async def bind_project_task_workflow(
     payload=Depends(require_auth),
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project = await _project_for_owner(db, project_id, tenant_key, user_id)
         if project.process_revision != body.expected_revision:
@@ -2555,6 +3454,7 @@ async def bind_project_task_workflow(
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
         bound_elsewhere = next(
             (
                 item
@@ -2575,6 +3475,7 @@ async def bind_project_task_workflow(
         task["workflow_status"] = workflow.status
         task["workflow_bound_at"] = datetime.now().astimezone().isoformat()
         task["workflow_bound_by"] = user_id
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
         graphs = dict(process.get("graphs") or {})
         workflow_graph = dict(graphs.get("workflow") or {})
         workflow_graph["nodes"] = [
@@ -2641,6 +3542,7 @@ async def create_project_task_feedback_batch(
     payload=Depends(require_auth),
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project, process, tasks, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
@@ -2663,6 +3565,7 @@ async def add_project_task_feedback(
     payload=Depends(require_auth),
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project, process, tasks, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
@@ -2688,6 +3591,7 @@ async def submit_project_task_feedback_batch(
     payload=Depends(require_auth),
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project, process, tasks, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
@@ -2715,6 +3619,9 @@ async def interpret_project_task_feedback(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
             expected_revision=body.expected_revision, task_id=task_id,
         )
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
         try:
             feedback = record_feedback_interpretation(
                 task, feedback_id=feedback_id, actor_id=f"agent:{user_id}",
@@ -2735,6 +3642,7 @@ async def act_on_project_task_feedback_understanding(
     body: FeedbackActionRequest, payload=Depends(require_auth),
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project, process, tasks, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
@@ -2765,6 +3673,9 @@ async def resolve_project_task_feedback(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
             expected_revision=body.expected_revision, task_id=task_id,
         )
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
         try:
             feedback = submit_feedback_resolution(
                 task, feedback_id=feedback_id, actor_id=f"agent:{user_id}",
@@ -2785,6 +3696,7 @@ async def accept_project_task_feedback_resolution(
     body: FeedbackAcceptanceRequest, payload=Depends(require_auth),
 ) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project, process, tasks, task = await _task_contract_for_update(
             db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
@@ -2821,7 +3733,15 @@ async def update_project_task_card_summary(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
-        update_card_summary(task, actor_id=f"user:{user_id}", **body.model_dump(exclude={"expected_revision"}))
+        _ensure_task_writable(task)
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
+        update_card_summary(
+            task,
+            actor_id=_lease_actor_id(payload),
+            **body.model_dump(exclude={"expected_revision", "session_id", "lease_epoch"}),
+        )
         process["tasks"] = tasks
         next_revision = await _cas_project_process(db, project=project, expected_revision=body.expected_revision, process=process)
         return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "card_summary": task["card_summary"]}
@@ -2844,7 +3764,13 @@ async def get_project_task(
         )
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
-        return {"project_id": project.id, "process_revision": project.process_revision, **task}
+        response = {"project_id": project.id, "process_revision": project.process_revision, **task}
+        if task.get("status") == "MERGED" and task.get("redirect_to_task_id"):
+            response["redirect"] = {
+                "task_id": task["redirect_to_task_id"],
+                "location": f"/api/v1/projects/{project_id}/tasks/{task['redirect_to_task_id']}",
+            }
+        return response
 
 
 @router.patch("/projects/{project_id}/tasks/{task_id}")
@@ -2873,6 +3799,10 @@ async def update_project_task(
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
         current_status = str(task.get("status") or "TODO")
         stages = [dict(item) for item in process.get("stages", [])]
         stage = next(item for item in stages if item["id"] == task["stage_id"])
@@ -3023,6 +3953,7 @@ async def add_project_member(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
+        _require_interactive_human(payload)
         project = await _project_for_owner(db, project_id, tenant_key, user_id)
         project_record_id = project.id
         existing = await db.scalar(
@@ -3101,6 +4032,7 @@ async def appoint_gate_approver(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
+        _require_interactive_human(payload)
         project = await _project_for_owner(db, project_id, tenant_key, user_id)
         project_record_id = project.id
         if body.user_id == project.owner_user_id:
@@ -3211,14 +4143,9 @@ async def decide_gate(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        project = await db.scalar(
-            select(WorkspaceProject).where(
-                WorkspaceProject.id == project_id,
-                WorkspaceProject.tenant_key == tenant_key,
-            )
+        project = await _project_for_human_approval(
+            db, project_id, tenant_key, user_id, payload
         )
-        if project is None:
-            raise HTTPException(status_code=404, detail="project not found")
         if user_id == project.owner_user_id:
             raise HTTPException(status_code=403, detail="project owner cannot self-review gates")
         if project.process_revision != body.expected_process_revision:
@@ -3351,12 +4278,17 @@ async def edit_project_task(
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
+        _enforce_agent_lease_fence(
+            task, payload, session_id=body.session_id, lease_epoch=body.lease_epoch
+        )
         stages = [dict(item) for item in process.get("stages", [])]
         target_stage = next((item for item in stages if item["id"] == body.stage_id), None)
         if target_stage is None:
             raise HTTPException(status_code=422, detail="stage not found")
         old_stage_id = task.get("stage_id")
         task.update({"stage_id": body.stage_id, "title": body.title.strip(), "summary": body.summary.strip(), "assignee_role": (body.assignee_role or "").strip() or None})
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
         for stage in stages:
             _aggregate_stage(stage, [item for item in tasks if item.get("stage_id") == stage["id"]])
         graphs = dict(process.get("graphs") or {})
@@ -4173,6 +5105,23 @@ def _verify_backfill_result(
             )
 
 
+def _enforce_qws_relation_backfill_contract(
+    context_snapshot: dict[str, Any], self_changes: dict[str, Any]
+) -> None:
+    relation_projection = (
+        ((context_snapshot or {}).get("task") or {}).get("relation_projection")
+    )
+    if (
+        isinstance(relation_projection, dict)
+        and relation_projection.get("canonical_source") == "QWS_PROCESS_SNAPSHOT"
+        and (self_changes.get("relationChanges") or self_changes.get("createIssues"))
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="QWS canonical relations are read-only in Taskboard backfill; submit a QWS relation proposal",
+        )
+
+
 async def _apply_taskboard_backfill(
     *,
     project_id: str,
@@ -4395,6 +5344,7 @@ async def open_task_conversation(
                         tenant_key=tenant_key,
                     )
                 )
+        _ensure_task_writable(task)
         if body.workflow_id != task.get("workflow_id"):
             raise HTTPException(status_code=409, detail="task workflow binding changed")
         card_context = _normalize_card_context(body.card_context, project=project, task=task)
@@ -5018,6 +5968,17 @@ async def apply_task_backfill_proposal(
         task_id = conversation.task_id
         expected_version = proposal.base_card_version
         self_changes = dict(proposal.self_changes or {})
+        latest_context = (
+            await db.scalars(
+                select(WorkspaceTaskConversationContext)
+                .where(WorkspaceTaskConversationContext.conversation_id == conversation.id)
+                .order_by(WorkspaceTaskConversationContext.revision.desc())
+                .limit(1)
+            )
+        ).first()
+        _enforce_qws_relation_backfill_contract(
+            latest_context.snapshot if latest_context else {}, self_changes
+        )
     evidence = await _apply_taskboard_backfill(
         project_id=project_id,
         task_id=task_id,

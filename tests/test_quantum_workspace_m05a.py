@@ -44,6 +44,8 @@ def client():
         "tenant_key": "tenant-a",
         "user_id": "owner-a",
         "sub": "owner-a",
+        "principal_type": "human",
+        "amr": ["test_interactive"],
         "is_super_admin": False,
     }
     with TestClient(app) as test_client:
@@ -300,6 +302,8 @@ def _auth(user_id: str, tenant: str = "tenant-a") -> None:
         "tenant_key": tenant,
         "user_id": user_id,
         "sub": user_id,
+        "principal_type": "human",
+        "amr": ["test_interactive"],
         "is_super_admin": False,
     }
 
@@ -713,6 +717,8 @@ def test_project_write_member_edits_task_and_persists_normalized_revision(client
         "tenant_key": "tenant-a",
         "user_id": "writer-a",
         "sub": "writer-a",
+        "principal_type": "human",
+        "amr": ["test_interactive"],
         "is_super_admin": False,
     }
     edited = client.put(

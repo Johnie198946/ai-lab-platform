@@ -12,7 +12,7 @@ import hashlib
 import json
 import os
 
-from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, inspect, select
+from sqlalchemy import JSON, Column, Integer, MetaData, String, Table, inspect, select, text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -80,6 +80,7 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_knowledge_policy_v2_columns)
         await conn.run_sync(_migrate_showroom_epoch_bigint)
         await conn.run_sync(_migrate_feedback_digest_columns)
+        await conn.run_sync(_migrate_workspace_delivery_contract)
 
 
 def _migrate_workflow_v2_columns(connection) -> None:
@@ -335,6 +336,72 @@ def _migrate_showroom_epoch_bigint(connection) -> None:
     connection.exec_driver_sql(
         "ALTER TABLE showroom_insight_executions "
         "ALTER COLUMN epoch TYPE BIGINT USING epoch::BIGINT"
+    )
+
+
+def _migrate_workspace_delivery_contract(connection) -> None:
+    """Add the immutable intake/artifact/manifest schema on existing deployments."""
+    schema = inspect(connection)
+    tables = set(schema.get_table_names())
+    required = {
+        "workspace_business_intakes",
+        "workspace_artifacts",
+        "workspace_artifact_versions",
+        "workspace_delivery_manifests",
+    }
+    missing = required - tables
+    if missing:
+        raise RuntimeError(f"workspace delivery tables missing after create_all: {sorted(missing)}")
+
+    intake_columns = {
+        item["name"] for item in schema.get_columns("workspace_business_intakes")
+    }
+    revision_added = "revision" not in intake_columns
+    if revision_added:
+        connection.exec_driver_sql(
+            "ALTER TABLE workspace_business_intakes "
+            "ADD COLUMN revision INTEGER NOT NULL DEFAULT 1"
+        )
+        project_ids = [
+            row[0]
+            for row in connection.execute(
+                text("SELECT DISTINCT project_id FROM workspace_business_intakes ORDER BY project_id")
+            )
+        ]
+        for project_id in project_ids:
+            row_ids = [
+                row[0]
+                for row in connection.execute(
+                    text(
+                        "SELECT id FROM workspace_business_intakes "
+                        "WHERE project_id = :project_id ORDER BY created_at, id"
+                    ),
+                    {"project_id": project_id},
+                )
+            ]
+            for revision, row_id in enumerate(row_ids, start=1):
+                connection.execute(
+                    text(
+                        "UPDATE workspace_business_intakes SET revision = :revision "
+                        "WHERE id = :row_id"
+                    ),
+                    {"revision": revision, "row_id": row_id},
+                )
+
+    duplicate = connection.execute(
+        text(
+            "SELECT project_id, revision, COUNT(*) FROM workspace_business_intakes "
+            "GROUP BY project_id, revision HAVING COUNT(*) > 1 LIMIT 1"
+        )
+    ).first()
+    if duplicate is not None:
+        raise RuntimeError(
+            "workspace business intake revisions are not unique: "
+            f"project_id={duplicate[0]} revision={duplicate[1]}"
+        )
+    connection.exec_driver_sql(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_workspace_intake_revision "
+        "ON workspace_business_intakes (project_id, revision)"
     )
 
 

@@ -23,9 +23,15 @@ os.environ.setdefault("AUTHEN_JWT_SECRET", "test-secret")
 BASELINE = {"main_agent", "supervision", "coder", "knowledge"}
 
 
-def _token(sub: str) -> str:
+def _token(sub: str, principal_type: str = "human") -> str:
     return jose_jwt.encode(
-        {"sub": sub, "username": sub, "exp": datetime.now(timezone.utc) + timedelta(hours=1)},
+        {
+            "sub": sub,
+            "username": sub,
+            "principal_type": principal_type,
+            "amr": ["test_interactive"] if principal_type == "human" else ["service_token"],
+            "exp": datetime.now(timezone.utc) + timedelta(hours=1),
+        },
         "test-secret",
         algorithm="HS256",
     )
@@ -90,9 +96,14 @@ class TestTenantAgentsAPI(unittest.TestCase):
         auth._is_super_admin = self._old_super
         self._tenant_agents_module.fetch_skill_catalog = self._old_catalog
 
-    def _request(self, method, path, sub: str | None = "user-a", json=None):
+    def _request(
+        self, method, path, sub: str | None = "user-a", json=None,
+        principal_type: str = "human",
+    ):
         async def _run():
-            headers = {"Authorization": f"Bearer {_token(sub)}"} if sub else {}
+            headers = {
+                "Authorization": f"Bearer {_token(sub, principal_type)}"
+            } if sub else {}
             async with httpx.AsyncClient(
                 transport=self._transport,
                 base_url="http://testserver",
@@ -125,6 +136,15 @@ class TestTenantAgentsAPI(unittest.TestCase):
         self.assertEqual(agent["subscribed_knowledge_packs"], [])
         self.assertIsNotNone(agent["created_at"])
 
+        # 更新（仍需保持当前租户/所有者边界）
+        r = self._request(
+            "PATCH", f"/api/v1/tenant-agents/{aid}",
+            json={"base_agent_id": "knowledge", "custom_name": "Alpha 更新版", "private_prompt_delta": "只输出核验结论"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["custom_name"], "Alpha 更新版")
+        self.assertEqual(r.json()["base_agent_id"], "knowledge")
+
         # 列表
         r = self._request("GET", "/api/v1/tenant-agents")
         self.assertEqual(r.status_code, 200)
@@ -141,6 +161,15 @@ class TestTenantAgentsAPI(unittest.TestCase):
         self.assertEqual(r.json(), [])
 
     # ---------------------------------------------------- base_agent_id 约束
+    def test_agent_principal_cannot_create_slice(self):
+        r = self._request(
+            "POST", "/api/v1/tenant-agents",
+            json={"base_agent_id": "coder"},
+            principal_type="agent",
+        )
+        self.assertEqual(r.status_code, 403, r.text)
+        self.assertEqual(r.json()["detail"], "authenticated human principal required")
+
     def test_invalid_base_agent_id_rejected(self):
         r = self._request(
             "POST",

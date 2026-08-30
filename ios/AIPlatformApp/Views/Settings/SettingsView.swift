@@ -190,11 +190,11 @@ public struct SettingsView: View {
                         }
                     }
 
-                    Text("租户标识: \(appState.currentProfile.tenantId)")
+                    Text("普通用户")
                         .font(.system(size: 12))
                         .foregroundColor(AppTheme.Colors.textSecondary)
 
-                    Text(appState.currentProfile.role.displayName)
+                    Text("个人工作空间")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundColor(AppTheme.Colors.statusCompleted)
                 }

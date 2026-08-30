@@ -40,7 +40,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
           due_date: canonicalRevision > 1 ? "2026-09-01" : null,
           development_context: { type: "branch", branch: "codex/runtime-task" },
         }],
-        dependencies: canonicalRevision > 1
+        dependencies: canonicalRevision === 2
           ? [{ from_task_id: "task-1", to_task_id: "task-2" }]
           : [],
       }));
@@ -140,6 +140,32 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     assert.equal(canonicalAfterResync.startDate, "2026-08-31");
     assert.equal(runtimeAfterResync.dueDate, "2026-09-01");
     assert.equal(runtimeAfterResync.relations.blockedBy.some((task) => task.id === canonicalTask.id), true);
+    const forbiddenRelationWrite = await fetch(
+      `${origin}/api/tasks/${canonicalTask.id}/relations/related/${runtimeTask.id}`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", cookie: cookieA },
+        body: JSON.stringify({ version: canonicalAfterResync.version, origin: "manual" }),
+      },
+    );
+    assert.equal(forbiddenRelationWrite.status, 409);
+    assert.equal((await forbiddenRelationWrite.json()).error.code, "QWS_RELATION_READ_ONLY");
+
+    canonicalRevision = 3;
+    const driftRepair = await fetch(`${origin}/api/qws/session`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
+      body: JSON.stringify({ project_id: "prj-sync" }),
+    });
+    assert.equal(driftRepair.status, 200);
+    const repairedTasks = await fetch(`${origin}/api/tasks?projectId=qws-tenant-a-prj-sync&archived=false`, {
+      headers: { cookie: cookieA },
+    }).then((response) => response.json());
+    assert.equal(
+      repairedTasks.tasks.find((task) => task.id === runtimeTask.id).relations.blockedBy.length,
+      0,
+      "QWS resync removes Taskboard relation drift when canonical relation disappears",
+    );
 
     const invalidSession = await fetch(`${origin}/api/qws/session`, {
       method: "POST",

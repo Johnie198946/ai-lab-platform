@@ -73,9 +73,8 @@ public struct ProfileEditSheet: View {
                         .font(.system(size: 15))
                 }
 
-                Section("租户与角色（只读）") {
-                    LabeledContent("租户标识", value: appState.currentProfile.tenantId)
-                    LabeledContent("角色", value: appState.currentProfile.role.displayName)
+                Section("账号") {
+                    LabeledContent("身份", value: "普通用户")
                 }
             }
             .navigationTitle("编辑个人信息")

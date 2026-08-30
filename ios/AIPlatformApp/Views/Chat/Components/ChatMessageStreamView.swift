@@ -60,6 +60,11 @@ public struct ChatMessageStreamView: View {
             .frame(maxWidth: AppTheme.Metrics.readableContentWidth)
             .frame(maxWidth: .infinity)
             .padding(.vertical, AppTheme.Spacing.md)
+            .background {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { coordinator.collapseActiveClarify() }
+            }
         }
         .id(coordinator.historyPageIdentity)
         // 仅设置首次进入会话的位置。不能使用无 role 的 defaultScrollAnchor：
@@ -114,7 +119,11 @@ public struct ChatMessageStreamView: View {
                 onSubmit: { selection in
                     coordinator.sendClarifySelection(messageId: message.id, selection: selection)
                 },
-                onRecover: { coordinator.recoverExpiredClarify(messageId: message.id) }
+                onRecover: { coordinator.recoverExpiredClarify(messageId: message.id) },
+                onDraftChange: { ids, text in
+                    coordinator.updateClarifyDraft(messageId: message.id, selectionIDs: ids, customText: text)
+                },
+                onExpand: { coordinator.setClarifyCollapsed(messageId: message.id, collapsed: false) }
             )
         } else {
             // 提交后（isSubmitted）：降级为完整气泡渲染——思维链胶囊 + 已提交澄清卡 + 正文
@@ -123,7 +132,8 @@ public struct ChatMessageStreamView: View {
                 message: message,
                 context: coordinator.makeRenderContext(for: message),
                 onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted },
-                onRegenerate: { msgId in coordinator.retryMessage(msgId) }
+                onRegenerate: { msgId in coordinator.retryMessage(msgId) },
+                onStartTopic: { coordinator.startTargetedTopic(from: $0) }
             )
         }
     }

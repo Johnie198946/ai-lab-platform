@@ -26,6 +26,12 @@ public struct LoginView: View {
     @State private var wechatLoginEnabled = false
     @State private var alipayLoginEnabled = false
     @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
+    @FocusState private var focusedField: LoginField?
+
+    private enum LoginField: Hashable {
+        case phone
+        case code
+    }
     
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
     
@@ -35,6 +41,8 @@ public struct LoginView: View {
         NavigationStack {
             ZStack {
                 QuantumMistBackground()
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: dismissLoginCard)
 
                 GeometryReader { geometry in
                     VStack(spacing: isLoginCardVisible ? 10 : 0) {
@@ -91,6 +99,9 @@ public struct LoginView: View {
         .task {
             await loadAuthCapabilities()
         }
+        .onOpenURL { url in
+            oauthCoordinator.handleCallback(url)
+        }
     }
     
     // MARK: - Subviews
@@ -145,6 +156,7 @@ public struct LoginView: View {
                         .keyboardType(.numberPad)
                         .textContentType(.telephoneNumber)
                         .font(AppTheme.Typography.body)
+                        .focused($focusedField, equals: .phone)
                 }
                 .frame(minHeight: AppTheme.Metrics.inputHeight)
                 .padding(.horizontal, AppTheme.Spacing.md)
@@ -169,6 +181,7 @@ public struct LoginView: View {
                         .keyboardType(.numberPad)
                         .textContentType(.oneTimeCode)
                         .font(AppTheme.Typography.body)
+                        .focused($focusedField, equals: .code)
 
                     Button(action: sendSmsCode) {
                         if isCountdownActive {
@@ -316,6 +329,17 @@ public struct LoginView: View {
             }
         }
     }
+
+    private func dismissLoginCard() {
+        guard isLoginCardVisible else { return }
+        focusedField = nil
+        let animation: Animation = reduceMotion
+            ? .easeOut(duration: 0.16)
+            : .interpolatingSpring(mass: 0.9, stiffness: 220, damping: 27)
+        withAnimation(animation) {
+            isLoginCardVisible = false
+        }
+    }
     
     private func sendSmsCode() {
         guard phoneNumber.count >= 11, phoneLoginEnabled, !isLoading else { return }
@@ -373,7 +397,10 @@ public struct LoginView: View {
         Task { @MainActor in
             do {
                 let start = try await APIClient.shared.startOAuth(provider: provider)
-                let ticket = try await oauthCoordinator.authenticate(url: start.authorizationUrl)
+                let ticket = try await oauthCoordinator.authenticate(
+                    url: start.authorizationUrl,
+                    provider: provider
+                )
                 let response = try await APIClient.shared.completeOAuth(ticket: ticket)
                 try await completeLogin(response)
             } catch OAuthSessionCoordinatorError.cancelled {
@@ -420,7 +447,19 @@ public struct LoginView: View {
         withAnimation(.spring()) {
             appState.isLoggedIn = true
             appState.isGuestMode = false
-            appState.currentProfile = MockData.tenantProfile
+            let displayName = profile.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? CuteDisplayNames.name(for: profile.userId)
+                : profile.username
+            appState.currentProfile = TenantProfile(
+                id: profile.userId,
+                name: displayName,
+                tenantId: profile.tenantKey,
+                role: .tenantMember,
+                avatarUrl: profile.avatarUrl,
+                concurrencyLimit: 5,
+                tokenQuotaUsage: 0,
+                isVipLane: false
+            )
         }
     }
 }
@@ -428,11 +467,17 @@ public struct LoginView: View {
 private enum OAuthSessionCoordinatorError: LocalizedError {
     case cancelled
     case invalidCallback
+    case providerError(String)
+    case alipayUnavailable
+    case cannotOpenProvider
 
     var errorDescription: String? {
         switch self {
         case .cancelled: return "已取消授权"
         case .invalidCallback: return "登录回调无效"
+        case .providerError(let code): return "第三方授权失败（\(code)）"
+        case .alipayUnavailable: return "未检测到支付宝客户端，请先安装支付宝后重试"
+        case .cannotOpenProvider: return "无法打开第三方授权客户端"
         }
     }
 }
@@ -442,35 +487,109 @@ private final class OAuthSessionCoordinator: NSObject, ObservableObject,
     ASWebAuthenticationPresentationContextProviding
 {
     private var session: ASWebAuthenticationSession?
+    private var externalContinuation: CheckedContinuation<String, Error>?
 
-    func authenticate(url: URL) async throws -> String {
+    func authenticate(url: URL, provider: String) async throws -> String {
+        if provider == "alipay" {
+            return try await authenticateInAlipay(url: url)
+        }
+        return try await authenticateInWebSession(url: url)
+    }
+
+    func handleCallback(_ url: URL) {
+        guard let continuation = externalContinuation else { return }
+        externalContinuation = nil
+        do {
+            continuation.resume(returning: try ticket(from: url))
+        } catch {
+            continuation.resume(throwing: error)
+        }
+    }
+
+    private func authenticateInWebSession(url: URL) async throws -> String {
         try await withCheckedThrowingContinuation { continuation in
             let session = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: "quantum"
-            ) { callbackURL, error in
+            ) { [weak self] callbackURL, error in
+                defer { self?.session = nil }
                 if let authError = error as? ASWebAuthenticationSessionError,
                    authError.code == .canceledLogin {
                     continuation.resume(throwing: OAuthSessionCoordinatorError.cancelled)
                     return
                 }
-                guard let callbackURL,
-                      let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
-                      let ticket = components.queryItems?.first(where: { $0.name == "oauth_ticket" })?.value,
-                      !ticket.isEmpty
-                else {
+                guard let callbackURL else {
                     continuation.resume(throwing: error ?? OAuthSessionCoordinatorError.invalidCallback)
                     return
                 }
-                continuation.resume(returning: ticket)
+                do {
+                    guard let self else {
+                        throw OAuthSessionCoordinatorError.invalidCallback
+                    }
+                    continuation.resume(returning: try self.ticket(from: callbackURL))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
             session.presentationContextProvider = self
             session.prefersEphemeralWebBrowserSession = true
             self.session = session
             if !session.start() {
+                self.session = nil
                 continuation.resume(throwing: OAuthSessionCoordinatorError.invalidCallback)
             }
         }
+    }
+
+    private func authenticateInAlipay(url: URL) async throws -> String {
+        guard let deepLink = alipayDeepLink(for: url),
+              UIApplication.shared.canOpenURL(deepLink) else {
+            throw OAuthSessionCoordinatorError.alipayUnavailable
+        }
+        return try await withCheckedThrowingContinuation { continuation in
+            externalContinuation = continuation
+            UIApplication.shared.open(deepLink, options: [:]) { [weak self] opened in
+                guard !opened, let self,
+                      let continuation = self.externalContinuation else { return }
+                self.externalContinuation = nil
+                continuation.resume(throwing: OAuthSessionCoordinatorError.cannotOpenProvider)
+            }
+        }
+    }
+
+    private func alipayDeepLink(for authorizationURL: URL) -> URL? {
+        // 20000067 是支付宝官方“打开 URL”容器，不是商户 appId；
+        // 商户、redirect_uri、state 等真实授权参数仍完整使用后端返回值。
+        var components = URLComponents()
+        components.scheme = "alipays"
+        components.host = "platformapi"
+        components.path = "/startapp"
+        components.queryItems = [
+            URLQueryItem(name: "appId", value: "20000067"),
+            URLQueryItem(name: "url", value: authorizationURL.absoluteString),
+        ]
+        return components.url
+    }
+
+    private func ticket(from callbackURL: URL) throws -> String {
+        guard callbackURL.scheme?.lowercased() == "quantum",
+              callbackURL.host?.lowercased() == "oauth",
+              callbackURL.path == "/callback",
+              let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)
+        else {
+            throw OAuthSessionCoordinatorError.invalidCallback
+        }
+        if let providerError = components.queryItems?
+            .first(where: { $0.name == "oauth_error" })?.value,
+           !providerError.isEmpty {
+            throw OAuthSessionCoordinatorError.providerError(providerError)
+        }
+        guard let ticket = components.queryItems?
+            .first(where: { $0.name == "oauth_ticket" })?.value,
+              !ticket.isEmpty else {
+            throw OAuthSessionCoordinatorError.invalidCallback
+        }
+        return ticket
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {

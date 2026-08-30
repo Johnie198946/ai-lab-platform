@@ -14,6 +14,7 @@ public struct StoredSessionSummary: Sendable {
     public let messageCount: Int
     public let agentId: String
     public let agentName: String
+    public let topic: TopicSessionMetadata?
 }
 
 /// Indexed local history. SessionManager serializes access on MainActor; SQLite supplies atomic writes.
@@ -42,21 +43,21 @@ public final class ChatHistoryStore: @unchecked Sendable {
     deinit { sqlite3_close(db) }
 
     public func summaries() throws -> [StoredSessionSummary] {
-        try query("SELECT id,title,updated_at,message_count,agent_id,agent_name FROM sessions ORDER BY updated_at DESC") { s in
-            StoredSessionSummary(id: text(s,0), title: text(s,1), updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,2)), messageCount: Int(sqlite3_column_int64(s,3)), agentId: text(s,4), agentName: text(s,5))
+        try query("SELECT id,title,updated_at,message_count,agent_id,agent_name,topic_payload FROM sessions ORDER BY updated_at DESC") { s in
+            StoredSessionSummary(id: text(s,0), title: text(s,1), updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,2)), messageCount: Int(sqlite3_column_int64(s,3)), agentId: text(s,4), agentName: text(s,5), topic: decodeTopic(s,6))
         }
     }
 
     public func summary(sessionId: String) throws -> StoredSessionSummary? {
         try query(
-            "SELECT id,title,updated_at,message_count,agent_id,agent_name FROM sessions WHERE id=? LIMIT 1",
+            "SELECT id,title,updated_at,message_count,agent_id,agent_name,topic_payload FROM sessions WHERE id=? LIMIT 1",
             { bind(sessionId, $0, 1) }
         ) { s in
             StoredSessionSummary(
                 id: text(s, 0), title: text(s, 1),
                 updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
                 messageCount: Int(sqlite3_column_int64(s, 3)),
-                agentId: text(s, 4), agentName: text(s, 5)
+                agentId: text(s, 4), agentName: text(s, 5), topic: decodeTopic(s, 6)
             )
         }.first
     }
@@ -65,6 +66,13 @@ public final class ChatHistoryStore: @unchecked Sendable {
         try run("INSERT OR IGNORE INTO sessions(id,title,updated_at,message_count,next_sequence,agent_id,agent_name) VALUES(?,?,?,?,?,?,?)") { s in
             bind(id,s,1); bind("新会话",s,2); sqlite3_bind_double(s,3,Date().timeIntervalSince1970)
             sqlite3_bind_int64(s,4,0); sqlite3_bind_int64(s,5,0); bind(agentId,s,6); bind(agentName,s,7)
+        }
+    }
+
+    public func updateTopic(_ topic: TopicSessionMetadata) throws {
+        let payload = try Self.encoder.encode(topic)
+        try run("UPDATE sessions SET topic_payload=?,updated_at=? WHERE id=?") { s in
+            bind(payload,s,1); sqlite3_bind_double(s,2,Date().timeIntervalSince1970); bind(topic.sessionId,s,3)
         }
     }
 
@@ -159,8 +167,22 @@ public final class ChatHistoryStore: @unchecked Sendable {
 
     private func schema() throws {
         try exec("CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,title TEXT NOT NULL,updated_at REAL NOT NULL,message_count INTEGER NOT NULL DEFAULT 0,next_sequence INTEGER NOT NULL DEFAULT 0,agent_id TEXT NOT NULL,agent_name TEXT NOT NULL)")
+        if !tableColumns("sessions").contains("topic_payload") {
+            try exec("ALTER TABLE sessions ADD COLUMN topic_payload BLOB")
+        }
         try exec("CREATE TABLE IF NOT EXISTS messages(session_id TEXT NOT NULL,sequence INTEGER NOT NULL,message_id TEXT NOT NULL,role TEXT NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(session_id,sequence),UNIQUE(session_id,message_id),FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE)")
         try exec("CREATE INDEX IF NOT EXISTS idx_messages_lookup ON messages(session_id,message_id)")
+    }
+
+    private func tableColumns(_ table: String) -> Set<String> {
+        Set((try? query("PRAGMA table_info(\(table))") { text($0, 1) }) ?? [])
+    }
+
+    private func decodeTopic(_ statement: OpaquePointer?, _ column: Int32) -> TopicSessionMetadata? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
+        let count = Int(sqlite3_column_bytes(statement, column))
+        guard let bytes = sqlite3_column_blob(statement, column), count > 0 else { return nil }
+        return try? Self.decoder.decode(TopicSessionMetadata.self, from: Data(bytes: bytes, count: count))
     }
 
     public func migrateLegacySessions() throws {

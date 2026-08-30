@@ -181,6 +181,8 @@ async def require_auth(
             "tenant_key": "demo",
             "org_id": "demo",
             "is_super_admin": True,
+            "principal_type": "dev_unauthenticated",
+            "amr": [],
             "visible_categories": None,
         }
     if credentials is None:
