@@ -3,8 +3,9 @@
 - receipt_id: `qws-unified-fact-model-20260830`
 - date: `2026-08-30`
 - branch: `main`
-- delivery_state: `TESTED`
-- code_source_of_truth: `GitHub main`（本收据写入时尚未提交/推送/部署）
+- delivery_state: `DEPLOYED_VERIFIED`
+- code_source_of_truth: `GitHub main`
+- application_commit: `1b2456d06baa9805f0c40c358da284712f888a5c`
 - baseline_when_final_gate_started: `bb6dfdfc9e77ae7fbaba3d00ddc43563cccb49c5`
 - production_before: `dba5c5016a8850f5b715ec7912f6af71653cb91d`
 
@@ -94,4 +95,19 @@
 - 真源：QWS process revision 为角色、任务、Workflow 与资源引用真源；Dashi 持久化排期 revision/receipt，并通过项目 ID 对齐。
 - 用户目录：未纳入或删除仓库根目录未跟踪的 `build/`。
 - 回滚：部署采用 exact-SHA immutable release；应用回滚到部署前 SHA `dba5c5016a8850f5b715ec7912f6af71653cb91d`。
-- 当前 RYG：`YELLOW`，原因仅为收据写入时尚未 commit / push / deploy / production acceptance；完成后更新为 `GREEN`。
+- 当前 RYG：`GREEN`。
+
+## GitHub 与生产验收
+
+- GitHub push：`origin/main` 曾回读为应用提交 `1b2456d06baa9805f0c40c358da284712f888a5c`，非本地自报。
+- exact-SHA deploy：`bash scripts/update.sh 1b2456d06baa9805f0c40c358da284712f888a5c`，exit `0`。
+- production marker：`/opt/ai-lab-platform/.deployed-sha=1b2456d06baa9805f0c40c358da284712f888a5c`。
+- live release：`/opt/releases/ai-lab-platform-1b2456d06baa.6eQCP6`。
+- rollback point：`/opt/releases/ai-lab-platform-dba5c5016a88.IFgaWO`。
+- API：`{"status":"ok","version":"0.8.0"}`；公网 `/health` 同样返回 200/ok。
+- Frontend：公网 HTTPS `/` 返回 HTTP 200。
+- Hermes Bridge：`status=ok, version=v6.0`；部署脚本重启期两次短暂 connection refused 后重试恢复，独立回读仍为 ok。
+- Dashi：Compose `healthy`；`/api/meta` 可读；生产 SQLite 已存在 `project_schedule_revisions` 表。
+- OpenAPI：生产公开 `PUT /api/v1/projects/{project_id}/roles/{role_name}` 与 `POST /api/v1/projects/{project_id}/consistency/validate`。
+- 生产业务写入边界：未借用或猜测用户凭据，未在真实用户项目制造验收数据；角色持久化、排期事务与收据读回由真实 HTTP/DB 集成测试覆盖。
+- 收据同步说明：本节是部署后的 docs-only GitHub 同步；应用运行态 SHA 仍以 `application_commit` 为准，不把文档提交伪称为二次应用部署。
