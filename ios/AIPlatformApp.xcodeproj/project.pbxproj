@@ -14,8 +14,8 @@
 		1B83E300CE2CE743A621F7C5 /* InfoPlist.strings in Resources */ = {isa = PBXBuildFile; fileRef = 4E35AD99D2D7E9243E8DADC7 /* InfoPlist.strings */; };
 		1CFDE4C45A3F91B300210288 /* TenantSessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 649C465782634364AD5E28C2 /* TenantSessionCoordinator.swift */; };
 		1DEF132BBABAAE7BE740235E /* KnowledgeNoteStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 62ED7CB52D98E7F4FE22A9D2 /* KnowledgeNoteStore.swift */; };
-		C0D3A0010000000000000001 /* ChatHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3A0010000000000000002 /* ChatHistoryStore.swift */; };
 		1EF0A40ED0CF79A929CB6F20 /* MarkdownBlockParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */; };
+		254C1CD57C1EACE9BAAF30A1 /* ChatHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 682708AC3F789E460269179F /* ChatHistoryStore.swift */; };
 		347B8891FA73F4A13044017F /* WorkflowDashboardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865230675174544683A40C47 /* WorkflowDashboardView.swift */; };
 		353DDBE9B6F14BAA4DD7F20F /* ChatStatusCards.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1F5BB3EF9C10F911B036B99 /* ChatStatusCards.swift */; };
 		364D6C336F779FC90000B64E /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD70BD59CD071FB619837740 /* ChatView.swift */; };
@@ -83,8 +83,8 @@
 		5739784ABF1359A2846D8888 /* APIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = APIClient.swift; sourceTree = "<group>"; };
 		5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownBlockParser.swift; sourceTree = "<group>"; };
 		62ED7CB52D98E7F4FE22A9D2 /* KnowledgeNoteStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KnowledgeNoteStore.swift; sourceTree = "<group>"; };
-		C0D3A0010000000000000002 /* ChatHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
 		649C465782634364AD5E28C2 /* TenantSessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TenantSessionCoordinator.swift; sourceTree = "<group>"; };
+		682708AC3F789E460269179F /* ChatHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatHistoryStore.swift; sourceTree = "<group>"; };
 		6C3999D4D79E502B3827976F /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		77831964D4BC5807CFED21D0 /* ProfileEditSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileEditSheet.swift; sourceTree = "<group>"; };
 		7A0179B18110033BC1CA0851 /* QuantumAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuantumAvatarView.swift; sourceTree = "<group>"; };
@@ -233,8 +233,8 @@
 		86A09AB8A1F908988E6AE52E /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				682708AC3F789E460269179F /* ChatHistoryStore.swift */,
 				F8E70EAC9E0B5B8A7FA5B187 /* InboxFileManager.swift */,
-				C0D3A0010000000000000002 /* ChatHistoryStore.swift */,
 				62ED7CB52D98E7F4FE22A9D2 /* KnowledgeNoteStore.swift */,
 				5B1D23EEB21DD2DD62B8D52D /* MarkdownBlockParser.swift */,
 				C46EACC0E8183D29E10202F1 /* QuickCommandTracker.swift */,
@@ -387,6 +387,14 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
+					287478BFBB6423EFA5B90DC4 = {
+						DevelopmentTeam = AALA948YY5;
+						ProvisioningStyle = Automatic;
+					};
+					E938C628C625CE7EB3E2B304 = {
+						DevelopmentTeam = AALA948YY5;
+						ProvisioningStyle = Automatic;
+					};
 				};
 			};
 			buildConfigurationList = CE9BE94AECA5AC64671543B4 /* Build configuration list for PBXProject "AIPlatformApp" */;
@@ -443,6 +451,7 @@
 				0D6B168E6164B25411D9D874 /* BlockCardDispatcher.swift in Sources */,
 				82FD2FEB26F5F572E59FD057 /* BubbleActionBar.swift in Sources */,
 				55FE0861FFFFA12CF6705B08 /* ChartCard.swift in Sources */,
+				254C1CD57C1EACE9BAAF30A1 /* ChatHistoryStore.swift in Sources */,
 				7B344FB8483CFD19E23FE67F /* ChatInFlightPlaceholderView.swift in Sources */,
 				07939825DDB42FFA9B2649ED /* ChatInputBar.swift in Sources */,
 				F9D61280C020B647D7B3E1D2 /* ChatMessageStreamView.swift in Sources */,
@@ -453,7 +462,6 @@
 				EA5709C3A46D1DE62905B40C /* ImageCard.swift in Sources */,
 				C9A8805D56EF7F858B0ADD99 /* InboxFileManager.swift in Sources */,
 				1DEF132BBABAAE7BE740235E /* KnowledgeNoteStore.swift in Sources */,
-				C0D3A0010000000000000001 /* ChatHistoryStore.swift in Sources */,
 				EA82BF67AC18747EC5F3FA3E /* KnowledgeView.swift in Sources */,
 				C5628D34D35E19AAF03CA518 /* LoginView.swift in Sources */,
 				835F48448522A2A88E0C7165 /* MainTabView.swift in Sources */,
@@ -498,9 +506,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AALA948YY5;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -520,15 +528,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = AALA948YY5;
 				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ailab.AIPlatformApp;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
@@ -603,9 +613,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = AALA948YY5;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -625,15 +635,17 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
-				CODE_SIGNING_ALLOWED = NO;
-				CODE_SIGNING_REQUIRED = NO;
-				CODE_SIGN_IDENTITY = "";
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 4;
+				DEVELOPMENT_TEAM = AALA948YY5;
 				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				MARKETING_VERSION = 1.0.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.ailab.AIPlatformApp;
 				SDKROOT = iphoneos;
 				SWIFT_VERSION = 5.9;
