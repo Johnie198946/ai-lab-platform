@@ -1284,6 +1284,78 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
     assert duplicate.json()["detail"] == "workflow already binds another project task"
 
 
+def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "merge-loop")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    primary, secondary = process["tasks"][:2]
+
+    preview_response = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
+        json={
+            "expected_revision": 1,
+            "secondary_task_id": secondary["id"],
+            "expected_primary_revision": 1,
+            "expected_secondary_revision": 1,
+        },
+    )
+    assert preview_response.status_code == 201, preview_response.text
+    preview = preview_response.json()["merge"]
+    choices = {
+        item["field"]: ("union" if "union" in item["allowed_choices"] else "primary")
+        for item in preview["conflicts"]
+    }
+    applied = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
+        json={"expected_revision": 2, "field_choices": choices},
+    )
+    assert applied.status_code == 200, applied.text
+    assert applied.json()["merge"]["status"] == "APPLIED"
+    assert applied.json()["secondary_task"]["status"] == "MERGED"
+    assert applied.json()["secondary_task"]["redirect_to_task_id"] == primary["id"]
+    merged_task = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{secondary['id']}"
+    )
+    assert merged_task.status_code == 200
+    assert merged_task.json()["redirect"]["task_id"] == primary["id"]
+    workflow_graph = client.get(
+        f"/api/v1/projects/{project_id}/graphs/workflow"
+    ).json()
+    merged_node = next(node for node in workflow_graph["nodes"] if node["id"] == secondary["id"])
+    assert merged_node["task_status"] == "MERGED"
+    blocked_update = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{secondary['id']}/card-summary",
+        json={"expected_revision": 3, "progress": "不应写入"},
+    )
+    assert blocked_update.status_code == 409
+    assert blocked_update.json()["detail"]["error"] == "merged_task_is_read_only"
+    replayed = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
+        json={"expected_revision": 3, "field_choices": choices},
+    )
+    assert replayed.status_code == 200
+    assert replayed.json()["process_revision"] == 3
+
+    reverted = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
+        json={"expected_revision": 3},
+    )
+    assert reverted.status_code == 200, reverted.text
+    assert reverted.json()["merge"]["status"] == "REVERTED"
+    assert reverted.json()["secondary_task"]["status"] == secondary["status"]
+    assert "redirect_to_task_id" not in reverted.json()["secondary_task"]
+    restored_task = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{secondary['id']}"
+    ).json()
+    assert "redirect" not in restored_task
+    replayed_revert = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
+        json={"expected_revision": 4},
+    )
+    assert replayed_revert.status_code == 200
+    assert replayed_revert.json()["process_revision"] == 4
+
+
 def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relation(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "operating-loop")

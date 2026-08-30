@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 import re
-from typing import Any
+from typing import Any, Mapping
 from uuid import uuid4
 
 DIRECTIONAL_RELATIONS = {"blocks", "blocked_by", "parent", "child"}
@@ -146,6 +148,197 @@ def find_duplicate_candidates(
             "requires_user_confirmation": True,
         })
     return sorted(candidates, key=lambda item: (-item["score"], str(item["target_task_id"])))
+
+
+MERGE_FIELDS = (
+    "title", "summary", "acceptance_criteria", "deliverables", "labels",
+    "assignee_role", "schedule",
+)
+MERGE_METADATA_FIELDS = (
+    "status", "merge_sources", "pre_merge_status", "redirect_to_task_id",
+    "merged_at", "merged_by",
+)
+
+
+def _merge_snapshot(task: dict[str, Any]) -> dict[str, Any]:
+    keys = (*MERGE_FIELDS, *MERGE_METADATA_FIELDS)
+    return {
+        "present": [key for key in keys if key in task],
+        "values": {key: deepcopy(task[key]) for key in keys if key in task},
+    }
+
+
+def _restore_merge_snapshot(task: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    for key in (*MERGE_FIELDS, *MERGE_METADATA_FIELDS):
+        task.pop(key, None)
+    task.update(deepcopy(snapshot["values"]))
+
+
+def _task_content_hash(task: dict[str, Any]) -> str:
+    canonical = json.dumps(
+        task, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _has_active_execution_lease(task: dict[str, Any]) -> bool:
+    lease = task.get("execution_lease") or {}
+    expires_at = lease.get("expires_at")
+    if not expires_at:
+        return False
+    try:
+        return datetime.fromisoformat(str(expires_at)) > utc_now()
+    except (TypeError, ValueError):
+        return True
+
+
+def create_merge_preview(
+    primary: dict[str, Any], secondary: dict[str, Any], *, created_by: str
+) -> dict[str, Any]:
+    if primary.get("id") == secondary.get("id"):
+        raise ValueError("merge_requires_two_tasks")
+    if (
+        primary.get("project_id") and secondary.get("project_id")
+        and primary["project_id"] != secondary["project_id"]
+    ):
+        raise ValueError("cross_project_merge_forbidden")
+    if primary.get("status") in {"MERGED", "CANCELLED"} or secondary.get("status") in {"MERGED", "CANCELLED"}:
+        raise ValueError("terminal_task_cannot_merge")
+    conflicts = []
+    for field in MERGE_FIELDS:
+        left, right = primary.get(field), secondary.get(field)
+        if left != right and (left not in (None, "", []) or right not in (None, "", [])):
+            conflicts.append({
+                "field": field,
+                "primary": deepcopy(left),
+                "secondary": deepcopy(right),
+                "allowed_choices": ["primary", "secondary", "union"]
+                if isinstance(left, list) or isinstance(right, list)
+                else ["primary", "secondary"],
+            })
+    return {
+        "id": f"merge_{uuid4().hex}",
+        "status": "PREVIEW",
+        "primary_task_id": primary["id"],
+        "secondary_task_id": secondary["id"],
+        "primary_revision": int(primary.get("task_revision") or 1),
+        "secondary_revision": int(secondary.get("task_revision") or 1),
+        "conflicts": conflicts,
+        "retained_on_source": ["feedback", "feedback_batches", "artifacts", "status_history", "handoffs", "decisions"],
+        "blockers": [
+            {"task_id": item["id"], "reason": "active_execution_lease"}
+            for item in (primary, secondary) if _has_active_execution_lease(item)
+        ],
+        "snapshots": {"primary": _merge_snapshot(primary), "secondary": _merge_snapshot(secondary)},
+        "created_by": created_by,
+        "created_at": utc_now().isoformat(),
+    }
+
+
+def _union_values(left: Any, right: Any) -> list[Any]:
+    result = []
+    for item in [*(left or []), *(right or [])]:
+        if item not in result:
+            result.append(deepcopy(item))
+    return result
+
+
+def apply_task_merge(
+    preview: dict[str, Any], primary: dict[str, Any], secondary: dict[str, Any],
+    *, field_choices: Mapping[str, str], actor_id: str,
+) -> dict[str, Any]:
+    if preview.get("status") == "APPLIED":
+        return preview
+    if preview.get("status") != "PREVIEW":
+        raise ValueError("merge_preview_not_applicable")
+    if _has_active_execution_lease(primary) or _has_active_execution_lease(secondary):
+        raise ValueError("active_execution_lease_blocks_merge")
+    if int(primary.get("task_revision") or 1) != preview["primary_revision"]:
+        raise ValueError("primary_task_revision_conflict")
+    if int(secondary.get("task_revision") or 1) != preview["secondary_revision"]:
+        raise ValueError("secondary_task_revision_conflict")
+    conflict_fields = {item["field"] for item in preview.get("conflicts") or []}
+    unexpected = set(field_choices) - conflict_fields
+    if unexpected:
+        raise ValueError(f"unexpected_merge_choice:{sorted(unexpected)[0]}")
+    for conflict in preview.get("conflicts") or []:
+        field = conflict["field"]
+        if field_choices.get(field) not in conflict["allowed_choices"]:
+            raise ValueError(f"merge_choice_required:{field}")
+    for conflict in preview.get("conflicts") or []:
+        field = conflict["field"]
+        choice = field_choices[field]
+        if choice == "secondary":
+            primary[field] = deepcopy(secondary.get(field))
+        elif choice == "union":
+            primary[field] = _union_values(primary.get(field), secondary.get(field))
+    now = utc_now().isoformat()
+    primary["merge_sources"] = _union_values(primary.get("merge_sources"), [secondary["id"]])
+    primary["task_revision"] = int(primary.get("task_revision") or 1) + 1
+    secondary["pre_merge_status"] = secondary.get("status")
+    secondary["status"] = "MERGED"
+    secondary["redirect_to_task_id"] = primary["id"]
+    secondary["merged_at"] = now
+    secondary["merged_by"] = actor_id
+    secondary.setdefault("status_history", []).append({
+        "from": secondary["pre_merge_status"], "to": "MERGED",
+        "reason": f"merged_into:{primary['id']}", "actor_id": actor_id, "at": now,
+    })
+    secondary["task_revision"] = int(secondary.get("task_revision") or 1) + 1
+    primary.setdefault("merge_history", []).append({
+        "merge_id": preview["id"], "action": "APPLIED",
+        "source_task_id": secondary["id"], "actor_id": actor_id, "at": now,
+    })
+    preview.update({
+        "status": "APPLIED",
+        "field_choices": deepcopy(dict(field_choices)),
+        "applied_by": actor_id,
+        "applied_at": now,
+        "applied_revisions": {
+            "primary": primary["task_revision"],
+            "secondary": secondary["task_revision"],
+        },
+        "applied_task_hashes": {
+            "primary": _task_content_hash(primary),
+            "secondary": _task_content_hash(secondary),
+        },
+    })
+    return preview
+
+
+def revert_task_merge(
+    merge: dict[str, Any], primary: dict[str, Any], secondary: dict[str, Any], *, actor_id: str
+) -> dict[str, Any]:
+    if merge.get("status") == "REVERTED":
+        return merge
+    if merge.get("status") != "APPLIED":
+        raise ValueError("merge_not_revertible")
+    revisions = merge.get("applied_revisions") or {}
+    if int(primary.get("task_revision") or 1) != revisions.get("primary"):
+        raise ValueError("primary_changed_after_merge")
+    if int(secondary.get("task_revision") or 1) != revisions.get("secondary"):
+        raise ValueError("secondary_changed_after_merge")
+    hashes = merge.get("applied_task_hashes") or {}
+    if _task_content_hash(primary) != hashes.get("primary"):
+        raise ValueError("primary_changed_after_merge")
+    if _task_content_hash(secondary) != hashes.get("secondary"):
+        raise ValueError("secondary_changed_after_merge")
+    previous_secondary_status = secondary.get("status")
+    _restore_merge_snapshot(primary, merge["snapshots"]["primary"])
+    _restore_merge_snapshot(secondary, merge["snapshots"]["secondary"])
+    primary["task_revision"] = int(revisions["primary"]) + 1
+    secondary["task_revision"] = int(revisions["secondary"]) + 1
+    reverted_at = utc_now().isoformat()
+    secondary.setdefault("status_history", []).append({
+        "from": previous_secondary_status, "to": secondary.get("status"),
+        "reason": f"merge_reverted:{merge['id']}", "actor_id": actor_id, "at": reverted_at,
+    })
+    primary.setdefault("merge_history", []).append({
+        "merge_id": merge["id"], "action": "REVERTED",
+        "source_task_id": secondary["id"], "actor_id": actor_id, "at": reverted_at,
+    })
+    merge.update({"status": "REVERTED", "reverted_by": actor_id, "reverted_at": reverted_at})
+    return merge
 
 
 def initialize_task_contract(task: dict[str, Any], *, task_revision: int = 1) -> dict[str, Any]:

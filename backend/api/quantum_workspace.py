@@ -74,14 +74,17 @@ from backend.services.workspace_process import (
 from backend.services.task_operating_loop import (
     acquire_execution_lease,
     add_feedback,
+    apply_task_merge,
     apply_feedback_acceptance,
     apply_feedback_action,
     build_task_context_pack,
     create_feedback_batch,
+    create_merge_preview,
     create_relation_proposal,
     find_duplicate_candidates,
     initialize_task_contract,
     record_feedback_interpretation,
+    revert_task_merge,
     submit_feedback_batch,
     submit_feedback_resolution,
     transition_task,
@@ -298,6 +301,22 @@ class CheckTaskDuplicatesRequest(BaseModel):
     due_date: str | None = Field(default=None, max_length=40)
     labels: list[str] = Field(default_factory=list, max_length=20)
     trigger: Literal["CREATE", "CLAIM"] = "CREATE"
+
+
+class CreateMergePreviewRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    secondary_task_id: str = Field(min_length=1, max_length=40)
+    expected_primary_revision: int = Field(ge=1)
+    expected_secondary_revision: int = Field(ge=1)
+
+
+class ApplyTaskMergeRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    field_choices: dict[str, Literal["primary", "secondary", "union"]]
+
+
+class RevertTaskMergeRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
 
 
 class ProposeTaskRelationRequest(BaseModel):
@@ -2245,6 +2264,17 @@ async def save_project_workflow_graph(
         }
 
 
+def _ensure_task_writable(task: dict[str, Any]) -> None:
+    if task.get("status") == "MERGED":
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "merged_task_is_read_only",
+                "redirect_to_task_id": task.get("redirect_to_task_id"),
+            },
+        )
+
+
 async def _task_contract_for_update(
     db, *, project_id: str, tenant_key: str, user_id: str,
     expected_revision: int, task_id: str,
@@ -2260,6 +2290,7 @@ async def _task_contract_for_update(
     task = next((item for item in tasks if item.get("id") == task_id), None)
     if task is None:
         raise HTTPException(status_code=404, detail="project task not found")
+    _ensure_task_writable(task)
     return project, process, tasks, task
 
 
@@ -2297,6 +2328,141 @@ async def check_project_task_duplicates(
             "candidates": candidates,
             "thresholds": {"strong": 0.90, "review": 0.75, "calibration": "PENDING_REAL_DATA"},
         }
+
+
+def _sync_task_status_projections(
+    process: dict[str, Any], tasks: list[dict[str, Any]], task_ids: set[str]
+) -> None:
+    statuses = {item["id"]: item.get("status") for item in tasks if item.get("id") in task_ids}
+    stages = [dict(item) for item in process.get("stages") or []]
+    affected_stages = {
+        item.get("stage_id") for item in tasks if item.get("id") in task_ids
+    }
+    for stage in stages:
+        if stage.get("id") in affected_stages:
+            _aggregate_stage(stage, [item for item in tasks if item.get("stage_id") == stage.get("id")])
+    graphs = dict(process.get("graphs") or {})
+    for graph_name in ("workflow", "ai-resource"):
+        graph = dict(graphs.get(graph_name) or {})
+        graph["nodes"] = [
+            {**node, "task_status": statuses[node["id"]]}
+            if node.get("id") in statuses else node
+            for node in graph.get("nodes") or []
+        ]
+        graphs[graph_name] = graph
+    process["stages"] = stages
+    process["graphs"] = graphs
+
+
+@router.post("/projects/{project_id}/tasks/{primary_task_id}/merge-previews", status_code=201)
+async def create_project_task_merge_preview(
+    project_id: str, primary_task_id: str, body: CreateMergePreviewRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        primary = next((item for item in tasks if item.get("id") == primary_task_id), None)
+        secondary = next((item for item in tasks if item.get("id") == body.secondary_task_id), None)
+        if primary is None or secondary is None:
+            raise HTTPException(status_code=404, detail="merge task not found")
+        if int(primary["task_revision"]) != body.expected_primary_revision or int(secondary["task_revision"]) != body.expected_secondary_revision:
+            raise HTTPException(status_code=409, detail="task revision conflict")
+        try:
+            preview = create_merge_preview(primary, secondary, created_by=f"user:{user_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        process["tasks"] = tasks
+        process["task_merges"] = [*(process.get("task_merges") or []), preview]
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project_id, "process_revision": revision, "merge": preview}
+
+
+@router.post("/projects/{project_id}/task-merges/{merge_id}/apply")
+async def apply_project_task_merge(
+    project_id: str, merge_id: str, body: ApplyTaskMergeRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        merges = [dict(item) for item in process.get("task_merges") or []]
+        merge = next((item for item in merges if item.get("id") == merge_id), None)
+        if merge is None:
+            raise HTTPException(status_code=404, detail="merge preview not found")
+        if merge.get("status") == "APPLIED":
+            primary = next(item for item in tasks if item.get("id") == merge["primary_task_id"])
+            secondary = next(item for item in tasks if item.get("id") == merge["secondary_task_id"])
+            return {"project_id": project_id, "process_revision": project.process_revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+        primary = next((item for item in tasks if item.get("id") == merge["primary_task_id"]), None)
+        secondary = next((item for item in tasks if item.get("id") == merge["secondary_task_id"]), None)
+        if primary is None or secondary is None:
+            raise HTTPException(status_code=409, detail="merge task missing")
+        try:
+            apply_task_merge(
+                merge, primary, secondary, field_choices=body.field_choices,
+                actor_id=f"user:{user_id}",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        process["tasks"] = tasks
+        process["task_merges"] = merges
+        _sync_task_status_projections(
+            process, tasks, {primary["id"], secondary["id"]}
+        )
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project_id, "process_revision": revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+
+
+@router.post("/projects/{project_id}/task-merges/{merge_id}/revert")
+async def revert_project_task_merge(
+    project_id: str, merge_id: str, body: RevertTaskMergeRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        merges = [dict(item) for item in process.get("task_merges") or []]
+        merge = next((item for item in merges if item.get("id") == merge_id), None)
+        if merge is None:
+            raise HTTPException(status_code=404, detail="merge not found")
+        if merge.get("status") == "REVERTED":
+            primary = next(item for item in tasks if item.get("id") == merge["primary_task_id"])
+            secondary = next(item for item in tasks if item.get("id") == merge["secondary_task_id"])
+            return {"project_id": project_id, "process_revision": project.process_revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+        primary = next((item for item in tasks if item.get("id") == merge["primary_task_id"]), None)
+        secondary = next((item for item in tasks if item.get("id") == merge["secondary_task_id"]), None)
+        if primary is None or secondary is None:
+            raise HTTPException(status_code=409, detail="merge task missing")
+        try:
+            revert_task_merge(merge, primary, secondary, actor_id=f"user:{user_id}")
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        process["tasks"] = tasks
+        process["task_merges"] = merges
+        _sync_task_status_projections(
+            process, tasks, {primary["id"], secondary["id"]}
+        )
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project_id, "process_revision": revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
 
 
 @router.post("/projects/{project_id}/tasks", status_code=201)
@@ -2494,6 +2660,7 @@ async def propose_project_task_relation(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
         if int(task.get("task_revision") or 1) != body.expected_task_revision:
             raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
         try:
@@ -2555,6 +2722,7 @@ async def bind_project_task_workflow(
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
         bound_elsewhere = next(
             (
                 item
@@ -2575,6 +2743,7 @@ async def bind_project_task_workflow(
         task["workflow_status"] = workflow.status
         task["workflow_bound_at"] = datetime.now().astimezone().isoformat()
         task["workflow_bound_by"] = user_id
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
         graphs = dict(process.get("graphs") or {})
         workflow_graph = dict(graphs.get("workflow") or {})
         workflow_graph["nodes"] = [
@@ -2821,6 +2990,7 @@ async def update_project_task_card_summary(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
         update_card_summary(task, actor_id=f"user:{user_id}", **body.model_dump(exclude={"expected_revision"}))
         process["tasks"] = tasks
         next_revision = await _cas_project_process(db, project=project, expected_revision=body.expected_revision, process=process)
@@ -2844,7 +3014,13 @@ async def get_project_task(
         )
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
-        return {"project_id": project.id, "process_revision": project.process_revision, **task}
+        response = {"project_id": project.id, "process_revision": project.process_revision, **task}
+        if task.get("status") == "MERGED" and task.get("redirect_to_task_id"):
+            response["redirect"] = {
+                "task_id": task["redirect_to_task_id"],
+                "location": f"/api/v1/projects/{project_id}/tasks/{task['redirect_to_task_id']}",
+            }
+        return response
 
 
 @router.patch("/projects/{project_id}/tasks/{task_id}")
@@ -3351,12 +3527,14 @@ async def edit_project_task(
         task = next((item for item in tasks if item["id"] == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        _ensure_task_writable(task)
         stages = [dict(item) for item in process.get("stages", [])]
         target_stage = next((item for item in stages if item["id"] == body.stage_id), None)
         if target_stage is None:
             raise HTTPException(status_code=422, detail="stage not found")
         old_stage_id = task.get("stage_id")
         task.update({"stage_id": body.stage_id, "title": body.title.strip(), "summary": body.summary.strip(), "assignee_role": (body.assignee_role or "").strip() or None})
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
         for stage in stages:
             _aggregate_stage(stage, [item for item in tasks if item.get("stage_id") == stage["id"]])
         graphs = dict(process.get("graphs") or {})

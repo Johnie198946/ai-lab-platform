@@ -9,13 +9,16 @@ from backend.services.task_operating_loop import (
     acquire_execution_lease,
     apply_feedback_acceptance,
     apply_feedback_action,
+    apply_task_merge,
     build_task_context_pack,
     create_feedback_batch,
     create_handoff_capsule,
+    create_merge_preview,
     create_relation_proposal,
     find_duplicate_candidates,
     initialize_task_contract,
     record_feedback_interpretation,
+    revert_task_merge,
     submit_feedback_batch,
     submit_feedback_resolution,
     transition_task,
@@ -255,3 +258,105 @@ def test_duplicate_candidates_use_multi_field_evidence() -> None:
     assert candidates[0]["target_task_id"] == "b"
     assert candidates[0]["classification"] == "STRONG_DUPLICATE"
     assert all(item["target_task_id"] != "c" for item in candidates)
+
+
+def test_merge_preview_apply_redirect_and_revert_preserve_facts() -> None:
+    primary = initialize_task_contract({
+        "id": "primary", "title": "完成发布包", "summary": "生成发布包",
+        "status": "TODO", "deliverables": ["安装包"],
+        "feedback": [{"id": "feedback-primary"}],
+    })
+    secondary = initialize_task_contract({
+        "id": "secondary", "title": "交付发布包", "summary": "生成并验证发布包",
+        "status": "WAITING_CLAIM", "deliverables": ["回滚说明"],
+        "feedback": [{"id": "feedback-secondary"}],
+        "artifacts": [{"id": "artifact-secondary"}],
+    })
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    assert preview["status"] == "PREVIEW"
+    assert {item["field"] for item in preview["conflicts"]} >= {"title", "summary", "deliverables"}
+    choices = {
+        item["field"]: ("union" if "union" in item["allowed_choices"] else "primary")
+        for item in preview["conflicts"]
+    }
+    apply_task_merge(
+        preview, primary, secondary, field_choices=choices, actor_id="user:user-a"
+    )
+    assert preview["status"] == "APPLIED"
+    assert primary["deliverables"] == ["安装包", "回滚说明"]
+    assert primary["feedback"] == [{"id": "feedback-primary"}]
+    assert primary["artifacts"] == []
+    assert secondary["feedback"] == [{"id": "feedback-secondary"}]
+    assert secondary["artifacts"] == [{"id": "artifact-secondary"}]
+    assert secondary["status"] == "MERGED"
+    assert secondary["redirect_to_task_id"] == "primary"
+
+    revert_task_merge(preview, primary, secondary, actor_id="user:user-a")
+    assert preview["status"] == "REVERTED"
+    assert primary["deliverables"] == ["安装包"]
+    assert secondary["status"] == "WAITING_CLAIM"
+    assert "redirect_to_task_id" not in secondary
+    assert primary["task_revision"] == 3
+    assert secondary["task_revision"] == 3
+
+
+def test_merge_revert_rejects_post_merge_changes() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    secondary["title"] = "另一个标题"
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    choices = {item["field"]: "primary" for item in preview["conflicts"]}
+    apply_task_merge(preview, primary, secondary, field_choices=choices, actor_id="user:user-a")
+    primary["task_revision"] += 1
+    with pytest.raises(ValueError, match="primary_changed_after_merge"):
+        revert_task_merge(preview, primary, secondary, actor_id="user:user-a")
+
+
+def test_active_execution_lease_blocks_merge_apply() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    primary["execution_lease"] = {"expires_at": "2099-01-01T00:00:00+00:00"}
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    assert preview["blockers"] == [
+        {"task_id": "primary", "reason": "active_execution_lease"}
+    ]
+    with pytest.raises(ValueError, match="active_execution_lease_blocks_merge"):
+        apply_task_merge(
+            preview, primary, secondary, field_choices={}, actor_id="user:user-a"
+        )
+
+
+def test_merge_requires_explicit_choice_for_every_conflict() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    secondary["title"] = "冲突标题"
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    with pytest.raises(ValueError, match="merge_choice_required:title"):
+        apply_task_merge(
+            preview, primary, secondary, field_choices={}, actor_id="user:user-a"
+        )
+    assert preview["status"] == "PREVIEW"
+    assert secondary["status"] == "TODO"
+
+
+def test_merge_rejects_cross_project_and_hash_detects_unrevisioned_edit() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    primary["project_id"], secondary["project_id"] = "project-a", "project-b"
+    with pytest.raises(ValueError, match="cross_project_merge_forbidden"):
+        create_merge_preview(primary, secondary, created_by="user:user-a")
+
+    secondary["project_id"] = "project-a"
+    secondary["title"] = "冲突标题"
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    choices = {item["field"]: "primary" for item in preview["conflicts"]}
+    apply_task_merge(preview, primary, secondary, field_choices=choices, actor_id="user:user-a")
+    primary["title"] = "合并后的未递增 revision 修改"
+    with pytest.raises(ValueError, match="primary_changed_after_merge"):
+        revert_task_merge(preview, primary, secondary, actor_id="user:user-a")
+
+
+def test_merge_snapshot_excludes_feedback_attachment_storage_refs() -> None:
+    primary, secondary = task("primary"), task("secondary")
+    secondary["feedback"] = [{
+        "id": "feedback-secret",
+        "attachments": [{"storage_ref": "private://secret"}],
+    }]
+    preview = create_merge_preview(primary, secondary, created_by="user:user-a")
+    assert "private://secret" not in str(preview["snapshots"])
