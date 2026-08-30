@@ -472,24 +472,45 @@ public struct ClientSessionMessageDTO: Codable, Hashable, Sendable {
     }
 }
 
+public struct ClientSourceSessionDTO: Codable, Hashable, Sendable, Identifiable {
+    public let sessionId: String
+    public let title: String
+    public let updatedAt: String?
+    public let organizedAt: String?
+    public let messages: [ClientSessionMessageDTO]
+    public let truncated: Bool
+    public var id: String { sessionId }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case title, messages, truncated
+        case updatedAt = "updated_at"
+        case organizedAt = "organized_at"
+    }
+}
+
 public struct ClientSessionContextDTO: Codable, Hashable, Sendable {
     public let sessionId: String
     public let messages: [ClientSessionMessageDTO]
     public let truncated: Bool
+    /// Additional authenticated, read-only source sessions for a multi-session organization task.
+    public let sourceSessions: [ClientSourceSessionDTO]
     /// Local-first notes are signed into the request context so Hermes can
     /// compare notes that have not completed background sync yet.
     public let localNotes: [ChatLocalNoteDTO]
 
-    public init(sessionId: String, messages: [ClientSessionMessageDTO], truncated: Bool, localNotes: [ChatLocalNoteDTO] = []) {
+    public init(sessionId: String, messages: [ClientSessionMessageDTO], truncated: Bool, sourceSessions: [ClientSourceSessionDTO] = [], localNotes: [ChatLocalNoteDTO] = []) {
         self.sessionId = sessionId
         self.messages = messages
         self.truncated = truncated
+        self.sourceSessions = sourceSessions
         self.localNotes = localNotes
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case messages, truncated
+        case sourceSessions = "source_sessions"
         case localNotes = "local_notes"
     }
 
@@ -498,6 +519,7 @@ public struct ClientSessionContextDTO: Codable, Hashable, Sendable {
         sessionId = try container.decode(String.self, forKey: .sessionId)
         messages = try container.decode([ClientSessionMessageDTO].self, forKey: .messages)
         truncated = try container.decodeIfPresent(Bool.self, forKey: .truncated) ?? false
+        sourceSessions = try container.decodeIfPresent([ClientSourceSessionDTO].self, forKey: .sourceSessions) ?? []
         localNotes = try container.decodeIfPresent([ChatLocalNoteDTO].self, forKey: .localNotes) ?? []
     }
 }

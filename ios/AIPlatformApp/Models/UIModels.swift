@@ -801,6 +801,8 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var sessionAgentNames: [String: String] = [:]
     @Published public private(set) var sessionMessageCounts: [String: Int] = [:]
     @Published public private(set) var topicSessions: [String: TopicSessionMetadata] = [:]
+    @Published public private(set) var sessionLifecycle: [String: SessionLifecycleStatus] = [:]
+    @Published public private(set) var sessionOrganizedAt: [String: Date] = [:]
 
     private var store: ChatHistoryStore
     private var accountFingerprint = "unconfigured"
@@ -838,6 +840,8 @@ public final class SessionManager: ObservableObject {
         sessionAgentNames.removeAll()
         sessionMessageCounts.removeAll()
         topicSessions.removeAll()
+        sessionLifecycle.removeAll()
+        sessionOrganizedAt.removeAll()
         persistedFingerprints.removeAll()
         activeSessionId = nil
         loadMetadata()
@@ -853,6 +857,8 @@ public final class SessionManager: ObservableObject {
         sessionAgentNames.removeAll()
         sessionMessageCounts.removeAll()
         topicSessions.removeAll()
+        sessionLifecycle.removeAll()
+        sessionOrganizedAt.removeAll()
         persistedFingerprints.removeAll()
         activeSessionId = nil
         accountFingerprint = "unconfigured"
@@ -879,10 +885,14 @@ public final class SessionManager: ObservableObject {
         sessionAgentIds = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentId) })
         sessionAgentNames = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.agentName) })
         sessionMessageCounts = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.messageCount) })
+        sessionLifecycle = Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0.lifecycleStatus) })
+        sessionOrganizedAt = Dictionary(uniqueKeysWithValues: summaries.compactMap { summary in
+            summary.organizedAt.map { (summary.id, $0) }
+        })
         topicSessions = Dictionary(uniqueKeysWithValues: summaries.compactMap { summary in
             summary.topic.map { ($0.sessionId, $0) }
         })
-        activeSessionId = summaries.first?.id
+        activeSessionId = summaries.first(where: { $0.lifecycleStatus == .active })?.id
     }
 
     // MARK: - 会话生命周期
@@ -903,6 +913,7 @@ public final class SessionManager: ObservableObject {
         sessionAgentIds[id] = agentId
         sessionAgentNames[id] = agentName
         sessionMessageCounts[id] = 0
+        sessionLifecycle[id] = .active
         activeSessionId = id
         try? store.createSession(id: id, agentId: agentId, agentName: agentName)
         return id
@@ -972,7 +983,37 @@ public final class SessionManager: ObservableObject {
             try? store.createSession(id: id, agentId: "main_agent", agentName: "Main 智能编排")
             loadMetadata()
         }
+        if (sessionLifecycle[id] ?? .active) != .active {
+            try? store.setLifecycle(.active, sessionId: id)
+            sessionLifecycle[id] = .active
+        }
         activeSessionId = id
+    }
+
+    public func setLifecycle(_ status: SessionLifecycleStatus, for id: String) {
+        guard sessionTitles[id] != nil else { return }
+        try? store.setLifecycle(status, sessionId: id)
+        sessionLifecycle[id] = status
+        if status != .active, activeSessionId == id {
+            activeSessionId = sortedSessionIDs(status: .active).first
+            if activeSessionId == nil { _ = createSession() }
+        }
+    }
+
+    public func markOrganized(_ ids: [String]) {
+        let valid = ids.filter { sessionTitles[$0] != nil }
+        guard !valid.isEmpty else { return }
+        try? store.markOrganized(valid)
+        let now = Date()
+        for id in valid { sessionOrganizedAt[id] = now }
+    }
+
+    public func linkOrganizationSources(organizerSessionId: String, sourceSessionIds: [String]) {
+        try? store.linkOrganizationSources(organizerSessionId: organizerSessionId, sourceSessionIds: sourceSessionIds)
+    }
+
+    public func organizationSources(for organizerSessionId: String) -> [String] {
+        (try? store.organizationSources(organizerSessionId: organizerSessionId)) ?? []
     }
 
     public func deleteSession(_ id: String) {
@@ -985,6 +1026,8 @@ public final class SessionManager: ObservableObject {
         sessionAgentNames.removeValue(forKey: id)
         sessionMessageCounts.removeValue(forKey: id)
         topicSessions.removeValue(forKey: id)
+        sessionLifecycle.removeValue(forKey: id)
+        sessionOrganizedAt.removeValue(forKey: id)
         persistedFingerprints.removeValue(forKey: id)
         if activeSessionId == id {
             activeSessionId = latestSessionID()
@@ -994,14 +1037,21 @@ public final class SessionManager: ObservableObject {
     }
 
     /// 按 updatedAt 倒序的会话 id 列表（供抽屉排序）。
-    public func sortedSessionIDs() -> [String] {
-        sessionUpdatedAt.keys.sorted {
+    public func sortedSessionIDs(status: SessionLifecycleStatus = .active, query: String = "") -> [String] {
+        let normalized = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return sessionUpdatedAt.keys.filter { id in
+            guard (sessionLifecycle[id] ?? .active) == status else { return false }
+            guard !normalized.isEmpty else { return true }
+            if title(for: id).lowercased().contains(normalized) { return true }
+            return ((try? store.contextMessages(sessionId: id, maxMessages: 200, maxCharacters: 120_000).messages) ?? [])
+                .contains { $0.content.lowercased().contains(normalized) }
+        }.sorted {
             (sessionUpdatedAt[$0] ?? .distantPast) > (sessionUpdatedAt[$1] ?? .distantPast)
         }
     }
 
     private func latestSessionID() -> String? {
-        sessionUpdatedAt.keys.max { (sessionUpdatedAt[$0] ?? .distantPast) < (sessionUpdatedAt[$1] ?? .distantPast) }
+        sortedSessionIDs(status: .active).first
     }
 
     public func messages(for id: String) -> [ChatMessage] {
@@ -1083,6 +1133,53 @@ public final class SessionManager: ObservableObject {
             sessionId: sessionId,
             messages: Array(messages),
             truncated: truncated
+        )
+    }
+
+    public func organizationContext(sourceSessionIDs: [String], destinationSessionId: String) -> ClientSessionContextDTO {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        var remainingCharacters = 120_000
+        var sourceSessions: [ClientSourceSessionDTO] = []
+        var anyTruncated = false
+        for id in sourceSessionIDs.prefix(24) where remainingCharacters > 0 {
+            let result = (try? store.contextMessages(
+                sessionId: id, maxMessages: 200,
+                maxCharacters: min(remainingCharacters, 40_000)
+            )) ?? ([], false)
+            let messages = result.0.compactMap { message -> ClientSessionMessageDTO? in
+                guard !message.pending, !message.degraded, !message.isDemoSample,
+                      !message.content.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty,
+                      message.role == .user || message.role == .assistant else { return nil }
+                return ClientSessionMessageDTO(
+                    id: "\(id):\(message.id)",
+                    role: message.role == .user ? "user" : "assistant",
+                    content: String(message.content.prefix(12_000)),
+                    createdAt: formatter.string(from: message.createdAt)
+                )
+            }
+            let cost = messages.reduce(0) { $0 + $1.content.count }
+            remainingCharacters -= cost
+            anyTruncated = anyTruncated || result.1
+            sourceSessions.append(ClientSourceSessionDTO(
+                sessionId: id,
+                title: title(for: id),
+                updatedAt: sessionUpdatedAt[id].map { formatter.string(from: $0) },
+                organizedAt: sessionOrganizedAt[id].map { formatter.string(from: $0) },
+                messages: messages,
+                truncated: result.1
+            ))
+        }
+        if sourceSessions.count < sourceSessionIDs.count { anyTruncated = true }
+        linkOrganizationSources(
+            organizerSessionId: destinationSessionId,
+            sourceSessionIds: sourceSessions.map(\.sessionId)
+        )
+        return ClientSessionContextDTO(
+            sessionId: destinationSessionId,
+            messages: [],
+            truncated: anyTruncated,
+            sourceSessions: sourceSessions
         )
     }
 
@@ -1547,6 +1644,7 @@ public final class AppState: ObservableObject {
     @Published public var pendingChatAgent: ChatAgentSelection? = nil
     @Published public var pendingChatPrompt: String? = nil
     @Published public var pendingChatContextScope: ChatContextScopeDTO? = nil
+    @Published public var pendingChatSessionContext: ClientSessionContextDTO? = nil
     @Published public var pendingWorkflowId: String? = nil
     @Published public var pendingKnowledgeNavigation: KnowledgeNavigationTarget? = nil
     @Published public var pendingTopicSessionId: String? = nil
@@ -1603,6 +1701,7 @@ public final class AppState: ObservableObject {
         self.isGuestMode = false
         self.chatSessionId = nil
         self.pendingChatContextScope = nil
+        self.pendingChatSessionContext = nil
         self.pendingKnowledgeNavigation = nil
         self.isDevMode = false
         KnowledgeNoteStore.shared.deactivate()
@@ -1610,9 +1709,14 @@ public final class AppState: ObservableObject {
         NotificationCenter.default.post(name: .localAccountDidChange, object: nil)
     }
     
-    public func navigateToChatWithPrompt(_ prompt: String, contextScope: ChatContextScopeDTO? = nil) {
+    public func navigateToChatWithPrompt(
+        _ prompt: String,
+        contextScope: ChatContextScopeDTO? = nil,
+        sessionContext: ClientSessionContextDTO? = nil
+    ) {
         self.pendingChatPrompt = prompt
         self.pendingChatContextScope = contextScope
+        self.pendingChatSessionContext = sessionContext
         self.activeTab = 0 // Switch to Chat tab
     }
 

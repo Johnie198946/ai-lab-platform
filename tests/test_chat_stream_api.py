@@ -298,6 +298,15 @@ async def test_stream_signs_client_context_and_never_trusts_client_tenant(
                     "messages": [
                         {"id": "m1", "role": "user", "content": "超聚变相关内容"}
                     ],
+                    "source_sessions": [{
+                        "session_id": "source-1",
+                        "title": "历史讨论",
+                        "messages": [{
+                            "id": "source-1:m1", "role": "assistant",
+                            "content": "需要整理的历史结论"
+                        }],
+                        "truncated": False,
+                    }],
                     "truncated": False,
                 },
             },
@@ -310,6 +319,8 @@ async def test_stream_signs_client_context_and_never_trusts_client_tenant(
     assert claims["user_id"] == "1"
     assert claims["session_id"] == observed["session_id"]
     assert claims["context_hash"] == context_digest(context)
+    assert context["source_sessions"][0]["session_id"] == "source-1"
+    assert context["source_sessions"][0]["messages"][0]["id"] == "source-1:m1"
 
 
 @pytest.mark.asyncio

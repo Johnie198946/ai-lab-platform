@@ -34,6 +34,7 @@ public struct KnowledgeView: View {
     @State private var notePendingTrash: KnowledgeNote?
     @State private var showingTrashConfirmation = false
     @State private var showingArchive = false
+    @State private var showingSessionOrganizer = false
 
     public init() {}
 
@@ -146,6 +147,11 @@ public struct KnowledgeView: View {
             .sheet(isPresented: $showingArchive) {
                 KnowledgeArchiveView()
             }
+            .sheet(isPresented: $showingSessionOrganizer) {
+                SessionOrganizationPicker { sessionIDs in
+                    beginSessionOrganization(sessionIDs)
+                }
+            }
             .onChange(of: appState.pendingKnowledgeNavigation) { _, target in
                 guard let target else { return }
                 applyNavigation(target)
@@ -217,10 +223,7 @@ public struct KnowledgeView: View {
             }
 
             Button {
-                appState.navigateToChatWithPrompt(
-                    "请基于我的本地笔记，帮我整理最近记录的重点和待办。",
-                    contextScope: localOnlyContext()
-                )
+                showingSessionOrganizer = true
             } label: {
                 HStack(spacing: AppTheme.Spacing.md) {
                     Image(systemName: "sparkles")
@@ -230,7 +233,7 @@ public struct KnowledgeView: View {
                         Text("用 AI 整理笔记")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.textPrimary)
-                        Text("切换到对话页并带入整理任务")
+                        Text("选择一个或多个会话，按主题整理")
                             .font(.caption)
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     }
@@ -243,7 +246,7 @@ public struct KnowledgeView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(SoftButtonStyle())
-            .accessibilityHint("切换到对话页")
+            .accessibilityHint("选择要整理的会话")
         }
         .padding(.vertical, AppTheme.Spacing.lg)
         .listRowInsets(pageInsets(vertical: AppTheme.Spacing.sm))
@@ -453,6 +456,25 @@ public struct KnowledgeView: View {
         return ChatContextScopeDTO(mode: .localOnly, localNotes: Array(notes))
     }
 
+    private func beginSessionOrganization(_ sessionIDs: [String]) {
+        guard !sessionIDs.isEmpty else { return }
+        let manager = SessionManager.shared
+        let destination = manager.createSession(agentId: "knowledge", agentName: "知识整理")
+        let context = manager.organizationContext(
+            sourceSessionIDs: sessionIDs,
+            destinationSessionId: destination
+        )
+        manager.switchTo(destination)
+        let prompt = """
+        请整理我刚刚明确选择的 \(sessionIDs.count) 个来源会话。先调用 session_context_read，读取 source_sessions；不要只整理当前或最新会话。先按主题分组，排除明显无关内容，再为每个主题创建或更新独立笔记。每篇笔记必须在 Markdown 中保留 source_session_ids 与带 session_id 前缀的 source_message_ids，冲突信息单独列出。先生成 knowledge_action_v1 待确认卡，不得直接写入，也不得删除、归档来源会话。
+        """
+        appState.navigateToChatWithPrompt(
+            prompt,
+            contextScope: localOnlyContext(),
+            sessionContext: context
+        )
+    }
+
     private func syncInBackground(_ note: KnowledgeNote) {
         let markdown = store.markdown(for: note)
         Task {
@@ -480,6 +502,97 @@ public struct KnowledgeView: View {
             try? await APIClient.shared.archiveKnowledgeNote(
                 id: note.id, mergedIntoNoteId: mergedIntoNoteId
             )
+        }
+    }
+}
+
+private struct SessionOrganizationPicker: View {
+    @ObservedObject private var manager = SessionManager.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Set<String> = []
+    @State private var searchText = ""
+    let onStart: ([String]) -> Void
+
+    private var available: [String] {
+        manager.sortedSessionIDs(status: .active, query: searchText)
+            .filter { manager.messageCount(for: $0) > 0 }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text("AI 只读取你明确选中的会话，先按主题分组，再生成待确认的知识操作。不会自动归档或删除。")
+                        .font(.subheadline)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                Section("快捷范围") {
+                    Button("当前会话") {
+                        selected = Set([manager.activeSessionID()].filter { manager.messageCount(for: $0) > 0 })
+                    }
+                    Button("当前会话及相关分支") {
+                        let active = manager.activeSessionID()
+                        let parent = manager.topicSessions[active]?.parentSessionId ?? active
+                        let related = manager.sortedSessionIDs().filter { id in
+                            id == active || id == parent || manager.topicSessions[id]?.parentSessionId == parent
+                        }
+                        selected = Set(related.prefix(30))
+                    }
+                    Button("最近 7 天") {
+                        let cutoff = Date().addingTimeInterval(-7 * 86_400)
+                        selected = Set(manager.sortedSessionIDs().filter {
+                            (manager.sessionUpdatedAt[$0] ?? .distantPast) >= cutoff && manager.messageCount(for: $0) > 0
+                        }.prefix(30))
+                    }
+                    Button("全部未整理会话") {
+                        selected = Set(manager.sortedSessionIDs().filter {
+                            manager.sessionOrganizedAt[$0] == nil && manager.messageCount(for: $0) > 0
+                        }.prefix(30))
+                    }
+                }
+                Section("手动选择 · 已选 \(selected.count)/30 个") {
+                    ForEach(available, id: \.self) { id in
+                        Button {
+                            if selected.contains(id) {
+                                selected.remove(id)
+                            } else if selected.count < 30 {
+                                selected.insert(id)
+                            }
+                        } label: {
+                            HStack(spacing: AppTheme.Spacing.sm) {
+                                Image(systemName: selected.contains(id) ? "checkmark.square.fill" : "square")
+                                    .foregroundStyle(selected.contains(id) ? AppTheme.Icons.interactive : AppTheme.Colors.textTertiary)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(manager.title(for: id)).lineLimit(1)
+                                    Text("\(manager.messageCount(for: id)) 条消息\(manager.sessionOrganizedAt[id] == nil ? "" : " · 已整理过")")
+                                        .font(.caption)
+                                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                                }
+                            }
+                        }
+                        .buttonStyle(SoftButtonStyle())
+                    }
+                }
+            }
+            .navigationTitle("选择整理范围")
+            .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $searchText, prompt: "搜索会话标题或内容")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("开始整理") {
+                        let ids = manager.sortedSessionIDs().filter(selected.contains)
+                        dismiss()
+                        onStart(ids)
+                    }
+                    .disabled(selected.isEmpty)
+                }
+            }
+            .onAppear {
+                guard selected.isEmpty else { return }
+                let active = manager.activeSessionID()
+                if manager.messageCount(for: active) > 0 { selected.insert(active) }
+            }
         }
     }
 }

@@ -91,6 +91,20 @@ public struct ChatView: View {
             } message: {
                 Text("此操作将清空当前会话所有消息记录。")
             }
+            .confirmationDialog(
+                "整理完成后如何处理来源会话？",
+                isPresented: Binding(
+                    get: { !coordinator.pendingOrganizationDisposition.isEmpty },
+                    set: { if !$0 && !coordinator.pendingOrganizationDisposition.isEmpty { coordinator.applyOrganizationDisposition(nil) } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("归档来源会话（推荐）") { coordinator.applyOrganizationDisposition(.archived) }
+                Button("保留在会话列表") { coordinator.applyOrganizationDisposition(nil) }
+                Button("移入回收站", role: .destructive) { coordinator.applyOrganizationDisposition(.trashed) }
+            } message: {
+                Text("已成功写入知识。归档可搜索和恢复；回收站中的会话将在后续保留期策略执行前保持可恢复。")
+            }
             .overlay(alignment: .bottom) { toastOverlay }
             .animation(.easeInOut(duration: 0.2), value: coordinator.toastMessage)
             .sheet(isPresented: $showingPlusMenu) {

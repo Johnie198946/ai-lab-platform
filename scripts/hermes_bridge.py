@@ -1427,12 +1427,17 @@ def _session_context_read_tool(args: dict[str, Any], **_kwargs) -> str:
     transcript = context["transcript"]
     context["read"] = True
     messages = transcript.get("messages") if isinstance(transcript.get("messages"), list) else []
+    source_sessions = (
+        transcript.get("source_sessions")
+        if isinstance(transcript.get("source_sessions"), list) else []
+    )
     return json.dumps(
         {
             "success": True,
             "session_id": transcript.get("session_id"),
             "truncated": bool(transcript.get("truncated")),
             "messages": messages,
+            "source_sessions": source_sessions,
         },
         ensure_ascii=False,
     )

@@ -24,6 +24,30 @@ os.environ.setdefault("HERMES_STATE_DB", "/tmp/test_state.db")
 class TestBridgeCLIParms(unittest.TestCase):
     """验收项 #2: CLI 参数与路径规范。"""
 
+    def test_session_context_read_returns_all_selected_source_sessions(self):
+        import scripts.hermes_bridge as bridge
+
+        bridge._client_context_tool_context.value = {
+            "transcript": {
+                "session_id": "organizer",
+                "messages": [],
+                "source_sessions": [{
+                    "session_id": "source-1",
+                    "title": "历史讨论",
+                    "messages": [{"id": "source-1:m1", "role": "user", "content": "原文"}],
+                    "truncated": False,
+                }],
+                "truncated": False,
+            }
+        }
+        try:
+            result = json.loads(bridge._session_context_read_tool({}))
+        finally:
+            bridge._client_context_tool_context.value = None
+        self.assertTrue(result["success"])
+        self.assertEqual(result["source_sessions"][0]["session_id"], "source-1")
+        self.assertEqual(result["source_sessions"][0]["messages"][0]["id"], "source-1:m1")
+
     def test_state_db_dynamic_path(self):
         """STATE_DB 使用动态 Home 路径（非硬编码 /root/.hermes/state.db）。"""
         # 重新 import 以获取模块级变量

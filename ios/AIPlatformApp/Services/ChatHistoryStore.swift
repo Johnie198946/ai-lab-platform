@@ -7,6 +7,10 @@ public struct StoredMessagePage: Sendable {
     public let hasNewer: Bool
 }
 
+public enum SessionLifecycleStatus: String, Codable, CaseIterable, Sendable {
+    case active, archived, trashed
+}
+
 public struct StoredSessionSummary: Sendable {
     public let id: String
     public let title: String
@@ -15,6 +19,10 @@ public struct StoredSessionSummary: Sendable {
     public let agentId: String
     public let agentName: String
     public let topic: TopicSessionMetadata?
+    public let lifecycleStatus: SessionLifecycleStatus
+    public let organizedAt: Date?
+    public let archivedAt: Date?
+    public let trashedAt: Date?
 }
 
 /// Indexed local history. SessionManager serializes access on MainActor; SQLite supplies atomic writes.
@@ -34,7 +42,8 @@ public final class ChatHistoryStore: @unchecked Sendable {
         let url = databaseURL ?? docs.appendingPathComponent("ChatHistory/history-v2.sqlite")
         self.legacyDirectory = legacyDirectory ?? docs.appendingPathComponent("Sessions", isDirectory: true)
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        guard sqlite3_open(url.path, &db) == SQLITE_OK else { throw error("open") }
+        let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
+        guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK else { throw error("open") }
         try exec("PRAGMA foreign_keys=ON"); try exec("PRAGMA journal_mode=WAL"); try exec("PRAGMA synchronous=NORMAL"); try exec("PRAGMA busy_timeout=5000")
         try schema()
         if performLegacyMigration { try migrateLegacySessions() }
@@ -43,21 +52,32 @@ public final class ChatHistoryStore: @unchecked Sendable {
     deinit { sqlite3_close(db) }
 
     public func summaries() throws -> [StoredSessionSummary] {
-        try query("SELECT id,title,updated_at,message_count,agent_id,agent_name,topic_payload FROM sessions ORDER BY updated_at DESC") { s in
-            StoredSessionSummary(id: text(s,0), title: text(s,1), updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s,2)), messageCount: Int(sqlite3_column_int64(s,3)), agentId: text(s,4), agentName: text(s,5), topic: decodeTopic(s,6))
+        try query("SELECT id,title,updated_at,message_count,agent_id,agent_name,topic_payload,lifecycle_status,organized_at,archived_at,trashed_at FROM sessions ORDER BY updated_at DESC") { s in
+            StoredSessionSummary(
+                id: text(s, 0), title: text(s, 1),
+                updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
+                messageCount: Int(sqlite3_column_int64(s, 3)), agentId: text(s, 4),
+                agentName: text(s, 5), topic: decodeTopic(s, 6),
+                lifecycleStatus: SessionLifecycleStatus(rawValue: text(s, 7)) ?? .active,
+                organizedAt: optionalDate(s, 8), archivedAt: optionalDate(s, 9),
+                trashedAt: optionalDate(s, 10)
+            )
         }
     }
 
     public func summary(sessionId: String) throws -> StoredSessionSummary? {
         try query(
-            "SELECT id,title,updated_at,message_count,agent_id,agent_name,topic_payload FROM sessions WHERE id=? LIMIT 1",
+            "SELECT id,title,updated_at,message_count,agent_id,agent_name,topic_payload,lifecycle_status,organized_at,archived_at,trashed_at FROM sessions WHERE id=? LIMIT 1",
             { bind(sessionId, $0, 1) }
         ) { s in
             StoredSessionSummary(
                 id: text(s, 0), title: text(s, 1),
                 updatedAt: Date(timeIntervalSince1970: sqlite3_column_double(s, 2)),
                 messageCount: Int(sqlite3_column_int64(s, 3)),
-                agentId: text(s, 4), agentName: text(s, 5), topic: decodeTopic(s, 6)
+                agentId: text(s, 4), agentName: text(s, 5), topic: decodeTopic(s, 6),
+                lifecycleStatus: SessionLifecycleStatus(rawValue: text(s, 7)) ?? .active,
+                organizedAt: optionalDate(s, 8), archivedAt: optionalDate(s, 9),
+                trashedAt: optionalDate(s, 10)
             )
         }.first
     }
@@ -136,6 +156,38 @@ public final class ChatHistoryStore: @unchecked Sendable {
         }
     }
     public func delete(_ id: String) throws { try run("DELETE FROM sessions WHERE id=?") { bind(id,$0,1) } }
+    public func setLifecycle(_ status: SessionLifecycleStatus, sessionId: String) throws {
+        let now = Date().timeIntervalSince1970
+        try run("UPDATE sessions SET lifecycle_status=?,archived_at=?,trashed_at=? WHERE id=?") { s in
+            bind(status.rawValue, s, 1)
+            if status == .archived { sqlite3_bind_double(s, 2, now) } else { sqlite3_bind_null(s, 2) }
+            if status == .trashed { sqlite3_bind_double(s, 3, now) } else { sqlite3_bind_null(s, 3) }
+            bind(sessionId, s, 4)
+        }
+    }
+    public func markOrganized(_ sessionIds: [String]) throws {
+        let now = Date().timeIntervalSince1970
+        try transaction {
+            for id in sessionIds {
+                try run("UPDATE sessions SET organized_at=? WHERE id=?") { s in
+                    sqlite3_bind_double(s, 1, now); bind(id, s, 2)
+                }
+            }
+        }
+    }
+    public func linkOrganizationSources(organizerSessionId: String, sourceSessionIds: [String]) throws {
+        try transaction {
+            try run("DELETE FROM session_organization_sources WHERE organizer_session_id=?") { bind(organizerSessionId, $0, 1) }
+            for sourceId in sourceSessionIds where sourceId != organizerSessionId {
+                try run("INSERT OR IGNORE INTO session_organization_sources(organizer_session_id,source_session_id) VALUES(?,?)") { s in
+                    bind(organizerSessionId, s, 1); bind(sourceId, s, 2)
+                }
+            }
+        }
+    }
+    public func organizationSources(organizerSessionId: String) throws -> [String] {
+        try query("SELECT source_session_id FROM session_organization_sources WHERE organizer_session_id=? ORDER BY source_session_id", { bind(organizerSessionId, $0, 1) }) { text($0, 0) }
+    }
     public func count(_ id: String) throws -> Int { Int(try int64("SELECT message_count FROM sessions WHERE id=?", { bind(id,$0,1) })) }
 
     // Async application-facing API. The synchronous primitives remain available for the MainActor cache.
@@ -170,8 +222,14 @@ public final class ChatHistoryStore: @unchecked Sendable {
         if !tableColumns("sessions").contains("topic_payload") {
             try exec("ALTER TABLE sessions ADD COLUMN topic_payload BLOB")
         }
+        if !tableColumns("sessions").contains("lifecycle_status") { try exec("ALTER TABLE sessions ADD COLUMN lifecycle_status TEXT NOT NULL DEFAULT 'active'") }
+        if !tableColumns("sessions").contains("organized_at") { try exec("ALTER TABLE sessions ADD COLUMN organized_at REAL") }
+        if !tableColumns("sessions").contains("archived_at") { try exec("ALTER TABLE sessions ADD COLUMN archived_at REAL") }
+        if !tableColumns("sessions").contains("trashed_at") { try exec("ALTER TABLE sessions ADD COLUMN trashed_at REAL") }
         try exec("CREATE TABLE IF NOT EXISTS messages(session_id TEXT NOT NULL,sequence INTEGER NOT NULL,message_id TEXT NOT NULL,role TEXT NOT NULL,payload BLOB NOT NULL,PRIMARY KEY(session_id,sequence),UNIQUE(session_id,message_id),FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE)")
         try exec("CREATE INDEX IF NOT EXISTS idx_messages_lookup ON messages(session_id,message_id)")
+        try exec("CREATE INDEX IF NOT EXISTS idx_sessions_lifecycle ON sessions(lifecycle_status,updated_at DESC)")
+        try exec("CREATE TABLE IF NOT EXISTS session_organization_sources(organizer_session_id TEXT NOT NULL,source_session_id TEXT NOT NULL,PRIMARY KEY(organizer_session_id,source_session_id),FOREIGN KEY(organizer_session_id) REFERENCES sessions(id) ON DELETE CASCADE,FOREIGN KEY(source_session_id) REFERENCES sessions(id) ON DELETE CASCADE)")
     }
 
     private func tableColumns(_ table: String) -> Set<String> {
@@ -248,5 +306,9 @@ public final class ChatHistoryStore: @unchecked Sendable {
     private func bind(_ x:String,_ s:OpaquePointer?,_ i:Int32){sqlite3_bind_text(s,i,x,-1,Self.transient)}
     private func bind(_ x:Data,_ s:OpaquePointer?,_ i:Int32){_ = x.withUnsafeBytes{sqlite3_bind_blob(s,i,$0.baseAddress,Int32($0.count),Self.transient)}}
     private func text(_ s:OpaquePointer?,_ i:Int32)->String{guard let p=sqlite3_column_text(s,i)else{return ""};return String(cString:p)}
+    private func optionalDate(_ s: OpaquePointer?, _ i: Int32) -> Date? {
+        guard sqlite3_column_type(s, i) != SQLITE_NULL else { return nil }
+        return Date(timeIntervalSince1970: sqlite3_column_double(s, i))
+    }
     private func error(_ context:String)->NSError{NSError(domain:"ChatHistoryStore",code:Int(sqlite3_errcode(db)),userInfo:[NSLocalizedDescriptionKey:"\(context): \(db.flatMap(sqlite3_errmsg).map(String.init(cString:)) ?? "unknown")"])}
 }

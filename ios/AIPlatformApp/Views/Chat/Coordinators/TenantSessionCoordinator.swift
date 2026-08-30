@@ -44,6 +44,8 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var streamOutputMessageIds: [String: String] = [:]
     private var animationTasks: [String: Task<Void, Never>] = [:]
     private var nextContextScope: ChatContextScopeDTO? = nil
+    private var nextClientSessionContext: ClientSessionContextDTO? = nil
+    @Published public var pendingOrganizationDisposition: [String] = []
     private var accountCancellable: AnyCancellable?
     /// Avoid synchronous SQLite rehydration every time SwiftUI merely presents the same Tab again.
     private var loadedSessionId: String? = nil
@@ -442,8 +444,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         if let prompt = appState?.pendingChatPrompt {
             self.inputText = prompt
             self.nextContextScope = appState?.pendingChatContextScope
+            self.nextClientSessionContext = appState?.pendingChatSessionContext
             appState?.pendingChatPrompt = nil
             appState?.pendingChatContextScope = nil
+            appState?.pendingChatSessionContext = nil
         }
     }
 
@@ -492,7 +496,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         let sid = sessionManager.activeSessionID()
-        let clientSessionContext = sessionManager.clientSessionContext(for: sid)
+        let clientSessionContext = nextClientSessionContext ?? sessionManager.clientSessionContext(for: sid)
+        nextClientSessionContext = nil
         var localNoteSnapshot: [ChatLocalNoteDTO] = []
         var localNoteCharacters = 0
         for note in (KnowledgeNoteStore.shared.notes + KnowledgeNoteStore.shared.archivedNotes).prefix(50) {
@@ -515,6 +520,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             sessionId: clientSessionContext.sessionId,
             messages: clientSessionContext.messages,
             truncated: clientSessionContext.truncated,
+            sourceSessions: clientSessionContext.sourceSessions,
             localNotes: localNoteSnapshot
         )
         messages.append(ChatMessage(sessionId: sid, role: .user, content: text, quotedContext: quote))
@@ -2068,11 +2074,30 @@ public final class TenantSessionCoordinator: ObservableObject {
             self.commitSession()
             if let message = result.message { self.showToast(message) }
             else if result.state == .synced { self.showToast("知识操作已应用并同步") }
+            if result.state == .synced {
+                let organizerId = self.sessionManager.activeSessionID()
+                let sources = self.sessionManager.organizationSources(for: organizerId)
+                if !sources.isEmpty {
+                    self.sessionManager.markOrganized(sources)
+                    self.pendingOrganizationDisposition = sources
+                }
+            }
             if result.state == .synced,
                self.sessionManager.topicSessions[self.sessionManager.activeSessionID()]?.state == .ending {
                 self.sessionManager.finishTopic(self.sessionManager.activeSessionID())
             }
         }
+    }
+
+    public func applyOrganizationDisposition(_ status: SessionLifecycleStatus?) {
+        let sources = pendingOrganizationDisposition
+        pendingOrganizationDisposition = []
+        guard let status else {
+            showToast("来源会话已保留")
+            return
+        }
+        for id in sources { sessionManager.setLifecycle(status, for: id) }
+        showToast(status == .archived ? "来源会话已归档" : "来源会话已移入回收站")
     }
 
     public func showToast(_ text: String) {

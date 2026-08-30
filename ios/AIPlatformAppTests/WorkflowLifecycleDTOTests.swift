@@ -610,6 +610,49 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertNil(try store.summaries().first(where: { $0.id == longSession }))
     }
 
+    @MainActor
+    func testSessionOrganizationLifecycleAndSourceContextAreRecoverable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let legacyURL = root.appendingPathComponent("legacy")
+        let store = try ChatHistoryStore(databaseURL: databaseURL, legacyDirectory: legacyURL)
+        let manager = SessionManager(store: store)
+        let first = manager.createSession()
+        manager.setMessages([
+            ChatMessage(id: "m1", sessionId: first, role: .user, content: "项目预算是两万元")
+        ], for: first)
+        let second = manager.createSession()
+        manager.setMessages([
+            ChatMessage(id: "m2", sessionId: second, role: .assistant, content: "登录页采用短信验证")
+        ], for: second)
+        await manager.flushPendingPersistence()
+        let organizer = manager.createSession(agentId: "knowledge", agentName: "知识整理")
+        let context = manager.organizationContext(
+            sourceSessionIDs: [first, second], destinationSessionId: organizer
+        )
+
+        XCTAssertEqual(context.sessionId, organizer)
+        XCTAssertEqual(Set(context.sourceSessions.map(\.sessionId)), Set([first, second]))
+        XCTAssertEqual(context.sourceSessions.first(where: { $0.sessionId == first })?.messages.first?.id, "\(first):m1")
+        XCTAssertEqual(Set(manager.organizationSources(for: organizer)), Set([first, second]))
+
+        manager.markOrganized([first, second])
+        manager.setLifecycle(.archived, for: first)
+        manager.setLifecycle(.trashed, for: second)
+        XCTAssertTrue(manager.sortedSessionIDs(status: .archived, query: "预算").contains(first))
+        XCTAssertTrue(manager.sortedSessionIDs(status: .trashed, query: "短信").contains(second))
+        manager.setLifecycle(.active, for: first)
+        XCTAssertTrue(manager.sortedSessionIDs(status: .active).contains(first))
+
+        let restored = SessionManager(
+            store: try ChatHistoryStore(databaseURL: databaseURL, legacyDirectory: legacyURL)
+        )
+        XCTAssertNotNil(restored.sessionOrganizedAt[first])
+        XCTAssertEqual(restored.sessionLifecycle[second], .trashed)
+        XCTAssertEqual(Set(restored.organizationSources(for: organizer)), Set([first, second]))
+    }
+
     func testChatHistoryStoreMigratesLegacyJSONAndKeepsBackup() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let legacy = root.appendingPathComponent("Sessions")

@@ -193,10 +193,20 @@ class ClientSessionMessage(BaseModel):
     created_at: Optional[str] = Field(None, max_length=64)
 
 
+class ClientSourceSession(BaseModel):
+    session_id: str = Field(..., min_length=1, max_length=100)
+    title: str = Field(..., min_length=1, max_length=200)
+    updated_at: Optional[str] = Field(None, max_length=64)
+    organized_at: Optional[str] = Field(None, max_length=64)
+    messages: List[ClientSessionMessage] = Field(default_factory=list, max_length=200)
+    truncated: bool = False
+
+
 class ClientSessionContext(BaseModel):
     session_id: str = Field(..., min_length=1, max_length=100)
     messages: List[ClientSessionMessage] = Field(default_factory=list, max_length=200)
     truncated: bool = False
+    source_sessions: List[ClientSourceSession] = Field(default_factory=list, max_length=24)
     # Local-first note snapshot used only for current-user similarity checks.
     # It is covered by the signed client-context capability and never becomes
     # a tenant Wiki source.
@@ -211,7 +221,13 @@ def _validated_client_session_context(
     if not client_session_id or context.session_id != client_session_id:
         raise HTTPException(status_code=422, detail="client_session_context_mismatch")
     payload = context.model_dump()
-    if sum(len(item["content"]) for item in payload["messages"]) > 120_000:
+    transcript_characters = sum(len(item["content"]) for item in payload["messages"])
+    transcript_characters += sum(
+        len(message["content"])
+        for source in payload.get("source_sessions") or []
+        for message in source.get("messages") or []
+    )
+    if transcript_characters > 120_000:
         raise HTTPException(status_code=413, detail="client_session_context_too_large")
     if sum(len(item["markdown"]) for item in payload.get("local_notes") or []) > 120_000:
         raise HTTPException(status_code=413, detail="client_session_context_too_large")
