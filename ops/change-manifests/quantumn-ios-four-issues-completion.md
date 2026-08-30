@@ -27,9 +27,14 @@
 - The iOS interaction change is simulator-build/test verified; final touch behavior still requires user acceptance on a physical iPhone.
 - Deployment receipts are recorded after the exact-SHA deployment completes.
 
-status: READY_TO_PUSH
-baseline_sha: `80341722463ead16016f516bd9fc23ac0cf38e11`
-remote_baseline_sha: `80341722463ead16016f516bd9fc23ac0cf38e11`
-functional_check: Python 32/32 passed; iOS 34/34 passed; syntax and diff checks passed
-rollback_point: deployment script must report the immutable prior release
+status: DEPLOYED
+implementation_commit: `49c0736aa29bc506b66f156d8907f4fb1a3593b5`
+remote_implementation_sha: `49c0736aa29bc506b66f156d8907f4fb1a3593b5` verified with `git ls-remote origin refs/heads/main` before deployment
+server_before: `/opt/releases/ai-lab-platform-8fe312223ccb.uFkR1T`
+server_after: `/opt/releases/ai-lab-platform-49c0736aa29b.xQZKJE`
+deployed_sha: `49c0736aa29bc506b66f156d8907f4fb1a3593b5`
+health_check: API `/ready` returned `ready` version `0.8.0`; Hermes Bridge `/health` returned `ok` version `v6.0`
+functional_check: Python 32/32 passed; iOS 34/34 passed; production OpenAPI exposes `PATCH /api/v1/tenant-agents/{agent_id}`; deployed Bridge contains the expanded user-knowledge write-intent matcher
+rollback_point: `/opt/releases/ai-lab-platform-8fe312223ccb.uFkR1T`
+release_note: iOS source is pushed to GitHub; this server deployment does not distribute an iOS binary through TestFlight/App Store.
 manifest: this file
