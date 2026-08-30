@@ -3106,6 +3106,11 @@ async def create_project_task_challenge_review(
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
         payload_binding = body.model_dump(exclude={"expected_revision", "expected_task_revision"})
+        receipt = (process.get("challenge_create_receipts") or {}).get(body.request_id)
+        if receipt is not None:
+            if receipt.get("request_payload") != payload_binding:
+                raise HTTPException(status_code=409, detail="challenge request replay payload drift")
+            return JSONResponse(status_code=200, content=receipt["response"])
         replay = next(
             (item for item in task.get("challenge_reviews") or [] if item.get("request_id") == body.request_id), None
         )
@@ -3114,8 +3119,8 @@ async def create_project_task_challenge_review(
                 raise HTTPException(status_code=409, detail="challenge request replay payload drift")
             return JSONResponse(status_code=200, content={
                 "project_id": project.id,
-                "process_revision": replay["result_process_revision"],
-                "task_revision": replay["result_task_revision"], "challenge_review": replay,
+                "process_revision": project.process_revision,
+                "task_revision": task["task_revision"], "challenge_review": replay,
             })
         if project.process_revision != body.expected_revision:
             raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
@@ -3146,10 +3151,22 @@ async def create_project_task_challenge_review(
         review["request_payload"] = payload_binding
         review["result_process_revision"] = body.expected_revision + 1
         review["result_task_revision"] = task["task_revision"]
+        create_response = {
+            "project_id": project_id,
+            "process_revision": body.expected_revision + 1,
+            "task_revision": task["task_revision"],
+            "challenge_review": json.loads(json.dumps(review)),
+        }
+        receipts = dict(process.get("challenge_create_receipts") or {})
+        receipts[body.request_id] = {
+            "request_payload": payload_binding,
+            "response": create_response,
+        }
+        process["challenge_create_receipts"] = dict(list(receipts.items())[-200:])
         process["tasks"] = tasks
         _sync_task_status_projections(process, tasks, {task_id})
         try:
-            next_revision = await _cas_project_process(
+            await _cas_project_process(
                 db, project=project, expected_revision=body.expected_revision, process=process
             )
         except HTTPException as exc:
@@ -3166,18 +3183,26 @@ async def create_project_task_challenge_review(
                 (item for item in (latest_task or {}).get("challenge_reviews") or [] if item.get("request_id") == body.request_id),
                 None,
             )
-            if persisted is not None and persisted.get("request_payload") == payload_binding:
+            persisted_receipt = (
+                ((latest.process_snapshot or {}).get("challenge_create_receipts") or {}).get(body.request_id)
+                if latest else None
+            )
+            if persisted_receipt is not None and persisted_receipt.get("request_payload") == payload_binding:
+                return JSONResponse(status_code=200, content=persisted_receipt["response"])
+            if (
+                latest is not None
+                and latest_task is not None
+                and persisted is not None
+                and persisted.get("request_payload") == payload_binding
+            ):
                 return JSONResponse(status_code=200, content={
                     "project_id": project_id,
-                    "process_revision": persisted["result_process_revision"],
-                    "task_revision": persisted["result_task_revision"],
+                    "process_revision": latest.process_revision,
+                    "task_revision": latest_task["task_revision"],
                     "challenge_review": persisted,
                 })
             raise
-        return {
-            "project_id": project_id, "process_revision": next_revision,
-            "task_revision": task["task_revision"], "challenge_review": review,
-        }
+        return create_response
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/challenge-reviews/{review_id}/decision")

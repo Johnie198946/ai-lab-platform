@@ -1676,6 +1676,8 @@ def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_re
     assert late_create_replay.status_code == 200
     assert late_create_replay.json()["process_revision"] == 2
     assert late_create_replay.json()["task_revision"] == 2
+    assert late_create_replay.json()["challenge_review"]["status"] == "OPEN"
+    assert late_create_replay.json()["challenge_review"]["decision_brief"]["status"] == "OPEN"
 
 
 def test_challenge_cas_conflict_rereads_identical_committed_request(
