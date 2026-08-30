@@ -4,8 +4,9 @@
 - task_goal: Build, sign, upload, and configure Quantumn iOS 1.0.3 (4) for App Store Connect/TestFlight.
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828`
-- source_sha: `dba5c5016a8850f5b715ec7912f6af71653cb91d`
-- current_status: `TESTED`
+- source_sha: `af6bc5d9a2258f6a338f3cd44108b1a07766f741` (exact source used for the successful archive/upload)
+- pre-release application source SHA: `dba5c5016a8850f5b715ec7912f6af71653cb91d`
+- current_status: `PUSHED`
 
 ## Changed files
 
@@ -40,27 +41,32 @@ The release configuration sets marketing version 1.0.3, build 4, automatic signi
 - post-fix xcresult: `/private/tmp/quantumn-ios-tests-1.0.3-4-orientation-fix/Logs/Test/Test-AIPlatformApp-2026.08.30_20-29-40-+0800.xcresult`
 - `git diff --check` for task files: passed.
 - `plutil -lint ios/AIPlatformApp/Info.plist`: passed.
-- Release Archive validation: pending.
-- `codesign --verify --deep --strict`: pending.
+- Fresh Release archive created from the current `main` source with destination `generic/platform=iOS` and automatic signing: passed.
+- Archive product Info.plist readback: version `1.0.3`, build `4`, Bundle ID `com.ailab.AIPlatformApp`, display name `Quantumn`, URL scheme `quantum`, query scheme `alipays`, background mode `audio`, and `ITSAppUsesNonExemptEncryption=false`; microphone and speech-recognition usage strings and all four required iPad orientations are present.
+- `codesign --verify --deep --strict`: passed (`valid on disk`; `satisfies its Designated Requirement`).
 
 ## Git delivery
 
-- local commit SHA: pending
-- GitHub remote/ref/SHA: pending
-- `git ls-remote` evidence: pending
+- application source SHA before release configuration: `dba5c5016a8850f5b715ec7912f6af71653cb91d`
+- release configuration commit: `a01cc3f` (version/signing/TestFlight configuration)
+- archive source/release fix commit: `af6bc5d9a2258f6a338f3cd44108b1a07766f741` (iPad orientation validation fix)
+- GitHub remote/ref/SHA after release push: `origin` / `refs/heads/main` / `af6bc5d9a2258f6a338f3cd44108b1a07766f741`
+- `git ls-remote origin refs/heads/main` evidence: `af6bc5d9a2258f6a338f3cd44108b1a07766f741 refs/heads/main`
 
 ## App Store Connect / TestFlight
 
 - version/build: `1.0.3 (4)`
-- archive_path: pending
+- archive_path: `/Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828/build/AIPlatformApp-1.0.3-4.xcarchive`
 - signing_team: `AALA948YY5`
-- upload_log: pending
-- App Store Connect build UUID: pending
-- processing_status: pending
-- export_compliance: pending
-- internal_group_core_testing: pending
-- external_group_external_testers: pending
-- beta_app_review_status: pending
+- archive signing identity: `Apple Development: Johnie Deng (G68222AH2P)`; export/upload used automatic App Store Connect signing for team `AALA948YY5`.
+- ExportOptions: `method=app-store-connect`, `destination=upload`, `teamID=AALA948YY5`, `signingStyle=automatic`.
+- upload_log: `2026-08-30 20:34:41.075 ... Progress 100%: Upload succeeded.`; `Uploaded AIPlatformApp`; `** EXPORT SUCCEEDED **`.
+- App Store Connect build UUID: `19b6ae38-ec2a-4afe-b1d1-a65d3265a3af`
+- processing_status: processing completed; build detail available as `1.0.3 (4)`.
+- export_compliance: automatically resolved by `ITSAppUsesNonExemptEncryption=false`; no additional export-compliance questionnaire was presented.
+- internal_group_core_testing: added to `核心测试` (internal, 1 tester); App Store Connect tester status shows `已安装 1.0.3 (4)` on 2026-08-30, confirming install availability.
+- external_group_external_testers: added to `外部测试员` (external, 4 testers); the build is listed in the group's build table.
+- beta_app_review_status: `正在等待审核`; the build detail exposes `从审核中移除`, confirming submission to Beta App Review.
 - rollback_build: `1.0.2 (3)`
 
 ## Deployment fields
@@ -68,11 +74,11 @@ The release configuration sets marketing version 1.0.3, build 4, automatic signi
 - server_before: not applicable; this task targets App Store Connect/TestFlight, not a server.
 - server_after: not applicable; no server deployment authorized or performed.
 - health_check: not applicable to a server; XCTest and Archive/upload checks are recorded above.
-- functional_check: pending TestFlight internal-install availability verification.
+- functional_check: passed for internal TestFlight availability; the member of `核心测试` is shown as having installed `1.0.3 (4)`. External availability is pending Apple Beta App Review approval.
 - rollback_point: App Store Connect/TestFlight build `1.0.2 (3)`; it will not be re-uploaded.
 
 ## Risks, incomplete items, and rollback
 
-- Archive, code-sign verification, upload, processing, TestFlight group assignment, and Beta App Review are pending.
-- Apple login, agreements, or review questions may require user handoff.
+- Archive, strict code-sign verification, upload, processing, group assignment, and Beta App Review submission are complete.
+- External distribution is not live: Apple Beta App Review status is `正在等待审核`, and external testers currently show no approved build available.
 - Rollback is to stop distribution of 1.0.3 (4) and retain 1.0.2 (3) as the prior TestFlight build.
