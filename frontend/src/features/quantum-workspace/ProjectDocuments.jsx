@@ -6,7 +6,7 @@ const emptyDraft = { title: "", content: "", status: "DRAFT", source_refs: [], t
 const lines = (value) => String(value || "").split("\n").map((item) => item.trim()).filter(Boolean);
 
 export function ProjectDocuments({ projectId, onRevisionChange }) {
-  const [payload, setPayload] = useState({ process_revision: 0, documents: [], graph: { backlinks: {}, broken_links: [] } });
+  const [payload, setPayload] = useState({ process_revision: 0, documents: [], document_structure: [], graph: { backlinks: {}, broken_links: [] } });
   const [selectedId, setSelectedId] = useState("");
   const [draft, setDraft] = useState(emptyDraft);
   const [busy, setBusy] = useState(false);
@@ -64,7 +64,11 @@ export function ProjectDocuments({ projectId, onRevisionChange }) {
     <aside>
       <div><span className="qw-eyebrow">Project documents</span><button type="button" onClick={create}>新建</button></div>
       <small>Obsidian-compatible · readable projection</small>
-      {payload.documents.map((document) => <button type="button" key={document.id} className={selectedId === document.id ? "active" : ""} onClick={() => select(document)}><FileText size={15} /><span><strong>{document.title}</strong><small>{document.status || "DRAFT"} · r{document.revision || 1}</small></span></button>)}
+      {payload.document_structure.map((folder) => {
+        const folderDocuments = payload.documents.filter((document) => document.category === folder.key);
+        return <section className="qw-document-folder" key={folder.key}><header><strong>{folder.name}</strong><small>{folder.purpose}</small></header>{folderDocuments.map((document) => <button type="button" key={document.id} className={selectedId === document.id ? "active" : ""} onClick={() => select(document)}><FileText size={15} /><span><strong>{document.title}</strong><small>{document.document_type === "PROJECT_MASTER" ? "唯一参照 · " : ""}{document.status || "DRAFT"} · r{document.revision || 1}</small></span></button>)}</section>;
+      })}
+      {!payload.document_structure.length && payload.documents.map((document) => <button type="button" key={document.id} className={selectedId === document.id ? "active" : ""} onClick={() => select(document)}><FileText size={15} /><span><strong>{document.title}</strong><small>{document.status || "DRAFT"} · r{document.revision || 1}</small></span></button>)}
       {!payload.documents.length && <p>蓝图尚未生成文档，可新建后编辑。</p>}
     </aside>
     <div className="qw-document-editor">

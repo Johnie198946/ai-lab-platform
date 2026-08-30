@@ -937,7 +937,10 @@ export function App() {
       return { unavailableReason: text("仅可在 Codex App 中使用", "Available only in the Codex app") };
     }
     if (!isLocalTaskboardOrigin(new URL(document.baseURI).origin)) {
-      return { unavailableReason: text("仅本地任务面板可用", "Available only on the local taskboard") };
+      return { unavailableReason: text(
+        "仅本地任务面板可用：当前网页项目看板不能直接控制本机 Codex 自动认领。请在 Codex App 打开并映射该项目目录，或使用项目顶部的 Automation 页面配置服务器自动化。",
+        "This web taskboard cannot control local Codex auto-claim. Open and map the project in the Codex app, or use the project's Automation page for server automation.",
+      ) };
     }
     if (!selectedProject) {
       return { unavailableReason: text("请先选择项目", "Select a project first") };

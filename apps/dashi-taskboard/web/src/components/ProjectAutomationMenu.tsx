@@ -325,8 +325,12 @@ export function ProjectAutomationMenu({
         aria-expanded={open}
         title={status === "ACTIVE"
           ? text("自动认领中", "Auto-claiming")
-          : text("自动化", "Automation")}
+          : unavailableReason || text("自动化", "Automation")}
         onClick={() => {
+          if (unavailableReason && new URLSearchParams(window.location.search).get("host") === "qws") {
+            window.parent.postMessage({ type: "taskboard:open-project-automation" }, window.location.origin);
+            return;
+          }
           if (!open) {
             setPosition((current) => ({ ...current, ready: false }));
             onOpen();

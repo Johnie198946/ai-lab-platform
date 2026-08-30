@@ -264,6 +264,95 @@ def instantiate_project_blueprint(
         },
         "ai-resource": {"id": f"graph_{uuid4().hex}", "view_type": "ai-resource", "source_status": "PLANNED", "nodes": [], "edges": []},
     }
+    supplied_documents = [dict(item) for item in blueprint.get("documents") or [] if isinstance(item, dict)]
+    for index, document in enumerate(supplied_documents):
+        document.setdefault("id", f"project-document-{index + 1}")
+        document.setdefault("category", "03-deliverables")
+        document.setdefault("folder", "03 交付成果")
+        document.setdefault("status", "DRAFT")
+        document.setdefault("revision", 1)
+        document.setdefault("tags", ["project/document"])
+        document.setdefault("source_refs", [])
+
+    # One top-level design is the project's unique reference. Every task receives
+    # a dedicated execution note, following Obsidian's vault/folder/link model.
+    master_document = next((item for item in supplied_documents if item.get("document_type") == "PROJECT_MASTER"), None)
+    if master_document is None:
+        stage_lines = "\n".join(f"- [[{stage['name']}]]：{stage.get('goal') or '按阶段任务执行'}" for stage in stages)
+        task_lines = "\n\n".join(
+            "\n".join([
+                f"### {task['title']}",
+                f"- 责任角色：{task.get('assignee_role') or '待分配'}",
+                f"- 任务说明：{task.get('summary') or task.get('goal') or '待补充'}",
+                f"- 交付物：{'、'.join(task.get('deliverables') or []) or '待补充'}",
+                f"- 验收标准：{'；'.join(task.get('acceptance_criteria') or []) or '待补充'}",
+                f"- 交接要求：{(task.get('handoff') or {}).get('completion_definition') or '达到验收标准后交给下游角色'}",
+                f"- 执行记录：[[任务记录-{task['title']}]]",
+            ])
+            for task in tasks
+        )
+        required_document_lines = "\n".join(
+            f"- {item.get('title') or item.get('id') or '未命名文档'}"
+            for item in supplied_documents
+        ) or "- 无额外文档"
+        master_document = {
+            "id": "00-project-master",
+            "title": "00 项目顶层设计（唯一参照）",
+            "document_type": "PROJECT_MASTER",
+            "canonical": True,
+            "category": "00-master",
+            "folder": "00 项目顶设",
+            "status": "PUBLISHED",
+            "revision": 1,
+            "locked_reference": True,
+            "source_refs": [f"task:{task['id']}" for task in tasks],
+            "tags": ["project/master", "single-source-of-truth"],
+            "content": (
+                f"# 项目顶层设计（唯一参照）\n\n> [!important] 唯一参照\n"
+                "后续所有任务的目标、范围、角色、验收与交付均以本文档为准；如需变更，先修订本文档并提升版本。\n\n"
+                f"## 项目目标\n{str(blueprint.get('project_goal') or '').strip()}\n\n"
+                f"## 阶段路线\n{stage_lines}\n\n## 任务、角色、交付与验收\n{task_lines}\n\n"
+                f"## 项目要求文档\n{required_document_lines}\n\n"
+                "## 变更规则\n任何目标、阶段、任务、角色、交付物或验收标准变化，都必须先更新本顶设并产生新 revision，再影响后续任务。\n"
+            ),
+        }
+        supplied_documents.append(master_document)
+
+    existing_ids = {str(item.get("id")) for item in supplied_documents}
+    for task in tasks:
+        document_id = f"task-record-{task['blueprint_key']}"
+        task["execution_document_id"] = document_id
+        if document_id in existing_ids:
+            continue
+        supplied_documents.append({
+            "id": document_id,
+            "title": f"任务记录-{task['title']}",
+            "document_type": "TASK_EXECUTION_RECORD",
+            "category": "02-task-records",
+            "folder": "02 任务执行记录",
+            "task_id": task["id"],
+            "status": "DRAFT",
+            "revision": 1,
+            "source_refs": [f"task:{task['id']}"],
+            "tags": ["project/task-record", f"role/{task.get('assignee_role') or 'unassigned'}"],
+            "content": (
+                f"# {task['title']} · 执行记录\n\n"
+                "上位依据：[[00 项目顶层设计（唯一参照）]]\n\n"
+                f"## 任务目标\n{task.get('goal') or task.get('summary') or ''}\n\n"
+                "## 执行过程\n- 待执行\n\n## 产出与证据\n- 待补充\n\n"
+                "## 验收结果\n- 待验收\n\n## 决策与遗留问题\n- 无\n"
+            ),
+        })
+        existing_ids.add(document_id)
+
+    for document in supplied_documents:
+        document.setdefault("updated_by", "system:project-dispatch")
+        document.setdefault("wikilinks", [])
+        document["content_hash"] = canonical_plan_hash({
+            key: document.get(key)
+            for key in ("id", "title", "content", "status", "revision", "source_refs", "tags")
+        })
+
     process = {
         "process_instance_id": process_id,
         "template_id": "hermes-dynamic-project",
@@ -274,8 +363,23 @@ def instantiate_project_blueprint(
         "gates": [],
         "tasks": tasks,
         "dependencies": dependencies,
-        "documents": list(blueprint.get("documents") or []),
+        "documents": supplied_documents,
+        "document_revisions": deepcopy(supplied_documents),
+        "document_structure": [
+            {"key": "00-master", "name": "00 项目顶设", "purpose": "唯一参照与变更基线"},
+            {"key": "01-requirements", "name": "01 需求与决策", "purpose": "需求、范围与关键决策"},
+            {"key": "02-task-records", "name": "02 任务执行记录", "purpose": "一任务一文档"},
+            {"key": "03-deliverables", "name": "03 交付成果", "purpose": "项目交付物"},
+            {"key": "99-archive", "name": "99 归档", "purpose": "历史版本与废弃材料"},
+        ],
         "project_goal": str(blueprint.get("project_goal") or "").strip(),
+        "project_master_document_id": str(master_document.get("id")),
+        "blueprint_snapshot": deepcopy(blueprint),
+        "document_policy": {
+            "single_source_of_truth": str(master_document.get("id")),
+            "task_record_required": True,
+            "task_record_field": "execution_document_id",
+        },
         "graphs": graphs,
         "calendar": {"timezone": "Asia/Shanghai", "work_calendar_id": None, "non_working_days": [], "status": "PLANNED"},
     }

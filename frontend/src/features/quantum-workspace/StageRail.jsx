@@ -76,7 +76,7 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
   const roles = useMemo(() => buildRoleOverview(process, stages), [process, stages]);
   const [selectedRoleName, setSelectedRoleName] = useState(() => roles[0]?.name || "");
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState({ name: "", description: "", responsibilities: "", decision_rights: "" });
+  const [draft, setDraft] = useState({ name: "", description: "", responsibilities: "", decision_rights: "", collaboration_boundaries: "" });
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [validation, setValidation] = useState(null);
@@ -91,6 +91,7 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
       description: profile.description || selectedRole.baseLabel || "",
       responsibilities: (profile.responsibilities || selectedRole.tasks.map((task) => task.title)).join("\n"),
       decision_rights: (profile.decision_rights || selectedRole.gates.map((gate) => gate.name)).join("\n"),
+      collaboration_boundaries: (profile.collaboration_boundaries || []).join("\n"),
     });
     setSaveError("");
     setEditing(true);
@@ -106,6 +107,7 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
         description: draft.description.trim(),
         responsibilities: draft.responsibilities.split("\n").map((item) => item.trim()).filter(Boolean),
         decision_rights: draft.decision_rights.split("\n").map((item) => item.trim()).filter(Boolean),
+        collaboration_boundaries: draft.collaboration_boundaries.split("\n").map((item) => item.trim()).filter(Boolean),
       });
       setSelectedRoleName(result.role.name);
       setEditing(false);
@@ -174,6 +176,7 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
               <label>角色说明<textarea rows="2" value={draft.description} onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))} /></label>
               <label>责任边界（每行一项）<textarea rows="4" value={draft.responsibilities} onChange={(event) => setDraft((current) => ({ ...current, responsibilities: event.target.value }))} /></label>
               <label>决策权限（每行一项）<textarea rows="3" value={draft.decision_rights} onChange={(event) => setDraft((current) => ({ ...current, decision_rights: event.target.value }))} /></label>
+              <label>交接边界（每行一项）<textarea rows="3" value={draft.collaboration_boundaries} onChange={(event) => setDraft((current) => ({ ...current, collaboration_boundaries: event.target.value }))} placeholder="例如：完成候选清单后交给行程策划师；不替代预算审批" /></label>
               {saveError && <p role="alert">{saveError}</p>}
               <div><button type="button" onClick={() => setEditing(false)}>取消</button><button type="submit" disabled={saving || !draft.name.trim()}><Save size={14} />{saving ? "保存并校验中…" : "保存并全局校验"}</button></div>
             </form>}
@@ -182,7 +185,11 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
               <section className="qw-role-responsibilities">
                 <h4>责任边界 <span>{selectedRole.tasks.length + selectedRole.gates.length}</span></h4>
                 <div>
-                  {selectedRole.tasks.map((task) => <article key={task.id}>
+                  {!!selectedRole.profile?.responsibilities?.length && selectedRole.profile.responsibilities.map((responsibility, index) => <article key={`profile-responsibility-${index}`}>
+                    <div><CheckCircle2 size={14} /><strong>{responsibility}</strong><span>人工定义</span></div>
+                    <p>{selectedRole.profile.description || "这是你为该角色明确的工作范围。"}</p>
+                  </article>)}
+                  {!selectedRole.profile?.responsibilities?.length && selectedRole.tasks.map((task) => <article key={task.id}>
                     <div><CheckCircle2 size={14} /><strong>{task.title}</strong><span>{task.stageName}</span></div>
                     <p>{task.summary || "按任务卡片要求完成工作与验收。"}</p>
                     {!!task.deliverables?.length && <small>交付物：{task.deliverables.join("、")}</small>}
@@ -204,7 +211,8 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
                 <section>
                   <h4>交接边界</h4>
                   <div className="qw-role-handoffs">
-                    {selectedRole.tasks.map((task) => {
+                    {!!selectedRole.profile?.collaboration_boundaries?.length && selectedRole.profile.collaboration_boundaries.map((boundary, index) => <p key={`boundary-${index}`}><strong>人工定义</strong><span>{boundary}</span><small>保存后立即作为该角色的协作边界</small></p>)}
+                    {!selectedRole.profile?.collaboration_boundaries?.length && selectedRole.tasks.map((task) => {
                       const handoff = task.handoff || {};
                       return <p key={task.id}><strong>{task.title}</strong><span>{handoff.to ? `交给 ${handoff.to}` : "交给下游责任角色"}</span><small>{handoff.completion_definition || (task.deliverables?.length ? `完成 ${task.deliverables.join("、")}` : "达到任务卡片验收标准")}</small></p>;
                     })}
@@ -216,8 +224,8 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
           </section>
         </div>}
         {validation && <div className="qw-consistency-popup" role="alertdialog" aria-label="项目一致性校验结果">
-          <section><header><ShieldCheck size={18} /><div><strong>{validation.blocking ? "发现自动执行阻断项" : validation.counts.error || validation.counts.warning ? "修改已保存，发现待修正项" : "修改已保存且校验通过"}</strong><small>不会撤销刚才的角色编辑 · Error 限制相关任务，Critical 暂停全局 Automation 副作用</small></div></header>
-          {!!validation.issues?.length && <ul>{validation.issues.slice(0, 8).map((issue) => <li key={`${issue.code}-${issue.scope}`} className={issue.severity.toLowerCase()}><b>{issue.severity}</b><span><strong>{issue.title}</strong><small>{issue.detail} · 建议：{issue.repair}</small></span></li>)}</ul>}
+          <section><header><ShieldCheck size={18} /><div><strong>{validation.blocking ? "角色已保存，但有问题需要先处理" : validation.counts.error || validation.counts.warning ? "角色已保存，请检查以下提醒" : "角色修改成功，相关信息已同步"}</strong><small>{validation.blocking ? "为避免错误执行，系统已暂停受影响的自动任务；你的修改不会丢失。处理下方问题后即可继续。" : validation.counts.error || validation.counts.warning ? "你的修改已经生效。下面会用具体任务说明哪里需要补充，不影响你继续查看和编辑。" : "角色名称、责任范围和交接关系已更新；后续任务会使用这份最新设置。"}</small></div></header>
+          {!!validation.issues?.length && <ul>{validation.issues.slice(0, 8).map((issue) => <li key={`${issue.code}-${issue.scope}`} className={issue.severity.toLowerCase()}><b>{issue.severity === "CRITICAL" ? "必须处理" : issue.severity === "ERROR" ? "执行前处理" : issue.severity === "WARNING" ? "建议检查" : "提示"}</b><span><strong>{issue.title}</strong><small>{issue.detail} · 处理办法：{issue.repair}</small></span></li>)}</ul>}
           <button type="button" onClick={() => setValidation(null)}>知道了</button></section>
         </div>}
       </div>

@@ -184,6 +184,9 @@ def test_hermes_blueprint_compiles_dynamic_stages_rich_cards_and_documents():
     assert process["tasks"][1]["status"] == "BACKLOG"
     assert {item["type"] for item in process["tasks"][1]["relations"]} == {"parent", "blocked_by"}
     assert process["documents"][0]["title"] == "项目说明"
+    assert any(item.get("id") == "00-project-master" and item.get("canonical") for item in process["documents"])
+    assert all(task.get("execution_document_id") for task in process["tasks"])
+    assert process["document_policy"]["task_record_required"] is True
 
 
 def test_hermes_blueprint_default_schedule_follows_dependencies_and_workdays():
@@ -317,6 +320,22 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert process["tasks"][0]["title"] == "完成交付"
     assert len(process["dependencies"]) == 1
     assert process["documents"][0]["id"] == "brief"
+
+    human_edited = json.loads(json.dumps(blueprint, ensure_ascii=False))
+    human_edited["project_goal"] = "按人工修订版交付项目"
+    human_edited["tasks"][0]["title"] = "按人工要求完成交付"
+    redispatched = client.post(f"/api/v1/projects/{project_id}/planning/dispatch", json={
+        "conversation_id": conversation_id,
+        "assistant_request_id": request_id,
+        "expected_revision": 1,
+        "blueprint": human_edited,
+    })
+    assert redispatched.status_code == 200, redispatched.text
+    assert redispatched.json()["blueprint_source"] == "HUMAN_EDITED_CONFIRMATION"
+    revised_process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert revised_process["project_goal"] == "按人工修订版交付项目"
+    assert revised_process["tasks"][0]["title"] == "按人工要求完成交付"
+    assert revised_process["dispatch_source"]["human_edited"] is True
 
     async def task_registry_profile():
         async with SessionLocal() as db:
@@ -1409,6 +1428,15 @@ def test_delivery_manifest_is_the_only_gate_to_done(_reset_database):
     assert accepted.status_code == 200, accepted.text
     assert accepted.json()["task_status"] == "DONE"
     assert accepted.json()["manifest"]["status"] == "ACCEPTED"
+    completed_process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    completion_doc = next(
+        item for item in completed_process["documents"]
+        if item["id"] == (task.get("execution_document_id") or f"task-record-{task_id}")
+    )
+    assert completion_doc["status"] == "PUBLISHED"
+    assert "验收标准通过且交付物已验证" in completion_doc["content"]
+    assert version["id"] in completion_doc["content"]
+    assert "b" * 64 in completion_doc["content"]
 
 
 def test_taskboard_backfill_uses_trusted_internal_host(monkeypatch):

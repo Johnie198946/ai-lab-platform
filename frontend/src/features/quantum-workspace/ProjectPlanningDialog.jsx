@@ -43,6 +43,12 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
   const blueprintMessages = messages.filter((item) => item.role === "assistant" && extractProjectBlueprint(item.content));
   const latestBlueprintMessage = blueprintMessages.at(-1);
   const latestBlueprintVersion = blueprintMessages.length;
+  const [reviewBlueprint, setReviewBlueprint] = useState(null);
+
+  useEffect(() => {
+    const generated = latestBlueprintMessage ? extractProjectBlueprint(latestBlueprintMessage.content) : null;
+    setReviewBlueprint(generated ? structuredClone(generated) : null);
+  }, [latestBlueprintMessage?.id]);
 
   useEffect(() => {
     if (!project) return undefined;
@@ -169,10 +175,10 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
 
   const dispatch = async () => {
     if (!blueprintRequestId || !conversation || busy) return;
-    if (!window.confirm("确认按当前蓝图一次性建立动态流程、任务卡片、AI 员工、甘特数据和项目文档？")) return;
+    if (!window.confirm("确认派发？系统将严格按你在当前页面保存后的需求确认单建立任务、角色、AI 员工、排期和项目文档，不会回用修改前的 AI 旧稿。")) return;
     setBusy(true); setError("");
     try {
-      await platformApi.dispatchProjectBlueprint(project.id, { conversation_id: conversation.id, assistant_request_id: blueprintRequestId, expected_revision: project.process_revision || 0 });
+      await platformApi.dispatchProjectBlueprint(project.id, { conversation_id: conversation.id, assistant_request_id: blueprintRequestId, expected_revision: project.process_revision || 0, blueprint: reviewBlueprint });
       await onChanged?.();
       window.location.assign(`/projects/${project.id}/taskboard`);
     } catch (reason) { setError(reason.message); setBusy(false); }
@@ -190,7 +196,8 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
           ? (blueprint ? projectPlanningNaturalReply(message.content) : projectPlanningVisibleAnswer(message.content, { pending: message.pending }))
           : message.content;
         const renderedAnswer = visibleAnswer || (message.waitingForClarification ? "请回答下方问题，Hermes 会继续评估。" : message.pending ? "正在检查需求完整度…" : message.failed ? "本轮未完成，请按提示重试。" : message.incomplete ? "本轮没有形成可验证蓝图，请补充信息或重试。" : "蓝图已生成，请确认派发。");
-        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : message.incomplete ? "incomplete" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}{message.role === "assistant" ? <div className="qw-message-markdown"><ReactMarkdown>{renderedAnswer}</ReactMarkdown></div> : <p>{renderedAnswer}</p>}{protocol && !blueprint && <ProjectBlueprintProtocol protocol={protocol.payload} complete={protocol.complete} dispatchable={false} />}{blueprint && <ProjectBlueprintReview blueprint={blueprint} version={blueprintIndex + 1} current={message.id === latestBlueprintMessage?.id} dispatchable={message.request_id === blueprintRequestId} />}</article>;
+        const isCurrentBlueprint = message.id === latestBlueprintMessage?.id;
+        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : message.incomplete ? "incomplete" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}{message.role === "assistant" ? <div className="qw-message-markdown"><ReactMarkdown>{renderedAnswer}</ReactMarkdown></div> : <p>{renderedAnswer}</p>}{protocol && !blueprint && <ProjectBlueprintProtocol protocol={protocol.payload} complete={protocol.complete} dispatchable={false} />}{blueprint && <ProjectBlueprintReview blueprint={isCurrentBlueprint && reviewBlueprint ? reviewBlueprint : blueprint} onChange={isCurrentBlueprint ? setReviewBlueprint : undefined} version={blueprintIndex + 1} current={isCurrentBlueprint} dispatchable={message.request_id === blueprintRequestId} />}</article>;
       })}<HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-project-clarification" continuationLabel="回答后，Hermes 会继续检查需求；信息足够时自动生成蓝图。" /></div>
       {error && <p className="qw-error compact" role="alert">{error}</p>}
       {planningNotice && <p className="qw-planning-notice" role="status">{planningNotice}</p>}

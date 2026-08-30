@@ -105,6 +105,9 @@ def upsert_project_document(
         "id": document_id,
         "title": title.strip(),
         "content": content,
+        "category": (current or {}).get("category") or "03-deliverables",
+        "folder": (current or {}).get("folder") or "03 交付成果",
+        "document_type": (current or {}).get("document_type") or "PROJECT_DOCUMENT",
         "status": normalized_status,
         "revision": revision,
         "source_refs": normalized_refs,
@@ -113,6 +116,10 @@ def upsert_project_document(
         "updated_by": actor_id,
         "updated_at": timestamp,
     }
+    current_metadata = current or {}
+    for metadata_key in ("task_id", "locked_reference", "canonical"):
+        if metadata_key in current_metadata:
+            payload[metadata_key] = current_metadata[metadata_key]
     payload["content_hash"] = canonical_hash(
         {key: payload[key] for key in ("id", "title", "content", "status", "revision", "source_refs", "tags")}
     )

@@ -1,0 +1,36 @@
+# qws-human-reviewed-blueprint-20260830 completion
+
+- status: TESTED
+- branch: `main`
+- worktree: `/Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828`
+- original_baseline: `ea28e677b05403b304a44f06fc67cae19f694fb4`
+- replay_base: `ae15241b89614bf92e11d956b92dd8abdc056937`（包含获准基线 `6b63a0f9a4d84445c6bfc84a685d439809a98c0b` 及其后续两个已发布提交）
+- replay: 原本地未推送提交 `f0a01430d5a9adbc13fecfb9946c4c8cacd25d35` 已在用户明确授权后安全重放；上游与本功能改动文件集合无重叠，重放无冲突。
+- scope:
+  - 需求确认单支持人工逐项编辑目标、阶段、任务、角色、交付物、验收标准与项目文档；派发 API 以保存后的结构化蓝图为真源，并记录人工修订来源。
+  - 角色校验改为非技术文案；责任、决策与交接边界支持编辑、持久化并以最新角色画像展示。
+  - 任务负责人候选改为项目内所有任务参与者/AI 员工的并集，不再只显示当前负责人、本人和通用 AI。
+  - 项目派发生成 `00 项目顶层设计（唯一参照）`、Obsidian 风格目录与一任务一记录；交付清单人工验收通过时自动发布任务记录，包含摘要、证据、产物位置和 SHA-256。
+  - 网页 QWS 看板明确解释本地 Codex 自动认领不可用原因；点击灰态 Automation 时跳转项目级 Automation 页面。
+- operation_paths:
+  - Planning -> 人工修改 -> 保存 -> `POST /planning/dispatch` 携带 `blueprint` -> canonical process。
+  - Role map -> 编辑角色/责任/交接 -> `PUT /roles/{role}` -> reload -> 最新角色画像。
+  - Dashi task detail/editor -> 汇总项目 `tasks[].participants` -> 负责人选择。
+  - Task delivery manifest ACCEPT -> `upsert_project_document` -> PUBLISHED task execution record。
+  - QWS embedded Taskboard Automation -> `postMessage` -> `/projects/{id}/automation`。
+- verification:
+  - 重放后 Backend full: `1027 passed, 2 skipped`。
+  - 重放后 Frontend full: `143/143 passed`。
+  - 重放后 Frontend production build: PASS（`2684 modules transformed`）。
+  - 重放后 Dashi full check: Node `369 passed, 1 skipped`；component `9/9 passed`；TypeScript 与 production build PASS。
+  - Python compile and `git diff --check`: PASS。
+- exclusions:
+  - 既有未跟踪目录 `build/` 未读取、未修改、未暂存。
+  - 未修改反馈日报实现或测试；上述全量失败作为基线外阻塞如实保留。
+- delivery:
+  - implementation_commit: pending
+  - github_main: pending
+  - server_before: pending
+  - server_after: pending
+  - production_verification: pending
+- rollback: 使用本清单最终记录的 GitHub SHA 前一 release，并通过 exact-SHA 部署脚本切回；不使用工作树覆盖生产。

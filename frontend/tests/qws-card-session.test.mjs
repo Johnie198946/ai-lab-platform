@@ -20,6 +20,10 @@ const planningSource = await readFile(
   new URL("../src/features/quantum-workspace/ProjectPlanningDialog.jsx", import.meta.url),
   "utf8",
 );
+const blueprintReviewSource = await readFile(
+  new URL("../src/features/quantum-workspace/ProjectBlueprintReview.jsx", import.meta.url),
+  "utf8",
+);
 const executionTraceSource = await readFile(
   new URL("../src/features/quantum-workspace/HermesExecutionTrace.jsx", import.meta.url),
   "utf8",
@@ -227,4 +231,16 @@ test("project planning treats new user input as a merged convergence revision", 
   assert.match(backendSource, /current_convergence_sheet_version/);
   assert.match(backendSource, /preserve every unaffected confirmed fact/);
   assert.match(backendSource, /Never start a parallel or unrelated planning flow/);
+});
+
+test("confirmed blueprint is fully human-editable and dispatches the saved revision", () => {
+  assert.match(blueprintReviewSource, /人工修订需求确认单/);
+  assert.match(blueprintReviewSource, /新增阶段/);
+  assert.match(blueprintReviewSource, /新增任务/);
+  assert.match(blueprintReviewSource, /新增文档/);
+  assert.match(blueprintReviewSource, /验收标准（每行一条）/);
+  assert.match(blueprintReviewSource, /交付物（每行一项）/);
+  assert.match(planningSource, /reviewBlueprint/);
+  assert.match(planningSource, /blueprint: reviewBlueprint/);
+  assert.match(planningSource, /严格按你在当前页面保存后的需求确认单/);
 });

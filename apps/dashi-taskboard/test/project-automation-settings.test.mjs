@@ -156,6 +156,9 @@ test("unavailable automation state has one notice, clears stale errors, and cann
     /if \(!automationRequestContext\) \{\s*setAutomationError\(null\);\s*return;/,
   );
   assert.doesNotMatch(reconcileSource, /setAutomationError\(automationProjectContext\.unavailableReason/);
+  assert.match(menuSource, /new URLSearchParams\(window\.location\.search\)\.get\("host"\) === "qws"/);
+  assert.match(menuSource, /taskboard:open-project-automation/);
+  assert.match(appSource, /当前网页项目看板不能直接控制本机 Codex 自动认领/);
 });
 
 test("automation changes submit immediately with model-specific effort normalization", () => {

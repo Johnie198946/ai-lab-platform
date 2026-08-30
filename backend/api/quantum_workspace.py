@@ -171,6 +171,7 @@ class DispatchProjectBlueprintRequest(BaseModel):
     conversation_id: str = Field(min_length=1, max_length=40)
     assistant_request_id: str = Field(min_length=8, max_length=100)
     expected_revision: int = Field(ge=0)
+    blueprint: dict[str, Any] | None = None
 
 
 class SaveProjectDocumentRequest(BaseModel):
@@ -1767,6 +1768,36 @@ async def decide_task_delivery_manifest(
             actor_id=f"user:{user_id}",
             reason=body.note or ("交付验收通过" if body.decision == "ACCEPT" else "验收退回返工"),
         )
+        if body.decision == "ACCEPT":
+            record_document_id = str(task.get("execution_document_id") or f"task-record-{task_id}")
+            artifact_lines = "\n".join(
+                f"- `{item.get('id')}` · SHA-256 `{item.get('sha256')}` · `{item.get('storage_ref')}`"
+                for item in manifest.content.get("artifact_versions", [])
+            ) or "- 本次交付未绑定独立产物文件"
+            evidence_lines = "\n".join(
+                f"- {item}" for item in manifest.content.get("acceptance_evidence", [])
+            ) or "- 以已验收交付清单为准"
+            completion_content = (
+                f"# 任务记录：{task.get('title') or task_id}\n\n"
+                f"> [!success] 已完成并通过人工验收\n"
+                f"> 本页由任务 `{task_id}` 的交付验收自动归档，是该任务的执行记录。\n\n"
+                f"## 任务依据\n- [[00 项目顶层设计（唯一参照）]]\n- 任务角色：{task.get('assignee_role') or '待分配'}\n"
+                f"- 交付清单：`{manifest.id}`\n- 验收决定：`{decision.id}`\n\n"
+                f"## 完成摘要\n{manifest.content.get('summary') or '已按任务验收标准完成。'}\n\n"
+                f"## 验收证据\n{evidence_lines}\n\n"
+                f"## 交付产物与哈希\n{artifact_lines}\n\n"
+                f"## 人工决定说明\n{body.note or '交付验收通过'}\n"
+            )
+            process, _ = upsert_project_document(
+                process,
+                document_id=record_document_id,
+                title=f"任务记录：{task.get('title') or task_id}",
+                content=completion_content,
+                status="PUBLISHED",
+                source_refs=[f"task:{task_id}"],
+                tags=["project/task-record", "status/completed"],
+                actor_id=f"user:{user_id}",
+            )
         revision = await _save_task_contract(
             db, project=project, process=process, tasks=tasks,
             expected_revision=body.expected_revision,
@@ -6247,7 +6278,9 @@ async def dispatch_project_blueprint(
         )
         if assistant is None:
             raise HTTPException(status_code=404, detail="Hermes blueprint message not found")
-        blueprint = _project_blueprint_from_text(assistant.content)
+        # The reviewed form is the final authority.  The assistant message remains
+        # the provenance anchor, but dispatch must use the human-edited copy.
+        blueprint = deepcopy(body.blueprint) if body.blueprint is not None else _project_blueprint_from_text(assistant.content)
         if blueprint is None:
             raise HTTPException(status_code=422, detail="Hermes has not produced a project_blueprint yet")
         try:
@@ -6257,6 +6290,13 @@ async def dispatch_project_blueprint(
             )
         except (ValueError, TypeError) as exc:
             raise HTTPException(status_code=422, detail=f"invalid project blueprint: {exc}") from exc
+        blueprint_source = "HUMAN_EDITED_CONFIRMATION" if body.blueprint is not None else "HERMES_CONFIRMED_MESSAGE"
+        process["dispatch_source"] = {
+            "kind": blueprint_source,
+            "human_edited": body.blueprint is not None,
+            "conversation_id": conversation.id,
+            "assistant_request_id": body.assistant_request_id,
+        }
         next_revision = await _cas_project_process(
             db,
             project=project,
@@ -6279,7 +6319,11 @@ async def dispatch_project_blueprint(
             id=f"audit_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
             actor_user_id=user_id, event_type="project.blueprint.dispatched",
             subject_id=conversation.id,
-            payload={"assistant_request_id": body.assistant_request_id, "process_revision": next_revision},
+            payload={
+                "assistant_request_id": body.assistant_request_id,
+                "process_revision": next_revision,
+                "human_edited_blueprint": body.blueprint is not None,
+            },
         ))
         await db.commit()
         return {
@@ -6289,6 +6333,7 @@ async def dispatch_project_blueprint(
             "task_count": len(process["tasks"]),
             "document_count": len(process.get("documents") or []),
             "ai_employees": employees,
+            "blueprint_source": blueprint_source,
         }
 
 
@@ -6302,6 +6347,7 @@ async def list_project_documents(project_id: str, payload=Depends(require_auth))
             "project_id": project.id,
             "process_revision": project.process_revision,
             "documents": documents,
+            "document_structure": (project.process_snapshot or {}).get("document_structure") or [],
             "graph": build_document_graph(documents),
             "truth_contract": "READABLE_PROJECTION_ONLY",
         }

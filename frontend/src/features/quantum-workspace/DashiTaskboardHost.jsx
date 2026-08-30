@@ -292,6 +292,10 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
         if (workflowId) openArchitect(workflowId);
         return;
       }
+      if (event.data.type === "taskboard:open-project-automation") {
+        window.location.assign(`/projects/${project.id}/automation`);
+        return;
+      }
       if (event.data.type !== "taskboard:create-thread") return;
       const dashiTaskId = event.data.payload?.taskId;
       try {

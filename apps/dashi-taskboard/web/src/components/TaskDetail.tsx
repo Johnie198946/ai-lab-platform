@@ -1001,7 +1001,12 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const assigneeOptions = [
+    ...tasks.filter((task) => task.projectId === currentTask.projectId).flatMap((task) => [task.assignee, ...task.participants]),
+    currentTask.assignee,
+    currentUser,
+    CODEX_AGENT_ACTOR,
+  ]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
