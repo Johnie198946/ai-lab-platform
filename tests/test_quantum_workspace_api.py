@@ -58,7 +58,7 @@ def _reset_database():
         "user_id": "user-a",
         "sub": "user-a",
         "principal_type": "human",
-        "amr": ["test_interactive"],
+        "amr": ["pwd"], "auth_time": int(datetime.now(timezone.utc).timestamp()),
         "is_super_admin": False,
     }
     with TestClient(app) as client:
@@ -999,7 +999,7 @@ def test_project_documents_assets_and_distillation_are_source_grounded(_reset_da
 
     app.dependency_overrides[require_auth] = lambda: {
         "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
-        "principal_type": "human", "amr": ["test_interactive"],
+        "principal_type": "human", "amr": ["pwd"], "auth_time": int(datetime.now(timezone.utc).timestamp()),
         "is_super_admin": False,
     }
 
@@ -1051,7 +1051,7 @@ def test_project_documents_assets_and_distillation_are_source_grounded(_reset_da
     revision = observation.json()["process_revision"]
     app.dependency_overrides[require_auth] = lambda: {
         "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
-        "principal_type": "human", "amr": ["test_interactive"],
+        "principal_type": "human", "amr": ["pwd"], "auth_time": int(datetime.now(timezone.utc).timestamp()),
         "is_super_admin": False,
     }
     calibration = client.get(f"/api/v1/projects/{project_id}/calibration")
@@ -2247,7 +2247,7 @@ def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_re
     assert agent_resolution.json()["detail"] == "authenticated human principal required"
     app.dependency_overrides[require_auth] = lambda: {
         "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
-        "principal_type": "human", "amr": ["test_interactive"], "is_super_admin": False,
+        "principal_type": "human", "amr": ["pwd"], "auth_time": int(datetime.now(timezone.utc).timestamp()), "is_super_admin": False,
     }
     resolved = client.post(
         f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
@@ -3055,7 +3055,7 @@ def test_agent_task_writes_require_current_lease_epoch() -> None:
         )
     _enforce_agent_lease_fence(
         task,
-        {"principal_type": "human", "sub": "user-a", "amr": ["test_interactive"]},
+        {"principal_type": "human", "sub": "user-a", "amr": ["pwd"]},
         session_id=None,
         lease_epoch=None,
     )
