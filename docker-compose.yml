@@ -56,6 +56,12 @@ services:
       AUTH_PUBLIC_BASE_URL: ${AUTH_PUBLIC_BASE_URL:-}
       AUTH_WEB_RETURN_URL: ${AUTH_WEB_RETURN_URL:-}
       AUTH_IOS_RETURN_URL: ${AUTH_IOS_RETURN_URL:-quantum://oauth/callback}
+      # 开发者免短信登录（默认关闭；启用时必须配置独立固定账号/验证码）
+      DEV_LOGIN_ENABLED: ${DEV_LOGIN_ENABLED:-false}
+      DEV_LOGIN_PHONE: ${DEV_LOGIN_PHONE:-}
+      DEV_LOGIN_CODE: ${DEV_LOGIN_CODE:-}
+      DEV_LOGIN_USER_ID: ${DEV_LOGIN_USER_ID:-dev-user}
+      DEV_LOGIN_USERNAME: ${DEV_LOGIN_USERNAME:-开发者}
       # Authen 认证服务（宿主机 systemd，经 host.docker.internal 访问）
       AUTHEN_BASE: http://host.docker.internal:8001
       AUTHEN_USER_URL: http://host.docker.internal:8003

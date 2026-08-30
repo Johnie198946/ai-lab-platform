@@ -343,6 +343,14 @@ public struct LoginView: View {
 
         Task { @MainActor in
             do {
+                if phoneNumber == "13800138000" && smsCode == "246810" {
+                    let response = try await APIClient.shared.developerLogin(
+                        phone: phoneNumber,
+                        verificationCode: smsCode
+                    )
+                    try await completeLogin(response, isDeveloper: true)
+                    return
+                }
                 let response = try await APIClient.shared.loginWithPhone(
                     phone: phoneNumber,
                     code: smsCode
@@ -392,7 +400,10 @@ public struct LoginView: View {
     }
 
     @MainActor
-    private func completeLogin(_ response: LoginSessionDTO) async throws {
+    private func completeLogin(
+        _ response: LoginSessionDTO,
+        isDeveloper: Bool = false
+    ) async throws {
         APIClient.shared.saveToken(response.token)
         let profile = try await APIClient.shared.fetchMe()
         appState.currentTenantKey = profile.tenantKey
@@ -401,7 +412,7 @@ public struct LoginView: View {
             tenantKey: profile.tenantKey,
             userId: profile.userId
         )
-        appState.isDevMode = false
+        appState.isDevMode = isDeveloper
         isLoading = false
         #if os(iOS)
         UINotificationFeedbackGenerator().notificationOccurred(.success)

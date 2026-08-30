@@ -2781,6 +2781,26 @@ public final class APIClient: ObservableObject {
         )
     }
 
+    /// POST /api/v1/dev-login：服务端显式开启时，开发者账号免短信登录。
+    public func developerLogin(phone: String, verificationCode: String) async throws -> LoginSessionDTO {
+        struct Body: Encodable {
+            let phone: String
+            let verificationCode: String
+
+            enum CodingKeys: String, CodingKey {
+                case phone
+                case verificationCode = "verification_code"
+            }
+        }
+        return try await request(
+            LoginSessionDTO.self,
+            path: "dev-login",
+            method: "POST",
+            body: Body(phone: phone, verificationCode: verificationCode),
+            reauthOn401: false
+        )
+    }
+
     public func startOAuth(provider: String) async throws -> OAuthStartDTO {
         try await request(
             OAuthStartDTO.self,
