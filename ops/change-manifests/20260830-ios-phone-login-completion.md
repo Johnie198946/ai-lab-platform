@@ -24,19 +24,20 @@
 
 ## 交付状态
 
-- status: COMMITTED
-- commit_sha: `fb43b308218517f4e2151b44145b98e8a4273744`（代码修复 commit；本 manifest 随后单独提交）。
-- GitHub remote/ref/SHA: 未授权/未执行 push，暂无远端 SHA。
+- status: DEPLOYED
+- commit_sha: `4e2b85c964a5fd8679e4e970106102f0090c456c`（manifest commit，包含代码修复 commit `fb43b308218517f4e2151b44145b98e8a4273744`）。
+- GitHub remote/ref/SHA: `origin/refs/heads/codex/fix-ios-phone-login-20260830` → `4e2b85c964a5fd8679e4e970106102f0090c456c`，已用 `git ls-remote` 核对；部署服务器实际拉取该分支。
 
 ## 部署
 
-- server_before: 不适用，未部署。
-- server_after: 不适用，未部署。
-- health_check: 不适用，未部署。
-- functional_check: 未执行真机/模拟器登录；需用开发账号请求验证码后验证完整登录链路。
-- rollback_point: `81bf225f7523df00261ed143280a0e062a5ce996`（本任务 worktree 基线）。
+- server_before: `http://120.24.248.58:8000/health` → HTTP 200, `{"status":"ok","version":"0.8.0"}`；容器重建前全部 running。
+- server_after: 服务器 `/opt/ai-lab-platform` 已拉取 `codex/fix-ios-phone-login-20260830` 并完成 Docker 镜像重建；API/前端/worker/postgres/redis 容器均 running。
+- health_check: 重建后 `http://120.24.248.58:8000/health` → `{"status":"ok","version":"0.8.0"}`。
+- functional_check: OpenAPI 确认 phone send/login 两路由存在；`POST /api/v1/auth/phone/login` 使用非法手机号返回 HTTP 422 `请输入有效的中国大陆手机号`。未提交真实手机号/验证码，未完成真实登录验证。
+- rollback_point: `/opt/ai-lab-platform.rollback-0.8.0-20260830.tgz`（服务器部署前生成，排除 `.env` 与 `data`）。
 
 ## 风险与回滚
 
-- 当前只修复客户端调用契约；短信服务本身、开发账号状态和服务器 Authen 配置仍需在可用环境验证。
+- 当前只修复客户端调用契约；短信服务本身、开发账号状态和服务器 Authen 配置仍需用真实验证码验证。
+- iOS 重新打包/安装未完成：CoreSimulator/CoreDevice 服务不可用；`xcodebuild` 在 asset catalog 阶段失败，`AIPlatformApp.app` 目录不完整，未安装到设备。`xcrun devicectl list devices` 超时，当前无可用连接设备。
 - 回滚方式：丢弃本 worktree 的两个代码文件改动，恢复到上述基线；未执行破坏性操作。
