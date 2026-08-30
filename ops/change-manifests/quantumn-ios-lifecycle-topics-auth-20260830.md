@@ -5,7 +5,7 @@ tags:
   - quantumn
   - ios
   - verification
-status: READY_TO_PUSH
+status: VERIFIED
 ---
 
 # Quantumn iOS 生命周期、话题与认证回执
@@ -28,25 +28,31 @@ status: READY_TO_PUSH
 
 ## 证据
 
-- baseline/local HEAD：`6fc4e43b1a3cfa28ad57787e9f2f9337bec4737a`（本任务改动仍在工作区，未提交）
-- GitHub `main`：`6fc4e43b1a3cfa28ad57787e9f2f9337bec4737a`
+- baseline HEAD：`6fc4e43b1a3cfa28ad57787e9f2f9337bec4737a`
+- implementation commit：`acc68281e200ba1d442d05d7b5daf7c637e002ef`
+- remote implementation SHA：部署前以 `git ls-remote` 核验为 `acc68281e200ba1d442d05d7b5daf7c637e002ef`
+- GitHub `main` 后续被并行 QWS 回执推进到 `50c3799f95dbf5a593f4ffa78c164a824e9f12e0`；implementation commit 仍是其祖先。
 - Xcode：`AIPlatformAppTests` 36 tests，0 failures，`TEST SUCCEEDED`
 - Python：`tests/test_chat_status.py tests/test_chat_stream_api.py` 71 passed
 - built product：`UIBackgroundModes=[audio]`，`LSApplicationQueriesSchemes=[alipays]`
 - 生产日志：原 Run 断连后 Bridge 保持后台运行；客户端连续 regenerate 创建了三个 Run，最终 detached watchdog 在 720 秒后中止最后一个 Run。
 
-> [!warning] 支付宝生产 TLS 待部署
-> 主机已有 SAN 包含 `120.24.248.58` 的 Let’s Encrypt 证书，但当前容器仍提供旧 self-signed 证书。此次交付增加正式证书挂载；部署时还必须设置主机证书路径、启用续期 timer，并从公网验证证书链。
+> [!success] 支付宝生产 TLS 已解除阻塞
+> 前端容器已只读挂载主机 Let’s Encrypt 证书。公网直连验证 `verify=0`、HTTP 200，SAN 包含 `120.24.248.58`；OAuth start 返回支付宝 `auth_user` 授权地址和同一 HTTPS callback。`ai-lab-ip-cert-renew.timer` 为 active，最近执行成功；续期后会重建前端容器以重新解析证书挂载。
 
 ## 尚需真机验收
 
 - 锁屏、切 App、蓝牙/扬声器路由与系统音频中断恢复。
-- 安装支付宝客户端后的真实唤端与回调（需先解除生产 HTTPS 阻塞）。
+- 安装支付宝客户端后的真实唤端、用户授权及一次性 ticket 兑换。
 - 长任务断网、切 Tab、杀 App 后返回的同一 Run 续接体验。
 
 ## 发布状态
 
 - 本地代码：已实现并通过门禁。
-- Git commit / push：未执行。
-- 服务器部署：未执行。
+- Git commit / push：`acc68281e200ba1d442d05d7b5daf7c637e002ef` 已推送并核验。
+- server_before：`/opt/releases/ai-lab-platform-6fc4e43b1a3c.8qZ8s8`
+- server_after：`/opt/releases/ai-lab-platform-acc68281e200.ijYWRu`
+- deployed SHA：`acc68281e200ba1d442d05d7b5daf7c637e002ef`
+- health：API `ready 0.8.0`；Hermes Bridge `ok v6.0`。
+- rollback point：`/opt/releases/ai-lab-platform-6fc4e43b1a3c.8qZ8s8`
 - TestFlight / App Store：未执行。
