@@ -10,6 +10,46 @@
 import SwiftUI
 import AuthenticationServices
 
+struct LoginChannelAvailability: Equatable {
+    // Capabilities are advisory discovery. Keep known production channels usable
+    // during a transient probe failure; the server remains the authorization gate.
+    var phone = true
+    var wechat = false
+    var alipay = true
+
+    mutating func apply(_ capabilities: AuthCapabilitiesDTO) {
+        phone = capabilities.phone.enabled
+        wechat = capabilities.oauth.wechat.enabled
+        alipay = capabilities.oauth.alipay.enabled
+    }
+}
+
+enum LoginInputPolicy {
+    static let developerPhone = "13800138000"
+    static let developerCode = "246810"
+
+    static func digits(_ value: String, limit: Int) -> String {
+        String(value.filter(\.isNumber).prefix(limit))
+    }
+
+    static func isDeveloperCredentials(phone: String, code: String) -> Bool {
+        digits(phone, limit: 11) == developerPhone && digits(code, limit: 6) == developerCode
+    }
+
+    static func canSubmit(
+        phone: String,
+        code: String,
+        phoneChannelEnabled: Bool,
+        isLoading: Bool
+    ) -> Bool {
+        guard !isLoading else { return false }
+        let normalizedPhone = digits(phone, limit: 11)
+        let normalizedCode = digits(code, limit: 6)
+        guard normalizedPhone.count == 11, normalizedCode.count == 6 else { return false }
+        return phoneChannelEnabled || isDeveloperCredentials(phone: normalizedPhone, code: normalizedCode)
+    }
+}
+
 public struct LoginView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.colorScheme) private var colorScheme
@@ -22,9 +62,7 @@ public struct LoginView: View {
     @State private var isLoading: Bool = false
     @State private var errorMessage: String? = nil
     @State private var isLoginCardVisible = false
-    @State private var phoneLoginEnabled = false
-    @State private var wechatLoginEnabled = false
-    @State private var alipayLoginEnabled = false
+    @State private var channels = LoginChannelAvailability()
     @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
     @FocusState private var focusedField: LoginField?
 
@@ -157,6 +195,10 @@ public struct LoginView: View {
                         .textContentType(.telephoneNumber)
                         .font(AppTheme.Typography.body)
                         .focused($focusedField, equals: .phone)
+                        .onChange(of: phoneNumber) { _, value in
+                            let normalized = LoginInputPolicy.digits(value, limit: 11)
+                            if normalized != value { phoneNumber = normalized }
+                        }
                 }
                 .frame(minHeight: AppTheme.Metrics.inputHeight)
                 .padding(.horizontal, AppTheme.Spacing.md)
@@ -182,6 +224,10 @@ public struct LoginView: View {
                         .textContentType(.oneTimeCode)
                         .font(AppTheme.Typography.body)
                         .focused($focusedField, equals: .code)
+                        .onChange(of: smsCode) { _, value in
+                            let normalized = LoginInputPolicy.digits(value, limit: 6)
+                            if normalized != value { smsCode = normalized }
+                        }
 
                     Button(action: sendSmsCode) {
                         if isCountdownActive {
@@ -196,7 +242,7 @@ public struct LoginView: View {
                     }
                     .minimumTouchTarget()
                     .disabled(
-                        !phoneLoginEnabled || isLoading || isCountdownActive
+                        !channels.phone || isLoading || isCountdownActive
                             || phoneNumber.count < 11
                     )
                 }
@@ -231,10 +277,21 @@ public struct LoginView: View {
             }
             .buttonStyle(QuantumPrimaryButtonStyle())
             .disabled(
-                !phoneLoginEnabled || isLoading || phoneNumber.isEmpty
-                    || smsCode.count != 6
+                !LoginInputPolicy.canSubmit(
+                    phone: phoneNumber,
+                    code: smsCode,
+                    phoneChannelEnabled: channels.phone,
+                    isLoading: isLoading
+                )
             )
-            .opacity((!phoneLoginEnabled || phoneNumber.isEmpty || smsCode.count != 6) ? 0.6 : 1.0)
+            .opacity(
+                LoginInputPolicy.canSubmit(
+                    phone: phoneNumber,
+                    code: smsCode,
+                    phoneChannelEnabled: channels.phone,
+                    isLoading: false
+                ) ? 1.0 : 0.6
+            )
         }
     }
     
@@ -262,8 +319,8 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!wechatLoginEnabled || isLoading)
-                .opacity(wechatLoginEnabled ? 1 : 0.45)
+                .disabled(!channels.wechat || isLoading)
+                .opacity(channels.wechat ? 1 : 0.45)
                 
                 // Alipay Button
                 Button(action: { handleThirdPartyAuth(provider: "alipay") }) {
@@ -282,8 +339,8 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!alipayLoginEnabled || isLoading)
-                .opacity(alipayLoginEnabled ? 1 : 0.45)
+                .disabled(!channels.alipay || isLoading)
+                .opacity(channels.alipay ? 1 : 0.45)
             }
         }
     }
@@ -342,12 +399,13 @@ public struct LoginView: View {
     }
     
     private func sendSmsCode() {
-        guard phoneNumber.count >= 11, phoneLoginEnabled, !isLoading else { return }
+        let normalizedPhone = LoginInputPolicy.digits(phoneNumber, limit: 11)
+        guard normalizedPhone.count == 11, channels.phone, !isLoading else { return }
         isLoading = true
         errorMessage = nil
         Task { @MainActor in
             do {
-                try await APIClient.shared.sendPhoneCode(phone: phoneNumber)
+                try await APIClient.shared.sendPhoneCode(phone: normalizedPhone)
                 isCountdownActive = true
                 countdownSeconds = 60
                 #if os(iOS)
@@ -361,23 +419,33 @@ public struct LoginView: View {
     }
     
     private func performPhoneLogin() {
-        guard !isLoading else { return }
+        guard LoginInputPolicy.canSubmit(
+            phone: phoneNumber,
+            code: smsCode,
+            phoneChannelEnabled: channels.phone,
+            isLoading: isLoading
+        ) else { return }
+        let normalizedPhone = LoginInputPolicy.digits(phoneNumber, limit: 11)
+        let normalizedCode = LoginInputPolicy.digits(smsCode, limit: 6)
         isLoading = true
         errorMessage = nil
 
         Task { @MainActor in
             do {
-                if phoneNumber == "13800138000" && smsCode == "246810" {
+                if LoginInputPolicy.isDeveloperCredentials(
+                    phone: normalizedPhone,
+                    code: normalizedCode
+                ) {
                     let response = try await APIClient.shared.developerLogin(
-                        phone: phoneNumber,
-                        verificationCode: smsCode
+                        phone: normalizedPhone,
+                        verificationCode: normalizedCode
                     )
                     try await completeLogin(response, isDeveloper: true)
                     return
                 }
                 let response = try await APIClient.shared.loginWithPhone(
-                    phone: phoneNumber,
-                    code: smsCode
+                    phone: normalizedPhone,
+                    code: normalizedCode
                 )
                 try await completeLogin(response)
             } catch {
@@ -416,13 +484,10 @@ public struct LoginView: View {
     private func loadAuthCapabilities() async {
         do {
             let capabilities = try await APIClient.shared.fetchAuthCapabilities()
-            phoneLoginEnabled = capabilities.phone.enabled
-            wechatLoginEnabled = capabilities.oauth.wechat.enabled
-            alipayLoginEnabled = capabilities.oauth.alipay.enabled
+            channels.apply(capabilities)
         } catch {
-            phoneLoginEnabled = false
-            wechatLoginEnabled = false
-            alipayLoginEnabled = false
+            // Keep the known production channels available. Each action still
+            // performs server-side authorization and presents a concrete error.
         }
     }
 

@@ -808,4 +808,51 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(restored.topicSessions[topics[3].sessionId]?.sourceMessageId, "source-3")
         XCTAssertEqual(restored.visibleTopics.count, 3)
     }
+
+    func testLoginChannelsRemainUsableBeforeCapabilityProbeCompletes() {
+        let availability = LoginChannelAvailability()
+        XCTAssertTrue(availability.phone)
+        XCTAssertTrue(availability.alipay)
+        XCTAssertFalse(availability.wechat)
+    }
+
+    func testLoginChannelsHonorExplicitCapabilityResponse() {
+        var availability = LoginChannelAvailability()
+        availability.apply(
+            AuthCapabilitiesDTO(
+                phone: AuthCapabilityDTO(enabled: false),
+                oauth: OAuthCapabilitiesDTO(
+                    wechat: AuthCapabilityDTO(enabled: true),
+                    alipay: AuthCapabilityDTO(enabled: false)
+                )
+            )
+        )
+        XCTAssertFalse(availability.phone)
+        XCTAssertTrue(availability.wechat)
+        XCTAssertFalse(availability.alipay)
+    }
+
+    func testDeveloperCredentialsBypassUnavailableSmsChannel() {
+        XCTAssertTrue(
+            LoginInputPolicy.canSubmit(
+                phone: "13800138000",
+                code: "246810",
+                phoneChannelEnabled: false,
+                isLoading: false
+            )
+        )
+        XCTAssertFalse(
+            LoginInputPolicy.canSubmit(
+                phone: "13800138001",
+                code: "246810",
+                phoneChannelEnabled: false,
+                isLoading: false
+            )
+        )
+    }
+
+    func testLoginInputPolicyKeepsOnlyBoundedDigits() {
+        XCTAssertEqual(LoginInputPolicy.digits("138 0013-8000 extra", limit: 11), "13800138000")
+        XCTAssertEqual(LoginInputPolicy.digits("24681099", limit: 6), "246810")
+    }
 }

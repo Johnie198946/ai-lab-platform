@@ -1341,7 +1341,7 @@ public final class APIClient: ObservableObject {
     private let streamSession: URLSession
     private let decoder: JSONDecoder
 
-    public init(baseURL: URL = URL(string: "http://120.24.248.58")!) {
+    public init(baseURL: URL = URL(string: "https://120.24.248.58")!) {
         self.baseURL = baseURL
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
