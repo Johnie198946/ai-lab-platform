@@ -34,12 +34,12 @@
 
 ## Delivery
 
-- status: `TESTED` (will be updated after commit, push, deployment, and functional verification).
-- commit_sha: pending.
-- remote_sha: pending.
+- status: `VERIFIED`.
+- implementation_commit: `6e771e6e18d67cc09b888e793de334fb73febbd6`.
+- remote_sha: `6e771e6e18d67cc09b888e793de334fb73febbd6`, verified with `git ls-remote origin refs/heads/main` before the evidence-only follow-up commit.
 - server_before: release `/opt/releases/ai-lab-platform-e4cb2f0bf9c8.WQvSdo`, SHA `e4cb2f0bf9c868c7243f49718b0f156ea13ecb89`.
-- server_after: pending.
-- health_check: pre-deploy API ready `0.8.0`; Hermes Bridge `v6.0` healthy.
-- functional_check: local UI passed; production developer login pending deployment.
-- rollback_point: `/opt/releases/ai-lab-platform-e4cb2f0bf9c8.WQvSdo` (SHA `e4cb2f0bf9c868c7243f49718b0f156ea13ecb89`).
+- server_after: release `/opt/releases/ai-lab-platform-6e771e6e18d6.MGfXN4`, `.deployed-sha=6e771e6e18d67cc09b888e793de334fb73febbd6`.
+- health_check: API `ready/version 0.8.0`; Hermes Bridge `ok/version v6.0`; runtime contract audit passed; all eight Compose services running, with API/Postgres/Redis/Taskboard healthy.
+- functional_check: production `/api/v1/dev-login` returned HTTP 200 with `dev-user` and tenant `xFusion_MO_Tenant`; the reinstalled simulator app logged in with the developer credentials and displayed `开发模式·免鉴权`. Screenshot: `/private/tmp/ai-lab-correct-latest-ios-dev-login-success.png`.
+- rollback_point: clean predecessor `/opt/releases/ai-lab-platform-4556f3056b40.QrGAYu` (SHA `4556f3056b4092a561fb4549f1d5cb05e6034ac4`). The immediately preceding `e4cb2f0...` directory was modified by the legacy updater before the immutable redeploy and is therefore not treated as the clean rollback artifact.
 - remaining_risks: fixed developer credentials are enabled only because the production shared environment already has `DEV_LOGIN_ENABLED=true`; access must remain limited to the intended internal environment.
