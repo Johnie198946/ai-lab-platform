@@ -940,7 +940,7 @@ async def _project_for_access(
     return project
 
 
-INTERACTIVE_HUMAN_AMR = {"pwd", "mfa", "passkey", "sms", "oidc", "oauth", "test_interactive"}
+INTERACTIVE_HUMAN_AMR = {"pwd", "otp", "mfa", "passkey", "sms", "oidc", "oauth", "test_interactive"}
 
 
 def _require_interactive_human(payload: dict[str, Any]) -> None:
