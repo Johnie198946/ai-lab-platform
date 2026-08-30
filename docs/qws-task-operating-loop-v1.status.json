@@ -211,12 +211,24 @@
       ]
     },
     "work_1a1c3c031b": {
-      "status": "TODO",
-      "evidence": []
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/models/workspace.py",
+        "backend/api/quantum_workspace.py",
+        "backend/services/qws_project_knowledge.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_quantum_workspace_api.py"
+      ]
     },
     "work_cb6ee5f6bb": {
-      "status": "TODO",
-      "evidence": []
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/models/workspace.py",
+        "backend/api/quantum_workspace.py",
+        "backend/services/qws_project_knowledge.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_quantum_workspace_api.py"
+      ]
     },
     "work_440c2de814": {
       "status": "IMPLEMENTED_AWAITING_REAL_DATA",

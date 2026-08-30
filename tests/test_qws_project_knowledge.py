@@ -4,6 +4,7 @@ import pytest
 
 from backend.services.qws_project_knowledge import (
     build_document_graph,
+    build_final_project_distillation,
     decide_distillation_candidate,
     distill_project_events,
     merge_distillation_candidates,
@@ -102,3 +103,42 @@ def test_distiller_cursor_does_not_skip_candidates_after_page_budget():
     assert first["next_cursor"] == 1
     second = distill_project_events(events, cursor=first["next_cursor"], max_candidates=2)
     assert [item["event_sequence"] for item in second["candidates"]] == [2, 3]
+
+
+def test_final_project_distillation_requires_terminal_tasks_and_accepted_manifests():
+    process = {"tasks": [
+        {"id": "task-1", "title": "完成交付", "status": "DONE", "task_revision": 3},
+        {"id": "task-2", "title": "合并重复项", "status": "MERGED"},
+    ]}
+    with pytest.raises(ValueError, match="missing_latest_accepted"):
+        build_final_project_distillation(
+            process, project_name="Alpha", accepted_manifests=[], actor_id="user:owner",
+        )
+    with pytest.raises(ValueError, match="task_revision_stale"):
+        build_final_project_distillation(
+            process, project_name="Alpha", accepted_manifests=[{
+                "id": "manifest-stale", "task_id": "task-1", "revision": 1,
+                "task_revision": 2, "status": "ACCEPTED",
+            }], actor_id="user:owner",
+        )
+    with pytest.raises(ValueError, match="missing_latest_accepted"):
+        build_final_project_distillation(
+            process, project_name="Alpha", accepted_manifests=[
+                {"id": "manifest-ok", "task_id": "task-1", "revision": 1,
+                 "task_revision": 3, "status": "ACCEPTED"},
+                {"id": "manifest-rework", "task_id": "task-1", "revision": 2,
+                 "task_revision": 3, "status": "REWORK"},
+            ], actor_id="user:owner",
+        )
+    final = build_final_project_distillation(
+        process, project_name="Alpha",
+        accepted_manifests=[{
+            "id": "manifest-1", "task_id": "task-1", "revision": 2,
+            "task_revision": 3, "status": "ACCEPTED",
+        }],
+        actor_id="user:owner",
+    )
+    assert final["closure_manifest"]["status"] == "ACCEPTED"
+    assert final["candidate"]["status"] == "ADMITTED"
+    assert final["candidate"]["source_refs"] == ["manifest:manifest-1@2"]
+    assert "# Final Project Distillation · Alpha" in final["payload"]["summary"]

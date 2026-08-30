@@ -16,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 TEST_DB = Path(gettempdir()) / f"quantum_workspace_test_{os.getpid()}.db"
@@ -41,7 +41,10 @@ from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
     WorkspaceBusinessIntake,
     WorkspaceCardSessionRegistry,
+    WorkspaceDeliveryManifest,
+    WorkspaceKnowledgeCandidate,
     WorkspaceProcessDraft,
+    WorkspaceProject,
     WorkspaceTaskConversation,
     WorkspaceTaskMessage,
 )
@@ -634,6 +637,32 @@ def test_project_documents_assets_and_distillation_are_source_grounded(_reset_da
     assert candidate["status"] == "CANDIDATE"
     assert candidate["source_refs"] == [source_ref]
 
+    async def _simulate_pre_governance_candidate():
+        async with SessionLocal() as db:
+            await db.execute(delete(WorkspaceKnowledgeCandidate).where(
+                WorkspaceKnowledgeCandidate.id == candidate["id"]
+            ))
+            project = await db.scalar(select(WorkspaceProject).where(WorkspaceProject.id == project_id))
+            assert project is not None
+            snapshot = dict(project.process_snapshot or {})
+            snapshot["distillation_candidates"] = [
+                {
+                    **item,
+                    **({"title": "旧候选标题", "summary": "旧候选摘要"}
+                       if item.get("id") == candidate["id"] else {}),
+                }
+                for item in snapshot.get("distillation_candidates") or []
+            ]
+            project.process_snapshot = snapshot
+            await db.commit()
+
+    asyncio.run(_simulate_pre_governance_candidate())
+    legacy_assets = client.get(f"/api/v1/projects/{project_id}/assets").json()
+    legacy_view = next(
+        item for item in legacy_assets["distillation_candidates"] if item["id"] == candidate["id"]
+    )
+    assert legacy_view["title"] == "旧候选标题"
+
     admitted = client.post(
         f"/api/v1/projects/{project_id}/distillation-candidates/{candidate['id']}/decision",
         json={"expected_revision": revision, "decision": "ADMIT", "note": "来源已核验"},
@@ -641,6 +670,54 @@ def test_project_documents_assets_and_distillation_are_source_grounded(_reset_da
     assert admitted.status_code == 200
     assert admitted.json()["candidate"]["status"] == "ADMITTED"
     revision = admitted.json()["process_revision"]
+
+    restricted = client.post(
+        f"/api/v1/projects/{project_id}/distillation-candidates/{candidate['id']}/govern",
+        json={
+            "expected_revision": revision, "action": "PERMISSION_CHANGE",
+            "reason": "来源权限已收紧", "source_refs": [],
+        },
+    )
+    assert restricted.status_code == 200
+    assert restricted.json()["candidate"]["status"] == "RESTRICTED"
+    revision = restricted.json()["process_revision"]
+    restricted_assets = client.get(f"/api/v1/projects/{project_id}/assets").json()
+    restricted_view = next(
+        item for item in restricted_assets["distillation_candidates"]
+        if item["id"] == candidate["id"]
+    )
+    assert restricted_view["title"] is None
+    assert restricted_view["summary"] is None
+
+    corrected = client.post(
+        f"/api/v1/projects/{project_id}/distillation-candidates/{candidate['id']}/govern",
+        json={
+            "expected_revision": revision, "action": "CORRECT", "reason": "原摘要需纠正",
+            "replacement": {"title": "经核验的项目事实", "summary": "修正后的摘要"},
+            "source_refs": [source_ref],
+        },
+    )
+    assert corrected.status_code == 200
+    replacement = corrected.json()["replacement"]
+    assert corrected.json()["candidate"]["status"] == "SUPERSEDED"
+    revision = corrected.json()["process_revision"]
+    deleted = client.post(
+        f"/api/v1/projects/{project_id}/distillation-candidates/{replacement['id']}/govern",
+        json={
+            "expected_revision": revision, "action": "COMPLIANCE_DELETE",
+            "reason": "合规删除请求", "source_refs": [],
+        },
+    )
+    assert deleted.status_code == 200
+    assert deleted.json()["candidate"]["status"] == "DELETED"
+    assert deleted.json()["governance_receipt"]["snapshot_payload_present"] is False
+    revision = deleted.json()["process_revision"]
+    governed_assets = client.get(f"/api/v1/projects/{project_id}/assets").json()
+    deleted_view = next(
+        item for item in governed_assets["distillation_candidates"] if item["id"] == replacement["id"]
+    )
+    assert deleted_view["title"] is None
+    assert deleted_view["summary"] is None
 
     rule = {
         "version": 1,
@@ -827,7 +904,79 @@ def test_project_documents_assets_and_distillation_are_source_grounded(_reset_da
     assets = client.get(f"/api/v1/projects/{project_id}/assets")
     assert assets.status_code == 200
     assert assets.json()["truth_contract"]["documents"] == "readable_projection_only"
-    assert assets.json()["distillation_candidates"][0]["status"] == "ADMITTED"
+    statuses = {item["status"] for item in assets.json()["distillation_candidates"]}
+    assert {"SUPERSEDED", "DELETED"}.issubset(statuses)
+
+
+def test_project_close_generates_final_distillation_and_freezes_regular_writes(_reset_database):
+    client = _reset_database
+    project_id = _create_project(client, "final-distillation")
+    bootstrap = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap").json()
+    revision = bootstrap["process"]["process_revision"]
+    generated = instantiate_project_blueprint({
+        "project_goal": "完成项目关闭验收",
+        "stages": [{
+            "key": "delivery", "name": "交付", "goal": "完成交付",
+            "acceptance_criteria": ["人工验收通过"],
+        }],
+        "tasks": [{
+            "key": "close-task", "stage_key": "delivery", "title": "完成交付",
+            "description": "提交最终交付", "role": "交付负责人", "status": "done",
+            "acceptance_criteria": ["交付完成"], "deliverables": ["交付包"],
+        }],
+    })
+    generated["project_id"] = project_id
+    generated["process_revision"] = revision
+    close_task_id = generated["tasks"][0]["id"]
+    generated["tasks"][0]["task_revision"] = 1
+
+    async def _prepare_close_state():
+        async with SessionLocal() as db:
+            project = await db.scalar(select(WorkspaceProject).where(WorkspaceProject.id == project_id))
+            assert project is not None
+            project.process_snapshot = generated
+            db.add(WorkspaceDeliveryManifest(
+                id="manifest-close-1", tenant_key="tenant-a", project_id=project_id,
+                task_id=close_task_id, revision=1, task_revision=1, status="ACCEPTED",
+                content={"summary": "人工已验收", "acceptance_checklist": [
+                    {"criterion": "交付完成", "passed": True}
+                ], "artifact_version_refs": []},
+                content_hash="manifest-hash-close-1", created_by="user-a",
+            ))
+            await db.commit()
+
+    asyncio.run(_prepare_close_state())
+    closed = client.post(
+        f"/api/v1/projects/{project_id}/close",
+        json={"expected_revision": revision, "note": "人工确认项目完成"},
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["status"] == "closed"
+    assert closed.json()["final_distillation"]["status"] == "ADMITTED"
+    closed_revision = closed.json()["process_revision"]
+    assets = client.get(f"/api/v1/projects/{project_id}/assets").json()
+    final_candidate = next(
+        item for item in assets["distillation_candidates"]
+        if item["category"] == "FINAL_PROJECT_DISTILLATION"
+    )
+    assert final_candidate["title"].startswith("Final Project Distillation")
+    blocked = client.put(
+        f"/api/v1/projects/{project_id}/documents/after-close",
+        json={
+            "expected_revision": closed_revision, "title": "不应写入", "content": "# blocked",
+            "status": "DRAFT",
+        },
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"] == "project_closed_read_only"
+    resource_plan = client.get(f"/api/v1/projects/{project_id}/resource-plan")
+    assert resource_plan.status_code == 200
+    owner_write = client.put(
+        f"/api/v1/projects/{project_id}/resource-plan",
+        json={"expected_revision": closed_revision, "plan": resource_plan.json()["plan"]},
+    )
+    assert owner_write.status_code == 409
+    assert owner_write.json()["detail"] == "project_closed_read_only"
 
 
 def test_business_intake_draft_requires_review_and_applies_atomically(_reset_database):

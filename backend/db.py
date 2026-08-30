@@ -348,6 +348,7 @@ def _migrate_workspace_delivery_contract(connection) -> None:
         "workspace_artifacts",
         "workspace_artifact_versions",
         "workspace_delivery_manifests",
+        "workspace_knowledge_candidates",
     }
     missing = required - tables
     if missing:

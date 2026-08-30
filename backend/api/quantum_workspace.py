@@ -37,6 +37,7 @@ from backend.models.workspace import (
     WorkspaceDeliveryManifest,
     WorkspaceGate,
     WorkspaceGateApprover,
+    WorkspaceKnowledgeCandidate,
     WorkspaceProcessDraft,
     WorkspaceProcessRevision,
     WorkspaceProject,
@@ -97,6 +98,7 @@ from backend.services.task_operating_loop import (
 )
 from backend.services.qws_project_knowledge import (
     build_document_graph,
+    build_final_project_distillation,
     decide_distillation_candidate,
     distill_project_events,
     merge_distillation_candidates,
@@ -189,6 +191,19 @@ class DecideDistillationCandidateRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     decision: Literal["ADMIT", "REJECT"]
     note: str = Field(default="", max_length=4000)
+
+
+class GovernDistillationCandidateRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    action: Literal["EXPIRE", "CORRECT", "PERMISSION_CHANGE", "COMPLIANCE_DELETE"]
+    reason: str = Field(min_length=1, max_length=4000)
+    replacement: dict[str, Any] | None = None
+    source_refs: list[str] = Field(default_factory=list, max_length=50)
+
+
+class CloseProjectRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    note: str = Field(min_length=1, max_length=4000)
 
 
 class SaveAutomationRuleRequest(BaseModel):
@@ -871,6 +886,8 @@ async def _project_for_access(
     tenant_key: str,
     user_id: str,
     required_scope: Literal["project:read", "project:write"],
+    *,
+    allow_closed_write: bool = False,
 ) -> WorkspaceProject:
     project = await db.scalar(
         select(WorkspaceProject).where(
@@ -881,6 +898,12 @@ async def _project_for_access(
     )
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
+    if (
+        project.status == "closed"
+        and required_scope == "project:write"
+        and not allow_closed_write
+    ):
+        raise HTTPException(status_code=409, detail="project_closed_read_only")
     if project.owner_user_id == user_id:
         return project
     member = await db.scalar(
@@ -2010,9 +2033,14 @@ async def _cas_project_process(
     expected_revision: int,
     process: dict[str, Any],
     commit: bool = True,
+    allow_closed_write: bool = False,
+    expected_project_status: str | None = None,
 ) -> int:
+    if project.status == "closed" and not allow_closed_write:
+        raise HTTPException(status_code=409, detail="project_closed_read_only")
     project_id = project.id
     tenant_key = project.tenant_key
+    status_at_cas = expected_project_status or project.status
     next_revision = expected_revision + 1
     result = await db.execute(
         update(WorkspaceProject)
@@ -2020,6 +2048,7 @@ async def _cas_project_process(
             WorkspaceProject.id == project_id,
             WorkspaceProject.tenant_key == tenant_key,
             WorkspaceProject.process_revision == expected_revision,
+            WorkspaceProject.status == status_at_cas,
         )
         .values(
             process_snapshot=process,
@@ -2576,7 +2605,7 @@ async def _validate_project_source_refs(
         kind = parsed["kind"]
         identity = parsed["id"]
         revision = parsed["revision"]
-        if kind in {"task", "intake", "artifact", "decision"} and revision is None:
+        if kind in {"task", "intake", "artifact", "decision", "manifest"} and revision is None:
             raise HTTPException(status_code=422, detail={
                 "error": "mutable_project_source_requires_revision", "source_ref": raw_ref,
             })
@@ -2622,6 +2651,15 @@ async def _validate_project_source_refs(
                     for task in tasks.values()
                     for review in task.get("challenge_reviews") or []
                 )
+        elif kind == "manifest":
+            query = select(WorkspaceDeliveryManifest.id).where(
+                WorkspaceDeliveryManifest.id == identity,
+                WorkspaceDeliveryManifest.project_id == project.id,
+                WorkspaceDeliveryManifest.tenant_key == project.tenant_key,
+            )
+            if revision is not None:
+                query = query.where(WorkspaceDeliveryManifest.revision == revision)
+            exists = await db.scalar(query) is not None
         elif kind == "audit":
             if revision is not None:
                 raise HTTPException(
@@ -5965,7 +6003,30 @@ async def list_project_assets(project_id: str, payload=Depends(require_auth)) ->
             WorkspaceApprovalDecision.project_id == project.id,
             WorkspaceApprovalDecision.tenant_key == tenant_key,
         ).order_by(WorkspaceApprovalDecision.created_at))).all())
+        knowledge_records = list((await db.scalars(select(WorkspaceKnowledgeCandidate).where(
+            WorkspaceKnowledgeCandidate.project_id == project.id,
+            WorkspaceKnowledgeCandidate.tenant_key == tenant_key,
+        ))).all())
+        knowledge_by_id = {item.id: item for item in knowledge_records}
         process = project.process_snapshot or {}
+        candidate_views = []
+        for metadata in process.get("distillation_candidates") or []:
+            record = knowledge_by_id.get(str(metadata.get("id")))
+            visible_payload = (
+                record.payload
+                if record and record.status not in {"RESTRICTED", "DELETED"}
+                else ({
+                    "title": metadata.get("title"),
+                    "summary": metadata.get("summary"),
+                } if record is None else None)
+            )
+            candidate_views.append({
+                **metadata,
+                "title": (visible_payload or {}).get("title"),
+                "summary": (visible_payload or {}).get("summary"),
+                "governance_status": record.status if record else metadata.get("status"),
+                "governance_receipt": record.governance_receipt if record else {},
+            })
         return {
             "project_id": project.id,
             "process_revision": project.process_revision,
@@ -5995,7 +6056,7 @@ async def list_project_assets(project_id: str, payload=Depends(require_auth)) ->
                 "source_ref": f"decision:{item.id}@{item.process_revision}",
             } for item in decisions],
             "documents": process.get("documents") or [],
-            "distillation_candidates": process.get("distillation_candidates") or [],
+            "distillation_candidates": candidate_views,
         }
 
 
@@ -6031,6 +6092,28 @@ async def run_project_distillation(
         next_process = merge_distillation_candidates(
             process, candidates=result["candidates"], next_cursor=result["next_cursor"]
         )
+        existing_hashes = set((await db.scalars(select(WorkspaceKnowledgeCandidate.candidate_hash).where(
+            WorkspaceKnowledgeCandidate.project_id == project.id,
+            WorkspaceKnowledgeCandidate.tenant_key == tenant_key,
+        ))).all())
+        for candidate in result["candidates"]:
+            if candidate["candidate_hash"] in existing_hashes:
+                continue
+            payload_value = {
+                "title": candidate.get("title") or "",
+                "summary": candidate.get("summary") or "",
+            }
+            payload_canonical = json.dumps(
+                payload_value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            db.add(WorkspaceKnowledgeCandidate(
+                id=candidate["id"], tenant_key=tenant_key, project_id=project.id,
+                candidate_hash=candidate["candidate_hash"], source_refs=candidate["source_refs"],
+                payload=payload_value,
+                payload_hash=hashlib.sha256(payload_canonical.encode()).hexdigest(),
+                status="CANDIDATE", revision=1, created_by=f"user:{user_id}",
+            ))
+            existing_hashes.add(candidate["candidate_hash"])
         revision = await _cas_project_process(
             db, project=project, expected_revision=body.expected_revision, process=next_process
         )
@@ -6058,10 +6141,45 @@ async def decide_project_distillation_candidate(
         except ValueError as exc:
             status_code = 404 if str(exc) == "distillation_candidate_not_found" else 409
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-        revision = await _cas_project_process(
-            db, project=project, expected_revision=body.expected_revision, process=process,
-            commit=False,
-        )
+        record = await db.scalar(select(WorkspaceKnowledgeCandidate).where(
+            WorkspaceKnowledgeCandidate.id == candidate_id,
+            WorkspaceKnowledgeCandidate.project_id == project.id,
+            WorkspaceKnowledgeCandidate.tenant_key == tenant_key,
+        ))
+        if record is None:
+            legacy_payload = {
+                "title": str(candidate.pop("title", "") or ""),
+                "summary": str(candidate.pop("summary", "") or ""),
+            }
+            if not any(legacy_payload.values()):
+                legacy_payload = None
+            for item in process.get("distillation_candidates") or []:
+                if item.get("id") == candidate_id:
+                    item.pop("title", None)
+                    item.pop("summary", None)
+            legacy_payload_hash = str(candidate.get("payload_hash") or hashlib.sha256(
+                json.dumps(legacy_payload or {}, ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest())
+            record = WorkspaceKnowledgeCandidate(
+                id=candidate_id, tenant_key=tenant_key, project_id=project.id,
+                candidate_hash=str(candidate.get("candidate_hash") or hashlib.sha256(
+                    candidate_id.encode()
+                ).hexdigest()),
+                source_refs=list(candidate.get("source_refs") or []), payload=legacy_payload,
+                payload_hash=legacy_payload_hash, status=candidate["status"], revision=1,
+                created_by="system:legacy-candidate-migration",
+                governance_receipt={"action": "LEGACY_CANDIDATE_MATERIALIZED"},
+            )
+            db.add(record)
+        record.status = candidate["status"]
+        record.revision += 1
+        record.governed_by = f"user:{user_id}"
+        record.governance_receipt = candidate["decision"]
+        with db.no_autoflush:
+            revision = await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process,
+                commit=False,
+            )
         db.add(WorkspaceAuditEvent(
             id=f"qwa_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
             actor_user_id=user_id, event_type="distillation_candidate_decided",
@@ -6070,6 +6188,226 @@ async def decide_project_distillation_candidate(
         ))
         await db.commit()
         return {"project_id": project.id, "process_revision": revision, "candidate": candidate}
+
+
+@router.post("/projects/{project_id}/distillation-candidates/{candidate_id}/govern")
+async def govern_project_distillation_candidate(
+    project_id: str, candidate_id: str, body: GovernDistillationCandidateRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        process = dict(project.process_snapshot or {})
+        candidates = [dict(item) for item in process.get("distillation_candidates") or []]
+        metadata = next((item for item in candidates if item.get("id") == candidate_id), None)
+        if metadata is None:
+            raise HTTPException(status_code=404, detail="distillation candidate not found")
+        record = await db.scalar(select(WorkspaceKnowledgeCandidate).where(
+            WorkspaceKnowledgeCandidate.id == candidate_id,
+            WorkspaceKnowledgeCandidate.project_id == project.id,
+            WorkspaceKnowledgeCandidate.tenant_key == tenant_key,
+        ))
+        if record is None:
+            legacy_payload = {
+                "title": str(metadata.pop("title", "") or ""),
+                "summary": str(metadata.pop("summary", "") or ""),
+            }
+            if not any(legacy_payload.values()):
+                legacy_payload = None
+            legacy_payload_hash = str(metadata.get("payload_hash") or hashlib.sha256(
+                json.dumps(legacy_payload or {}, ensure_ascii=False, sort_keys=True).encode()
+            ).hexdigest())
+            record = WorkspaceKnowledgeCandidate(
+                id=candidate_id, tenant_key=tenant_key, project_id=project.id,
+                candidate_hash=str(metadata.get("candidate_hash") or hashlib.sha256(
+                    candidate_id.encode()
+                ).hexdigest()),
+                source_refs=list(metadata.get("source_refs") or []),
+                payload=legacy_payload, payload_hash=legacy_payload_hash,
+                status=str(metadata.get("status") or "CANDIDATE"), revision=1,
+                created_by="system:legacy-candidate-migration",
+                governance_receipt={"action": "LEGACY_CANDIDATE_MATERIALIZED"},
+            )
+            db.add(record)
+        allowed_actions = {
+            "CANDIDATE": {"EXPIRE", "CORRECT", "PERMISSION_CHANGE", "COMPLIANCE_DELETE"},
+            "ADMITTED": {"EXPIRE", "CORRECT", "PERMISSION_CHANGE", "COMPLIANCE_DELETE"},
+            "RESTRICTED": {"EXPIRE", "CORRECT", "COMPLIANCE_DELETE"},
+            "EXPIRED": {"CORRECT", "COMPLIANCE_DELETE"},
+            "REJECTED": {"COMPLIANCE_DELETE"},
+            "SUPERSEDED": {"COMPLIANCE_DELETE"},
+            "DELETED": set(),
+        }
+        if body.action not in allowed_actions.get(record.status, set()):
+            raise HTTPException(
+                status_code=409, detail="knowledge_candidate_governance_transition_invalid"
+            )
+        now = datetime.now(timezone.utc).isoformat()
+        receipt: dict[str, Any] = {
+            "action": body.action, "reason": body.reason,
+            "actor_id": f"user:{user_id}", "governed_at": now,
+            "previous_payload_hash": record.payload_hash,
+        }
+        replacement_metadata = None
+        if body.action == "CORRECT":
+            if not body.replacement or not body.source_refs:
+                raise HTTPException(
+                    status_code=422, detail="correction_requires_replacement_and_source_refs"
+                )
+            await _validate_project_source_refs(
+                db, project=project, process=process, source_refs=body.source_refs
+            )
+            replacement_payload = {
+                "title": str(body.replacement.get("title") or "").strip()[:200],
+                "summary": str(body.replacement.get("summary") or "").strip()[:4000],
+            }
+            if not replacement_payload["title"]:
+                raise HTTPException(status_code=422, detail="correction_requires_title")
+            payload_canonical = json.dumps(
+                replacement_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            )
+            payload_hash = hashlib.sha256(payload_canonical.encode()).hexdigest()
+            candidate_hash = hashlib.sha256(json.dumps({
+                "supersedes": candidate_id, "payload_hash": payload_hash,
+                "source_refs": sorted(body.source_refs),
+            }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            replacement_id = f"knowledge-candidate:{candidate_hash[:24]}"
+            replacement_metadata = {
+                "id": replacement_id, "candidate_hash": candidate_hash,
+                "payload_hash": payload_hash, "source_refs": sorted(body.source_refs),
+                "status": "CANDIDATE", "category": metadata.get("category"),
+                "supersedes_id": candidate_id, "created_at": now,
+            }
+            db.add(WorkspaceKnowledgeCandidate(
+                id=replacement_id, tenant_key=tenant_key, project_id=project.id,
+                candidate_hash=candidate_hash, source_refs=sorted(body.source_refs),
+                payload=replacement_payload, payload_hash=payload_hash, status="CANDIDATE",
+                revision=1, supersedes_id=candidate_id, created_by=f"user:{user_id}",
+            ))
+            record.status = "SUPERSEDED"
+            metadata["status"] = "SUPERSEDED"
+            candidates.append(replacement_metadata)
+            receipt["replacement_id"] = replacement_id
+        elif body.action == "EXPIRE":
+            record.status = "EXPIRED"
+            metadata["status"] = "EXPIRED"
+        elif body.action == "PERMISSION_CHANGE":
+            record.status = "RESTRICTED"
+            metadata["status"] = "RESTRICTED"
+            receipt["permission_contract"] = "PROJECT_RBAC_REVALIDATION_REQUIRED"
+        else:
+            record.payload = None
+            record.status = "DELETED"
+            metadata["status"] = "DELETED"
+            receipt.update({
+                "deletion_scope": "PRIMARY_GOVERNED_PAYLOAD",
+                "snapshot_payload_present": False,
+                "backup_disposition": "BOUND_BY_INFRASTRUCTURE_RETENTION_POLICY",
+            })
+        record.revision += 1
+        record.governed_by = f"user:{user_id}"
+        record.governance_receipt = receipt
+        metadata["governance_receipt"] = receipt
+        process["distillation_candidates"] = candidates
+        with db.no_autoflush:
+            revision = await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process,
+                commit=False, allow_closed_write=True,
+            )
+        db.add(WorkspaceAuditEvent(
+            id=f"qwa_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
+            actor_user_id=user_id, event_type="knowledge_candidate_governed",
+            subject_id=candidate_id, payload=receipt,
+        ))
+        await db.commit()
+        return {
+            "project_id": project.id, "process_revision": revision,
+            "candidate": metadata, "replacement": replacement_metadata,
+            "governance_receipt": receipt,
+        }
+
+
+@router.post("/projects/{project_id}/close")
+async def close_project_with_final_distillation(
+    project_id: str, body: CloseProjectRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.status == "closed":
+            raise HTTPException(status_code=409, detail="project_already_closed")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        manifests = list((await db.scalars(select(WorkspaceDeliveryManifest).where(
+            WorkspaceDeliveryManifest.project_id == project.id,
+            WorkspaceDeliveryManifest.tenant_key == tenant_key,
+        ))).all())
+        process = dict(project.process_snapshot or {})
+        try:
+            final = build_final_project_distillation(
+                process, project_name=project.name,
+                accepted_manifests=[_manifest_out(item) for item in manifests],
+                actor_id=f"user:{user_id}",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        candidate = final["candidate"]
+        payload_value = final["payload"]
+        db.add(WorkspaceKnowledgeCandidate(
+            id=candidate["id"], tenant_key=tenant_key, project_id=project.id,
+            candidate_hash=candidate["candidate_hash"], source_refs=candidate["source_refs"],
+            payload=payload_value, payload_hash=candidate["payload_hash"], status="ADMITTED",
+            revision=1, governed_by=f"user:{user_id}", created_by=f"user:{user_id}",
+            governance_receipt={
+                "action": "PROJECT_CLOSE_ADMISSION", "note": body.note,
+                "actor_id": f"user:{user_id}",
+            },
+        ))
+        process["project_delivery_manifest"] = {**final["closure_manifest"], "note": body.note}
+        process["distillation_candidates"] = [
+            *(process.get("distillation_candidates") or []), candidate,
+        ]
+        process, document = upsert_project_document(
+            process, document_id="final-project-distillation",
+            title=payload_value["title"],
+            content=(
+                "# Final Project Distillation\n\n"
+                "> [!info] Governed projection\n"
+                f"> Payload is governed by `{candidate['id']}` and resolved through the project asset API.\n"
+            ),
+            status="PUBLISHED", source_refs=candidate["source_refs"],
+            tags=["project/final-distillation", "status/closed"], actor_id=f"user:{user_id}",
+        )
+        project.status = "closed"
+        with db.no_autoflush:
+            revision = await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process,
+                commit=False, allow_closed_write=True, expected_project_status="active",
+            )
+        db.add(WorkspaceAuditEvent(
+            id=f"qwa_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
+            actor_user_id=user_id, event_type="project_closed_with_final_distillation",
+            subject_id=project.id,
+            payload={
+                "project_manifest_id": final["closure_manifest"]["id"],
+                "candidate_id": candidate["id"], "payload_hash": candidate["payload_hash"],
+            },
+        ))
+        await db.commit()
+        return {
+            "project_id": project.id, "status": "closed", "process_revision": revision,
+            "project_delivery_manifest": process["project_delivery_manifest"],
+            "final_distillation": candidate, "document": document,
+        }
 
 
 @router.get("/projects/{project_id}/automations")

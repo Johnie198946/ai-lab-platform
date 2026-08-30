@@ -19,6 +19,7 @@ def test_workspace_delivery_migration_backfills_revisions_and_is_idempotent() ->
             "workspace_artifacts",
             "workspace_artifact_versions",
             "workspace_delivery_manifests",
+            "workspace_knowledge_candidates",
         ):
             connection.exec_driver_sql(f"CREATE TABLE {table} (id VARCHAR(48) PRIMARY KEY)")
         connection.execute(

@@ -391,20 +391,32 @@
         {
           "id": "work_1a1c3c031b",
           "title": "项目关闭时生成 Delivery Manifest 与 Final Project Distillation",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "项目关闭时生成 Delivery Manifest 与 Final Project Distillation具备可验证的主路径与证据"
           ],
-          "evidence": []
+          "evidence": [
+            "backend/models/workspace.py",
+            "backend/api/quantum_workspace.py",
+            "backend/services/qws_project_knowledge.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_quantum_workspace_api.py"
+          ]
         },
         {
           "id": "work_cb6ee5f6bb",
           "title": "候选知识过期、纠正、权限变更和合规删除治理",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "候选知识过期、纠正、权限变更和合规删除治理具备可验证的主路径与证据"
           ],
-          "evidence": []
+          "evidence": [
+            "backend/models/workspace.py",
+            "backend/api/quantum_workspace.py",
+            "backend/services/qws_project_knowledge.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_quantum_workspace_api.py"
+          ]
         },
         {
           "id": "work_440c2de814",

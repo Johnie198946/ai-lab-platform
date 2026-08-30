@@ -17,7 +17,7 @@ from typing import Any, Iterable
 _WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 _SOURCE_REF_RE = re.compile(
-    r"^(?P<kind>task|intake|artifact|decision|audit):(?P<id>[A-Za-z0-9._:-]+)(?:@(?P<revision>[1-9][0-9]*))?$"
+    r"^(?P<kind>task|intake|artifact|decision|manifest|audit):(?P<id>[A-Za-z0-9_.:-]+)(?:@(?P<revision>[1-9][0-9]*))?$"
 )
 
 
@@ -206,7 +206,15 @@ def merge_distillation_candidates(
     existing = [dict(item) for item in next_process.get("distillation_candidates") or []]
     by_hash = {str(item.get("candidate_hash")): item for item in existing}
     for candidate in candidates:
-        candidate_copy = deepcopy(candidate)
+        candidate_copy = {
+            key: deepcopy(value)
+            for key, value in candidate.items()
+            if key not in {"title", "summary"}
+        }
+        candidate_copy["payload_hash"] = canonical_hash({
+            "title": candidate.get("title") or "",
+            "summary": candidate.get("summary") or "",
+        })
         by_hash.setdefault(str(candidate_copy.get("candidate_hash")), candidate_copy)
     next_process["distillation_candidates"] = sorted(
         by_hash.values(), key=lambda item: (int(item.get("event_sequence") or 0), str(item.get("id") or ""))
@@ -239,3 +247,74 @@ def decide_distillation_candidate(
     }
     next_process["distillation_candidates"] = candidates
     return next_process, candidate
+
+
+def build_final_project_distillation(
+    process: dict[str, Any], *, project_name: str,
+    accepted_manifests: Iterable[dict[str, Any]], actor_id: str,
+) -> dict[str, Any]:
+    """Build deterministic project-close manifest and admitted final distillation."""
+    tasks = [dict(item) for item in process.get("tasks") or []]
+    if not tasks:
+        raise ValueError("project_close_requires_tasks")
+    non_terminal = [item["id"] for item in tasks if item.get("status") not in {"DONE", "MERGED"}]
+    if non_terminal:
+        raise ValueError("project_close_has_non_terminal_tasks")
+    task_ids = {str(item["id"]) for item in tasks}
+    latest_by_task: dict[str, dict[str, Any]] = {}
+    for raw_item in accepted_manifests:
+        item = dict(raw_item)
+        task_id = str(item.get("task_id") or "")
+        if task_id not in task_ids:
+            continue
+        if int(item.get("revision") or 0) > int(latest_by_task.get(task_id, {}).get("revision") or 0):
+            latest_by_task[task_id] = item
+    for task in tasks:
+        if task.get("status") != "DONE":
+            continue
+        latest = latest_by_task.get(str(task["id"]))
+        if latest is None or latest.get("status") != "ACCEPTED":
+            raise ValueError("project_close_missing_latest_accepted_delivery_manifest")
+        task_revision = int(task.get("task_revision") or 0)
+        if task_revision < 1 or int(latest.get("task_revision") or 0) != task_revision:
+            raise ValueError("project_close_delivery_manifest_task_revision_stale")
+    latest_by_task = {
+        task_id: item for task_id, item in latest_by_task.items()
+        if item.get("status") == "ACCEPTED"
+    }
+    source_refs = sorted(
+        f"manifest:{item['id']}@{item['revision']}" for item in latest_by_task.values()
+    )
+    if not source_refs:
+        raise ValueError("project_close_requires_accepted_manifest")
+    closed_at = datetime.now(timezone.utc).isoformat()
+    task_lines = [
+        f"- [{item.get('status')}] {item.get('title') or item['id']} (`{item['id']}`)"
+        for item in tasks
+    ]
+    content = "\n".join([
+        f"# Final Project Distillation · {project_name}", "",
+        "> [!success] Project closed", "> All DONE tasks have an accepted Delivery Manifest.",
+        "", "## Delivery scope", "", *task_lines, "", "## Provenance", "",
+        *[f"- `{ref}`" for ref in source_refs], "",
+    ])
+    payload = {"title": f"Final Project Distillation · {project_name}", "summary": content}
+    payload_hash = canonical_hash(payload)
+    candidate_hash = canonical_hash({"type": "FINAL_PROJECT_DISTILLATION", "source_refs": source_refs})
+    candidate_id = f"knowledge-candidate:{candidate_hash[:24]}"
+    closure_manifest = {
+        "id": f"project-manifest:{canonical_hash(source_refs)[:24]}",
+        "status": "ACCEPTED", "source_refs": source_refs,
+        "task_count": len(tasks), "accepted_manifest_count": len(latest_by_task),
+        "closed_by": actor_id, "closed_at": closed_at,
+    }
+    return {
+        "closure_manifest": closure_manifest,
+        "candidate": {
+            "id": candidate_id, "candidate_hash": candidate_hash,
+            "payload_hash": payload_hash, "source_refs": source_refs,
+            "status": "ADMITTED", "category": "FINAL_PROJECT_DISTILLATION",
+            "created_at": closed_at,
+        },
+        "payload": payload,
+    }

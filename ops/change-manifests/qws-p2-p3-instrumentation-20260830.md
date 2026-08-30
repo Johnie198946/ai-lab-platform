@@ -12,7 +12,7 @@ tags:
 # QWS P2 与 P3 校准基础交付回执
 
 > [!success] 结论
-> P2 六项已实现并通过本地完整门禁；P3 已实现指标采集、校准提案和按项目 L1/L2/L3 门禁，但真实校准结论必须等待生产样本。Final Project Distillation 与知识过期/纠正/权限变更/合规删除仍为 TODO。本回执不表示已推送或部署。
+> P2 六项已实现并通过本地完整门禁；P3 已实现指标采集、校准提案、按项目 L1/L2/L3 门禁、Final Project Distillation 与候选知识生命周期治理，但真实校准结论必须等待生产样本。本回执不表示已部署。
 
 ## 真源与边界
 
@@ -48,12 +48,15 @@ tags:
 - 样本量不足时明确返回 `INSUFFICIENT_REAL_DATA`，不会伪造或自动应用阈值。
 - 校准只生成 proposal，阈值应用和 L2/L3 升级均需交互式人类决定。
 - L3 明确禁止 production/deploy/publish/delete/credential 等 scope/capability。
+- 项目关闭要求任务终态，且每个 DONE 任务的**最新** Delivery Manifest 必须为 `ACCEPTED` 并匹配当前 `task_revision`；关闭后普通 process write 由 revision + project status 双重 CAS 拦截。
+- 关闭时生成项目级 Manifest、Final Project Distillation 与 Published 指针投影；正文只存在 governed payload，不复制进 immutable process revision。
+- 知识候选 payload 与 immutable process metadata 分离；支持过期、纠正、权限收紧和合规删除。`RESTRICTED`/`DELETED` 不返回 payload；合规删除清除主治理表 payload、保留哈希审计收据，并明确备份受基础设施保留策略约束。
 
 ## 验证收据
 
 | 门禁 | 结果 |
 |---|---:|
-| Backend pytest | `880 passed, 2 skipped, 10 warnings` |
+| Backend pytest | `882 passed, 2 skipped, 10 warnings` |
 | QWS frontend tests | `11 passed` |
 | Frontend production build | 通过 |
 | Ruff | 通过 |
@@ -64,8 +67,8 @@ tags:
 ## RYG
 
 - **Green**：P2 六项本地实现与测试；P0/P1 既有生产状态未被降级。
-- **Amber**：P3 九项事件采集/指标合同已实现但等待真实生产样本；不宣称已校准。
-- **Red / TODO**：Final Project Distillation；知识候选过期、纠正、权限变更与合规删除；尚未部署本变更。
+- **Amber**：P3 九项事件采集/指标合同已实现但等待真实生产样本；不宣称已校准。备份物理清理由基础设施保留策略执行，不伪称即时擦除。
+- **Red / TODO**：尚未部署本变更；L2/L3 不会在真实样本门禁通过前启用。
 
 ## 费用 A/B 轨
 
@@ -75,5 +78,5 @@ tags:
 ## 回滚
 
 - 代码回滚：切回部署前精确 Git SHA 与不可变 Release。
-- 数据边界：本次无破坏性 schema 删除；新增 process snapshot 字段为 additive。
+- 数据边界：本次无破坏性 schema 删除；新增 `workspace_knowledge_candidates` 与 process snapshot 字段均为 additive。
 - 自治回滚：项目 policy 可由交互式人类降回 `L1`；Automation rule 可通过新版本 disabled 停止新 run，既有 run 仍可审计重放。
