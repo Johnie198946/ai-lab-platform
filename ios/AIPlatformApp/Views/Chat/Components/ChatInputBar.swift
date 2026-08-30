@@ -14,11 +14,13 @@ public struct ChatInputBar: View {
     @Binding public var isVoicePressing: Bool
     @ObservedObject public var speechService: SpeechRecognizerService
     public let isGenerating: Bool
+    public let dismissKeyboardToken: Int
     public let onSend: () -> Void
     public let onVoicePressChanged: (Bool) -> Void
     public let onPlusTap: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var isTextInputFocused: Bool
 
     public init(
         inputText: Binding<String>,
@@ -26,6 +28,7 @@ public struct ChatInputBar: View {
         isVoicePressing: Binding<Bool>,
         speechService: SpeechRecognizerService,
         isGenerating: Bool,
+        dismissKeyboardToken: Int,
         onSend: @escaping () -> Void,
         onVoicePressChanged: @escaping (Bool) -> Void,
         onPlusTap: @escaping () -> Void
@@ -35,6 +38,7 @@ public struct ChatInputBar: View {
         self._isVoicePressing = isVoicePressing
         self.speechService = speechService
         self.isGenerating = isGenerating
+        self.dismissKeyboardToken = dismissKeyboardToken
         self.onSend = onSend
         self.onVoicePressChanged = onVoicePressChanged
         self.onPlusTap = onPlusTap
@@ -57,6 +61,9 @@ public struct ChatInputBar: View {
         .background(AppTheme.Colors.background.opacity(0.96))
         .animation(AppTheme.Motion.standard, value: inputText.isEmpty)
         .animation(AppTheme.Motion.standard, value: speechService.state)
+        .onChange(of: dismissKeyboardToken) { _, _ in
+            isTextInputFocused = false
+        }
     }
 
     private func quotedFollowUpBanner(quote: QuotedContext) -> some View {
@@ -108,6 +115,7 @@ public struct ChatInputBar: View {
             .accessibilityLabel("添加附件或引用知识")
 
             TextField(isGenerating ? "任务执行中，可继续输入" : "描述目标，或继续当前任务…", text: $inputText, axis: .vertical)
+                .focused($isTextInputFocused)
                 .lineLimit(1...5)
                 .font(AppTheme.Typography.body)
                 .padding(.vertical, 11)
@@ -163,11 +171,6 @@ public struct ChatInputBar: View {
     private var voiceHoldButton: some View {
         Button(action: {}) {
             ZStack {
-                VoicePressHalo(
-                    isActive: speechService.state == .recording || isVoicePressing,
-                    reduceMotion: reduceMotion
-                )
-
                 Circle()
                     .fill(
                         (speechService.state == .recording || isVoicePressing)
@@ -303,29 +306,6 @@ public struct ChatInputBar: View {
 
     private func timeString(_ seconds: Int) -> String {
         String(format: "%02d:%02d", seconds / 60, seconds % 60)
-    }
-}
-
-private struct VoicePressHalo: View {
-    let isActive: Bool
-    let reduceMotion: Bool
-
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduceMotion || !isActive)) { timeline in
-            let elapsed = timeline.date.timeIntervalSinceReferenceDate
-            let phase = reduceMotion ? 0.0 : (sin(elapsed * 4.2) + 1) / 2
-
-            Circle()
-                .stroke(
-                    AppTheme.Colors.actionGradient,
-                    lineWidth: 2
-                )
-                .frame(width: 48, height: 48)
-                .scaleEffect(isActive ? 1.04 + phase * 0.18 : 0.94)
-                .opacity(isActive ? 0.52 - phase * 0.32 : 0)
-        }
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
     }
 }
 

@@ -855,4 +855,17 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(LoginInputPolicy.digits("138 0013-8000 extra", limit: 11), "13800138000")
         XCTAssertEqual(LoginInputPolicy.digits("24681099", limit: 6), "246810")
     }
+
+    func testChatDraftSubmissionConsumesTextExactlyOnce() {
+        var draft = "  帮我继续调研鹿岛  "
+        XCTAssertEqual(ChatDraftSubmission.consume(&draft), "帮我继续调研鹿岛")
+        XCTAssertEqual(draft, "")
+        XCTAssertNil(ChatDraftSubmission.consume(&draft))
+    }
+
+    func testChatDraftSubmissionKeepsWhitespaceOnlyDraftUnsent() {
+        var draft = "   \n "
+        XCTAssertNil(ChatDraftSubmission.consume(&draft))
+        XCTAssertEqual(draft, "   \n ")
+    }
 }

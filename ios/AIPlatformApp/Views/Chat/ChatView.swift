@@ -8,6 +8,15 @@
 
 import SwiftUI
 
+enum ChatDraftSubmission {
+    static func consume(_ draft: inout String) -> String? {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return nil }
+        draft = ""
+        return text
+    }
+}
+
 public struct ChatView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var sessionManager: SessionManager
@@ -22,6 +31,7 @@ public struct ChatView: View {
     @State private var showingSessionDrawer: Bool = false
     @State private var showingAgentPicker: Bool = false
     @State private var tenantAgents: [TenantAgentDTO] = []
+    @State private var dismissKeyboardToken = 0
     // Keep the draft local so every keystroke does not publish through the
     // session coordinator and invalidate the whole message stream.
     @State private var draftText: String = ""
@@ -51,16 +61,21 @@ public struct ChatView: View {
                     if let topic = currentTopic {
                         topicControlBar(topic)
                     }
-                    ChatMessageStreamView(coordinator: coordinator)
+                    ChatMessageStreamView(
+                        coordinator: coordinator,
+                        onBackgroundTap: dismissKeyboard
+                    )
                     ChatInputBar(
                         inputText: $draftText,
                         quotedContext: $coordinator.quotedContext,
                         isVoicePressing: $isVoicePressing,
                         speechService: speechService,
                         isGenerating: coordinator.isGenerating,
+                        dismissKeyboardToken: dismissKeyboardToken,
                         onSend: {
-                            coordinator.inputText = draftText
-                            coordinator.sendMessage()
+                            guard let text = ChatDraftSubmission.consume(&draftText) else { return }
+                            coordinator.sendMessage(text: text)
+                            dismissKeyboard()
                         },
                         onVoicePressChanged: handleVoicePressChanged,
                         onPlusTap: { showingPlusMenu = true }
@@ -167,6 +182,10 @@ public struct ChatView: View {
         let sessionId = sessionManager.activeSessionID()
         guard let topic = sessionManager.topicSessions[sessionId], topic.state != .ended else { return nil }
         return topic
+    }
+
+    private func dismissKeyboard() {
+        dismissKeyboardToken &+= 1
     }
 
     @ViewBuilder

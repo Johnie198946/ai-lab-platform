@@ -316,13 +316,6 @@ public struct SoftButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
             .opacity(configuration.isPressed ? 0.86 : 1.0)
-            .overlay {
-                PressBorderGlow(
-                    isActive: configuration.isPressed,
-                    cornerRadius: AppTheme.Radius.sm,
-                    reduceMotion: reduceMotion
-                )
-            }
             .animation(reduceMotion ? nil : AppTheme.Motion.quick, value: configuration.isPressed)
     }
 }
@@ -330,8 +323,6 @@ public struct SoftButtonStyle: ButtonStyle {
 public struct QuantumCardModifier: ViewModifier {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @GestureState private var isPressed = false
 
     public func body(content: Content) -> some View {
         content
@@ -342,28 +333,12 @@ public struct QuantumCardModifier: ViewModifier {
                     .stroke(AppTheme.Colors.border.opacity(0.92), lineWidth: 0.75)
             }
             .contentShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .simultaneousGesture(pressGesture, including: .gesture)
-            .overlay {
-                PressBorderGlow(
-                    isActive: isPressed,
-                    cornerRadius: AppTheme.Radius.lg,
-                    reduceMotion: reduceMotion
-                )
-            }
             .shadow(
                 color: colorScheme == .dark ? Color.black.opacity(0.24) : Color(hex: "6B5A8A").opacity(0.10),
                 radius: 20,
                 x: 0,
                 y: 4
             )
-            .animation(reduceMotion ? nil : AppTheme.Motion.quick, value: isPressed)
-    }
-
-    private var pressGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .updating($isPressed) { _, state, _ in
-                state = true
-            }
     }
 }
 
@@ -377,10 +352,9 @@ public extension View {
             .contentShape(Rectangle())
     }
 
-    /// React Bits BorderGlow 的 SwiftUI 原生按压反馈版本。
-    /// 仅在触摸期间绘制，不改变布局，也不拦截内部按钮或滚动手势。
+    /// 保留调用兼容性，但全局关闭发光反馈。
     func pressBorderGlow(cornerRadius: CGFloat = AppTheme.Radius.md) -> some View {
-        modifier(PressBorderGlowModifier(cornerRadius: cornerRadius))
+        self
     }
 }
 
@@ -399,63 +373,9 @@ public struct QuantumPrimaryButtonStyle: ButtonStyle {
             .padding(.horizontal, AppTheme.Spacing.xl)
             .background(AppTheme.Colors.actionGradient.opacity(isEnabled ? 1 : 0.46))
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-            .overlay {
-                PressBorderGlow(
-                    isActive: configuration.isPressed && isEnabled,
-                    cornerRadius: AppTheme.Radius.md,
-                    reduceMotion: reduceMotion
-                )
-            }
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
             .opacity(configuration.isPressed ? 0.92 : 1)
             .animation(reduceMotion ? nil : AppTheme.Motion.quick, value: configuration.isPressed)
-    }
-}
-
-// MARK: - Global Press Border Glow
-
-private struct PressBorderGlowModifier: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @GestureState private var isPressed = false
-
-    let cornerRadius: CGFloat
-
-    func body(content: Content) -> some View {
-        content
-            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .simultaneousGesture(
-                DragGesture(minimumDistance: 0)
-                    .updating($isPressed) { _, state, _ in
-                        state = true
-                    },
-                including: .gesture
-            )
-            .overlay {
-                PressBorderGlow(
-                    isActive: isPressed,
-                    cornerRadius: cornerRadius,
-                    reduceMotion: reduceMotion
-                )
-            }
-            .animation(reduceMotion ? nil : AppTheme.Motion.quick, value: isPressed)
-    }
-}
-
-private struct PressBorderGlow: View {
-    let isActive: Bool
-    let cornerRadius: CGFloat
-    let reduceMotion: Bool
-
-    var body: some View {
-        if isActive {
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .stroke(AppTheme.Colors.quantumGradient, lineWidth: 2)
-                .shadow(color: AppTheme.Colors.quantumViolet.opacity(0.30), radius: reduceMotion ? 0 : 2)
-            .padding(-2)
-            .transition(.opacity)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
-        }
     }
 }
 

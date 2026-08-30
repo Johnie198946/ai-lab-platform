@@ -11,9 +11,14 @@ import SwiftUI
 
 public struct ChatMessageStreamView: View {
     @ObservedObject public var coordinator: TenantSessionCoordinator
+    public let onBackgroundTap: () -> Void
 
-    public init(coordinator: TenantSessionCoordinator) {
+    public init(
+        coordinator: TenantSessionCoordinator,
+        onBackgroundTap: @escaping () -> Void = {}
+    ) {
         self.coordinator = coordinator
+        self.onBackgroundTap = onBackgroundTap
     }
 
     public var body: some View {
@@ -63,7 +68,10 @@ public struct ChatMessageStreamView: View {
             .background {
                 Color.clear
                     .contentShape(Rectangle())
-                    .onTapGesture { coordinator.collapseActiveClarify() }
+                    .onTapGesture {
+                        coordinator.collapseActiveClarify()
+                        onBackgroundTap()
+                    }
             }
         }
         .id(coordinator.historyPageIdentity)
@@ -71,7 +79,7 @@ public struct ChatMessageStreamView: View {
         // 超长消息后继续发送时，它会参与内容尺寸变化的锚点平移，并在 iOS 26
         // 触发消息栈的 AttributeGraph 布局循环。
         .initialScrollAnchor(startsAtBottom: coordinator.historyPageStartsAtBottom)
-        .scrollDismissesKeyboard(.interactively)
+        .scrollDismissesKeyboard(.immediately)
     }
 
     private func historyButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
