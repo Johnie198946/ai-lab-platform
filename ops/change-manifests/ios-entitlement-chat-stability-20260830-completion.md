@@ -42,7 +42,7 @@
 - local_commit: `bf4b077` (`fix ios chat lifecycle and entitlement visibility`)
 - remote_sha: resolved by post-push `git ls-remote`; exact remote receipt is reported with this manifest in the delivery response.
 - server_before: `/opt/releases/ai-lab-platform-ea28e677b054.qWS2xA`; `.deployed-sha=ea28e677b05403b304a44f06fc67cae19f694fb4`。
-- server_after: auth fix deployed as `/opt/releases/ai-lab-platform-6b63a0f9a4d8.CYUfWJ`; tenant status recovery deployment pending this manifest's next commit.
+- server_after: implementation release `/opt/releases/ai-lab-platform-4211c0ea39d7.qK0eaE`; `.deployed-sha=4211c0ea39d7680d8a8f6b175b5d08779c526ea5`。最终 receipt commit 使用同一代码并在完成通报中回读精确 SHA。
 - production_deployment: `AUTHORIZED_FOR_SIMULATOR_ACCEPTANCE`
 - simulator_before: app was installed from an earlier build on `AIPlatform Preview`.
 - simulator_after: final Debug build installed and launched; bundle container and process verified; login card visual acceptance passed.
@@ -57,4 +57,6 @@
 
 - JWT fix deployed and verified: public `/dev-login` 200 → `/me` 200 → `/me/knowledge-access` 200；模拟器恢复到已登录对话主页。
 - Two distinct chat sessions ran concurrently; the short session completed with `并行会话已启动` while the Kagoshima research continued.
-- Kagoshima Agent itself completed in about 142 seconds with a 3,616-character answer, but the detached status endpoint remained `running` because it read the global state DB instead of the tenant sandbox DB. The recovery fix and regression tests are included in the next deployment.
+- The first live Kagoshima Run completed in about 142 seconds with a 3,616-character answer but exposed the global-vs-tenant state DB recovery defect; that defect was then fixed and redeployed.
+- After deploying the tenant sandbox recovery fix, the repeated Kagoshima Run detached after initial status frames, completed through `/chat/status` in 137.2 seconds with a 4,641-character answer, and released the same-session slot; an immediate same-session follow-up returned `槽位已释放`.
+- Simulator final state: authenticated Quantum chat home, no login/error overlay. TestFlight remains untouched.
