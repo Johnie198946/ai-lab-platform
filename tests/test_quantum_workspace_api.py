@@ -736,6 +736,74 @@ def test_intake_revisions_and_artifact_registry_are_immutable_and_versioned(
     assert versions[0]["verification"]["verified"] is True
 
 
+def test_delivery_manifest_is_the_only_gate_to_done(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "delivery-gate")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    task = process["tasks"][0]
+    task_id = task["id"]
+    started = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}",
+        json={"expected_revision": 1, "status": "IN_PROGRESS"},
+    )
+    assert started.status_code == 200, started.text
+    review = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}",
+        json={"expected_revision": 2, "status": "ACCEPTANCE_REVIEW"},
+    )
+    assert review.status_code == 200, review.text
+    direct_done = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}",
+        json={"expected_revision": 3, "status": "DONE"},
+    )
+    assert direct_done.status_code == 409
+    assert direct_done.json()["detail"]["error"] == "delivery_manifest_acceptance_required"
+
+    artifact = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "delivery.final",
+            "title": "最终交付物",
+            "artifact_type": "document",
+            "task_id": task_id,
+        },
+    ).json()
+    version = client.post(
+        f"/api/v1/projects/{project_id}/artifacts/{artifact['id']}/versions",
+        json={
+            "storage_ref": "repo://delivery/final.md",
+            "sha256": "b" * 64,
+            "media_type": "text/markdown",
+            "verification": {"verified": True, "test_ref": "test://delivery"},
+        },
+    ).json()
+    current_task = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}"
+    ).json()
+    evidence = [
+        {"criterion": criterion, "passed": True, "evidence_ref": "test://delivery"}
+        for criterion in current_task.get("acceptance_criteria", [])
+    ]
+    manifest = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}/delivery-manifests",
+        json={
+            "expected_revision": 3,
+            "expected_task_revision": current_task["task_revision"],
+            "artifact_version_ids": [version["id"]],
+            "acceptance_evidence": evidence,
+            "summary": "验收标准通过且交付物已验证",
+        },
+    )
+    assert manifest.status_code == 201, manifest.text
+    accepted = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}/delivery-manifests/{manifest.json()['id']}/decision",
+        json={"expected_revision": 3, "decision": "ACCEPT", "note": "用户验收通过"},
+    )
+    assert accepted.status_code == 200, accepted.text
+    assert accepted.json()["task_status"] == "DONE"
+    assert accepted.json()["manifest"]["status"] == "ACCEPTED"
+
+
 def test_taskboard_backfill_uses_trusted_internal_host(monkeypatch):
     requests = []
 
@@ -1134,7 +1202,7 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
     assert created_task.status_code == 201
     assert created_task.json()["process_revision"] == 2
     task = created_task.json()["task"]
-    assert task["status"] == "TODO"
+    assert task["status"] == "WAITING_CLAIM"
     assert task["workflow_status"] == "UNCONNECTED"
 
     process_after_create = client.get(
@@ -1306,7 +1374,13 @@ def test_task_state_machine_rejects_terminal_rollback_and_missing_reason(_reset_
         f"/api/v1/projects/{project_id}/tasks/{task_id}",
         json={"expected_revision": 2, "status": "DONE"},
     )
-    assert done.status_code == 200
+    assert done.status_code == 409
+    assert done.json()["detail"]["error"] == "delivery_manifest_acceptance_required"
+    review = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{task_id}",
+        json={"expected_revision": 2, "status": "ACCEPTANCE_REVIEW"},
+    )
+    assert review.status_code == 200
     reopened = client.patch(
         f"/api/v1/projects/{project_id}/tasks/{task_id}",
         json={"expected_revision": 3, "status": "TODO"},

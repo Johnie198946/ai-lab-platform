@@ -34,6 +34,7 @@ from backend.models.workspace import (
     WorkspaceArtifactVersion,
     WorkspaceAuditEvent,
     WorkspaceBusinessIntake,
+    WorkspaceDeliveryManifest,
     WorkspaceGate,
     WorkspaceGateApprover,
     WorkspaceProcessDraft,
@@ -175,6 +176,20 @@ class RegisterArtifactVersionRequest(BaseModel):
     size_bytes: int | None = Field(default=None, ge=0)
     lineage: dict[str, Any] = Field(default_factory=dict)
     verification: dict[str, Any] = Field(default_factory=dict)
+
+
+class BuildDeliveryManifestRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    artifact_version_ids: list[str] = Field(min_length=1, max_length=50)
+    acceptance_evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    summary: str = Field(min_length=1, max_length=8000)
+
+
+class DecideDeliveryManifestRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    decision: Literal["ACCEPT", "REWORK"]
+    note: str = Field(default="", max_length=4000)
 
 
 class GenerateDraftRequest(BaseModel):
@@ -1247,6 +1262,148 @@ async def list_project_artifact_versions(
             )
         ).all()
         return [_artifact_version_out(item) for item in versions]
+
+
+def _manifest_out(manifest: WorkspaceDeliveryManifest) -> dict[str, Any]:
+    return {
+        "id": manifest.id,
+        "project_id": manifest.project_id,
+        "task_id": manifest.task_id,
+        "revision": manifest.revision,
+        "task_revision": manifest.task_revision,
+        "status": manifest.status,
+        "content_hash": manifest.content_hash,
+        "content": manifest.content,
+        "created_by": manifest.created_by,
+        "created_at": manifest.created_at,
+    }
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/delivery-manifests", status_code=201)
+async def build_task_delivery_manifest(
+    project_id: str, task_id: str, body: BuildDeliveryManifestRequest,
+    payload=Depends(require_auth),
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, _, _, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        if int(task.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail="task revision conflict")
+        if task.get("status") != "ACCEPTANCE_REVIEW":
+            raise HTTPException(status_code=409, detail="task must be in ACCEPTANCE_REVIEW")
+        unresolved = [
+            item["id"] for item in task.get("feedback") or []
+            if item.get("status") not in {"RESOLVED", "RECORDED_ONLY", "DUPLICATE"}
+        ]
+        if unresolved:
+            raise HTTPException(status_code=409, detail={"error": "unresolved_feedback", "ids": unresolved})
+        criteria = task.get("acceptance_criteria") or []
+        passed = [item for item in body.acceptance_evidence if item.get("passed") is True]
+        if len(passed) < len(criteria):
+            raise HTTPException(status_code=409, detail="acceptance evidence is incomplete")
+        versions = (
+            await db.scalars(
+                select(WorkspaceArtifactVersion)
+                .join(WorkspaceArtifact, WorkspaceArtifact.id == WorkspaceArtifactVersion.artifact_id)
+                .where(
+                    WorkspaceArtifact.project_id == project_id,
+                    WorkspaceArtifact.tenant_key == tenant_key,
+                    WorkspaceArtifactVersion.id.in_(body.artifact_version_ids),
+                )
+            )
+        ).all()
+        if len(versions) != len(set(body.artifact_version_ids)):
+            raise HTTPException(status_code=409, detail="artifact version is missing or inaccessible")
+        if any(item.verification.get("verified") is not True for item in versions):
+            raise HTTPException(status_code=409, detail="all artifact versions must be verified")
+        content = {
+            "summary": body.summary,
+            "acceptance_evidence": body.acceptance_evidence,
+            "artifact_versions": [
+                {"id": item.id, "sha256": item.sha256, "storage_ref": item.storage_ref}
+                for item in sorted(versions, key=lambda row: row.id)
+            ],
+            "feedback_resolved": True,
+        }
+        canonical = json.dumps(content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        content_hash = hashlib.sha256(canonical.encode()).hexdigest()
+        existing = await db.scalar(
+            select(WorkspaceDeliveryManifest).where(
+                WorkspaceDeliveryManifest.project_id == project_id,
+                WorkspaceDeliveryManifest.content_hash == content_hash,
+                WorkspaceDeliveryManifest.status == "READY",
+            )
+        )
+        if existing is not None:
+            return JSONResponse(status_code=200, content=json.loads(json.dumps(_manifest_out(existing), default=str)))
+        latest = await db.scalar(
+            select(func.max(WorkspaceDeliveryManifest.revision)).where(
+                WorkspaceDeliveryManifest.project_id == project_id,
+                WorkspaceDeliveryManifest.task_id == task_id,
+            )
+        )
+        manifest = WorkspaceDeliveryManifest(
+            id=f"manifest_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
+            task_id=task_id, revision=int(latest or 0) + 1,
+            task_revision=body.expected_task_revision, status="READY",
+            content_hash=content_hash, content=content, created_by=user_id,
+        )
+        db.add(manifest)
+        await db.commit()
+        await db.refresh(manifest)
+        return _manifest_out(manifest)
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/delivery-manifests/{manifest_id}/decision")
+async def decide_task_delivery_manifest(
+    project_id: str, task_id: str, manifest_id: str,
+    body: DecideDeliveryManifestRequest, payload=Depends(require_auth),
+):
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project, process, tasks, task = await _task_contract_for_update(
+            db, project_id=project_id, tenant_key=tenant_key, user_id=user_id,
+            expected_revision=body.expected_revision, task_id=task_id,
+        )
+        manifest = await db.scalar(
+            select(WorkspaceDeliveryManifest).where(
+                WorkspaceDeliveryManifest.id == manifest_id,
+                WorkspaceDeliveryManifest.tenant_key == tenant_key,
+                WorkspaceDeliveryManifest.project_id == project_id,
+                WorkspaceDeliveryManifest.task_id == task_id,
+                WorkspaceDeliveryManifest.status == "READY",
+            )
+        )
+        if manifest is None:
+            raise HTTPException(status_code=404, detail="ready delivery manifest not found")
+        decision_status = "ACCEPTED" if body.decision == "ACCEPT" else "REWORK"
+        decided_content = {**manifest.content, "decision_note": body.note, "source_manifest_id": manifest.id}
+        canonical = json.dumps(decided_content, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        decision = WorkspaceDeliveryManifest(
+            id=f"manifest_{uuid4().hex}", tenant_key=tenant_key, project_id=project_id,
+            task_id=task_id, revision=manifest.revision + 1,
+            task_revision=int(task.get("task_revision") or 1), status=decision_status,
+            content_hash=hashlib.sha256(canonical.encode()).hexdigest(),
+            content=decided_content, created_by=user_id,
+        )
+        db.add(decision)
+        transition_task(
+            task,
+            to_status="DONE" if body.decision == "ACCEPT" else "IN_PROGRESS",
+            actor_id=f"user:{user_id}",
+            reason=body.note or ("交付验收通过" if body.decision == "ACCEPT" else "验收退回返工"),
+        )
+        revision = await _save_task_contract(
+            db, project=project, process=process, tasks=tasks,
+            expected_revision=body.expected_revision,
+        )
+        return {
+            "project_id": project_id, "process_revision": revision,
+            "task_status": task["status"], "manifest": _manifest_out(decision),
+        }
 
 
 @router.post("/projects/{project_id}/process-drafts/generate")
@@ -2657,12 +2814,21 @@ async def update_project_task(
                 "task": task,
                 "stage": stage,
             }
+        if body.status == "DONE":
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "delivery_manifest_acceptance_required",
+                    "from": current_status,
+                    "to": body.status,
+                },
+            )
         try:
             transition_task(
                 task,
                 to_status=body.status,
                 actor_id=f"user:{user_id}",
-                reason=body.reason or "explicit taskboard action",
+                reason=body.reason,
             )
         except ValueError as exc:
             error, _, detail = str(exc).partition(":")

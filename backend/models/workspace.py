@@ -293,6 +293,30 @@ class WorkspaceArtifactVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class WorkspaceDeliveryManifest(Base):
+    """Append-only task delivery candidate and its user acceptance decision."""
+
+    __tablename__ = "workspace_delivery_manifests"
+    __table_args__ = (
+        UniqueConstraint("project_id", "task_id", "revision", name="uq_workspace_delivery_manifest_revision"),
+        UniqueConstraint("project_id", "content_hash", "status", name="uq_workspace_delivery_manifest_hash_status"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    task_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class WorkspaceProcessDraft(Base):
     __tablename__ = "workspace_process_drafts"
     __table_args__ = (
@@ -652,6 +676,7 @@ _IMMUTABLE_REVISION_MODELS = (
     WorkspaceTaskDependency,
     WorkspaceBusinessIntake,
     WorkspaceArtifactVersion,
+    WorkspaceDeliveryManifest,
 )
 
 
