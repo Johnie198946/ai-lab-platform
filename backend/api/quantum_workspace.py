@@ -77,6 +77,7 @@ from backend.services.task_operating_loop import (
     apply_task_merge,
     apply_feedback_acceptance,
     apply_feedback_action,
+    build_relation_digest,
     build_task_context_pack,
     create_feedback_batch,
     create_merge_preview,
@@ -331,6 +332,14 @@ class ProposeTaskRelationRequest(BaseModel):
     evidence_refs: list[str] = Field(default_factory=list, max_length=20)
     confidence: float = Field(ge=0, le=1)
     impact: dict[str, str] = Field(default_factory=dict)
+
+
+class DecideTaskRelationRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    decision: Literal["CONFIRM", "REJECT"]
+    reason: str | None = Field(default=None, max_length=1000)
 
 
 class BindTaskWorkflowRequest(BaseModel):
@@ -2326,6 +2335,17 @@ async def save_project_workflow_graph(
         }
 
 
+def _readable_task_ids(
+    tasks: list[dict[str, Any]], *, project_id: str
+) -> set[str]:
+    """Project RBAC is the current task-read boundary; foreign targets stay restricted."""
+    return {
+        str(task["id"])
+        for task in tasks
+        if task.get("project_id") in {None, project_id}
+    }
+
+
 def _ensure_task_writable(task: dict[str, Any]) -> None:
     if task.get("status") == "MERGED":
         raise HTTPException(
@@ -2705,6 +2725,24 @@ async def acquire_project_task_execution_lease(
         return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "lease": lease}
 
 
+@router.get("/projects/{project_id}/tasks/{task_id}/relation-digest")
+async def get_project_task_relation_digest(
+    project_id: str, task_id: str, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        readable_ids = _readable_task_ids(tasks, project_id=project.id)
+        if task is None or task_id not in readable_ids:
+            raise HTTPException(status_code=404, detail="project task not found")
+        return build_relation_digest(
+            task, {**process, "tasks": tasks}, readable_task_ids=readable_ids
+        )
+
+
 @router.get("/projects/{project_id}/tasks/{task_id}/context-pack")
 async def get_project_task_context_pack(
     project_id: str,
@@ -2714,20 +2752,22 @@ async def get_project_task_context_pack(
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
-        process = project.process_snapshot or {}
+        process = dict(project.process_snapshot or {})
         tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
         task = next((item for item in tasks if item.get("id") == task_id), None)
-        if task is None:
+        readable_ids = _readable_task_ids(tasks, project_id=project.id)
+        if task is None or task_id not in readable_ids:
             raise HTTPException(status_code=404, detail="project task not found")
-        related_ids = {
-            str(relation.get("target_id") or relation.get("target_task_id"))
-            for relation in task.get("relations") or []
-            if relation.get("target_id") or relation.get("target_task_id")
-        }
-        related = [item for item in tasks if item.get("id") in related_ids]
-        return build_task_context_pack(
-            task, project_id=project.id, process_revision=project.process_revision, related_tasks=related
+        digest = build_relation_digest(
+            task, {**process, "tasks": tasks}, readable_task_ids=readable_ids,
+            max_entries=3, summary_token_budget=200,
         )
+        context = build_task_context_pack(
+            task, project_id=project.id, process_revision=project.process_revision
+        )
+        context.pop("relations", None)
+        context["relation_digest"] = digest
+        return context
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/relation-proposals", status_code=201)
@@ -2774,6 +2814,67 @@ async def propose_project_task_relation(
             db, project=project, expected_revision=body.expected_revision, process=process
         )
         return {"project_id": project.id, "process_revision": next_revision, "task_revision": task["task_revision"], "proposal": proposal}
+
+
+@router.post("/projects/{project_id}/relation-proposals/{proposal_id}/decision")
+async def decide_project_task_relation(
+    project_id: str,
+    proposal_id: str,
+    body: DecideTaskRelationRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
+        proposals = list(process.get("relation_proposals") or [])
+        proposal = next((item for item in proposals if item.get("id") == proposal_id), None)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="relation proposal not found")
+        final_status = "CONFIRMED" if body.decision == "CONFIRM" else "REJECTED"
+        if proposal.get("status") in {"CONFIRMED", "REJECTED"}:
+            if (
+                proposal.get("decision_request_id") == body.request_id
+                and proposal.get("status") == final_status
+                and proposal.get("decision_reason") == body.reason
+            ):
+                return {
+                    "project_id": project.id,
+                    "process_revision": project.process_revision,
+                    "task_revision": proposal.get("source_task_revision"),
+                    "proposal": proposal,
+                }
+            raise HTTPException(status_code=409, detail="relation decision replay payload drift")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        source = next((item for item in tasks if item.get("id") == proposal.get("source_task_id")), None)
+        if source is None:
+            raise HTTPException(status_code=409, detail="relation proposal source task missing")
+        _ensure_task_writable(source)
+        if int(source.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": source.get("task_revision")})
+        source["task_revision"] = int(source.get("task_revision") or 1) + 1
+        proposal.update({
+            "status": final_status,
+            "decision": body.decision,
+            "decision_reason": body.reason,
+            "decision_request_id": body.request_id,
+            "decided_by": user_id,
+            "decided_at": datetime.now(timezone.utc).isoformat(),
+            "source_task_revision": source["task_revision"],
+        })
+        process["tasks"] = tasks
+        process["relation_proposals"] = proposals
+        next_revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {
+            "project_id": project.id,
+            "process_revision": next_revision,
+            "task_revision": source["task_revision"],
+            "proposal": proposal,
+        }
 
 
 @router.put("/projects/{project_id}/tasks/{task_id}/workflow")

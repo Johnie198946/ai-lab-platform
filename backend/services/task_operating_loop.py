@@ -756,6 +756,181 @@ def create_relation_proposal(
     return proposal
 
 
+def _truncate_relation_summary(text: str, max_tokens: int = 300) -> str:
+    estimated_tokens = 0.0
+    for end, char in enumerate(text, start=1):
+        estimated_tokens += 1.0 if "\u3400" <= char <= "\u9fff" else 0.25
+        if estimated_tokens > max_tokens:
+            return text[: end - 1]
+    return text
+
+
+def _safe_relation_text(value: Any, *, limit: int = 500) -> str | None:
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value[:limit] if value else None
+
+
+def _relation_summary(task: dict[str, Any], *, token_budget: int) -> str:
+    card = task.get("card_summary") or {}
+    parts = [
+        _safe_relation_text(card.get("purpose") or task.get("summary")),
+        _safe_relation_text(card.get("progress")),
+        _safe_relation_text(card.get("next_action")),
+    ]
+    parts.extend(_safe_relation_text(item) for item in (card.get("key_points") or [])[:5])
+    parts.extend(
+        f"阻塞：{text}"
+        for item in (card.get("blockers") or [])[:3]
+        if (text := _safe_relation_text(item))
+    )
+    text = "；".join(item for item in parts if item)
+    return _truncate_relation_summary(text, token_budget)
+
+
+def _safe_relation_artifact_refs(task: dict[str, Any]) -> list[dict[str, Any]]:
+    safe = []
+    for item in (task.get("evidence_refs") or [])[:10]:
+        if not isinstance(item, dict):
+            continue
+        projected = {
+            key: item[key]
+            for key in ("artifact_id", "artifact_version_id")
+            if isinstance(item.get(key), str) and item[key].strip()
+        }
+        if projected:
+            safe.append(projected)
+    return safe
+
+
+def _reverse_relation_type(relation_type: str) -> str:
+    return {
+        "blocks": "blocked_by", "blocked_by": "blocks",
+        "parent": "child", "child": "parent",
+    }.get(relation_type, relation_type)
+
+
+def build_relation_digest(
+    task: dict[str, Any], process: dict[str, Any], *, readable_task_ids: set[str],
+    max_entries: int = 20, summary_token_budget: int = 300,
+) -> dict[str, Any]:
+    """Build a bounded relation projection without cross-task private facts."""
+    task_id = str(task["id"])
+    tasks = {str(item.get("id")): item for item in process.get("tasks") or []}
+    relations: list[dict[str, Any]] = []
+
+    def add_relation(item: dict[str, Any], target_id: str, relation_type: str) -> None:
+        relations.append({
+            "id": item.get("id"),
+            "target_task_id": target_id,
+            "relation_type": relation_type,
+            "reason": item.get("reason"),
+            "release_condition": item.get("release_condition"),
+        })
+
+    for item in task.get("relations") or []:
+        if not isinstance(item, dict):
+            continue
+        target_id = str(item.get("target_task_id") or item.get("target_id") or "")
+        if target_id:
+            add_relation(item, target_id, str(item.get("type") or item.get("relation_type") or "related"))
+    for owner in tasks.values():
+        if str(owner.get("id")) == task_id:
+            continue
+        for item in owner.get("relations") or []:
+            if not isinstance(item, dict):
+                continue
+            target_id = str(item.get("target_task_id") or item.get("target_id") or "")
+            if target_id == task_id:
+                relation_type = str(item.get("type") or item.get("relation_type") or "related")
+                add_relation(item, str(owner["id"]), _reverse_relation_type(relation_type))
+    for item in process.get("relation_proposals") or []:
+        if not isinstance(item, dict) or item.get("status") not in {"APPROVED", "CONFIRMED", "ACCEPTED"}:
+            continue
+        source_id, target_id = str(item.get("source_task_id")), str(item.get("target_task_id"))
+        if task_id not in {source_id, target_id}:
+            continue
+        relation_type = str(item.get("proposed_type") or "related")
+        add_relation(
+            {**item, "release_condition": (item.get("impact") or {}).get("release_condition")},
+            target_id if source_id == task_id else source_id,
+            relation_type if source_id == task_id else _reverse_relation_type(relation_type),
+        )
+    for item in process.get("dependencies") or []:
+        if not isinstance(item, dict):
+            continue
+        source_id, target_id = str(item.get("from_task_id")), str(item.get("to_task_id"))
+        if source_id == task_id:
+            add_relation(item, target_id, "blocks")
+        elif target_id == task_id:
+            add_relation(item, source_id, "blocked_by")
+
+    entries = []
+    seen: set[tuple[str, str]] = set()
+    restricted_count = 0
+    for relation in relations:
+        target_id = relation["target_task_id"]
+        key = (target_id, str(relation["relation_type"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(entries) >= max_entries:
+            break
+        target = tasks.get(target_id)
+        if target is None or target_id not in readable_task_ids:
+            restricted_count += 1
+            entries.append({"restricted": True, "label": "受限依赖"})
+            continue
+        effective = target
+        if target.get("status") == "MERGED" and target.get("redirect_to_task_id") in tasks:
+            redirected = tasks[str(target["redirect_to_task_id"])]
+            if str(redirected["id"]) in readable_task_ids:
+                effective = redirected
+        decisions = [
+            {
+                key: text
+                for key in ("id", "title", "summary", "status", "outcome")
+                if (text := _safe_relation_text(item.get(key))) is not None
+            }
+            for item in (effective.get("decisions") or [])
+            if isinstance(item, dict)
+            and item.get("status") in {"APPROVED", "ACCEPTED", "CONFIRMED"}
+            and (item.get("task_id") == task_id or task_id in (item.get("related_task_ids") or []))
+        ][-5:]
+        effective_revision = int(effective.get("task_revision") or 1)
+        entries.append({
+            "relation_id": _safe_relation_text(relation.get("id"), limit=120),
+            "relation_type": _safe_relation_text(relation["relation_type"], limit=40),
+            "restricted": False,
+            "source_target_task_id": target_id,
+            "effective_task_id": effective["id"],
+            "title": _safe_relation_text(effective.get("title"), limit=200),
+            "status": _safe_relation_text(effective.get("status"), limit=40),
+            "assignee_role": _safe_relation_text(effective.get("assignee_role"), limit=80),
+            "forecast_finish_at": _safe_relation_text((effective.get("schedule") or {}).get("forecast_finish_at"), limit=80),
+            "digest": _relation_summary(effective, token_budget=summary_token_budget),
+            "reason": _safe_relation_text(relation.get("reason")),
+            "release_condition": _safe_relation_text(relation.get("release_condition")),
+            "decisions": decisions,
+            "artifact_refs": _safe_relation_artifact_refs(effective),
+            "as_of_revision": effective_revision,
+            "source_refs": [f"task:{effective['id']}@{effective_revision}"],
+            "inferred": False,
+        })
+    return {
+        "schema_version": "qws.relation-digest.v1",
+        "task_id": task_id,
+        "entries": entries,
+        "restricted_count": restricted_count,
+        "exclusions": [
+            "full_chat_history", "private_attachments", "old_comments",
+            "tool_logs", "unconfirmed_ai_inference",
+        ],
+        "generated_at": utc_now().isoformat(),
+    }
+
+
 def create_handoff_capsule(
     task: dict[str, Any],
     *,

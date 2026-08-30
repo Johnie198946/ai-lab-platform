@@ -10,6 +10,7 @@ from backend.services.task_operating_loop import (
     apply_feedback_acceptance,
     apply_feedback_action,
     apply_task_merge,
+    build_relation_digest,
     build_task_context_pack,
     create_feedback_batch,
     create_handoff_capsule,
@@ -360,3 +361,84 @@ def test_merge_snapshot_excludes_feedback_attachment_storage_refs() -> None:
     }]
     preview = create_merge_preview(primary, secondary, created_by="user:user-a")
     assert "private://secret" not in str(preview["snapshots"])
+
+
+def test_relation_digest_filters_permissions_and_private_facts() -> None:
+    source = task("source")
+    visible = task("visible")
+    visible.update({
+        "title": "可见依赖",
+        "card_summary": {
+            **visible["card_summary"],
+            "purpose": "交付安全评审",
+            "progress": "评审中",
+            "next_action": "提交证据",
+            "key_points": [{"private_note": "嵌套秘密"}],
+        },
+        "evidence_refs": [
+            {"artifact_id": "artifact-safe", "storage_ref": "private://must-not-leak"},
+            "private://secret-evidence",
+        ],
+        "feedback": [{"content": "不应进入摘要", "attachments": [{"storage_ref": "private://secret"}]}],
+        "decisions": [
+            {"id": "decision-1", "status": "APPROVED", "summary": "采用方案 A", "related_task_ids": ["source"], "private_note": "不披露"},
+            {"id": "decision-unconfirmed", "summary": "未经确认的秘密", "related_task_ids": ["source"]},
+        ],
+    })
+    restricted = task("restricted")
+    restricted.update({"title": "机密任务标题", "summary": "机密内容"})
+    source["relations"] = [
+        {"id": "rel-visible", "type": "blocked_by", "target_task_id": "visible", "release_condition": "安全证据通过"},
+        {"id": "rel-private", "type": "related", "target_task_id": "restricted"},
+    ]
+    process = {
+        "tasks": [source, visible, restricted],
+        "relation_proposals": [{
+            "id": "unconfirmed", "source_task_id": "source", "target_task_id": "restricted",
+            "proposed_type": "overlaps", "status": "PROPOSED",
+        }],
+    }
+    digest = build_relation_digest(
+        source, process, readable_task_ids={"source", "visible"}
+    )
+    readable = next(item for item in digest["entries"] if not item["restricted"])
+    private = next(item for item in digest["entries"] if item["restricted"])
+    assert readable["title"] == "可见依赖"
+    assert readable["release_condition"] == "安全证据通过"
+    assert readable["artifact_refs"] == [{"artifact_id": "artifact-safe"}]
+    assert readable["decisions"] == [{"id": "decision-1", "summary": "采用方案 A", "status": "APPROVED"}]
+    assert private == {
+        "restricted": True, "label": "受限依赖",
+    }
+    serialized = str(digest)
+    assert "机密任务标题" not in serialized
+    assert "private://secret" not in serialized
+    assert "private://secret-evidence" not in serialized
+    assert "private://must-not-leak" not in serialized
+    assert "不应进入摘要" not in serialized
+    assert "未经确认的秘密" not in serialized
+    assert "嵌套秘密" not in serialized
+    assert all(item.get("relation_id") != "unconfirmed" for item in digest["entries"])
+
+
+def test_relation_digest_reverses_incoming_edges_and_honors_context_limit() -> None:
+    source = task("source")
+    parent = task("parent")
+    blocker = task("blocker")
+    extra = task("extra")
+    parent["relations"] = [{"id": "rel-parent", "type": "parent", "target_task_id": "source"}]
+    process = {
+        "tasks": [source, parent, blocker, extra],
+        "relation_proposals": [
+            {"id": "rel-block", "source_task_id": "blocker", "target_task_id": "source", "proposed_type": "blocks", "status": "CONFIRMED"},
+            {"id": "rel-extra", "source_task_id": "source", "target_task_id": "extra", "proposed_type": "related", "status": "CONFIRMED"},
+        ],
+    }
+    digest = build_relation_digest(
+        source, process, readable_task_ids={"source", "parent", "blocker", "extra"},
+        max_entries=2, summary_token_budget=200,
+    )
+    assert len(digest["entries"]) == 2
+    assert [(item["effective_task_id"], item["relation_type"]) for item in digest["entries"]] == [
+        ("parent", "child"), ("blocker", "blocked_by"),
+    ]

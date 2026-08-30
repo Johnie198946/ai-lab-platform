@@ -1450,8 +1450,18 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/context-pack"
     )
     assert context.status_code == 200, context.text
-    assert context.json()["identity"]["execution_lease"]["session_id"] == "session-primary"
-    assert "full_chat_history" in context.json()["exclusions"]
+    context_payload = context.json()
+    assert context_payload["identity"]["execution_lease"]["session_id"] == "session-primary"
+    assert "full_chat_history" in context_payload["exclusions"]
+    assert "relations" not in context_payload
+    assert context_payload["relation_digest"]["schema_version"] == "qws.relation-digest.v1"
+    digest = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-digest"
+    )
+    assert digest.status_code == 200, digest.text
+    digest_payload = digest.json()
+    assert digest_payload["entries"] == context_payload["relation_digest"]["entries"]
+    assert digest_payload["exclusions"] == context_payload["relation_digest"]["exclusions"]
 
     proposal = client.post(
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-proposals",
@@ -1484,6 +1494,41 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
     )
     assert conflicting_lease.status_code == 409
     assert conflicting_lease.json()["detail"]["error"] == "execution_lease_conflict"
+
+    confirmed = client.post(
+        f"/api/v1/projects/{project_id}/relation-proposals/{proposal.json()['proposal']['id']}/decision",
+        json={
+            "request_id": "relation-confirm-0001",
+            "expected_revision": 3,
+            "expected_task_revision": 3,
+            "decision": "CONFIRM",
+            "reason": "用户确认关联",
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["process_revision"] == 4
+    assert confirmed.json()["task_revision"] == 4
+    assert confirmed.json()["proposal"]["status"] == "CONFIRMED"
+    replayed_confirmation = client.post(
+        f"/api/v1/projects/{project_id}/relation-proposals/{proposal.json()['proposal']['id']}/decision",
+        json={
+            "request_id": "relation-confirm-0001",
+            "expected_revision": 3,
+            "expected_task_revision": 3,
+            "decision": "CONFIRM",
+            "reason": "用户确认关联",
+        },
+    )
+    assert replayed_confirmation.status_code == 200
+    assert replayed_confirmation.json()["process_revision"] == 4
+    confirmed_digest = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-digest"
+    )
+    assert confirmed_digest.status_code == 200
+    assert any(
+        item.get("effective_task_id") == target["id"] and item.get("relation_type") == "related"
+        for item in confirmed_digest.json()["entries"]
+    )
 
 
 
