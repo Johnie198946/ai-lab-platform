@@ -2,10 +2,10 @@
 
 - task_id: `qws-p1-product-contract-closure-20260830`
 - branch: `main`
-- status: `PUSHED`
-- deployment: `NOT_DEPLOYED`
-- production_migration_execution: `NOT_EXECUTED`
-- authorization: 仅代码、测试、提交和推送；没有生产部署授权
+- status: `DEPLOYED_VERIFIED`
+- deployment: `DEPLOYED`
+- production_migration_execution: `EXECUTED_VERIFIED`
+- authorization: 用户已明确授权推送和部署
 
 ## 范围
 
@@ -68,7 +68,7 @@ Task Drawer 已提供：
 
 ## 验证收据
 
-- 全仓 pytest：`865 passed, 2 skipped, 10 warnings`
+- 全仓 pytest：`866 passed, 2 skipped, 10 warnings`
 - QWS / migration 专项：`74 passed, 5 warnings`
 - Dashi Taskboard 全量：`368 passed, 1 skipped`；组件：`9 passed`
 - Quantum Workspace 前端专项：`11 passed`
@@ -100,8 +100,23 @@ Task Drawer 已提供：
 
 ### Red
 
-- 生产 migration：未执行。
-- 部署与线上 UI/E2E：未执行、未授权。
+- 无代码或 schema 发布阻塞。
+
+## 生产部署验收
+
+- 部署前 marker：`49c0736aa29bc506b66f156d8907f4fb1a3593b5`
+- 已验证代码 SHA：`6fc4e43b1a3cfa28ad57787e9f2f9337bec4737a`
+- 不可变 release：`/opt/releases/ai-lab-platform-6fc4e43b1a3c.8qZ8s8`
+- 回滚点：`/opt/releases/ai-lab-platform-49c0736aa29b.xQZKJE`
+- `/ready`：HTTP 200，`status=ready`，版本 `0.8.0`。
+- Hermes Bridge：`status=ok`；Bridge、Gateway、Serve 均为 active。
+- Compose：API、Taskboard、PostgreSQL、Redis healthy；Frontend 与三个 worker running。
+- PostgreSQL：Intake revision 列及 `(project_id, revision)` 唯一索引存在；Artifact、ArtifactVersion、DeliveryManifest 表全部存在。
+- OpenAPI：lease acquire/heartbeat/reclaim、Relation Digest、Challenge、Manifest、Tenant Agent 目标路由均存在。
+- 无凭证写探针：Tenant Agent 创建、Challenge decision、Manifest decision 均返回 HTTP 401。
+- 本地与活动 release 的五个关键源码 SHA-256 完全一致。
+- Bridge 实际 CWD 指向活动 release；`wiki/raw/knowledge/tools` 均解析到持久 Vault。
+- 受认证保护的浏览器端人工操作 E2E 尚未使用真实生产用户执行，保留为 Yellow，不影响 API/schema 发布事实。
 
 ## 安全
 
