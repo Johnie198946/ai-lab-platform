@@ -1,4 +1,4 @@
-import { ChevronLeft, FileText, GitBranch, LayoutDashboard, Route } from "lucide-react";
+import { ChevronLeft, FileText, GitBranch, LayoutDashboard, Route, Zap } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
@@ -7,6 +7,7 @@ import { AIResourceWorkbench } from "./AIResourceWorkbench";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
 import { ProjectDocuments } from "./ProjectDocuments";
+import { ProjectAutomations } from "./ProjectAutomations";
 import { DashiTaskboardHost } from "./DashiTaskboardHost";
 import { StageRail } from "./StageRail";
 import { TaskChatDrawer } from "./TaskChatDrawer";
@@ -31,7 +32,7 @@ export function ProjectWorkspacePage() {
   const [dialogError, setDialogError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/documents") ? "documents" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
+  const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/documents") ? "documents" : location.pathname.includes("/automation") ? "automation" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
 
   const load = useCallback(async () => {
     setError("");
@@ -231,6 +232,7 @@ export function ProjectWorkspacePage() {
           <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
           <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
           <NavLink to={`/projects/${projectId}/documents`}><FileText size={15} />Documents</NavLink>
+          <NavLink to={`/projects/${projectId}/automation`}><Zap size={15} />Automation</NavLink>
           <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
         </div>
         <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} />
@@ -239,6 +241,7 @@ export function ProjectWorkspacePage() {
       {view === "taskboard" && <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
       {view === "documents" && <ProjectDocuments projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />}
+      {view === "automation" && <ProjectAutomations projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />}
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} process={process} onSave={saveWorkflowGraph} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
       {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} onClose={() => setSelectedTaskSession(null)} />}

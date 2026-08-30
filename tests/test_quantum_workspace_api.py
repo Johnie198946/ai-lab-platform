@@ -563,6 +563,273 @@ def _create_project(client, suffix="draft"):
     return response.json()["project_id"]
 
 
+def test_project_documents_assets_and_distillation_are_source_grounded(_reset_database):
+    client = _reset_database
+    project_id = _create_project(client, "knowledge-p2")
+    bootstrap = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap").json()
+    revision = bootstrap["process"]["process_revision"]
+    intake = client.post(
+        f"/api/v1/projects/{project_id}/business-intakes",
+        json={
+            "request_id": "idem-intake-knowledge-p2",
+            "business_goal": "沉淀可审计项目知识",
+            "customers_and_scenarios": "项目成员跨 Session 交接",
+            "product_scope": "项目知识闭环",
+            "product_form": "software",
+            "innovation_level": "major_upgrade",
+            "tailoring_level": "standard",
+            "requirements_and_evidence": "文档中的事实必须有可验证来源",
+            "desired_deliverables": ["项目说明"],
+            "target_finish_at": "2027-03-31T00:00:00Z",
+        },
+    )
+    assert intake.status_code == 201
+    source_ref = f"intake:{intake.json()['id']}@{intake.json()['revision']}"
+
+    missing_source = client.put(
+        f"/api/v1/projects/{project_id}/documents/brief",
+        json={
+            "expected_revision": revision,
+            "title": "项目说明",
+            "content": "# 项目说明",
+            "status": "PUBLISHED",
+        },
+    )
+    assert missing_source.status_code == 422
+
+    saved = client.put(
+        f"/api/v1/projects/{project_id}/documents/brief",
+        json={
+            "expected_revision": revision,
+            "title": "项目说明",
+            "content": "# 项目说明\n\n参考 [[交付清单]]。",
+            "status": "PUBLISHED",
+            "source_refs": [source_ref],
+            "tags": ["project/qws"],
+        },
+    )
+    assert saved.status_code == 200
+    revision = saved.json()["process_revision"]
+    assert saved.json()["document"]["revision"] == 1
+    assert saved.json()["document"]["content_hash"]
+
+    listed = client.get(f"/api/v1/projects/{project_id}/documents")
+    assert listed.status_code == 200
+    assert listed.json()["truth_contract"] == "READABLE_PROJECTION_ONLY"
+    assert listed.json()["graph"]["broken_links"][0]["target_title"] == "交付清单"
+
+    exported = client.get(f"/api/v1/projects/{project_id}/documents/brief/obsidian")
+    assert exported.status_code == 200
+    assert "source_refs:" in exported.json()["content"]
+    assert source_ref in exported.json()["content"]
+
+    distilled = client.post(
+        f"/api/v1/projects/{project_id}/distillation-runs",
+        json={"expected_revision": revision, "max_candidates": 10},
+    )
+    assert distilled.status_code == 200
+    revision = distilled.json()["process_revision"]
+    assert len(distilled.json()["candidates"]) == 1
+    candidate = distilled.json()["candidates"][0]
+    assert candidate["status"] == "CANDIDATE"
+    assert candidate["source_refs"] == [source_ref]
+
+    admitted = client.post(
+        f"/api/v1/projects/{project_id}/distillation-candidates/{candidate['id']}/decision",
+        json={"expected_revision": revision, "decision": "ADMIT", "note": "来源已核验"},
+    )
+    assert admitted.status_code == 200
+    assert admitted.json()["candidate"]["status"] == "ADMITTED"
+    revision = admitted.json()["process_revision"]
+
+    rule = {
+        "version": 1,
+        "enabled": True,
+        "automation_level": "L1",
+        "output_status": "WAITING_CLAIM",
+        "cron": "0 9 * * 1",
+        "timezone": "Asia/Shanghai",
+        "misfire_policy": "RUN_ONCE",
+        "concurrency_policy": "FORBID",
+        "novelty_threshold": 0.75,
+        "budget": {
+            "max_candidates_scanned": 100,
+            "max_recommendations_per_run": 5,
+            "max_catch_up_runs": 1,
+        },
+        "circuit_breaker": {"noise_ratio": 0.9},
+    }
+    configured = client.put(
+        f"/api/v1/projects/{project_id}/automations/weekly-review",
+        json={"expected_revision": revision, "rule": rule},
+    )
+    assert configured.status_code == 200
+    revision = configured.json()["process_revision"]
+
+    denied_run = client.post(
+        f"/api/v1/projects/{project_id}/automation-runs",
+        json={
+            "expected_revision": revision, "rule_id": "weekly-review", "rule_version": 1,
+            "scheduled_for": "2026-08-31T01:00:00Z", "candidates": [],
+        },
+    )
+    assert denied_run.status_code == 403
+
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "automation-service",
+        "principal_type": "service", "amr": ["service_token"],
+        "scopes": ["qws:automation-run"], "is_super_admin": False,
+    }
+
+    planned = client.post(
+        f"/api/v1/projects/{project_id}/automations/weekly-review/plan-due-runs",
+        json={
+            "rule_version": 1,
+            "due_slots": ["2026-08-31T01:00:00Z"],
+            "now": "2026-08-31T02:00:00Z",
+        },
+    )
+    assert planned.status_code == 200
+    assert planned.json()["planned_slots"] == ["2026-08-31T01:00:00+00:00"]
+
+    automated = client.post(
+        f"/api/v1/projects/{project_id}/automation-runs",
+        json={
+            "expected_revision": revision,
+            "rule_id": "weekly-review",
+            "rule_version": 1,
+            "scheduled_for": "2026-08-31T01:00:00Z",
+            "candidates": [{
+                "title": "核对项目交付",
+                "description": "检查交付证据",
+                "source_refs": [source_ref],
+            }],
+        },
+    )
+    assert automated.status_code == 200
+    revision = automated.json()["process_revision"]
+    run = automated.json()["run"]
+    recommendation = run["recommendations"][0]
+    assert recommendation["status"] == "WAITING_CLAIM"
+
+    replay = client.post(
+        f"/api/v1/projects/{project_id}/automation-runs",
+        json={
+            "expected_revision": revision,
+            "rule_id": "weekly-review",
+            "rule_version": 1,
+            "scheduled_for": "2026-08-31T01:00:00Z",
+            "candidates": [{
+                "title": "核对项目交付", "description": "检查交付证据",
+                "source_refs": [source_ref],
+            }],
+        },
+    )
+    assert replay.status_code == 200
+    assert replay.json()["idempotent_replay"] is True
+    drifted_replay = client.post(
+        f"/api/v1/projects/{project_id}/automation-runs",
+        json={
+            "expected_revision": revision,
+            "rule_id": "weekly-review",
+            "rule_version": 1,
+            "scheduled_for": "2026-08-31T01:00:00Z",
+            "candidates": [{
+                "title": "漂移后的建议", "description": "不同负载",
+                "source_refs": [source_ref],
+            }],
+        },
+    )
+    assert drifted_replay.status_code == 409
+    assert drifted_replay.json()["detail"] == "automation_run_replay_payload_drift"
+
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
+        "principal_type": "human", "amr": ["test_interactive"],
+        "is_super_admin": False,
+    }
+
+    decided = client.post(
+        f"/api/v1/projects/{project_id}/automation-runs/{run['id']}/recommendations/{recommendation['id']}/decision",
+        json={"expected_revision": revision, "decision": "ACCEPT", "note": "进入捕获区"},
+    )
+    assert decided.status_code == 200
+    assert decided.json()["run"]["recommendations"][0]["decision"] == "ACCEPTED"
+    assert decided.json()["metrics"]["acceptance_rate"] == 1.0
+    revision = decided.json()["process_revision"]
+
+    denied_observation = client.post(
+        f"/api/v1/projects/{project_id}/telemetry-events",
+        json={
+            "expected_revision": revision,
+            "event": {
+                "id": "denied-observation", "event_type": "DUPLICATE_DECISION",
+                "correct": True, "user_undid": False,
+                "source_refs": [candidate["observation_ref"]],
+                "measurement_version": 1, "observed_at": "2026-08-30T00:00:00Z",
+            },
+        },
+    )
+    assert denied_observation.status_code == 403
+
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "telemetry-service",
+        "principal_type": "service", "amr": ["service_token"],
+        "scopes": ["qws:telemetry-write"], "is_super_admin": False,
+    }
+
+    observation = client.post(
+        f"/api/v1/projects/{project_id}/telemetry-events",
+        json={
+            "expected_revision": revision,
+            "event": {
+                "id": "duplicate-observation-1",
+                "event_type": "DUPLICATE_DECISION",
+                "correct": True,
+                "user_undid": False,
+                "source_refs": [candidate["observation_ref"]],
+                "measurement_version": 1,
+                "observed_at": "2026-08-30T00:00:00Z",
+            },
+        },
+    )
+    assert observation.status_code == 200
+    revision = observation.json()["process_revision"]
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
+        "principal_type": "human", "amr": ["test_interactive"],
+        "is_super_admin": False,
+    }
+    calibration = client.get(f"/api/v1/projects/{project_id}/calibration")
+    assert calibration.status_code == 200
+    assert calibration.json()["calibration"]["status"] == "INSUFFICIENT_REAL_DATA"
+    assert calibration.json()["calibration"]["applied"] is False
+
+    premature_l2 = client.put(
+        f"/api/v1/projects/{project_id}/autonomy-policy",
+        json={
+            "expected_revision": revision,
+            "policy": {"level": "L2", "capabilities": ["recommend_task"]},
+        },
+    )
+    assert premature_l2.status_code == 409
+    assert premature_l2.json()["detail"] == "autonomy_upgrade_requires_real_sample"
+    l1 = client.put(
+        f"/api/v1/projects/{project_id}/autonomy-policy",
+        json={
+            "expected_revision": revision,
+            "policy": {"level": "L1", "capabilities": ["recommend_task"]},
+        },
+    )
+    assert l1.status_code == 200
+    assert l1.json()["policy"]["level"] == "L1"
+
+    assets = client.get(f"/api/v1/projects/{project_id}/assets")
+    assert assets.status_code == 200
+    assert assets.json()["truth_contract"]["documents"] == "readable_projection_only"
+    assert assets.json()["distillation_candidates"][0]["status"] == "ADMITTED"
+
+
 def test_business_intake_draft_requires_review_and_applies_atomically(_reset_database):
     client = _reset_database
     project_id = _create_project(client)

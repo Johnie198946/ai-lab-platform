@@ -43,6 +43,7 @@ export default function App() {
           <Route path="/projects/:projectId/taskboard" element={<ProjectWorkspacePage />} />
           <Route path="/projects/:projectId/schedule" element={<ProjectWorkspacePage />} />
           <Route path="/projects/:projectId/documents" element={<ProjectWorkspacePage />} />
+          <Route path="/projects/:projectId/automation" element={<ProjectWorkspacePage />} />
           <Route path="/projects/:projectId/graph/:viewType" element={<ProjectWorkspacePage />} />
         </Route>
         <Route path="/architect" element={<ArchitectPage />} />

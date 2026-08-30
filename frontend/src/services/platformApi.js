@@ -419,6 +419,27 @@ export const platformApi = {
   saveProjectDocument(projectId, documentId, payload) {
     return request(`/api/v1/projects/${projectId}/documents/${encodeURIComponent(documentId)}`, { method: "PUT", body: payload });
   },
+  exportProjectDocumentObsidian(projectId, documentId) {
+    return request(`/api/v1/projects/${projectId}/documents/${encodeURIComponent(documentId)}/obsidian`);
+  },
+  listProjectAssets(projectId) {
+    return request(`/api/v1/projects/${projectId}/assets`);
+  },
+  listProjectAutomations(projectId) {
+    return request(`/api/v1/projects/${projectId}/automations`);
+  },
+  saveProjectAutomation(projectId, ruleId, payload) {
+    return request(`/api/v1/projects/${projectId}/automations/${encodeURIComponent(ruleId)}`, { method: "PUT", body: payload });
+  },
+  runProjectAutomation(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/automation-runs`, { method: "POST", body: payload });
+  },
+  decideProjectAutomationRecommendation(projectId, runId, recommendationId, payload) {
+    return request(`/api/v1/projects/${projectId}/automation-runs/${encodeURIComponent(runId)}/recommendations/${encodeURIComponent(recommendationId)}/decision`, { method: "POST", body: payload });
+  },
+  getProjectCalibration(projectId) {
+    return request(`/api/v1/projects/${projectId}/calibration`);
+  },
   createBusinessIntake(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/business-intakes`, { method: "POST", body: payload });
   },

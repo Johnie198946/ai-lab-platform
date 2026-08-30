@@ -11,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "docs" / "qws-task-operating-loop-v1.md"
 OUTPUT = ROOT / "docs" / "qws-task-operating-loop-v1.compiled.json"
+STATUS = ROOT / "docs" / "qws-task-operating-loop-v1.status.json"
 PHASE_RE = re.compile(r"^### (P[0-3])：(.+)$", re.MULTILINE)
 BULLET_RE = re.compile(r"^- (.+?)[；。]?$|^\d+\. (.+?)[；。]?$", re.MULTILINE)
 IMPLEMENTATION_HEADING = "## 13. 分阶段实施"
@@ -66,6 +67,19 @@ def compile_plan(markdown: str) -> dict:
     if len(decisions) != 6:
         raise ValueError(f"expected 6 product decisions, found {len(decisions)}")
 
+    status_overlay = json.loads(STATUS.read_text(encoding="utf-8")) if STATUS.exists() else {}
+    task_statuses = status_overlay.get("tasks") or {}
+    known_task_ids = {task["id"] for phase in phases for task in phase["tasks"]}
+    unknown_task_ids = sorted(set(task_statuses) - known_task_ids)
+    if unknown_task_ids:
+        raise ValueError(f"status_overlay_unknown_tasks:{','.join(unknown_task_ids)}")
+    for phase in phases:
+        for task in phase["tasks"]:
+            overlay = task_statuses.get(task["id"])
+            if overlay:
+                task["status"] = str(overlay["status"])
+                task["evidence"] = list(overlay.get("evidence") or [])
+
     return {
         "schema_version": "1.0",
         "source": str(SOURCE.relative_to(ROOT)),
@@ -74,6 +88,7 @@ def compile_plan(markdown: str) -> dict:
         "strategy": "P0_TO_P3",
         "phase_count": len(phases),
         "task_count": sum(len(phase["tasks"]) for phase in phases),
+        "execution_status_source": str(STATUS.relative_to(ROOT)) if STATUS.exists() else None,
         "phases": phases,
         "product_decisions": decisions,
     }

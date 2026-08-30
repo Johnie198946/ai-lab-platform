@@ -6,6 +6,7 @@
   "strategy": "P0_TO_P3",
   "phase_count": 4,
   "task_count": 37,
+  "execution_status_source": "docs/qws-task-operating-loop-v1.status.json",
   "phases": [
     {
       "id": "P0",
@@ -15,81 +16,111 @@
         {
           "id": "work_4620fa9d25",
           "title": "标题生成/校验；卡片去任务号和内部 UUID",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "标题生成/校验；卡片去任务号和内部 UUID具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_5260cc726a",
           "title": "拆分 `请你决策` 与 `等你验收`",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "拆分 `请你决策` 与 `等你验收`具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_bd0897f04f",
           "title": "六状态合法迁移、阻塞、返工 Run、终态和恢复规则",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "六状态合法迁移、阻塞、返工 Run、终态和恢复规则具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_b5ca69d0dc",
           "title": "baseline/forecast/actual",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "baseline/forecast/actual具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_d847ee03b8",
           "title": "Handoff Capsule + Context Pack v1",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Handoff Capsule + Context Pack v1具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_b553424d49",
           "title": "relation proposal、环检测、revision CAS",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "relation proposal、环检测、revision CAS具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_24856a3680",
           "title": "任务级 Feedback、图片/附件状态和本轮反馈批次",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "任务级 Feedback、图片/附件状态和本轮反馈批次具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_60e998eeba",
           "title": "Initial Intake 原文、场景、方法论和受审计修订",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Initial Intake 原文、场景、方法论和受审计修订具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_4ca846ed98",
           "title": "Artifact Registry、版本哈希和任务完成门禁",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Artifact Registry、版本哈希和任务完成门禁具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_eb18b7ebc5",
           "title": "字段级真源、事件事务和投影 revision",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "字段级真源、事件事务和投影 revision具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         }
       ]
@@ -104,65 +135,89 @@
         {
           "id": "work_34d56471b0",
           "title": "创建时/认领时相似检查",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "创建时/认领时相似检查具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_b41f2fba32",
           "title": "Merge Preview、MERGED 重定向与撤销",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Merge Preview、MERGED 重定向与撤销具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_9f60728e5b",
           "title": "Challenge Review",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Challenge Review具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_25fec0c807",
           "title": "权限过滤的 Relation Digest",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "权限过滤的 Relation Digest具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_7ee3dddec5",
           "title": "Feedback 理解卡、返工、逐项验收和重新打开",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Feedback 理解卡、返工、逐项验收和重新打开具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_a82880fe5f",
           "title": "附件扫描、解析失败披露、权限继承和原线程保留",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "附件扫描、解析失败披露、权限继承和原线程保留具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_b835137da2",
           "title": "Project Distiller 无状态增量候选与事件游标",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Project Distiller 无状态增量候选与事件游标具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         },
         {
           "id": "work_df7b087118",
           "title": "Raw → Admission → Wiki → Index/Matrix → Receipt 基础链路",
-          "status": "TODO",
+          "status": "DEPLOYED_VERIFIED",
           "acceptance": [
             "Raw → Admission → Wiki → Index/Matrix → Receipt 基础链路具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
           ]
         }
       ]
@@ -177,49 +232,99 @@
         {
           "id": "work_0e63c36a50",
           "title": "Obsidian-like Markdown 文档体验",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "Obsidian-like Markdown 文档体验具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_project_knowledge.py",
+            "backend/services/qws_automation.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_qws_automation.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_507a77897a",
           "title": "项目资产库：原始需求、决策过程、交付物和项目蒸馏",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "项目资产库：原始需求、决策过程、交付物和项目蒸馏具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_project_knowledge.py",
+            "backend/services/qws_automation.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_qws_automation.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_a3f7a179a9",
           "title": "Automation 向导、run、报告与 recommendation",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "Automation 向导、run、报告与 recommendation具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_project_knowledge.py",
+            "backend/services/qws_automation.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_qws_automation.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+            "backend/api/quantum_workspace.py",
+            "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
           ]
         },
         {
           "id": "work_1d4789f770",
           "title": "Cron 时区/DST、误点火、补跑、并发、规则版本和幂等语义",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "Cron 时区/DST、误点火、补跑、并发、规则版本和幂等语义具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_project_knowledge.py",
+            "backend/services/qws_automation.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_qws_automation.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+            "backend/api/quantum_workspace.py",
+            "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
           ]
         },
         {
           "id": "work_60527c223a",
           "title": "novelty 聚类、预算、熔断",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "novelty 聚类、预算、熔断具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_project_knowledge.py",
+            "backend/services/qws_automation.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_qws_automation.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+            "backend/api/quantum_workspace.py",
+            "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
           ]
         },
         {
           "id": "work_015804ba5e",
           "title": "采纳/拒绝反馈回流",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "采纳/拒绝反馈回流具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_project_knowledge.py",
+            "backend/services/qws_automation.py",
+            "tests/test_qws_project_knowledge.py",
+            "tests/test_qws_automation.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+            "backend/api/quantum_workspace.py",
+            "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
           ]
         }
       ]
@@ -234,33 +339,53 @@
         {
           "id": "work_9b630dafcf",
           "title": "用真实任务校准重复阈值和 ETA",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "用真实任务校准重复阈值和 ETA具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_147b7cb651",
           "title": "按项目开放 L2/L3 自动化",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "按项目开放 L2/L3 自动化具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_c4b29b4f3b",
           "title": "仪表盘观察重复拦截准确率、交接恢复率、ETA 偏差、推荐采纳率、cron 噪声率",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "仪表盘观察重复拦截准确率、交接恢复率、ETA 偏差、推荐采纳率、cron 噪声率具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_c1e34b5859",
           "title": "反馈一次验收通过率、附件读取失败率和知识候选采纳率",
-          "status": "TODO",
+          "status": "IMPLEMENTED_VERIFIED",
           "acceptance": [
             "反馈一次验收通过率、附件读取失败率和知识候选采纳率具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
@@ -269,7 +394,8 @@
           "status": "TODO",
           "acceptance": [
             "项目关闭时生成 Delivery Manifest 与 Final Project Distillation具备可验证的主路径与证据"
-          ]
+          ],
+          "evidence": []
         },
         {
           "id": "work_cb6ee5f6bb",
@@ -277,62 +403,98 @@
           "status": "TODO",
           "acceptance": [
             "候选知识过期、纠正、权限变更和合规删除治理具备可验证的主路径与证据"
-          ]
+          ],
+          "evidence": []
         },
         {
           "id": "work_440c2de814",
           "title": "新 Session 首次正确行动率",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "新 Session 首次正确行动率具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_12cd8680a3",
           "title": "交接后重复工作率",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "交接后重复工作率具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_2b4cc814c1",
           "title": "forecast P50/P80 校准误差",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "forecast P50/P80 校准误差具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_c3f974d47f",
           "title": "重复提醒精确率与用户撤销率",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "重复提醒精确率与用户撤销率具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_f3359ddf9f",
           "title": "推荐采纳率，而非推荐数量",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "推荐采纳率，而非推荐数量具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_bbb83168a0",
           "title": "被 Challenge Review 修改或避免的高风险任务数",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "被 Challenge Review 修改或避免的高风险任务数具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         },
         {
           "id": "work_851f2b8ec9",
           "title": "每个完成任务的上下文 token 与人工打断次数",
-          "status": "TODO",
+          "status": "IMPLEMENTED_AWAITING_REAL_DATA",
           "acceptance": [
             "每个完成任务的上下文 token 与人工打断次数具备可验证的主路径与证据"
+          ],
+          "evidence": [
+            "backend/services/qws_calibration.py",
+            "tests/test_qws_calibration.py",
+            "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
           ]
         }
       ]

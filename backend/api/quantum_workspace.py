@@ -95,6 +95,30 @@ from backend.services.task_operating_loop import (
     transition_task,
     update_card_summary,
 )
+from backend.services.qws_project_knowledge import (
+    build_document_graph,
+    decide_distillation_candidate,
+    distill_project_events,
+    merge_distillation_candidates,
+    parse_source_ref,
+    render_obsidian_markdown,
+    upsert_project_document,
+)
+from backend.services.qws_automation import (
+    automation_candidate_input_hash,
+    automation_feedback_metrics,
+    complete_automation_run,
+    decide_recommendation,
+    plan_misfire_runs,
+    start_automation_run,
+    validate_automation_rule,
+)
+from backend.services.qws_calibration import (
+    append_telemetry_event,
+    build_calibration_dashboard,
+    propose_calibration,
+    validate_autonomy_policy,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
 
@@ -151,6 +175,55 @@ class SaveProjectDocumentRequest(BaseModel):
     expected_revision: int = Field(ge=0)
     title: str = Field(min_length=1, max_length=200)
     content: str = Field(max_length=200_000)
+    status: Literal["DRAFT", "PUBLISHED", "ARCHIVED"] = "DRAFT"
+    source_refs: list[str] = Field(default_factory=list, max_length=100)
+    tags: list[str] = Field(default_factory=list, max_length=40)
+
+
+class DistillProjectRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    max_candidates: int = Field(default=20, ge=1, le=100)
+
+
+class DecideDistillationCandidateRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    decision: Literal["ADMIT", "REJECT"]
+    note: str = Field(default="", max_length=4000)
+
+
+class SaveAutomationRuleRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    rule: dict[str, Any]
+
+
+class RunAutomationRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    rule_id: str = Field(min_length=1, max_length=120)
+    rule_version: int = Field(ge=1)
+    scheduled_for: datetime
+    candidates: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
+
+
+class PlanAutomationRunsRequest(BaseModel):
+    rule_version: int = Field(ge=1)
+    due_slots: list[datetime] = Field(default_factory=list, max_length=10000)
+    now: datetime
+
+
+class DecideAutomationRecommendationRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    decision: Literal["ACCEPT", "REJECT"]
+    note: str = Field(default="", max_length=4000)
+
+
+class RecordProjectTelemetryRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    event: dict[str, Any]
+
+
+class SaveProjectAutonomyPolicyRequest(BaseModel):
+    expected_revision: int = Field(ge=0)
+    policy: dict[str, Any]
 
 
 class BusinessIntakeRequest(BaseModel):
@@ -849,6 +922,16 @@ def _require_interactive_human(payload: dict[str, Any]) -> None:
     amr = {str(item).lower() for item in (payload.get("amr") or [])}
     if not amr.intersection(INTERACTIVE_HUMAN_AMR):
         raise HTTPException(status_code=403, detail="interactive human authentication required")
+
+
+def _require_service_capability(payload: dict[str, Any], capability: str) -> None:
+    if str(payload.get("principal_type") or "").lower() != "service":
+        raise HTTPException(status_code=403, detail="trusted service principal required")
+    scopes = {
+        str(item) for item in (payload.get("scopes") or payload.get("permissions") or [])
+    }
+    if capability not in scopes:
+        raise HTTPException(status_code=403, detail=f"{capability} capability required")
 
 
 async def _project_for_human_approval(
@@ -2476,6 +2559,84 @@ def _readable_task_ids(
         for task in tasks
         if task.get("project_id") in {None, project_id}
     }
+
+
+async def _validate_project_source_refs(
+    db, *, project: WorkspaceProject, process: dict[str, Any], source_refs: list[str]
+) -> None:
+    """Resolve every project-document source ref inside the caller's project boundary."""
+    tasks = {str(item.get("id")): item for item in process.get("tasks") or [] if item.get("id")}
+    for raw_ref in source_refs:
+        try:
+            parsed = parse_source_ref(raw_ref)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=422, detail={"error": str(exc), "source_ref": raw_ref}
+            ) from exc
+        kind = parsed["kind"]
+        identity = parsed["id"]
+        revision = parsed["revision"]
+        if kind in {"task", "intake", "artifact", "decision"} and revision is None:
+            raise HTTPException(status_code=422, detail={
+                "error": "mutable_project_source_requires_revision", "source_ref": raw_ref,
+            })
+        exists = False
+        if kind == "task":
+            task = tasks.get(identity)
+            exists = task is not None and (
+                revision is None or int(task.get("task_revision") or 1) == revision
+            )
+        elif kind == "intake":
+            query = select(WorkspaceBusinessIntake.id).where(
+                WorkspaceBusinessIntake.id == identity,
+                WorkspaceBusinessIntake.project_id == project.id,
+                WorkspaceBusinessIntake.tenant_key == project.tenant_key,
+            )
+            if revision is not None:
+                query = query.where(WorkspaceBusinessIntake.revision == revision)
+            exists = await db.scalar(query) is not None
+        elif kind == "artifact":
+            query = select(WorkspaceArtifact.id).where(
+                WorkspaceArtifact.id == identity,
+                WorkspaceArtifact.project_id == project.id,
+                WorkspaceArtifact.tenant_key == project.tenant_key,
+            )
+            if revision is not None:
+                query = query.join(
+                    WorkspaceArtifactVersion,
+                    WorkspaceArtifactVersion.artifact_id == WorkspaceArtifact.id,
+                ).where(WorkspaceArtifactVersion.version == revision)
+            exists = await db.scalar(query) is not None
+        elif kind == "decision":
+            query = select(WorkspaceApprovalDecision.id).where(
+                WorkspaceApprovalDecision.id == identity,
+                WorkspaceApprovalDecision.project_id == project.id,
+                WorkspaceApprovalDecision.tenant_key == project.tenant_key,
+            )
+            if revision is not None:
+                query = query.where(WorkspaceApprovalDecision.process_revision == revision)
+            exists = await db.scalar(query) is not None
+            if not exists and revision is None:
+                exists = any(
+                    ((review.get("decision") or {}).get("id") == identity)
+                    for task in tasks.values()
+                    for review in task.get("challenge_reviews") or []
+                )
+        elif kind == "audit":
+            if revision is not None:
+                raise HTTPException(
+                    status_code=422,
+                    detail={"error": "audit_source_ref_has_no_revision", "source_ref": raw_ref},
+                )
+            exists = await db.scalar(select(WorkspaceAuditEvent.id).where(
+                WorkspaceAuditEvent.id == identity,
+                WorkspaceAuditEvent.project_id == project.id,
+                WorkspaceAuditEvent.tenant_key == project.tenant_key,
+            )) is not None
+        if not exists:
+            raise HTTPException(
+                status_code=422, detail={"error": "project_source_not_found", "source_ref": raw_ref}
+            )
 
 
 async def _validate_challenge_evidence_refs(
@@ -5702,24 +5863,520 @@ async def list_project_documents(project_id: str, payload=Depends(require_auth))
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
-        return {"project_id": project.id, "process_revision": project.process_revision, "documents": (project.process_snapshot or {}).get("documents") or []}
+        documents = (project.process_snapshot or {}).get("documents") or []
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            "documents": documents,
+            "graph": build_document_graph(documents),
+            "truth_contract": "READABLE_PROJECTION_ONLY",
+        }
+
+
+@router.get("/projects/{project_id}/documents/{document_id}/obsidian")
+async def export_project_document_obsidian(
+    project_id: str, document_id: str, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        document = next(
+            (
+                item for item in (project.process_snapshot or {}).get("documents") or []
+                if str(item.get("id")) == document_id
+            ),
+            None,
+        )
+        if document is None:
+            raise HTTPException(status_code=404, detail="project document not found")
+        return {
+            "project_id": project.id,
+            "document_id": document_id,
+            "revision": int(document.get("revision") or 1),
+            "media_type": "text/markdown",
+            "content": render_obsidian_markdown(document),
+        }
 
 
 @router.put("/projects/{project_id}/documents/{document_id}")
 async def save_project_document(project_id: str, document_id: str, body: SaveProjectDocumentRequest, payload=Depends(require_auth)) -> dict[str, Any]:
     tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
         process = dict(project.process_snapshot or {})
-        documents = [dict(item) for item in process.get("documents") or []]
-        document = next((item for item in documents if str(item.get("id")) == document_id), None)
-        if document is None:
-            document = {"id": document_id, "status": "draft", "source": "user"}
-            documents.append(document)
-        document.update({"title": body.title.strip(), "content": body.content, "updated_by": user_id, "updated_at": datetime.now(timezone.utc).isoformat()})
-        process["documents"] = documents
-        revision = await _cas_project_process(db, project=project, expected_revision=body.expected_revision, process=process)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        await _validate_project_source_refs(
+            db, project=project, process=process, source_refs=body.source_refs
+        )
+        try:
+            process, document = upsert_project_document(
+                process,
+                document_id=document_id,
+                title=body.title,
+                content=body.content,
+                status=body.status,
+                source_refs=body.source_refs,
+                tags=body.tags,
+                actor_id=f"user:{user_id}",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process, commit=False
+        )
+        db.add(WorkspaceAuditEvent(
+            id=f"qwa_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
+            actor_user_id=user_id,
+            event_type=("project_document_published" if body.status == "PUBLISHED" else "project_document_saved"),
+            subject_id=document_id,
+            payload={
+                "document_revision": document["revision"],
+                "content_hash": document["content_hash"],
+                "source_refs": document["source_refs"],
+                "status": document["status"],
+            },
+        ))
+        await db.commit()
         return {"project_id": project.id, "process_revision": revision, "document": document}
+
+
+@router.get("/projects/{project_id}/assets")
+async def list_project_assets(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        intakes = list((await db.scalars(select(WorkspaceBusinessIntake).where(
+            WorkspaceBusinessIntake.project_id == project.id,
+            WorkspaceBusinessIntake.tenant_key == tenant_key,
+        ).order_by(WorkspaceBusinessIntake.revision))).all())
+        artifacts = list((await db.scalars(select(WorkspaceArtifact).where(
+            WorkspaceArtifact.project_id == project.id,
+            WorkspaceArtifact.tenant_key == tenant_key,
+        ).order_by(WorkspaceArtifact.created_at))).all())
+        artifact_ids = [item.id for item in artifacts]
+        versions = list((await db.scalars(select(WorkspaceArtifactVersion).where(
+            WorkspaceArtifactVersion.artifact_id.in_(artifact_ids)
+        ).order_by(WorkspaceArtifactVersion.artifact_id, WorkspaceArtifactVersion.version))).all()) if artifact_ids else []
+        decisions = list((await db.scalars(select(WorkspaceApprovalDecision).where(
+            WorkspaceApprovalDecision.project_id == project.id,
+            WorkspaceApprovalDecision.tenant_key == tenant_key,
+        ).order_by(WorkspaceApprovalDecision.created_at))).all())
+        process = project.process_snapshot or {}
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            "truth_contract": {
+                "intakes": "workspace_business_intakes",
+                "decisions": "workspace_approval_decisions_and_challenge_reviews",
+                "artifacts": "workspace_artifacts_and_versions",
+                "documents": "readable_projection_only",
+                "distillation": "candidate_only_until_human_admission",
+            },
+            "intakes": [{
+                "id": item.id, "revision": item.revision, "status": item.status,
+                "source_ref": f"intake:{item.id}@{item.revision}",
+            } for item in intakes],
+            "artifacts": [{
+                "id": item.id, "artifact_key": item.artifact_key, "title": item.title,
+                "status": item.status, "current_version": item.current_version,
+            } for item in artifacts],
+            "artifact_versions": [{
+                "id": item.id, "artifact_id": item.artifact_id, "version": item.version,
+                "sha256": item.sha256, "media_type": item.media_type,
+                "source_ref": f"artifact:{item.artifact_id}@{item.version}",
+            } for item in versions],
+            "decisions": [{
+                "id": item.id, "gate_id": item.gate_id, "decision": item.decision,
+                "process_revision": item.process_revision,
+                "source_ref": f"decision:{item.id}@{item.process_revision}",
+            } for item in decisions],
+            "documents": process.get("documents") or [],
+            "distillation_candidates": process.get("distillation_candidates") or [],
+        }
+
+
+@router.post("/projects/{project_id}/distillation-runs")
+async def run_project_distillation(
+    project_id: str, body: DistillProjectRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        process = dict(project.process_snapshot or {})
+        rows = list((await db.scalars(select(WorkspaceAuditEvent).where(
+            WorkspaceAuditEvent.project_id == project.id,
+            WorkspaceAuditEvent.tenant_key == tenant_key,
+        ).order_by(WorkspaceAuditEvent.created_at, WorkspaceAuditEvent.id))).all())
+        events = [{
+            "sequence": index,
+            "id": row.id,
+            "event_type": row.event_type,
+            "title": row.event_type.replace("_", " "),
+            "summary": str((row.payload or {}).get("summary") or ""),
+            "payload": row.payload or {},
+        } for index, row in enumerate(rows, start=1)]
+        result = distill_project_events(
+            events, cursor=int(process.get("distillation_cursor") or 0),
+            max_candidates=body.max_candidates,
+        )
+        next_process = merge_distillation_candidates(
+            process, candidates=result["candidates"], next_cursor=result["next_cursor"]
+        )
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=next_process
+        )
+        return {"project_id": project.id, "process_revision": revision, **result}
+
+
+@router.post("/projects/{project_id}/distillation-candidates/{candidate_id}/decision")
+async def decide_project_distillation_candidate(
+    project_id: str, candidate_id: str, body: DecideDistillationCandidateRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        try:
+            process, candidate = decide_distillation_candidate(
+                dict(project.process_snapshot or {}), candidate_id=candidate_id,
+                decision=body.decision, actor_id=f"user:{user_id}", note=body.note,
+            )
+        except ValueError as exc:
+            status_code = 404 if str(exc) == "distillation_candidate_not_found" else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process,
+            commit=False,
+        )
+        db.add(WorkspaceAuditEvent(
+            id=f"qwa_{uuid4().hex}", tenant_key=tenant_key, project_id=project.id,
+            actor_user_id=user_id, event_type="distillation_candidate_decided",
+            subject_id=candidate_id,
+            payload={"decision": body.decision, "candidate_hash": candidate.get("candidate_hash")},
+        ))
+        await db.commit()
+        return {"project_id": project.id, "process_revision": revision, "candidate": candidate}
+
+
+@router.get("/projects/{project_id}/automations")
+async def list_project_automations(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        process = project.process_snapshot or {}
+        runs = process.get("automation_runs") or []
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            "runtime_contract": "HERMES_ONLY_QWS_IS_POLICY_AND_LEDGER",
+            "rules": process.get("automation_rules") or [],
+            "runs": runs,
+            "metrics": automation_feedback_metrics(runs),
+        }
+
+
+@router.post("/projects/{project_id}/automations/{rule_id}/plan-due-runs")
+async def plan_project_automation_runs(
+    project_id: str, rule_id: str, body: PlanAutomationRunsRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_service_capability(payload, "qws:automation-run")
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        rules = [
+            item for item in (project.process_snapshot or {}).get("automation_rules") or []
+            if item.get("id") == rule_id
+        ]
+        latest = max(rules, key=lambda item: int(item.get("version") or 0), default=None)
+        if (
+            latest is None
+            or int(latest.get("version") or 0) != body.rule_version
+            or not latest.get("enabled")
+        ):
+            raise HTTPException(status_code=404, detail="latest enabled automation rule not found")
+        try:
+            planned = plan_misfire_runs(latest, due_slots=body.due_slots, now=body.now)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            "rule_id": rule_id,
+            "rule_version": body.rule_version,
+            "planned_slots": [item.isoformat() for item in planned],
+            "runtime_contract": "HERMES_CRON_ADAPTER_MUST_SUBMIT_EACH_PLANNED_SLOT",
+        }
+
+
+@router.put("/projects/{project_id}/automations/{rule_id}")
+async def save_project_automation_rule(
+    project_id: str, rule_id: str, body: SaveAutomationRuleRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        try:
+            rule = validate_automation_rule({**body.rule, "id": rule_id})
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        process = dict(project.process_snapshot or {})
+        rules = [dict(item) for item in process.get("automation_rules") or []]
+        same_version = next((
+            item for item in rules
+            if item.get("id") == rule_id and int(item.get("version") or 0) == rule["version"]
+        ), None)
+        if same_version is not None:
+            if same_version.get("rule_hash") != rule["rule_hash"]:
+                raise HTTPException(status_code=409, detail="automation_rule_version_drift")
+            return {
+                "project_id": project.id, "process_revision": project.process_revision,
+                "rule": same_version, "idempotent_replay": True,
+            }
+        latest_version = max(
+            [int(item.get("version") or 0) for item in rules if item.get("id") == rule_id],
+            default=0,
+        )
+        if rule["version"] != latest_version + 1:
+            raise HTTPException(status_code=409, detail="automation_rule_version_must_increment")
+        rule["configured_by"] = f"user:{user_id}"
+        rule["configured_at"] = datetime.now(timezone.utc).isoformat()
+        rules.append(rule)
+        process["automation_rules"] = rules
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project.id, "process_revision": revision, "rule": rule}
+
+
+@router.post("/projects/{project_id}/automation-runs")
+async def create_project_automation_run(
+    project_id: str, body: RunAutomationRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_service_capability(payload, "qws:automation-run")
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
+        rule_versions = [
+            item for item in process.get("automation_rules") or []
+            if item.get("id") == body.rule_id
+            and int(item.get("version") or 0) == body.rule_version
+        ]
+        rule = rule_versions[0] if rule_versions else None
+        if rule is None:
+            raise HTTPException(status_code=404, detail="automation rule version not found")
+        for candidate in body.candidates:
+            source_refs = [str(item) for item in candidate.get("source_refs") or []]
+            if not source_refs:
+                raise HTTPException(status_code=422, detail="automation_candidate_requires_source_ref")
+            await _validate_project_source_refs(
+                db, project=project, process=process, source_refs=source_refs
+            )
+        runs = [dict(item) for item in process.get("automation_runs") or []]
+        try:
+            started = start_automation_run(rule, scheduled_for=body.scheduled_for, active_runs=runs)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if started["action"] == "REPLAY":
+            replay_input_hash = automation_candidate_input_hash(
+                body.candidates[: int((rule.get("budget") or {}).get("max_candidates_scanned") or 0)]
+            )
+            if started["run"].get("input_hash") != replay_input_hash:
+                raise HTTPException(status_code=409, detail="automation_run_replay_payload_drift")
+            return {
+                "project_id": project.id, "process_revision": project.process_revision,
+                "run": started["run"], "idempotent_replay": True,
+            }
+        latest_rule = max(
+            (item for item in process.get("automation_rules") or [] if item.get("id") == body.rule_id),
+            key=lambda item: int(item.get("version") or 0),
+            default=None,
+        )
+        if latest_rule is None or int(latest_rule.get("version") or 0) != body.rule_version:
+            raise HTTPException(status_code=409, detail="automation_rule_version_superseded")
+        if not rule.get("enabled"):
+            raise HTTPException(status_code=404, detail="enabled automation rule not found")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        if started["action"] not in {"START", "REPLACE"}:
+            raise HTTPException(status_code=409, detail="automation_run_suppressed_by_concurrency")
+        try:
+            run = complete_automation_run(
+                started["run"], candidates=body.candidates, rule=rule
+            )
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if started["action"] == "REPLACE":
+            replaced_ids = set(started.get("replaced_run_ids") or [])
+            runs = [
+                {**item, "status": "REPLACED", "replaced_by": run["id"]}
+                if item.get("id") in replaced_ids else item
+                for item in runs
+            ]
+        runs.append(run)
+        process["automation_runs"] = runs
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project.id, "process_revision": revision, "run": run}
+
+
+@router.post(
+    "/projects/{project_id}/automation-runs/{run_id}/recommendations/{recommendation_id}/decision"
+)
+async def decide_project_automation_recommendation(
+    project_id: str, run_id: str, recommendation_id: str,
+    body: DecideAutomationRecommendationRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        process = dict(project.process_snapshot or {})
+        runs = [dict(item) for item in process.get("automation_runs") or []]
+        run = next((item for item in runs if item.get("id") == run_id), None)
+        if run is None:
+            raise HTTPException(status_code=404, detail="automation run not found")
+        try:
+            decided_run = decide_recommendation(
+                run, recommendation_id=recommendation_id, decision=body.decision,
+                actor_id=f"user:{user_id}", note=body.note,
+            )
+        except ValueError as exc:
+            status_code = 404 if str(exc) == "recommendation_not_found" else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        runs[runs.index(run)] = decided_run
+        process["automation_runs"] = runs
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {
+            "project_id": project.id, "process_revision": revision,
+            "run": decided_run, "metrics": automation_feedback_metrics(runs),
+        }
+
+
+@router.get("/projects/{project_id}/calibration")
+async def get_project_calibration(project_id: str, payload=Depends(require_auth)) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        process = project.process_snapshot or {}
+        return {
+            "project_id": project.id,
+            "process_revision": project.process_revision,
+            "autonomy_policy": process.get("autonomy_policy") or {
+                "level": "L1", "status": "DEFAULT",
+            },
+            "calibration": propose_calibration(process),
+        }
+
+
+@router.post("/projects/{project_id}/telemetry-events")
+async def record_project_telemetry(
+    project_id: str, body: RecordProjectTelemetryRequest, payload=Depends(require_auth)
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_service_capability(payload, "qws:telemetry-write")
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        event = dict(body.event)
+        source_refs = [str(item) for item in event.get("source_refs") or []]
+        allowed_source_kinds = {
+            "DUPLICATE_DECISION": {"audit", "decision"},
+            "HANDOFF_RESUME": {"audit", "task"},
+            "ETA_COMPLETED": {"task"},
+            "FEEDBACK_CYCLE": {"audit", "task"},
+            "ATTACHMENT_READ": {"audit", "artifact"},
+            "CHALLENGE_OUTCOME": {"audit", "decision"},
+            "TASK_COMPLETED": {"audit", "task"},
+        }
+        event_type = str(event.get("event_type") or "")
+        allowed_kinds = allowed_source_kinds.get(event_type, set())
+        try:
+            source_kinds = [parse_source_ref(ref)["kind"] for ref in source_refs]
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not source_refs or any(kind not in allowed_kinds for kind in source_kinds):
+            raise HTTPException(status_code=422, detail="telemetry_source_kind_mismatch")
+        await _validate_project_source_refs(
+            db, project=project, process=dict(project.process_snapshot or {}), source_refs=source_refs
+        )
+        event["recorded_by"] = _lease_actor_id(payload)
+        try:
+            process = append_telemetry_event(dict(project.process_snapshot or {}), event)
+        except ValueError as exc:
+            status_code = 409 if str(exc) == "telemetry_event_payload_drift" else 422
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        if process == dict(project.process_snapshot or {}):
+            return {
+                "project_id": project.id, "process_revision": project.process_revision,
+                "event": event, "idempotent_replay": True,
+            }
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project.id, "process_revision": revision, "event": event}
+
+
+@router.put("/projects/{project_id}/autonomy-policy")
+async def save_project_autonomy_policy(
+    project_id: str, body: SaveProjectAutonomyPolicyRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    _require_interactive_human(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_owner(db, project_id, tenant_key, user_id)
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={
+                "error": "project_revision_conflict", "server_revision": project.process_revision,
+            })
+        process = dict(project.process_snapshot or {})
+        try:
+            policy = validate_autonomy_policy(
+                body.policy, build_calibration_dashboard(process)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        policy["approved_by"] = f"user:{user_id}"
+        policy["approved_at"] = datetime.now(timezone.utc).isoformat()
+        process["autonomy_policy"] = policy
+        revision = await _cas_project_process(
+            db, project=project, expected_revision=body.expected_revision, process=process
+        )
+        return {"project_id": project.id, "process_revision": revision, "policy": policy}
 
 
 def _backfill_proposal_out(

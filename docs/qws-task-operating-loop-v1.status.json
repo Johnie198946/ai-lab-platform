@@ -1,0 +1,278 @@
+{
+  "schema_version": "1.0",
+  "truth": "EXECUTION_STATUS_OVERLAY",
+  "tasks": {
+    "work_4620fa9d25": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_5260cc726a": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_bd0897f04f": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_b5ca69d0dc": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_d847ee03b8": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_b553424d49": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_24856a3680": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_60e998eeba": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_4ca846ed98": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_eb18b7ebc5": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_34d56471b0": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_b41f2fba32": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_9f60728e5b": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_25fec0c807": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_7ee3dddec5": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_a82880fe5f": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_b835137da2": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_df7b087118": {
+      "status": "DEPLOYED_VERIFIED",
+      "evidence": [
+        "ops/change-manifests/qws-p1-product-contract-closure-20260830.md"
+      ]
+    },
+    "work_0e63c36a50": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_project_knowledge.py",
+        "backend/services/qws_automation.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_qws_automation.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_507a77897a": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_project_knowledge.py",
+        "backend/services/qws_automation.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_qws_automation.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_a3f7a179a9": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_project_knowledge.py",
+        "backend/services/qws_automation.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_qws_automation.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+        "backend/api/quantum_workspace.py",
+        "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
+      ]
+    },
+    "work_1d4789f770": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_project_knowledge.py",
+        "backend/services/qws_automation.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_qws_automation.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+        "backend/api/quantum_workspace.py",
+        "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
+      ]
+    },
+    "work_60527c223a": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_project_knowledge.py",
+        "backend/services/qws_automation.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_qws_automation.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+        "backend/api/quantum_workspace.py",
+        "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
+      ]
+    },
+    "work_015804ba5e": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_project_knowledge.py",
+        "backend/services/qws_automation.py",
+        "tests/test_qws_project_knowledge.py",
+        "tests/test_qws_automation.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md",
+        "backend/api/quantum_workspace.py",
+        "frontend/src/features/quantum-workspace/ProjectAutomations.jsx"
+      ]
+    },
+    "work_9b630dafcf": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_147b7cb651": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_c4b29b4f3b": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_c1e34b5859": {
+      "status": "IMPLEMENTED_VERIFIED",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_1a1c3c031b": {
+      "status": "TODO",
+      "evidence": []
+    },
+    "work_cb6ee5f6bb": {
+      "status": "TODO",
+      "evidence": []
+    },
+    "work_440c2de814": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_12cd8680a3": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_2b4cc814c1": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_c3f974d47f": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_f3359ddf9f": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_bbb83168a0": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    },
+    "work_851f2b8ec9": {
+      "status": "IMPLEMENTED_AWAITING_REAL_DATA",
+      "evidence": [
+        "backend/services/qws_calibration.py",
+        "tests/test_qws_calibration.py",
+        "ops/change-manifests/qws-p2-p3-instrumentation-20260830.md"
+      ]
+    }
+  }
+}
