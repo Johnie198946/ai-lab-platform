@@ -467,6 +467,12 @@ def test_relation_digest_filters_permissions_and_private_facts() -> None:
         "target_task_id": "visible", "proposed_type": "related", "status": "PROPOSED",
     })
     assert relation_state_hash(process) == unconfirmed_hash
+    reordered = {
+        **process,
+        "tasks": list(reversed(process["tasks"])),
+        "relation_proposals": list(reversed(process["relation_proposals"])),
+    }
+    assert relation_state_hash(reordered) == relation_state_hash(process)
     readable = next(item for item in digest["entries"] if not item["restricted"])
     private = next(item for item in digest["entries"] if item["restricted"])
     assert readable["title"] == "可见依赖"

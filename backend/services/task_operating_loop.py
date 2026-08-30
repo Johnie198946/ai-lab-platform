@@ -907,17 +907,59 @@ def _reverse_relation_type(relation_type: str) -> str:
 
 
 def relation_state_hash(process: dict[str, Any]) -> str:
-    """Hash the canonical QWS relation projection; proposals count only once confirmed."""
+    """Hash stable canonical relation semantics, independent of list order and audit metadata."""
+    edges: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def add_edge(
+        source_id: Any, target_id: Any, relation_type: Any, *,
+        relation_id: Any = None, reason: Any = None, release_condition: Any = None,
+    ) -> None:
+        source, target = str(source_id or ""), str(target_id or "")
+        edge_type = str(relation_type or "related")
+        if not source or not target:
+            return
+        edges.setdefault((source, target, edge_type), {
+            "source_task_id": source,
+            "target_task_id": target,
+            "relation_type": edge_type,
+            "relation_id": str(relation_id) if relation_id else None,
+            "reason": str(reason) if reason else None,
+            "release_condition": str(release_condition) if release_condition else None,
+        })
+
+    for owner in sorted(process.get("tasks") or [], key=lambda item: str(item.get("id") or "")):
+        for relation in owner.get("relations") or []:
+            if isinstance(relation, dict):
+                add_edge(
+                    owner.get("id"),
+                    relation.get("target_task_id") or relation.get("target_id"),
+                    relation.get("type") or relation.get("relation_type"),
+                    relation_id=relation.get("id"),
+                    reason=relation.get("reason"),
+                    release_condition=relation.get("release_condition"),
+                )
+    for dependency in process.get("dependencies") or []:
+        if isinstance(dependency, dict):
+            add_edge(
+                dependency.get("from_task_id"), dependency.get("to_task_id"), "blocks",
+                relation_id=dependency.get("id"), reason=dependency.get("reason"),
+                release_condition=dependency.get("release_condition"),
+            )
+    for proposal in process.get("relation_proposals") or []:
+        if isinstance(proposal, dict) and proposal.get("status") in {"APPROVED", "CONFIRMED", "ACCEPTED"}:
+            add_edge(
+                proposal.get("source_task_id"), proposal.get("target_task_id"),
+                proposal.get("proposed_type"), relation_id=f"relation:{proposal.get('id')}",
+                reason=proposal.get("reason"),
+                release_condition=(proposal.get("impact") or {}).get("release_condition"),
+            )
     canonical = {
-        "dependencies": process.get("dependencies") or [],
-        "task_relations": [
-            {"task_id": item.get("id"), "relations": item.get("relations") or []}
-            for item in (process.get("tasks") or [])
-        ],
-        "confirmed_proposals": [
-            item for item in (process.get("relation_proposals") or [])
-            if item.get("status") in {"APPROVED", "CONFIRMED", "ACCEPTED"}
-        ],
+        "edges": sorted(
+            edges.values(),
+            key=lambda item: (
+                item["source_task_id"], item["target_task_id"], item["relation_type"]
+            ),
+        )
     }
     payload = json.dumps(
         canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str

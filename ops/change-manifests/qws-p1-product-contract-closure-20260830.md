@@ -19,7 +19,8 @@
 - 无鉴权开发模式不再被视为可审批人类。
 - Challenge Decision、Relation Proposal Decision、Delivery Manifest Decision 要求交互式 human principal 与 `gate:approve`（项目 Owner 具备固有审批权；成员需显式 scope）。
 - Feedback 理解确认和验收要求交互式 human principal。
-- 项目删除要求交互式 human、Owner 权限及 `X-QWS-Confirm-Project-Id` 精确确认。
+- 项目删除要求 Owner、交互式 human，并通过 `X-QWS-Confirm-Project-Id` 精确确认目标。
+- Tenant Agent 切片创建、更新和删除要求交互式 human，且所有 visibility 均严格绑定 owner。
 - 成员权限变更与 Gate approver 任命要求交互式 human Owner。
 
 ### 2. Challenge / Decision Brief 合同
@@ -43,6 +44,7 @@
 - `QWS_PROCESS_SNAPSHOT` 是 canonical relation writer。
 - 已确认 Relation Proposal 被原子 materialize 为 canonical task relation，并更新 Task revision。
 - Relation Digest 输出 canonical source、稳定 source hash 和 `READ_ONLY_CONSUMER_REQUIRED` 投影合同。
+- source hash 基于排序、去重后的关系语义边计算，不受任务数组顺序或 proposal 审计时间等元数据影响。
 - Dashi QWS 模式同步 canonical 关系并移除漂移关系；QWS 卡片上的 Taskboard relation POST/DELETE 被服务端拒绝。
 - Agent Context 只消费 QWS Relation Digest；Taskboard 关系仅参与 drift 对账，不进入执行事实。
 - QWS backfill 对 relation mutation fail-closed，要求走 QWS Relation Proposal。
