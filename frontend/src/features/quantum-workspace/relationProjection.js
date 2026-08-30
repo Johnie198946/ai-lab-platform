@@ -48,8 +48,8 @@ export function buildTaskboardRelationProjection({ digest, dashiTask, allTasks, 
   const verifiable = digest?.canonical_source === "QWS_PROCESS_SNAPSHOT";
   return {
     canonical_source: digest?.canonical_source || null,
-    canonical_hash: digest?.source_hash || null,
-    taskboard_mode: digest?.projection_contract?.taskboard_mode || "READ_ONLY_CONSUMER_REQUIRED",
+    canonical_hash: digest?.canonical_source_hash || null,
+    taskboard_mode: digest?.external_projection_mode || "READ_ONLY_CONSUMER_REQUIRED",
     status: !verifiable ? "UNVERIFIABLE" : (!missingInTaskboard.length && !extraInTaskboard.length && !unmappedCount ? "ALIGNED" : "DRIFT"),
     missing_in_taskboard: missingInTaskboard,
     extra_in_taskboard: extraInTaskboard,

@@ -132,8 +132,8 @@ test("QuantumWorkspace opens a specifically requested canonical workflow", () =>
 test("QWS relation snapshot is canonical and Taskboard drift never replaces it", () => {
   const digest = {
     canonical_source: "QWS_PROCESS_SNAPSHOT",
-    source_hash: "a".repeat(64),
-    projection_contract: { taskboard_mode: "READ_ONLY_CONSUMER_REQUIRED" },
+    canonical_source_hash: "a".repeat(64),
+    external_projection_mode: "READ_ONLY_CONSUMER_REQUIRED",
     entries: [{ relation_type: "blocks", effective_task_id: "qws-target", title: "目标" }],
   };
   const qwsTasks = [{ id: "qws-target" }, { id: "qws-extra" }];
@@ -146,6 +146,8 @@ test("QWS relation snapshot is canonical and Taskboard drift never replaces it",
     allTasks: [dashiTarget, dashiExtra],
   });
   assert.equal(projection.status, "DRIFT");
+  assert.equal(projection.canonical_hash, "a".repeat(64));
+  assert.equal(projection.taskboard_mode, "READ_ONLY_CONSUMER_REQUIRED");
   assert.deepEqual(projection.extra_in_taskboard, ["related:qws-extra"]);
   assert.equal(groupCanonicalRelations(projection.canonical_entries).blocks[0].effective_task_id, "qws-target");
   assert.equal(groupCanonicalRelations(projection.canonical_entries).related.length, 0);
