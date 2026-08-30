@@ -12,13 +12,16 @@ import SwiftUI
 public struct ChatMessageStreamView: View {
     @ObservedObject public var coordinator: TenantSessionCoordinator
     public let onBackgroundTap: () -> Void
+    public let onStartTopic: ((ChatMessage) -> Void)?
 
     public init(
         coordinator: TenantSessionCoordinator,
-        onBackgroundTap: @escaping () -> Void = {}
+        onBackgroundTap: @escaping () -> Void = {},
+        onStartTopic: ((ChatMessage) -> Void)? = nil
     ) {
         self.coordinator = coordinator
         self.onBackgroundTap = onBackgroundTap
+        self.onStartTopic = onStartTopic
     }
 
     public var body: some View {
@@ -141,7 +144,10 @@ public struct ChatMessageStreamView: View {
                 context: coordinator.makeRenderContext(for: message),
                 onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted },
                 onRegenerate: { msgId in coordinator.retryMessage(msgId) },
-                onStartTopic: { coordinator.startTargetedTopic(from: $0) }
+                onStartTopic: { message in
+                    if let onStartTopic { onStartTopic(message) }
+                    else { coordinator.startTargetedTopic(from: message) }
+                }
             )
         }
     }

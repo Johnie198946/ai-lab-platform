@@ -135,16 +135,10 @@ def _session_payload(
 
 @router.get("/capabilities")
 async def capabilities():
-    try:
-        data = await _authen_request("GET", "/api/v1/auth/capabilities")
-    except HTTPException:
-        data = {
-            "phone": {"enabled": False},
-            "oauth": {
-                "wechat": {"enabled": False},
-                "alipay": {"enabled": False},
-            },
-        }
+    # Preserve the distinction between "not configured" and "temporarily
+    # unavailable".  Masking an Authen 503 as all-disabled strands healthy SMS
+    # and Alipay setups behind a misleading permanent-off UI.
+    data = await _authen_request("GET", "/api/v1/auth/capabilities")
     https_ready = os.environ.get("AUTH_PUBLIC_BASE_URL", "").strip().startswith(
         "https://"
     )

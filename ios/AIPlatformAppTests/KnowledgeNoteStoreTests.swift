@@ -50,6 +50,17 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         XCTAssertTrue(markdown.contains("[[欢迎使用知识笔记|开始]]"))
     }
 
+    func testMultiTagSearchUsesLogicalAnd() throws {
+        let store = KnowledgeNoteStore.shared
+        store.activate(tenantKey: "tag-tenant-\(UUID())", userId: "tag-user")
+        let both = try XCTUnwrap(store.createNote(title: "双标签", tags: ["旅行", "日本"]))
+        let one = try XCTUnwrap(store.createNote(title: "单标签", tags: ["旅行"]))
+        defer { store.moveToTrash(id: both.id); store.moveToTrash(id: one.id) }
+
+        XCTAssertEqual(store.search("", tags: ["旅行", "日本"]).map(\.id), [both.id])
+        XCTAssertEqual(Set(store.search("", tags: ["旅行"]).map(\.id)), Set([both.id, one.id]))
+    }
+
     func testRenamingNoteUpdatesIncomingWikiLinks() throws {
         let store = KnowledgeNoteStore.shared
         let suffix = UUID().uuidString.prefix(8)

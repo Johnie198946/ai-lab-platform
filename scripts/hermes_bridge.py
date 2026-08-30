@@ -84,6 +84,7 @@ from backend.services.tenant_hermes_sandbox import (  # noqa: E402
     list_sandbox_skills,
     persist_agent_snapshot,
     read_sandbox_skill,
+    write_sandbox_skill,
 )
 from backend.services.chat_triage import (  # noqa: E402
     CASUAL,
@@ -1103,10 +1104,22 @@ _FULL_KNOWLEDGE_CATEGORY_RE = re.compile(
     r"^knowledge/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)+"
     r"(?:public|entitlement/[A-Za-z0-9][A-Za-z0-9._-]*)$"
 )
+_REVISION_REQUEST_RE = re.compile(
+    r"(?:不满意|不对|不行|重写|改写|重新写|换一版|换个版本|再来一版|再写|再改|"
+    r"上一版|这一版|这版|语气再|风格再|调整|修改|补充|不要.{0,12}(?:一样|重复))",
+    re.IGNORECASE,
+)
+_SKILL_CREATE_REQUEST_RE = re.compile(
+    r"(?:创建|新建|生成|做|建).{0,12}(?:技能|skill)", re.IGNORECASE
+)
 
 
 def _is_note_draft_request(goal: str) -> bool:
     return bool(_NOTE_DRAFT_REQUEST_RE.search(str(goal or "")))
+
+
+def _is_revision_request(goal: str) -> bool:
+    return bool(_REVISION_REQUEST_RE.search(str(goal or "")))
 
 
 def _fallback_note_title(markdown: str) -> str:
@@ -1367,6 +1380,45 @@ def _tenant_skill_read_tool(args: dict[str, Any], **_kwargs) -> str:
     )
 
 
+def _tenant_skill_manage_tool(args: dict[str, Any], **_kwargs) -> str:
+    sandbox = getattr(_sandbox_tool_context, "value", None)
+    if not isinstance(sandbox, TenantHermesSandbox):
+        return json.dumps({"success": False, "error": "sandbox_unavailable"})
+    action = str((args or {}).get("action") or "create").strip().lower()
+    name = str((args or {}).get("name") or "").strip()
+    try:
+        if action == "delete":
+            changed = delete_sandbox_skill(sandbox, name)
+            return json.dumps(
+                {"success": changed, "action": action, "name": name},
+                ensure_ascii=False,
+            )
+        if action not in {"create", "update"}:
+            return json.dumps({"success": False, "error": "unsupported_action"})
+        content = str((args or {}).get("content") or "")
+        path = write_sandbox_skill(
+            sandbox,
+            name,
+            content,
+            replace=action == "update",
+        )
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return json.dumps(
+            {
+                "success": True,
+                "action": action,
+                "name": name,
+                "sha256": digest,
+                "scope": "tenant_private",
+            },
+            ensure_ascii=False,
+        )
+    except (ValueError, FileExistsError) as error:
+        return json.dumps(
+            {"success": False, "error": str(error)[:300]}, ensure_ascii=False
+        )
+
+
 def _ensure_knowledge_gateway_tool_registered() -> None:
     """Register the platform-owned tool once in Hermes' process-global registry."""
     global _knowledge_tool_registered
@@ -1466,6 +1518,31 @@ def _ensure_tenant_skill_tool_registered() -> None:
                 },
             },
             handler=lambda args, **kwargs: _tenant_skill_read_tool(args, **kwargs),
+        )
+        registry.register(
+            name="tenant_skill_manage",
+            toolset="tenant_skills",
+            schema={
+                "name": "tenant_skill_manage",
+                "description": (
+                    "Create, update, or delete one Skill only inside the authenticated "
+                    "tenant/user Hermes sandbox. SKILL.md must include governed routing "
+                    "frontmatter, trigger phrases, and negative phrases."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["create", "update", "delete"],
+                        },
+                        "name": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["action", "name"],
+                },
+            },
+            handler=lambda args, **kwargs: _tenant_skill_manage_tool(args, **kwargs),
         )
         _sandbox_tool_registered = True
 
@@ -4108,6 +4185,8 @@ def _tenant_base_toolsets(allowed_tools: set[str]) -> set[str]:
     """Return only tenant-authorized stateful toolsets."""
     requested = {"clarify"}
     requested.update({"memory", "session_search"} & allowed_tools)
+    if "tenant_skill_manage" in allowed_tools:
+        requested.add("tenant_skills")
     return requested
 
 
@@ -4545,11 +4624,33 @@ def _run_agent_sync(
                     " note_draft。不要澄清，不要声称已经写入。"
                 )
             elif _is_note_draft_request(goal) and knowledge_action_enabled:
+                transcript_result = _session_context_read_tool({})
                 goal += (
                     "\n\n【知识工作区协议】本客户端支持 knowledge_action_v1。"
-                    "请先用 knowledge_workspace_read 读取或搜索当前用户个人笔记，再调用"
+                    "session_context_read 已由平台验证执行，完整结果如下：\n"
+                    + transcript_result
+                    + "\n请先用 knowledge_workspace_read 读取或搜索当前用户个人笔记，再调用"
                     " knowledge_action_propose 生成一张待确认操作卡；禁止调用 note_draft，"
-                    "禁止声称已经写入。若请求总结当前会话，再先调用 session_context_read。"
+                    "禁止声称已经写入。"
+                )
+                if "仅当我明确要求拆分" in goal:
+                    goal += (
+                        "\n【综合笔记硬约束】本轮必须只提议一篇综合笔记；"
+                        "不得按来源文件数、来源会话数或主题数拆成多篇。"
+                    )
+            if _is_revision_request(goal):
+                goal += (
+                    "\n\n【修订硬约束】用户正在对上一版提出修改。必须逐项落实本轮反馈，"
+                    "输出一版实质不同的修订稿；禁止复述或原样返回上一版。完成前对比上一版，"
+                    "若核心段落无变化则继续改写。"
+                )
+            if _SKILL_CREATE_REQUEST_RE.search(goal):
+                goal += (
+                    "\n\n【租户 Skill 创建协议】完成需求确认后，必须调用 "
+                    "tenant_skill_manage 在当前认证租户沙箱中创建或更新 Skill；"
+                    "禁止调用全局 skill_manage，禁止写宿主机全局 Skill。SKILL.md 必须包含"
+                    "可判断的 Use when 描述、至少两层 skill_path、skill_level、"
+                    "trigger_phrases 和 negative_phrases。工具返回 success=true 后才可称已创建。"
                 )
         agent, session_db, route_context = _build_in_process_agent(
             goal, user_id, hermes_sid, stream_q,

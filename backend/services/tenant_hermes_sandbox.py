@@ -243,6 +243,66 @@ def read_sandbox_skill(
     return path.read_text(encoding="utf-8", errors="replace")[:max_chars]
 
 
+def write_sandbox_skill(
+    sandbox: TenantHermesSandbox,
+    name: str,
+    content: str,
+    *,
+    replace: bool = False,
+) -> Path:
+    """Atomically create/update one tenant-owned SKILL.md after routing gates."""
+    if not _SAFE_SKILL_NAME.fullmatch(name):
+        raise ValueError("invalid_skill_name")
+    encoded = content.encode("utf-8")
+    if not encoded or len(encoded) > 200_000:
+        raise ValueError("invalid_skill_content")
+    if not content.startswith("---"):
+        raise ValueError("skill_frontmatter_required")
+    parts = content.split("---", 2)
+    if len(parts) != 3:
+        raise ValueError("invalid_skill_frontmatter")
+    try:
+        metadata = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError as exc:
+        raise ValueError("invalid_skill_frontmatter") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid_skill_frontmatter")
+    declared_name = str(metadata.get("name") or "").strip()
+    if declared_name and declared_name != name:
+        raise ValueError("skill_name_mismatch")
+    issues = routing_quality_issues({**metadata, "name": name})
+    if issues:
+        raise ValueError("routing_governance_failed:" + ",".join(sorted(issues)))
+
+    target = sandbox.custom_skills / name
+    skill_md = target / "SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _path_lock(target):
+        if target.exists():
+            if target.is_symlink() or not skill_md.is_file() or skill_md.is_symlink():
+                raise ValueError("invalid_skill_path")
+            if not replace:
+                raise FileExistsError("skill_exists")
+        staging = Path(tempfile.mkdtemp(prefix=f".{name}.", dir=target.parent))
+        try:
+            (staging / "SKILL.md").write_bytes(encoded)
+            if target.exists():
+                backup = target.with_name(f".{name}.previous")
+                shutil.rmtree(backup, ignore_errors=True)
+                os.replace(target, backup)
+                try:
+                    os.replace(staging, target)
+                except Exception:
+                    os.replace(backup, target)
+                    raise
+                shutil.rmtree(backup, ignore_errors=True)
+            else:
+                os.replace(staging, target)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+    return skill_md
+
+
 def delete_sandbox_skill(sandbox: TenantHermesSandbox, name: str) -> bool:
     """Delete one tenant-owned custom Skill without touching templates."""
     if not _SAFE_SKILL_NAME.fullmatch(name):

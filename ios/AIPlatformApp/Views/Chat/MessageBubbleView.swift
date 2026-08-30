@@ -9,6 +9,21 @@
 
 import SwiftUI
 
+enum StreamTextChunker {
+    static func chunks(_ text: String, size: Int = 1_600) -> [String] {
+        guard !text.isEmpty, size > 0 else { return [] }
+        var result: [String] = []
+        var start = text.startIndex
+        while start < text.endIndex {
+            let end = text.index(start, offsetBy: size, limitedBy: text.endIndex)
+                ?? text.endIndex
+            result.append(String(text[start..<end]))
+            start = end
+        }
+        return result
+    }
+}
+
 public struct MessageBubbleView: View {
     public let message: ChatMessage
     public var context: PluginRenderContext? = nil
@@ -17,6 +32,8 @@ public struct MessageBubbleView: View {
     public var onStartTopic: ((ChatMessage) -> Void)? = nil
 
     @State private var isCopied: Bool = false
+    @State private var quoteFragmentDraft = ""
+    @State private var isChoosingQuoteFragment = false
 
     public init(
         message: ChatMessage,
@@ -45,6 +62,15 @@ public struct MessageBubbleView: View {
         }
         .padding(.horizontal, AppTheme.Spacing.md)
         .padding(.vertical, AppTheme.Spacing.xs)
+        .sheet(isPresented: $isChoosingQuoteFragment) {
+            QuoteFragmentPicker(sourceText: message.content, text: $quoteFragmentDraft) {
+                let fragment = quoteFragmentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !fragment.isEmpty { onQuoteFollowUp?(QuotedContext(text: fragment)) }
+                isChoosingQuoteFragment = false
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
     }
 
     // MARK: - User Bubble
@@ -108,12 +134,14 @@ public struct MessageBubbleView: View {
             if !trimmed.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                     if message.isStreaming, !trimmed.isEmpty {
-                        // Keep streaming rendering incremental and cheap. Full
-                        // Markdown parsing happens atomically at the terminal event.
-                        Text(message.content)
-                            .font(AppTheme.Typography.body)
-                            .foregroundColor(AppTheme.Colors.textPrimary)
-                            .textSelection(.enabled)
+                        // Stable chunks keep old layout nodes unchanged while only
+                        // the tail grows. Selection is enabled after completion;
+                        // enabling it on a mutating long Text causes drag jank.
+                        ForEach(Array(streamingTextChunks.enumerated()), id: \.offset) { _, chunk in
+                            Text(chunk)
+                                .font(AppTheme.Typography.body)
+                                .foregroundColor(AppTheme.Colors.textPrimary)
+                        }
                     } else if !markdownBlocks.isEmpty {
                         // MarkdownBlock.id is content-derived; use parse order as
                         // local identity so repeated paragraphs stay distinct.
@@ -209,6 +237,10 @@ public struct MessageBubbleView: View {
         return MarkdownBlockParser.shared.parse(message.content, messageId: cacheKey)
     }
 
+    private var streamingTextChunks: [String] {
+        StreamTextChunker.chunks(message.content)
+    }
+
     // MARK: - 演示样例标注
     private var demoSampleBadge: some View {
         HStack(spacing: 4) {
@@ -283,7 +315,13 @@ public struct MessageBubbleView: View {
             Button(action: {
                 quoteAction(QuotedContext(text: message.content))
             }) {
-                Label("引用追问", systemImage: "quote.bubble")
+                Label("引用全文追问", systemImage: "quote.bubble")
+            }
+            Button {
+                quoteFragmentDraft = ""
+                isChoosingQuoteFragment = true
+            } label: {
+                Label("选择片段引用", systemImage: "selection.pin.in.out")
             }
         }
 
@@ -309,6 +347,62 @@ public struct MessageBubbleView: View {
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             isCopied = false
+        }
+    }
+}
+
+private struct QuoteFragmentPicker: View {
+    let sourceText: String
+    @Binding var text: String
+    let onConfirm: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                Text("原文（长按选择并复制需要的词、句或段落）")
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                ScrollView {
+                    Text(sourceText)
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 210)
+                .padding(AppTheme.Spacing.sm)
+                .background(AppTheme.Colors.surfaceTint)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+
+                Text("引用内容")
+                    .font(.footnote.weight(.semibold))
+                TextEditor(text: $text)
+                    .font(AppTheme.Typography.body)
+                    .frame(minHeight: 80, maxHeight: 150)
+                    .overlay(alignment: .topLeading) {
+                        if text.isEmpty {
+                            Text("粘贴或输入要引用的片段")
+                                .foregroundStyle(AppTheme.Colors.textTertiary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .padding(AppTheme.Spacing.sm)
+                    .background(AppTheme.Colors.surfaceTint)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+            }
+            .padding(AppTheme.Spacing.md)
+            .navigationTitle("选择引用片段")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("引用") { onConfirm() }
+                        .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
         }
     }
 }

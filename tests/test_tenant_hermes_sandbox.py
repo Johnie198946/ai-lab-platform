@@ -9,6 +9,7 @@ from backend.services.tenant_hermes_sandbox import (
     list_sandbox_skills,
     persist_agent_snapshot,
     read_sandbox_skill,
+    write_sandbox_skill,
 )
 
 
@@ -102,6 +103,54 @@ def test_delete_rejects_path_traversal(tmp_path: Path):
         raise AssertionError("path traversal should be rejected")
     except ValueError as error:
         assert str(error) == "invalid_skill_name"
+
+
+def test_write_skill_is_governed_atomic_and_tenant_isolated(tmp_path: Path):
+    template = _template(tmp_path / "template")
+    root = tmp_path / "sandboxes"
+    tenant_a = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="u", root=root, template_root=template
+    )
+    tenant_b = ensure_tenant_sandbox(
+        tenant_key="tenant-b", user_id="u", root=root, template_root=template
+    )
+    content = """---
+name: itinerary-helper
+description: Use when the user asks to create a travel itinerary. Do not use for booking purchases.
+skill_path: travel/planning
+skill_level: professional
+trigger_phrases:
+  - create a travel itinerary
+negative_phrases:
+  - buy a flight ticket
+---
+Build an evidence-based itinerary and ask before saving it.
+"""
+    path = write_sandbox_skill(tenant_a, "itinerary-helper", content)
+    assert path.is_file()
+    assert read_sandbox_skill(tenant_a, "itinerary-helper") == content
+    assert read_sandbox_skill(tenant_b, "itinerary-helper") is None
+    try:
+        write_sandbox_skill(tenant_a, "itinerary-helper", content)
+        raise AssertionError("create must not overwrite an existing tenant Skill")
+    except FileExistsError:
+        pass
+
+
+def test_write_skill_rejects_missing_routing_governance(tmp_path: Path):
+    sandbox = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="u",
+        root=tmp_path / "sandboxes", template_root=_template(tmp_path / "template"),
+    )
+    try:
+        write_sandbox_skill(
+            sandbox,
+            "unsafe",
+            "---\nname: unsafe\ndescription: generic helper\n---\nDo everything.\n",
+        )
+        raise AssertionError("ungoverned Skill must be rejected")
+    except ValueError as error:
+        assert str(error).startswith("routing_governance_failed:")
 
 
 def test_agent_snapshot_never_contains_raw_identity(tmp_path: Path):

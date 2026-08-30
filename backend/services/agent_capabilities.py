@@ -23,6 +23,7 @@ SAFE_GLOBAL_TOOLS = (
     "knowledge_search",
     "user_note_search",
     "skill_load",
+    "tenant_skill_manage",
     "delegate_task",
 )
 PRIVILEGED_TOOLS = ("terminal", "read_file", "write_file", "patch", "knowledge_ingest")

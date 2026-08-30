@@ -87,6 +87,15 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertFalse(access.entitlementStale)
     }
 
+    func testStreamingTextChunksKeepCompletedPrefixesStable() {
+        let initial = String(repeating: "鹿儿岛内容", count: 1_000)
+        let first = StreamTextChunker.chunks(initial, size: 256)
+        let second = StreamTextChunker.chunks(initial + "新增尾段", size: 256)
+        XCTAssertGreaterThan(first.count, 1)
+        XCTAssertEqual(Array(second.prefix(first.count - 1)), Array(first.prefix(first.count - 1)))
+        XCTAssertEqual(second.joined(), initial + "新增尾段")
+    }
+
     func testMarkdownParserReusesBoundedMessageCache() {
         let key = "streaming-\(UUID().uuidString)"
         let first = MarkdownBlockParser.shared.parse("第一段", messageId: key)

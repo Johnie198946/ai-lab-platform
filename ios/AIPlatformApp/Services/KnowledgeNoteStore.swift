@@ -402,9 +402,17 @@ public final class KnowledgeNoteStore: ObservableObject {
     }
 
     public func search(_ query: String, tag: String? = nil) -> [KnowledgeNote] {
+        search(query, tags: tag.map { Set([$0]) } ?? [])
+    }
+
+    /// Every selected tag must be present (logical AND), matching the knowledge
+    /// workspace's multi-tag filtering contract.
+    public func search(_ query: String, tags: Set<String>) -> [KnowledgeNote] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         return notes.filter { note in
-            let tagMatches = tag == nil || note.tags.contains(where: { $0.caseInsensitiveCompare(tag!) == .orderedSame })
+            let noteTags = Set(note.tags.map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) })
+            let requestedTags = Set(tags.map { $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current) })
+            let tagMatches = requestedTags.isSubset(of: noteTags)
             let queryMatches = trimmed.isEmpty
                 || note.title.localizedCaseInsensitiveContains(trimmed)
                 || note.body.localizedCaseInsensitiveContains(trimmed)

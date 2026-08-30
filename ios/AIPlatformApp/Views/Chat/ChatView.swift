@@ -30,6 +30,7 @@ public struct ChatView: View {
     @State private var showingPlusMenu: Bool = false
     @State private var showingSessionDrawer: Bool = false
     @State private var showingAgentPicker: Bool = false
+    @State private var showingTopicDiscussion: Bool = false
     @State private var tenantAgents: [TenantAgentDTO] = []
     @State private var dismissKeyboardToken = 0
     // Keep the draft local so every keystroke does not publish through the
@@ -63,7 +64,11 @@ public struct ChatView: View {
                     }
                     ChatMessageStreamView(
                         coordinator: coordinator,
-                        onBackgroundTap: dismissKeyboard
+                        onBackgroundTap: dismissKeyboard,
+                        onStartTopic: { message in
+                            coordinator.startTargetedTopic(from: message)
+                            showingTopicDiscussion = currentTopic != nil
+                        }
                     )
                     ChatInputBar(
                         inputText: $draftText,
@@ -99,11 +104,11 @@ public struct ChatView: View {
                 ),
                 titleVisibility: .visible
             ) {
-                Button("归档来源会话（推荐）") { coordinator.applyOrganizationDisposition(.archived) }
-                Button("保留在会话列表") { coordinator.applyOrganizationDisposition(nil) }
-                Button("移入回收站", role: .destructive) { coordinator.applyOrganizationDisposition(.trashed) }
+                Button("归档来源会话（新笔记仍在知识首页）") { coordinator.applyOrganizationDisposition(.archived) }
+                Button("保留来源会话") { coordinator.applyOrganizationDisposition(nil) }
+                Button("来源会话移入回收站", role: .destructive) { coordinator.applyOrganizationDisposition(.trashed) }
             } message: {
-                Text("已成功写入知识。归档可搜索和恢复；回收站中的会话将在后续保留期策略执行前保持可恢复。")
+                Text("这里处理的是整理所依据的来源会话，不会归档刚创建的笔记。新笔记仍在知识首页；知识页“归档”仅显示被明确归档的笔记。")
             }
             .overlay(alignment: .bottom) { toastOverlay }
             .animation(.easeInOut(duration: 0.2), value: coordinator.toastMessage)
@@ -114,6 +119,11 @@ public struct ChatView: View {
                     onWeChatImported: { link in coordinator.importWeChatLink(link) },
                     onKnowledgeReferenced: { item in coordinator.referenceKnowledge(item) }
                 )
+            }
+            .sheet(isPresented: $showingTopicDiscussion, onDismiss: returnToTopicParent) {
+                TargetedTopicDiscussionSheet(coordinator: coordinator)
+                    .presentationDetents([.fraction(0.8)])
+                    .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showingSessionDrawer) {
                 SessionDrawerSheet(
@@ -233,6 +243,14 @@ public struct ChatView: View {
               let topic = sessionManager.topicSessions[id] else { return }
         appState.pendingTopicSessionId = nil
         coordinator.openTopic(topic)
+        showingTopicDiscussion = true
+    }
+
+    @MainActor
+    private func returnToTopicParent() {
+        let sessionId = sessionManager.activeSessionID()
+        guard let topic = sessionManager.topicSessions[sessionId] else { return }
+        coordinator.switchSession(to: topic.parentSessionId)
     }
 
     @MainActor
@@ -287,6 +305,52 @@ public struct ChatView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
                 .padding(.bottom, 90)
         }
+    }
+}
+
+private struct TargetedTopicDiscussionSheet: View {
+    @ObservedObject var coordinator: TenantSessionCoordinator
+    @Environment(\.dismiss) private var dismiss
+    @StateObject private var speechService = SpeechRecognizerService()
+    @State private var draft = ""
+    @State private var isVoicePressing = false
+    @State private var dismissKeyboardToken = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("针对性话题", systemImage: "bubble.left.and.bubble.right.fill")
+                    .font(.headline)
+                Spacer()
+                Button("结束并整理") { coordinator.endCurrentTopic() }
+                    .font(.caption.weight(.semibold))
+                Button("返回") { dismiss() }
+            }
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .padding(.vertical, AppTheme.Spacing.sm)
+            .background(AppTheme.Colors.surfaceTint)
+
+            ChatMessageStreamView(coordinator: coordinator) {
+                dismissKeyboardToken &+= 1
+            }
+
+            ChatInputBar(
+                inputText: $draft,
+                quotedContext: $coordinator.quotedContext,
+                isVoicePressing: $isVoicePressing,
+                speechService: speechService,
+                isGenerating: coordinator.isGenerating,
+                dismissKeyboardToken: dismissKeyboardToken,
+                onSend: {
+                    guard let text = ChatDraftSubmission.consume(&draft) else { return }
+                    coordinator.sendMessage(text: text)
+                    dismissKeyboardToken &+= 1
+                },
+                onVoicePressChanged: { _ in },
+                onPlusTap: {}
+            )
+        }
+        .background(AppTheme.Colors.background)
     }
 }
 

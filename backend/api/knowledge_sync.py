@@ -22,6 +22,7 @@ from pydantic import BaseModel, Field
 from backend.api.auth import require_auth
 from backend.services.user_note_context import (
     archived_note_paths,
+    compile_private_note_index,
     namespace,
     note_directory,
     note_paths,
@@ -146,12 +147,16 @@ async def sync_note(
         metadata_path,
         json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
     )
+    private_index = compile_private_note_index(
+        tenant_key, user_id, _sync_root()
+    )
     return {
         "note_id": note_id,
         "content_hash": actual_hash,
         "changed": changed,
         "sync_status": "synced",
-        "compile_status": "owned_by_platform_pipeline",
+        "compile_status": "private_index_ready",
+        "private_index_hash": private_index["index_hash"],
     }
 
 
@@ -193,6 +198,7 @@ async def archive_note(
             removed_active = True
         if metadata_path.is_file():
             metadata_path.unlink()
+        compile_private_note_index(tenant_key, user_id, _sync_root())
         return {
             "note_id": note_id,
             "archive_status": "archived",
@@ -222,6 +228,7 @@ async def archive_note(
         metadata_path.unlink()
     except FileNotFoundError:
         pass
+    compile_private_note_index(tenant_key, user_id, _sync_root())
     return {
         "note_id": note_id,
         "archive_status": "archived",
@@ -262,6 +269,7 @@ async def restore_note(
         archived_metadata.unlink()
     except FileNotFoundError:
         pass
+    compile_private_note_index(tenant_key, user_id, _sync_root())
     return {"note_id": note_id, "archive_status": "active", "changed": True}
 
 
@@ -286,6 +294,7 @@ async def trash_note(
                 path.unlink()
             except FileNotFoundError:
                 pass
+        compile_private_note_index(tenant_key, user_id, _sync_root())
         return {"note_id": note_id, "trash_status": "trashed", "changed": False}
     if not source_note.is_file():
         raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
@@ -309,4 +318,5 @@ async def trash_note(
         source_metadata.unlink()
     except FileNotFoundError:
         pass
+    compile_private_note_index(tenant_key, user_id, _sync_root())
     return {"note_id": note_id, "trash_status": "trashed", "changed": True}

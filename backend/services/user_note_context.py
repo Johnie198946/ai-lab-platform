@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -54,6 +55,56 @@ def archived_note_paths(
 ) -> tuple[Path, Path]:
     directory = note_directory(tenant_key, user_id, root) / ".archive"
     return directory / f"{note_id}.md", directory / f"{note_id}.sync.json"
+
+
+def compile_private_note_index(
+    tenant_key: str, user_id: str, root: Path | None = None
+) -> dict[str, Any]:
+    """Compile active user notes into a deterministic private retrieval manifest."""
+    directory = note_directory(tenant_key, user_id, root)
+    directory.mkdir(parents=True, exist_ok=True)
+    items: list[dict[str, Any]] = []
+    for path in sorted(directory.glob("*.md")):
+        if not path.is_file() or path.is_symlink():
+            continue
+        raw = path.read_bytes()
+        markdown = raw.decode("utf-8", errors="replace")
+        items.append({
+            "id": path.stem,
+            "title": _frontmatter_value(markdown, "title") or path.stem,
+            "content_hash": hashlib.sha256(raw).hexdigest(),
+            "security_level": "red",
+            "owner_tenant": namespace(tenant_key),
+            "owner_user": namespace(user_id),
+            "source": "user_note",
+        })
+    canonical = json.dumps(
+        items, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    payload = {
+        "version": 1,
+        "security_level": "red",
+        "tenant_namespace": namespace(tenant_key),
+        "user_namespace": namespace(user_id),
+        "document_count": len(items),
+        "index_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "documents": items,
+    }
+    descriptor, temporary = tempfile.mkstemp(
+        dir=str(directory), prefix=".private-index.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, directory / ".private-index.json")
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return payload
 
 
 def _frontmatter_value(markdown: str, key: str) -> str:

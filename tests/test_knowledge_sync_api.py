@@ -1,5 +1,6 @@
 import asyncio
 import hashlib
+import json
 import os
 import tempfile
 from pathlib import Path
@@ -60,6 +61,7 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
         )
         assert first.status_code == 200, first.text
         assert first.json()["changed"] is True
+        assert first.json()["compile_status"] == "private_index_ready"
 
         second = _request(
             "PUT",
@@ -90,6 +92,10 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
         )
         assert (user_dir / "note-1.md").read_text() == markdown
         assert (user_dir / "note-1.sync.json").is_file()
+        private_index = json.loads((user_dir / ".private-index.json").read_text())
+        assert private_index["security_level"] == "red"
+        assert private_index["document_count"] == 1
+        assert private_index["documents"][0]["id"] == "note-1"
 
 
 def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
@@ -136,13 +142,16 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
         owner_dir = Path(directory) / sync.namespace("tenant-a") / sync.namespace("sync-user")
         assert not (owner_dir / "old-note.md").exists()
         assert (owner_dir / ".archive" / "old-note.md").is_file()
+        assert json.loads((owner_dir / ".private-index.json").read_text())["document_count"] == 0
         metadata = (owner_dir / ".archive" / "old-note.sync.json").read_text()
         assert '"merged_into_note_id": "merged-note"' in metadata
         restored = _request("POST", "/api/v1/me/knowledge-notes/old-note/restore", json={})
         assert restored.status_code == 200
         assert (owner_dir / "old-note.md").is_file()
+        assert json.loads((owner_dir / ".private-index.json").read_text())["document_count"] == 1
         trashed = _request("POST", "/api/v1/me/knowledge-notes/old-note/trash", json={})
         assert trashed.status_code == 200
         assert trashed.json()["trash_status"] == "trashed"
         assert not (owner_dir / "old-note.md").exists()
         assert (owner_dir / ".trash" / "old-note.md").is_file()
+        assert json.loads((owner_dir / ".private-index.json").read_text())["document_count"] == 0

@@ -30,7 +30,7 @@ public struct KnowledgeView: View {
     @State private var path: [String] = []
     @State private var searchText = ""
     @State private var scope: NoteScope = .all
-    @State private var selectedTag: String?
+    @State private var selectedTags: Set<String> = []
     @State private var notePendingTrash: KnowledgeNote?
     @State private var showingTrashConfirmation = false
     @State private var showingArchive = false
@@ -39,7 +39,7 @@ public struct KnowledgeView: View {
     public init() {}
 
     public var body: some View {
-        let visibleNotes = store.search(searchText, tag: selectedTag).filter { note in
+        let visibleNotes = store.search(searchText, tags: selectedTags).filter { note in
             switch scope {
             case .all: return true
             case .pinned: return note.isPinned
@@ -320,10 +320,18 @@ public struct KnowledgeView: View {
     }
 
     private func tagButton(title: String, tag: String?) -> some View {
-        let selected = selectedTag == tag
+        let selected = tag == nil ? selectedTags.isEmpty : selectedTags.contains(tag!)
         return Button {
             withAnimation(AppTheme.Motion.quick) {
-                selectedTag = tag
+                if let tag {
+                    if selectedTags.contains(tag) {
+                        selectedTags.remove(tag)
+                    } else {
+                        selectedTags.insert(tag)
+                    }
+                } else {
+                    selectedTags.removeAll()
+                }
             }
         } label: {
             Text(title)
@@ -466,7 +474,7 @@ public struct KnowledgeView: View {
         )
         manager.switchTo(destination)
         let prompt = """
-        请整理我刚刚明确选择的 \(sessionIDs.count) 个来源会话。先调用 session_context_read，读取 source_sessions；不要只整理当前或最新会话。先按主题分组，排除明显无关内容，再为每个主题创建或更新独立笔记。每篇笔记必须在 Markdown 中保留 source_session_ids 与带 session_id 前缀的 source_message_ids，冲突信息单独列出。先生成 knowledge_action_v1 待确认卡，不得直接写入，也不得删除、归档来源会话。
+        请整理我刚刚明确选择的 \(sessionIDs.count) 个来源会话。先调用 session_context_read，读取全部 source_sessions；不要只整理当前或最新会话。排除明显无关内容后，将所有相关主题归纳为一篇结构清晰的综合笔记（仅当我明确要求拆分时才创建多篇）。笔记必须在 Markdown 中保留 source_session_ids 与带 session_id 前缀的 source_message_ids，冲突信息单独列出。先生成 knowledge_action_v1 待确认卡，不得直接写入，也不得删除、归档来源会话。
         """
         appState.navigateToChatWithPrompt(
             prompt,
@@ -1057,10 +1065,15 @@ private struct KnowledgeNoteEditor: View {
         if let saved = store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) {
             saveStatus = "已保存到本地"
             let markdown = store.markdown(for: saved)
-            Task {
-                try? await APIClient.shared.syncKnowledgeNote(
-                    id: saved.id, markdown: markdown, updatedAt: saved.updatedAt
-                )
+            Task { @MainActor in
+                do {
+                    try await APIClient.shared.syncKnowledgeNote(
+                        id: saved.id, markdown: markdown, updatedAt: saved.updatedAt
+                    )
+                    saveStatus = "已保存并编译为私有知识"
+                } catch {
+                    saveStatus = "本地已保存，私有知识同步失败"
+                }
             }
         } else {
             saveStatus = "保存失败"

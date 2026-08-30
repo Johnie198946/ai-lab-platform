@@ -106,6 +106,7 @@ public struct MainTabView: View {
 private struct TopicSessionMiniBar: View {
     let topics: [TopicSessionMetadata]
     let onOpen: (TopicSessionMetadata) -> Void
+    @State private var dragOffset: CGSize = .zero
 
     private var primary: TopicSessionMetadata? {
         topics.first(where: { $0.state != .queued }) ?? topics.first
@@ -150,6 +151,16 @@ private struct TopicSessionMiniBar: View {
         .background(.ultraThinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
         .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
+        .offset(dragOffset)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 8)
+                .onChanged { value in
+                    dragOffset = CGSize(
+                        width: min(max(value.translation.width, -110), 110),
+                        height: min(max(value.translation.height, -260), 24)
+                    )
+                }
+        )
         .accessibilityLabel("打开针对性话题，当前共 \(topics.count) 个")
     }
 }

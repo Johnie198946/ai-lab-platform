@@ -670,7 +670,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         startStatusPolling(req: req, taskEpoch: taskEpoch)
     }
 
-    // MARK: - 流式 80ms 批量节流（Supervision 批复）
+    // MARK: - 流式批量节流
     private var deltaBuffer: String = ""
     private var flushScheduled: Bool = false
     private var flushTask: Task<Void, Never>? = nil
@@ -692,7 +692,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard !flushScheduled else { return }
         flushScheduled = true
         flushTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(nanoseconds: 80_000_000)
+            // Re-laying out a long, selectable Text view at 12.5fps competes
+            // with the user's downward drag.  A 160ms coalescing window keeps
+            // streaming responsive while leaving the main thread scroll budget.
+            try? await Task.sleep(nanoseconds: 160_000_000)
             guard let self = self, !Task.isCancelled, self.tenantEpoch == taskEpoch else {
                 self?.flushScheduled = false
                 self?.deltaBuffer = ""
@@ -784,8 +787,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                     scheduleContentFlush(messageId: outputId, taskEpoch: taskEpoch)
                     if let idx = messages.firstIndex(where: { $0.id == outputId }) {
                         updateReasoningSteps(for: idx) { steps in
-                            if let tIdx = steps.firstIndex(where: { $0.type == .thought && $0.status == "running" }) {
-                                steps[tIdx].status = "done"
+                            if let tIdx = steps.firstIndex(where: { $0.type == .thought }) {
+                                steps[tIdx].title = "正在生成回答…"
+                                steps[tIdx].status = "running"
                             }
                         }
                     }

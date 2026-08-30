@@ -46,6 +46,17 @@ def test_note_draft_request_detection_and_title_fallback():
     assert bridge._is_note_draft_request("帮我完善《TokenBox》这篇笔记")
     assert not bridge._is_note_draft_request("笔记功能怎么使用？")
     assert bridge._fallback_note_title("# 超聚变会话总结\n\n正文") == "超聚变会话总结"
+    assert bridge._is_revision_request("这版不满意，请重写")
+    assert bridge._is_revision_request("语气再正式一点")
+    assert bridge._SKILL_CREATE_REQUEST_RE.search("帮我创建一个行程技能")
+    assert not bridge._is_revision_request("今天天气怎么样")
+
+
+def test_tenant_skill_manage_permission_enables_tenant_skill_toolset():
+    import scripts.hermes_bridge as bridge
+
+    assert "tenant_skills" in bridge._tenant_base_toolsets({"tenant_skill_manage"})
+    assert "skills" not in bridge._tenant_base_toolsets({"tenant_skill_manage"})
 
 
 def test_client_context_capability_binds_context_and_rejects_tamper():
@@ -80,6 +91,16 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
             "messages": [
                 {"id": "m1", "role": "user", "content": "超聚变是一家公司"},
             ],
+            "source_sessions": [
+                {
+                    "session_id": "source-1",
+                    "messages": [{"id": "source-1:m1", "role": "user", "content": "来源一"}],
+                },
+                {
+                    "session_id": "source-2",
+                    "messages": [{"id": "source-2:m1", "role": "assistant", "content": "来源二"}],
+                },
+            ],
             "truncated": False,
         },
         "request_id": "request-1234",
@@ -94,6 +115,9 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         assert denied["error"] == "session_context_read_required"
         transcript = json.loads(bridge._session_context_read_tool({}))
         assert transcript["messages"][0]["content"] == "超聚变是一家公司"
+        assert [item["session_id"] for item in transcript["source_sessions"]] == [
+            "source-1", "source-2"
+        ]
         search_denied = json.loads(bridge._note_draft_tool({
             "title": "超聚变", "markdown": "正文",
         }))
