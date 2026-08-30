@@ -370,6 +370,17 @@ class TestConcurrencyGuard(unittest.TestCase):
         self.assertIn('"phase": "boot"', body)
 
 
+class TestPlanningClarifyTimeout(unittest.TestCase):
+    def test_project_planning_never_uses_an_unreasonably_short_input_window(self):
+        import scripts.hermes_bridge as bridge
+
+        marker = "[QuantumWorkspace authenticated project planning session]"
+        with patch.object(bridge, "CLARIFY_TIMEOUT_SECONDS", 5), \
+             patch.object(bridge, "PROJECT_PLANNING_CLARIFY_TIMEOUT_SECONDS", 180):
+            self.assertEqual(bridge._clarify_timeout_for_goal(marker), 180)
+            self.assertEqual(bridge._clarify_timeout_for_goal("ordinary chat"), 5)
+
+
 class TestClarifyResolveReason(unittest.TestCase):
     """保活机制 v6（G-7）：clarify resolve 失败 reason 三态（expired/rejected/no_pending）。"""
 

@@ -11,5 +11,8 @@ export const composeClarificationResponse = (choices, selections, responseText) 
   const regular = selected.filter((choice) => !isOtherClarificationChoice(choice)).map((choice) => choice.label);
   const includesOther = selected.some(isOtherClarificationChoice);
   const detail = String(responseText || "").trim();
-  return [...regular, ...(includesOther && detail ? [`其他：${detail}`] : [])].join("；");
+  return [
+    ...regular,
+    ...(detail ? [`${includesOther ? "其他" : regular.length ? "补充" : "回答"}：${detail}`] : []),
+  ].join("；");
 };

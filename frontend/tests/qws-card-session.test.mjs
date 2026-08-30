@@ -102,9 +102,13 @@ test("card session renders and submits Hermes clarification instead of waiting s
   assert.equal(isOtherClarificationChoice({ label: "其他（请填写）", value: "other" }), true);
   const choices = ["部署到内网", "Other"].map(normalizedClarificationChoice);
   assert.equal(composeClarificationResponse(choices, ["部署到内网", "Other"], "需要离线部署"), "部署到内网；其他：需要离线部署");
+  assert.equal(composeClarificationResponse(choices, ["部署到内网"], "仅允许办公网访问"), "部署到内网；补充：仅允许办公网访问");
+  assert.equal(composeClarificationResponse(choices, [], "由我自己描述需求"), "回答：由我自己描述需求");
   assert.match(clarificationSource, /isOtherClarificationChoice/);
   assert.match(clarificationSource, /请补充具体信息/);
-  assert.match(clarificationSource, /这段内容会原样交给 Hermes/);
+  assert.match(clarificationSource, /完全自行输入/);
+  assert.match(clarificationSource, /选项仅作辅助/);
+  assert.match(clarificationSource, /剩余/);
   assert.match(clarificationSource, /composedResponse/);
 });
 
@@ -126,6 +130,8 @@ test("unfinished project planning can be resumed and deletion has explicit progr
   assert.match(homeSource, /删除中…/);
   assert.match(planningSource, /resumeNeeded/);
   assert.match(planningSource, /上次 AI 生成尚未完成/);
+  assert.match(planningSource, /本轮已结束，蓝图尚未完成/);
+  assert.match(planningSource, /澄清输入窗口已超时/);
 });
 
 test("dispatch persists a structured task contract for every card session", () => {

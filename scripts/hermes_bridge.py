@@ -163,6 +163,16 @@ STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "
 WATCHDOG_INTERVAL_SECONDS = float(os.environ.get("HERMES_WATCHDOG_INTERVAL", "10"))
 # clarify 等待用户响应超时（默认 180s，替代 Hermes 原生 3600s）
 CLARIFY_TIMEOUT_SECONDS = int(os.environ.get("HERMES_CLARIFY_TIMEOUT", "180"))
+PROJECT_PLANNING_CLARIFY_TIMEOUT_SECONDS = max(
+    180,
+    int(os.environ.get("HERMES_PROJECT_PLANNING_CLARIFY_TIMEOUT", "180")),
+)
+
+
+def _clarify_timeout_for_goal(goal: str) -> int:
+    if "[QuantumWorkspace authenticated project planning session]" in goal:
+        return max(CLARIFY_TIMEOUT_SECONDS, PROJECT_PLANNING_CLARIFY_TIMEOUT_SECONDS)
+    return CLARIFY_TIMEOUT_SECONDS
 # Drill-me 至少完成三轮需求收敛后才允许输出方案。上限由 prompt 约束，避免无休止追问。
 DRILL_ME_MIN_ROUNDS = max(2, int(os.environ.get("HERMES_DRILL_ME_MIN_ROUNDS", "3")))
 DRILL_ME_MAX_ROUNDS = max(
@@ -2677,6 +2687,7 @@ def _pending_clarify(user_id: str) -> dict | None:
             if getattr(entry, "session_key", None) == user_id and getattr(entry, "response", "§") is None:
                 run = _stream_run_get(user_id)
                 issued = float((run or {}).get("clarify_issued") or time.monotonic())
+                timeout_seconds = int((run or {}).get("clarify_timeout_seconds") or CLARIFY_TIMEOUT_SECONDS)
                 return {
                     "clarify_id": entry.clarify_id,
                     "request_id": (run or {}).get("request_id"),
@@ -2685,7 +2696,7 @@ def _pending_clarify(user_id: str) -> dict | None:
                     # 兼容服务器 Hermes v0.19.0（_ClarifyEntry 无 multi_select 字段，仅 awaiting_text）
                     "multi_select": bool(getattr(entry, "multi_select", False)),
                     "expires_in_seconds": max(
-                        0, int(CLARIFY_TIMEOUT_SECONDS - (time.monotonic() - issued))
+                        0, int(timeout_seconds - (time.monotonic() - issued))
                     ),
                 }
     except Exception as e:
@@ -4150,6 +4161,7 @@ def _build_in_process_agent(
     session_db = _create_sandbox_session_db(sandbox)
     drill_me_enabled = _is_drill_me_goal(goal)
     clarify_round = 0
+    clarify_timeout_seconds = _clarify_timeout_for_goal(goal)
 
     def _clarify_cb(question: str, choices=None, multi_select: bool = False) -> str:
         """clarify 回调：注册进 clarify_gateway → 推 clarify 事件 → 阻塞等用户响应。"""
@@ -4182,7 +4194,7 @@ def _build_in_process_agent(
             "question": question,
             "choices": list(choices) if choices else None,
             "multi_select": bool(multi_select) and bool(choices),
-            "expires_in_seconds": CLARIFY_TIMEOUT_SECONDS,
+            "expires_in_seconds": clarify_timeout_seconds,
         })
         print(f"[bridge] clarify-REGISTER cid={clarify_id} user={user_id} q={str(question)[:30]}")
         # 记录 clarify 发出时间戳：resolve 失败分类依据（expired vs no_pending）
@@ -4191,7 +4203,8 @@ def _build_in_process_agent(
             with _stream_runs_guard:
                 run_state["clarify_issued"] = time.monotonic()
                 run_state["clarify_id"] = clarify_id
-        resp = cg.wait_for_response(clarify_id, timeout=float(CLARIFY_TIMEOUT_SECONDS))
+                run_state["clarify_timeout_seconds"] = clarify_timeout_seconds
+        resp = cg.wait_for_response(clarify_id, timeout=float(clarify_timeout_seconds))
         print(f"[bridge] clarify-WAIT-RETURN cid={clarify_id} resp={str(resp)[:40]!r}")
         if resp is None or resp == "":
             _qput(stream_q, {
@@ -4200,7 +4213,7 @@ def _build_in_process_agent(
                 "request_id": request_id,
             })
             return (
-                f"[user did not respond within {CLARIFY_TIMEOUT_SECONDS}s. "
+                f"[user did not respond within {clarify_timeout_seconds}s. "
                 "Make the most reasonable assumption and continue.]"
             )
         clarify_round += 1
@@ -4688,10 +4701,11 @@ async def clarify_resolve(body: ClarifyResolveRequest):
         if pending is None:
             run = _stream_run_get(body.session_id)
             issued = (run or {}).get("clarify_issued")
+            timeout_seconds = int((run or {}).get("clarify_timeout_seconds") or CLARIFY_TIMEOUT_SECONDS)
             state = (
                 "expired"
                 if issued is not None
-                and (time.monotonic() - issued) <= CLARIFY_TIMEOUT_SECONDS + 60
+                and (time.monotonic() - issued) <= timeout_seconds + 60
                 else "no_pending"
             )
             return {"ok": False, "state": state, "clarify_id": body.clarify_id}
@@ -4724,7 +4738,8 @@ async def clarify_resolve(body: ClarifyResolveRequest):
         reason = "rejected"
     else:
         clarify_issued = run.get("clarify_issued") if run else None
-        if clarify_issued is not None and (time.monotonic() - clarify_issued) <= CLARIFY_TIMEOUT_SECONDS + 60:
+        timeout_seconds = int((run or {}).get("clarify_timeout_seconds") or CLARIFY_TIMEOUT_SECONDS)
+        if clarify_issued is not None and (time.monotonic() - clarify_issued) <= timeout_seconds + 60:
             reason = "expired"
         else:
             reason = "no_pending"
