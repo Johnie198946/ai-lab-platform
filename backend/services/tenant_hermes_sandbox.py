@@ -162,8 +162,15 @@ def ensure_tenant_sandbox(
     source = template_root or template_skills_root()
     version = _template_version(source)
     active_template = templates_root / (version or "empty")
+    manifest_path = base / "sandbox.json"
 
     with _path_lock(base):
+        previous_manifest: dict[str, Any] = {}
+        if manifest_path.is_file() and not manifest_path.is_symlink():
+            try:
+                previous_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError, TypeError):
+                previous_manifest = {}
         for directory in (
             active_template.parent,
             custom_root,
@@ -186,13 +193,14 @@ def ensure_tenant_sandbox(
                 os.replace(payload, active_template)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
-        _copy_legacy_custom_skills(source, tenant_key, custom_root)
+        if not previous_manifest.get("legacy_custom_import_completed"):
+            _copy_legacy_custom_skills(source, tenant_key, custom_root)
         manifest = {
-            "version": 1,
+            "version": 2,
             "tenant_namespace": tenant_ns,
             "active_template_version": version or "empty",
+            "legacy_custom_import_completed": True,
         }
-        manifest_path = base / "sandbox.json"
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(
             json.dumps(manifest, ensure_ascii=False, sort_keys=True), encoding="utf-8"

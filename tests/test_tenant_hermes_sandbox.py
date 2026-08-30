@@ -83,6 +83,10 @@ def test_delete_only_removes_current_tenant_custom_skill(tmp_path: Path):
 
     assert delete_sandbox_skill(tenant_a, "private-skill") is True
     assert read_sandbox_skill(tenant_a, "private-skill") is None
+    tenant_a_reopened = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="u", root=root, template_root=template
+    )
+    assert read_sandbox_skill(tenant_a_reopened, "private-skill") is None
     assert delete_sandbox_skill(tenant_a, "research-template") is False
     assert read_sandbox_skill(tenant_a, "research-template") is not None
     assert read_sandbox_skill(tenant_b, "research-template") is not None
