@@ -79,6 +79,7 @@ from backend.services.task_operating_loop import (
     build_task_context_pack,
     create_feedback_batch,
     create_relation_proposal,
+    find_duplicate_candidates,
     initialize_task_contract,
     record_feedback_interpretation,
     submit_feedback_batch,
@@ -284,6 +285,19 @@ class AcquireTaskLeaseRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=100)
     actor_id: str = Field(min_length=1, max_length=100)
     ttl_seconds: int = Field(default=900, ge=60, le=3600)
+    duplicate_override_reason: str | None = Field(default=None, min_length=3, max_length=1000)
+
+
+class CheckTaskDuplicatesRequest(BaseModel):
+    task_id: str | None = Field(default=None, max_length=40)
+    title: str = Field(min_length=1, max_length=160)
+    summary: str = Field(min_length=1, max_length=4000)
+    acceptance_criteria: list[str] = Field(default_factory=list, max_length=40)
+    deliverables: list[str] = Field(default_factory=list, max_length=40)
+    assignee_role: str | None = Field(default=None, max_length=160)
+    due_date: str | None = Field(default=None, max_length=40)
+    labels: list[str] = Field(default_factory=list, max_length=20)
+    trigger: Literal["CREATE", "CLAIM"] = "CREATE"
 
 
 class ProposeTaskRelationRequest(BaseModel):
@@ -2256,6 +2270,35 @@ async def _save_task_contract(db, *, project, process, tasks, expected_revision:
     )
 
 
+@router.post("/projects/{project_id}/task-duplicate-check")
+async def check_project_task_duplicates(
+    project_id: str, body: CheckTaskDuplicatesRequest,
+    payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
+        tasks = [
+            {**initialize_task_contract(item), "project_id": project_id}
+            for item in (project.process_snapshot or {}).get("tasks", [])
+        ]
+        source = {
+            **body.model_dump(exclude={"trigger"}),
+            "project_id": project_id,
+        }
+        candidates = find_duplicate_candidates(source, tasks, trigger=body.trigger)
+        return {
+            "project_id": project_id,
+            "process_revision": project.process_revision,
+            "trigger": body.trigger,
+            "candidate_count": len(candidates),
+            "candidates": candidates,
+            "thresholds": {"strong": 0.90, "review": 0.75, "calibration": "PENDING_REAL_DATA"},
+        }
+
+
 @router.post("/projects/{project_id}/tasks", status_code=201)
 async def create_project_task(
     project_id: str,
@@ -2365,6 +2408,32 @@ async def acquire_project_task_execution_lease(
         task = next((item for item in tasks if item.get("id") == task_id), None)
         if task is None:
             raise HTTPException(status_code=404, detail="project task not found")
+        if task.get("status") != "TODO":
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "task_not_runnable", "status": task.get("status")},
+            )
+        candidates = find_duplicate_candidates(
+            {**task, "project_id": project_id},
+            [{**item, "project_id": project_id} for item in tasks],
+            trigger="CLAIM",
+        )
+        strong = [item for item in candidates if item["classification"] == "STRONG_DUPLICATE"]
+        if strong and not body.duplicate_override_reason:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "strong_duplicate_requires_review", "candidates": strong},
+            )
+        if strong:
+            task["duplicate_check_overrides"] = [
+                *(task.get("duplicate_check_overrides") or []),
+                {
+                    "reason": body.duplicate_override_reason,
+                    "actor_id": body.actor_id,
+                    "candidate_ids": [item["target_task_id"] for item in strong],
+                    "at": datetime.now(timezone.utc).isoformat(),
+                },
+            ][-20:]
         try:
             lease = acquire_execution_lease(
                 task,

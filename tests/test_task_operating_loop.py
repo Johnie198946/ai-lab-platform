@@ -13,6 +13,7 @@ from backend.services.task_operating_loop import (
     create_feedback_batch,
     create_handoff_capsule,
     create_relation_proposal,
+    find_duplicate_candidates,
     initialize_task_contract,
     record_feedback_interpretation,
     submit_feedback_batch,
@@ -233,3 +234,24 @@ def test_rejected_feedback_resolution_reopens_completed_task() -> None:
     assert feedback["status"] == "REOPENED"
     assert current["status"] == "IN_PROGRESS"
     assert current["status_history"][-1]["reason"] == "验收仍失败"
+
+
+def test_duplicate_candidates_use_multi_field_evidence() -> None:
+    source = {
+        "id": "a", "project_id": "p", "title": "生成访客系统发布包",
+        "summary": "生成可部署发布包并附回滚说明",
+        "acceptance_criteria": ["发布包可安装", "回滚说明可执行"],
+        "deliverables": ["发布包", "回滚说明"],
+        "assignee_role": "发布负责人",
+    }
+    duplicate = {**source, "id": "b", "title": "生成访客系统发布包"}
+    different = {
+        **source, "id": "c", "title": "完成访客系统安全检查",
+        "summary": "验证权限和输入安全",
+        "acceptance_criteria": ["安全测试通过"],
+        "deliverables": ["安全报告"],
+    }
+    candidates = find_duplicate_candidates(source, [source, duplicate, different], trigger="CREATE")
+    assert candidates[0]["target_task_id"] == "b"
+    assert candidates[0]["classification"] == "STRONG_DUPLICATE"
+    assert all(item["target_task_id"] != "c" for item in candidates)

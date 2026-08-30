@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+import re
 from typing import Any
 from uuid import uuid4
 
@@ -56,9 +57,95 @@ FEEDBACK_ACTIONS = {
 }
 FEEDBACK_ACCEPTANCE_ACTIONS = {"accept_resolution", "reopen", "reject_resolution"}
 
+DUPLICATE_STRONG_THRESHOLD = 0.90
+DUPLICATE_REVIEW_THRESHOLD = 0.75
+
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _text_features(value: Any) -> set[str]:
+    text = re.sub(r"\s+", "", str(value or "").lower())
+    if not text:
+        return set()
+    return {text[index:index + 2] for index in range(max(1, len(text) - 1))}
+
+
+def _similarity(left: Any, right: Any) -> float:
+    a, b = _text_features(left), _text_features(right)
+    if not a and not b:
+        return 0.0
+    return 2 * len(a & b) / (len(a) + len(b))
+
+
+def score_task_similarity(source: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    """Deterministic P1 baseline; thresholds are telemetry inputs, not permanent truth."""
+    source_title_goal = f"{source.get('title', '')} {source.get('summary', '')}"
+    target_title_goal = f"{target.get('title', '')} {target.get('summary', '')}"
+    scores = {
+        "title_goal": _similarity(source_title_goal, target_title_goal),
+        "acceptance": _similarity(source.get("acceptance_criteria"), target.get("acceptance_criteria")),
+        "deliverables": _similarity(source.get("deliverables"), target.get("deliverables")),
+        "object_project": 1.0 if source.get("project_id") == target.get("project_id") else 0.0,
+        "time_assignee": _similarity(
+            [source.get("assignee_role"), source.get("due_date")],
+            [target.get("assignee_role"), target.get("due_date")],
+        ),
+        "evidence_tags": _similarity(
+            [source.get("evidence_refs"), source.get("labels")],
+            [target.get("evidence_refs"), target.get("labels")],
+        ),
+    }
+    weights = {
+        "title_goal": 0.30,
+        "acceptance": 0.25,
+        "deliverables": 0.20,
+        "object_project": 0.10,
+        "time_assignee": 0.10,
+        "evidence_tags": 0.05,
+    }
+    active = {
+        "title_goal": True,
+        "acceptance": bool(source.get("acceptance_criteria") or target.get("acceptance_criteria")),
+        "deliverables": bool(source.get("deliverables") or target.get("deliverables")),
+        "object_project": True,
+        "time_assignee": bool(
+            source.get("assignee_role") or target.get("assignee_role")
+            or source.get("due_date") or target.get("due_date")
+        ),
+        "evidence_tags": bool(
+            source.get("evidence_refs") or target.get("evidence_refs")
+            or source.get("labels") or target.get("labels")
+        ),
+    }
+    denominator = sum(weight for key, weight in weights.items() if active[key])
+    weighted = sum(scores[key] * weights[key] for key in weights if active[key]) / denominator
+    return {"score": round(weighted, 4), "field_scores": scores}
+
+
+def find_duplicate_candidates(
+    source: dict[str, Any], tasks: list[dict[str, Any]], *, trigger: str
+) -> list[dict[str, Any]]:
+    candidates = []
+    for target in tasks:
+        if target.get("id") == source.get("id") or target.get("status") in {"MERGED", "CANCELLED"}:
+            continue
+        result = score_task_similarity(source, target)
+        score = result["score"]
+        if score < DUPLICATE_REVIEW_THRESHOLD:
+            continue
+        classification = "STRONG_DUPLICATE" if score >= DUPLICATE_STRONG_THRESHOLD else "RELATED_OR_MERGE"
+        candidates.append({
+            "target_task_id": target.get("id"),
+            "target_title": target.get("title"),
+            "score": score,
+            "classification": classification,
+            "field_scores": result["field_scores"],
+            "trigger": trigger,
+            "requires_user_confirmation": True,
+        })
+    return sorted(candidates, key=lambda item: (-item["score"], str(item["target_task_id"])))
 
 
 def initialize_task_contract(task: dict[str, Any], *, task_revision: int = 1) -> dict[str, Any]:
