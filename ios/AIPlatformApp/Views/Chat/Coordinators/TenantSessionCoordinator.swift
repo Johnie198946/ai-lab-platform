@@ -12,6 +12,8 @@ import Combine
 
 @MainActor
 public final class TenantSessionCoordinator: ObservableObject {
+    public static let shared = TenantSessionCoordinator()
+
     @Published public var messages: [ChatMessage] = []
     @Published public var inputText: String = ""
     @Published public var quickCommands: [String] = []
@@ -43,6 +45,14 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// Agent 请求 ID -> 当前 UI 输出消息 ID。Clarify 后仍消费同一 SSE，但把续写放到用户选择之后。
     private var streamOutputMessageIds: [String: String] = [:]
     private var animationTasks: [String: Task<Void, Never>] = [:]
+    /// Detached server Runs continue independently of the currently visible chat.
+    /// One monitor per logical session writes the terminal answer back to that session.
+    private var backgroundRunMonitors: [String: Task<Void, Never>] = [:]
+    private var backgroundRunRequests: [String: InFlightRequest] = [:]
+    private var sessionPendingQueues: [String: [PendingItem]] = [:]
+    private let maximumConcurrentRuns = 2
+    private var lastStreamCheckpoint = Date.distantPast
+    private var lastCheckpointCharacterCount = 0
     private var nextContextScope: ChatContextScopeDTO? = nil
     private var nextClientSessionContext: ClientSessionContextDTO? = nil
     @Published public var pendingOrganizationDisposition: [String] = []
@@ -68,6 +78,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard appState != nil else { return }
         tenantEpoch += 1
         cancelAllTasksAndAnimations()
+        for task in backgroundRunMonitors.values { task.cancel() }
+        backgroundRunMonitors.removeAll()
+        backgroundRunRequests.removeAll()
         isGenerating = false
         inflight = nil
         pendingQueue.removeAll()
@@ -167,6 +180,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                       self.sessionManager.activeSessionID() == sid else { return }
                 if status.status == "completed", let answer = status.answer, !answer.isEmpty {
                     self.applyRecoveredAnswer(answer, outputMessageId: outputId)
+                    self.backgroundRunMonitors[sid]?.cancel()
+                    self.backgroundRunMonitors.removeValue(forKey: sid)
+                    self.backgroundRunRequests.removeValue(forKey: sid)
+                    self.finishGeneration()
                     return
                 }
                 if status.status == "running" {
@@ -270,19 +287,17 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     public func switchSession(to sessionId: String) {
-        guard sessionId != sessionManager.activeSessionID() else { return }
+        let previousSessionId = sessionManager.activeSessionID()
+        guard sessionId != previousSessionId else { return }
 
-        // 双重物理阻断：递增 Epoch + 取消所有在途 Task
+        sessionPendingQueues[previousSessionId] = pendingQueue
+        detachCurrentRunForNavigation()
         tenantEpoch += 1
         cancelAllTasksAndAnimations()
 
-        if let inf = inflight {
-            sessionManager.markInterrupted(sessionId: inf.sessionId)
-        }
-
         isGenerating = false
         inflight = nil
-        pendingQueue.removeAll()
+        pendingQueue = sessionPendingQueues[sessionId] ?? []
         waitingSeconds = 0
         thinkingPhase = nil
         thinkingDetail = nil
@@ -322,12 +337,11 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     public func newSession(agentId: String? = nil, agentName: String? = nil) {
+        let previousSessionId = sessionManager.activeSessionID()
+        sessionPendingQueues[previousSessionId] = pendingQueue
+        detachCurrentRunForNavigation()
         tenantEpoch += 1
         cancelAllTasksAndAnimations()
-
-        if let inf = inflight {
-            sessionManager.markInterrupted(sessionId: inf.sessionId)
-        }
 
         isGenerating = false
         inflight = nil
@@ -348,6 +362,10 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     public func deleteSession(_ sessionId: String) {
+        backgroundRunMonitors[sessionId]?.cancel()
+        backgroundRunMonitors.removeValue(forKey: sessionId)
+        backgroundRunRequests.removeValue(forKey: sessionId)
+        sessionPendingQueues.removeValue(forKey: sessionId)
         if sessionId == sessionManager.activeSessionID() {
             newSession()
         }
@@ -413,6 +431,60 @@ public final class TenantSessionCoordinator: ObservableObject {
         stopStatusPolling()
         for task in animationTasks.values { task.cancel() }
         animationTasks.removeAll()
+    }
+
+    /// Navigation detaches the transport but never cancels the server Run.
+    /// The partial answer is checkpointed and a session-keyed monitor owns
+    /// completion while another tab or conversation is visible.
+    private func detachCurrentRunForNavigation() {
+        guard let req = inflight else { return }
+        let outputId = outputMessageId(for: req)
+        drainDeltaBuffer(messageId: outputId)
+        commitSession()
+        startBackgroundRunMonitor(req: req, outputMessageId: outputId)
+        currentChatTask?.cancel()
+        currentChatTask = nil
+        stopStatusPolling()
+    }
+
+    private func startBackgroundRunMonitor(req: InFlightRequest, outputMessageId: String) {
+        guard backgroundRunMonitors[req.sessionId] == nil else { return }
+        backgroundRunRequests[req.sessionId] = req
+        backgroundRunMonitors[req.sessionId] = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer {
+                self.backgroundRunMonitors.removeValue(forKey: req.sessionId)
+                self.backgroundRunRequests.removeValue(forKey: req.sessionId)
+            }
+            var attempts = 0
+            while attempts < 360, !Task.isCancelled {
+                do {
+                    let status = try await APIClient.shared.fetchChatStatus(
+                        sessionId: req.sessionId, agentId: req.agentId
+                    )
+                    if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                        self.sessionManager.applyCompletedStatus(
+                            sessionId: req.sessionId,
+                            requestId: outputMessageId,
+                            answer: answer
+                        )
+                        return
+                    }
+                    if ["timeout", "not_found"].contains(status.status) {
+                        self.sessionManager.applyDegraded(
+                            sessionId: req.sessionId,
+                            requestId: outputMessageId,
+                            text: "任务未能完成，可返回会话后重试"
+                        )
+                        return
+                    }
+                } catch {
+                    // A transient status failure must not create a second Run.
+                }
+                attempts += 1
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
     }
 
     // MARK: - 快捷指令与计时器
@@ -490,31 +562,43 @@ public final class TenantSessionCoordinator: ObservableObject {
         let quote = quotedContext
         let contextScope = nextContextScope ?? ChatContextScopeDTO()
         nextContextScope = nil
+        let sid = sessionManager.activeSessionID()
+        if backgroundRunMonitors[sid] != nil {
+            showToast("当前会话仍有任务在后台执行，请等待完成")
+            return
+        }
+        if !isGenerating && backgroundRunMonitors.count >= maximumConcurrentRuns {
+            showToast("已有 \(maximumConcurrentRuns) 个会话任务在执行，请稍后再试")
+            return
+        }
         if isGenerating && pendingQueue.count >= 3 && !regenerate {
             showToast("最多排队 3 条，请等待")
             return
         }
 
-        let sid = sessionManager.activeSessionID()
         let clientSessionContext = nextClientSessionContext ?? sessionManager.clientSessionContext(for: sid)
         nextClientSessionContext = nil
         var localNoteSnapshot: [ChatLocalNoteDTO] = []
         var localNoteCharacters = 0
-        for note in (KnowledgeNoteStore.shared.notes + KnowledgeNoteStore.shared.archivedNotes).prefix(50) {
-            let markdown = String(KnowledgeNoteStore.shared.markdown(for: note).prefix(20_000))
-            guard localNoteCharacters + markdown.count <= 100_000 else { break }
-            localNoteSnapshot.append(ChatLocalNoteDTO(
-                id: note.id,
-                title: note.title,
-                markdown: markdown,
-                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt),
-                contentHash: KnowledgeNoteStore.shared.contentHash(for: note),
-                tags: note.tags,
-                aliases: note.aliases,
-                isPinned: note.isPinned,
-                archived: note.archivedAt != nil
-            ))
-            localNoteCharacters += markdown.count
+        // Ordinary web/general questions must not upload every local note. Only
+        // explicit local/combined knowledge requests receive a bounded snapshot.
+        if contextScope.mode == .localOnly || contextScope.mode == .combined {
+            for note in (KnowledgeNoteStore.shared.notes + KnowledgeNoteStore.shared.archivedNotes).prefix(12) {
+                let markdown = String(KnowledgeNoteStore.shared.markdown(for: note).prefix(8_000))
+                guard localNoteCharacters + markdown.count <= 40_000 else { break }
+                localNoteSnapshot.append(ChatLocalNoteDTO(
+                    id: note.id,
+                    title: note.title,
+                    markdown: markdown,
+                    updatedAt: ISO8601DateFormatter().string(from: note.updatedAt),
+                    contentHash: KnowledgeNoteStore.shared.contentHash(for: note),
+                    tags: note.tags,
+                    aliases: note.aliases,
+                    isPinned: note.isPinned,
+                    archived: note.archivedAt != nil
+                ))
+                localNoteCharacters += markdown.count
+            }
         }
         let enrichedClientSessionContext = ClientSessionContextDTO(
             sessionId: clientSessionContext.sessionId,
@@ -549,6 +633,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         thinkingPhase = nil
         thinkingDetail = nil
         generationStartDate = Date()
+        lastStreamCheckpoint = .distantPast
+        lastCheckpointCharacterCount = 0
         let sid = sessionManager.activeSessionID()
         let req = InFlightRequest(
             id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
@@ -622,18 +708,34 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.deltaBuffer = ""
                 self.messages[idx].pending = false
                 self.messages[idx].isStreaming = true
+                let count = self.messages[idx].content.count
+                if Date().timeIntervalSince(self.lastStreamCheckpoint) >= 0.75
+                    || count - self.lastCheckpointCharacterCount >= 2_048 {
+                    self.lastStreamCheckpoint = Date()
+                    self.lastCheckpointCharacterCount = count
+                    self.commitSession()
+                }
             }
         }
     }
 
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
         var handedOffToStatusRecovery = false
+        var receivedTerminalEvent = false
         defer {
-            let outputId = self.outputMessageId(for: req)
-            self.drainDeltaBuffer(messageId: outputId)
-            self.finalizeReasoningDuration(for: outputId)
-            self.commitSession()
-            // 交给 status monitor 后仍是同一个活跃 Run，不能被流任务的 defer 清掉。
+            if self.tenantEpoch == taskEpoch,
+               self.sessionManager.activeSessionID() == req.sessionId {
+                let outputId = self.outputMessageId(for: req)
+                self.drainDeltaBuffer(messageId: outputId)
+                self.finalizeReasoningDuration(for: outputId)
+                self.commitSession()
+            } else {
+                self.flushTask?.cancel()
+                self.flushTask = nil
+                self.flushScheduled = false
+                self.deltaBuffer = ""
+            }
+            // Once handed to a status monitor, this remains the same active Run.
             if !handedOffToStatusRecovery,
                self.inflight?.id == req.id && self.tenantEpoch == taskEpoch {
                 self.isGenerating = false
@@ -659,7 +761,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             clientSessionContext: req.clientSessionContext
         )
         do {
-            for try await event in stream {
+            eventLoop: for try await event in stream {
                 guard self.tenantEpoch == taskEpoch else {
                     drainDeltaBuffer(messageId: req.id)
                     return
@@ -851,12 +953,15 @@ public final class TenantSessionCoordinator: ObservableObject {
                         updateReasoningSteps(for: idx) { steps in
                             for i in steps.indices { steps[i].status = "done" }
                         }
-                        // 兜底：若流式 delta 偶发丢失或仅收到 done 帧，以 answer 补全正文（防空气泡）
-                        if messages[idx].content.isEmpty, let answer, !answer.isEmpty {
+                        // The terminal answer is authoritative. Replacing the
+                        // accumulated transport snapshot prevents truncated or
+                        // stale deltas from winning the final persistence race.
+                        if let answer, !answer.isEmpty {
                             messages[idx].content = answer
                         }
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
+                        receivedTerminalEvent = !messages[idx].content.isEmpty
                     }
 
                 case .error(let code, let message):
@@ -872,14 +977,22 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                         messages[idx].degraded = true
+                        receivedTerminalEvent = true
                     }
                 }
+                if receivedTerminalEvent { break eventLoop }
             }
             guard self.tenantEpoch == taskEpoch else { return }
             let outputId = outputMessageId(for: req)
             drainDeltaBuffer(messageId: outputId)
+            if receivedTerminalEvent {
+                commitSession()
+                finishGeneration()
+                return
+            }
 
-            // 流自然结束但没有终态（包括 busy SSE）时，只对账同一个 server-side Run。
+            // A stream that ended without a terminal frame (including busy)
+            // reconciles the same server Run instead of starting a duplicate.
             handedOffToStatusRecovery = await recoverAfterStreamEnd(req, outputMessageId: outputId)
             if !handedOffToStatusRecovery { finishGeneration() }
         } catch {
@@ -1398,8 +1511,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                             source: "bridge"
                         )
                         if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
-                            self.messages[idx].content = ""
-                            self.messages[idx].blocks = [.clarify(block)]
+                            if !self.messages[idx].blocks.contains(where: {
+                                if case .clarify(let existing) = $0 { return existing.id == block.id }
+                                return false
+                            }) {
+                                self.messages[idx].blocks.append(.clarify(block))
+                            }
                             self.messages[idx].pending = false
                             self.messages[idx].isStreaming = false
                         }

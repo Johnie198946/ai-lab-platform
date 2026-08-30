@@ -3151,6 +3151,13 @@ async def chat_stream(body: GoalRequest):
             except Exception:
                 pass
             _stream_run_discard(user_id, existing.get("run_id"))
+        run_id = uuid.uuid4().hex[:12]
+        if not _stream_run_reserve(user_id, run_id, body.request_id):
+            return StreamingResponse(
+                _busy_sse(user_id),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
         try:
             print(f"[bridge] v7 进程内流式: user={user_id}")
             return StreamingResponse(
@@ -3158,6 +3165,7 @@ async def chat_stream(body: GoalRequest):
                     user_id,
                     goal,
                     request_id=body.request_id,
+                    reserved_run_id=run_id,
                     allow_local_files=False,
                     agent_config=body.agent_config,
                     knowledge_capability=body.knowledge_capability,
@@ -3179,6 +3187,7 @@ async def chat_stream(body: GoalRequest):
                 },
             )
         except Exception as stream_err:
+            _stream_run_discard(user_id, run_id)
             print(f"[bridge] v7 进程内流式失败·降级: {stream_err}")
 
     if knowledge_claims or client_context_claims:
@@ -3680,6 +3689,21 @@ def _stream_run_register(user_id: str, state: dict) -> None:
         _stream_runs[user_id] = state
 
 
+def _stream_run_reserve(user_id: str, run_id: str, request_id: str | None) -> bool:
+    """Atomically claim one logical session before constructing its SSE body."""
+    with _stream_runs_guard:
+        if user_id in _stream_runs:
+            return False
+        _stream_runs[user_id] = {
+            "reserved": True,
+            "attached": True,
+            "start_ts": time.monotonic(),
+            "run_id": run_id,
+            "request_id": request_id,
+        }
+        return True
+
+
 def _stream_run_get(user_id: str) -> dict | None:
     with _stream_runs_guard:
         return _stream_runs.get(user_id)
@@ -3697,17 +3721,16 @@ def _stream_run_discard(user_id: str, run_id: str | None = None) -> None:
 
 
 def _watchdog_scan_once(now: float | None = None) -> list[tuple[str, str | None]]:
-    """watchdog 单次扫描：返回应中断的 (user_id, run_id) 列表（detached 且超时）。
+    """Return Runs past the server execution deadline, independent of SSE state.
 
-    独立纯函数便于单测（G-10 压缩测试直接驱动）；attached run 由 SSE generator
-    自身守护（客户端连接存在），不在 watchdog 管辖范围。
+    Connection loss never shortens a Run. Attached and detached executions share
+    the same governance deadline; only that deadline or explicit user cancel may
+    interrupt the worker.
     """
     now = now if now is not None else time.monotonic()
     victims: list[tuple[str, str | None]] = []
     with _stream_runs_guard:
-        for uid, state in list(_stream_runs.items()):
-            if state.get("attached", True):
-                continue
+        for uid, state in _stream_runs.items():
             start_ts = state.get("start_ts") or 0
             if now - start_ts > STREAM_MAX_DURATION_SECONDS:
                 victims.append((uid, state.get("run_id")))
@@ -3721,7 +3744,7 @@ def _watchdog_loop_step() -> None:
     """
     for uid, run_id in _watchdog_scan_once():
         print(
-            f"[bridge] watchdog: detached run 超 {STREAM_MAX_DURATION_SECONDS}s"
+            f"[bridge] watchdog: run 超 {STREAM_MAX_DURATION_SECONDS}s"
             f"·interrupt+discard user={uid}"
         )
         _interrupt_and_discard(uid, run_id)
@@ -4549,6 +4572,7 @@ def _sse_from_in_process(
     user_id: str,
     goal: str,
     request_id: str | None = None,
+    reserved_run_id: str | None = None,
     allow_local_files: bool = False,
     agent_config: dict[str, Any] | None = None,
     knowledge_capability: str | None = None,
@@ -4573,7 +4597,7 @@ def _sse_from_in_process(
     agent_holder: list = [None]
     start_ts = time.monotonic()
     last_keepalive_ts = time.monotonic()
-    run_id = uuid.uuid4().hex[:12]
+    run_id = reserved_run_id or uuid.uuid4().hex[:12]
 
     # 首帧状态（worker 启动前入队 → SSE 首帧即 boot，<10ms 真实构建状态）
     _qput(stream_q, {"type": "status", "phase": "boot", "detail": "正在初始化推理引擎…"})

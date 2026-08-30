@@ -291,11 +291,11 @@ class TestWatchdogKeepAlive(unittest.TestCase):
             victims = self.bridge._watchdog_scan_once()
             self.assertTrue(any(uid == "w1" for uid, _ in victims))
 
-    def test_attached_not_flagged(self):
+    def test_attached_and_detached_share_same_execution_deadline(self):
         with patch.object(self.bridge, "STREAM_MAX_DURATION_SECONDS", 720):
-            self._register("w2", attached=True, age_seconds=800)  # attached 超时也不杀
+            self._register("w2", attached=True, age_seconds=800)
             victims = self.bridge._watchdog_scan_once()
-            self.assertFalse(any(uid == "w2" for uid, _ in victims))
+            self.assertTrue(any(uid == "w2" for uid, _ in victims))
 
     def test_detached_within_budget_not_flagged(self):
         with patch.object(self.bridge, "STREAM_MAX_DURATION_SECONDS", 720):
@@ -329,6 +329,18 @@ class TestWatchdogKeepAlive(unittest.TestCase):
 
 class TestConcurrencyGuard(unittest.TestCase):
     """保活机制 v6（G-6）：同 session 活跃 run → running 事件流，不启动新 agent。"""
+
+    def tearDown(self):
+        import scripts.hermes_bridge as bridge
+        bridge._stream_runs.clear()
+
+    def test_atomic_reservation_allows_only_one_request(self):
+        import scripts.hermes_bridge as bridge
+        self.assertTrue(bridge._stream_run_reserve("same-session", "run-1", "request-1"))
+        self.assertFalse(bridge._stream_run_reserve("same-session", "run-2", "request-2"))
+        state = bridge._stream_run_get("same-session")
+        self.assertIsNotNone(state)
+        self.assertEqual((state or {})["run_id"], "run-1")
 
     def _collect(self, resp):
         async def gather():

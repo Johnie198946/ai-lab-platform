@@ -105,7 +105,7 @@ public struct ChatMessageStreamView: View {
                 message: message.content,
                 onRetry: { coordinator.retryMessage(message.id) }
             )
-        } else if message.pending && message.role == .assistant {
+        } else if message.usesPendingPlaceholder {
             if let req = coordinator.inflight, req.id == message.id {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
                     // 实时思考链：流式期间的 thought/tool 步骤逐步揭示，绝不藏在占位卡后面
@@ -185,6 +185,13 @@ public struct ChatMessageStreamView: View {
         default:
             EmptyView()
         }
+    }
+}
+
+extension ChatMessage {
+    var usesPendingPlaceholder: Bool {
+        pending && role == .assistant
+            && content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 }
 

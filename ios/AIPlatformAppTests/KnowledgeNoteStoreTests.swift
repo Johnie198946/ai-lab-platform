@@ -80,7 +80,9 @@ final class KnowledgeNoteStoreTests: XCTestCase {
 
     func testReloadAndIndexedSearchScaleToOneThousandNotes() throws {
         let store = KnowledgeNoteStore.shared
-        store.activate(tenantKey: "scale-tenant-\(UUID())", userId: "scale-user")
+        let tenantKey = "scale-tenant-\(UUID())"
+        let userId = "scale-user"
+        store.activate(tenantKey: tenantKey, userId: userId)
         let fm = FileManager.default
         let root = store.vaultDirectory
         for index in 0..<1_000 {
@@ -92,10 +94,15 @@ final class KnowledgeNoteStoreTests: XCTestCase {
             store.reload()
         }
         measure {
+            store.activate(tenantKey: tenantKey, userId: userId)
             store.reload()
             _ = store.search("内容 999")
             if let first = store.notes.first { _ = store.backlinks(to: first) }
         }
+        // The host app may publish an account lifecycle notification while the
+        // performance block runs. Reassert the test account before verification.
+        store.activate(tenantKey: tenantKey, userId: userId)
+        store.reload()
         XCTAssertEqual(store.notes.count, 1_000)
     }
 }

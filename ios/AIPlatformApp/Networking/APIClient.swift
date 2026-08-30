@@ -123,6 +123,16 @@ public struct SubscriptionsResponse: Codable {
     public let categories: [String]
 }
 
+public struct EffectiveKnowledgeDTO: Codable, Identifiable, Hashable {
+    public let category: String
+    public let title: String
+    public let securityLevel: String
+    public let source: String
+    public let documentCount: Int
+
+    public var id: String { category }
+}
+
 public struct KnowledgeAccessResponse: Codable {
     public let tenantKey: String
     public let organizationId: String
@@ -136,6 +146,7 @@ public struct KnowledgeAccessResponse: Codable {
     public var baseKnowledge: BaseKnowledgeDTO? = nil
     public var tenantPrivateKnowledge: TenantPrivateKnowledgeDTO? = nil
     public let effectiveCategories: [String]
+    public var effectiveKnowledge: [EffectiveKnowledgeDTO]? = nil
     public let entitlementStale: Bool
 }
 

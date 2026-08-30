@@ -53,6 +53,40 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertNil(object["user_id"])
     }
 
+    func testPendingPlaceholderNeverHidesVisiblePartialAnswer() {
+        let empty = ChatMessage(role: .assistant, content: "", isStreaming: true, pending: true)
+        let partial = ChatMessage(role: .assistant, content: "已经生成的内容", isStreaming: true, pending: true)
+        XCTAssertTrue(empty.usesPendingPlaceholder)
+        XCTAssertFalse(partial.usesPendingPlaceholder)
+    }
+
+    func testKnowledgeAccessDecodesRuntimeEffectiveKnowledge() throws {
+        let data = Data("""
+        {
+          "tenant_key": "tenant-a",
+          "organization_id": "org-a",
+          "plan_id": "",
+          "plan_status": "inactive",
+          "policy_version": "policy-12345678",
+          "wallet": [],
+          "yellow_entitlements": [],
+          "effective_categories": ["public"],
+          "effective_knowledge": [{
+            "category": "public",
+            "title": "公共知识",
+            "security_level": "green",
+            "source": "public",
+            "document_count": 3
+          }],
+          "entitlement_stale": false
+        }
+        """.utf8)
+        let access = try decoder().decode(KnowledgeAccessResponse.self, from: data)
+        XCTAssertEqual(access.effectiveKnowledge?.map(\.category), ["public"])
+        XCTAssertEqual(access.effectiveKnowledge?.first?.documentCount, 3)
+        XCTAssertFalse(access.entitlementStale)
+    }
+
     func testMarkdownParserReusesBoundedMessageCache() {
         let key = "streaming-\(UUID().uuidString)"
         let first = MarkdownBlockParser.shared.parse("第一段", messageId: key)
@@ -852,10 +886,10 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(restored.visibleTopics.count, 3)
     }
 
-    func testLoginChannelsRemainUsableBeforeCapabilityProbeCompletes() {
+    func testLoginChannelsRemainFailClosedBeforeCapabilityProbeCompletes() {
         let availability = LoginChannelAvailability()
-        XCTAssertTrue(availability.phone)
-        XCTAssertTrue(availability.alipay)
+        XCTAssertFalse(availability.phone)
+        XCTAssertFalse(availability.alipay)
         XCTAssertFalse(availability.wechat)
     }
 

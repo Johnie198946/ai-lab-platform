@@ -67,6 +67,21 @@ async def test_wallet_never_grants_yellow_and_private_is_owner_only(policy_rows)
 
 
 @pytest.mark.asyncio
+async def test_effective_knowledge_projection_matches_runtime_policy(policy_rows):
+    from backend.api.catalog import _effective_knowledge_items
+
+    async with SessionLocal() as db:
+        policy, metadata = await resolve_policy(
+            db, tenant_key="tenant-a", org_id="org-a", catalog=CATALOG,
+            is_super_admin=True, allow_admin_bypass=False,
+        )
+    items = _effective_knowledge_items(policy, metadata, CATALOG)
+    assert {item["category"] for item in items} == {"public", "premium", "private-a"}
+    assert next(item for item in items if item["category"] == "premium")["source"] == "subscription"
+    assert next(item for item in items if item["category"] == "private-a")["source"] == "tenant_private"
+
+
+@pytest.mark.asyncio
 async def test_stale_authen_projection_fails_closed_only_for_yellow(policy_rows):
     async with SessionLocal() as db:
         snapshot = await db.get(TenantEntitlementSnapshot, "tenant-a")

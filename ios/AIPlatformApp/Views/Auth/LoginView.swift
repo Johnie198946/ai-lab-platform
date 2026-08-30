@@ -11,11 +11,11 @@ import SwiftUI
 import AuthenticationServices
 
 struct LoginChannelAvailability: Equatable {
-    // Capabilities are advisory discovery. Keep known production channels usable
-    // during a transient probe failure; the server remains the authorization gate.
-    var phone = true
+    // Start fail-closed while capability discovery is in flight, avoiding the
+    // misleading enabled-then-grey flash on production startup.
+    var phone = false
     var wechat = false
-    var alipay = true
+    var alipay = false
 
     mutating func apply(_ capabilities: AuthCapabilitiesDTO) {
         phone = capabilities.phone.enabled
@@ -63,6 +63,8 @@ public struct LoginView: View {
     @State private var errorMessage: String? = nil
     @State private var isLoginCardVisible = false
     @State private var channels = LoginChannelAvailability()
+    @State private var isCapabilityLoading = true
+    @State private var capabilityMessage: String?
     @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
     @FocusState private var focusedField: LoginField?
 
@@ -93,7 +95,7 @@ public struct LoginView: View {
                             )
                             .frame(
                                 height: isLoginCardVisible
-                                    ? min(176, geometry.size.height * 0.23)
+                                    ? min(132, geometry.size.height * 0.18)
                                     : min(390, geometry.size.height * 0.52)
                             )
                         }
@@ -155,6 +157,18 @@ public struct LoginView: View {
                     .foregroundColor(AppTheme.Colors.textSecondary)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isCapabilityLoading {
+                Label("正在检测可用登录方式…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let capabilityMessage {
+                Label(capabilityMessage, systemImage: "info.circle.fill")
+                    .font(AppTheme.Typography.micro)
+                    .foregroundColor(AppTheme.Colors.statusWarning)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             phoneLoginSection
             thirdPartyChannelsSection
@@ -232,6 +246,14 @@ public struct LoginView: View {
                     Button(action: sendSmsCode) {
                         if isCountdownActive {
                             Text("\(countdownSeconds)s 后重发")
+                                .font(AppTheme.Typography.label)
+                                .foregroundColor(AppTheme.Colors.textTertiary)
+                        } else if isCapabilityLoading {
+                            Text("检测中")
+                                .font(AppTheme.Typography.label)
+                                .foregroundColor(AppTheme.Colors.textTertiary)
+                        } else if !channels.phone {
+                            Text("短信暂未开放")
                                 .font(AppTheme.Typography.label)
                                 .foregroundColor(AppTheme.Colors.textTertiary)
                         } else {
@@ -333,7 +355,7 @@ public struct LoginView: View {
                                     .foregroundColor(AppTheme.Colors.thirdPartyAlipay)
                                     .font(.system(size: 20))
                             )
-                        Text("支付宝")
+                        Text(channels.alipay ? "支付宝" : "支付宝·暂未开放")
                             .font(.system(size: 11))
                             .foregroundColor(AppTheme.Colors.textSecondary)
                     }
@@ -482,12 +504,20 @@ public struct LoginView: View {
 
     @MainActor
     private func loadAuthCapabilities() async {
+        isCapabilityLoading = true
+        capabilityMessage = nil
+        defer { isCapabilityLoading = false }
         do {
             let capabilities = try await APIClient.shared.fetchAuthCapabilities()
             channels.apply(capabilities)
+            if !channels.phone && !channels.alipay && !channels.wechat {
+                capabilityMessage = "认证渠道未配置；开发登录待服务端更新。"
+            } else if !channels.phone {
+                capabilityMessage = "短信登录暂未开放，请使用已启用的第三方方式。"
+            }
         } catch {
-            // Keep the known production channels available. Each action still
-            // performs server-side authorization and presents a concrete error.
+            channels = LoginChannelAvailability()
+            capabilityMessage = "认证服务暂时不可用，请稍后重试。"
         }
     }
 

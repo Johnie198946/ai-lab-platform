@@ -471,6 +471,7 @@ public struct SubscriptionCenterView: View {
     private let highlightedEntitlementKey: String?
 
     @State private var center: SubscriptionCenterResponse?
+    @State private var knowledgeAccess: KnowledgeAccessResponse?
     @State private var adminRequests: [SubscriptionRequestDTO] = []
     @State private var isLoading = true
     @State private var busyID: String?
@@ -502,13 +503,13 @@ public struct SubscriptionCenterView: View {
                             .foregroundStyle(AppTheme.Colors.textSecondary)
                     } else if let center {
                         currentPlanCard(center)
-                        requestSection(center.requests)
-                        plansSection(center)
-                        if center.isSuperAdmin, !publicationCandidates.isEmpty {
-                            publicationApprovalSection
-                        }
-                        knowledgePacksSection(center)
                         if center.isSuperAdmin {
+                            requestSection(center.requests)
+                            plansSection(center)
+                            if !publicationCandidates.isEmpty {
+                                publicationApprovalSection
+                            }
+                            knowledgePacksSection(center)
                             adminSection
                         }
                     }
@@ -545,7 +546,7 @@ public struct SubscriptionCenterView: View {
         .toolbar(.visible, for: .navigationBar)
         .task { await load() }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let center { stickyApplicationBar(center) }
+            if let center, center.isSuperAdmin { stickyApplicationBar(center) }
         }
         .sheet(item: $inspectedPack) { pack in
             knowledgePackDetail(pack)
@@ -560,13 +561,27 @@ public struct SubscriptionCenterView: View {
     }
 
     private func currentPlanCard(_ center: SubscriptionCenterResponse) -> some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
+        let effective = knowledgeAccess?.effectiveKnowledge ?? knowledgeAccess?.effectiveCategories.map { category in
+            let isPrivate = knowledgeAccess?.tenantPrivateKnowledge?.categories.contains(category) == true
+            return EffectiveKnowledgeDTO(
+                category: category,
+                title: category.split(separator: "/").last.map(String.init) ?? category,
+                securityLevel: isPrivate ? "red" : "green",
+                source: isPrivate ? "tenant_private" : "runtime",
+                documentCount: 0
+            )
+        } ?? []
+        let greenCount = effective.filter { $0.securityLevel == "green" }.count
+        let yellowCount = effective.filter { $0.securityLevel == "yellow" }.count
+        let redCount = effective.filter { $0.securityLevel == "red" }.count
+
+        return VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
             HStack {
-                Label("当前权益", systemImage: "checkmark.shield.fill")
+                Label("当前可用知识", systemImage: "checkmark.shield.fill")
                     .font(AppTheme.Typography.label)
                     .foregroundStyle(AppTheme.Colors.statusCompleted)
                 Spacer()
-                Text("以组织为单位")
+                Text("运行时真实权限")
                     .font(AppTheme.Typography.micro)
                     .foregroundStyle(AppTheme.Colors.textTertiary)
             }
@@ -581,47 +596,56 @@ public struct SubscriptionCenterView: View {
                         .font(AppTheme.Typography.micro.weight(.semibold))
                         .foregroundStyle(AppTheme.Colors.statusCompleted)
                 }
-                let grants = subscription.activePackGrants ?? center.activePackGrants ?? []
-                let allowance = subscription.packAllowance ?? center.packAllowance ?? 0
-                let baseKnowledge = center.baseKnowledge
-                let privateKnowledge = center.tenantPrivateKnowledge
-                HStack(spacing: 0) {
-                    entitlementMetric(value: "\(baseKnowledge?.documentCount ?? 0)篇", label: "公共知识")
-                    Divider().frame(height: 34)
-                    entitlementMetric(value: allowance < 0 ? "定制" : "\(grants.count)/\(allowance)", label: "黄色知识包")
-                    Divider().frame(height: 34)
-                    entitlementMetric(value: "\(privateKnowledge?.documentCount ?? 0)篇", label: "私有知识")
-                }
-                .padding(.vertical, AppTheme.Spacing.sm)
-                .background(AppTheme.Colors.secondaryBackground)
-                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                if !grants.isEmpty {
-                    Label(grants.map(\.name).joined(separator: "、"), systemImage: "books.vertical.fill")
-                        .font(AppTheme.Typography.supporting)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                }
-                if let baseKnowledge, !baseKnowledge.isReady {
-                    Label(
-                        "公共知识正在完成来源与权限复核（\(baseKnowledge.documentCount)/\(baseKnowledge.minimumDocumentCount)），开放后会自动出现，无需再次申请。",
-                        systemImage: "hammer.fill"
-                    )
-                    .font(AppTheme.Typography.supporting)
-                    .foregroundStyle(AppTheme.Colors.statusWarning)
-                    .padding(AppTheme.Spacing.md)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(AppTheme.Colors.statusWarning.opacity(0.10))
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
-                }
                 Text("权益版本 V\(subscription.entitlementVersion) · 有效期 \(subscription.effectiveUntil?.dateOnly ?? "长期")")
                     .font(AppTheme.Typography.micro)
                     .foregroundStyle(AppTheme.Colors.textTertiary)
             } else {
-                Text("尚未开通组织套餐")
+                Text("个人工作空间")
                     .font(AppTheme.Typography.cardTitle)
                     .foregroundStyle(AppTheme.Colors.textPrimary)
-                Text("绿色公共知识仍可直接使用；黄色受限知识需要选择套餐并提交审批。")
+                Text("以下只显示当前账号已被知识网关实际放行的内容。")
                     .font(AppTheme.Typography.supporting)
                     .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+
+            HStack(spacing: 0) {
+                entitlementMetric(value: "\(greenCount)项", label: "公共知识")
+                Divider().frame(height: 34)
+                entitlementMetric(value: "\(yellowCount)项", label: "受限知识")
+                Divider().frame(height: 34)
+                entitlementMetric(value: "\(redCount)项", label: "私有知识")
+            }
+            .padding(.vertical, AppTheme.Spacing.sm)
+            .background(AppTheme.Colors.secondaryBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+
+            if knowledgeAccess?.entitlementStale == true {
+                Label("权益同步状态不可确认，受限知识已按安全策略隐藏。", systemImage: "arrow.triangle.2.circlepath")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.statusWarning)
+            } else if effective.isEmpty {
+                ContentUnavailableView("暂无可用知识", systemImage: "books.vertical", description: Text("下拉刷新以重新同步当前账号的知识权限。"))
+                    .frame(minHeight: 120)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(effective) { item in
+                        HStack(spacing: AppTheme.Spacing.md) {
+                            Image(systemName: item.securityLevel == "green" ? "checkmark.circle.fill" : (item.securityLevel == "yellow" ? "lock.open.fill" : "lock.shield.fill"))
+                                .foregroundStyle(item.securityLevel == "green" ? AppTheme.Colors.statusCompleted : (item.securityLevel == "yellow" ? AppTheme.Colors.statusWarning : AppTheme.Colors.primary))
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                                Text("\(item.documentCount) 篇 · \(item.source == "subscription" ? "已获批" : (item.source == "tenant_private" ? "当前工作空间" : "公共可用"))")
+                                    .font(AppTheme.Typography.micro)
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, AppTheme.Spacing.sm)
+                        if item.id != effective.last?.id { Divider() }
+                    }
+                }
             }
         }
         .padding(AppTheme.Spacing.xl)
@@ -1363,8 +1387,12 @@ public struct SubscriptionCenterView: View {
         isLoading = true
         errorMessage = nil
         do {
-            let response = try await api.fetchSubscriptionCenter()
+            async let centerRequest = api.fetchSubscriptionCenter()
+            async let accessRequest = api.fetchKnowledgeAccess()
+            let response = try await centerRequest
+            let access = try await accessRequest
             center = response
+            knowledgeAccess = access
             if let highlightedEntitlementKey,
                let pack = (response.knowledgePacks ?? []).first(where: { $0.entitlementKey == highlightedEntitlementKey }) {
                 inspectedPack = pack
@@ -1380,6 +1408,7 @@ public struct SubscriptionCenterView: View {
                 publicationCandidates = []
             }
         } catch {
+            knowledgeAccess = nil
             errorMessage = actionableMessage(for: error)
         }
         isLoading = false

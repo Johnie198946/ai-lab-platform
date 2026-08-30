@@ -107,9 +107,16 @@ public struct MessageBubbleView: View {
             // 2. Markdown 正文卡片（正文非空 或 流式中）
             if !trimmed.isEmpty || message.isStreaming {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                    if !markdownBlocks.isEmpty {
-                        // MarkdownBlock.id 基于内容；重复段落/分隔线会产生相同 id。
-                        // 使用解析顺序作为局部身份，避免 SwiftUI 在长列表布局时合并重复节点。
+                    if message.isStreaming, !trimmed.isEmpty {
+                        // Keep streaming rendering incremental and cheap. Full
+                        // Markdown parsing happens atomically at the terminal event.
+                        Text(message.content)
+                            .font(AppTheme.Typography.body)
+                            .foregroundColor(AppTheme.Colors.textPrimary)
+                            .textSelection(.enabled)
+                    } else if !markdownBlocks.isEmpty {
+                        // MarkdownBlock.id is content-derived; use parse order as
+                        // local identity so repeated paragraphs stay distinct.
                         ForEach(Array(markdownBlocks.enumerated()), id: \.offset) { _, block in
                             MarkdownBlockCard(block: block)
                         }

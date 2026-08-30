@@ -347,6 +347,32 @@ async def remove_from_wallet(category: str, payload=Depends(require_auth)):
     return await _remove_wallet_category(category, payload)
 
 
+def _effective_knowledge_items(policy, metadata, catalog: list[dict]) -> list[dict]:
+    """Stable runtime entitlement projection consumed by first-party clients."""
+    result = []
+    for item in catalog:
+        category = str(item.get("category") or "")
+        if category not in policy.effective_categories:
+            continue
+        meta = metadata.get(category)
+        if meta is None:
+            continue
+        security = meta.security_level
+        result.append({
+            "category": category,
+            "title": str(item.get("title") or category),
+            "security_level": security,
+            "source": (
+                "subscription" if security == "yellow"
+                else "tenant_private" if security == "red"
+                else "public"
+            ),
+            "document_count": int(item.get("doc_count") or 0),
+        })
+    result.sort(key=lambda item: (item["security_level"], item["title"]))
+    return result
+
+
 @router.get("/me/knowledge-access")
 async def my_knowledge_access(payload=Depends(require_auth)):
     from backend.db import SessionLocal
@@ -355,16 +381,21 @@ async def my_knowledge_access(payload=Depends(require_auth)):
     vault = knowledge._vault()
     catalog = compute_catalog()
     async with SessionLocal() as db:
-        policy, _ = await resolve_policy(
+        # Mirror the runtime Agent/Gateway policy. Admin catalog visibility must
+        # not silently widen what an Agent can actually use.
+        policy, metadata = await resolve_policy(
             db,
             tenant_key=payload["tenant_key"],
             org_id=payload.get("org_id", ""),
             catalog=catalog,
             is_super_admin=bool(payload.get("is_super_admin")),
             is_guest=str(payload.get("role") or "") == "guest",
-            allow_admin_bypass=bool(payload.get("is_super_admin")),
+            allow_admin_bypass=False,
         )
         snapshot = await db.get(TenantEntitlementSnapshot, payload["tenant_key"])
+
+    effective_knowledge = _effective_knowledge_items(policy, metadata, catalog)
+
     return {
         "tenant_key": policy.tenant_key,
         "organization_id": policy.org_id,
@@ -380,6 +411,7 @@ async def my_knowledge_access(payload=Depends(require_auth)):
             payload["tenant_key"], vault
         ),
         "effective_categories": sorted(policy.effective_categories),
+        "effective_knowledge": effective_knowledge,
         "entitlement_stale": policy.entitlement_stale,
     }
 

@@ -21,7 +21,7 @@ public struct ChatView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var sessionManager: SessionManager
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var coordinator = TenantSessionCoordinator()
+    @StateObject private var coordinator = TenantSessionCoordinator.shared
     @StateObject private var speechService = SpeechRecognizerService()
 
     @State private var isShowingClearAlert: Bool = false

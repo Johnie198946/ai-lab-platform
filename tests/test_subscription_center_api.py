@@ -139,16 +139,22 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self.assertEqual(post_call[2]["json"]["requested_pack_ids"], ["pack-1", "pack-2"])
         self.assertNotIn("organization_id", post_call[2]["json"])
 
-    def test_center_forwards_knowledge_pack_governance_state(self):
+    def test_member_center_hides_ungranted_knowledge_pack_governance_state(self):
         response = self.request("GET", "/api/v1/subscription-center")
         self.assertEqual(response.status_code, 200, response.text)
         body = response.json()
-        self.assertEqual(body["knowledge_packs"][0]["status"], "draft")
+        self.assertEqual(body["knowledge_packs"], [])
         self.assertEqual(body["pack_allowance"], 0)
         self.assertEqual(body["base_knowledge"]["status"], "building")
         basic = next(item for item in body["plans"] if item["id"] == "plan-basic")
         self.assertFalse(basic["is_available"])
         self.assertEqual(basic["availability"], "content_building")
+
+    def test_admin_center_can_read_knowledge_pack_governance_state(self):
+        self.super_admin = True
+        response = self.request("GET", "/api/v1/subscription-center")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["knowledge_packs"][0]["status"], "draft")
 
     def test_base_plan_application_is_blocked_until_public_corpus_is_ready(self):
         response = self.request(

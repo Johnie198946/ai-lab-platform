@@ -200,6 +200,22 @@ async def subscription_center(payload=Depends(require_auth)):
         center["knowledge_packs"] = []
         center["active_pack_grants"] = []
         center["pack_allowance"] = 0
+    # The member settings surface is an entitlement summary, not a marketplace.
+    # Minimize data server-side so hidden candidate/ungranted packs cannot be
+    # enumerated by bypassing the iOS view.
+    if not payload.get("is_super_admin"):
+        grants = center.get("active_pack_grants") or (
+            (center.get("subscription") or {}).get("active_pack_grants")
+        ) or []
+        active_ids = {
+            str(item.get("knowledge_pack_id") or item.get("id") or "")
+            for item in grants
+            if item.get("status") == "active"
+        }
+        center["knowledge_packs"] = [
+            item for item in (center.get("knowledge_packs") or [])
+            if str(item.get("id") or "") in active_ids
+        ]
     return {
         **center,
         "plans": plan_items,

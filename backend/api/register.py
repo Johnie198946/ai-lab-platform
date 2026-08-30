@@ -14,6 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
 
+from backend.api import auth as auth_api
 from backend.api.auth import require_auth
 
 AUTHEN_BASE = os.environ.get("AUTHEN_BASE", "http://host.docker.internal:8001")
@@ -126,7 +127,10 @@ def _issue_jwt(
 
     from jose import jwt
 
-    secret = os.environ.get("AUTHEN_JWT_SECRET", "")
+    # Use the verifier's process snapshot as the signing source of truth. Reading
+    # os.environ again here can mint tokens with a rotated value while
+    # require_auth still verifies with the import-time value.
+    secret = auth_api.AUTHEN_JWT_SECRET
     if not secret:
         return ""
     now = datetime.now(timezone.utc)

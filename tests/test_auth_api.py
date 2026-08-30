@@ -166,6 +166,8 @@ class TestAuthAPI(unittest.TestCase):
                 "DEV_LOGIN_CODE": "246810",
                 "DEV_LOGIN_USER_ID": "dev-user",
                 "DEV_LOGIN_USERNAME": "开发者",
+                # Simulate an environment rotation without restarting the verifier.
+                "AUTHEN_JWT_SECRET": "rotated-after-import",
             },
             clear=False,
         ), patch.object(register, "_provision_tenant", fake_provision):
@@ -175,8 +177,13 @@ class TestAuthAPI(unittest.TestCase):
                 json={"phone": "13800138000", "verification_code": "246810"},
             )
         self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.json()["token"])
+        token = r.json()["token"]
+        self.assertTrue(token)
         self.assertEqual(r.json()["tenant_key"], "u-dev-user")
+        from jose import jwt as jose_jwt
+        import backend.api.auth as auth
+        claims = jose_jwt.decode(token, auth.AUTHEN_JWT_SECRET, algorithms=["HS256"])
+        self.assertEqual(claims["sub"], "dev-user")
 
 
 if __name__ == "__main__":
