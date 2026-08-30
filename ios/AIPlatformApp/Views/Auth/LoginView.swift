@@ -330,10 +330,22 @@ public struct LoginView: View {
     
     private func sendSmsCode() {
         guard phoneNumber.count >= 11 else { return }
-        isCountdownActive = true
-        #if os(iOS)
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        #endif
+        guard !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+
+        Task { @MainActor in
+            do {
+                _ = try await APIClient.shared.sendPhoneCode(phone: phoneNumber)
+                isCountdownActive = true
+                #if os(iOS)
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                #endif
+            } catch {
+                errorMessage = "验证码发送失败：\(error.localizedDescription)"
+            }
+            isLoading = false
+        }
     }
     
     private func performPhoneLogin() {
@@ -341,36 +353,23 @@ public struct LoginView: View {
         isLoading = true
         errorMessage = nil
 
-        // 手机号表单 → register 契约桥接（开发态占位；生产需真实邮箱/密码表单，见开发总结）
-        let username = phoneNumber
-        let email = "\(phoneNumber)@ailab.quantum"
-        let password = smsCode
-        let code = smsCode
-
         Task { @MainActor in
-            var isDev = false
-            // 1. 真实注册（后端内建兜底：注册失败自动回退登录，返回平台 JWT）
             do {
-                let resp = try await APIClient.shared.register(
-                    email: email,
-                    username: username,
-                    password: password,
-                    verificationCode: code
+                let response = try await APIClient.shared.loginWithPhoneCode(
+                    phone: phoneNumber,
+                    code: smsCode
                 )
-                guard let token = resp.token, !token.isEmpty else {
-                    // 顶设铁律：未拿到凭证绝不进入主界面（避免"假装登录成功"后被 401 踢回）
-                    isLoading = false
-                    errorMessage = "登录失败：未获取到访问凭证，请稍后重试"
-                    return
+                guard !response.token.isEmpty else {
+                    throw APIError.server(502, "认证服务未返回访问凭证")
                 }
-                APIClient.shared.saveToken(token)
+                APIClient.shared.saveToken(response.token)
             } catch {
                 isLoading = false
                 errorMessage = "登录失败：\(error.localizedDescription)"
                 return
             }
 
-            // 2. 探测 /me 判定开发态（dev 载荷 tenant_key=demo）或连接失败
+            var isDev = false
             do {
                 let profile = try await APIClient.shared.fetchMe()
                 if profile.tenantKey == "demo" || profile.username == "dev" {

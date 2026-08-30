@@ -393,6 +393,11 @@ public struct LoginSessionDTO: Codable {
     public let isNewUser: Bool?
 }
 
+public struct SendPhoneCodeResponseDTO: Codable {
+    public let success: Bool
+    public let message: String?
+}
+
 /// GET /api/v1/topology 单节点（后端基线 Agent 注册表唯一真值来源）
 public struct TopologyNodeDTO: Codable, Identifiable, Hashable {
     public let id: String
@@ -1996,6 +2001,31 @@ public final class APIClient: ObservableObject {
     }
 
     // MARK: - Token 用量 / 注册
+
+    /// POST /api/v1/auth/phone/send-code：请求手机号验证码。
+    public func sendPhoneCode(phone: String) async throws -> SendPhoneCodeResponseDTO {
+        struct Body: Encodable { let phone: String }
+        return try await request(
+            SendPhoneCodeResponseDTO.self,
+            path: "auth/phone/send-code",
+            method: "POST",
+            body: Body(phone: phone)
+        )
+    }
+
+    /// POST /api/v1/auth/phone/login：使用手机号验证码换取平台 JWT。
+    public func loginWithPhoneCode(phone: String, code: String) async throws -> LoginSessionDTO {
+        struct Body: Encodable {
+            let phone: String
+            let code: String
+        }
+        return try await request(
+            LoginSessionDTO.self,
+            path: "auth/phone/login",
+            method: "POST",
+            body: Body(phone: phone, code: code)
+        )
+    }
 
     /// GET /api/v1/me/usage → (chat_calls, token_used)
     public func fetchUsage() async throws -> (chatCalls: Int, tokenUsed: Int) {
