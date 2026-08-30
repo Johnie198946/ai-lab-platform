@@ -34,6 +34,10 @@ The release configuration sets marketing version 1.0.3, build 4, automatic signi
 - Fix: added `GENERATE_INFOPLIST_FILE=YES` to `AIPlatformAppTests` in `ios/project.yml`, then regenerated the project.
 - Full XCTest rerun on iPhone 17 Pro / iOS 26.1: `TEST SUCCEEDED`; 43 tests executed, 0 failures.
 - xcresult: `/private/tmp/quantumn-ios-tests-1.0.3-4/Logs/Test/Test-AIPlatformApp-2026.08.30_20-21-30-+0800.xcresult`
+- First App Store Connect validation attempt rejected the bundle because iPad multitasking required `UIInterfaceOrientationPortraitUpsideDown` (validation ID `6b40a6c0-74c7-42be-89d9-9bc697ca7051`); no upload succeeded.
+- Fix: added the missing iPad orientation in `ios/project.yml` and regenerated the Xcode project.
+- Full XCTest after the orientation fix: `TEST SUCCEEDED`; 43 tests executed, 0 failures.
+- post-fix xcresult: `/private/tmp/quantumn-ios-tests-1.0.3-4-orientation-fix/Logs/Test/Test-AIPlatformApp-2026.08.30_20-29-40-+0800.xcresult`
 - `git diff --check` for task files: passed.
 - `plutil -lint ios/AIPlatformApp/Info.plist`: passed.
 - Release Archive validation: pending.

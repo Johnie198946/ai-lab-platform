@@ -43,6 +43,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ailab.AIPlatformApp
