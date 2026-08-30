@@ -40,3 +40,24 @@ After fast-forwarding to `8efe2b7` (`fix(auth): reject token confusion on destru
 - `backend/api/quantum_workspace.py`
 
 The repository-root untracked `build/` directory was not read into, modified, staged, or removed.
+
+## Additional 100-case matrix
+
+A second independently generated suite adds exactly 100 unique pytest parameters:
+
+| Surface | Cases |
+|---|---:|
+| Missing role / deliverable / acceptance contract | 15 |
+| Missing stage / duplicate task identity | 15 |
+| Date and planned-date inversions | 10 |
+| Missing dependency endpoints / cycle variants | 20 |
+| Malformed Workflow node/data / orphan roles | 15 |
+| Unbound and dangling AI Resource references | 15 |
+| Move and Automation preflight scoping | 10 |
+| **Total** | **100** |
+
+- matrix integrity: `cases=100`, `unique=100`
+- isolated result: `100 passed in 0.81s`
+- full backend after inclusion: `1021 passed, 2 skipped`
+- newly discovered defects: none
+- evidence: `tests/test_project_consistency_100_generated.py`
