@@ -1,8 +1,9 @@
 import { CheckCircle2, FileText, GitBranch, RefreshCw, Users } from "lucide-react";
+import { ProjectBlueprintProtocol } from "./ProjectBlueprintProtocol";
 
 const unique = (values = []) => [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
 
-export function ProjectBlueprintReview({ blueprint, version, current = false }) {
+export function ProjectBlueprintReview({ blueprint, version, current = false, dispatchable = false }) {
   const stages = Array.isArray(blueprint?.stages) ? blueprint.stages : [];
   const tasks = Array.isArray(blueprint?.tasks) ? blueprint.tasks : [];
   const documents = Array.isArray(blueprint?.documents) ? blueprint.documents : [];
@@ -31,6 +32,7 @@ export function ProjectBlueprintReview({ blueprint, version, current = false }) 
       </li>;
     })}</ol>
     {!!acceptance.length && <details><summary>查看关键验收标准（{acceptance.length}）</summary><ul>{acceptance.slice(0, 12).map((item) => <li key={item}>{item}</li>)}</ul></details>}
+    <ProjectBlueprintProtocol protocol={JSON.stringify(blueprint, null, 2)} complete dispatchable={dispatchable} />
     {current && <p className="qw-blueprint-revise"><RefreshCw size={13} />不符合预期时，直接在下方粘贴你的流程或补充要求；Hermes 会基于 v{version} 合并修订并生成 v{version + 1}。</p>}
   </section>;
 }

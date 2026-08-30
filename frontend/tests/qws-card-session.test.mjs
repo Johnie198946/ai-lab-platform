@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { composeClarificationResponse, isOtherClarificationChoice, normalizedClarificationChoice } from "../src/features/quantum-workspace/hermesClarification.js";
-import { extractProjectBlueprint, projectPlanningNaturalReply, projectPlanningVisibleAnswer } from "../src/features/quantum-workspace/projectBlueprintPresentation.js";
+import { extractProjectBlueprint, extractProjectBlueprintProtocol, projectPlanningNaturalReply, projectPlanningVisibleAnswer } from "../src/features/quantum-workspace/projectBlueprintPresentation.js";
 
 const hostSource = await readFile(
   new URL("../src/features/quantum-workspace/DashiTaskboardHost.jsx", import.meta.url),
@@ -165,10 +165,14 @@ test("project planning reuses the safe Hermes execution trace", () => {
   assert.doesNotMatch(executionTraceSource, /chain.of.thought|思维链/i);
 });
 
-test("project planning hides blueprint protocol while streaming and renders a natural summary", () => {
+test("project planning exposes blueprint protocol beside the natural summary", () => {
   const partial = "方案已收敛。\n```project_blueprint\n{\"project_goal\":\"建设人脸识别门禁\",\"stages\":[";
   assert.equal(projectPlanningVisibleAnswer(partial, { pending: true }), "方案已收敛。");
   assert.doesNotMatch(projectPlanningVisibleAnswer(partial, { pending: true }), /project_goal|stages|```/);
+  assert.deepEqual(extractProjectBlueprintProtocol(partial), {
+    payload: '{"project_goal":"建设人脸识别门禁","stages":[',
+    complete: false,
+  });
 
   const blueprint = {
     project_goal: "建设人脸识别门禁",
@@ -181,6 +185,8 @@ test("project planning hides blueprint protocol while streaming and renders a na
   };
   const completed = `蓝图可供确认。\n\`\`\`project_blueprint\n${JSON.stringify(blueprint)}\n\`\`\``;
   assert.deepEqual(extractProjectBlueprint(completed), blueprint);
+  assert.equal(extractProjectBlueprintProtocol(completed).complete, true);
+  assert.match(extractProjectBlueprintProtocol(completed).payload, /"project_goal": "建设人脸识别门禁"/);
   const visible = projectPlanningVisibleAnswer(completed);
   assert.match(visible, /项目蓝图已经整理完成，共 2 个阶段、2 项任务和 1 份项目文档/);
   assert.match(visible, /项目目标：建设人脸识别门禁/);
@@ -199,6 +205,18 @@ test("project planning hides blueprint protocol while streaming and renders a na
   assert.deepEqual(extractProjectBlueprint(bare), blueprint);
   assert.equal(projectPlanningNaturalReply(bare), "更新后的完整方案：");
   assert.equal(projectPlanningVisibleAnswer('正在整理。\n{"project_goal":"门禁","stages":[', { pending: true }), "正在整理。");
+});
+
+test("project planning rejects false done terminals and exposes one controlled repair", () => {
+  assert.match(backendSource, /phase": "blueprint_repair"/);
+  assert.match(backendSource, /missing_project_blueprint/);
+  assert.match(backendSource, /terminal_type == "planning_incomplete"/);
+  assert.match(backendSource, /Do not ask another clarification in this repair pass/);
+  assert.match(backendSource, /stream_context = None if planning_session else hermes_context/);
+  assert.match(planningSource, /eventValue\.type === "planning_incomplete"/);
+  assert.match(planningSource, /setPlanningNotice\(detail\)/);
+  assert.match(planningSource, /蓝图未通过完整性校验/);
+  assert.match(executionTraceSource, /blueprint_repair/);
 });
 
 test("project planning treats new user input as a merged convergence revision", () => {

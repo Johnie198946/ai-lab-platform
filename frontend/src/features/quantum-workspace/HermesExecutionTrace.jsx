@@ -1,5 +1,6 @@
 const PHASE_LABELS = {
   planning_context: "项目名称与描述已绑定，正在检查需求空白",
+  blueprint_repair: "首轮未形成完整协议，正在执行一次受控补全",
   context: "正在同步会话上下文与权限",
   boot: "正在启动租户 Hermes",
   reasoning: "Hermes 正在理解需求",

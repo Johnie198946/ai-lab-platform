@@ -4,7 +4,8 @@ import { platformApi } from "../../services/platformApi";
 import { HermesClarificationCard } from "./HermesClarificationCard";
 import { createHermesExecution, HermesExecutionTrace, updateHermesExecution } from "./HermesExecutionTrace";
 import { ProjectBlueprintReview } from "./ProjectBlueprintReview";
-import { extractProjectBlueprint, projectPlanningNaturalReply, projectPlanningVisibleAnswer } from "./projectBlueprintPresentation.js";
+import { ProjectBlueprintProtocol } from "./ProjectBlueprintProtocol";
+import { extractProjectBlueprint, extractProjectBlueprintProtocol, projectPlanningNaturalReply, projectPlanningVisibleAnswer } from "./projectBlueprintPresentation.js";
 
 const planningContext = (project) => ({
   schema_version: 1,
@@ -29,6 +30,7 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [planningNotice, setPlanningNotice] = useState("");
   const [blueprintRequestId, setBlueprintRequestId] = useState("");
   const [resumeNeeded, setResumeNeeded] = useState(false);
   const [clarification, setClarification] = useState(null);
@@ -84,7 +86,7 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
   };
 
   const runStream = async (activeConversation, { text, requestId, trigger = "user", showUser = true }) => {
-    setBusy(true); setError(""); setClarification(null); setResumeNeeded(false);
+    setBusy(true); setError(""); setPlanningNotice(""); setClarification(null); setResumeNeeded(false);
     const startedAt = Date.now();
     setClock(startedAt);
     setMessages((current) => [...current, ...(showUser ? [{ id: requestId, request_id: requestId, role: "user", content: text }] : []), { id: `${requestId}-assistant`, request_id: requestId, role: "assistant", content: "", pending: true, execution: createHermesExecution("正在把项目背景交给 Hermes", startedAt) }]);
@@ -95,9 +97,26 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
         if (eventValue.type === "done") {
           const answer = eventValue.answer || "";
           setClarification(null);
+          setPlanningNotice("");
           setMessages((current) => current.map((item) => item.id === `${requestId}-assistant` ? { ...item, content: answer || item.content, pending: false, waitingForClarification: false, execution: { ...item.execution, current: "本轮处理完成", elapsedMs: Date.now() - item.execution.startedAt } } : item));
           if (extractProjectBlueprint(answer)) setBlueprintRequestId(requestId);
           else setResumeNeeded(true);
+        }
+        if (eventValue.type === "planning_incomplete") {
+          const detail = eventValue.detail || "Hermes 本轮没有返回可验证的完整项目蓝图。";
+          const answer = eventValue.answer || "";
+          setClarification(null);
+          setBlueprintRequestId("");
+          setResumeNeeded(true);
+          setPlanningNotice(detail);
+          setMessages((current) => current.map((item) => item.id === `${requestId}-assistant` ? {
+            ...item,
+            content: answer || item.content || detail,
+            pending: false,
+            incomplete: true,
+            waitingForClarification: false,
+            execution: { ...item.execution, current: "蓝图未通过完整性校验", elapsedMs: Date.now() - item.execution.startedAt },
+          } : item));
         }
         if (eventValue.type === "error") {
           const detail = eventValue.detail || eventValue.message || "Hermes 上游连接失败。";
@@ -165,12 +184,14 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
       <div className="qw-planning-messages" ref={messagesRef} aria-live="polite">{!messages.length && <div className="qw-chat-empty"><Bot size={24} /><strong>{resumeNeeded ? "上次 AI 生成尚未完成" : "正在把项目名称与描述交给 Hermes"}</strong><span>{resumeNeeded ? "点击下方“继续 AI 生成”，Hermes 会沿用本 Session 的项目背景继续收敛。" : "Hermes 会先判断信息是否足够；不足时直接提出一个关键问题，足够时生成可确认蓝图。"}</span></div>}{messages.map((message) => {
         const blueprint = message.role === "assistant" ? extractProjectBlueprint(message.content) : null;
         const blueprintIndex = blueprint ? blueprintMessages.findIndex((item) => item.id === message.id) : -1;
+        const protocol = message.role === "assistant" ? extractProjectBlueprintProtocol(message.content) : null;
         const visibleAnswer = message.role === "assistant"
           ? (blueprint ? projectPlanningNaturalReply(message.content) : projectPlanningVisibleAnswer(message.content, { pending: message.pending }))
           : message.content;
-        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}<p>{visibleAnswer || (message.waitingForClarification ? "请回答下方问题，Hermes 会继续评估。" : message.pending ? "正在检查需求完整度…" : message.failed ? "本轮未完成，请按提示重试。" : "蓝图已生成，请确认派发。")}</p>{blueprint && <ProjectBlueprintReview blueprint={blueprint} version={blueprintIndex + 1} current={message.id === latestBlueprintMessage?.id} />}</article>;
+        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : message.incomplete ? "incomplete" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}<p>{visibleAnswer || (message.waitingForClarification ? "请回答下方问题，Hermes 会继续评估。" : message.pending ? "正在检查需求完整度…" : message.failed ? "本轮未完成，请按提示重试。" : message.incomplete ? "本轮没有形成可验证蓝图，请补充信息或重试。" : "蓝图已生成，请确认派发。")}</p>{protocol && !blueprint && <ProjectBlueprintProtocol protocol={protocol.payload} complete={protocol.complete} dispatchable={false} />}{blueprint && <ProjectBlueprintReview blueprint={blueprint} version={blueprintIndex + 1} current={message.id === latestBlueprintMessage?.id} dispatchable={message.request_id === blueprintRequestId} />}</article>;
       })}<HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-project-clarification" continuationLabel="回答后，Hermes 会继续检查需求；信息足够时自动生成蓝图。" /></div>
       {error && <p className="qw-error compact" role="alert">{error}</p>}
+      {planningNotice && <p className="qw-planning-notice" role="status">{planningNotice}</p>}
       <form className="qw-planning-composer" onSubmit={send}><label className="qw-sr-only" htmlFor="project-planning-question">项目需求</label><textarea id="project-planning-question" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={clarification ? "请先回答上方澄清问题…" : latestBlueprintVersion ? `继续补充或修订收敛单 v${latestBlueprintVersion}，也可以直接粘贴你的流程…` : "补充目标、范围、角色、日期、验收或依赖…"} disabled={!conversation || busy || !!clarification} /><button className="qw-button primary" aria-label="发送" disabled={!conversation || busy || !!clarification || !question.trim()}><Send size={16} /></button></form>
       <footer><button type="button" className="qw-button subtle" disabled={!conversation || busy} onClick={() => send(null, "基于当前项目名称、描述和既有对话，判断能否收敛需求并完成全部字段：能则直接生成完整项目蓝图；不能则继续向我提出最关键的问题，直至需求收敛。")}>{resumeNeeded ? "继续 AI 生成" : blueprintRequestId ? "重新检查蓝图" : "检查并生成蓝图"}</button><button type="button" className="qw-button primary" disabled={!blueprintRequestId || busy} onClick={dispatch}>{busy ? "正在派发…" : "确认并派发项目"}</button></footer>
     </>}

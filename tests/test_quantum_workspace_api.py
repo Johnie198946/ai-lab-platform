@@ -8,6 +8,7 @@ import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
+from uuid import uuid4
 
 from types import SimpleNamespace
 
@@ -368,11 +369,16 @@ def test_new_project_session_automatically_assesses_context_and_preserves_system
         captured["context"] = req.client_session_context
         captured["trusted_professional_surface"] = kwargs.get("trusted_professional_surface")
 
-        async def events():
-            yield 'data: {"type":"clarify","clarify_id":"clarify-1","question":"首期必须覆盖哪些生产环节？","choices":["排产","报工"]}\n\n'
-            yield 'data: {"type":"done","answer":"已进入需求澄清"}\n\n'
+        answer = (
+            "```project_blueprint\n"
+            f"{json.dumps({'schema_version': '1.0', 'project_goal': '交付可验证的新产品方案', 'stages': [{'key': 'delivery', 'name': '交付'}], 'tasks': [{'key': 'T1', 'stage_key': 'delivery', 'title': '完成交付'}]}, ensure_ascii=False)}\n"
+            "```"
+        )
+        async def event_stream():
+            yield f'data: {json.dumps({"type": "clarify", "clarify_id": "clarify-1", "question": "首期必须覆盖哪些生产环节？", "choices": ["排产", "报工"]}, ensure_ascii=False)}\n\n'
+            yield f'data: {json.dumps({"type": "done", "answer": answer}, ensure_ascii=False)}\n\n'
 
-        return StreamingResponse(events(), media_type="text/event-stream")
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
     conversation_id = opened.json()["id"]
@@ -386,14 +392,15 @@ def test_new_project_session_automatically_assesses_context_and_preserves_system
     )
     assert streamed.status_code == 200, streamed.text
     assert '"phase": "planning_context"' in streamed.text
-    assert '"type":"clarify"' in streamed.text
+    assert '"phase": "blueprint_repair"' not in streamed.text
+    assert '"type": "clarify"' in streamed.text
     assert "project_name=Quantum Router" in captured["question"]
     assert "project_goal=交付可验证的新产品方案" in captured["question"]
     assert "不要要求用户重复" in captured["knowledge_query"]
     assert "调用 clarify" in captured["question"]
     assert "持续询问用户至需求收敛" in captured["knowledge_query"]
     assert captured["session_id"] == opened.json()["binding"]["session_id"]
-    assert captured["context"] is not None
+    assert captured["context"] is None
     assert captured["trusted_professional_surface"] is True
     messages = client.get(
         f"/api/v1/task-conversations/{conversation_id}/messages"
@@ -402,6 +409,140 @@ def test_new_project_session_automatically_assesses_context_and_preserves_system
         ("system", "auto_project_intake"),
         ("assistant", None),
     ]
+
+
+def test_project_planning_repairs_one_missing_blueprint_before_reporting_done(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id = _create_project(client, "blueprint-repair-success")
+    opened = client.post("/api/v1/task-conversations", json={
+        "project_id": project_id,
+        "task_id": "project-intake",
+        "workflow_id": None,
+        "agent_version": "hermes-project-planning-v1",
+        "card_context": {
+            "schema_version": 1,
+            "project": {"id": project_id, "name": "蓝图修复", "business_goal": "生成可派发计划", "desired_outputs": []},
+            "task": {
+                "dashi_task_id": "project-intake",
+                "qws_task_id": "project-intake",
+                "title": "项目需求收敛与派发",
+                "descriptions": [{"content": "生成可派发计划"}],
+                "status": "in_progress",
+                "assignee": {"id": "main_agent", "name": "Hermes"},
+                "qws": {"binding_kind": "project_planning", "stage_id": "project-planning"},
+            },
+        },
+    })
+    assert opened.status_code == 201, opened.text
+    calls = []
+    blueprint = {
+        "project_goal": "生成可派发计划",
+        "stages": [{"key": "delivery", "name": "交付"}],
+        "tasks": [{"key": "T1", "stage_key": "delivery", "title": "完成交付", "role": "负责人"}],
+        "documents": [],
+    }
+
+    async def fake_chat_stream(req, payload, **kwargs):
+        calls.append(req)
+
+        async def events():
+            if len(calls) == 1:
+                invalid = {"project_goal": "生成可派发计划", "stages": [], "tasks": []}
+                answer = f"```project_blueprint\n{json.dumps(invalid, ensure_ascii=False)}\n```"
+                yield f"data: {json.dumps({'type': 'done', 'answer': answer}, ensure_ascii=False)}\n\n"
+            else:
+                answer = f"蓝图已补全。\\n```project_blueprint\\n{json.dumps(blueprint, ensure_ascii=False)}\\n```"
+                yield f"data: {json.dumps({'type': 'done', 'answer': answer}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
+    request_id = f"project-plan-{uuid4().hex}"
+    streamed = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages/stream",
+        json={"question": "现在生成完整蓝图", "request_id": request_id, "trigger": "user"},
+    )
+    assert streamed.status_code == 200, streamed.text
+    assert len(calls) == 2
+    assert all(request.client_session_context is None for request in calls)
+    assert "[Blueprint repair pass]" in calls[1].question
+    assert '"phase": "blueprint_repair"' in streamed.text
+    assert '"blueprint_repair_attempted": true' in streamed.text
+    assert '"type": "planning_incomplete"' not in streamed.text
+    messages = client.get(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages"
+    ).json()
+    assistant = next(item for item in messages if item["role"] == "assistant")
+    assert assistant["event_metadata"]["terminal_type"] == "done"
+    assert assistant["event_metadata"]["retry_attempted"] is True
+    assert qws_api._project_blueprint_from_text(assistant["content"]) == blueprint
+
+
+def test_project_planning_persists_and_replays_typed_incomplete_terminal(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id = _create_project(client, "blueprint-repair-incomplete")
+    opened = client.post("/api/v1/task-conversations", json={
+        "project_id": project_id,
+        "task_id": "project-intake",
+        "workflow_id": None,
+        "agent_version": "hermes-project-planning-v1",
+        "card_context": {
+            "schema_version": 1,
+            "project": {"id": project_id, "name": "蓝图缺口", "business_goal": "生成可派发计划", "desired_outputs": []},
+            "task": {
+                "dashi_task_id": "project-intake",
+                "qws_task_id": "project-intake",
+                "title": "项目需求收敛与派发",
+                "descriptions": [{"content": "生成可派发计划"}],
+                "status": "in_progress",
+                "assignee": {"id": "main_agent", "name": "Hermes"},
+                "qws": {"binding_kind": "project_planning", "stage_id": "project-planning"},
+            },
+        },
+    })
+    assert opened.status_code == 201, opened.text
+    calls = []
+
+    async def fake_chat_stream(req, payload, **kwargs):
+        calls.append(req)
+
+        async def events():
+            answer = "尚缺少不可替代的外部约束。" if len(calls) == 1 else "PLANNING_GAP: 缺少法定审批主体。"
+            yield f"data: {json.dumps({'type': 'done', 'answer': answer}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
+    request_id = f"project-plan-{uuid4().hex}"
+    payload = {"question": "现在生成完整蓝图", "request_id": request_id, "trigger": "user"}
+    streamed = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages/stream",
+        json=payload,
+    )
+    assert streamed.status_code == 200, streamed.text
+    assert len(calls) == 2
+    assert '"type": "planning_incomplete"' in streamed.text
+    assert '"code": "missing_project_blueprint"' in streamed.text
+    assert '"retry_attempted": true' in streamed.text
+    assert '"type": "done"' not in streamed.text
+    messages = client.get(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages"
+    ).json()
+    assistant = next(item for item in messages if item["role"] == "assistant")
+    assert assistant["event_metadata"]["terminal_type"] == "planning_incomplete"
+    assert assistant["event_metadata"]["code"] == "missing_project_blueprint"
+    assert assistant["event_metadata"]["retry_attempted"] is True
+    replayed = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/messages/stream",
+        json=payload,
+    )
+    assert replayed.status_code == 200, replayed.text
+    assert '"type": "planning_incomplete"' in replayed.text
+    assert '"type": "done"' not in replayed.text
 
 
 def test_readiness_fails_closed_when_database_initialization_failed(_reset_database):

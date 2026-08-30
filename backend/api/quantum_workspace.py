@@ -791,6 +791,10 @@ def _parse_sse_event(frame: str) -> dict[str, Any] | None:
         return None
 
 
+def _encode_sse_event(event: dict[str, Any]) -> str:
+    return f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+
 def _project_out(project: WorkspaceProject) -> dict[str, Any]:
     task_count = len((project.process_snapshot or {}).get("tasks") or [])
     return {
@@ -7270,6 +7274,20 @@ async def stream_task_message(
                 )
                 if terminal_type == "error":
                     yield f"data: {json.dumps({'type': 'error', 'detail': existing_assistant.content}, ensure_ascii=False)}\n\n"
+                elif terminal_type == "planning_incomplete":
+                    yield _encode_sse_event({
+                        "type": "planning_incomplete",
+                        "code": (existing_assistant.event_metadata or {}).get(
+                            "code", "missing_project_blueprint"
+                        ),
+                        "detail": (existing_assistant.event_metadata or {}).get(
+                            "detail", "Hermes 本轮没有返回可验证的完整项目蓝图。"
+                        ),
+                        "retry_attempted": bool(
+                            (existing_assistant.event_metadata or {}).get("retry_attempted")
+                        ),
+                        "answer": existing_assistant.content,
+                    })
                 else:
                     yield f"data: {json.dumps({'type': 'done', 'answer': existing_assistant.content}, ensure_ascii=False)}\n\n"
 
@@ -7399,6 +7417,24 @@ async def stream_task_message(
             effective_question,
             ]
         )
+    # Project planning must keep the resumable Hermes Session as the source of
+    # clarification continuity. Signed card snapshots intentionally disable
+    # Session resume in the Bridge and remain appropriate for task sessions.
+    stream_context = None if planning_session else hermes_context
+
+    def validated_planning_blueprint(content: str | None) -> dict[str, Any] | None:
+        blueprint = _project_blueprint_from_text(content)
+        if blueprint is None:
+            return None
+        try:
+            instantiate_project_blueprint(
+                blueprint,
+                schedule_anchor=project.created_at.date(),
+            )
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return blueprint
+
     upstream = await stream_chat(
         StreamRequest(
             question=server_goal,
@@ -7407,7 +7443,7 @@ async def stream_task_message(
             agent_id=(None if planning_session else str((conversation.binding or {}).get("agent_id") or "") or None),
             skill_id=None,
             quoted_context=None,
-            client_session_context=hermes_context,
+            client_session_context=stream_context,
         ),
         payload,
         knowledge_query=effective_question,
@@ -7420,51 +7456,130 @@ async def stream_task_message(
     async def relay_and_record():
         answer: str | None = None
         failure: str | None = None
-        deltas: list[str] = []
-        terminal_done = False
-        buffer = ""
+        terminal_type: str | None = None
+        terminal_code: str | None = None
+        terminal_detail: str | None = None
+        retry_attempted = False
 
-        def consume(frames: list[str]) -> None:
-            nonlocal answer, failure, terminal_done
+        async def parsed_events(response: StreamingResponse):
+            buffer = ""
+            async for chunk in response.body_iterator:
+                text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
+                buffer += text
+                frames, buffer = _extract_sse_frames(buffer)
+                for frame in frames:
+                    event = _parse_sse_event(frame)
+                    if event is not None:
+                        yield event
+            frames, _ = _extract_sse_frames(buffer, final=True)
             for frame in frames:
                 event = _parse_sse_event(frame)
-                if event is None:
-                    continue
-                if event.get("type") == "delta" and event.get("content"):
+                if event is not None:
+                    yield event
+
+        async def relay_attempt(response: StreamingResponse, *, repair: bool = False):
+            nonlocal answer, failure, terminal_type
+            deltas: list[str] = []
+            async for event in parsed_events(response):
+                event_type = event.get("type")
+                if event_type == "delta" and event.get("content"):
                     deltas.append(str(event["content"]))
-                if event.get("type") == "done":
-                    terminal_done = True
-                    answer = str(event.get("answer") or "".join(deltas))
-                if event.get("type") == "error":
+                if event_type == "error":
                     failure = str(
                         event.get("detail")
                         or event.get("message")
                         or "Hermes stream failed"
                     )
+                    terminal_type = "error"
+                    yield _encode_sse_event(event)
+                    return
+                if event_type == "done":
+                    candidate = str(event.get("answer") or "".join(deltas)).strip()
+                    if planning_session and validated_planning_blueprint(candidate) is None:
+                        answer = candidate or answer
+                        return
+                    answer = candidate
+                    terminal_type = "done"
+                    yield _encode_sse_event({
+                        **event,
+                        "answer": candidate,
+                        **({"blueprint_repair_attempted": True} if repair else {}),
+                    })
+                    return
+                yield _encode_sse_event(event)
+            return
 
         try:
             if planning_session:
                 yield f"data: {json.dumps({'type': 'status', 'phase': 'planning_context', 'detail': '项目名称与描述已绑定，正在检查需求空白'}, ensure_ascii=False)}\n\n"
-            async for chunk in upstream.body_iterator:
-                text = chunk.decode("utf-8") if isinstance(chunk, bytes) else str(chunk)
-                buffer += text
-                frames, buffer = _extract_sse_frames(buffer)
-                consume(frames)
-                yield chunk
-            frames, buffer = _extract_sse_frames(buffer, final=True)
-            consume(frames)
-            if not terminal_done and failure is None:
+            async for frame in relay_attempt(upstream):
+                yield frame
+            first_completed = terminal_type in {"done", "error"}
+
+            if planning_session and not first_completed and failure is None:
+                retry_attempted = True
+                yield _encode_sse_event({
+                    "type": "status",
+                    "phase": "blueprint_repair",
+                    "detail": "首轮未形成完整蓝图，正在执行一次受控协议补全",
+                })
+                repair_request_id = f"{body.request_id[:72]}-repair-{uuid4().hex[:8]}"
+                repair_goal = "\n".join([
+                    server_goal,
+                    "[Blueprint repair pass]",
+                    "The prior planning turn ended without a valid project_blueprint block.",
+                    "Do not ask another clarification in this repair pass.",
+                    "Using only confirmed facts already present in this Session, now return a concise review followed by exactly one complete fenced project_blueprint JSON block matching the required schema.",
+                    "Do not invent facts. Optional non-blocking dates may remain null. If a genuinely blocking fact is still absent, return a concise response beginning with PLANNING_GAP: and name only the blocking facts.",
+                ])
+                repair_upstream = await stream_chat(
+                    StreamRequest(
+                        question=repair_goal,
+                        request_id=repair_request_id,
+                        session_id=conversation.session_id,
+                        agent_id=None,
+                        skill_id=None,
+                        quoted_context=None,
+                        client_session_context=stream_context,
+                    ),
+                    payload,
+                    knowledge_query=effective_question,
+                    allow_agent_invocation=False,
+                    allow_agency=False,
+                    trusted_professional_surface=True,
+                    first_activity_timeout_seconds=60,
+                )
+                async for frame in relay_attempt(repair_upstream, repair=True):
+                    yield frame
+                if terminal_type != "done" and failure is None:
+                    terminal_type = "planning_incomplete"
+                    terminal_code = "missing_project_blueprint"
+                    terminal_detail = (
+                        "Hermes 已执行一次自动协议补全，但仍未返回可验证的完整项目蓝图。"
+                        "你可以补充缺失信息，或点击“继续 AI 生成”重试。"
+                    )
+                    yield _encode_sse_event({
+                        "type": terminal_type,
+                        "code": terminal_code,
+                        "detail": terminal_detail,
+                        "retry_attempted": True,
+                        "answer": answer or "",
+                    })
+
+            if terminal_type is None and failure is None:
                 failure = "Hermes stream ended without a terminal event"
+                terminal_type = "error"
                 yield f"data: {json.dumps({'type': 'error', 'detail': failure}, ensure_ascii=False)}\n\n"
         except Exception as exc:
             failure = f"Hermes stream interrupted: {exc}"
+            terminal_type = "error"
             yield f"data: {json.dumps({'type': 'error', 'detail': failure}, ensure_ascii=False)}\n\n"
         recorded_answer = (
             failure
             or answer
             or "Hermes stream ended without a terminal event"
         )
-        terminal_type = "error" if failure or not terminal_done else "done"
+        terminal_type = "error" if failure else (terminal_type or "error")
         async with SessionLocal() as db:
             persisted_conversation = await db.scalar(
                 select(WorkspaceTaskConversation).where(
@@ -7484,6 +7599,9 @@ async def stream_task_message(
                     event_metadata={
                         "source": "hermes-sse",
                         "terminal_type": terminal_type,
+                        "code": terminal_code,
+                        "detail": terminal_detail,
+                        "retry_attempted": retry_attempted,
                     },
                 )
             )

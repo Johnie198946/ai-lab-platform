@@ -40,6 +40,25 @@ export const extractProjectBlueprint = (content = "") => {
   return locateBlueprintPayload(source)?.blueprint || null;
 };
 
+export const extractProjectBlueprintProtocol = (content = "") => {
+  const source = String(content || "");
+  const located = locateBlueprintPayload(source);
+  if (located) {
+    const payloadEnd = located.payloadEnd >= 0 ? located.payloadEnd : source.length;
+    const payload = source.slice(located.payloadStart, payloadEnd).trim();
+    if (!payload) return null;
+    return {
+      payload: located.blueprint ? JSON.stringify(located.blueprint, null, 2) : payload,
+      complete: Boolean(located.blueprint),
+    };
+  }
+
+  const objectStart = source.search(/\{\s*"(?:schema_version|project_goal|stages|tasks)"\s*:/i);
+  if (objectStart < 0) return null;
+  const payload = source.slice(objectStart).trim();
+  return payload ? { payload, complete: false } : null;
+};
+
 export const summarizeProjectBlueprint = (blueprint) => {
   if (!blueprint) return "";
   const stages = Array.isArray(blueprint.stages) ? blueprint.stages : [];
@@ -74,7 +93,7 @@ export const projectPlanningVisibleAnswer = (content = "", { pending = false } =
   if (!located) {
     const likelyBareBlueprint = pending && source.search(/\{\s*"(?:project_goal|stages|tasks)"\s*:/i);
     if (likelyBareBlueprint >= 0) {
-      return source.slice(0, likelyBareBlueprint).trim() || "项目蓝图正在整理中，结构化协议已隐藏。";
+      return source.slice(0, likelyBareBlueprint).trim() || "项目蓝图正在整理中，结构化协议草稿见下方。";
     }
     return source.trim();
   }
@@ -83,7 +102,7 @@ export const projectPlanningVisibleAnswer = (content = "", { pending = false } =
   const blueprint = located.blueprint;
   if (blueprint) return [naturalReply, summarizeProjectBlueprint(blueprint)].filter(Boolean).join("\n\n");
   if (naturalReply) return naturalReply;
-  return pending ? "项目蓝图正在整理中，结构化协议已隐藏。" : "项目蓝图已返回，正在整理为可读摘要。";
+  return pending ? "项目蓝图正在整理中，结构化协议草稿见下方。" : "项目蓝图已返回，结构化协议见下方。";
 };
 
 export const projectPlanningNaturalReply = (content = "") => {
