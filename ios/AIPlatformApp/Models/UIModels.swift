@@ -27,6 +27,16 @@ public enum UserRole: String, Codable, Sendable, CaseIterable {
     }
 }
 
+public enum CuteDisplayNames {
+    private static let names = ["棉花糖小兔", "奶油小熊", "星星布丁", "云朵团子", "桃桃软糖", "月亮小鹿"]
+
+    public static func name(for userID: String) -> String {
+        guard !userID.isEmpty else { return names[0] }
+        let value = userID.utf8.reduce(0) { ($0 &* 31) &+ Int($1) }
+        return names[abs(value) % names.count]
+    }
+}
+
 public struct TenantProfile: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public var name: String

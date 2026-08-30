@@ -125,6 +125,15 @@ class TestTenantAgentsAPI(unittest.TestCase):
         self.assertEqual(agent["subscribed_knowledge_packs"], [])
         self.assertIsNotNone(agent["created_at"])
 
+        # 更新（仍需保持当前租户/所有者边界）
+        r = self._request(
+            "PATCH", f"/api/v1/tenant-agents/{aid}",
+            json={"base_agent_id": "knowledge", "custom_name": "Alpha 更新版", "private_prompt_delta": "只输出核验结论"},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(r.json()["custom_name"], "Alpha 更新版")
+        self.assertEqual(r.json()["base_agent_id"], "knowledge")
+
         # 列表
         r = self._request("GET", "/api/v1/tenant-agents")
         self.assertEqual(r.status_code, 200)

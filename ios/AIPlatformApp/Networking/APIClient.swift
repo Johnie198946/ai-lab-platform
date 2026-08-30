@@ -1739,6 +1739,10 @@ public final class APIClient: ObservableObject {
         try await request(TenantAgentDTO.self, path: "tenant-agents", method: "POST", body: body)
     }
 
+    public func updateTenantAgent(id: String, body: TenantAgentCreateDTO) async throws -> TenantAgentDTO {
+        try await request(TenantAgentDTO.self, path: "tenant-agents/\(encodedPath(id))", method: "PATCH", body: body)
+    }
+
     /// DELETE /api/v1/tenant-agents/{id}：删除租户切片（204 无响应体）
     public func deleteTenantAgent(id: String) async throws {
         let url = baseURL

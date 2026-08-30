@@ -420,7 +420,19 @@ public struct LoginView: View {
         withAnimation(.spring()) {
             appState.isLoggedIn = true
             appState.isGuestMode = false
-            appState.currentProfile = MockData.tenantProfile
+            let displayName = profile.username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? CuteDisplayNames.name(for: profile.userId)
+                : profile.username
+            appState.currentProfile = TenantProfile(
+                id: profile.userId,
+                name: displayName,
+                tenantId: profile.tenantKey,
+                role: .tenantMember,
+                avatarUrl: profile.avatarUrl,
+                concurrencyLimit: 5,
+                tokenQuotaUsage: 0,
+                isVipLane: false
+            )
         }
     }
 }

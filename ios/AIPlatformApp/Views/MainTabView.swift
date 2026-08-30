@@ -8,10 +8,14 @@
 //
 
 import SwiftUI
+#if os(iOS)
+import UIKit
+#endif
 
 public struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
+    @StateObject private var keyboardObserver = KeyboardObserver()
 
     public init() {}
 
@@ -48,33 +52,35 @@ public struct MainTabView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .safeAreaInset(edge: .bottom, spacing: 18) {
-            VStack(spacing: AppTheme.Spacing.xs) {
-                if let activity = workflowActivities.primaryActivity {
-                    WorkflowActivityMiniBar(
-                        activity: activity,
-                        count: workflowActivities.visibleActivities.count,
-                        onOpen: {
-                            appState.pendingWorkflowId = activity.workflow.id
-                            appState.activeTab = 1
-                        },
-                        onDismiss: {
-                            workflowActivities.dismiss(activity.workflow.id)
-                        }
-                    )
-                    .padding(.horizontal, AppTheme.Spacing.lg)
-                } else if let activity = workflowActivities.primaryExecutionActivity {
-                    WorkflowExecutionMiniBar(
-                        activity: activity,
-                        count: workflowActivities.visibleExecutionActivities.count,
-                        onOpen: {
-                            appState.pendingWorkflowId = activity.workflow.id
-                            appState.activeTab = 1
-                        },
-                        onDismiss: { workflowActivities.dismiss(activity.workflow.id) }
-                    )
-                    .padding(.horizontal, AppTheme.Spacing.lg)
+            if !keyboardObserver.isKeyboardVisible {
+                VStack(spacing: AppTheme.Spacing.xs) {
+                    if let activity = workflowActivities.primaryActivity {
+                        WorkflowActivityMiniBar(
+                            activity: activity,
+                            count: workflowActivities.visibleActivities.count,
+                            onOpen: {
+                                appState.pendingWorkflowId = activity.workflow.id
+                                appState.activeTab = 1
+                            },
+                            onDismiss: {
+                                workflowActivities.dismiss(activity.workflow.id)
+                            }
+                        )
+                        .padding(.horizontal, AppTheme.Spacing.lg)
+                    } else if let activity = workflowActivities.primaryExecutionActivity {
+                        WorkflowExecutionMiniBar(
+                            activity: activity,
+                            count: workflowActivities.visibleExecutionActivities.count,
+                            onOpen: {
+                                appState.pendingWorkflowId = activity.workflow.id
+                                appState.activeTab = 1
+                            },
+                            onDismiss: { workflowActivities.dismiss(activity.workflow.id) }
+                        )
+                        .padding(.horizontal, AppTheme.Spacing.lg)
+                    }
+                    QuantumFloatingTabBar(selection: $appState.activeTab)
                 }
-                QuantumFloatingTabBar(selection: $appState.activeTab)
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
@@ -84,6 +90,36 @@ public struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.isDevMode)
+    }
+}
+
+private final class KeyboardObserver: ObservableObject {
+    @Published private(set) var isKeyboardVisible = false
+    private let notificationCenter: NotificationCenter
+    private var observers: [NSObjectProtocol] = []
+
+    init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
+        observers = [
+            notificationCenter.addObserver(
+                forName: UIResponder.keyboardWillShowNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.isKeyboardVisible = true
+            },
+            notificationCenter.addObserver(
+                forName: UIResponder.keyboardWillHideNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.isKeyboardVisible = false
+            }
+        ]
+    }
+
+    deinit {
+        observers.forEach(notificationCenter.removeObserver)
     }
 }
 

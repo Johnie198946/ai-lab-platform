@@ -21,6 +21,9 @@ public struct ChatView: View {
     @State private var showingSessionDrawer: Bool = false
     @State private var showingAgentPicker: Bool = false
     @State private var tenantAgents: [TenantAgentDTO] = []
+    // Keep the draft local so every keystroke does not publish through the
+    // session coordinator and invalidate the whole message stream.
+    @State private var draftText: String = ""
 
     private let waitingTimer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -46,12 +49,15 @@ public struct ChatView: View {
                     )
                     ChatMessageStreamView(coordinator: coordinator)
                     ChatInputBar(
-                        inputText: $coordinator.inputText,
+                        inputText: $draftText,
                         quotedContext: $coordinator.quotedContext,
                         isVoicePressing: $isVoicePressing,
                         speechService: speechService,
                         isGenerating: coordinator.isGenerating,
-                        onSend: { coordinator.sendMessage() },
+                        onSend: {
+                            coordinator.inputText = draftText
+                            coordinator.sendMessage()
+                        },
                         onVoicePressChanged: handleVoicePressChanged,
                         onPlusTap: { showingPlusMenu = true }
                     )
@@ -117,11 +123,19 @@ public struct ChatView: View {
                 coordinator.handlePendingAgent()
             }
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
+            .onChange(of: coordinator.inputText) { _, newValue in
+                // Session restore, prompts, chips and voice input can update
+                // the coordinator outside the TextField.
+                if newValue != draftText {
+                    draftText = newValue
+                }
+            }
             .onChange(of: speechService.state) { oldState, newState in
                 guard newState == .idle, oldState != .idle else { return }
                 let recognized = speechService.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !recognized.isEmpty else { return }
-                coordinator.inputText = joinedVoiceInput(prefix: voiceInputPrefix, transcript: recognized)
+                draftText = joinedVoiceInput(prefix: voiceInputPrefix, transcript: recognized)
+                coordinator.inputText = draftText
                 isVoicePressing = false
             }
             .onReceive(waitingTimer) { _ in coordinator.tickWaitingTimer() }
@@ -144,7 +158,7 @@ public struct ChatView: View {
     private func handleVoicePressChanged(_ isPressing: Bool) {
         if isPressing {
             guard speechService.state == .idle else { return }
-            voiceInputPrefix = coordinator.inputText
+            voiceInputPrefix = draftText
             Task { @MainActor in
                 await speechService.start(autoStopOnSilence: false)
                 if !isVoicePressing, speechService.state == .recording {
