@@ -98,16 +98,18 @@ async def register(body: RegisterRequest):
             login_payload = r2.json()
             user_id = str(login_payload.get("user", {}).get("id", ""))
             tenant_key = await _provision_tenant(user_id)
-            # Authen access_token 与平台同 secret 签名，直接作为平台 JWT
-            token = login_payload.get("access_token", "") or _issue_jwt(user_id)
+            # 平台重新签发带可信主体/认证方式声明的 JWT；不透传 Authen bearer。
+            token = _issue_jwt(user_id, body.username, auth_method="pwd")
             return {"success": True, "message": "登录成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
     user_id = r.json().get("user_id", "")
     tenant_key = await _provision_tenant(user_id)
-    token = _issue_jwt(user_id)
+    token = _issue_jwt(user_id, body.username, auth_method="pwd")
     return {"success": True, "message": "注册成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
 
 
-def _issue_jwt(user_id: str, username: str = "") -> str:
+def _issue_jwt(
+    user_id: str, username: str = "", *, auth_method: str = "interactive"
+) -> str:
     """签发平台 JWT（与 Authen 同 secret/算法，sub=user_id，供 require_auth 校验）。"""
     from datetime import datetime, timedelta, timezone
 
@@ -116,11 +118,15 @@ def _issue_jwt(user_id: str, username: str = "") -> str:
     secret = os.environ.get("AUTHEN_JWT_SECRET", "")
     if not secret:
         return ""
+    now = datetime.now(timezone.utc)
     return jwt.encode(
         {
             "sub": user_id,
             "username": username,
-            "exp": datetime.now(timezone.utc) + timedelta(hours=12),
+            "principal_type": "human",
+            "amr": [auth_method],
+            "auth_time": int(now.timestamp()),
+            "exp": now + timedelta(hours=12),
         },
         secret,
         algorithm="HS256",
@@ -145,7 +151,7 @@ async def dev_login(body: DevLoginRequest):
     user_id = os.environ.get("DEV_LOGIN_USER_ID", "dev-user").strip() or "dev-user"
     username = os.environ.get("DEV_LOGIN_USERNAME", "开发者").strip() or "开发者"
     tenant_key = await _provision_tenant(user_id)
-    token = _issue_jwt(user_id, username)
+    token = _issue_jwt(user_id, username, auth_method="dev_code")
     if not token:
         raise HTTPException(status_code=503, detail="服务端未配置 AUTHEN_JWT_SECRET")
     return {

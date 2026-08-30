@@ -5,7 +5,7 @@ import asyncio
 
 import json
 import os
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
 
@@ -31,6 +31,8 @@ import backend.api.quantum_workspace as qws_api  # noqa: E402
 from backend.api.auth import require_auth  # noqa: E402
 from backend.api.quantum_workspace import (  # noqa: E402
     _apply_taskboard_backfill,
+    _enforce_agent_lease_fence,
+    _enforce_qws_relation_backfill_contract,
     _parse_backfill_block,
 )
 from backend.services.workspace_process import instantiate_project_blueprint, persist_process_revision  # noqa: E402
@@ -51,6 +53,8 @@ def _reset_database():
         "tenant_key": "tenant-a",
         "user_id": "user-a",
         "sub": "user-a",
+        "principal_type": "human",
+        "amr": ["test_interactive"],
         "is_super_admin": False,
     }
     with TestClient(app) as client:
@@ -103,7 +107,10 @@ def test_project_home_supports_update_and_owner_delete(_reset_database):
     assert updated.status_code == 200
     assert updated.json()["name"] == "新项目名"
     assert updated.json()["desired_outputs"] == ["项目文档"]
-    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    deleted = client.delete(
+        f"/api/v1/projects/{project_id}",
+        headers={"X-QWS-Confirm-Project-Id": project_id},
+    )
     assert deleted.status_code == 204
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
@@ -288,7 +295,10 @@ def test_project_planning_session_dispatches_confirmed_blueprint(_reset_database
     assert registry.task_profile["acceptance_criteria"] == ["成果可阅读"]
     assert registry.task_profile["stage"]["name"] == "交付"
 
-    deleted = client.delete(f"/api/v1/projects/{project_id}")
+    deleted = client.delete(
+        f"/api/v1/projects/{project_id}",
+        headers={"X-QWS-Confirm-Project-Id": project_id},
+    )
     assert deleted.status_code == 204, deleted.text
     assert client.get(f"/api/v1/projects/{project_id}").status_code == 404
 
@@ -1535,6 +1545,40 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
     )
 
 
+def test_execution_lease_heartbeat_requires_same_session_and_epoch(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "lease-heartbeat")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    acquired = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease",
+        json={
+            "expected_revision": 1, "expected_task_revision": 1,
+            "session_id": "session-a", "actor_id": "agent-a", "ttl_seconds": 900,
+        },
+    )
+    assert acquired.status_code == 200, acquired.text
+    epoch = acquired.json()["lease"]["lease_epoch"]
+    renewed = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease/heartbeat",
+        json={
+            "expected_revision": 2, "expected_task_revision": 2,
+            "session_id": "session-a", "lease_epoch": epoch, "ttl_seconds": 900,
+        },
+    )
+    assert renewed.status_code == 200, renewed.text
+    assert renewed.json()["process_revision"] == 3
+    assert renewed.json()["lease"]["lease_epoch"] == epoch
+    wrong_epoch = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease/heartbeat",
+        json={
+            "expected_revision": 3, "expected_task_revision": 3,
+            "session_id": "session-a", "lease_epoch": epoch + 1, "ttl_seconds": 900,
+        },
+    )
+    assert wrong_epoch.status_code == 409
+    assert wrong_epoch.json()["detail"]["error"] == "execution_lease_epoch_conflict"
+
+
 def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "challenge-review")
@@ -1545,12 +1589,13 @@ def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_re
         "expected_task_revision": 1, "agreed": ["目标合理"],
         "challenges": ["未经授权将直接发布生产"],
         "impacts": {"security": "可能泄露数据", "no_action": "继续阻断发布"},
-        "evidence": [{"kind": "FACT", "statement": "没有部署授权", "source_refs": ["policy:deploy"]}],
+        "evidence": [{"kind": "FACT", "statement": "没有部署授权", "source_refs": [f"task:{task['id']}@1"]}],
         "alternatives": [
             {"id": "keep", "label": "保留原方案", "cost": "高风险", "resolution": "PROCEED"},
             {"id": "experiment", "label": "先做沙盒实验", "cost": "增加一天", "resolution": "EXPERIMENT"},
         ],
-        "conclusion": "EXPERIMENT", "question": "是否先做沙盒实验？",
+        "conclusion": "EXPERIMENT", "decision_key": "production_release_strategy",
+        "question": "是否先做沙盒实验？",
         "risk_categories": ["security", "production_publish"], "reversible": False,
     }
     created = client.post(
@@ -1588,6 +1633,20 @@ def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_re
         "request_id": "challenge-decision-0001", "expected_revision": 2,
         "expected_task_revision": 2, "selected_option_id": "experiment",
         "resolution": "EXPERIMENT", "rationale": "先验证再申请发布授权",
+    }
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
+        "principal_type": "agent", "is_super_admin": False,
+    }
+    agent_resolution = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json=decision_request,
+    )
+    assert agent_resolution.status_code == 403
+    assert agent_resolution.json()["detail"] == "authenticated human principal required"
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "user-a", "sub": "user-a",
+        "principal_type": "human", "amr": ["test_interactive"], "is_super_admin": False,
     }
     resolved = client.post(
         f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
@@ -1629,12 +1688,13 @@ def test_challenge_cas_conflict_rereads_identical_committed_request(
         "request_id": "challenge-race-0001", "expected_revision": 1,
         "expected_task_revision": 1, "agreed": ["目标合理"],
         "challenges": ["直接发布生产缺少授权"], "impacts": {"security": "发布风险"},
-        "evidence": [{"kind": "FACT", "statement": "无发布授权"}],
+        "evidence": [{"kind": "FACT", "statement": "无发布授权", "source_refs": [f"task:{task['id']}@1"]}],
         "alternatives": [
             {"id": "keep", "label": "保留", "cost": "高风险", "resolution": "PROCEED"},
             {"id": "sandbox", "label": "沙盒", "cost": "一天", "resolution": "EXPERIMENT"},
         ],
-        "conclusion": "EXPERIMENT", "question": "是否先做沙盒？",
+        "conclusion": "EXPERIMENT", "decision_key": "production_release_strategy",
+        "question": "是否先做沙盒？",
         "risk_categories": ["production_publish"], "reversible": False,
     }
     original = qws_api._cas_project_process
@@ -2344,3 +2404,55 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
     ).json()
     assert messages[-1]["event_metadata"]["terminal_type"] == "error"
+
+
+def test_qws_canonical_relation_backfill_is_fail_closed() -> None:
+    snapshot = {
+        "task": {
+            "relation_projection": {
+                "canonical_source": "QWS_PROCESS_SNAPSHOT",
+                "taskboard_mode": "READ_ONLY_CONSUMER_REQUIRED",
+            }
+        }
+    }
+    _enforce_qws_relation_backfill_contract(snapshot, {"description": "safe"})
+    with pytest.raises(HTTPException, match="QWS canonical relations") as relation_error:
+        _enforce_qws_relation_backfill_contract(
+            snapshot,
+            {"relationChanges": {"add": [{"type": "blocks", "target_task_id": "t2"}]}},
+        )
+    assert relation_error.value.status_code == 409
+    with pytest.raises(HTTPException, match="QWS canonical relations"):
+        _enforce_qws_relation_backfill_contract(
+            snapshot,
+            {"createIssues": [{"title": "child", "relation": "sub_issue"}]},
+        )
+
+
+def test_agent_task_writes_require_current_lease_epoch() -> None:
+    task = {
+        "execution_lease": {
+            "status": "ACTIVE",
+            "session_id": "session-new",
+            "lease_epoch": 4,
+            "actor_id": "agent:agent-a",
+            "expires_at": (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
+        }
+    }
+    payload = {"principal_type": "agent", "sub": "agent-a"}
+    _enforce_agent_lease_fence(task, payload, session_id="session-new", lease_epoch=4)
+    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+        _enforce_agent_lease_fence(task, payload, session_id="session-old", lease_epoch=3)
+    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+        _enforce_agent_lease_fence(task, {}, session_id="session-new", lease_epoch=4)
+    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+        _enforce_agent_lease_fence(
+            task, {"principal_type": "agent", "sub": "agent-b"},
+            session_id="session-new", lease_epoch=4,
+        )
+    _enforce_agent_lease_fence(
+        task,
+        {"principal_type": "human", "sub": "user-a", "amr": ["test_interactive"]},
+        session_id=None,
+        lease_epoch=None,
+    )

@@ -1852,6 +1852,41 @@ export function createTaskboardServer(options = {}) {
         existingMarkers.add(marker);
         existingTasksByMarker.set(marker, created);
       }
+      const canonicalRelationKey = (type, taskId, relatedId) => {
+        if (type === "related") return `related:${[taskId, relatedId].sort().join(":")}`;
+        if (type === "blocked_by") return `blocks:${relatedId}:${taskId}`;
+        return `${type}:${taskId}:${relatedId}`;
+      };
+      const desiredRelationKeys = new Set();
+      for (const task of process.tasks || []) {
+        const taskId = cardIdsByQwsTaskId.get(task.id);
+        for (const relation of desiredRelations.get(task.id) || []) {
+          const relatedId = cardIdsByQwsTaskId.get(relation.target_task_id);
+          if (taskId && relatedId) desiredRelationKeys.add(canonicalRelationKey(relation.type, taskId, relatedId));
+        }
+      }
+      const qwsCardIds = new Set(cardIdsByQwsTaskId.values());
+      for (const task of process.tasks || []) {
+        const taskId = cardIdsByQwsTaskId.get(task.id);
+        if (!taskId) continue;
+        const current = database.getTask(taskId);
+        const existingRelations = [
+          ...(current.relations.parent ? [{ type: "parent", target: current.relations.parent }] : []),
+          ...current.relations.blockedBy.map((target) => ({ type: "blocked_by", target })),
+          ...current.relations.blocks.map((target) => ({ type: "blocks", target })),
+          ...current.relations.related.map((target) => ({ type: "related", target })),
+        ];
+        for (const relation of existingRelations) {
+          if (!qwsCardIds.has(relation.target.id)) continue;
+          const key = canonicalRelationKey(relation.type, taskId, relation.target.id);
+          if (desiredRelationKeys.has(key)) continue;
+          const latest = database.getTask(taskId);
+          database.removeTaskRelation(
+            taskId, latest.version, relation.type, relation.target.id,
+            null, null, actor, "manual",
+          );
+        }
+      }
       for (const task of process.tasks || []) {
         const taskId = cardIdsByQwsTaskId.get(task.id);
         for (const relation of desiredRelations.get(task.id) || []) {
@@ -3043,6 +3078,18 @@ export function createTaskboardServer(options = {}) {
           throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Issue relation routes do not accept query parameters");
         }
         const relationType = parseIssueRelationType(type);
+        const relationTask = database.getTask(taskId);
+        if (
+          resolved.qwsMode
+          && ["POST", "DELETE"].includes(request.method)
+          && String(relationTask?.projectId || "").startsWith("qws-")
+        ) {
+          throw new ApiError(
+            409,
+            "QWS_RELATION_READ_ONLY",
+            "QWS canonical relations must be changed through a QWS relation proposal",
+          );
+        }
         if (request.method === "POST") {
           const { version, threadId, threadBinding, origin } = resolveInputThreadBinding(
             parseRelationMutation(await readJson(request)),

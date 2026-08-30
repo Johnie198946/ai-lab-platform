@@ -141,6 +141,7 @@ def find_duplicate_candidates(
         candidates.append({
             "target_task_id": target.get("id"),
             "target_title": target.get("title"),
+            "target_task_revision": int(target.get("task_revision") or 1),
             "score": score,
             "classification": classification,
             "field_scores": result["field_scores"],
@@ -253,6 +254,12 @@ def apply_task_merge(
         raise ValueError("merge_preview_not_applicable")
     if _has_active_execution_lease(primary) or _has_active_execution_lease(secondary):
         raise ValueError("active_execution_lease_blocks_merge")
+    if any(
+        item.get("status") == "OPEN"
+        for task in (primary, secondary)
+        for item in task.get("challenge_reviews") or []
+    ):
+        raise ValueError("open_challenge_decision_required")
     if int(primary.get("task_revision") or 1) != preview["primary_revision"]:
         raise ValueError("primary_task_revision_conflict")
     if int(secondary.get("task_revision") or 1) != preview["secondary_revision"]:
@@ -664,7 +671,7 @@ def acquire_execution_lease(
     ttl_seconds: int = 900,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """CAS-acquire or renew a task's single execution lease."""
+    """CAS-acquire a new lease epoch; renewals use heartbeat_execution_lease."""
     now = now or utc_now()
     current_revision = int(task.get("task_revision") or 1)
     if task.get("status") != "TODO":
@@ -673,14 +680,22 @@ def acquire_execution_lease(
         raise ValueError(f"task_revision_conflict:{current_revision}")
     current = task.get("execution_lease") or {}
     expires_at = _parse_time(current.get("expires_at"))
-    if current and expires_at and expires_at > now and current.get("session_id") != session_id:
+    if (
+        current
+        and current.get("status", "ACTIVE") == "ACTIVE"
+        and expires_at
+        and expires_at > now
+    ):
         raise ValueError(f"execution_lease_conflict:{current.get('session_id')}")
 
     next_revision = current_revision + 1
+    lease_epoch = int(current.get("lease_epoch") or 0) + 1
     lease = {
         "session_id": session_id,
         "actor_id": actor_id,
-        "acquired_at": current.get("acquired_at") if current.get("session_id") == session_id else now.isoformat(),
+        "lease_epoch": lease_epoch,
+        "status": "ACTIVE",
+        "acquired_at": now.isoformat(),
         "heartbeat_at": now.isoformat(),
         "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
         "task_revision": next_revision,
@@ -689,6 +704,72 @@ def acquire_execution_lease(
     task["primary_session_id"] = session_id
     task["task_revision"] = next_revision
     return lease
+
+
+def heartbeat_execution_lease(
+    task: dict[str, Any], *, expected_task_revision: int, session_id: str,
+    lease_epoch: int, ttl_seconds: int = 900, now: datetime | None = None,
+) -> dict[str, Any]:
+    """Renew only the active lease owned by the same session and epoch."""
+    now = now or utc_now()
+    current_revision = int(task.get("task_revision") or 1)
+    if current_revision != expected_task_revision:
+        raise ValueError(f"task_revision_conflict:{current_revision}")
+    if task.get("status") not in {"TODO", "IN_PROGRESS"}:
+        raise ValueError(f"task_status_not_renewable:{task.get('status')}")
+    lease = task.get("execution_lease") or {}
+    expires_at = _parse_time(lease.get("expires_at"))
+    if lease.get("status", "ACTIVE") != "ACTIVE":
+        raise ValueError(f"execution_lease_not_active:{lease.get('status')}")
+    if lease.get("session_id") != session_id:
+        raise ValueError(f"execution_lease_session_conflict:{lease.get('session_id')}")
+    if int(lease.get("lease_epoch") or 0) != lease_epoch:
+        raise ValueError(f"execution_lease_epoch_conflict:{lease.get('lease_epoch')}")
+    if expires_at is None or expires_at <= now:
+        raise ValueError("execution_lease_expired")
+    next_revision = current_revision + 1
+    lease.update({
+        "heartbeat_at": now.isoformat(),
+        "expires_at": (now + timedelta(seconds=ttl_seconds)).isoformat(),
+        "task_revision": next_revision,
+    })
+    task["task_revision"] = next_revision
+    return lease
+
+
+def reclaim_expired_execution_lease(
+    task: dict[str, Any], *, expected_task_revision: int,
+    session_id: str, actor_id: str, ttl_seconds: int = 900,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Recover an abandoned IN_PROGRESS task under a new lease epoch."""
+    now = now or utc_now()
+    current_revision = int(task.get("task_revision") or 1)
+    if current_revision != expected_task_revision:
+        raise ValueError(f"task_revision_conflict:{current_revision}")
+    if task.get("status") != "IN_PROGRESS":
+        raise ValueError(f"task_status_not_reclaimable:{task.get('status')}")
+    current = task.get("execution_lease") or {}
+    current_expires_at = _parse_time(current.get("expires_at"))
+    if (
+        current.get("status", "ACTIVE") == "ACTIVE"
+        and current_expires_at is not None
+        and current_expires_at > now
+    ):
+        raise ValueError("execution_lease_still_active")
+    task["status"] = "TODO"
+    task.setdefault("status_history", []).append({
+        "from": "IN_PROGRESS", "to": "TODO",
+        "reason": "expired_execution_lease_reclaimed", "at": now.isoformat(),
+    })
+    return acquire_execution_lease(
+        task,
+        expected_task_revision=current_revision,
+        session_id=session_id,
+        actor_id=actor_id,
+        ttl_seconds=ttl_seconds,
+        now=now,
+    )
 
 
 def _dependency_edges(process: dict[str, Any]) -> list[tuple[str, str]]:
@@ -817,6 +898,25 @@ def _reverse_relation_type(relation_type: str) -> str:
     }.get(relation_type, relation_type)
 
 
+def relation_state_hash(process: dict[str, Any]) -> str:
+    """Hash the canonical QWS relation projection; proposals count only once confirmed."""
+    canonical = {
+        "dependencies": process.get("dependencies") or [],
+        "task_relations": [
+            {"task_id": item.get("id"), "relations": item.get("relations") or []}
+            for item in (process.get("tasks") or [])
+        ],
+        "confirmed_proposals": [
+            item for item in (process.get("relation_proposals") or [])
+            if item.get("status") in {"APPROVED", "CONFIRMED", "ACCEPTED"}
+        ],
+    }
+    payload = json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
 def build_relation_digest(
     task: dict[str, Any], process: dict[str, Any], *, readable_task_ids: set[str],
     max_entries: int = 20, summary_token_budget: int = 300,
@@ -926,6 +1026,9 @@ def build_relation_digest(
         })
     return {
         "schema_version": "qws.relation-digest.v1",
+        "canonical_source": "QWS_PROCESS_SNAPSHOT",
+        "canonical_source_hash": relation_state_hash(process),
+        "external_projection_mode": "READ_ONLY_CONSUMER",
         "task_id": task_id,
         "entries": entries,
         "restricted_count": restricted_count,
@@ -942,12 +1045,16 @@ HARD_CHALLENGE_RISKS = {
     "fact_contract_conflict", "production_publish", "budget_exceeded", "cross_task_impact",
 }
 SOFT_CHALLENGE_RISKS = {"architecture", "scope", "cost", "experience", "maintenance", "dependency"}
+CHALLENGE_SOURCE_REF_RE = re.compile(
+    r"^(?:artifact|artifact_version|task|decision|intake|manifest):[A-Za-z0-9_.-]+(?:@[1-9][0-9]*)?$"
+)
 
 
 def create_challenge_review(
     task: dict[str, Any], *, actor_id: str, agreed: list[str], challenges: list[str],
     impacts: dict[str, str], evidence: list[dict[str, Any]], alternatives: list[dict[str, Any]],
-    conclusion: str, question: str, risk_categories: Sequence[str], reversible: bool,
+    conclusion: str, decision_key: str, question: str,
+    risk_categories: Sequence[str], reversible: bool,
 ) -> dict[str, Any]:
     if any(item.get("status") == "OPEN" for item in task.get("challenge_reviews") or []):
         raise ValueError("open_challenge_review_exists")
@@ -977,7 +1084,7 @@ def create_challenge_review(
         raise ValueError(f"unknown_challenge_risk:{sorted(unknown)[0]}")
     if risks & HARD_CHALLENGE_RISKS:
         gate_level = "HARD"
-    elif risks & SOFT_CHALLENGE_RISKS or conclusion in {"MODIFY", "REJECT", "EXPERIMENT"}:
+    elif conclusion in {"MODIFY", "REJECT", "EXPERIMENT"} or risks & SOFT_CHALLENGE_RISKS:
         gate_level = "SOFT"
     else:
         gate_level = "NOTICE"
@@ -996,6 +1103,23 @@ def create_challenge_review(
         raise ValueError("challenge_options_invalid")
     if not evidence or any(item.get("kind") not in {"FACT", "INFERENCE", "TO_VERIFY"} for item in evidence):
         raise ValueError("challenge_evidence_invalid")
+    for item in evidence:
+        refs = item.get("source_refs") or []
+        if item.get("kind") == "FACT" and not refs:
+            raise ValueError("challenge_fact_source_ref_required")
+        if any(
+            not isinstance(ref, str) or not CHALLENGE_SOURCE_REF_RE.fullmatch(ref.strip())
+            for ref in refs
+        ):
+            raise ValueError("challenge_source_ref_invalid")
+    stripped_question = question.strip()
+    if (
+        not re.fullmatch(r"[a-z][a-z0-9_.-]{2,79}", decision_key)
+        or not stripped_question
+        or stripped_question[-1] not in {"?", "？"}
+        or sum(stripped_question.count(mark) for mark in ("?", "？")) != 1
+    ):
+        raise ValueError("challenge_requires_one_question")
     now = utc_now().isoformat()
     review_id = f"challenge_{uuid4().hex}"
     brief = None
@@ -1005,14 +1129,16 @@ def create_challenge_review(
             "conflict": challenges, "why_it_matters": impacts, "evidence": evidence,
             "options": alternatives, "recommendation": conclusion,
             "no_action_impact": impacts.get("no_action") or "风险或冲突保持未解决",
-            "question": question, "status": "OPEN", "created_at": now,
+            "decision_key": decision_key, "question": question,
+            "status": "OPEN", "created_at": now,
         }
     review = {
         "id": review_id, "status": "OPEN" if requires_decision else "RECORDED",
         "resume_status": task.get("status"),
         "agreed": agreed, "challenges": challenges, "impacts": impacts,
         "evidence": evidence, "alternatives": alternatives, "conclusion": conclusion,
-        "question": question, "risk_categories": sorted(risks),
+        "decision_key": decision_key, "question": question,
+        "risk_categories": sorted(risks),
         "submitted_risk_categories": sorted(submitted_risks),
         "detected_risk_categories": sorted(detected_risks), "gate_level": gate_level,
         "requires_user_decision": requires_decision, "reversible": reversible,

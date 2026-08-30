@@ -396,7 +396,10 @@ export const platformApi = {
     return request(`/api/v1/projects/${projectId}`, { method: "PATCH", body: payload });
   },
   deleteProject(projectId) {
-    return request(`/api/v1/projects/${projectId}`, { method: "DELETE" });
+    return request(`/api/v1/projects/${projectId}`, {
+      method: "DELETE",
+      headers: { "X-QWS-Confirm-Project-Id": projectId },
+    });
   },
   getProject(projectId) {
     return request(`/api/v1/projects/${projectId}`);
@@ -457,6 +460,30 @@ export const platformApi = {
   },
   askProjectResourceContext(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/resource-plan/chat`, { method: "POST", body: payload });
+  },
+  getProjectTaskRelationDigest(projectId, taskId) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}/relation-digest`);
+  },
+  getProjectTaskDeliveryManifests(projectId, taskId) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}/delivery-manifests`);
+  },
+  decideProjectTaskDeliveryManifest(projectId, taskId, manifestId, payload) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}/delivery-manifests/${manifestId}/decision`, { method: "POST", body: payload });
+  },
+  resolveProjectTaskChallenge(projectId, taskId, reviewId, payload) {
+    return request(`/api/v1/projects/${projectId}/challenge-reviews/${reviewId}/decision`, {
+      method: "POST",
+      body: payload,
+    });
+  },
+  checkProjectTaskDuplicates(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/task-duplicate-check`, { method: "POST", body: payload });
+  },
+  createProjectTaskMergePreview(projectId, primaryTaskId, payload) {
+    return request(`/api/v1/projects/${projectId}/tasks/${primaryTaskId}/merge-previews`, { method: "POST", body: payload });
+  },
+  applyProjectTaskMerge(projectId, mergeId, payload) {
+    return request(`/api/v1/projects/${projectId}/task-merges/${mergeId}/apply`, { method: "POST", body: payload });
   },
   updateProjectTask(projectId, taskId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks/${taskId}`, { method: "PATCH", body: payload });

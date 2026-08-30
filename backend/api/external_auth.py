@@ -116,8 +116,11 @@ async def _authen_request(method: str, path: str, **kwargs) -> dict:
     return response.json()
 
 
-def _session_payload(user_id: str, tenant_key: str, *, is_new_user: bool = False) -> dict:
-    token = _issue_jwt(user_id)
+def _session_payload(
+    user_id: str, tenant_key: str, *, is_new_user: bool = False,
+    auth_method: str = "interactive",
+) -> dict:
+    token = _issue_jwt(user_id, auth_method=auth_method)
     if not token:
         raise HTTPException(status_code=503, detail="平台登录签名尚未配置")
     return {
@@ -173,7 +176,8 @@ async def phone_login(body: PhoneLoginRequest):
         raise HTTPException(status_code=502, detail="认证服务未返回用户标识")
     tenant_key = await _provision_tenant(user_id)
     return _session_payload(
-        user_id, tenant_key, is_new_user=bool(payload.get("is_new_user"))
+        user_id, tenant_key, is_new_user=bool(payload.get("is_new_user")),
+        auth_method="sms",
     )
 
 
@@ -289,4 +293,4 @@ async def oauth_complete(body: TicketRequest):
         user_id = flow.user_id
         await db.commit()
     tenant_key = await _provision_tenant(user_id)
-    return _session_payload(user_id, tenant_key)
+    return _session_payload(user_id, tenant_key, auth_method="oauth")

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -18,8 +18,11 @@ from backend.services.task_operating_loop import (
     create_merge_preview,
     create_relation_proposal,
     find_duplicate_candidates,
+    heartbeat_execution_lease,
     initialize_task_contract,
     record_feedback_interpretation,
+    reclaim_expired_execution_lease,
+    relation_state_hash,
     revert_task_merge,
     resolve_challenge_review,
     submit_feedback_batch,
@@ -50,6 +53,7 @@ def test_task_contract_lease_handoff_and_context_pack() -> None:
     )
     assert current["task_revision"] == 2
     assert lease["session_id"] == "session-a"
+    assert lease["lease_epoch"] == 1
 
     with pytest.raises(ValueError, match="task_revision_conflict"):
         acquire_execution_lease(
@@ -79,6 +83,63 @@ def test_task_contract_lease_handoff_and_context_pack() -> None:
     assert context["current_state"]["next_action"] == "验证 API"
     assert len(context["relations"]) == 3
     assert "full_chat_history" in context["exclusions"]
+
+
+def test_lease_heartbeat_requires_same_session_epoch_and_active_task() -> None:
+    current = task("lease-heartbeat")
+    lease = acquire_execution_lease(
+        current, expected_task_revision=1, session_id="session-a", actor_id="agent-a"
+    )
+    transition_task(
+        current, to_status="IN_PROGRESS", actor_id="agent-a", reason="claimed"
+    )
+    renewed = heartbeat_execution_lease(
+        current,
+        expected_task_revision=current["task_revision"],
+        session_id="session-a",
+        lease_epoch=lease["lease_epoch"],
+    )
+    assert renewed["lease_epoch"] == lease["lease_epoch"]
+    with pytest.raises(ValueError, match="execution_lease_session_conflict"):
+        heartbeat_execution_lease(
+            current,
+            expected_task_revision=current["task_revision"],
+            session_id="session-b",
+            lease_epoch=lease["lease_epoch"],
+        )
+    current["execution_lease"]["status"] = "SUSPENDED"
+    with pytest.raises(ValueError, match="execution_lease_not_active"):
+        heartbeat_execution_lease(
+            current,
+            expected_task_revision=current["task_revision"],
+            session_id="session-a",
+            lease_epoch=lease["lease_epoch"],
+        )
+
+
+def test_expired_in_progress_lease_can_be_reclaimed_with_new_epoch() -> None:
+    current_time = datetime(2026, 8, 30, 8, 0, tzinfo=timezone.utc)
+    item = task("Recover abandoned run")
+    first = acquire_execution_lease(
+        item, expected_task_revision=1, session_id="session-old",
+        actor_id="agent:old", ttl_seconds=60, now=current_time,
+    )
+    transition_task(
+        item, to_status="IN_PROGRESS", actor_id="agent:old",
+    )
+    reclaimed = reclaim_expired_execution_lease(
+        item,
+        expected_task_revision=3,
+        session_id="session-new",
+        actor_id="agent:new",
+        ttl_seconds=300,
+        now=current_time + timedelta(seconds=61),
+    )
+    assert first["lease_epoch"] == 1
+    assert reclaimed["lease_epoch"] == 2
+    assert reclaimed["session_id"] == "session-new"
+    assert item["status"] == "TODO"
+    assert item["task_revision"] == 4
 
 
 def test_relation_proposal_detects_dependency_cycle() -> None:
@@ -403,6 +464,15 @@ def test_relation_digest_filters_permissions_and_private_facts() -> None:
     digest = build_relation_digest(
         source, process, readable_task_ids={"source", "visible"}
     )
+    assert digest["canonical_source"] == "QWS_PROCESS_SNAPSHOT"
+    assert digest["external_projection_mode"] == "READ_ONLY_CONSUMER"
+    assert digest["canonical_source_hash"] == relation_state_hash(process)
+    unconfirmed_hash = digest["canonical_source_hash"]
+    process["relation_proposals"].append({
+        "id": "another-unconfirmed", "source_task_id": "source",
+        "target_task_id": "visible", "proposed_type": "related", "status": "PROPOSED",
+    })
+    assert relation_state_hash(process) == unconfirmed_hash
     readable = next(item for item in digest["entries"] if not item["restricted"])
     private = next(item for item in digest["entries"] if item["restricted"])
     assert readable["title"] == "可见依赖"
@@ -455,12 +525,12 @@ def test_hard_challenge_builds_decision_brief_and_blocks_claim_until_resolved() 
     review = create_challenge_review(
         item, actor_id="hermes-agent", agreed=["目标合理"], challenges=["会直接发布生产"],
         impacts={"security": "可能泄露", "no_action": "继续阻断发布"},
-        evidence=[{"kind": "FACT", "statement": "缺少发布授权", "source_refs": ["policy:deploy"]}],
+        evidence=[{"kind": "FACT", "statement": "缺少发布授权", "source_refs": ["task:requirements@1"]}],
         alternatives=[
             {"id": "keep", "label": "保留方案", "cost": "高风险", "resolution": "PROCEED"},
             {"id": "experiment", "label": "先做沙盒实验", "cost": "增加一天", "resolution": "EXPERIMENT"},
         ],
-        conclusion="EXPERIMENT", question="是否先做沙盒实验？",
+        conclusion="EXPERIMENT", decision_key="execution_strategy", question="是否先做沙盒实验？",
         risk_categories=["production_publish", "security"], reversible=False,
     )
     assert review["gate_level"] == "HARD"
@@ -491,12 +561,55 @@ def test_reversible_notice_records_without_blocking_task() -> None:
             {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
             {"id": "edit", "label": "小改", "cost": "很低", "resolution": "MODIFY"},
         ],
-        conclusion="ACCEPT", question="无须阻断", risk_categories=["reversible_optimization"],
+        conclusion="ACCEPT", decision_key="execution_strategy", question="是否继续？", risk_categories=["reversible_optimization"],
         reversible=True,
     )
     assert review["gate_level"] == "NOTICE"
     assert review["decision_brief"] is None
     assert item["status"] == "TODO"
+
+    experience = task("experience")
+    experience_review = create_challenge_review(
+        experience, actor_id="agent", agreed=["目标清晰"],
+        challenges=["界面可做轻微优化"], impacts={"experience": "可逆微调"},
+        evidence=[{"kind": "INFERENCE", "statement": "可能改善体验", "source_refs": []}],
+        alternatives=[
+            {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
+            {"id": "edit", "label": "微调", "cost": "很低", "resolution": "MODIFY"},
+        ],
+        conclusion="ACCEPT", decision_key="execution_strategy", question="是否按原计划继续？",
+        risk_categories=["experience"], reversible=True,
+    )
+    assert experience_review["gate_level"] == "SOFT"
+    assert experience_review["requires_user_decision"] is True
+    assert experience["status"] == "DECISION_REQUIRED"
+
+
+def test_challenge_fact_requires_safe_source_and_exactly_one_question() -> None:
+    def invoke(item: dict, evidence: list[dict], question: str) -> dict:
+        return create_challenge_review(
+            item,
+            actor_id="agent", agreed=["目标清晰"], challenges=["需要确认事实"],
+            impacts={}, evidence=evidence, alternatives=[
+                {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
+                {"id": "edit", "label": "调整", "cost": "低", "resolution": "MODIFY"},
+            ], conclusion="ACCEPT", decision_key="execution_strategy", question=question, risk_categories=[], reversible=True,
+        )
+
+    with pytest.raises(ValueError, match="challenge_fact_source_ref_required"):
+        invoke(task("missing-source"), [{"kind": "FACT", "statement": "事实"}], "是否继续？")
+    with pytest.raises(ValueError, match="challenge_source_ref_invalid"):
+        invoke(
+            task("unsafe-source"),
+            [{"kind": "FACT", "statement": "事实", "source_refs": ["private://secret"]}],
+            "是否继续？",
+        )
+    with pytest.raises(ValueError, match="challenge_requires_one_question"):
+        invoke(
+            task("many-questions"),
+            [{"kind": "FACT", "statement": "事实", "source_refs": ["task:source"]}],
+            "是否继续？是否修改？",
+        )
 
 
 def test_hard_risk_keywords_are_server_detected_and_option_action_must_match() -> None:
@@ -509,7 +622,7 @@ def test_hard_risk_keywords_are_server_detected_and_option_action_must_match() -
             {"id": "delete", "label": "直接删除", "cost": "不可逆", "resolution": "PROCEED"},
             {"id": "backup", "label": "先备份", "cost": "增加时间", "resolution": "MODIFY"},
         ],
-        conclusion="MODIFY", question="是否先备份？", risk_categories=[], reversible=True,
+        conclusion="MODIFY", decision_key="execution_strategy", question="是否先备份？", risk_categories=[], reversible=True,
     )
     assert review["gate_level"] == "HARD"
     assert "irreversible_delete" in review["detected_risk_categories"]
@@ -518,3 +631,26 @@ def test_hard_risk_keywords_are_server_detected_and_option_action_must_match() -
             item, review_id=review["id"], selected_option_id="backup",
             resolution="PROCEED", rationale="动作与选项冲突", actor_id="user:user-a",
         )
+
+
+def test_open_challenge_blocks_merge_state_escape() -> None:
+    primary = task("primary")
+    secondary = task("secondary")
+    preview = create_merge_preview(primary, secondary, created_by="human")
+    create_challenge_review(
+        secondary, actor_id="agent", agreed=["目标一致"],
+        challenges=["直接删除历史"], impacts={"no_action": "保留历史"},
+        evidence=[{
+            "kind": "FACT", "statement": "任务保存历史",
+            "source_refs": ["task:secondary@1"],
+        }],
+        alternatives=[
+            {"id": "keep", "label": "保留", "cost": "低", "resolution": "PROCEED"},
+            {"id": "cancel", "label": "取消", "cost": "延期", "resolution": "CANCEL"},
+        ],
+        conclusion="REJECT", decision_key="merge_history_policy",
+        question="是否保留任务历史？", risk_categories=["irreversible_delete"],
+        reversible=False,
+    )
+    with pytest.raises(ValueError, match="open_challenge_decision_required"):
+        apply_task_merge(preview, primary, secondary, field_choices={}, actor_id="human")
