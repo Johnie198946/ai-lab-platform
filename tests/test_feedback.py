@@ -22,6 +22,16 @@ from backend.services.feedback import (
 )
 
 
+def _next_digest_window() -> datetime:
+    """Return a deterministic future instant after the 09:00 CST cutoff."""
+    cst = timezone(timedelta(hours=8))
+    local = datetime.now(timezone.utc).astimezone(cst)
+    target = local.replace(hour=10, minute=0, second=0, microsecond=0)
+    if local.hour >= 9:
+        target += timedelta(days=1)
+    return target.astimezone(timezone.utc)
+
+
 @pytest.mark.parametrize(
     "message",
     [
@@ -303,7 +313,7 @@ async def test_daily_digest_freezes_until_local_delivery_ack(monkeypatch):
         session_id="digest-session",
     )
     assert receipt is not None
-    now = datetime.now(timezone.utc) + timedelta(days=1, minutes=1)
+    now = _next_digest_window()
     first = await prepare_feedback_digest(now)
     second = await prepare_feedback_digest(now + timedelta(minutes=10))
     assert first["status"] == "prepared"
@@ -334,7 +344,7 @@ async def test_unacked_digest_retries_oldest_batch_with_stable_id(monkeypatch):
         request_id="retry-event",
         session_id="retry-session",
     )
-    first_now = datetime.now(timezone.utc) + timedelta(days=1)
+    first_now = _next_digest_window()
     first = await prepare_feedback_digest(first_now)
     second = await prepare_feedback_digest(first_now + timedelta(days=1))
     assert first["status"] == "prepared"
@@ -357,7 +367,7 @@ async def test_frozen_failed_digest_transitions_back_to_prepared_before_ack(monk
         request_id="failed-retry-event",
         session_id="failed-retry-session",
     )
-    now = datetime.now(timezone.utc) + timedelta(days=1)
+    now = _next_digest_window()
     first = await prepare_feedback_digest(now)
     digest_date = datetime.strptime(
         first["digest_id"].removeprefix("feedback-"), "%Y-%m-%d"

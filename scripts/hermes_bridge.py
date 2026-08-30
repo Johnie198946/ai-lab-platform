@@ -127,6 +127,12 @@ MAPPING_FILE = Path(
         "/opt/ai-lab-platform/data/session_mappings.json",
     )
 )
+STATE_DB_MAPPING_FILE = Path(
+    os.environ.get(
+        "HERMES_STATE_DB_MAPPING_FILE",
+        "/opt/ai-lab-platform/data/session_state_dbs.json",
+    )
+)
 # 消费水位线持久化文件（user_id -> 已投递最大消息 id），供断点 0ms 回读判定
 WATERMARK_FILE = Path(
     os.environ.get(
@@ -281,6 +287,9 @@ ANSI_ESCAPE_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]')
 
 # user_id -> hermes_session_id 显式绑定（内存缓存 + JSON 持久化）
 _user_session_map: dict[str, str] = {}
+# user_id -> tenant sandbox state.db. Cloud multi-tenant sessions are stored
+# outside the global Hermes state.db and status recovery must use the same DB.
+_user_state_db_map: dict[str, str] = {}
 # user_id -> 已投递最大消息 id（消费水位线，断点 0ms 回读判定）
 _delivered_watermark: dict[str, int] = {}
 # 全局并发信号量（两级锁序第一级）
@@ -524,6 +533,21 @@ def _load_mapping() -> None:
                 _user_session_map = {}
 
 
+def _load_state_db_mapping() -> None:
+    global _user_state_db_map
+    with _mapping_lock:
+        if STATE_DB_MAPPING_FILE.exists():
+            try:
+                raw = json.loads(STATE_DB_MAPPING_FILE.read_text())
+                _user_state_db_map = {
+                    str(key): str(value)
+                    for key, value in raw.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+            except Exception:
+                _user_state_db_map = {}
+
+
 def _save_mapping() -> None:
     """原子写 MAPPING_FILE（临时文件 + os.replace），进程内锁保护，杜绝并发损坏。"""
     global _user_session_map
@@ -548,6 +572,31 @@ def _save_mapping() -> None:
                 raise
         except Exception as e:
             print(f"[bridge] 保存映射失败: {e}")
+
+
+def _save_state_db_mapping() -> None:
+    """Atomically persist trusted user -> tenant sandbox state.db bindings."""
+    with _mapping_lock:
+        try:
+            STATE_DB_MAPPING_FILE.parent.mkdir(parents=True, exist_ok=True)
+            data = json.dumps(_user_state_db_map, ensure_ascii=False, indent=2)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(STATE_DB_MAPPING_FILE.parent),
+                prefix=".session_state_dbs.",
+                suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(data)
+                os.replace(tmp_path, STATE_DB_MAPPING_FILE)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except Exception as error:
+            print(f"[bridge] state.db 映射持久化失败: {error}")
 
 
 def _load_watermarks() -> None:
@@ -786,12 +835,13 @@ def _set_watermark(user_id: str, max_msg_id: int) -> None:
 
 # ---------- Hermes 原生 Session 存在性断言 ----------
 
-def _session_exists(session_id: str) -> bool:
-    """查询 Hermes state.db 确认 session 真实存在（防 --resume fallback 污染）。"""
-    if not os.path.exists(STATE_DB):
+def _session_exists(session_id: str, state_db: str | None = None) -> bool:
+    """Confirm a session in its owning global or tenant sandbox state.db."""
+    db_path = state_db or STATE_DB
+    if not os.path.exists(db_path):
         return False
     try:
-        conn = sqlite3.connect(STATE_DB)
+        conn = sqlite3.connect(db_path)
         try:
             cur = conn.execute(
                 "SELECT 1 FROM sessions WHERE id=? AND archived=0 LIMIT 1",
@@ -2552,31 +2602,42 @@ def _start_workflow_thread(execution_id: str) -> None:
 # ---------- 会话管理辅助 ----------
 
 def _resolve_hermes_session(user_id: str) -> str | None:
-    """解析 user_id 对应的 hermes session_id（存在性断言·失效则清除）。"""
+    """Resolve a user's session in the same state.db where it was created."""
     hermes_sid = _user_session_map.get(user_id)
-    if hermes_sid and not _session_exists(hermes_sid):
+    state_db = _user_state_db_map.get(user_id)
+    if hermes_sid and not _session_exists(hermes_sid, state_db):
         print(f"[bridge] user {user_id} session {hermes_sid} 已失效·清除映射·新建")
         _user_session_map.pop(user_id, None)
+        _user_state_db_map.pop(user_id, None)
         _save_mapping()
+        _save_state_db_mapping()
         hermes_sid = None
     return hermes_sid
 
 
-def _update_session_mapping(user_id: str, hermes_sid: str) -> None:
-    """更新 user_id → hermes session_id 映射并持久化。"""
+def _update_session_mapping(
+    user_id: str, hermes_sid: str, state_db: str | Path | None = None
+) -> None:
+    """Persist user -> Hermes session and its physical state.db binding."""
     _user_session_map[user_id] = hermes_sid
     _save_mapping()
+    if state_db is not None:
+        _user_state_db_map[user_id] = str(state_db)
+        _save_state_db_mapping()
     print(f"[bridge] 会话映射: user={user_id} -> session={hermes_sid}")
 
 
 # ---------- 思维链水位线快照与增量回读 ----------
 
-def _get_baseline_id(session_id: str | None) -> int:
-    """请求前快照：当前 session 已落库的最大消息 id（新会话/异常返回 0）。"""
-    if not session_id or not os.path.exists(STATE_DB):
+def _get_baseline_id(
+    session_id: str | None, state_db: str | None = None
+) -> int:
+    """Snapshot the max message ID from the session's owning state.db."""
+    db_path = state_db or STATE_DB
+    if not session_id or not os.path.exists(db_path):
         return 0
     try:
-        conn = sqlite3.connect(STATE_DB)
+        conn = sqlite3.connect(db_path)
         try:
             cur = conn.execute(
                 "SELECT COALESCE(MAX(id), 0) FROM messages WHERE session_id=?",
@@ -2591,11 +2652,14 @@ def _get_baseline_id(session_id: str | None) -> int:
         return 0
 
 
-def _readback_delta(session_id: str | None, baseline_id: int) -> list[dict]:
-    """执行后增量回读：仅 id > baseline_id 的当次新增行（只读 SELECT·禁止写操作）。"""
-    if not session_id or not os.path.exists(STATE_DB):
+def _readback_delta(
+    session_id: str | None, baseline_id: int, state_db: str | None = None
+) -> list[dict]:
+    """Read this turn's rows from the session's owning state.db."""
+    db_path = state_db or STATE_DB
+    if not session_id or not os.path.exists(db_path):
         return []
-    conn = sqlite3.connect(STATE_DB)
+    conn = sqlite3.connect(db_path)
     try:
         conn.row_factory = sqlite3.Row
         cur = conn.execute(
@@ -2737,6 +2801,12 @@ def _query_status(
     显式移除历史「>300s 无更新」stale 判定。
     """
     wm_key = user_id or hermes_sid or ""
+    run = _stream_run_get(user_id or "")
+    state_db = str(
+        (run or {}).get("state_db")
+        or _user_state_db_map.get(user_id or "")
+        or STATE_DB
+    )
     empty = {
         "status": "not_found",
         "phase": "not_found",
@@ -2756,10 +2826,10 @@ def _query_status(
 
     if not hermes_sid:
         return _running_fallback()
-    if not os.path.exists(STATE_DB):
+    if not os.path.exists(state_db):
         return _running_fallback()
     try:
-        conn = sqlite3.connect(f"file:{STATE_DB}?mode=ro", uri=True)
+        conn = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
     except Exception as e:
         print(f"[bridge] state.db 只读连接失败: {e}")
         return _running_fallback()
@@ -2800,7 +2870,6 @@ def _query_status(
         clarify = _pending_clarify(user_id or "")
 
         # run 存在性判定（单一时钟源）：start_ts 超 720s → timeout + interrupt+discard
-        run = _stream_run_get(user_id or "")
         if run is not None:
             start_ts = run.get("start_ts") or 0
             if time.monotonic() - start_ts > STREAM_MAX_DURATION_SECONDS:
@@ -2822,6 +2891,11 @@ def _query_status(
         # completed：最后一条 assistant 且内容非空（且无 pending clarify 阻塞）
         if role == "assistant" and content and clarify is None:
             steps = [s.model_dump() for s in extract_steps([dict(r) for r in rows])]
+            if run is not None:
+                # A detached SSE has no live generator left to consume the done
+                # frame and clear its slot. The durable assistant row is the
+                # terminal truth, so release the run atomically here.
+                _stream_run_discard(user_id or "", run.get("run_id"))
             return {
                 "status": "completed",
                 "phase": "completed",
@@ -2889,7 +2963,10 @@ def _mark_consumed(user_id: str, hermes_sid: str | None) -> None:
     if not hermes_sid:
         return
     try:
-        _set_watermark(user_id, _get_baseline_id(hermes_sid))
+        _set_watermark(
+            user_id,
+            _get_baseline_id(hermes_sid, _user_state_db_map.get(user_id)),
+        )
     except Exception as e:
         print(f"[bridge] 标记消费失败·忽略: {e}")
 
@@ -3068,6 +3145,7 @@ async def _stream_from_serve(goal: str, session_id: str | None = None):
 @app.on_event("startup")
 async def _startup():
     _load_mapping()
+    _load_state_db_mapping()
     _load_watermarks()
     _load_workflow_runs()
     _load_planning_runs()
@@ -3152,7 +3230,12 @@ async def chat_stream(body: GoalRequest):
                 pass
             _stream_run_discard(user_id, existing.get("run_id"))
         run_id = uuid.uuid4().hex[:12]
-        if not _stream_run_reserve(user_id, run_id, body.request_id):
+        if not _stream_run_reserve(
+            user_id,
+            run_id,
+            body.request_id,
+            sandbox.state_db if sandbox is not None else STATE_DB,
+        ):
             return StreamingResponse(
                 _busy_sse(user_id),
                 media_type="text/event-stream",
@@ -3689,7 +3772,12 @@ def _stream_run_register(user_id: str, state: dict) -> None:
         _stream_runs[user_id] = state
 
 
-def _stream_run_reserve(user_id: str, run_id: str, request_id: str | None) -> bool:
+def _stream_run_reserve(
+    user_id: str,
+    run_id: str,
+    request_id: str | None,
+    state_db: str | Path | None = None,
+) -> bool:
     """Atomically claim one logical session before constructing its SSE body."""
     with _stream_runs_guard:
         if user_id in _stream_runs:
@@ -3700,6 +3788,7 @@ def _stream_run_reserve(user_id: str, run_id: str, request_id: str | None) -> bo
             "start_ts": time.monotonic(),
             "run_id": run_id,
             "request_id": request_id,
+            "state_db": str(state_db) if state_db is not None else STATE_DB,
         }
         return True
 
@@ -4478,7 +4567,11 @@ def _run_agent_sync(
         # 前端 probeAndResume 断点恢复不依赖 SSE 连接。
         agent_sid = getattr(agent, "session_id", None) or hermes_sid
         if agent_sid and client_session_context is None:
-            _update_session_mapping(user_id, agent_sid)
+            _update_session_mapping(
+                user_id,
+                agent_sid,
+                sandbox.state_db if sandbox is not None else STATE_DB,
+            )
         # 第二帧状态：agent 构建完成（build 返回后、run_conversation 前）→ 进入推理
         _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
         applied_triage = route_context.get("triage")
@@ -4622,6 +4715,7 @@ def _sse_from_in_process(
         "start_ts": start_ts,
         "run_id": run_id,
         "request_id": request_id,
+        "state_db": str(sandbox.state_db) if sandbox is not None else STATE_DB,
     })
     worker.start()
 

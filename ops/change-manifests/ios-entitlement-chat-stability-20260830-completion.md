@@ -25,11 +25,12 @@
 - Bridge 增加原子 session Run 预占，连接状态不再改变任务治理截止时间。
 - 登录 capability 初始 fail-closed 并显示明确原因；修复开发者登录签发与验签读取不同 JWT secret 快照的问题。
 - 补充平台自签 JWT 的严格来源合同（`iss`、`aud`、`token_use=access`），覆盖开发、短信和 OAuth 登录；兼容模式显式关闭 audience/issuer 验证以继续接受旧 Token。
+- 修复 cloud multi-tenant Bridge 状态回读仍查询全局 `~/.hermes/state.db` 的问题：持久化 `user → tenant sandbox state.db`，运行中和重启后均从会话所属数据库恢复完成答案；status 识别完成后释放 detached Run 槽位。
 
 ## Validation
 
 - backend focused tests: `70 passed`（auth/subscription/policy/bridge/chat stream）。
-- backend full suite after strict JWT fix: `1025 passed, 2 skipped, 10 warnings`。
+- backend full suite after JWT + tenant status recovery fixes: `1027 passed, 2 skipped, 10 warnings`。
 - iOS XCTest: `45 passed`；新增 runtime entitlement DTO 与 partial-content pending 回归测试。
 - iOS final XCTest on latest `main`: `45 passed`。
 - simulator device: `AIPlatform Preview`, iOS 26.1, UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`。
@@ -41,7 +42,7 @@
 - local_commit: `bf4b077` (`fix ios chat lifecycle and entitlement visibility`)
 - remote_sha: resolved by post-push `git ls-remote`; exact remote receipt is reported with this manifest in the delivery response.
 - server_before: `/opt/releases/ai-lab-platform-ea28e677b054.qWS2xA`; `.deployed-sha=ea28e677b05403b304a44f06fc67cae19f694fb4`。
-- server_after: `PENDING_AUTH_FIX_DEPLOYMENT`
+- server_after: auth fix deployed as `/opt/releases/ai-lab-platform-6b63a0f9a4d8.CYUfWJ`; tenant status recovery deployment pending this manifest's next commit.
 - production_deployment: `AUTHORIZED_FOR_SIMULATOR_ACCEPTANCE`
 - simulator_before: app was installed from an earlier build on `AIPlatform Preview`.
 - simulator_after: final Debug build installed and launched; bundle container and process verified; login card visual acceptance passed.
@@ -50,5 +51,10 @@
 ## Remaining risks
 
 - 生产短信、支付宝能力当前由 Authen 返回 disabled；缺少供应商凭据时不能伪装为可用。
-- 生产开发者登录现状为 `/dev-login` 返回 200，但其 token 调用 `/me` 返回 401；代码修复已完成，需获得生产部署授权后才能在生产 API 生效。
-- 本轮按用户要求部署到模拟器；生产 API/Bridge 未部署，生产端行为不会因本轮本地安装改变。
+- TestFlight 尚未推送；本轮只完成生产后端与本地模拟器验收。
+
+## Live acceptance findings
+
+- JWT fix deployed and verified: public `/dev-login` 200 → `/me` 200 → `/me/knowledge-access` 200；模拟器恢复到已登录对话主页。
+- Two distinct chat sessions ran concurrently; the short session completed with `并行会话已启动` while the Kagoshima research continued.
+- Kagoshima Agent itself completed in about 142 seconds with a 3,616-character answer, but the detached status endpoint remained `running` because it read the global state DB instead of the tenant sandbox DB. The recovery fix and regression tests are included in the next deployment.

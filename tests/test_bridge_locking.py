@@ -109,6 +109,62 @@ class TestWatermark(unittest.TestCase):
             self.assertEqual(_readback_delta("sess_a", 0), [])
 
 
+class TestTenantSandboxStatus(unittest.TestCase):
+    def setUp(self):
+        import scripts.hermes_bridge as bridge
+
+        self.bridge = bridge
+        self.tmp_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp_db.close()
+        self.user_id = "tenant-user-session"
+        self.session_id = "sandbox-session"
+        conn = sqlite3.connect(self.tmp_db.name)
+        conn.execute(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, ended_at REAL, archived INTEGER)"
+        )
+        conn.execute(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, "
+            "content TEXT, reasoning_content TEXT, tool_name TEXT, tool_calls TEXT, "
+            "timestamp REAL, active INTEGER)"
+        )
+        conn.execute(
+            "INSERT INTO sessions VALUES (?,?,?)",
+            (self.session_id, time.time(), 0),
+        )
+        conn.execute(
+            "INSERT INTO messages VALUES (?,?,?,?,?,?,?,?,?)",
+            (1, self.session_id, "assistant", "sandbox answer", "", None, None, time.time(), 1),
+        )
+        conn.commit()
+        conn.close()
+        bridge._user_session_map[self.user_id] = self.session_id
+        bridge._user_state_db_map[self.user_id] = self.tmp_db.name
+
+    def tearDown(self):
+        self.bridge._user_session_map.pop(self.user_id, None)
+        self.bridge._user_state_db_map.pop(self.user_id, None)
+        self.bridge._stream_runs.pop(self.user_id, None)
+        os.unlink(self.tmp_db.name)
+
+    def test_completed_status_reads_tenant_sandbox_database(self):
+        with patch.object(self.bridge, "_pending_clarify", return_value=None):
+            status = self.bridge._query_status(self.session_id, self.user_id)
+        self.assertEqual(status["status"], "completed")
+        self.assertEqual(status["answer"], "sandbox answer")
+
+    def test_active_run_carries_sandbox_database_binding(self):
+        self.bridge._stream_run_register(self.user_id, {
+            "run_id": "run-1",
+            "start_ts": time.monotonic(),
+            "state_db": self.tmp_db.name,
+        })
+        self.bridge._user_state_db_map.pop(self.user_id, None)
+        with patch.object(self.bridge, "_pending_clarify", return_value=None):
+            status = self.bridge._query_status(self.session_id, self.user_id)
+        self.assertEqual(status["status"], "completed")
+        self.assertIsNone(self.bridge._stream_run_get(self.user_id))
+
+
 class TestKnowledgeGatewayTool(unittest.TestCase):
     def tearDown(self):
         import scripts.hermes_bridge as bridge
