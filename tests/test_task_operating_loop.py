@@ -12,6 +12,7 @@ from backend.services.task_operating_loop import (
     apply_task_merge,
     build_relation_digest,
     build_task_context_pack,
+    create_challenge_review,
     create_feedback_batch,
     create_handoff_capsule,
     create_merge_preview,
@@ -20,6 +21,7 @@ from backend.services.task_operating_loop import (
     initialize_task_contract,
     record_feedback_interpretation,
     revert_task_merge,
+    resolve_challenge_review,
     submit_feedback_batch,
     submit_feedback_resolution,
     transition_task,
@@ -442,3 +444,77 @@ def test_relation_digest_reverses_incoming_edges_and_honors_context_limit() -> N
     assert [(item["effective_task_id"], item["relation_type"]) for item in digest["entries"]] == [
         ("parent", "child"), ("blocker", "blocked_by"),
     ]
+
+
+def test_hard_challenge_builds_decision_brief_and_blocks_claim_until_resolved() -> None:
+    item = task("challenge")
+    acquire_execution_lease(
+        item, session_id="running", actor_id="agent", ttl_seconds=900,
+        expected_task_revision=1,
+    )
+    review = create_challenge_review(
+        item, actor_id="hermes-agent", agreed=["目标合理"], challenges=["会直接发布生产"],
+        impacts={"security": "可能泄露", "no_action": "继续阻断发布"},
+        evidence=[{"kind": "FACT", "statement": "缺少发布授权", "source_refs": ["policy:deploy"]}],
+        alternatives=[
+            {"id": "keep", "label": "保留方案", "cost": "高风险", "resolution": "PROCEED"},
+            {"id": "experiment", "label": "先做沙盒实验", "cost": "增加一天", "resolution": "EXPERIMENT"},
+        ],
+        conclusion="EXPERIMENT", question="是否先做沙盒实验？",
+        risk_categories=["production_publish", "security"], reversible=False,
+    )
+    assert review["gate_level"] == "HARD"
+    assert review["decision_brief"]["question"] == "是否先做沙盒实验？"
+    assert item["status"] == "DECISION_REQUIRED"
+    assert item["execution_lease"]["status"] == "SUSPENDED"
+    assert item["execution_lease"]["expires_at"] == review["created_at"]
+    with pytest.raises(ValueError, match="task_status_not_claimable"):
+        acquire_execution_lease(
+            item, session_id="s", actor_id="a", ttl_seconds=60,
+            expected_task_revision=item["task_revision"],
+        )
+    decision = resolve_challenge_review(
+        item, review_id=review["id"], selected_option_id="experiment",
+        resolution="EXPERIMENT", rationale="先验证再发布", actor_id="user:user-a",
+    )
+    assert decision["status"] == "CONFIRMED"
+    assert item["status"] == "TODO"
+    assert review["decision_brief"]["status"] == "RESOLVED"
+
+
+def test_reversible_notice_records_without_blocking_task() -> None:
+    item = task("notice")
+    review = create_challenge_review(
+        item, actor_id="hermes-agent", agreed=["可优化"], challenges=["文案可更简洁"],
+        impacts={"experience": "轻微改善"}, evidence=[{"kind": "INFERENCE", "statement": "可能更易读"}],
+        alternatives=[
+            {"id": "keep", "label": "保持", "cost": "无", "resolution": "PROCEED"},
+            {"id": "edit", "label": "小改", "cost": "很低", "resolution": "MODIFY"},
+        ],
+        conclusion="ACCEPT", question="无须阻断", risk_categories=["reversible_optimization"],
+        reversible=True,
+    )
+    assert review["gate_level"] == "NOTICE"
+    assert review["decision_brief"] is None
+    assert item["status"] == "TODO"
+
+
+def test_hard_risk_keywords_are_server_detected_and_option_action_must_match() -> None:
+    item = task("detected-risk")
+    review = create_challenge_review(
+        item, actor_id="hermes-agent", agreed=["目标明确"],
+        challenges=["将不可逆删除生产数据"], impacts={"no_action": "保留数据"},
+        evidence=[{"kind": "TO_VERIFY", "statement": "备份状态未知"}],
+        alternatives=[
+            {"id": "delete", "label": "直接删除", "cost": "不可逆", "resolution": "PROCEED"},
+            {"id": "backup", "label": "先备份", "cost": "增加时间", "resolution": "MODIFY"},
+        ],
+        conclusion="MODIFY", question="是否先备份？", risk_categories=[], reversible=True,
+    )
+    assert review["gate_level"] == "HARD"
+    assert "irreversible_delete" in review["detected_risk_categories"]
+    with pytest.raises(ValueError, match="challenge_option_resolution_mismatch"):
+        resolve_challenge_review(
+            item, review_id=review["id"], selected_option_id="backup",
+            resolution="PROCEED", rationale="动作与选项冲突", actor_id="user:user-a",
+        )

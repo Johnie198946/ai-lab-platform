@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 from uuid import uuid4
 
 DIRECTIONAL_RELATIONS = {"blocks", "blocked_by", "parent", "child"}
@@ -37,7 +37,7 @@ TASK_STATUSES = {
 
 TASK_TRANSITIONS: dict[str, set[str]] = {
     "WAITING_CLAIM": {"TODO", "CANCELLED"},
-    "TODO": {"IN_PROGRESS", "BLOCKED", "PAUSED", "CANCELLED"},
+    "TODO": {"IN_PROGRESS", "DECISION_REQUIRED", "BLOCKED", "PAUSED", "CANCELLED"},
     "IN_PROGRESS": {"DECISION_REQUIRED", "ACCEPTANCE_REVIEW", "BLOCKED", "PAUSED", "CANCELLED"},
     "DECISION_REQUIRED": {"TODO", "IN_PROGRESS", "CANCELLED"},
     "ACCEPTANCE_REVIEW": {"DONE", "IN_PROGRESS", "CANCELLED"},
@@ -399,6 +399,10 @@ def transition_task(
         return task
     if to_status not in TASK_TRANSITIONS.get(current, set()):
         raise ValueError(f"illegal_task_transition:{current}:{to_status}")
+    if current == "DECISION_REQUIRED" and any(
+        item.get("status") == "OPEN" for item in task.get("challenge_reviews") or []
+    ):
+        raise ValueError("open_challenge_decision_required")
     if to_status in {"BLOCKED", "PAUSED", "DECISION_REQUIRED"} and not (reason or "").strip():
         raise ValueError("transition_reason_required")
     now = now or utc_now()
@@ -663,6 +667,8 @@ def acquire_execution_lease(
     """CAS-acquire or renew a task's single execution lease."""
     now = now or utc_now()
     current_revision = int(task.get("task_revision") or 1)
+    if task.get("status") != "TODO":
+        raise ValueError(f"task_status_not_claimable:{task.get('status')}")
     if current_revision != expected_task_revision:
         raise ValueError(f"task_revision_conflict:{current_revision}")
     current = task.get("execution_lease") or {}
@@ -929,6 +935,151 @@ def build_relation_digest(
         ],
         "generated_at": utc_now().isoformat(),
     }
+
+
+HARD_CHALLENGE_RISKS = {
+    "security", "permission", "irreversible_delete", "legal", "data_leak",
+    "fact_contract_conflict", "production_publish", "budget_exceeded", "cross_task_impact",
+}
+SOFT_CHALLENGE_RISKS = {"architecture", "scope", "cost", "experience", "maintenance", "dependency"}
+
+
+def create_challenge_review(
+    task: dict[str, Any], *, actor_id: str, agreed: list[str], challenges: list[str],
+    impacts: dict[str, str], evidence: list[dict[str, Any]], alternatives: list[dict[str, Any]],
+    conclusion: str, question: str, risk_categories: Sequence[str], reversible: bool,
+) -> dict[str, Any]:
+    if any(item.get("status") == "OPEN" for item in task.get("challenge_reviews") or []):
+        raise ValueError("open_challenge_review_exists")
+    submitted_risks = {str(item) for item in risk_categories}
+    risk_text = json.dumps(
+        {"challenges": challenges, "impacts": impacts, "question": question},
+        ensure_ascii=False,
+    ).lower()
+    keyword_risks = {
+        "security": ("安全", "security", "credential", "密钥", "token"),
+        "permission": ("权限", "未授权", "permission", "unauthorized"),
+        "irreversible_delete": ("不可逆", "删除", "清空", "drop table", "truncate", "destroy"),
+        "legal": ("法律", "合规", "legal", "license"),
+        "data_leak": ("泄露", "外泄", "data leak", "exfiltrat"),
+        "fact_contract_conflict": ("事实合同冲突", "contract conflict"),
+        "production_publish": ("生产发布", "直接发布", "上线", "部署生产", "production deploy"),
+        "budget_exceeded": ("预算超限", "超预算", "budget exceeded", "over budget"),
+        "cross_task_impact": ("跨任务", "cross-task", "cross task"),
+    }
+    detected_risks = {
+        category for category, keywords in keyword_risks.items()
+        if any(keyword in risk_text for keyword in keywords)
+    }
+    risks = submitted_risks | detected_risks
+    unknown = risks - HARD_CHALLENGE_RISKS - SOFT_CHALLENGE_RISKS - {"reversible_optimization"}
+    if unknown:
+        raise ValueError(f"unknown_challenge_risk:{sorted(unknown)[0]}")
+    if risks & HARD_CHALLENGE_RISKS:
+        gate_level = "HARD"
+    elif risks & SOFT_CHALLENGE_RISKS or conclusion in {"MODIFY", "REJECT", "EXPERIMENT"}:
+        gate_level = "SOFT"
+    else:
+        gate_level = "NOTICE"
+    if gate_level == "NOTICE" and not reversible:
+        gate_level = "SOFT"
+    requires_decision = gate_level in {"HARD", "SOFT"}
+    if requires_decision and task.get("status") not in {"TODO", "IN_PROGRESS"}:
+        raise ValueError("challenge_review_requires_active_task")
+    option_ids = [str(item.get("id") or "") for item in alternatives]
+    if (
+        len(alternatives) < 2 or len(option_ids) != len(set(option_ids))
+        or any(not item for item in option_ids)
+        or any(item.get("resolution") not in {"PROCEED", "MODIFY", "EXPERIMENT", "CANCEL"} for item in alternatives)
+        or any(not str(item.get("cost") or "").strip() for item in alternatives)
+    ):
+        raise ValueError("challenge_options_invalid")
+    if not evidence or any(item.get("kind") not in {"FACT", "INFERENCE", "TO_VERIFY"} for item in evidence):
+        raise ValueError("challenge_evidence_invalid")
+    now = utc_now().isoformat()
+    review_id = f"challenge_{uuid4().hex}"
+    brief = None
+    if requires_decision:
+        brief = {
+            "id": f"decision_brief_{uuid4().hex}", "challenge_review_id": review_id,
+            "conflict": challenges, "why_it_matters": impacts, "evidence": evidence,
+            "options": alternatives, "recommendation": conclusion,
+            "no_action_impact": impacts.get("no_action") or "风险或冲突保持未解决",
+            "question": question, "status": "OPEN", "created_at": now,
+        }
+    review = {
+        "id": review_id, "status": "OPEN" if requires_decision else "RECORDED",
+        "resume_status": task.get("status"),
+        "agreed": agreed, "challenges": challenges, "impacts": impacts,
+        "evidence": evidence, "alternatives": alternatives, "conclusion": conclusion,
+        "question": question, "risk_categories": sorted(risks),
+        "submitted_risk_categories": sorted(submitted_risks),
+        "detected_risk_categories": sorted(detected_risks), "gate_level": gate_level,
+        "requires_user_decision": requires_decision, "reversible": reversible,
+        "decision_brief": brief, "created_by": actor_id, "created_at": now,
+    }
+    task["challenge_reviews"] = [*(task.get("challenge_reviews") or []), review]
+    if requires_decision:
+        lease = task.get("execution_lease") or {}
+        if lease:
+            review["suspended_lease"] = deepcopy(lease)
+            lease.update({
+                "status": "SUSPENDED", "suspended_at": now,
+                "suspended_reason": f"challenge_review:{review_id}", "expires_at": now,
+            })
+            task["execution_lease"] = lease
+        transition_task(
+            task, to_status="DECISION_REQUIRED", actor_id=actor_id,
+            reason=f"challenge_review:{review_id}:{gate_level}",
+        )
+    else:
+        task["task_revision"] = int(task.get("task_revision") or 1) + 1
+    return review
+
+
+def resolve_challenge_review(
+    task: dict[str, Any], *, review_id: str, selected_option_id: str,
+    resolution: str, rationale: str, actor_id: str,
+) -> dict[str, Any]:
+    review = next(
+        (item for item in task.get("challenge_reviews") or [] if item.get("id") == review_id), None
+    )
+    if review is None:
+        raise ValueError("challenge_review_not_found")
+    if review.get("status") != "OPEN":
+        raise ValueError("challenge_review_not_open")
+    if task.get("status") != "DECISION_REQUIRED":
+        raise ValueError("challenge_decision_requires_decision_state")
+    option_ids = {str(item.get("id")) for item in review.get("alternatives") or []}
+    if selected_option_id not in option_ids:
+        raise ValueError("challenge_option_not_found")
+    selected_option = next(
+        item for item in review.get("alternatives") or [] if str(item.get("id")) == selected_option_id
+    )
+    if selected_option.get("resolution") != resolution:
+        raise ValueError("challenge_option_resolution_mismatch")
+    now = utc_now().isoformat()
+    decision = {
+        "id": f"decision_{uuid4().hex}", "type": "CHALLENGE_RESOLUTION",
+        "challenge_review_id": review_id,
+        "decision_brief_id": (review.get("decision_brief") or {}).get("id"),
+        "selected_option_id": selected_option_id, "resolution": resolution,
+        "rationale": rationale, "status": "CONFIRMED",
+        "related_task_ids": [str(task["id"])], "decided_by": actor_id, "decided_at": now,
+    }
+    review.update({"status": "RESOLVED", "decision": decision, "resolved_at": now})
+    if review.get("decision_brief"):
+        review["decision_brief"].update({"status": "RESOLVED", "decision_id": decision["id"]})
+    task["decisions"] = [*(task.get("decisions") or []), decision]
+    transition_task(
+        task,
+        to_status=(
+            "CANCELLED" if resolution == "CANCEL"
+            else "TODO"
+        ),
+        actor_id=actor_id, reason=f"challenge_resolved:{review_id}:{resolution}",
+    )
+    return decision
 
 
 def create_handoff_capsule(

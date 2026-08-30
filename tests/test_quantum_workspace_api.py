@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import atexit
 import asyncio
+
 import json
 import os
 from datetime import date
 from pathlib import Path
 from tempfile import gettempdir
+
 from types import SimpleNamespace
 
 import httpx
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select
@@ -24,6 +27,7 @@ os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DB}"
 os.environ.setdefault("AUTHEN_DEV_MODE", "true")
 
 from backend.main import app  # noqa: E402
+import backend.api.quantum_workspace as qws_api  # noqa: E402
 from backend.api.auth import require_auth  # noqa: E402
 from backend.api.quantum_workspace import (  # noqa: E402
     _apply_taskboard_backfill,
@@ -1529,6 +1533,122 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
         item.get("effective_task_id") == target["id"] and item.get("relation_type") == "related"
         for item in confirmed_digest.json()["entries"]
     )
+
+
+def test_challenge_review_hard_gate_decision_brief_and_idempotent_resolution(_reset_database):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "challenge-review")
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    task = process["tasks"][0]
+    request = {
+        "request_id": "challenge-create-0001", "expected_revision": 1,
+        "expected_task_revision": 1, "agreed": ["目标合理"],
+        "challenges": ["未经授权将直接发布生产"],
+        "impacts": {"security": "可能泄露数据", "no_action": "继续阻断发布"},
+        "evidence": [{"kind": "FACT", "statement": "没有部署授权", "source_refs": ["policy:deploy"]}],
+        "alternatives": [
+            {"id": "keep", "label": "保留原方案", "cost": "高风险", "resolution": "PROCEED"},
+            {"id": "experiment", "label": "先做沙盒实验", "cost": "增加一天", "resolution": "EXPERIMENT"},
+        ],
+        "conclusion": "EXPERIMENT", "question": "是否先做沙盒实验？",
+        "risk_categories": ["security", "production_publish"], "reversible": False,
+    }
+    created = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews", json=request
+    )
+    assert created.status_code == 201, created.text
+    review = created.json()["challenge_review"]
+    assert review["gate_level"] == "HARD"
+    assert review["decision_brief"]["status"] == "OPEN"
+    assert created.json()["process_revision"] == 2
+    assert created.json()["task_revision"] == 2
+    assert client.get(f"/api/v1/projects/{project_id}/tasks/{task['id']}").json()["status"] == "DECISION_REQUIRED"
+    replayed_create = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews", json=request
+    )
+    assert replayed_create.status_code == 200
+    assert replayed_create.json()["challenge_review"]["id"] == review["id"]
+    drifted_create = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews",
+        json={**request, "question": "另一个问题"},
+    )
+    assert drifted_create.status_code == 409
+    blocked_lease = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/execution-lease",
+        json={"expected_revision": 2, "expected_task_revision": 2, "session_id": "blocked", "actor_id": "agent", "ttl_seconds": 60},
+    )
+    assert blocked_lease.status_code == 409
+    bypass = client.patch(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}",
+        json={"expected_revision": 2, "status": "TODO", "reason": "尝试绕过 Challenge"},
+    )
+    assert bypass.status_code == 409
+    assert bypass.json()["detail"]["error"] == "open_challenge_decision_required"
+    decision_request = {
+        "request_id": "challenge-decision-0001", "expected_revision": 2,
+        "expected_task_revision": 2, "selected_option_id": "experiment",
+        "resolution": "EXPERIMENT", "rationale": "先验证再申请发布授权",
+    }
+    resolved = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json=decision_request,
+    )
+    assert resolved.status_code == 200, resolved.text
+    assert resolved.json()["process_revision"] == 3
+    assert resolved.json()["task_revision"] == 3
+    assert resolved.json()["decision"]["status"] == "CONFIRMED"
+    replayed_resolution = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json=decision_request,
+    )
+    assert replayed_resolution.status_code == 200
+    assert replayed_resolution.json()["process_revision"] == 3
+    drifted_resolution = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews/{review['id']}/decision",
+        json={**decision_request, "rationale": "不同理由"},
+    )
+    assert drifted_resolution.status_code == 409
+    restored = client.get(f"/api/v1/projects/{project_id}/tasks/{task['id']}").json()
+    assert restored["status"] == "TODO"
+    assert restored["challenge_reviews"][0]["decision_brief"]["status"] == "RESOLVED"
+    late_create_replay = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews", json=request
+    )
+    assert late_create_replay.status_code == 200
+    assert late_create_replay.json()["process_revision"] == 2
+    assert late_create_replay.json()["task_revision"] == 2
+
+
+def test_challenge_cas_conflict_rereads_identical_committed_request(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "challenge-race")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    request = {
+        "request_id": "challenge-race-0001", "expected_revision": 1,
+        "expected_task_revision": 1, "agreed": ["目标合理"],
+        "challenges": ["直接发布生产缺少授权"], "impacts": {"security": "发布风险"},
+        "evidence": [{"kind": "FACT", "statement": "无发布授权"}],
+        "alternatives": [
+            {"id": "keep", "label": "保留", "cost": "高风险", "resolution": "PROCEED"},
+            {"id": "sandbox", "label": "沙盒", "cost": "一天", "resolution": "EXPERIMENT"},
+        ],
+        "conclusion": "EXPERIMENT", "question": "是否先做沙盒？",
+        "risk_categories": ["production_publish"], "reversible": False,
+    }
+    original = qws_api._cas_project_process
+
+    async def committed_winner_then_conflict(*args, **kwargs):
+        await original(*args, **kwargs)
+        raise HTTPException(status_code=409, detail="simulated concurrent winner")
+
+    monkeypatch.setattr(qws_api, "_cas_project_process", committed_winner_then_conflict)
+    url = f"/api/v1/projects/{project_id}/tasks/{task['id']}/challenge-reviews"
+    response = client.post(url, json=request)
+    assert response.status_code == 200
+    assert response.json()["process_revision"] == 2
+    assert response.json()["challenge_review"]["request_id"] == request["request_id"]
 
 
 

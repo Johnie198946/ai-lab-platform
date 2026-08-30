@@ -79,6 +79,7 @@ from backend.services.task_operating_loop import (
     apply_feedback_action,
     build_relation_digest,
     build_task_context_pack,
+    create_challenge_review,
     create_feedback_batch,
     create_merge_preview,
     create_relation_proposal,
@@ -86,6 +87,7 @@ from backend.services.task_operating_loop import (
     initialize_task_contract,
     record_feedback_interpretation,
     revert_task_merge,
+    resolve_challenge_review,
     submit_feedback_batch,
     submit_feedback_resolution,
     transition_task,
@@ -340,6 +342,49 @@ class DecideTaskRelationRequest(BaseModel):
     expected_task_revision: int = Field(ge=1)
     decision: Literal["CONFIRM", "REJECT"]
     reason: str | None = Field(default=None, max_length=1000)
+
+
+class ChallengeEvidenceRequest(BaseModel):
+    kind: Literal["FACT", "INFERENCE", "TO_VERIFY"]
+    statement: str = Field(min_length=1, max_length=2000)
+    source_refs: list[str] = Field(default_factory=list, max_length=20)
+
+
+class ChallengeOptionRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    label: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    cost: str = Field(min_length=1, max_length=1000)
+    resolution: Literal["PROCEED", "MODIFY", "EXPERIMENT", "CANCEL"]
+
+
+class CreateChallengeReviewRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    agreed: list[str] = Field(default_factory=list, max_length=20)
+    challenges: list[str] = Field(min_length=1, max_length=20)
+    impacts: dict[str, str] = Field(default_factory=dict)
+    evidence: list[ChallengeEvidenceRequest] = Field(min_length=1, max_length=30)
+    alternatives: list[ChallengeOptionRequest] = Field(min_length=2, max_length=5)
+    conclusion: Literal["ACCEPT", "MODIFY", "REJECT", "EXPERIMENT"]
+    question: str = Field(min_length=1, max_length=1000)
+    risk_categories: list[Literal[
+        "security", "permission", "irreversible_delete", "legal", "data_leak",
+        "fact_contract_conflict", "production_publish", "budget_exceeded", "cross_task_impact",
+        "architecture", "scope", "cost", "experience", "maintenance", "dependency",
+        "reversible_optimization",
+    ]] = Field(default_factory=list, max_length=20)
+    reversible: bool
+
+
+class ResolveChallengeReviewRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
+    expected_revision: int = Field(ge=0)
+    expected_task_revision: int = Field(ge=1)
+    selected_option_id: str = Field(min_length=1, max_length=80)
+    resolution: Literal["PROCEED", "MODIFY", "EXPERIMENT", "CANCEL"]
+    rationale: str = Field(min_length=1, max_length=2000)
 
 
 class BindTaskWorkflowRequest(BaseModel):
@@ -1798,12 +1843,14 @@ async def _cas_project_process(
     process: dict[str, Any],
     commit: bool = True,
 ) -> int:
+    project_id = project.id
+    tenant_key = project.tenant_key
     next_revision = expected_revision + 1
     result = await db.execute(
         update(WorkspaceProject)
         .where(
-            WorkspaceProject.id == project.id,
-            WorkspaceProject.tenant_key == project.tenant_key,
+            WorkspaceProject.id == project_id,
+            WorkspaceProject.tenant_key == tenant_key,
             WorkspaceProject.process_revision == expected_revision,
         )
         .values(
@@ -1817,8 +1864,8 @@ async def _cas_project_process(
         await db.rollback()
         server_revision = await db.scalar(
             select(WorkspaceProject.process_revision).where(
-                WorkspaceProject.id == project.id,
-                WorkspaceProject.tenant_key == project.tenant_key,
+                WorkspaceProject.id == project_id,
+                WorkspaceProject.tenant_key == tenant_key,
             )
         )
         raise HTTPException(
@@ -2768,6 +2815,168 @@ async def get_project_task_context_pack(
         context.pop("relations", None)
         context["relation_digest"] = digest
         return context
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/challenge-reviews", status_code=201)
+async def create_project_task_challenge_review(
+    project_id: str, task_id: str, body: CreateChallengeReviewRequest,
+    payload=Depends(require_auth),
+) -> Any:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        payload_binding = body.model_dump(exclude={"expected_revision", "expected_task_revision"})
+        replay = next(
+            (item for item in task.get("challenge_reviews") or [] if item.get("request_id") == body.request_id), None
+        )
+        if replay is not None:
+            if replay.get("request_payload") != payload_binding:
+                raise HTTPException(status_code=409, detail="challenge request replay payload drift")
+            return JSONResponse(status_code=200, content={
+                "project_id": project.id,
+                "process_revision": replay["result_process_revision"],
+                "task_revision": replay["result_task_revision"], "challenge_review": replay,
+            })
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        _ensure_task_writable(task)
+        if task.get("status") not in {"TODO", "IN_PROGRESS"}:
+            raise HTTPException(status_code=409, detail="challenge_review_requires_active_task")
+        if int(task.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
+        try:
+            review = create_challenge_review(
+                task, actor_id=f"user:{user_id}", agreed=body.agreed,
+                challenges=body.challenges, impacts=body.impacts,
+                evidence=[item.model_dump() for item in body.evidence],
+                alternatives=[item.model_dump(exclude_none=True) for item in body.alternatives],
+                conclusion=body.conclusion, question=body.question,
+                risk_categories=body.risk_categories, reversible=body.reversible,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        review["request_id"] = body.request_id
+        review["request_payload"] = payload_binding
+        review["result_process_revision"] = body.expected_revision + 1
+        review["result_task_revision"] = task["task_revision"]
+        process["tasks"] = tasks
+        _sync_task_status_projections(process, tasks, {task_id})
+        try:
+            next_revision = await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process
+            )
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            latest = await db.scalar(select(WorkspaceProject).where(
+                WorkspaceProject.id == project_id, WorkspaceProject.tenant_key == tenant_key,
+            ))
+            latest_task = next(
+                (item for item in (latest.process_snapshot or {}).get("tasks", []) if item.get("id") == task_id),
+                None,
+            ) if latest else None
+            persisted = next(
+                (item for item in (latest_task or {}).get("challenge_reviews") or [] if item.get("request_id") == body.request_id),
+                None,
+            )
+            if persisted is not None and persisted.get("request_payload") == payload_binding:
+                return JSONResponse(status_code=200, content={
+                    "project_id": project_id,
+                    "process_revision": persisted["result_process_revision"],
+                    "task_revision": persisted["result_task_revision"],
+                    "challenge_review": persisted,
+                })
+            raise
+        return {
+            "project_id": project_id, "process_revision": next_revision,
+            "task_revision": task["task_revision"], "challenge_review": review,
+        }
+
+
+@router.post("/projects/{project_id}/tasks/{task_id}/challenge-reviews/{review_id}/decision")
+async def resolve_project_task_challenge_review(
+    project_id: str, task_id: str, review_id: str,
+    body: ResolveChallengeReviewRequest, payload=Depends(require_auth),
+) -> dict[str, Any]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
+        tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
+        task = next((item for item in tasks if item.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail="project task not found")
+        review = next(
+            (item for item in task.get("challenge_reviews") or [] if item.get("id") == review_id), None
+        )
+        if review is None:
+            raise HTTPException(status_code=404, detail="challenge review not found")
+        payload_binding = body.model_dump(exclude={"expected_revision", "expected_task_revision"})
+        existing = review.get("decision")
+        if existing is not None:
+            if existing.get("request_id") != body.request_id or existing.get("request_payload") != payload_binding:
+                raise HTTPException(status_code=409, detail="challenge decision replay payload drift")
+            return {
+                "project_id": project.id,
+                "process_revision": existing["result_process_revision"],
+                "task_revision": existing["result_task_revision"], "decision": existing,
+            }
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail={"error": "project_revision_conflict", "server_revision": project.process_revision})
+        if int(task.get("task_revision") or 1) != body.expected_task_revision:
+            raise HTTPException(status_code=409, detail={"error": "task_revision_conflict", "server_revision": task.get("task_revision")})
+        try:
+            decision = resolve_challenge_review(
+                task, review_id=review_id, selected_option_id=body.selected_option_id,
+                resolution=body.resolution, rationale=body.rationale,
+                actor_id=f"user:{user_id}",
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        decision["request_id"] = body.request_id
+        decision["request_payload"] = payload_binding
+        decision["result_process_revision"] = body.expected_revision + 1
+        decision["result_task_revision"] = task["task_revision"]
+        process["tasks"] = tasks
+        _sync_task_status_projections(process, tasks, {task_id})
+        try:
+            next_revision = await _cas_project_process(
+                db, project=project, expected_revision=body.expected_revision, process=process
+            )
+        except HTTPException as exc:
+            if exc.status_code != 409:
+                raise
+            latest = await db.scalar(select(WorkspaceProject).where(
+                WorkspaceProject.id == project_id, WorkspaceProject.tenant_key == tenant_key,
+            ))
+            latest_task = next(
+                (item for item in (latest.process_snapshot or {}).get("tasks", []) if item.get("id") == task_id),
+                None,
+            ) if latest else None
+            latest_review = next(
+                (item for item in (latest_task or {}).get("challenge_reviews") or [] if item.get("id") == review_id),
+                None,
+            )
+            persisted = (latest_review or {}).get("decision")
+            if (
+                persisted is not None and persisted.get("request_id") == body.request_id
+                and persisted.get("request_payload") == payload_binding
+            ):
+                return {
+                    "project_id": project_id,
+                    "process_revision": persisted["result_process_revision"],
+                    "task_revision": persisted["result_task_revision"], "decision": persisted,
+                }
+            raise
+        return {
+            "project_id": project_id, "process_revision": next_revision,
+            "task_revision": task["task_revision"], "decision": decision,
+        }
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/relation-proposals", status_code=201)
