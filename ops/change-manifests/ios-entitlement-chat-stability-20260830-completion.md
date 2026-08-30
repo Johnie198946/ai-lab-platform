@@ -37,8 +37,8 @@
 
 ## Delivery
 
-- local_commit: `PENDING`
-- remote_sha: `PENDING`
+- local_commit: `bf4b077` (`fix ios chat lifecycle and entitlement visibility`)
+- remote_sha: resolved by post-push `git ls-remote`; exact remote receipt is reported with this manifest in the delivery response.
 - server_before: `NOT_TOUCHED`
 - server_after: `NOT_TOUCHED`
 - production_deployment: `NOT_AUTHORIZED`
