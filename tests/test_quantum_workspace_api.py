@@ -1289,10 +1289,21 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     project_id, _ = _create_applied_process(client, "merge-loop")
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     primary, secondary = process["tasks"][:2]
+    source_artifact = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "merge.source.evidence",
+            "title": "来源任务证据",
+            "artifact_type": "document",
+            "task_id": secondary["id"],
+        },
+    )
+    assert source_artifact.status_code == 201
 
     preview_response = client.post(
         f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
         json={
+            "request_id": "merge-preview-0001",
             "expected_revision": 1,
             "secondary_task_id": secondary["id"],
             "expected_primary_revision": 1,
@@ -1301,13 +1312,25 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     )
     assert preview_response.status_code == 201, preview_response.text
     preview = preview_response.json()["merge"]
+    preview_replay = client.post(
+        f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
+        json={
+            "request_id": "merge-preview-0001",
+            "expected_revision": 1,
+            "secondary_task_id": secondary["id"],
+            "expected_primary_revision": 1,
+            "expected_secondary_revision": 1,
+        },
+    )
+    assert preview_replay.status_code == 200
+    assert preview_replay.json()["merge"]["id"] == preview["id"]
     choices = {
         item["field"]: ("union" if "union" in item["allowed_choices"] else "primary")
         for item in preview["conflicts"]
     }
     applied = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
-        json={"expected_revision": 2, "field_choices": choices},
+        json={"request_id": "merge-apply-0001", "expected_revision": 2, "field_choices": choices},
     )
     assert applied.status_code == 200, applied.text
     assert applied.json()["merge"]["status"] == "APPLIED"
@@ -1329,16 +1352,61 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     )
     assert blocked_update.status_code == 409
     assert blocked_update.json()["detail"]["error"] == "merged_task_is_read_only"
+    blocked_artifact = client.post(
+        f"/api/v1/projects/{project_id}/artifacts",
+        json={
+            "artifact_key": "merge.source.after",
+            "title": "不应写入来源任务",
+            "artifact_type": "document",
+            "task_id": secondary["id"],
+        },
+    )
+    assert blocked_artifact.status_code == 409
+    blocked_version = client.post(
+        f"/api/v1/projects/{project_id}/artifacts/{source_artifact.json()['id']}/versions",
+        json={
+            "storage_ref": "repo://merge/blocked.md",
+            "sha256": "c" * 64,
+            "media_type": "text/markdown",
+            "verification": {"verified": True},
+        },
+    )
+    assert blocked_version.status_code == 409
+    blocked_conversation = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": secondary["id"],
+            "workflow_id": secondary.get("workflow_id"),
+            "agent_version": "hermes-current",
+        },
+    )
+    assert blocked_conversation.status_code == 409
+    assert blocked_conversation.json()["detail"]["error"] == "merged_task_is_read_only"
+    artifacts = client.get(f"/api/v1/projects/{project_id}/artifacts").json()
+    merged_artifact = next(item for item in artifacts if item["artifact_key"] == "merge.source.evidence")
+    assert merged_artifact["source_task_id"] == secondary["id"]
+    assert merged_artifact["effective_task_id"] == primary["id"]
+    manifests = client.get(
+        f"/api/v1/projects/{project_id}/tasks/{primary['id']}/delivery-manifests"
+    )
+    assert manifests.status_code == 200
+    assert manifests.json() == []
     replayed = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
-        json={"expected_revision": 3, "field_choices": choices},
+        json={"request_id": "merge-apply-0001", "expected_revision": 2, "field_choices": choices},
     )
     assert replayed.status_code == 200
     assert replayed.json()["process_revision"] == 3
+    drifted_apply = client.post(
+        f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
+        json={"request_id": "merge-apply-drift", "expected_revision": 2, "field_choices": choices},
+    )
+    assert drifted_apply.status_code == 409
 
     reverted = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
-        json={"expected_revision": 3},
+        json={"request_id": "merge-revert-0001", "expected_revision": 3},
     )
     assert reverted.status_code == 200, reverted.text
     assert reverted.json()["merge"]["status"] == "REVERTED"
@@ -1350,7 +1418,7 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     assert "redirect" not in restored_task
     replayed_revert = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
-        json={"expected_revision": 4},
+        json={"request_id": "merge-revert-0001", "expected_revision": 3},
     )
     assert replayed_revert.status_code == 200
     assert replayed_revert.json()["process_revision"] == 4

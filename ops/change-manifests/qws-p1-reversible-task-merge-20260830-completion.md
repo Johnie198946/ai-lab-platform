@@ -19,6 +19,10 @@
 - `MERGED` 卡片为只读终态，写请求返回主任务重定向。
 - Preview 快照仅包含可能被合并改写的字段，不包含反馈附件 `storage_ref` 等内部事实。
 - 撤销同时校验 revision 与任务内容哈希，防止未正确递增 revision 的其他写路径导致事实覆盖。
+- Preview / Apply / Revert 均使用 `request_id`，原请求可用原 `expected_revision` 重放；请求漂移返回冲突。
+- `MERGED` 来源任务禁止新建 Session、卡片更新和新 Artifact；既有 Artifact 通过 `source_task_id` / `effective_task_id` 从主任务发现。
+- 新增主任务 Delivery Manifest 聚合读取，来源任务记录不迁移、不删除。
+- 阶段聚合将 `MERGED` 视为已收口任务，避免来源卡继续占用未完成分母。
 
 ## API
 
@@ -26,6 +30,7 @@
 POST /api/v1/projects/{project_id}/tasks/{primary_task_id}/merge-previews
 POST /api/v1/projects/{project_id}/task-merges/{merge_id}/apply
 POST /api/v1/projects/{project_id}/task-merges/{merge_id}/revert
+GET  /api/v1/projects/{project_id}/tasks/{task_id}/delivery-manifests
 ```
 
 ## 验证

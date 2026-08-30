@@ -304,6 +304,7 @@ class CheckTaskDuplicatesRequest(BaseModel):
 
 
 class CreateMergePreviewRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
     expected_revision: int = Field(ge=0)
     secondary_task_id: str = Field(min_length=1, max_length=40)
     expected_primary_revision: int = Field(ge=1)
@@ -311,11 +312,13 @@ class CreateMergePreviewRequest(BaseModel):
 
 
 class ApplyTaskMergeRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
     expected_revision: int = Field(ge=0)
     field_choices: dict[str, Literal["primary", "secondary", "union"]]
 
 
 class RevertTaskMergeRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=120)
     expected_revision: int = Field(ge=0)
 
 
@@ -1154,7 +1157,7 @@ async def create_project_artifact(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
         existing = await db.scalar(
             select(WorkspaceArtifact).where(
                 WorkspaceArtifact.tenant_key == tenant_key,
@@ -1171,6 +1174,14 @@ async def create_project_artifact(
             if not same:
                 raise HTTPException(status_code=409, detail="artifact_key already binds different metadata")
             return JSONResponse(status_code=200, content=json.loads(json.dumps(_artifact_out(existing), default=str)))
+        if body.task_id:
+            task = next(
+                (item for item in (project.process_snapshot or {}).get("tasks", []) if item.get("id") == body.task_id),
+                None,
+            )
+            if task is None:
+                raise HTTPException(status_code=422, detail="artifact task does not belong to project")
+            _ensure_task_writable(task)
         artifact = WorkspaceArtifact(
             id=f"artifact_{uuid4().hex}",
             tenant_key=tenant_key,
@@ -1193,7 +1204,7 @@ async def create_project_artifact(
 async def list_project_artifacts(project_id: str, payload=Depends(require_auth)) -> list[dict[str, Any]]:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
         artifacts = (
             await db.scalars(
                 select(WorkspaceArtifact)
@@ -1204,7 +1215,18 @@ async def list_project_artifacts(project_id: str, payload=Depends(require_auth))
                 .order_by(WorkspaceArtifact.created_at, WorkspaceArtifact.id)
             )
         ).all()
-        return [_artifact_out(item) for item in artifacts]
+        redirects = {
+            item["id"]: item.get("redirect_to_task_id")
+            for item in (project.process_snapshot or {}).get("tasks", [])
+            if item.get("status") == "MERGED" and item.get("redirect_to_task_id")
+        }
+        result = []
+        for item in artifacts:
+            output = _artifact_out(item)
+            output["source_task_id"] = item.task_id
+            output["effective_task_id"] = redirects.get(item.task_id, item.task_id)
+            result.append(output)
+        return result
 
 
 @router.post("/projects/{project_id}/artifacts/{artifact_id}/versions", status_code=201)
@@ -1214,7 +1236,7 @@ async def register_project_artifact_version(
 ):
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
-        await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
         artifact = await db.scalar(
             select(WorkspaceArtifact).where(
                 WorkspaceArtifact.id == artifact_id,
@@ -1235,6 +1257,14 @@ async def register_project_artifact_version(
                 status_code=200,
                 content=json.loads(json.dumps(_artifact_version_out(existing), default=str)),
             )
+        if artifact.task_id:
+            task = next(
+                (item for item in (project.process_snapshot or {}).get("tasks", []) if item.get("id") == artifact.task_id),
+                None,
+            )
+            if task is None:
+                raise HTTPException(status_code=409, detail="artifact task is no longer available")
+            _ensure_task_writable(task)
         next_version = int(artifact.current_version or 0) + 1
         version = WorkspaceArtifactVersion(
             id=f"artver_{uuid4().hex}",
@@ -1310,6 +1340,37 @@ def _manifest_out(manifest: WorkspaceDeliveryManifest) -> dict[str, Any]:
         "created_by": manifest.created_by,
         "created_at": manifest.created_at,
     }
+
+
+@router.get("/projects/{project_id}/tasks/{task_id}/delivery-manifests")
+async def list_task_delivery_manifests(
+    project_id: str, task_id: str, payload=Depends(require_auth),
+) -> list[dict[str, Any]]:
+    tenant_key, user_id = _scope(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(db, project_id, tenant_key, user_id, "project:read")
+        tasks = (project.process_snapshot or {}).get("tasks", [])
+        source_ids = {
+            item["id"] for item in tasks
+            if item.get("id") == task_id or item.get("redirect_to_task_id") == task_id
+        }
+        if not source_ids:
+            raise HTTPException(status_code=404, detail="project task not found")
+        manifests = (
+            await db.scalars(
+                select(WorkspaceDeliveryManifest)
+                .where(
+                    WorkspaceDeliveryManifest.tenant_key == tenant_key,
+                    WorkspaceDeliveryManifest.project_id == project_id,
+                    WorkspaceDeliveryManifest.task_id.in_(source_ids),
+                )
+                .order_by(WorkspaceDeliveryManifest.created_at, WorkspaceDeliveryManifest.revision)
+            )
+        ).all()
+        return [
+            {**_manifest_out(item), "source_task_id": item.task_id, "effective_task_id": task_id}
+            for item in manifests
+        ]
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/delivery-manifests", status_code=201)
@@ -1704,18 +1765,19 @@ def _aggregate_stage(stage: dict[str, Any], tasks: list[dict[str, Any]]) -> None
         stage["progress"] = 0
         return
     statuses = {task["status"] for task in tasks}
-    if statuses == {"DONE"}:
+    completed_statuses = {"DONE", "MERGED"}
+    if statuses <= completed_statuses:
         stage["status"] = "DONE"
     elif "BLOCKED" in statuses:
         stage["status"] = "BLOCKED"
-    elif "IN_PROGRESS" in statuses or "DONE" in statuses:
+    elif "IN_PROGRESS" in statuses or statuses & completed_statuses:
         stage["status"] = "IN_PROGRESS"
     elif "PAUSED" in statuses:
         stage["status"] = "PAUSED"
     else:
         stage["status"] = "NOT_STARTED"
     stage["progress"] = round(
-        sum(1 for task in tasks if task["status"] == "DONE") / len(tasks) * 100
+        sum(1 for task in tasks if task["status"] in completed_statuses) / len(tasks) * 100
     )
 
 
@@ -2358,13 +2420,28 @@ def _sync_task_status_projections(
 async def create_project_task_merge_preview(
     project_id: str, primary_task_id: str, body: CreateMergePreviewRequest,
     payload=Depends(require_auth),
-) -> dict[str, Any]:
+) -> Any:
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
+        process = dict(project.process_snapshot or {})
+        existing = next(
+            (item for item in process.get("task_merges") or [] if item.get("preview_request_id") == body.request_id),
+            None,
+        )
+        if existing is not None:
+            if (
+                existing.get("primary_task_id") != primary_task_id
+                or existing.get("secondary_task_id") != body.secondary_task_id
+                or existing.get("primary_revision") != body.expected_primary_revision
+                or existing.get("secondary_revision") != body.expected_secondary_revision
+            ):
+                raise HTTPException(status_code=409, detail="request_id binds different merge preview inputs")
+            return JSONResponse(status_code=200, content={
+                "project_id": project_id, "process_revision": project.process_revision, "merge": existing,
+            })
         if project.process_revision != body.expected_revision:
             raise HTTPException(status_code=409, detail="project revision conflict")
-        process = dict(project.process_snapshot or {})
         tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
         primary = next((item for item in tasks if item.get("id") == primary_task_id), None)
         secondary = next((item for item in tasks if item.get("id") == body.secondary_task_id), None)
@@ -2376,6 +2453,7 @@ async def create_project_task_merge_preview(
             preview = create_merge_preview(primary, secondary, created_by=f"user:{user_id}")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        preview["preview_request_id"] = body.request_id
         process["tasks"] = tasks
         process["task_merges"] = [*(process.get("task_merges") or []), preview]
         revision = await _cas_project_process(
@@ -2392,8 +2470,6 @@ async def apply_project_task_merge(
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
-        if project.process_revision != body.expected_revision:
-            raise HTTPException(status_code=409, detail="project revision conflict")
         process = dict(project.process_snapshot or {})
         tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
         merges = [dict(item) for item in process.get("task_merges") or []]
@@ -2401,9 +2477,16 @@ async def apply_project_task_merge(
         if merge is None:
             raise HTTPException(status_code=404, detail="merge preview not found")
         if merge.get("status") == "APPLIED":
+            if (
+                merge.get("apply_request_id") != body.request_id
+                or merge.get("field_choices") != body.field_choices
+            ):
+                raise HTTPException(status_code=409, detail="apply request replay payload drift")
             primary = next(item for item in tasks if item.get("id") == merge["primary_task_id"])
             secondary = next(item for item in tasks if item.get("id") == merge["secondary_task_id"])
             return {"project_id": project_id, "process_revision": project.process_revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
         primary = next((item for item in tasks if item.get("id") == merge["primary_task_id"]), None)
         secondary = next((item for item in tasks if item.get("id") == merge["secondary_task_id"]), None)
         if primary is None or secondary is None:
@@ -2415,6 +2498,7 @@ async def apply_project_task_merge(
             )
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        merge["apply_request_id"] = body.request_id
         process["tasks"] = tasks
         process["task_merges"] = merges
         _sync_task_status_projections(
@@ -2434,8 +2518,6 @@ async def revert_project_task_merge(
     tenant_key, user_id = _scope(payload)
     async with SessionLocal() as db:
         project = await _project_for_access(db, project_id, tenant_key, user_id, "project:write")
-        if project.process_revision != body.expected_revision:
-            raise HTTPException(status_code=409, detail="project revision conflict")
         process = dict(project.process_snapshot or {})
         tasks = [initialize_task_contract(item) for item in process.get("tasks", [])]
         merges = [dict(item) for item in process.get("task_merges") or []]
@@ -2443,9 +2525,13 @@ async def revert_project_task_merge(
         if merge is None:
             raise HTTPException(status_code=404, detail="merge not found")
         if merge.get("status") == "REVERTED":
+            if merge.get("revert_request_id") != body.request_id:
+                raise HTTPException(status_code=409, detail="revert request replay payload drift")
             primary = next(item for item in tasks if item.get("id") == merge["primary_task_id"])
             secondary = next(item for item in tasks if item.get("id") == merge["secondary_task_id"])
             return {"project_id": project_id, "process_revision": project.process_revision, "merge": merge, "primary_task": primary, "secondary_task": secondary}
+        if project.process_revision != body.expected_revision:
+            raise HTTPException(status_code=409, detail="project revision conflict")
         primary = next((item for item in tasks if item.get("id") == merge["primary_task_id"]), None)
         secondary = next((item for item in tasks if item.get("id") == merge["secondary_task_id"]), None)
         if primary is None or secondary is None:
@@ -2454,6 +2540,7 @@ async def revert_project_task_merge(
             revert_task_merge(merge, primary, secondary, actor_id=f"user:{user_id}")
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        merge["revert_request_id"] = body.request_id
         process["tasks"] = tasks
         process["task_merges"] = merges
         _sync_task_status_projections(
@@ -4573,6 +4660,7 @@ async def open_task_conversation(
                         tenant_key=tenant_key,
                     )
                 )
+        _ensure_task_writable(task)
         if body.workflow_id != task.get("workflow_id"):
             raise HTTPException(status_code=409, detail="task workflow binding changed")
         card_context = _normalize_card_context(body.card_context, project=project, task=task)
