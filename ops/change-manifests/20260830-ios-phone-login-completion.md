@@ -33,11 +33,11 @@
 - server_before: `http://120.24.248.58:8000/health` → HTTP 200, `{"status":"ok","version":"0.8.0"}`；容器重建前全部 running。
 - server_after: 服务器 `/opt/ai-lab-platform` 已拉取 `codex/fix-ios-phone-login-20260830` 并完成 Docker 镜像重建；API/前端/worker/postgres/redis 容器均 running。
 - health_check: 重建后 `http://120.24.248.58:8000/health` → `{"status":"ok","version":"0.8.0"}`。
-- functional_check: OpenAPI 确认 phone send/login 两路由存在；`POST /api/v1/auth/phone/login` 使用非法手机号返回 HTTP 422 `请输入有效的中国大陆手机号`。未提交真实手机号/验证码，未完成真实登录验证。
+- functional_check: OpenAPI 确认 phone send/login 两路由存在；`POST /api/v1/auth/phone/login` 使用非法手机号返回 HTTP 422 `请输入有效的中国大陆手机号`。iOS Simulator 构建成功，已在 `AIPlatform Preview`（UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`）卸载旧包、安装新包并启动；登录页完整渲染，启动日志确认可连接平台 API。未提交真实手机号/验证码，未完成真实登录验证。
 - rollback_point: `/opt/ai-lab-platform.rollback-0.8.0-20260830.tgz`（服务器部署前生成，排除 `.env` 与 `data`）。
 
 ## 风险与回滚
 
 - 当前只修复客户端调用契约；短信服务本身、开发账号状态和服务器 Authen 配置仍需用真实验证码验证。
-- iOS 重新打包/安装未完成：CoreSimulator/CoreDevice 服务不可用；`xcodebuild` 在 asset catalog 阶段失败，`AIPlatformApp.app` 目录不完整，未安装到设备。`xcrun devicectl list devices` 超时，当前无可用连接设备。
+- iOS 重新打包/安装已完成：以系统级 CoreSimulator 访问构建 `Debug-iphonesimulator/AIPlatformApp.app` 成功；新 App 容器为 `CEB54D28-0A68-4638-8219-3B194835F2C3/AIPlatformApp.app`，启动 PID `94236`。首次截图为首帧加载白屏，等待后登录页正常渲染。
 - 回滚方式：丢弃本 worktree 的两个代码文件改动，恢复到上述基线；未执行破坏性操作。
