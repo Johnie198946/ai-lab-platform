@@ -10,6 +10,7 @@ import SwiftUI
 
 public struct ChatView: View {
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var sessionManager: SessionManager
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var coordinator = TenantSessionCoordinator()
     @StateObject private var speechService = SpeechRecognizerService()
@@ -47,6 +48,9 @@ public struct ChatView: View {
                         onHistoryTap: { showingSessionDrawer = true },
                         onClearTap: { isShowingClearAlert = true }
                     )
+                    if let topic = currentTopic {
+                        topicControlBar(topic)
+                    }
                     ChatMessageStreamView(coordinator: coordinator)
                     ChatInputBar(
                         inputText: $draftText,
@@ -87,6 +91,7 @@ public struct ChatView: View {
                     sessionManager: coordinator.sessionManager,
                     onSelect: { id in
                         coordinator.switchSession(to: id)
+                        coordinator.reconcileActiveRun()
                         showingSessionDrawer = false
                     },
                     onNew: {
@@ -113,7 +118,9 @@ public struct ChatView: View {
                 coordinator.refreshQuickCommands()
                 coordinator.handlePendingAgent()
                 coordinator.handlePendingPrompt()
+                handlePendingTopic()
                 coordinator.reconcileRestoredClarify()
+                coordinator.reconcileActiveRun()
             }
             .task { await refreshAgents() }
             .onReceive(NotificationCenter.default.publisher(for: .tenantAgentsDidUpdate)) { _ in
@@ -123,6 +130,7 @@ public struct ChatView: View {
                 coordinator.handlePendingAgent()
             }
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
+            .onChange(of: appState.pendingTopicSessionId) { _, _ in handlePendingTopic() }
             .onChange(of: coordinator.inputText) { _, newValue in
                 // Session restore, prompts, chips and voice input can update
                 // the coordinator outside the TextField.
@@ -143,6 +151,7 @@ public struct ChatView: View {
                 if phase == .active {
                     InboxFileManager.shared.cleanupStaleInboxFiles()
                     coordinator.reconcileRestoredClarify()
+                    coordinator.reconcileActiveRun()
                 }
             }
             .onDisappear {
@@ -152,6 +161,45 @@ public struct ChatView: View {
                 }
             }
         }
+    }
+
+    private var currentTopic: TopicSessionMetadata? {
+        let sessionId = sessionManager.activeSessionID()
+        guard let topic = sessionManager.topicSessions[sessionId], topic.state != .ended else { return nil }
+        return topic
+    }
+
+    @ViewBuilder
+    private func topicControlBar(_ topic: TopicSessionMetadata) -> some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .foregroundStyle(AppTheme.Icons.intelligence)
+            Text(String(topic.sourceText.prefix(52)))
+                .font(AppTheme.Typography.micro)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            if topic.state == .ending {
+                Label("等待确认入库", systemImage: "hourglass")
+                    .font(AppTheme.Typography.micro.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            } else {
+                Button("结束并整理入库") { coordinator.endCurrentTopic() }
+                    .font(AppTheme.Typography.micro.weight(.semibold))
+                    .buttonStyle(SoftButtonStyle())
+            }
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.sm)
+        .background(AppTheme.Colors.surfaceTint)
+    }
+
+    @MainActor
+    private func handlePendingTopic() {
+        guard let id = appState.pendingTopicSessionId,
+              let topic = sessionManager.topicSessions[id] else { return }
+        appState.pendingTopicSessionId = nil
+        coordinator.openTopic(topic)
     }
 
     @MainActor

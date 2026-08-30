@@ -15,6 +15,7 @@ import UIKit
 public struct MainTabView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
+    @EnvironmentObject private var sessionManager: SessionManager
     @StateObject private var keyboardObserver = KeyboardObserver()
 
     public init() {}
@@ -54,7 +55,16 @@ public struct MainTabView: View {
         .safeAreaInset(edge: .bottom, spacing: 18) {
             if !keyboardObserver.isKeyboardVisible {
                 VStack(spacing: AppTheme.Spacing.xs) {
-                    if let activity = workflowActivities.primaryActivity {
+                    if !sessionManager.visibleTopics.isEmpty {
+                        TopicSessionMiniBar(
+                            topics: sessionManager.visibleTopics,
+                            onOpen: { topic in
+                                appState.pendingTopicSessionId = topic.sessionId
+                                appState.activeTab = 0
+                            }
+                        )
+                        .padding(.horizontal, AppTheme.Spacing.lg)
+                    } else if let activity = workflowActivities.primaryActivity {
                         WorkflowActivityMiniBar(
                             activity: activity,
                             count: workflowActivities.visibleActivities.count,
@@ -90,6 +100,57 @@ public struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.isDevMode)
+    }
+}
+
+private struct TopicSessionMiniBar: View {
+    let topics: [TopicSessionMetadata]
+    let onOpen: (TopicSessionMetadata) -> Void
+
+    private var primary: TopicSessionMetadata? {
+        topics.first(where: { $0.state != .queued }) ?? topics.first
+    }
+
+    var body: some View {
+        Menu {
+            ForEach(topics) { topic in
+                Button {
+                    onOpen(topic)
+                } label: {
+                    Label(
+                        topic.state == .queued
+                            ? "排队 · \(String(topic.sourceText.prefix(32)))"
+                            : String(topic.sourceText.prefix(38)),
+                        systemImage: topic.state == .queued ? "clock.badge" : "bubble.left.and.bubble.right"
+                    )
+                }
+                .disabled(topic.state == .queued)
+            }
+        } label: {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: primary?.state == .queued ? "clock.badge" : "bubble.left.and.bubble.right.fill")
+                    .foregroundStyle(AppTheme.Icons.intelligence)
+                    .frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(topics.count > 1 ? "针对性话题 · 共 \(topics.count) 个" : "针对性话题")
+                        .font(AppTheme.Typography.supporting.weight(.semibold))
+                    Text(primary?.state == .queued ? "排队中" : String(primary?.sourceText.prefix(44) ?? ""))
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down").font(.caption.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(SoftButtonStyle())
+        .padding(.horizontal, AppTheme.Spacing.sm)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
+        .accessibilityLabel("打开针对性话题，当前共 \(topics.count) 个")
     }
 }
 

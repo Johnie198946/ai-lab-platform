@@ -555,6 +555,13 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(status.clarify?.expiresInSeconds, 88)
     }
 
+    func testRunningChatStatusNeverAllowsRegenerate() {
+        XCTAssertFalse(TenantSessionCoordinator.statusAllowsRegenerate("running"))
+        XCTAssertFalse(TenantSessionCoordinator.statusAllowsRegenerate("completed"))
+        XCTAssertTrue(TenantSessionCoordinator.statusAllowsRegenerate("timeout"))
+        XCTAssertTrue(TenantSessionCoordinator.statusAllowsRegenerate("not_found"))
+    }
+
     func testChatHistoryStorePagesOneThousandMessagesWithinBudgets() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -766,5 +773,39 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
         await manager.flushPendingPersistence()
         XCTAssertEqual(try store.message(sessionId: sessionId, id: "queued")?.content, "立即发送")
+    }
+
+    @MainActor
+    func testTopicSessionsCapQueuePromoteAndPersistMetadata() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let legacyURL = root.appendingPathComponent("legacy")
+        let store = try ChatHistoryStore(databaseURL: databaseURL, legacyDirectory: legacyURL)
+        let manager = SessionManager(store: store)
+        let parent = manager.createSession()
+
+        let topics = (0..<4).map { index in
+            manager.startTopic(
+                parentSessionId: parent,
+                sourceMessage: ChatMessage(
+                    id: "source-\(index)", sessionId: parent,
+                    role: .assistant, content: "话题来源 \(index)"
+                )
+            )
+        }
+
+        XCTAssertEqual(topics.prefix(3).map(\.state), [.active, .active, .active])
+        XCTAssertEqual(topics[3].state, .queued)
+        manager.finishTopic(topics[0].sessionId)
+        XCTAssertEqual(manager.topicSessions[topics[0].sessionId]?.state, .ended)
+        XCTAssertEqual(manager.topicSessions[topics[3].sessionId]?.state, .active)
+
+        let restored = SessionManager(
+            store: try ChatHistoryStore(databaseURL: databaseURL, legacyDirectory: legacyURL)
+        )
+        XCTAssertEqual(restored.topicSessions[topics[0].sessionId]?.state, .ended)
+        XCTAssertEqual(restored.topicSessions[topics[3].sessionId]?.sourceMessageId, "source-3")
+        XCTAssertEqual(restored.visibleTopics.count, 3)
     }
 }

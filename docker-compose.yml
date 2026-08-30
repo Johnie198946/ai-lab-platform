@@ -234,6 +234,10 @@ services:
       - taskboard
     volumes:
       - ./docs/charts:/usr/share/nginx/html/charts
+      # Development defaults to the repository certificate. Production sets these
+      # two variables to the host-managed Let's Encrypt certificate and key.
+      - ${AI_LAB_TLS_CERT_FILE:-./frontend/nginx/ailab.crt}:/etc/nginx/ssl/ailab.crt:ro
+      - ${AI_LAB_TLS_KEY_FILE:-./frontend/nginx/ailab.key}:/etc/nginx/ssl/ailab.key:ro
 
 volumes:
   pgdata:

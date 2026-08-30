@@ -140,6 +140,20 @@ public final class SpeechRecognizerService: ObservableObject {
             return
         }
 
+        // Speech output owns a `.playback` session while reading. Stop it before changing
+        // the shared session to an input-capable category for recognition.
+        SpeechPlaybackController.shared.stop()
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.record, mode: .measurement, options: [])
+            try session.setActive(true)
+        } catch {
+            isMockMode = true
+            mockHint = "录音音频会话启动失败，已切换 Mock。"
+            startMockRecording()
+            return
+        }
+
         state = .recording
         transcript = ""
         elapsedSeconds = 0
@@ -243,6 +257,10 @@ public final class SpeechRecognizerService: ObservableObject {
         recognitionRequest = nil
         recognitionTask?.cancel()
         recognitionTask = nil
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
     }
 
     // MARK: - Mock 录音（模拟器/离线 fallback）

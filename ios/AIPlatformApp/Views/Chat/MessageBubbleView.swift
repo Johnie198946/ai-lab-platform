@@ -14,6 +14,7 @@ public struct MessageBubbleView: View {
     public var context: PluginRenderContext? = nil
     public var onQuoteFollowUp: ((QuotedContext) -> Void)? = nil
     public var onRegenerate: ((String) -> Void)? = nil
+    public var onStartTopic: ((ChatMessage) -> Void)? = nil
 
     @State private var isCopied: Bool = false
 
@@ -21,12 +22,14 @@ public struct MessageBubbleView: View {
         message: ChatMessage,
         context: PluginRenderContext? = nil,
         onQuoteFollowUp: ((QuotedContext) -> Void)? = nil,
-        onRegenerate: ((String) -> Void)? = nil
+        onRegenerate: ((String) -> Void)? = nil,
+        onStartTopic: ((ChatMessage) -> Void)? = nil
     ) {
         self.message = message
         self.context = context
         self.onQuoteFollowUp = onQuoteFollowUp
         self.onRegenerate = onRegenerate
+        self.onStartTopic = onStartTopic
     }
 
     public var body: some View {
@@ -274,6 +277,12 @@ public struct MessageBubbleView: View {
                 quoteAction(QuotedContext(text: message.content))
             }) {
                 Label("引用追问", systemImage: "quote.bubble")
+            }
+        }
+
+        if let onStartTopic, !message.content.isEmpty, !message.isStreaming {
+            Button(action: { onStartTopic(message) }) {
+                Label("开启针对性话题", systemImage: "bubble.left.and.bubble.right")
             }
         }
 

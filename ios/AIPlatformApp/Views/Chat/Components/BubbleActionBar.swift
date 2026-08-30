@@ -9,16 +9,114 @@
 import SwiftUI
 import AVFoundation
 
+/// App-scoped speech playback keeps synthesis alive when a bubble or tab leaves the view tree.
+/// The `.playback` session routes built-in audio to the speaker and, with the `audio`
+/// background mode, lets an utterance that the user started continue while locked/backgrounded.
+@MainActor
+final class SpeechPlaybackController: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+    static let shared = SpeechPlaybackController()
+
+    @Published private(set) var speakingMessageID: String?
+
+    private let synthesizer = AVSpeechSynthesizer()
+    private var currentUtterance: AVSpeechUtterance?
+
+    override private init() {
+        super.init()
+        synthesizer.delegate = self
+    }
+
+    func isSpeaking(messageID: String) -> Bool {
+        speakingMessageID == messageID && (synthesizer.isSpeaking || synthesizer.isPaused)
+    }
+
+    func toggle(messageID: String, content: String) {
+        if speakingMessageID == messageID,
+           synthesizer.isSpeaking || synthesizer.isPaused {
+            stop()
+            return
+        }
+
+        if synthesizer.isSpeaking || synthesizer.isPaused {
+            synthesizer.stopSpeaking(at: .immediate)
+        }
+
+        guard configureAudioSession() else { return }
+
+        let utterance = AVSpeechUtterance(string: content)
+        utterance.voice = preferredMandarinVoice()
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.94
+        utterance.pitchMultiplier = 1.0
+        utterance.volume = 1.0
+
+        currentUtterance = utterance
+        speakingMessageID = messageID
+        synthesizer.speak(utterance)
+    }
+
+    func stop() {
+        guard synthesizer.isSpeaking || synthesizer.isPaused else { return }
+        synthesizer.stopSpeaking(at: .immediate)
+        finishPlayback()
+    }
+
+    private func configureAudioSession() -> Bool {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .spokenAudio, options: [])
+            try session.setActive(true)
+            return true
+        } catch {
+            assertionFailure("Unable to activate speech audio session: \(error)")
+            return false
+        }
+    }
+
+    private func preferredMandarinVoice() -> AVSpeechSynthesisVoice? {
+        let voices = AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.caseInsensitiveCompare("zh-CN") == .orderedSame }
+            .sorted { $0.quality.rawValue > $1.quality.rawValue }
+        return voices.first ?? AVSpeechSynthesisVoice(language: "zh-CN")
+    }
+
+    private func finishPlayback() {
+        currentUtterance = nil
+        speakingMessageID = nil
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didFinish utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor in
+            guard utterance === self.currentUtterance else { return }
+            self.finishPlayback()
+        }
+    }
+
+    nonisolated func speechSynthesizer(
+        _ synthesizer: AVSpeechSynthesizer,
+        didCancel utterance: AVSpeechUtterance
+    ) {
+        Task { @MainActor in
+            guard utterance === self.currentUtterance else { return }
+            self.finishPlayback()
+        }
+    }
+}
+
 public struct BubbleActionBar: View {
     public let messageId: String
     public let content: String
     public var onRegenerate: (() -> Void)? = nil
 
     @State private var isCopied: Bool = false
-    @State private var isSpeaking: Bool = false
     @State private var feedbackState: FeedbackState = .none
-
-    private static let speechSynthesizer = AVSpeechSynthesizer()
+    @ObservedObject private var speechPlayback = SpeechPlaybackController.shared
 
     public enum FeedbackState {
         case none
@@ -67,12 +165,12 @@ public struct BubbleActionBar: View {
             // 语音朗读 (TTS)
             Button(action: toggleSpeech) {
                 HStack(spacing: 3) {
-                    Image(systemName: isSpeaking ? "speaker.slash.fill" : "speaker.wave.2")
+                    Image(systemName: speechPlayback.isSpeaking(messageID: messageId) ? "speaker.slash.fill" : "speaker.wave.2")
                         .font(.system(size: 11))
-                    Text(isSpeaking ? "停止" : "朗读")
+                    Text(speechPlayback.isSpeaking(messageID: messageId) ? "停止" : "朗读")
                         .font(.system(size: 11))
                 }
-                .foregroundColor(isSpeaking ? AppTheme.Icons.intelligence : AppTheme.Icons.tertiary)
+                .foregroundColor(speechPlayback.isSpeaking(messageID: messageId) ? AppTheme.Icons.intelligence : AppTheme.Icons.tertiary)
                 .padding(.horizontal, 6)
                 .padding(.vertical, 3)
             }
@@ -116,16 +214,7 @@ public struct BubbleActionBar: View {
     private func toggleSpeech() {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        if Self.speechSynthesizer.isSpeaking {
-            Self.speechSynthesizer.stopSpeaking(at: .immediate)
-            isSpeaking = false
-        } else {
-            let utterance = AVSpeechUtterance(string: content)
-            utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-            utterance.rate = 0.52
-            Self.speechSynthesizer.speak(utterance)
-            isSpeaking = true
-        }
+        speechPlayback.toggle(messageID: messageId, content: content)
         #endif
     }
 
