@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 AUTHEN_JWT_SECRET = os.environ.get("AUTHEN_JWT_SECRET", "")
 AUTHEN_JWT_ALGORITHM = "HS256"
+AUTHEN_JWT_ISSUER = os.environ.get("AUTHEN_JWT_ISSUER", "Unified Auth Platform")
+AUTHEN_JWT_AUDIENCE = os.environ.get("AUTHEN_JWT_AUDIENCE", "ai-lab-platform")
+AUTHEN_JWT_STRICT_PROVENANCE = os.environ.get(
+    "AUTHEN_JWT_STRICT_PROVENANCE", "true"
+).strip().lower() == "true"
 AUTHEN_PERMISSION_URL = os.environ.get(
     "AUTHEN_PERMISSION_URL", "http://host.docker.internal:8004"
 )
@@ -200,11 +205,22 @@ async def require_auth(
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
+        decode_kwargs: Dict[str, Any] = {}
+        if AUTHEN_JWT_STRICT_PROVENANCE:
+            decode_kwargs.update(
+                audience=AUTHEN_JWT_AUDIENCE,
+                issuer=AUTHEN_JWT_ISSUER,
+            )
         payload = jwt.decode(
             credentials.credentials,
             AUTHEN_JWT_SECRET,
             algorithms=[AUTHEN_JWT_ALGORITHM],
+            **decode_kwargs,
         )
+        if AUTHEN_JWT_STRICT_PROVENANCE and payload.get("token_use") != "access":
+            raise JWTError("wrong token_use")
+        if not str(payload.get("sub") or "").strip():
+            raise JWTError("missing subject")
     except JWTError:
         raise HTTPException(
             status_code=401,

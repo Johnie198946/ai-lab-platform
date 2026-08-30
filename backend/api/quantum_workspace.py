@@ -955,7 +955,10 @@ async def _project_for_access(
     return project
 
 
-INTERACTIVE_HUMAN_AMR = {"pwd", "otp", "mfa", "passkey", "sms", "oidc", "oauth", "test_interactive"}
+INTERACTIVE_HUMAN_AMR = {"pwd", "otp", "mfa", "passkey", "sms", "oidc", "oauth"}
+DESTRUCTIVE_AUTH_MAX_AGE_SECONDS = int(
+    os.environ.get("QWS_DESTRUCTIVE_AUTH_MAX_AGE_SECONDS", "900")
+)
 
 
 def _require_interactive_human(payload: dict[str, Any]) -> None:
@@ -964,6 +967,16 @@ def _require_interactive_human(payload: dict[str, Any]) -> None:
     amr = {str(item).lower() for item in (payload.get("amr") or [])}
     if not amr.intersection(INTERACTIVE_HUMAN_AMR):
         raise HTTPException(status_code=403, detail="interactive human authentication required")
+    raw_auth_time = payload.get("auth_time")
+    try:
+        if raw_auth_time is None:
+            raise ValueError("missing auth_time")
+        auth_time = int(raw_auth_time)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=403, detail="recent interactive authentication required")
+    age_seconds = int(datetime.now(timezone.utc).timestamp()) - auth_time
+    if age_seconds < -30 or age_seconds > DESTRUCTIVE_AUTH_MAX_AGE_SECONDS:
+        raise HTTPException(status_code=403, detail="recent interactive authentication required")
 
 
 def _require_service_capability(payload: dict[str, Any], capability: str) -> None:

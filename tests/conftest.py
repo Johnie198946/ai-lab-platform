@@ -6,6 +6,10 @@
 from __future__ import annotations
 
 import os
+
+# Legacy API fixtures mint minimal local JWTs. Provenance-specific tests enable
+# strict mode explicitly; production defaults to strict mode.
+os.environ.setdefault("AUTHEN_JWT_STRICT_PROVENANCE", "false")
 import tempfile
 from pathlib import Path
 

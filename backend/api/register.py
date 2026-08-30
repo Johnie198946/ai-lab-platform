@@ -73,11 +73,9 @@ async def _provision_tenant(user_id: str) -> str:
 
 @router.post("/register")
 async def register(body: RegisterRequest):
-    """自助注册: 代理 Authen register/email（需要邮箱验证码），成功后签发平台 JWT。
-    已存在用户（邮箱重复 422）时自动回退 login（identifier=email, password）取 Authen access_token，
-    保证老用户登录态可持续（同 secret 校验通过即视为平台 JWT）。"""
+    """Proxy registration/login and return only the Authen-issued bearer token."""
     async with httpx.AsyncClient(timeout=20) as client:
-        r = await client.post(
+        register_response = await client.post(
             f"{AUTHEN_BASE}/api/v1/auth/register/email",
             json={
                 "email": body.email,
@@ -86,25 +84,38 @@ async def register(body: RegisterRequest):
                 "verification_code": body.verification_code,
             },
         )
-        if r.status_code != 200:
-            # 回退：已有账号 → 直接登录（identifier 兼容 email/手机号）
-            r2 = await client.post(
-                f"{AUTHEN_BASE}/api/v1/auth/login",
-                json={"identifier": body.email, "password": body.password},
-            )
-            if r2.status_code != 200:
-                detail = r.json().get("detail") if r.content else "注册失败"
-                raise HTTPException(status_code=r.status_code, detail=detail)
-            login_payload = r2.json()
-            user_id = str(login_payload.get("user", {}).get("id", ""))
-            tenant_key = await _provision_tenant(user_id)
-            # 平台重新签发带可信主体/认证方式声明的 JWT；不透传 Authen bearer。
-            token = _issue_jwt(user_id, body.username, auth_method="pwd")
-            return {"success": True, "message": "登录成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
-    user_id = r.json().get("user_id", "")
-    tenant_key = await _provision_tenant(user_id)
-    token = _issue_jwt(user_id, body.username, auth_method="pwd")
-    return {"success": True, "message": "注册成功", "user_id": user_id, "token": token, "tenant_key": tenant_key}
+        # Existing users and newly registered users both authenticate at Authen.
+        # QWS must not self-assert human principal claims with the shared verify key.
+        login_response = await client.post(
+            f"{AUTHEN_BASE}/api/v1/auth/login",
+            json={"identifier": body.email, "password": body.password},
+        )
+        if login_response.status_code != 200:
+            if register_response.status_code != 200:
+                detail = (
+                    register_response.json().get("detail")
+                    if register_response.content
+                    else "注册失败"
+                )
+                raise HTTPException(
+                    status_code=register_response.status_code,
+                    detail=detail,
+                )
+            raise HTTPException(status_code=502, detail="注册后Authen登录失败")
+
+        login_payload = login_response.json()
+        user_id = str(login_payload.get("user", {}).get("id", ""))
+        token = str(login_payload.get("access_token") or "")
+        if not user_id or not token:
+            raise HTTPException(status_code=502, detail="Authen登录响应不完整")
+        tenant_key = await _provision_tenant(user_id)
+        return {
+            "success": True,
+            "message": "注册或登录成功",
+            "user_id": user_id,
+            "token": token,
+            "tenant_key": tenant_key,
+        }
 
 
 def _issue_jwt(
