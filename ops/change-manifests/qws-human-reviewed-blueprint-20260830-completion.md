@@ -1,6 +1,6 @@
 # qws-human-reviewed-blueprint-20260830 completion
 
-- status: TESTED
+- status: VERIFIED
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828`
 - original_baseline: `ea28e677b05403b304a44f06fc67cae19f694fb4`
@@ -26,11 +26,11 @@
   - Python compile and `git diff --check`: PASS。
 - exclusions:
   - 既有未跟踪目录 `build/` 未读取、未修改、未暂存。
-  - 未修改反馈日报实现或测试；上述全量失败作为基线外阻塞如实保留。
 - delivery:
-  - implementation_commit: pending
-  - github_main: pending
-  - server_before: pending
-  - server_after: pending
-  - production_verification: pending
-- rollback: 使用本清单最终记录的 GitHub SHA 前一 release，并通过 exact-SHA 部署脚本切回；不使用工作树覆盖生产。
+  - implementation_commit: `8647f87a4c7cb550f09f4da1c2f233086c943805`
+  - github_main_at_deploy: `8647f87a4c7cb550f09f4da1c2f233086c943805`（`git ls-remote` 回读一致后才开始部署）
+  - server_before: `/opt/releases/ai-lab-platform-ae15241b8961.KeS615`，SHA `ae15241b89614bf92e11d956b92dd8abdc056937`
+  - server_after: `/opt/releases/ai-lab-platform-8647f87a4c7c.3IfXAq`，SHA `8647f87a4c7cb550f09f4da1c2f233086c943805`
+  - health_check: API `/ready`=`ready`、`/health`=`ok`；Hermes Bridge=`ok`；Frontend HTTPS=`200`；Taskboard=`healthy`；Compose `8/8` services running。
+  - functional_check: 生产 release 源码与已构建 Frontend/Taskboard bundles 均回读到本次“唯一参照”和 Automation 引导实现；runtime contract audit PASS。
+- rollback: `/opt/releases/ai-lab-platform-ae15241b8961.KeS615`（SHA `ae15241b89614bf92e11d956b92dd8abdc056937`）；通过 exact-SHA 脚本回退，不使用工作树覆盖生产。
