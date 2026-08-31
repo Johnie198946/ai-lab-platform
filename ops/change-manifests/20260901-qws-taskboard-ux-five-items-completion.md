@@ -45,10 +45,11 @@
 
 ## Delivery
 
-- local_commit: not created
-- remote_sha: not pushed
-- server_before: not changed
-- server_after: not changed
-- health_check: not applicable (local tested change)
-- rollback_point: `7d6675aa3dabf82bc539281cb97be7720473cd53`
-- remaining_risks: Browser end-to-end confirmation still requires an authenticated QWS runtime with real project documents and attachments; no deployment was requested or performed.
+- implementation_commit: `d8f818830dec66dab7af6bf80727aeb473355d89`
+- remote_sha: `d8f818830dec66dab7af6bf80727aeb473355d89` (`refs/heads/main`, verified by `git ls-remote`)
+- server_before: `/opt/releases/ai-lab-platform-7d6675aa3dab.Eb9srO`
+- server_after: `/opt/releases/ai-lab-platform-d8f818830dec.KY7ysT`
+- health_check: API `/ready=ready`; Hermes Bridge `:9118/health=ok`
+- rollback_point: `/opt/releases/ai-lab-platform-7d6675aa3dab.Eb9srO`
+- status: `DEPLOYED`; authenticated visual interaction remains for the user to inspect, while server SHA, builds, tests and runtime health are verified.
+- remaining_risks: review cards wait in application-process background coroutines; browser disconnect is safe, but an API process restart during the wait still requires a durable worker recovery design.
