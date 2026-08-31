@@ -942,6 +942,12 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(LoginInputPolicy.digits("24681099", limit: 6), "246810")
     }
 
+    func testAuthentication401PreservesBackendReason() {
+        let body = Data(#"{"detail":"验证码无效或已过期"}"#.utf8)
+        let error = APIError.authenticationFailure(body: body)
+        XCTAssertEqual(error.localizedDescription, "验证码无效或已过期")
+    }
+
     func testChatDraftSubmissionConsumesTextExactlyOnce() {
         var draft = "  帮我继续调研鹿岛  "
         XCTAssertEqual(ChatDraftSubmission.consume(&draft), "帮我继续调研鹿岛")

@@ -1245,6 +1245,7 @@ public struct WorkflowPlanEditRequestDTO: Encodable {
 public enum APIError: Error, LocalizedError {
     case invalidURL
     case unauthorized
+    case authenticationRejected(String)
     case knowledgeScopeChanged
     case server(Int, String)
     case network(String)
@@ -1255,6 +1256,7 @@ public enum APIError: Error, LocalizedError {
         switch self {
         case .invalidURL: return "无效的请求地址"
         case .unauthorized: return "登录态失效，请重新登录"
+        case .authenticationRejected(let message): return message
         case .knowledgeScopeChanged:
             return "套餐或知识权限已变化，请刷新知识权限后重试"
         case .server(let code, let msg):
@@ -1277,6 +1279,18 @@ public enum APIError: Error, LocalizedError {
             return .knowledgeScopeChanged
         }
         return .server(statusCode, raw)
+    }
+
+    /// 登录、验证码及 OAuth 探测请求没有既有登录态；其 401 必须保留后端原因，
+    /// 不能误报成“登录态失效”。
+    public static func authenticationFailure(body: Data) -> APIError {
+        struct Envelope: Decodable { let detail: String }
+        let detail = try? JSONDecoder().decode(Envelope.self, from: body).detail
+        let message = detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let message, !message.isEmpty else {
+            return .authenticationRejected("认证失败，请检查验证码后重试")
+        }
+        return .authenticationRejected(message)
     }
 }
 
@@ -1457,13 +1471,15 @@ public final class APIClient: ObservableObject {
                     throw APIError.network("无效响应")
                 }
                 if http.statusCode == 401 {
-                    // 401 绝不重试：主链路清 token 置 needsReauth 引导登录；探测链路仅抛错由调用方降级
+                    // 401 绝不重试：主链路清 token 置 needsReauth 引导登录；
+                    // 登录/探测链路保留服务端原因，避免把验证码错误误报为登录态失效。
                     if reauthOn401 {
                         clearToken()
                         isOfflineMode = false
                         needsReauth = true
+                        throw APIError.unauthorized
                     }
-                    throw APIError.unauthorized
+                    throw APIError.authenticationFailure(body: data)
                 }
                 guard (200..<300).contains(http.statusCode) else {
                     throw APIError.fromHTTP(statusCode: http.statusCode, body: data)
