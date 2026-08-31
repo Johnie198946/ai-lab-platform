@@ -3607,7 +3607,7 @@ def _apply_triage_toolset_policy(
             "tenant_skills", "file", "terminal",
         })
     elif not triage.get("agency_enabled"):
-        denied.update({"agency_agents", "ai_lab"})
+        denied.update({"agency_agents", "ai_lab", "delegation"})
     if not evidence & {"web_search", "web_extract"}:
         denied.add("web")
     if "knowledge_search" not in evidence:

@@ -639,6 +639,17 @@ def test_bridge_applies_fail_closed_toolsets_from_server_triage():
         '<<AI_LAB_TRIAGE class="PROFESSIONAL_TASK" agency="1">>'
     )
 
+    no_agency = _request_triage({"triage": {
+        "route_class": "PROFESSIONAL_TASK",
+        "reason_code": "tenant_skill_management",
+        "evidence_requirements": [],
+        "agency_enabled": False,
+        "skill_enabled": True,
+    }})
+    assert no_agency is not None
+    assert "delegation" not in _apply_triage_toolset_policy(all_tools, no_agency)
+    assert "tenant_skills" in _apply_triage_toolset_policy(all_tools, no_agency)
+
 
 def test_agency_tool_event_exposes_only_selected_route_target():
     events: queue.Queue = queue.Queue()
