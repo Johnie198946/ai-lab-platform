@@ -35,7 +35,7 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
           development_context: { platform: "independent web", devices: ["mobile", "desktop"] },
         }, {
           id: "task-2", stage_id: "stage-1", title: "Runtime task", summary: "Use a branch",
-          status: "TODO", assignee_role: "需求经理", deliverables: [],
+          status: "WAITING_CLAIM", assignee_role: "需求经理", deliverables: [],
           start_date: canonicalRevision > 1 ? "2026-09-01" : null,
           due_date: canonicalRevision > 1 ? "2026-09-01" : null,
           development_context: { type: "branch", branch: "codex/runtime-task" },
@@ -123,19 +123,20 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
         "程野 · AI 员工 · 测试经理", "沈星 · AI 员工 · 交付经理", "陆川 · AI 员工 · 评审人",
       ],
     );
-    assert.equal(canonicalTask.status, "todo", "dispatched QWS backlog tasks belong in the visible waiting-for-claim lane");
+    assert.equal(canonicalTask.status, "backlog", "QWS backlog tasks belong in the executable todo lane");
+    assert.equal(runtimeTask.status, "todo", "WAITING_CLAIM remains separate and is not executable todo");
     assert.deepEqual(runtimeTask.developmentContext, {
       type: "branch",
       branch: "codex/runtime-task",
     });
     assert.equal(runtimeTask.relations.blockedBy.length, 0);
 
-    const legacyBacklog = await fetch(`${origin}/api/tasks/${canonicalTask.id}`, {
+    const blockedCard = await fetch(`${origin}/api/tasks/${canonicalTask.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json", cookie: cookieA },
-      body: JSON.stringify({ version: canonicalTask.version, status: "backlog" }),
+      body: JSON.stringify({ version: canonicalTask.version, status: "blocked" }),
     });
-    assert.equal(legacyBacklog.status, 200);
+    assert.equal(blockedCard.status, 200);
     canonicalRevision = 2;
     const resyncedSession = await fetch(`${origin}/api/qws/session`, {
       method: "POST",
@@ -146,7 +147,11 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     const tasksAfterResync = await fetch(`${origin}/api/tasks?projectId=qws-tenant-a-prj-sync&archived=false`, {
       headers: { cookie: cookieA },
     }).then((response) => response.json());
-    assert.equal(tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id).status, "todo");
+    assert.equal(
+      tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id).status,
+      "blocked",
+      "a runtime blocker must not return to waiting-for-claim after QWS refresh",
+    );
     const canonicalAfterResync = tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id);
     const runtimeAfterResync = tasksAfterResync.tasks.find((task) => task.id === runtimeTask.id);
     assert.equal(canonicalAfterResync.startDate, "2026-08-31");

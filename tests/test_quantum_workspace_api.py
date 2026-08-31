@@ -2990,8 +2990,13 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
         req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
         captured["question"] = req.question
+        captured.setdefault("questions", []).append(req.question)
+        captured["stream_calls"] = captured.get("stream_calls", 0) + 1
 
         async def events():
+            if captured["stream_calls"] == 1:
+                yield 'data: {"type":"done","answer":"执行完成，但格式缺失"}\n\n'
+                return
             answer = (
                 "执行完成。\n```task_backfill\n"
                 + json.dumps({
@@ -3009,6 +3014,9 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
         return StreamingResponse(events(), media_type="text/event-stream")
 
     async def fake_apply_taskboard_backfill(**kwargs):
+        captured.setdefault("apply_calls", []).append(kwargs)
+        if len(captured["apply_calls"]) == 1:
+            raise HTTPException(status_code=409, detail="card version changed before backfill")
         captured["applied"] = kwargs
         return {"updated_fields": ["status"], "comment_id": "comment-auto"}
 
@@ -3033,9 +3041,13 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
             break
         time.sleep(0.01)
     assert state["state"] == "completed", state
+    assert len(captured["apply_calls"]) == 2
+    assert captured["applied"]["expected_version"] is None
     assert captured["applied"]["authorization"] == "Bearer test-token"
     assert captured["applied"]["self_changes"]["status"] == "done"
-    assert "AUTO_EXECUTE=true. Continue autonomously until done." in captured["question"]
+    assert captured["stream_calls"] == 2
+    assert any("AUTO_EXECUTE=true. Continue autonomously until done." in question for question in captured["questions"])
+    assert "修复上一轮自动执行结果" in captured["questions"][-1]
     messages = client.get(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
     ).json()

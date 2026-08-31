@@ -10,7 +10,7 @@ export const STATUS_DETAILS: Record<
   TaskStatus,
   { label: string; tone: string }
 > = {
-  backlog: { label: "待立项", tone: "backlog" },
+  backlog: { label: "待办", tone: "backlog" },
   todo: { label: "等待认领", tone: "todo" },
   in_progress: { label: "处理中", tone: "progress" },
   in_review: { label: "等你确认", tone: "review" },

@@ -36,8 +36,11 @@
 
 ## Remaining risks
 
-- 交互纠偏：用户要求保留 Taskboard 顶部 ▶️，并将其定义为“一键启动当前项目全部 todo/backlog 卡片”；不再把逐卡 AI Session 当作主入口。QWS host 下 ▶️ 已恢复，旧 Automation 配置弹层仍不出现。
-- 批量启动采用单次点击枚举全部待办、逐卡建立持久化任务会话并立即排队；单卡失败由 `Promise.allSettled` 隔离，服务端默认最多 3 个任务并发，其余保持 queued。
+- 交互纠偏：用户要求保留 Taskboard 顶部 ▶️，并将其定义为“一键启动当前项目全部待办卡片”；不再把逐卡 AI Session 当作主入口。QWS host 下 ▶️ 已恢复，旧 Automation 配置弹层仍不出现。
+- 批量启动采用单次点击枚举“待办”列（Taskboard `backlog`）全部卡片；“等待认领”（Taskboard `todo`）明确不进入执行池。逐卡建立持久化任务会话并立即排队；单卡启动失败最多重试 3 次，服务端默认最多 3 个任务并发，其余保持 queued。
+- 状态语义纠偏：中文 `backlog` 由“待立项”改为“待办”；QWS `WAITING_CLAIM` 单独映射为“等待认领”。QWS 刷新不会再用未执行态覆盖本地 `in_progress/blocked/in_review/done/canceled`，因此遇到阻碍不会回到等待认领。
+- 自动回填发生安全字段版本冲突时会基于最新卡片版本重试；模型首次输出缺少/损坏 `task_backfill` 或包含无效路由时，同一 Session 自动执行一次纯格式修复，不重复外部动作。
+- 所有租户的 QWS AI 员工默认继承完整 `SAFE_GLOBAL_TOOLS` 基础能力并允许安全网络访问；高权限 `terminal/read_file/write_file/patch/knowledge_ingest` 仍不在该集合内。
 - 生产首次真实任务验收：`conv_003f3129292c4807b5f8ec16f41e6a90` 在约 51 秒内从 running 到 completed，自动将卡片 `e1763efa-a41d-46c9-ab9a-0c213bdcd7ca` 标记为 `blocked`，并写入执行纪要、问题、根因、已尝试方案、验证结果与下一步；没有伪造完成。
 - 首次验收暴露 AI 员工仅获知识工具、未获公开网络工具；本轮追加修复为安全工具集 `knowledge_search/web_search/web_extract/skill_load`，并对已有 AI 员工增量升级能力。
 - 浏览器断开不影响任务，但 QWS 应用进程在执行中重启时不会自动续跑。状态保留在任务会话中；真正进程级恢复需要独立持久化 Worker/队列及服务身份，不能保存用户 Bearer Token 冒充耐久执行。

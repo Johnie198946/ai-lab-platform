@@ -82,7 +82,7 @@ test("the complete issue status set shares one ordered source", () => {
     "done",
     "canceled",
   ]);
-  assert.match(boardColumnSource, /backlog: \{ label: "待立项", tone: "backlog" \}/);
+  assert.match(boardColumnSource, /backlog: \{ label: "待办", tone: "backlog" \}/);
   assert.match(boardColumnSource, /todo: \{ label: "等待认领", tone: "todo" \}/);
   assert.match(boardColumnSource, /in_progress: \{ label: "处理中", tone: "progress" \}/);
   assert.match(boardColumnSource, /in_review: \{ label: "等你确认", tone: "review" \}/);

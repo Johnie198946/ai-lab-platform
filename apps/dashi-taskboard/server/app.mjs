@@ -1782,7 +1782,7 @@ export function createTaskboardServer(options = {}) {
     };
     const stages = new Map((process.stages || []).map((stage) => [stage.id, stage]));
     const employeesByRole = new Map(aiEmployees.map((item) => [item.job_title, item]));
-    const statusMap = { BACKLOG: "todo", TODO: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "blocked", IN_REVIEW: "in_review", DONE: "done" };
+    const statusMap = { BACKLOG: "backlog", TODO: "backlog", WAITING_CLAIM: "todo", IN_PROGRESS: "in_progress", BLOCKED: "blocked", PAUSED: "blocked", DECISION_REQUIRED: "in_review", ACCEPTANCE_REVIEW: "in_review", IN_REVIEW: "in_review", DONE: "done", CANCELLED: "canceled" };
     const plannedTasks = new Map();
     for (const task of process.tasks || []) {
       const stage = stages.get(task.stage_id);
@@ -1800,7 +1800,7 @@ export function createTaskboardServer(options = {}) {
           task.handoff?.completion_definition ? `完成/转交判定：${task.handoff.completion_definition}` : "",
           qwsBusinessContextDescription(task.development_context),
         ].filter(Boolean).join("\n\n"),
-        status: statusMap[String(task.status || "").toUpperCase()] || "todo",
+        status: statusMap[String(task.status || "").toUpperCase()] || "backlog",
         priority: ["none", "urgent", "high", "medium", "low"].includes(task.priority) ? task.priority : "none",
         labels: [`qws-${qwsSlug(task.id)}`.slice(0, 64), ...(task.labels || [])].slice(0, 20),
         developmentContext: qwsRuntimeDevelopmentContext(task.development_context),
@@ -1846,7 +1846,9 @@ export function createTaskboardServer(options = {}) {
         const existing = existingTasksByMarker.get(marker);
         if (existing) {
           const changes = {};
-          if (existing.status !== parsed.status) changes.status = parsed.status;
+          const preservesRuntimeStatus = ["in_progress", "blocked", "in_review", "done", "canceled"].includes(existing.status)
+            && ["backlog", "todo"].includes(parsed.status);
+          if (existing.status !== parsed.status && !preservesRuntimeStatus) changes.status = parsed.status;
           if (!existing.developmentContext && parsed.developmentContext) changes.developmentContext = parsed.developmentContext;
           if (!existing.startDate && parsed.startDate) changes.startDate = parsed.startDate;
           if (!existing.dueDate && parsed.dueDate) changes.dueDate = parsed.dueDate;

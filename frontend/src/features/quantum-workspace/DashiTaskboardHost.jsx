@@ -274,21 +274,32 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
             { user },
           );
           const todoTasks = (tasksPayload.tasks || []).filter((item) =>
-            ["todo", "backlog"].includes(item.status) && !item.archivedAt,
+            item.status === "backlog" && !item.archivedAt,
           );
           const results = await Promise.allSettled(todoTasks.map(async (item) => {
-            const session = await loadTaskSession(item.id);
-            const conversation = await platformApi.openTaskConversation({
-              project_id: project.id,
-              task_id: session.task.id,
-              workflow_id: session.task.workflow_id,
-              agent_version: "hermes-current",
-              card_context: session.cardContext,
-            });
-            return platformApi.startTaskAutoExecution(conversation.id, {
-              instruction: batchAutoInstruction(item.title),
-              request_id: `qw-batch-${crypto.randomUUID()}`,
-            });
+            let lastError;
+            for (let attempt = 0; attempt < 3; attempt += 1) {
+              try {
+                const session = await loadTaskSession(item.id);
+                const conversation = await platformApi.openTaskConversation({
+                  project_id: project.id,
+                  task_id: session.task.id,
+                  workflow_id: session.task.workflow_id,
+                  agent_version: "hermes-current",
+                  card_context: session.cardContext,
+                });
+                return await platformApi.startTaskAutoExecution(conversation.id, {
+                  instruction: batchAutoInstruction(item.title),
+                  request_id: `qw-batch-${crypto.randomUUID()}`,
+                });
+              } catch (reason) {
+                lastError = reason;
+                if (attempt < 2) {
+                  await new Promise((resolve) => window.setTimeout(resolve, 400 * (attempt + 1)));
+                }
+              }
+            }
+            throw lastError || new Error(`任务《${item.title}》启动失败`);
           }));
           const started = results.filter((result) => result.status === "fulfilled").length;
           const failed = results.length - started;

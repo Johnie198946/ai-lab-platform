@@ -703,11 +703,7 @@ async def _ensure_project_ai_employees(
     used_display_names = {
         _employee_payload(row)["display_name"] for row in by_role.values()
     }
-    employee_tools = [
-        tool
-        for tool in SAFE_GLOBAL_TOOLS
-        if tool in {"web_search", "web_extract", "knowledge_search", "skill_load"}
-    ]
+    employee_tools = list(SAFE_GLOBAL_TOOLS)
     for role in role_names:
         if role in by_role:
             existing = by_role[role]
@@ -7597,27 +7593,42 @@ async def _run_task_auto_execution_unlimited(
         await _set_auto_execution_state(
             conversation_id, state="running", request_id=body.request_id
         )
-        upstream = await stream_task_message(
-            conversation_id,
-            TaskMessageRequest(
-                question=body.instruction,
-                request_id=body.request_id,
-                trigger="auto_execute",
-            ),
-            payload,
-        )
-        async for _ in upstream.body_iterator:
-            pass
+        assistant_request_id = body.request_id
+        materialized = None
+        for attempt in range(2):
+            instruction = body.instruction if attempt == 0 else (
+                "修复上一轮自动执行结果的结构化回填格式。不要重复已经完成的外部动作；"
+                "只根据上一轮已获得的事实重新输出最终答复，并以一个合法的 ```task_backfill JSON 块结束。"
+                "self_changes 必须包含 status=done 或 blocked 与 appendComment；routes 只能使用 session_directory 中存在的精确 task_id，无法确认时使用空数组。"
+            )
+            upstream = await stream_task_message(
+                conversation_id,
+                TaskMessageRequest(
+                    question=instruction,
+                    request_id=assistant_request_id,
+                    trigger="auto_execute",
+                ),
+                payload,
+            )
+            async for _ in upstream.body_iterator:
+                pass
+            try:
+                materialized = await materialize_task_backfill_proposal(
+                    conversation_id,
+                    MaterializeBackfillProposalRequest(
+                        assistant_request_id=assistant_request_id
+                    ),
+                    payload,
+                )
+                if isinstance(materialized, JSONResponse) and materialized.status_code != 204:
+                    break
+            except HTTPException as exc:
+                if attempt == 1 or exc.status_code not in {404, 422}:
+                    raise
+            assistant_request_id = f"{body.request_id[:90]}-repair"
 
-        materialized = await materialize_task_backfill_proposal(
-            conversation_id,
-            MaterializeBackfillProposalRequest(
-                assistant_request_id=body.request_id
-            ),
-            payload,
-        )
         if not isinstance(materialized, JSONResponse) or materialized.status_code == 204:
-            raise RuntimeError("auto execution completed without task_backfill")
+            raise RuntimeError("auto execution completed without valid task_backfill")
         proposal_payload = json.loads(bytes(materialized.body))
         proposal_id = str(proposal_payload.get("id") or "")
         if not proposal_id:
@@ -7653,13 +7664,30 @@ async def _run_task_auto_execution_unlimited(
             expected_version = proposal.base_card_version
             self_changes = dict(proposal.self_changes or {})
 
-        evidence = await _apply_taskboard_backfill(
-            project_id=project_id,
-            task_id=task_id,
-            expected_version=expected_version,
-            self_changes=self_changes,
-            authorization=authorization,
-        )
+        try:
+            evidence = await _apply_taskboard_backfill(
+                project_id=project_id,
+                task_id=task_id,
+                expected_version=expected_version,
+                self_changes=self_changes,
+                authorization=authorization,
+            )
+        except HTTPException as exc:
+            safe_rebase_fields = {"status", "appendComment", "addAttachments"}
+            if (
+                exc.status_code == 409
+                and exc.detail == "card version changed before backfill"
+                and set(self_changes).issubset(safe_rebase_fields)
+            ):
+                evidence = await _apply_taskboard_backfill(
+                    project_id=project_id,
+                    task_id=task_id,
+                    expected_version=None,
+                    self_changes=self_changes,
+                    authorization=authorization,
+                )
+            else:
+                raise
 
         async with SessionLocal() as db:
             conversation = await _conversation_for_tenant(
