@@ -360,7 +360,7 @@ def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
     source = types.SimpleNamespace(
-        platform=types.SimpleNamespace(value="feishu"),
+        platform=types.SimpleNamespace(value="slack"),
         user_id="member-1",
         chat_id="group-1",
         chat_type="group",
@@ -371,7 +371,7 @@ def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
         event.text,
         session_id="parent-group",
         turn_id="turn-group",
-        platform="feishu",
+        platform="slack",
         sender_id="member-1",
     )
     assert router._LOCAL_TURN_STATES["parent-group"]["principal"] == "group_member"
@@ -397,6 +397,30 @@ def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
         "write_file", {"path": "/tmp/nope"}, session_id="child-group"
     )
     assert child_denied and child_denied["action"] == "block"
+
+
+def test_direct_feishu_surface_is_local_owner_without_per_user_downgrade(monkeypatch):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    router._GATEWAY_IDENTITIES.clear()
+    monkeypatch.delenv("FEISHU_CODE_WRITE_OWNER_IDS", raising=False)
+    monkeypatch.delenv("AI_LAB_LOCAL_OWNER_IDS", raising=False)
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
+    router._pre_llm_call(
+        "写入本地知识库",
+        session_id="feishu-direct-owner",
+        turn_id="feishu-direct-owner-turn",
+        platform="feishu",
+        sender_id="authenticated-feishu-user",
+    )
+    state = router._LOCAL_TURN_STATES["feishu-direct-owner"]
+    assert state["principal"] == "local_owner"
+    assert router._pre_tool_call(
+        "write_file",
+        {"path": "/tmp/direct-owner-note.md", "content": "ok"},
+        session_id="feishu-direct-owner",
+    ) is None
 
 
 def test_feishu_configured_owner_gets_full_local_owner_capabilities(monkeypatch):
@@ -532,7 +556,7 @@ def test_untrusted_sender_cannot_use_wrapped_or_direct_privileged_tools(monkeypa
         "请检查系统",
         session_id="untrusted",
         turn_id="untrusted-turn",
-        platform="feishu",
+        platform="slack",
         sender_id="",
     )
     assert router._LOCAL_TURN_STATES["untrusted"]["principal"] == "untrusted_sender"

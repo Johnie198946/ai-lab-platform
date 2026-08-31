@@ -21,7 +21,7 @@ tags:
 1. 任何命中 `PROFESSIONAL_TASK` 且匹配到 Agency 的任务都会先强制 `delegate_task`；子代理回执又成为最终输出的通用发布门禁。
 2. 这把“执行增强”错误等同于“任务真实性”，导致旅行笔记入库、链接研究等普通任务因子代理暂时失败而整体失败。
 3. 微信回退提示仍引用 `browser_navigate/browser_console`，与当前 Hermes 实际浏览器入口 `browser_exec` 不一致；本机 Python 3.12 还存在 `google-ai-generativelanguage` 版本冲突。
-4. 飞书 Owner 虽已进入 Owner ID 白名单，Agent OS 仍映射为 `vault_owner` 并注入只读文案。
+4. 飞书直连同一单用户 Mac Gateway，却仍按云端多用户边界降为 `vault_owner` 并注入只读文案。
 
 ## 通用规则
 
@@ -43,10 +43,10 @@ tags:
 
 ## 飞书 Owner
 
-- `FEISHU_CODE_WRITE_OWNER_IDS` / `AI_LAB_LOCAL_OWNER_IDS` 中已配置的飞书 Owner 直接映射为 `local_owner`。
+- 本机直连的 Feishu/Lark surface 整体映射为 `local_owner`，不再逐用户降权。
 - 不再注入 `read-only vault access`。
 - Owner 可使用本机 Hermes 已安装工具，包括读写文件、终端、浏览器与受控委派。
-- 未配置的飞书用户仍保持原有 `approved_user/group_member/untrusted_sender` 边界。
+- 其他消息平台仍保持原有 `approved_user/group_member/untrusted_sender` 边界。
 
 ## 变更文件
 
@@ -61,7 +61,7 @@ tags:
 
 - 定向 Agent OS / Agency：`70 passed`。
 - 后端全量（首轮基线）：`1033 passed, 2 skipped, 10 warnings`。
-- 最新 GitHub `main` 重放后定向测试：`70 passed, 2 warnings`。
+- 最新 GitHub `main` 重放后定向测试：`71 passed, 2 warnings`。
 - 最新 GitHub `main` 重放后全量：`1034 passed, 2 skipped, 10 warnings`。
 - Ruff（忽略该文件既有 `F841 task_marker_present`）：通过。
 - `git diff --check`：通过。

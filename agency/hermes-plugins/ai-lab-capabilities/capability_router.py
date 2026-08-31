@@ -44,7 +44,12 @@ _GATEWAY_IDENTITIES: dict[tuple[str, str, str], str] = {}
 _LOCAL_ENABLED = True
 logger = logging.getLogger(__name__)
 
-_LOCAL_OWNER_PLATFORMS = {"cli", "desktop", "local", "hermes-desktop"}
+# This installation is a single-user Mac runtime. Feishu/Lark reaches the
+# same owner-controlled Hermes gateway, so it is an owner surface rather than
+# a lower-trust cloud tenant. Other messaging platforms keep scoped policy.
+_LOCAL_OWNER_PLATFORMS = {
+    "cli", "desktop", "local", "hermes-desktop", "feishu", "lark"
+}
 _LOCAL_SAFE_TOOLS = {
     "agency_agents_load",
     "clarify",
