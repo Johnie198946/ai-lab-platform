@@ -43,7 +43,8 @@ tags:
 
 ## 飞书 Owner
 
-- 本机直连的 Feishu/Lark surface 整体映射为 `local_owner`，不再逐用户降权。
+- 本机 `local_single_tenant` 直连的 Feishu/Lark surface 整体映射为 `local_owner`，不再逐用户降权。
+- 云端 `cloud_multi_tenant` 即使加载同一插件，也继续按 Owner ID / 租户身份授权，不继承 Mac 超管语义。
 - 不再注入 `read-only vault access`。
 - Owner 可使用本机 Hermes 已安装工具，包括读写文件、终端、浏览器与受控委派。
 - 其他消息平台仍保持原有 `approved_user/group_member/untrusted_sender` 边界。
@@ -61,7 +62,7 @@ tags:
 
 - 定向 Agent OS / Agency：`70 passed`。
 - 后端全量（首轮基线）：`1033 passed, 2 skipped, 10 warnings`。
-- 最新 GitHub `main` 重放后定向测试：`71 passed, 2 warnings`。
+- 最新 GitHub `main` 重放后定向测试：`72 passed, 2 warnings`。
 - 最新 GitHub `main` 重放后全量：`1034 passed, 2 skipped, 10 warnings`。
 - Ruff（忽略该文件既有 `F841 task_marker_present`）：通过。
 - `git diff --check`：通过。

@@ -44,12 +44,11 @@ _GATEWAY_IDENTITIES: dict[tuple[str, str, str], str] = {}
 _LOCAL_ENABLED = True
 logger = logging.getLogger(__name__)
 
-# This installation is a single-user Mac runtime. Feishu/Lark reaches the
-# same owner-controlled Hermes gateway, so it is an owner surface rather than
-# a lower-trust cloud tenant. Other messaging platforms keep scoped policy.
-_LOCAL_OWNER_PLATFORMS = {
-    "cli", "desktop", "local", "hermes-desktop", "feishu", "lark"
-}
+# On a single-user Mac, Feishu/Lark reaches the same owner-controlled Hermes
+# gateway and is an owner surface. Cloud multi-tenant deployments keep their
+# scoped identity policy even though they load the same plugin.
+_LOCAL_OWNER_PLATFORMS = {"cli", "desktop", "local", "hermes-desktop"}
+_LOCAL_DIRECT_OWNER_PLATFORMS = {"feishu", "lark"}
 _LOCAL_SAFE_TOOLS = {
     "agency_agents_load",
     "clarify",
@@ -913,6 +912,14 @@ def _configured_owner(platform: str, sender_id: str) -> bool:
     return sender_id in configured or f"{platform}:{sender_id}" in configured
 
 
+def _owner_surface(platform: str) -> bool:
+    platform = platform.casefold()
+    if platform in _LOCAL_OWNER_PLATFORMS:
+        return True
+    mode = os.environ.get("AI_LAB_AGENT_OS_MODE", "local_single_tenant").strip().casefold()
+    return platform in _LOCAL_DIRECT_OWNER_PLATFORMS and mode != "cloud_multi_tenant"
+
+
 def _configured_vault_roots() -> tuple[Path, ...]:
     raw = os.environ.get("OBSIDIAN_VAULT_PATH", "").strip()
     candidates = [Path(raw).expanduser()] if raw else [_DEFAULT_VAULT_ROOT]
@@ -979,7 +986,7 @@ def _pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> None:
     sender_id = str(getattr(source, "user_id", "") or "").strip()
     chat_type = _plain_value(getattr(source, "chat_type", ""))
     message = str(getattr(event, "text", "") or "")
-    if platform in _LOCAL_OWNER_PLATFORMS:
+    if _owner_surface(platform):
         principal = "local_owner"
     elif _configured_owner(platform, sender_id):
         principal = "local_owner"
@@ -1006,7 +1013,7 @@ def _resolve_principal(platform: str, sender_id: str, message: str) -> str:
         )
     if hinted:
         return hinted
-    if platform in _LOCAL_OWNER_PLATFORMS:
+    if _owner_surface(platform):
         return "local_owner"
     if _configured_owner(platform, sender_id):
         return "local_owner"

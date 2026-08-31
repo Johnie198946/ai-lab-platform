@@ -423,6 +423,32 @@ def test_direct_feishu_surface_is_local_owner_without_per_user_downgrade(monkeyp
     ) is None
 
 
+def test_cloud_multi_tenant_feishu_keeps_scoped_identity(monkeypatch):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    router._GATEWAY_IDENTITIES.clear()
+    monkeypatch.setenv("AI_LAB_AGENT_OS_MODE", "cloud_multi_tenant")
+    monkeypatch.delenv("FEISHU_CODE_WRITE_OWNER_IDS", raising=False)
+    monkeypatch.delenv("AI_LAB_LOCAL_OWNER_IDS", raising=False)
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
+    router._pre_llm_call(
+        "写入知识库",
+        session_id="cloud-feishu-user",
+        turn_id="cloud-feishu-user-turn",
+        platform="feishu",
+        sender_id="tenant-user",
+    )
+    state = router._LOCAL_TURN_STATES["cloud-feishu-user"]
+    assert state["principal"] == "approved_user"
+    denied = router._pre_tool_call(
+        "write_file",
+        {"path": "/tmp/cloud-user-note.md", "content": "no"},
+        session_id="cloud-feishu-user",
+    )
+    assert denied and denied["action"] == "block"
+
+
 def test_feishu_configured_owner_gets_full_local_owner_capabilities(monkeypatch):
     _, router = load_router()
     router._LOCAL_TURN_STATES.clear()
