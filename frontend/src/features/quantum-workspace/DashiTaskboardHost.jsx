@@ -2,11 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAuth } from "../../auth/AuthContext";
 import { platformApi } from "../../services/platformApi";
 import { buildTaskboardRelationProjection, groupCanonicalRelations, qwsTaskMarker } from "./relationProjection.js";
+import { ProjectDocuments } from "./ProjectDocuments";
 import "./DashiTaskboardHost.css";
 
 const safeSlug = (value) => String(value || "qws").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "qws";
 
-const batchAutoInstruction = (taskTitle) => `立即全自动执行任务《${taskTitle}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。优先使用项目知识与安全公开网络工具完成事实核查和交付。执行结束后必须输出 task_backfill：将状态设为 done 或 blocked；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；独立成果使用 Markdown 附件。`;
+const isReviewTask = (task) => /审核|验收|评审|复核|review|acceptance/i.test([
+  task?.title,
+  task?.assignee_role,
+  task?.assignee?.name,
+  ...(task?.labels || []),
+].filter(Boolean).join(" "));
+
+const batchAutoInstruction = (task) => isReviewTask(task)
+  ? `立即执行审核任务《${task.title}》。先确认所有 blockedBy 上游任务已完成；系统会在依赖完成前保持本卡在待办队列。审核时逐项检查每个上游任务的交付物和验收标准，并在 routes 中按 session_directory 的精确 target_task_id 为每个被审核任务写入明确评论：通过项写依据，不通过项写问题、整改方案和复核条件。若存在必须由用户决定且无法自动消除的分歧，将本卡 status 设为 in_review（等你确认）；若全部可自动验收则设为 done；若客观阻塞则设为 blocked。appendComment 必须写审核纪要、结论和剩余风险，最终只输出一个合法 task_backfill。`
+  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。优先使用项目知识与安全公开网络工具完成事实核查和交付。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；独立成果使用 Markdown 附件。`;
 
 
 function resolveDashiTheme() {
@@ -40,6 +50,12 @@ async function dashiRequest(path, { method = "GET", body, user } = {}) {
       : "";
   if (!response.ok) throw new Error(payload?.error?.message || payload?.message || detail || `Dashi API ${response.status}`);
   return payload;
+}
+
+async function dashiTextRequest(path) {
+  const response = await fetch(`/taskboard${path}`, { credentials: "same-origin" });
+  if (!response.ok) throw new Error(`Dashi content API ${response.status}`);
+  return response.text();
 }
 
 const issueSummary = (issue) => issue ? {
@@ -81,7 +97,7 @@ function resolveCanonicalTask(dashiTask, qwsTasks) {
 }
 
 
-function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, comments, attachments, relationProjection }) {
+function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, comments, attachments, relationProjection, reviewInputs = [] }) {
   const canonicalRelations = groupCanonicalRelations(relationProjection.canonical_entries);
   return {
     schema_version: 2,
@@ -137,6 +153,7 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, comment
         kind: attachment.kind,
         created_at: attachment.createdAt,
       })),
+      review_inputs: reviewInputs,
       status: dashiTask.status,
       priority: dashiTask.priority,
       assignee: dashiTask.assignee || null,
@@ -163,7 +180,7 @@ function buildCardContext({ project, dashiProjectId, dashiTask, qwsTask, comment
   };
 }
 
-export function DashiTaskboardHost({ project, onOpenTaskChat }) {
+export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }) {
   const { authSession } = useAuth();
   const user = authSession?.user || {};
   const tenant = safeSlug(user.tenant_key || user.user_id || "default");
@@ -172,6 +189,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
   const [state, setState] = useState("正在初始化 Dashi Taskboard…");
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+  const [activeView, setActiveView] = useState("issues");
 
   const ensureTaskboardSession = useCallback(async () => {
     const accessToken = authSession?.accessToken || "";
@@ -234,6 +252,42 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
       allTasks: tasksPayload.tasks || [],
       qwsTasks,
     });
+    const reviewTask = isReviewTask({ ...qwsTask, assignee: dashiTask.assignee });
+    const tasksById = new Map((tasksPayload.tasks || []).map((item) => [item.id, item]));
+    const reviewTargets = reviewTask ? (dashiTask.relations?.blockedBy || []) : [];
+    const reviewInputs = await Promise.all(reviewTargets.map(async (target) => {
+      const targetTask = tasksById.get(target.id) || target;
+      const [targetComments, targetAttachments] = await Promise.all([
+        dashiRequest(`/api/tasks/${encodeURIComponent(target.id)}/comments`, { user }),
+        dashiRequest(`/api/tasks/${encodeURIComponent(target.id)}/attachments`, { user }),
+      ]);
+      const attachments = await Promise.all((targetAttachments.attachments || []).slice(0, 6).map(async (attachment) => {
+        const readable = String(attachment.contentType || "").startsWith("text/")
+          || /\.(md|markdown|txt|json|yaml|yml|csv|log)$/i.test(attachment.filename || "");
+        const content = readable
+          ? await dashiTextRequest(`/api/attachments/${encodeURIComponent(attachment.id)}/content`).catch(() => "")
+          : "";
+        return {
+          id: attachment.id,
+          filename: attachment.filename,
+          content_type: attachment.contentType,
+          content: content.slice(0, 20_000),
+        };
+      }));
+      return {
+        task_id: targetTask.id,
+        identifier: targetTask.identifier || null,
+        title: targetTask.title || "",
+        description: targetTask.description || "",
+        status: targetTask.status || null,
+        comments: (targetComments.comments || []).slice(-20).map((comment) => ({
+          body: comment.body || "",
+          author_name: comment.authorName || "",
+          created_at: comment.createdAt,
+        })),
+        attachments,
+      };
+    }));
     return {
       task: {
         ...qwsTask,
@@ -249,6 +303,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
         comments: commentsPayload.comments || [],
         attachments: attachmentsPayload.attachments || [],
         relationProjection,
+        reviewInputs,
       }),
     };
   }, [dashiProjectId, project, user]);
@@ -265,6 +320,35 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
     const receive = async (event) => {
       if (event.source !== iframeRef.current?.contentWindow || !event.data?.type) return;
       const frame = iframeRef.current.contentWindow;
+      if (event.data.type === "taskboard:view-change") {
+        setActiveView(event.data.payload?.view || "issues");
+        return;
+      }
+      if (event.data.type === "taskboard:run-task") {
+        const dashiTaskId = event.data.payload?.taskId;
+        setError("");
+        setState("正在启动此任务…");
+        try {
+          const session = await loadTaskSession(dashiTaskId);
+          const conversation = await platformApi.openTaskConversation({
+            project_id: project.id,
+            task_id: session.task.id,
+            workflow_id: session.task.workflow_id,
+            agent_version: "hermes-current",
+            card_context: session.cardContext,
+          });
+          await platformApi.startTaskAutoExecution(conversation.id, {
+            instruction: batchAutoInstruction(session.task),
+            request_id: `qw-single-${crypto.randomUUID()}`,
+          });
+          setState(`任务《${session.task.title}》已开始执行，可在卡片中查看实时进度`);
+          frame.postMessage({ type: "taskboard:task-started", payload: { taskId: dashiTaskId } }, window.location.origin);
+          window.setTimeout(() => setState(""), 5000);
+        } catch (reason) {
+          setError(reason.message || "任务启动失败");
+        }
+        return;
+      }
       if (event.data.type === "taskboard:run-project-todos") {
         setError("");
         setState("正在启动全部待办任务…");
@@ -289,7 +373,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
                   card_context: session.cardContext,
                 });
                 return await platformApi.startTaskAutoExecution(conversation.id, {
-                  instruction: batchAutoInstruction(item.title),
+                  instruction: batchAutoInstruction(item),
                   request_id: `qw-batch-${crypto.randomUUID()}`,
                 });
               } catch (reason) {
@@ -371,7 +455,10 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
 
   const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">
-    {(state || error) && <div className={`qw-dashi-status ${error ? "is-error" : ""}`}>{error || state}</div>}
+    {(state || error) && <div className={`qw-dashi-status ${error ? "is-error" : ""}`} role="status"><i aria-hidden="true" />{error || state}</div>}
     {ready && <iframe ref={iframeRef} title="Dashi Taskboard" src={src} allow="clipboard-read; clipboard-write" />}
+    {ready && activeView === "readme" && <div className="qw-dashi-project-documents" aria-label="项目文档工作区">
+      <ProjectDocuments projectId={project.id} onRevisionChange={onRevisionChange} />
+    </div>}
   </section>;
 }

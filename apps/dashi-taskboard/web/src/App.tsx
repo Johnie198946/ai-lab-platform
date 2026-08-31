@@ -2275,6 +2275,9 @@ export function App() {
     closeContextMenu();
     setGanttViewMenuOpen(false);
     setBoardView(view);
+    if (host === "qws" && window.parent !== window) {
+      window.parent.postMessage({ type: "taskboard:view-change", payload: { view } }, window.location.origin);
+    }
     if (selectedProjectId) {
       taskboardStorage.setItem(`${PROJECT_VIEW_KEY_PREFIX}${selectedProjectId}`, view);
     }

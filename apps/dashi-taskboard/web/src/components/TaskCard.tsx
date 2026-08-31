@@ -24,6 +24,7 @@ import { DueDateIcon, PriorityIcon, ProjectIcon } from "./SemanticIcons";
 import { LabelPicker } from "./LabelPicker";
 import { TaskPropertyPicker } from "./TaskPropertyPicker";
 import { TaskConversationMenu } from "./TaskConversationMenu";
+import { TaskboardIcon } from "./TaskboardIcon";
 import completeIcon from "../assets/figma-taskboard/card-complete.svg";
 import processingAnimation from "../assets/figma-taskboard/loading-16.svg";
 
@@ -408,6 +409,7 @@ export function TaskCard({
   onOpenConversation,
 }: TaskCardProps) {
   const { locale, text } = useTaskboardI18n();
+  const qwsHost = new URL(document.baseURI).searchParams.get("host") === "qws";
   const displayIdentifier = task.externalKey ?? task.identifier;
   const [propertyMenu, setPropertyMenu] = useState<"priority" | "labels" | "assignee" | null>(null);
   const [savingProperty, setSavingProperty] = useState<"priority" | "labels" | "dueDate" | "assignee" | null>(null);
@@ -489,6 +491,24 @@ export function TaskCard({
           >
             <img src={completeIcon} alt="" aria-hidden="true" />
             <span>{text("完成", "Complete")}</span>
+          </button>
+        )}
+        {qwsHost && task.status !== "in_progress" && task.status !== "done" && task.status !== "canceled" && (
+          <button
+            className="task-card-run"
+            type="button"
+            aria-label={text(`执行 ${displayIdentifier}`, `Run ${displayIdentifier}`)}
+            title={text("单独执行此任务", "Run this task")}
+            onClick={(event) => {
+              event.stopPropagation();
+              window.parent.postMessage({
+                type: "taskboard:run-task",
+                payload: { taskId: task.id },
+              }, window.location.origin);
+            }}
+          >
+            <TaskboardIcon name="automationPlay" />
+            <span>{text("执行", "Run")}</span>
           </button>
         )}
         {variant === "sidebar" && (

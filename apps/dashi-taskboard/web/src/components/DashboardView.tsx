@@ -233,16 +233,17 @@ export function DashboardView({
   rangeEnd.setMonth(rangeEnd.getMonth() + 3);
   const rangeEndValue = rangeEnd.getTime();
   const upcomingEnd = todayValue + 14 * 86_400_000;
-  const activeTasks = tasks.filter((task) => task.status !== "done" && task.status !== "canceled");
-  const completedTasks = tasks.filter((task) => task.status === "done");
+  const scopeTasks = tasks.filter((task) => task.status !== "canceled");
+  const activeTasks = scopeTasks.filter((task) => task.status !== "done");
+  const completedTasks = scopeTasks.filter((task) => task.status === "done");
   const overdueTasks = activeTasks.filter((task) => task.dueDate && dayValue(task.dueDate) < todayValue);
-  const runningTasks = tasks.filter((task) => presentations[task.id]?.processing.running);
+  const runningTasks = scopeTasks.filter((task) => presentations[task.id]?.processing.running);
   const upcomingTasks = activeTasks
     .filter((task) => task.dueDate && dayValue(task.dueDate) <= upcomingEnd)
     .sort((left, right) => (left.dueDate ?? "").localeCompare(right.dueDate ?? ""))
     .slice(0, 5);
-  const completionRate = tasks.length
-    ? Math.round((completedTasks.length / tasks.length) * 100)
+  const completionRate = scopeTasks.length
+    ? Math.round((completedTasks.length / scopeTasks.length) * 100)
     : 0;
   const aggregateCreatedAt = isAllProjects
     ? tasks.reduce<string | null>((earliest, task) => (
@@ -406,6 +407,21 @@ export function DashboardView({
 
   const metrics = [
     {
+      label: taskStatusLabel(language, "done"),
+      value: completedTasks.length,
+      tone: "done",
+    },
+    {
+      label: taskStatusLabel(language, "backlog"),
+      value: tasks.filter((task) => task.status === "backlog").length,
+      tone: "backlog",
+    },
+    {
+      label: taskStatusLabel(language, "todo"),
+      value: tasks.filter((task) => task.status === "todo").length,
+      tone: "todo",
+    },
+    {
       label: taskStatusLabel(language, "in_progress"),
       value: tasks.filter((task) => task.status === "in_progress").length,
       tone: "progress",
@@ -421,30 +437,22 @@ export function DashboardView({
       tone: "blocked",
     },
     { label: text("已逾期", "Overdue"), value: overdueTasks.length, tone: "overdue" },
-    {
-      label: taskStatusLabel(language, "backlog"),
-      value: tasks.filter((task) => task.status === "backlog").length,
-      tone: "backlog",
-    },
   ];
 
+  const liveStatusSummary = text(
+    `当前完成 ${completedTasks.length}/${scopeTasks.length}（${completionRate}%）；待办 ${tasks.filter((task) => task.status === "backlog").length}，等待认领 ${tasks.filter((task) => task.status === "todo").length}，处理中 ${tasks.filter((task) => task.status === "in_progress").length}，等你确认 ${tasks.filter((task) => task.status === "in_review").length}，遇到阻碍 ${tasks.filter((task) => task.status === "blocked").length}。`,
+    `${completedTasks.length}/${scopeTasks.length} completed (${completionRate}%); ${tasks.filter((task) => task.status === "backlog").length} todo, ${tasks.filter((task) => task.status === "todo").length} waiting for claim, ${tasks.filter((task) => task.status === "in_progress").length} in progress, ${tasks.filter((task) => task.status === "in_review").length} awaiting confirmation, and ${tasks.filter((task) => task.status === "blocked").length} blocked.`,
+  );
   const summaryBody = isAllProjects
     ? text(
         `所有项目共有 ${tasks.length} 个议题，${completedTasks.length} 个已完成，${activeTasks.length} 个尚未结束；当前 ${tasks.filter((task) => task.status === "blocked").length} 个遇到阻碍，${overdueTasks.length} 个已逾期。`,
         `Across all projects, ${tasks.length} issues are tracked: ${completedTasks.length} completed and ${activeTasks.length} still open; ${tasks.filter((task) => task.status === "blocked").length} are blocked and ${overdueTasks.length} overdue.`,
       )
     : projectSummary?.summary
-      ?? (projectSummary?.refreshing
-        ? text(
-            "Codex 正在整理当前项目的进展、风险和下一步重点…",
-            "Codex is reviewing the project's progress, risks, and next steps…",
-          )
-        : summaryLoadFailed || projectSummary?.error
-          ? text("Codex 暂时无法生成项目总结。", "Codex cannot generate the project summary now.")
-          : text(
-              "Codex 正在整理当前项目的进展、风险和下一步重点…",
-              "Codex is reviewing the project's progress, risks, and next steps…",
-            ));
+      ? `${liveStatusSummary} ${projectSummary.summary}`
+      : summaryLoadFailed || projectSummary?.error
+        ? `${liveStatusSummary} ${text("项目总结暂时不可用。", "The narrative summary is temporarily unavailable.")}`
+        : liveStatusSummary;
   const hour = new Date().getHours();
   const greeting = hour < 12
     ? text("上午好", "Good morning")
@@ -456,7 +464,7 @@ export function DashboardView({
     `${greeting}，${currentUser.name}，今天是${summaryDate}，${summaryBody}`,
     `${greeting}, ${currentUser.name}. Today is ${summaryDate}. ${summaryBody}`,
   );
-  const summaryReady = isAllProjects || projectSummary !== null || summaryLoadFailed;
+  const summaryReady = true;
 
   useEffect(() => {
     if (!summaryReady) {
@@ -529,7 +537,7 @@ export function DashboardView({
 
         <div className="dashboard-metrics">
           {metrics.map((metric) => {
-            const percent = activeTasks.length ? Math.round((metric.value / activeTasks.length) * 100) : 0;
+            const percent = scopeTasks.length ? Math.round((metric.value / scopeTasks.length) * 100) : 0;
             return (
               <article className={`dashboard-metric tone-${metric.tone}`} key={metric.label}>
                 <span className="dashboard-metric-label">{metric.label}</span>

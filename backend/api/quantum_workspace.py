@@ -5773,6 +5773,7 @@ async def _apply_taskboard_backfill(
     expected_version: int | None,
     self_changes: dict[str, Any],
     authorization: str,
+    comment_prefix: str = "AI 回填（经用户确认）",
 ) -> dict[str, Any]:
     timeout = httpx.Timeout(30, connect=10)
     async with httpx.AsyncClient(base_url=_TASKBOARD_INTERNAL_URL, timeout=timeout) as client:
@@ -5944,7 +5945,7 @@ async def _apply_taskboard_backfill(
             await call(
                 "POST", f"{task_path}/comments",
                 json_body={
-                    "body": f"AI 回填（经用户确认）\n\n{append_comment.strip()}"
+                    "body": f"{comment_prefix}\n\n{append_comment.strip()}"
                 },
             )
         return evidence
@@ -7585,6 +7586,85 @@ async def _set_auto_execution_state(
         await db.commit()
 
 
+async def _read_taskboard_task(
+    *, project_id: str, task_id: str, authorization: str,
+) -> dict[str, Any]:
+    timeout = httpx.Timeout(30, connect=10)
+    async with httpx.AsyncClient(base_url=_TASKBOARD_INTERNAL_URL, timeout=timeout) as client:
+        session_response = await client.post(
+            "/api/qws/session",
+            json={"project_id": project_id},
+            headers={"Authorization": authorization, "Host": "127.0.0.1"},
+        )
+        if session_response.status_code != 200:
+            raise HTTPException(status_code=502, detail="Taskboard tenant session failed")
+        session_token = session_response.cookies.get("qws-taskboard-session")
+        if not session_token:
+            raise HTTPException(status_code=502, detail="Taskboard tenant session cookie is missing")
+        response = await client.get(
+            f"/api/tasks/{task_id}",
+            headers={
+                "Cookie": f"qws-taskboard-session={session_token}",
+                "Host": "127.0.0.1",
+            },
+        )
+        if response.status_code != 200:
+            raise HTTPException(status_code=502, detail="Taskboard task read failed")
+        return dict((response.json() or {}).get("task") or {})
+
+
+async def _review_task_identity(
+    conversation_id: str, payload: dict[str, Any]
+) -> tuple[str, str, bool]:
+    async with SessionLocal() as db:
+        conversation = await _conversation_for_tenant(
+            db, conversation_id, *_scope(payload)
+        )
+        latest_context = await db.scalar(
+            select(WorkspaceTaskConversationContext)
+            .where(WorkspaceTaskConversationContext.conversation_id == conversation.id)
+            .order_by(WorkspaceTaskConversationContext.revision.desc())
+            .limit(1)
+        )
+        raw_card = (latest_context.snapshot or {}).get("task") if latest_context else {}
+        card = raw_card if isinstance(raw_card, dict) else {}
+        text = " ".join(str(value or "") for value in [
+            card.get("title"),
+            card.get("assignee_role"),
+            ((card.get("assignee") or {}).get("name") if isinstance(card.get("assignee"), dict) else ""),
+            " ".join(card.get("labels") or []),
+            " ".join(card.get("acceptance_criteria") or []),
+        ])
+        is_review = re.search(r"审核|验收|评审|复核|review|acceptance", text, re.IGNORECASE) is not None
+        return conversation.project_id, conversation.task_id, is_review
+
+
+def _review_dependencies_ready(task: dict[str, Any]) -> bool:
+    raw_relations = task.get("relations")
+    relations = raw_relations if isinstance(raw_relations, dict) else {}
+    raw_blockers = relations.get("blockedBy")
+    blockers = raw_blockers if isinstance(raw_blockers, list) else []
+    valid_blockers = [item for item in blockers if isinstance(item, dict)]
+    return not valid_blockers or all(item.get("status") == "done" for item in valid_blockers)
+
+
+async def _wait_for_review_dependencies(
+    conversation_id: str, payload: dict[str, Any], authorization: str,
+) -> None:
+    project_id, task_id, is_review = await _review_task_identity(
+        conversation_id, payload
+    )
+    if not is_review:
+        return
+    while True:
+        task = await _read_taskboard_task(
+            project_id=project_id, task_id=task_id, authorization=authorization
+        )
+        if _review_dependencies_ready(task):
+            return
+        await asyncio.sleep(10)
+
+
 async def _run_task_auto_execution_unlimited(
     conversation_id: str, body: AutoExecuteTaskRequest,
     payload: dict[str, Any], authorization: str,
@@ -7593,13 +7673,24 @@ async def _run_task_auto_execution_unlimited(
         await _set_auto_execution_state(
             conversation_id, state="running", request_id=body.request_id
         )
+        project_id, task_id, _ = await _review_task_identity(
+            conversation_id, payload
+        )
+        await _apply_taskboard_backfill(
+            project_id=project_id,
+            task_id=task_id,
+            expected_version=None,
+            self_changes={"status": "in_progress"},
+            authorization=authorization,
+            comment_prefix="AI 自动执行",
+        )
         assistant_request_id = body.request_id
         materialized = None
         for attempt in range(2):
             instruction = body.instruction if attempt == 0 else (
                 "修复上一轮自动执行结果的结构化回填格式。不要重复已经完成的外部动作；"
                 "只根据上一轮已获得的事实重新输出最终答复，并以一个合法的 ```task_backfill JSON 块结束。"
-                "self_changes 必须包含 status=done 或 blocked 与 appendComment；routes 只能使用 session_directory 中存在的精确 task_id，无法确认时使用空数组。"
+                "self_changes 必须包含 status=done、in_review 或 blocked 与 appendComment；只有确需用户决策时使用 in_review；routes 只能使用 session_directory 中存在的精确 task_id，无法确认时使用空数组。"
             )
             upstream = await stream_task_message(
                 conversation_id,
@@ -7663,6 +7754,17 @@ async def _run_task_auto_execution_unlimited(
             task_id = conversation.task_id
             expected_version = proposal.base_card_version
             self_changes = dict(proposal.self_changes or {})
+            routed_items = [dict(item) for item in proposal.routed_items or []]
+
+        for routed in routed_items:
+            await _apply_taskboard_backfill(
+                project_id=project_id,
+                task_id=str(routed["target_task_id"]),
+                expected_version=None,
+                self_changes={"appendComment": str(routed["content"])},
+                authorization=authorization,
+                comment_prefix="AI 审核评论",
+            )
 
         try:
             evidence = await _apply_taskboard_backfill(
@@ -7671,6 +7773,7 @@ async def _run_task_auto_execution_unlimited(
                 expected_version=expected_version,
                 self_changes=self_changes,
                 authorization=authorization,
+                comment_prefix="AI 自动执行",
             )
         except HTTPException as exc:
             safe_rebase_fields = {"status", "appendComment", "addAttachments"}
@@ -7685,6 +7788,7 @@ async def _run_task_auto_execution_unlimited(
                     expected_version=None,
                     self_changes=self_changes,
                     authorization=authorization,
+                    comment_prefix="AI 自动执行",
                 )
             else:
                 raise
@@ -7744,6 +7848,9 @@ async def _run_task_auto_execution(
     conversation_id: str, body: AutoExecuteTaskRequest,
     payload: dict[str, Any], authorization: str,
 ) -> None:
+    await _wait_for_review_dependencies(
+        conversation_id, payload, authorization
+    )
     async with _AUTO_EXECUTION_SEMAPHORE:
         await _run_task_auto_execution_unlimited(
             conversation_id, body, payload, authorization

@@ -94,6 +94,7 @@ import {
   type RelationMutationResult,
 } from "./IssueRelations";
 import { TaskPropertyPicker } from "./TaskPropertyPicker";
+import { TaskboardIcon } from "./TaskboardIcon";
 import { buildIssueUrl } from "../issueRoute";
 import { postEmbeddedHostMessage } from "../embeddedHost.mjs";
 import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
@@ -182,6 +183,15 @@ function fileSize(value: number): string {
   if (value < 1024) return `${value} B`;
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(value < 10 * 1024 ? 1 : 0)} KB`;
   return `${(value / (1024 * 1024)).toFixed(value < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function attachmentPreviewKind(attachment: Attachment): "image" | "pdf" | "text" | "unsupported" {
+  const contentType = attachment.contentType.toLowerCase();
+  const extension = attachment.filename.split(".").pop()?.toLowerCase() ?? "";
+  if (contentType.startsWith("image/") || ["png", "jpg", "jpeg", "gif", "webp", "svg"].includes(extension)) return "image";
+  if (contentType === "application/pdf" || extension === "pdf") return "pdf";
+  if (contentType.startsWith("text/") || ["md", "markdown", "txt", "json", "yaml", "yml", "csv", "log", "xml", "sql", "js", "ts", "tsx", "jsx", "css", "html"].includes(extension)) return "text";
+  return "unsupported";
 }
 
 async function downloadAttachmentFile(attachment: Attachment) {
@@ -420,6 +430,10 @@ export function TaskDetail({
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [pendingAttachmentDelete, setPendingAttachmentDelete] = useState<Attachment | null>(null);
   const [deletingAttachment, setDeletingAttachment] = useState(false);
+  const [attachmentPreview, setAttachmentPreview] = useState<Attachment | null>(null);
+  const [attachmentPreviewContent, setAttachmentPreviewContent] = useState("");
+  const [attachmentPreviewError, setAttachmentPreviewError] = useState("");
+  const [attachmentPreviewLoading, setAttachmentPreviewLoading] = useState(false);
   const [comments, setComments] = useState<Comment[]>([]);
   const [taskActivities, setTaskActivities] = useState<TaskChangeActivity[]>([]);
   const [commentsLoading, setCommentsLoading] = useState(true);
@@ -522,6 +536,28 @@ export function TaskDetail({
     );
     return () => controller.abort();
   }, [attachmentsRevision, task.id]);
+
+  useEffect(() => {
+    if (!attachmentPreview || attachmentPreviewKind(attachmentPreview) !== "text") {
+      setAttachmentPreviewContent("");
+      setAttachmentPreviewError("");
+      setAttachmentPreviewLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setAttachmentPreviewLoading(true);
+    setAttachmentPreviewError("");
+    fetch(resolveTaskboardUrl(attachmentDownloadUrl(attachmentPreview)), { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(text("无法读取附件内容。", "Could not read attachment content."));
+        setAttachmentPreviewContent(await response.text());
+      })
+      .catch((error) => {
+        if (error.name !== "AbortError") setAttachmentPreviewError(error.message);
+      })
+      .finally(() => setAttachmentPreviewLoading(false));
+    return () => controller.abort();
+  }, [attachmentPreview]);
 
   useEffect(() => {
     function receiveAttachmentOpenError(event: MessageEvent) {
@@ -1180,9 +1216,8 @@ export function TaskDetail({
                         <a
                           className="attachment-link"
                           href={attachmentDownloadUrl(attachment)}
-                          download={attachment.filename}
-                          title={text(`下载 ${attachment.filename}`, `Download ${attachment.filename}`)}
-                          onClick={(event) => handleAttachmentDownload(event, attachment)}
+                          title={text(`预览 ${attachment.filename}`, `Preview ${attachment.filename}`)}
+                          onClick={(event) => { event.preventDefault(); setAttachmentPreview(attachment); }}
                         >
                           <span className="attachment-file-icon" aria-hidden="true">
                             <LinearIcon name="file" />
@@ -1330,7 +1365,7 @@ export function TaskDetail({
                   const comment = item.comment;
                   return (
                   <article
-                    className={`comment-entry is-${comment.authorType}`}
+                    className={`comment-entry is-${comment.authorType}${/^AI (回填|自动执行|审核评论)/.test(comment.body || "") ? " is-agent" : ""}`}
                     key={comment.id}
                     id={`comment-${comment.id}`}
                   >
@@ -1628,6 +1663,22 @@ export function TaskDetail({
 
           <aside className="issue-properties" aria-label={text("议题属性", "Issue properties")}>
             <div className="detail-primary-actions">
+              {qwsHost && (
+                <button
+                  className="detail-run-task-action"
+                  type="button"
+                  disabled={currentTask.status === "in_progress"}
+                  onClick={() => window.parent.postMessage({
+                    type: "taskboard:run-task",
+                    payload: { taskId: currentTask.id },
+                  }, window.location.origin)}
+                >
+                  <TaskboardIcon name="automationPlay" />
+                  <span>{currentTask.status === "in_progress"
+                    ? text("任务执行中", "Task running")
+                    : text("执行此任务", "Run this task")}</span>
+                </button>
+              )}
               <button
                 className="detail-open-thread-action"
                 type="button"
@@ -1959,6 +2010,34 @@ export function TaskDetail({
               <button className="button danger" type="button" disabled={deletingAttachment} onClick={() => void confirmAttachmentDelete()}>{deletingAttachment ? text("删除中…", "Deleting…") : text("删除附件", "Delete attachment")}</button>
             </div>
           </div>
+        </div>
+      )}
+
+      {attachmentPreview && (
+        <div className="attachment-preview-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setAttachmentPreview(null);
+        }}>
+          <section className="attachment-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="attachment-preview-title">
+            <header>
+              <div><span>{text("附件预览", "Attachment preview")}</span><h2 id="attachment-preview-title">{attachmentPreview.filename}</h2><small>{fileSize(attachmentPreview.size)} · {relativeTime(attachmentPreview.createdAt, locale)}</small></div>
+              <div>
+                <button type="button" onClick={() => void downloadAttachmentFile(attachmentPreview).catch((error) => setAttachmentPreviewError(String(error)))}>{text("下载", "Download")}</button>
+                <button type="button" aria-label={text("关闭预览", "Close preview")} onClick={() => setAttachmentPreview(null)}><LinearIcon name="close" /></button>
+              </div>
+            </header>
+            <div className={`attachment-preview-body is-${attachmentPreviewKind(attachmentPreview)}`}>
+              {attachmentPreviewKind(attachmentPreview) === "image" && <img src={resolveTaskboardUrl(attachmentDownloadUrl(attachmentPreview))} alt={attachmentPreview.filename} />}
+              {attachmentPreviewKind(attachmentPreview) === "pdf" && <iframe src={resolveTaskboardUrl(attachmentDownloadUrl(attachmentPreview))} title={attachmentPreview.filename} />}
+              {attachmentPreviewKind(attachmentPreview) === "text" && (attachmentPreviewLoading
+                ? <p className="attachment-preview-state">{text("正在读取附件…", "Loading attachment…")}</p>
+                : attachmentPreviewError
+                  ? <p className="attachment-preview-state error">{attachmentPreviewError}</p>
+                  : /\.(md|markdown)$/i.test(attachmentPreview.filename)
+                    ? <DescriptionDocument value={attachmentPreviewContent} referenceTasks={referenceTasks} onOpenTask={onOpenTask} />
+                    : <pre>{attachmentPreviewContent}</pre>)}
+              {attachmentPreviewKind(attachmentPreview) === "unsupported" && <p className="attachment-preview-state">{text("此格式暂不支持在线预览，请下载后查看。", "This format cannot be previewed here. Download it to view.")}</p>}
+            </div>
+          </section>
         </div>
       )}
     </section>

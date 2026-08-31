@@ -6,7 +6,7 @@ import { BusinessIntakePanel } from "./BusinessIntakePanel";
 import { AIResourceWorkbench } from "./AIResourceWorkbench";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
-import { ProjectDocuments } from "./ProjectDocuments";
+
 
 import { DashiTaskboardHost } from "./DashiTaskboardHost";
 import { StageRail } from "./StageRail";
@@ -251,11 +251,11 @@ export function ProjectWorkspacePage() {
       </div>
       {error && <p className="qw-error page">{error}</p>}
       {view === "taskboard" && <div className="qw-taskboard-workspace">
-        <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />
-        <section className="qw-taskboard-documents" aria-label="Taskboard 项目文档">
-          <header><span className="qw-eyebrow">Taskboard · Project documents</span><h2>项目文档</h2><p>执行日志、纪要和项目文档统一留在 Taskboard 工作区。</p></header>
-          <ProjectDocuments projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />
-        </section>
+        <DashiTaskboardHost
+          project={project}
+          onOpenTaskChat={setSelectedTaskSession}
+          onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))}
+        />
       </div>}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
 

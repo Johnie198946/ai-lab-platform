@@ -172,7 +172,7 @@
 
 .dashboard-view .dashboard-metrics {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   height: 120px;
   gap: 0;
   overflow: hidden;
@@ -211,7 +211,7 @@
   min-width: 0;
   min-height: 0;
   gap: 12px;
-  padding: 20px 22px;
+  padding: 20px 16px;
   border: 0;
   border-left: .5px solid var(--border);
   border-radius: 0;
@@ -228,6 +228,8 @@
 .dashboard-view .dashboard-metric.tone-blocked,
 .dashboard-view .dashboard-metric.tone-overdue { --metric-color: var(--status-blocked); }
 .dashboard-view .dashboard-metric.tone-backlog { --metric-color: var(--priority-high); }
+.dashboard-view .dashboard-metric.tone-todo { --metric-color: var(--text-tertiary); }
+.dashboard-view .dashboard-metric.tone-done { --metric-color: var(--status-done); }
 
 .dashboard-view .dashboard-metric-label {
   color: var(--text-secondary);

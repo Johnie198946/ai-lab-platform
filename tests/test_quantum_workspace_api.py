@@ -36,6 +36,7 @@ from backend.api.quantum_workspace import (  # noqa: E402
     _enforce_agent_lease_fence,
     _enforce_qws_relation_backfill_contract,
     _parse_backfill_block,
+    _review_dependencies_ready,
 )
 from backend.services.workspace_process import instantiate_project_blueprint, persist_process_revision  # noqa: E402
 from backend.db import SessionLocal  # noqa: E402
@@ -3038,7 +3039,11 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
 
     async def fake_apply_taskboard_backfill(**kwargs):
         captured.setdefault("apply_calls", []).append(kwargs)
-        if len(captured["apply_calls"]) == 1:
+        if (
+            kwargs["self_changes"].get("status") == "done"
+            and not captured.get("stale_done_raised")
+        ):
+            captured["stale_done_raised"] = True
             raise HTTPException(status_code=409, detail="card version changed before backfill")
         captured["applied"] = kwargs
         return {"updated_fields": ["status"], "comment_id": "comment-auto"}
@@ -3064,7 +3069,8 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
             break
         time.sleep(0.01)
     assert state["state"] == "completed", state
-    assert len(captured["apply_calls"]) == 2
+    assert len(captured["apply_calls"]) == 3
+    assert captured["apply_calls"][0]["self_changes"] == {"status": "in_progress"}
     assert captured["applied"]["expected_version"] is None
     assert captured["applied"]["authorization"] == "Bearer test-token"
     assert captured["applied"]["self_changes"]["status"] == "done"
@@ -3167,6 +3173,19 @@ def test_task_chat_records_and_replays_abrupt_upstream_disconnect(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
     ).json()
     assert messages[-1]["event_metadata"]["terminal_type"] == "error"
+
+
+def test_review_dependency_gate_waits_for_every_upstream_task() -> None:
+    assert _review_dependencies_ready({"relations": {"blockedBy": []}}) is True
+    assert _review_dependencies_ready({
+        "relations": {"blockedBy": [{"id": "a", "status": "done"}, {"id": "b", "status": "done"}]}
+    }) is True
+    assert _review_dependencies_ready({
+        "relations": {"blockedBy": [{"id": "a", "status": "done"}, {"id": "b", "status": "in_progress"}]}
+    }) is False
+    assert _review_dependencies_ready({
+        "relations": {"blockedBy": [{"id": "a", "status": "blocked"}]}
+    }) is False
 
 
 def test_qws_canonical_relation_backfill_is_fail_closed() -> None:

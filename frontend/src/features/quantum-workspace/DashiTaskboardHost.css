@@ -5,8 +5,13 @@
 .qw-taskboard-documents > header h2 { margin: 4px 0; }
 .qw-taskboard-documents > header p { margin: 0; color: #64748b; }
 .qw-dashi-host iframe { width: 100%; height: 100%; border: 0; display: block; background: #f8fafc; }
-.qw-dashi-status { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; color: #475569; background: #f8fafc; font-size: 14px; }
-.qw-dashi-status.is-error { color: #b42318; }
+.qw-dashi-status { position: absolute; z-index: 5; top: 58px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 9px; max-width: min(620px, calc(100% - 32px)); padding: 10px 14px; border: 1px solid #bfd0ee; border-radius: 9px; color: #294f91; background: rgba(245,248,255,.97); box-shadow: 0 10px 30px rgba(30,55,95,.16); font-size: 12px; font-weight: 700; }
+.qw-dashi-status i { width: 13px; height: 13px; flex: none; border: 2px solid #a9bee5; border-top-color: #2f6fed; border-radius: 50%; animation: qw-dashi-spin .8s linear infinite; }
+.qw-dashi-status.is-error { border-color: #efb9bf; color: #b42318; background: #fff5f5; }
+.qw-dashi-status.is-error i { border-color: #e5a7ae; border-top-color: #b42318; }
+.qw-dashi-project-documents { position: absolute; z-index: 3; inset: 92px 0 0; overflow: auto; background: #f8fafc; padding: 14px 0 24px; }
+.qw-dashi-project-documents .qw-documents { min-height: calc(100% - 28px); margin: 0 18px; }
+@keyframes qw-dashi-spin { to { transform: rotate(360deg); } }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) .qw-dashi-host,
