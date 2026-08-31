@@ -56,6 +56,7 @@ _LOCAL_SAFE_TOOLS = {
     "tool_search",
     "web_extract",
     "web_search",
+    "browser_exec",
 }
 _VAULT_READ_TOOLS = frozenset({"read_file", "search_files"})
 _VAULT_OWNER_AUX_READ_TOOLS = frozenset({"session_search"})
@@ -234,6 +235,12 @@ _PROFESSIONAL_TASK_RE = re.compile(
     r"(?:深入|专业|完整|系统|多源|核验|审计|生产|上线|架构|基准|报告|方案|合规|"
     r"风险|指标|端到端|竞品|行业研究|交叉验证|research|professional|production|"
     r"benchmark|audit|verify)",
+    re.I,
+)
+_REQUIRED_DELEGATION_RE = re.compile(
+    r"(?:必须|务必|强制|请|用|使用|派|调用).{0,12}(?:delegate_task|子代理|子agent|child\s*agent|"
+    r"多代理|多agent|专业代理|专家代理|并行代理|并行子任务)|"
+    r"(?:delegate_task|子代理|child\s*agent).{0,12}(?:必须|务必|强制|并行|独立复核)",
     re.I,
 )
 _NEGATIVE_SPLIT_RE = re.compile(
@@ -841,7 +848,8 @@ def _candidate_context(
             "Require a matching trigger, task level, and boundary; negative boundaries override "
             "positive keywords. Load only the selected capability using invoke. If no candidate "
             "materially improves the answer, respond directly. For URL research call web_extract "
-            "once; on failure use browser_navigate/browser_console, then web_search. Never use "
+            "once; on failure use browser_exec with a real rendered browser, then web_search. For "
+            "mp.weixin.qq.com verification pages, do not infer content from the article ID. Never use "
             "terminal/curl to download or parse a public page. Do not expose internal names.\n"
             "Candidates: "
         )
@@ -969,7 +977,7 @@ def _pre_gateway_dispatch(event: Any = None, **kwargs: Any) -> None:
     if platform in _LOCAL_OWNER_PLATFORMS:
         principal = "local_owner"
     elif _configured_owner(platform, sender_id):
-        principal = "vault_owner"
+        principal = "local_owner"
     elif not sender_id:
         principal = "untrusted_sender"
     elif chat_type in {"group", "channel", "room", "topic"}:
@@ -996,7 +1004,7 @@ def _resolve_principal(platform: str, sender_id: str, message: str) -> str:
     if platform in _LOCAL_OWNER_PLATFORMS:
         return "local_owner"
     if _configured_owner(platform, sender_id):
-        return "vault_owner"
+        return "local_owner"
     if not sender_id:
         return "untrusted_sender"
     return "approved_user"
@@ -1028,6 +1036,7 @@ def _selected_agency(query: str) -> dict[str, Any] | None:
 def _local_professional_context(query: str, state: dict[str, Any]) -> str:
     selected_skill = _selected_skill(query)
     selected_agency = _selected_agency(query)
+    delegation_required = bool(selected_agency and _REQUIRED_DELEGATION_RE.search(query))
     state.update({
         "route_class": "PROFESSIONAL_TASK",
         "skill_decision": "SELECT" if selected_skill else "NONE",
@@ -1038,7 +1047,9 @@ def _local_professional_context(query: str, state: dict[str, Any]) -> str:
         "loaded_skill": None,
         "skill_result_hash": None,
         "skill_failure_code": None,
-        "agency_decision": "CALL" if selected_agency else "SKIP",
+        "agency_decision": (
+            "CALL" if delegation_required else "OPTIONAL" if selected_agency else "SKIP"
+        ),
         "requested_agent": (
             str(selected_agency.get("id") or "").removeprefix("agency:")
             if selected_agency else None
@@ -1063,8 +1074,10 @@ def _local_professional_context(query: str, state: dict[str, Any]) -> str:
         "[LOCAL_SINGLE_TENANT_AGENT_OS — trusted local policy]\n"
         "Hermes is the only runtime. The trusted runtime executes the selected Skill phase with "
         "native skill_view before this model call and appends its verified result below. Never "
-        "simulate or reload that phase. When Agency decision is CALL, your first and only allowed "
-        "tool before dispatch is native delegate_task with the exact tasks[] arguments in the plan. "
+        "simulate or reload that phase. Agency selection is optional unless the user explicitly "
+        "required delegation. OPTIONAL failures degrade to direct Hermes execution and never block "
+        "the task. When Agency decision is CALL, your first and only allowed tool before dispatch is "
+        "native delegate_task with the exact tasks[] arguments in the plan. "
         "After dispatch, return only a truthful started-status; after the completion continuation, "
         "materially use the verified child result. Do not invent receipts. Internal names and "
         "receipts stay hidden "
@@ -1377,7 +1390,7 @@ def _subagent_stop(
     summary = str(child_summary or kwargs.get("summary") or kwargs.get("result") or "").strip()
     with _LOCAL_STATE_LOCK:
         state = _LOCAL_TURN_STATES.get(parent_session_id)
-        if state is None or state.get("agency_decision") != "CALL":
+        if state is None or state.get("agency_decision") not in {"CALL", "OPTIONAL"}:
             return None
         requested = str(state.get("requested_agent") or "")
         loaded = _loaded_agency_from_history(
@@ -1437,13 +1450,27 @@ def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: An
             state.get("skill_decision") == "SELECT"
             and state.get("loaded_skill") != state.get("requested_skill")
         ):
-            code = str(state.get("skill_failure_code") or "SKILL_RESULT_MISSING")
-            return _verification_failure(
+            logger.warning(
+                "LOCAL_AGENT_OS_DEGRADED code=%s session_id=%s",
+                str(state.get("skill_failure_code") or "SKILL_RESULT_MISSING"),
                 session_id,
-                state,
-                code,
-                "所选 Skill 未获得真实成功回执，已阻止发布未经验证的结果。",
             )
+        if state.get("agency_decision") == "OPTIONAL":
+            receipt = _canonical_local_receipt(
+                session_id,
+                str(state.get("requested_agent") or ""),
+                str(
+                    state.get("completion_delegation_id")
+                    or state.get("dispatch_delegation_id")
+                    or ""
+                ),
+            ) or {}
+            if receipt.get("verifier") == "pass":
+                summary = str(receipt.get("result") or "").strip()
+                state["main_adopted"] = True
+                return response_text if _summary_adopted(response_text, summary) else summary
+            state["main_adopted"] = True
+            return response_text
         if state.get("agency_decision") != "CALL":
             state["main_adopted"] = True
             return response_text
@@ -1668,8 +1695,8 @@ def _pre_llm_with_runtime_skill(
         str(result.get("context") or "")
         + "\n[RUNTIME_VERIFIED_SKILL_RESULT — trusted native tool result]\n"
         + json.dumps(injected_payload, ensure_ascii=False, separators=(",", ":"))
-        + "\nThe Skill phase is complete. Before any other tool, call native delegate_task "
-        "with the exact tasks[] arguments in the plan."
+        + "\nThe Skill phase is complete. Delegation is required only when the trusted plan "
+        "marks Agency decision CALL; otherwise continue directly or delegate optionally."
     )
     return result
 
@@ -1730,7 +1757,7 @@ def _pre_tool_call(
         if (
             effective_tool == "delegate_task"
             and local_state.get("route_class") == "PROFESSIONAL_TASK"
-            and local_state.get("agency_decision") == "CALL"
+            and local_state.get("agency_decision") in {"CALL", "OPTIONAL"}
             and effective_args != local_state.get("expected_delegate_args")
         ):
             with _LOCAL_STATE_LOCK:
@@ -1793,7 +1820,7 @@ def _pre_tool_call(
                 "action": "block",
                 "message": (
                     "Public-page research must not use terminal/curl. Use web_extract once; "
-                    "if it failed, use browser_navigate/browser_console, then web_search."
+                    "if it failed, use browser_exec with a real rendered browser, then web_search."
                 ),
             }
         if tool_name == "web_extract":
@@ -1803,7 +1830,7 @@ def _pre_tool_call(
                     "action": "block",
                     "message": (
                         "web_extract was already attempted this turn. Do not retry the same "
-                        "backend; use browser_navigate/browser_console, then web_search."
+                        "backend; use browser_exec with a real rendered browser, then web_search."
                     ),
                 }
             _WEB_RESEARCH_TURNS[turn_key] = calls + 1
@@ -1857,12 +1884,12 @@ def _post_tool_call(
         dispatch = _verified_delegation_dispatch(result)
         with _LOCAL_STATE_LOCK:
             state = _LOCAL_TURN_STATES.get(session_id)
-            if state is not None and state.get("agency_decision") == "CALL":
+            if state is not None and state.get("agency_decision") in {"CALL", "OPTIONAL"}:
                 if dispatch is not None:
                     state["delegation_dispatched"] = True
                     state["dispatch_delegation_id"] = str(dispatch["delegation_id"])
                     state["failure_code"] = None
-                else:
+                elif state.get("agency_decision") == "CALL":
                     state["failure_code"] = "DELEGATE_RESULT_FAILED"
     capability_id = _capability_id_for_call(tool_name, args or {})
     if not capability_id:

@@ -66,7 +66,7 @@ def test_delegate_wrappers_cannot_bypass_skill_first_gate(monkeypatch):
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [_skill(router)])
     monkeypatch.setattr(router, "_agency_capabilities", _agency)
     router._pre_llm_call(
-        "请系统调研企业 AI 市场并给出有证据的专业报告",
+        "请必须委派子代理系统调研企业 AI 市场并给出有证据的专业报告",
         session_id="wrapper-skill-gate-parent",
         turn_id="wrapper-skill-gate-turn",
         platform="desktop",

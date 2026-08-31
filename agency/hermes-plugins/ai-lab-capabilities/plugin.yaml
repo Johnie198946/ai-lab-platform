@@ -1,5 +1,5 @@
 name: ai-lab-capabilities
-version: 1.4.11
+version: 1.5.0
 description: Governed Skill/Agency routing plus safe no-key web extraction for Mac and cloud Hermes.
 provides_tools:
   - ai_lab_capabilities

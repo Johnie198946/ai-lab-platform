@@ -120,7 +120,7 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
     monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
     context = LocalPluginContext()
     plugin.register(context)
-    original = "请研究这篇文章并核验来源：https://example.com/report?a=1&b=2"
+    original = "请必须委派子代理研究这篇文章并核验来源：https://example.com/report?a=1&b=2"
 
     result = context.hooks["pre_llm_call"](
         original,
@@ -185,7 +185,7 @@ def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(mo
     assert started.startswith("已启动专业研究")
 
 
-def test_runtime_skill_failure_has_structured_reason_code(monkeypatch):
+def test_runtime_skill_failure_degrades_without_blocking_main(monkeypatch):
     plugin, router = load_router()
     router._INSTALLED = False
     router._LOCAL_TURN_STATES.clear()
@@ -205,11 +205,14 @@ def test_runtime_skill_failure_has_structured_reason_code(monkeypatch):
         sender_id="owner-open-id",
     )
 
-    blocked = context.hooks["transform_llm_output"](
-        "未经验证的回答",
+    fallback = context.hooks["transform_llm_output"](
+        "主 Agent 已直接完成任务。",
         session_id="runtime-skill-failure",
     )
-    assert "SKILL_RESULT_FAILED" in blocked
+    assert fallback == "主 Agent 已直接完成任务。"
+    assert router._LOCAL_TURN_STATES["runtime-skill-failure"][
+        "skill_failure_code"
+    ] == "SKILL_RESULT_FAILED"
 
 
 def test_runtime_skill_context_stays_below_hook_spill_limit(monkeypatch):
@@ -243,7 +246,7 @@ def test_local_professional_turn_requires_native_skill_then_delegation(monkeypat
     monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
 
     result = router._pre_llm_call(
-        "请系统调研企业 AI 市场并给出有证据的专业报告",
+        "请必须委派子代理系统调研企业 AI 市场并给出有证据的专业报告",
         session_id="local-parent",
         turn_id="local-turn",
         platform="desktop",
@@ -260,8 +263,94 @@ def test_local_professional_turn_requires_native_skill_then_delegation(monkeypat
     assert state["agency_decision"] == "CALL"
     assert state["requested_agent"] == "trend-researcher"
     assert state["expected_delegate_args"]["tasks"][0]["goal"] == (
-        "请系统调研企业 AI 市场并给出有证据的专业报告"
+        "请必须委派子代理系统调研企业 AI 市场并给出有证据的专业报告"
     )
+
+
+def test_ordinary_professional_work_uses_optional_agency_and_never_blocks_tools(monkeypatch):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
+
+    router._pre_llm_call(
+        "请深入研究并整理以下土耳其旅行笔记，写入本地知识库并更新索引。",
+        session_id="optional-ingestion",
+        turn_id="optional-ingestion-turn",
+        platform="desktop",
+        sender_id="local-owner",
+    )
+    state = router._LOCAL_TURN_STATES["optional-ingestion"]
+    assert state["route_class"] == "PROFESSIONAL_TASK"
+    assert state["agency_decision"] == "OPTIONAL"
+    assert router._pre_tool_call(
+        "write_file",
+        {"path": "/tmp/turkey.md", "content": "verified note"},
+        session_id="optional-ingestion",
+    ) is None
+    state["skill_failure_code"] = "SKILL_RESULT_FAILED"
+    assert router._transform_llm_output(
+        "已真实写入并读回核验。", session_id="optional-ingestion"
+    ) == "已真实写入并读回核验。"
+
+
+def test_optional_delegate_failure_is_diagnostic_not_task_failure(monkeypatch):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
+    router._pre_llm_call(
+        "深入研究这个链接 https://example.com/report",
+        session_id="optional-research",
+        turn_id="optional-research-turn",
+        platform="desktop",
+        sender_id="local-owner",
+    )
+    state = router._LOCAL_TURN_STATES["optional-research"]
+    assert state["agency_decision"] == "OPTIONAL"
+    router._post_tool_call(
+        "delegate_task",
+        state["expected_delegate_args"],
+        json.dumps({"error": "temporary child failure"}),
+        session_id="optional-research",
+    )
+    assert state["failure_code"] is None
+    assert router._transform_llm_output(
+        "主 Agent 使用真实网页证据完成研究。", session_id="optional-research"
+    ) == "主 Agent 使用真实网页证据完成研究。"
+
+
+def test_wechat_verification_fallback_allows_real_browser_for_approved_user(monkeypatch):
+    _, router = load_router()
+    router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
+    monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
+    router._pre_llm_call(
+        "看看这个微信链接 https://mp.weixin.qq.com/s/article-id",
+        session_id="wechat-browser",
+        turn_id="wechat-browser-turn",
+        platform="feishu",
+        sender_id="approved-user",
+    )
+    assert router._pre_tool_call(
+        "browser_exec",
+        {"code": "print(page_info())"},
+        session_id="wechat-browser",
+        turn_id="wechat-browser-turn",
+    ) is None
+    assert router._pre_tool_call(
+        "web_extract",
+        {"urls": ["https://mp.weixin.qq.com/s/article-id"]},
+        session_id="wechat-browser",
+        turn_id="wechat-browser-turn",
+    ) is None
+    repeated = router._pre_tool_call(
+        "web_extract",
+        {"urls": ["https://mp.weixin.qq.com/s/article-id"]},
+        session_id="wechat-browser",
+        turn_id="wechat-browser-turn",
+    )
+    assert repeated and "browser_exec" in repeated["message"]
 
 
 def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
@@ -310,24 +399,12 @@ def test_local_principal_scope_is_inherited_by_native_child(monkeypatch):
     assert child_denied and child_denied["action"] == "block"
 
 
-def test_feishu_write_owner_gets_scoped_vault_read_not_full_local_owner(
-    monkeypatch, tmp_path
-):
+def test_feishu_configured_owner_gets_full_local_owner_capabilities(monkeypatch):
     _, router = load_router()
     router._LOCAL_TURN_STATES.clear()
     router._GATEWAY_IDENTITIES.clear()
     monkeypatch.setenv("FEISHU_CODE_WRITE_OWNER_IDS", "ou_owner")
     monkeypatch.delenv("AI_LAB_LOCAL_OWNER_IDS", raising=False)
-    vault = tmp_path / "AI Lab"
-    wiki = vault / "wiki"
-    wiki.mkdir(parents=True)
-    note = wiki / "Quantumn.md"
-    note.write_text("# Quantumn", encoding="utf-8")
-    outside = tmp_path / "secret.txt"
-    outside.write_text("secret", encoding="utf-8")
-    escape = wiki / "escape.md"
-    escape.symlink_to(outside)
-    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
 
@@ -337,64 +414,33 @@ def test_feishu_write_owner_gets_scoped_vault_read_not_full_local_owner(
         chat_id="owner-dm",
         chat_type="dm",
     )
-    event = types.SimpleNamespace(source=source, text="读取本地知识库")
+    event = types.SimpleNamespace(source=source, text="写入本地知识库")
     router._pre_gateway_dispatch(event=event)
     injected = router._pre_llm_call(
         event.text,
-        session_id="owner-vault-session",
-        turn_id="owner-vault-turn",
+        session_id="owner-admin-session",
+        turn_id="owner-admin-turn",
         platform="feishu",
         sender_id="ou_owner",
     )
-    state = router._LOCAL_TURN_STATES["owner-vault-session"]
-    assert state["principal"] == "vault_owner"
-    assert injected and str(vault.resolve()) in injected["context"]
-    assert router._pre_tool_call(
-        "search_files", {"path": str(vault)}, session_id="owner-vault-session"
-    ) is None
-    assert router._pre_tool_call(
-        "read_file", {"path": str(note)}, session_id="owner-vault-session"
-    ) is None
-    assert router._pre_tool_call(
-        "session_search", {"query": "Quantumn"}, session_id="owner-vault-session"
-    ) is None
-
-    for path in (outside, escape):
-        denied = router._pre_tool_call(
-            "read_file", {"path": str(path)}, session_id="owner-vault-session"
-        )
-        assert denied and "VAULT_PATH_DENIED" in denied["message"]
-    wrapped_escape = router._pre_tool_call(
-        "tool_call",
-        {"name": "read_file", "arguments": {"path": str(escape)}},
-        session_id="owner-vault-session",
-    )
-    assert wrapped_escape and "VAULT_PATH_DENIED" in wrapped_escape["message"]
-    missing = router._pre_tool_call(
-        "search_files", {}, session_id="owner-vault-session"
-    )
-    assert missing and "VAULT_PATH_REQUIRED" in missing["message"]
-    relative = router._pre_tool_call(
-        "search_files", {"path": "wiki"}, session_id="owner-vault-session"
-    )
-    assert relative and "VAULT_PATH_REQUIRED" in relative["message"]
+    state = router._LOCAL_TURN_STATES["owner-admin-session"]
+    assert state["principal"] == "local_owner"
+    assert not injected or "read-only vault access" not in str(injected.get("context") or "")
     for tool_name, args in (
-        ("write_file", {"path": str(note), "content": "overwrite"}),
         ("terminal", {"command": "pwd"}),
+        ("write_file", {"path": "/tmp/owner-note.md", "content": "ok"}),
+        ("patch", {"path": "/tmp/owner-note.md"}),
+        ("browser_exec", {"code": "print(page_info())"}),
     ):
-        denied = router._pre_tool_call(
-            tool_name, args, session_id="owner-vault-session"
-        )
-        assert denied and denied["action"] == "block"
+        assert router._pre_tool_call(
+            tool_name, args, session_id="owner-admin-session"
+        ) is None
 
 
-def test_missing_sender_internal_turn_inherits_verified_vault_owner(monkeypatch, tmp_path):
+def test_missing_sender_internal_turn_inherits_verified_local_owner(monkeypatch):
     _, router = load_router()
     router._LOCAL_TURN_STATES.clear()
     router._GATEWAY_IDENTITIES.clear()
-    vault = tmp_path / "vault"
-    vault.mkdir()
-    monkeypatch.setenv("OBSIDIAN_VAULT_PATH", str(vault))
     monkeypatch.setenv("FEISHU_CODE_WRITE_OWNER_IDS", "ou_owner")
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     monkeypatch.setattr(router, "_agency_capabilities", lambda: [])
@@ -406,7 +452,7 @@ def test_missing_sender_internal_turn_inherits_verified_vault_owner(monkeypatch,
         platform="feishu",
         sender_id="ou_owner",
     )
-    assert first and str(vault.resolve()) in first["context"]
+    assert first is None
     second = router._pre_llm_call(
         "继续读取",
         session_id="owner-continuation",
@@ -414,8 +460,8 @@ def test_missing_sender_internal_turn_inherits_verified_vault_owner(monkeypatch,
         platform="feishu",
         sender_id="",
     )
-    assert router._LOCAL_TURN_STATES["owner-continuation"]["principal"] == "vault_owner"
-    assert second and str(vault.resolve()) in second["context"]
+    assert router._LOCAL_TURN_STATES["owner-continuation"]["principal"] == "local_owner"
+    assert second is None
 
 
 def test_non_owner_feishu_user_cannot_read_local_vault(monkeypatch, tmp_path):
@@ -441,7 +487,7 @@ def test_local_in_memory_receipt_is_diagnostic_only(monkeypatch):
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
     router._pre_llm_call(
-        "请系统调研市场趋势并核验多源证据",
+        "请必须委派子代理系统调研市场趋势并核验多源证据",
         session_id="receipt-parent",
         turn_id="receipt-turn",
         platform="desktop",

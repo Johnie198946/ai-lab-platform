@@ -127,7 +127,7 @@ def test_delegate_task_is_blocked_until_selected_skill_really_loads(monkeypatch)
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
     monkeypatch.setattr(router, "_agency_capabilities", agency)
     pre_result = router._pre_llm_call(
-        "请系统调研企业 AI 市场并给出有证据的专业报告",
+        "请必须委派子代理系统调研企业 AI 市场并给出有证据的专业报告",
         session_id="skill-gate-parent",
         turn_id="skill-gate-turn",
         platform="desktop",
@@ -170,7 +170,7 @@ def test_final_transform_never_falls_back_to_in_memory_receipt(monkeypatch):
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     monkeypatch.setattr(router, "_agency_capabilities", agency)
     router._pre_llm_call(
-        "请系统调研市场趋势并核验多源证据",
+        "请必须委派子代理系统调研市场趋势并核验多源证据",
         session_id="canonical-only-parent",
         turn_id="canonical-only-turn",
         platform="desktop",
