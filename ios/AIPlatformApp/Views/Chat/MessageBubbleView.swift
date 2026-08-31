@@ -24,6 +24,68 @@ enum StreamTextChunker {
     }
 }
 
+struct BoundedTextPreview: Equatable {
+    let content: String
+    let omittedPrefix: Bool
+}
+
+enum LongMessagePresentation {
+    static let longAnswerCharacterThreshold = 4_000
+    static let streamingCharacterLimit = 2_400
+    static let collapsedCharacterLimit = 800
+
+    static func isLong(_ text: String, limit: Int = longAnswerCharacterThreshold) -> Bool {
+        guard limit >= 0 else { return true }
+        guard let boundary = text.index(
+            text.startIndex,
+            offsetBy: limit,
+            limitedBy: text.endIndex
+        ) else { return false }
+        return boundary != text.endIndex
+    }
+
+    static func streamingPreview(_ text: String, limit: Int = streamingCharacterLimit) -> BoundedTextPreview {
+        guard isLong(text, limit: limit) else {
+            return BoundedTextPreview(content: text, omittedPrefix: false)
+        }
+        let start = text.index(text.endIndex, offsetBy: -limit)
+        return BoundedTextPreview(content: String(text[start...]), omittedPrefix: true)
+    }
+
+    static func collapsedPreview(_ text: String, limit: Int = collapsedCharacterLimit) -> String {
+        guard isLong(text, limit: limit) else { return text }
+        let boundary = text.index(text.startIndex, offsetBy: limit)
+        let rawPrefix = String(text[..<boundary])
+        let minimumBoundary = rawPrefix.index(
+            rawPrefix.startIndex,
+            offsetBy: max(0, limit / 2),
+            limitedBy: rawPrefix.endIndex
+        ) ?? rawPrefix.startIndex
+        if let paragraphBreak = rawPrefix.range(of: "\n\n", options: .backwards),
+           paragraphBreak.lowerBound >= minimumBoundary {
+            return String(rawPrefix[..<paragraphBreak.lowerBound])
+        }
+        return rawPrefix
+    }
+}
+
+enum ChatStreamingPerformancePolicy {
+    static func flushDelayNanoseconds(currentUTF8Count: Int) -> UInt64 {
+        switch currentUTF8Count {
+        case ..<4_000: return 160_000_000
+        case ..<12_000: return 250_000_000
+        default: return 400_000_000
+        }
+    }
+
+    static func typewriterBatchSize(totalCharacterCount: Int) -> Int {
+        guard totalCharacterCount > 0 else { return 1 }
+        return max(3, (totalCharacterCount + 23) / 24)
+    }
+
+    static let typewriterDelayNanoseconds: UInt64 = 50_000_000
+}
+
 public struct MessageBubbleView: View {
     public let message: ChatMessage
     public var context: PluginRenderContext? = nil
@@ -34,6 +96,7 @@ public struct MessageBubbleView: View {
     @State private var isCopied: Bool = false
     @State private var quoteFragmentDraft = ""
     @State private var isChoosingQuoteFragment = false
+    @State private var isShowingFullAnswer = false
 
     public init(
         message: ChatMessage,
@@ -70,6 +133,9 @@ public struct MessageBubbleView: View {
             }
             .presentationDetents([.medium, .large])
             .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $isShowingFullAnswer) {
+            LongAnswerSheet(messageId: message.id, content: message.content)
         }
     }
 
@@ -135,23 +201,46 @@ public struct MessageBubbleView: View {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
                     if message.isStreaming, !trimmed.isEmpty {
                         // Stable chunks keep old layout nodes unchanged while only
-                        // the tail grows. Selection is enabled after completion;
-                        // enabling it on a mutating long Text causes drag jank.
+                        // a bounded tail grows. Keeping the rendered subtree capped
+                        // prevents a very long answer from monopolizing layout.
+                        if streamingPreview.omittedPrefix {
+                            Label("前文已暂时折叠，完整内容会在生成结束后保留", systemImage: "text.append")
+                                .font(AppTheme.Typography.supporting.weight(.medium))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                .accessibilityLabel("长回答生成中，前文已暂时折叠")
+                        }
                         ForEach(Array(streamingTextChunks.enumerated()), id: \.offset) { _, chunk in
                             Text(chunk)
                                 .font(AppTheme.Typography.body)
                                 .foregroundColor(AppTheme.Colors.textPrimary)
                         }
-                    } else if !markdownBlocks.isEmpty {
+                    } else if !completedMarkdownBlocks.isEmpty {
                         // MarkdownBlock.id is content-derived; use parse order as
                         // local identity so repeated paragraphs stay distinct.
-                        ForEach(Array(markdownBlocks.enumerated()), id: \.offset) { _, block in
+                        ForEach(Array(completedMarkdownBlocks.enumerated()), id: \.offset) { _, block in
                             MarkdownBlockCard(block: block)
                         }
                     } else if !trimmed.isEmpty {
-                        Text(message.content)
+                        Text(completedDisplayContent)
                             .font(AppTheme.Typography.body)
                             .foregroundColor(AppTheme.Colors.textPrimary)
+                    }
+
+                    if isLongCompletedAnswer {
+                        Button {
+                            isShowingFullAnswer = true
+                        } label: {
+                            HStack(spacing: AppTheme.Spacing.xs) {
+                                Text("展开全文")
+                                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                            }
+                            .font(AppTheme.Typography.supporting.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.quantumBlue)
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .background(AppTheme.Colors.surfaceTint, in: Capsule())
+                        }
+                        .buttonStyle(SoftButtonStyle())
+                        .accessibilityHint("在独立页面中查看完整回答")
                     }
 
                     if message.isStreaming {
@@ -229,16 +318,31 @@ public struct MessageBubbleView: View {
         }
     }
 
-    /// 解析后的 Markdown 卡片块（流式期间缓存 key = messageId + isStreaming，剔除 content hash，
-    /// 流式期不重解析；done 时以完整内容解析一次——Supervision 条件 5）。
-    private var markdownBlocks: [MarkdownBlock] {
-        guard !message.content.isEmpty else { return [] }
-        let cacheKey = message.isStreaming ? "\(message.id)_streaming" : "\(message.id)_done_\(message.content.hashValue)"
-        return MarkdownBlockParser.shared.parse(message.content, messageId: cacheKey)
+    /// 流式期不解析 Markdown；完成态短回答解析全文，长回答只解析有界预览。
+    private var isLongCompletedAnswer: Bool {
+        !message.isStreaming && LongMessagePresentation.isLong(message.content)
+    }
+
+    private var completedDisplayContent: String {
+        isLongCompletedAnswer
+            ? LongMessagePresentation.collapsedPreview(message.content)
+            : message.content
+    }
+
+    private var completedMarkdownBlocks: [MarkdownBlock] {
+        guard !message.isStreaming, !message.content.isEmpty else { return [] }
+        let suffix = isLongCompletedAnswer
+            ? "collapsed_\(completedDisplayContent.hashValue)"
+            : "done_\(message.content.hashValue)"
+        return MarkdownBlockParser.shared.parse(completedDisplayContent, messageId: "\(message.id)_\(suffix)")
+    }
+
+    private var streamingPreview: BoundedTextPreview {
+        LongMessagePresentation.streamingPreview(message.content)
     }
 
     private var streamingTextChunks: [String] {
-        StreamTextChunker.chunks(message.content)
+        StreamTextChunker.chunks(streamingPreview.content)
     }
 
     // MARK: - 演示样例标注
@@ -347,6 +451,60 @@ public struct MessageBubbleView: View {
         Task {
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             isCopied = false
+        }
+    }
+}
+
+private struct LongAnswerSheet: View {
+    let messageId: String
+    let content: String
+    let cacheKey: String
+    @Environment(\.dismiss) private var dismiss
+    @State private var isCopied = false
+
+    init(messageId: String, content: String) {
+        self.messageId = messageId
+        self.content = content
+        self.cacheKey = "\(messageId)_full_\(content.hashValue)"
+    }
+
+    private var blocks: [MarkdownBlock] {
+        MarkdownBlockParser.shared.parse(content, messageId: cacheKey)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                        MarkdownBlockCard(block: block)
+                    }
+                }
+                .textSelection(.enabled)
+                .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(AppTheme.Spacing.md)
+            }
+            .background(AppTheme.Colors.background)
+            .navigationTitle("回答全文")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        #if os(iOS)
+                        UIPasteboard.general.string = content
+                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        #endif
+                        isCopied = true
+                    } label: {
+                        Label(isCopied ? "已复制" : "复制全文", systemImage: isCopied ? "checkmark" : "doc.on.doc")
+                    }
+                    .accessibilityHint("复制完整回答到剪贴板")
+                }
+            }
         }
     }
 }

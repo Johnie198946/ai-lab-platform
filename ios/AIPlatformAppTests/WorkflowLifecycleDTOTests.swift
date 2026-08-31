@@ -191,6 +191,29 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testLongAnswerDisclosureKeepsBubbleLayoutBoundedAcrossAccessibilitySizes() {
+        let message = ChatMessage(
+            role: .assistant,
+            content: String(repeating: "## 长回答\n这是一段用于验证折叠布局的富文本。\n\n", count: 2_000)
+        )
+        let widths: [CGFloat] = [375, 844]
+
+        for width in widths {
+            let root = MessageBubbleView(message: message)
+                .environment(\.dynamicTypeSize, .accessibility5)
+                .environment(\.colorScheme, .dark)
+                .frame(width: width)
+            let host = UIHostingController(rootView: root)
+            let fitting = host.sizeThatFits(
+                in: CGSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+            )
+
+            XCTAssertGreaterThan(fitting.height, 44)
+            XCTAssertLessThan(fitting.height, 4_000)
+        }
+    }
+
     private func findScrollView(in view: UIView) -> UIScrollView? {
         if let scrollView = view as? UIScrollView {
             return scrollView
@@ -946,6 +969,45 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         let body = Data(#"{"detail":"验证码无效或已过期"}"#.utf8)
         let error = APIError.authenticationFailure(body: body)
         XCTAssertEqual(error.localizedDescription, "验证码无效或已过期")
+    }
+
+    func testStreamingPreviewKeepsOnlyBoundedTail() {
+        let content = String(repeating: "前", count: 1_200)
+            + String(repeating: "后", count: 2_400)
+        let preview = LongMessagePresentation.streamingPreview(content)
+
+        XCTAssertTrue(preview.omittedPrefix)
+        XCTAssertEqual(preview.content.count, 2_400)
+        XCTAssertEqual(preview.content, String(repeating: "后", count: 2_400))
+    }
+
+    func testStreamingPreviewLeavesShortContentUnchanged() {
+        let content = "短回答"
+        let preview = LongMessagePresentation.streamingPreview(content)
+
+        XCTAssertFalse(preview.omittedPrefix)
+        XCTAssertEqual(preview.content, content)
+    }
+
+    func testCompletedLongAnswerUsesBoundedSemanticPreview() {
+        let first = String(repeating: "甲", count: 800)
+        let second = String(repeating: "乙", count: 4_000)
+        let content = first + "\n\n" + second
+        let preview = LongMessagePresentation.collapsedPreview(content)
+
+        XCTAssertTrue(LongMessagePresentation.isLong(content))
+        XCTAssertEqual(preview, first)
+        XCTAssertLessThanOrEqual(preview.count, LongMessagePresentation.collapsedCharacterLimit)
+    }
+
+    func testLongStreamingPolicyBoundsRefreshAndTypewriterUpdates() {
+        XCTAssertEqual(ChatStreamingPerformancePolicy.flushDelayNanoseconds(currentUTF8Count: 3_999), 160_000_000)
+        XCTAssertEqual(ChatStreamingPerformancePolicy.flushDelayNanoseconds(currentUTF8Count: 4_000), 250_000_000)
+        XCTAssertEqual(ChatStreamingPerformancePolicy.flushDelayNanoseconds(currentUTF8Count: 12_000), 400_000_000)
+
+        let total = 100_000
+        let batch = ChatStreamingPerformancePolicy.typewriterBatchSize(totalCharacterCount: total)
+        XCTAssertLessThanOrEqual((total + batch - 1) / batch, 24)
     }
 
     func testChatDraftSubmissionConsumesTextExactlyOnce() {

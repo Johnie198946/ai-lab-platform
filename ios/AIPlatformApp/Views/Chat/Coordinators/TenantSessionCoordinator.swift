@@ -691,11 +691,14 @@ public final class TenantSessionCoordinator: ObservableObject {
     private func scheduleContentFlush(messageId: String, taskEpoch: Int) {
         guard !flushScheduled else { return }
         flushScheduled = true
+        let publishedCount = messages.first(where: { $0.id == messageId })?.content.utf8.count ?? 0
+        let delay = ChatStreamingPerformancePolicy.flushDelayNanoseconds(
+            currentUTF8Count: publishedCount + deltaBuffer.utf8.count
+        )
         flushTask = Task { @MainActor [weak self] in
-            // Re-laying out a long, selectable Text view at 12.5fps competes
-            // with the user's downward drag.  A 160ms coalescing window keeps
-            // streaming responsive while leaving the main thread scroll budget.
-            try? await Task.sleep(nanoseconds: 160_000_000)
+            // Increase coalescing as the answer grows. Combined with the bounded
+            // streaming tail this leaves a predictable main-thread scroll budget.
+            try? await Task.sleep(nanoseconds: delay)
             guard let self = self, !Task.isCancelled, self.tenantEpoch == taskEpoch else {
                 self?.flushScheduled = false
                 self?.deltaBuffer = ""
@@ -1760,16 +1763,24 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func typewriter(messageId: String, answer: String) async {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
-        let chars = Array(answer)
-        guard !chars.isEmpty else {
+        let totalCount = answer.count
+        guard totalCount > 0 else {
             messages[idx].isStreaming = false
             return
         }
+        let batchSize = ChatStreamingPerformancePolicy.typewriterBatchSize(
+            totalCharacterCount: totalCount
+        )
         var shown = 0
-        while shown < chars.count {
-            shown = min(shown + 3, chars.count)
-            messages[idx].content = String(chars[0..<shown])
-            try? await Task.sleep(nanoseconds: 16_000_000)
+        while shown < totalCount {
+            shown = min(shown + batchSize, totalCount)
+            let end = answer.index(answer.startIndex, offsetBy: shown)
+            messages[idx].content = String(answer[..<end])
+            if shown < totalCount {
+                try? await Task.sleep(
+                    nanoseconds: ChatStreamingPerformancePolicy.typewriterDelayNanoseconds
+                )
+            }
         }
         messages[idx].isStreaming = false
     }
