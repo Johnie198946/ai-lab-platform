@@ -57,6 +57,14 @@ def test_explicit_capability_is_professional_but_does_not_self_grant():
     assert payload["skill_enabled"] is True
 
 
+def test_skill_management_intent_stays_in_authenticated_main_agent():
+    from backend.api.chat import _is_skill_management_request
+
+    assert _is_skill_management_request("确认后创建一个行程技能")
+    assert _is_skill_management_request("update this skill")
+    assert not _is_skill_management_request("调用行程技能帮我规划")
+
+
 def test_explicit_skill_agent_keeps_skill_discovery_enabled():
     from backend.api.chat import _skill_routing_enabled
     from backend.services.agent_capabilities import EffectiveAgent

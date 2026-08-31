@@ -705,6 +705,16 @@ def _skill_routing_enabled(agent: EffectiveAgent, skill_id: str | None) -> bool:
     )
 
 
+_SKILL_MANAGEMENT_INTENT = re.compile(
+    r"(?:创建|新建|生成|做|建|更新|修改|删除|create|update|delete).{0,12}(?:技能|skill)",
+    re.IGNORECASE,
+)
+
+
+def _is_skill_management_request(text: str) -> bool:
+    return bool(_SKILL_MANAGEMENT_INTENT.search(text or ""))
+
+
 def _classify_stream_request(
     req: "StreamRequest",
     *,
@@ -850,6 +860,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
             agent.id == DEFAULT_AGENT_ID
             and delegated_target is None
             and not skill_id
+            and not _is_skill_management_request(req.question)
         ),
         skill_enabled=_skill_routing_enabled(agent, skill_id),
     )
@@ -1344,6 +1355,7 @@ async def stream_chat(
                     and agent.id == DEFAULT_AGENT_ID
                     and delegated_target is None
                     and not skill_id
+                    and not _is_skill_management_request(req.question)
                 ),
                 skill_enabled=_skill_routing_enabled(agent, skill_id),
             )
