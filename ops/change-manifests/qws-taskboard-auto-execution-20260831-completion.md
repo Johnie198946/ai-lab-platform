@@ -36,6 +36,8 @@
 
 ## Remaining risks
 
+- 交互纠偏：用户要求保留 Taskboard 顶部 ▶️，并将其定义为“一键启动当前项目全部 todo/backlog 卡片”；不再把逐卡 AI Session 当作主入口。QWS host 下 ▶️ 已恢复，旧 Automation 配置弹层仍不出现。
+- 批量启动采用单次点击枚举全部待办、逐卡建立持久化任务会话并立即排队；单卡失败由 `Promise.allSettled` 隔离，服务端默认最多 3 个任务并发，其余保持 queued。
 - 生产首次真实任务验收：`conv_003f3129292c4807b5f8ec16f41e6a90` 在约 51 秒内从 running 到 completed，自动将卡片 `e1763efa-a41d-46c9-ab9a-0c213bdcd7ca` 标记为 `blocked`，并写入执行纪要、问题、根因、已尝试方案、验证结果与下一步；没有伪造完成。
 - 首次验收暴露 AI 员工仅获知识工具、未获公开网络工具；本轮追加修复为安全工具集 `knowledge_search/web_search/web_extract/skill_load`，并对已有 AI 员工增量升级能力。
 - 浏览器断开不影响任务，但 QWS 应用进程在执行中重启时不会自动续跑。状态保留在任务会话中；真正进程级恢复需要独立持久化 Worker/队列及服务身份，不能保存用户 Bearer Token 冒充耐久执行。

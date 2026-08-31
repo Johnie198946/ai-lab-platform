@@ -6,6 +6,8 @@ import "./DashiTaskboardHost.css";
 
 const safeSlug = (value) => String(value || "qws").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "qws";
 
+const batchAutoInstruction = (taskTitle) => `立即全自动执行任务《${taskTitle}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。优先使用项目知识与安全公开网络工具完成事实核查和交付。执行结束后必须输出 task_backfill：将状态设为 done 或 blocked；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；独立成果使用 Markdown 附件。`;
+
 
 function resolveDashiTheme() {
   const explicitTheme = document.documentElement.dataset.theme;
@@ -263,6 +265,44 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
     const receive = async (event) => {
       if (event.source !== iframeRef.current?.contentWindow || !event.data?.type) return;
       const frame = iframeRef.current.contentWindow;
+      if (event.data.type === "taskboard:run-project-todos") {
+        setError("");
+        setState("正在启动全部待办任务…");
+        try {
+          const tasksPayload = await dashiRequest(
+            `/api/tasks?projectId=${encodeURIComponent(dashiProjectId)}&archived=false`,
+            { user },
+          );
+          const todoTasks = (tasksPayload.tasks || []).filter((item) =>
+            ["todo", "backlog"].includes(item.status) && !item.archivedAt,
+          );
+          const results = await Promise.allSettled(todoTasks.map(async (item) => {
+            const session = await loadTaskSession(item.id);
+            const conversation = await platformApi.openTaskConversation({
+              project_id: project.id,
+              task_id: session.task.id,
+              workflow_id: session.task.workflow_id,
+              agent_version: "hermes-current",
+              card_context: session.cardContext,
+            });
+            return platformApi.startTaskAutoExecution(conversation.id, {
+              instruction: batchAutoInstruction(item.title),
+              request_id: `qw-batch-${crypto.randomUUID()}`,
+            });
+          }));
+          const started = results.filter((result) => result.status === "fulfilled").length;
+          const failed = results.length - started;
+          setState(`已启动 ${started} 个待办任务${failed ? `，${failed} 个启动失败` : ""}`);
+          frame.postMessage({
+            type: "taskboard:project-todos-started",
+            payload: { total: todoTasks.length, started, failed },
+          }, window.location.origin);
+          window.setTimeout(() => setState(""), 8000);
+        } catch (reason) {
+          setError(reason.message || "批量启动待办任务失败");
+        }
+        return;
+      }
       if (event.data.type === "taskboard:frame-awaiting-challenge") {
         frame.postMessage({ type: "taskboard:frame-challenge", payload: { challenge: crypto.randomUUID().replaceAll("-", "") } }, window.location.origin);
         return;

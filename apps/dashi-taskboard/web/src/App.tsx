@@ -3522,6 +3522,21 @@ export function App() {
           <div ref={dragRegionRef} className="workspace-drag-region" aria-hidden="true" />
 
           <div className="header-actions">
+            {selectedProject && host === "qws" && (
+              <button
+                type="button"
+                className="project-automation-trigger no-drag is-paused"
+                aria-label={text("启动全部待办", "Start all todo tasks")}
+                title={text("一键启动全部待办任务", "Start every todo task")}
+                onClick={() => window.parent.postMessage({
+                  type: "taskboard:run-project-todos",
+                  payload: { projectId: selectedProject.id },
+                }, window.location.origin)}
+              >
+                <TaskboardIcon name="automationPlay" />
+                <span>{text("启动全部待办", "Start all todos")}</span>
+              </button>
+            )}
             {selectedProject && host !== "qws" && (
               <ProjectAutomationMenu
                 automation={selectedProjectAutomation}

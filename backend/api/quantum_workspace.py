@@ -124,6 +124,9 @@ from backend.services.qws_calibration import (
 
 router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
 _AUTO_EXECUTION_TASKS: set[asyncio.Task] = set()
+_AUTO_EXECUTION_SEMAPHORE = asyncio.Semaphore(
+    max(1, int(os.getenv("QWS_AUTO_EXECUTION_CONCURRENCY", "3")))
+)
 
 _TASKBOARD_INTERNAL_URL = os.getenv(
     "DASHI_TASKBOARD_INTERNAL_URL", "http://taskboard:47823"
@@ -7586,7 +7589,7 @@ async def _set_auto_execution_state(
         await db.commit()
 
 
-async def _run_task_auto_execution(
+async def _run_task_auto_execution_unlimited(
     conversation_id: str, body: AutoExecuteTaskRequest,
     payload: dict[str, Any], authorization: str,
 ) -> None:
@@ -7706,6 +7709,16 @@ async def _run_task_auto_execution(
         await _set_auto_execution_state(
             conversation_id, state="failed", request_id=body.request_id,
             error=str(getattr(exc, "detail", None) or exc)[:2000],
+        )
+
+
+async def _run_task_auto_execution(
+    conversation_id: str, body: AutoExecuteTaskRequest,
+    payload: dict[str, Any], authorization: str,
+) -> None:
+    async with _AUTO_EXECUTION_SEMAPHORE:
+        await _run_task_auto_execution_unlimited(
+            conversation_id, body, payload, authorization
         )
 
 
