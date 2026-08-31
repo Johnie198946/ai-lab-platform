@@ -117,6 +117,18 @@ async def me(payload=Depends(require_auth)):
     return await _build_profile(payload)
 
 
+@router.get("/me/session")
+async def me_session(payload=Depends(require_auth)):
+    """登录关键路径使用的轻量身份快照；不扫描知识目录或聚合用量。"""
+    return {
+        "user_id": payload.get("user_id", ""),
+        "username": payload.get("username", ""),
+        "avatar_url": payload.get("avatar_url"),
+        "is_super_admin": payload.get("is_super_admin", False),
+        "tenant_key": payload["tenant_key"],
+    }
+
+
 @router.patch("/me")
 async def patch_me(body: ProfileUpdate, payload=Depends(require_auth)):
     """更新当前用户 username / avatar_url，返回更新后的完整 Profile。

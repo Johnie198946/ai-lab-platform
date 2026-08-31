@@ -120,6 +120,9 @@ export const platformApi = {
   getHealth() {
     return request("/health");
   },
+  getSessionMe(options = {}) {
+    return request("/api/v1/me/session", options);
+  },
   login({ identifier, password }) {
     return request("", {
       method: "POST",
@@ -532,6 +535,12 @@ export const platformApi = {
   },
   streamTaskMessage(conversationId, payload, onEvent) {
     return streamRequest(`/api/v1/task-conversations/${conversationId}/messages/stream`, payload, onEvent);
+  },
+  startTaskAutoExecution(conversationId, payload) {
+    return request(`/api/v1/task-conversations/${conversationId}/auto-execute`, { method: "POST", body: payload });
+  },
+  getTaskAutoExecution(conversationId) {
+    return request(`/api/v1/task-conversations/${conversationId}/auto-execution`);
   },
   submitTaskClarification(payload) {
     return request("/api/chat/stream/clarify", { method: "POST", body: payload });

@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useParams } from "react-router-dom";
 import { ProtectedRoute } from "../components/ProtectedRoute";
 import { useAuth } from "../auth/AuthContext";
 import { LoginPage } from "../pages/LoginPage";
@@ -24,6 +24,11 @@ function ShowroomRedirect() {
   return <Navigate to={isAuthenticated ? "/agency" : "/login?next=/agency"} replace />;
 }
 
+function ProjectTaskboardRedirect() {
+  const { projectId } = useParams();
+  return <Navigate to={`/projects/${projectId}/taskboard`} replace />;
+}
+
 export default function App() {
   const { isAuthenticated, authSession } = useAuth();
 
@@ -42,8 +47,8 @@ export default function App() {
           <Route path="/templates" element={<WorkspaceHomePage />} />
           <Route path="/projects/:projectId/taskboard" element={<ProjectWorkspacePage />} />
           <Route path="/projects/:projectId/schedule" element={<ProjectWorkspacePage />} />
-          <Route path="/projects/:projectId/documents" element={<ProjectWorkspacePage />} />
-          <Route path="/projects/:projectId/automation" element={<ProjectWorkspacePage />} />
+          <Route path="/projects/:projectId/documents" element={<ProjectTaskboardRedirect />} />
+          <Route path="/projects/:projectId/automation" element={<ProjectTaskboardRedirect />} />
           <Route path="/projects/:projectId/graph/:viewType" element={<ProjectWorkspacePage />} />
         </Route>
         <Route path="/architect" element={<ArchitectPage />} />

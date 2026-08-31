@@ -1,4 +1,9 @@
 .qw-dashi-host { position: relative; min-height: 760px; height: calc(100vh - 232px); margin: 0 -24px -32px; background: #f8fafc; overflow: hidden; }
+.qw-taskboard-workspace .qw-dashi-host { margin-bottom: 0; }
+.qw-taskboard-documents { margin: 32px 0 0; padding-top: 28px; border-top: 1px solid var(--qw-border, #dbe2ea); }
+.qw-taskboard-documents > header { margin-bottom: 16px; }
+.qw-taskboard-documents > header h2 { margin: 4px 0; }
+.qw-taskboard-documents > header p { margin: 0; color: #64748b; }
 .qw-dashi-host iframe { width: 100%; height: 100%; border: 0; display: block; background: #f8fafc; }
 .qw-dashi-status { position: absolute; z-index: 2; inset: 0; display: grid; place-items: center; color: #475569; background: #f8fafc; font-size: 14px; }
 .qw-dashi-status.is-error { color: #b42318; }

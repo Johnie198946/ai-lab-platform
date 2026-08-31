@@ -5,6 +5,7 @@ import asyncio
 
 import json
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import gettempdir
@@ -2943,6 +2944,79 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
     ).json()
     assert len(replay_messages) == 2
+
+
+def test_task_auto_execution_runs_server_side_and_applies_backfill(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "auto-execution")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    conversation = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": task["id"],
+            "workflow_id": task["workflow_id"],
+            "agent_version": "hermes-current",
+        },
+    ).json()
+    captured = {}
+
+    async def fake_chat_stream(
+        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
+    ):
+        captured["question"] = req.question
+
+        async def events():
+            answer = (
+                "执行完成。\n```task_backfill\n"
+                + json.dumps({
+                    "summary": "自动执行完成并记录纪要",
+                    "self_changes": {
+                        "status": "done",
+                        "appendComment": "执行日志：完成；问题：无；解决方案：已验证。",
+                    },
+                    "routes": [],
+                }, ensure_ascii=False)
+                + "\n```"
+            )
+            yield f"data: {json.dumps({'type': 'done', 'answer': answer}, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    async def fake_apply_taskboard_backfill(**kwargs):
+        captured["applied"] = kwargs
+        return {"updated_fields": ["status"], "comment_id": "comment-auto"}
+
+    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", fake_chat_stream)
+    monkeypatch.setattr(
+        "backend.api.quantum_workspace._apply_taskboard_backfill",
+        fake_apply_taskboard_backfill,
+    )
+    request_id = "auto-execution-request-0001"
+    started = client.post(
+        f"/api/v1/task-conversations/{conversation['id']}/auto-execute",
+        headers={"Authorization": "Bearer test-token"},
+        json={"instruction": "全自动完成当前任务并写日志", "request_id": request_id},
+    )
+    assert started.status_code == 202, started.text
+    state = {}
+    for _ in range(100):
+        state = client.get(
+            f"/api/v1/task-conversations/{conversation['id']}/auto-execution"
+        ).json()
+        if state.get("state") in {"completed", "failed"}:
+            break
+        time.sleep(0.01)
+    assert state["state"] == "completed", state
+    assert captured["applied"]["authorization"] == "Bearer test-token"
+    assert captured["applied"]["self_changes"]["status"] == "done"
+    assert "AUTO_EXECUTE=true. Continue autonomously until done." in captured["question"]
+    messages = client.get(
+        f"/api/v1/task-conversations/{conversation['id']}/messages"
+    ).json()
+    assert messages[-1]["event_metadata"]["terminal_type"] == "done"
 
 
 def test_task_chat_persists_and_replays_terminal_stream_failure(

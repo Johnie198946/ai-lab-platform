@@ -94,6 +94,17 @@ class TestMeAPI(unittest.TestCase):
         # 未持久化时回退 JWT username
         self.assertEqual(body["username"], "tester")
 
+    def test_get_me_session_returns_lightweight_identity(self):
+        r = self.request("GET", "/api/v1/me/session")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json(), {
+            "user_id": "me-user-1",
+            "username": "tester",
+            "avatar_url": None,
+            "is_super_admin": False,
+            "tenant_key": "u-me-test",
+        })
+
     def test_patch_me_updates_username_and_avatar(self):
         r = self.request(
             "PATCH",

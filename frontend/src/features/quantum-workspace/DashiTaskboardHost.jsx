@@ -292,10 +292,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
         if (workflowId) openArchitect(workflowId);
         return;
       }
-      if (event.data.type === "taskboard:open-project-automation") {
-        window.location.assign(`/projects/${project.id}/automation`);
-        return;
-      }
+      if (event.data.type === "taskboard:open-project-automation") return;
       if (event.data.type !== "taskboard:create-thread") return;
       const dashiTaskId = event.data.payload?.taskId;
       try {
@@ -303,6 +300,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat }) {
         const session = await loadTaskSession(dashiTaskId);
         onOpenTaskChat?.({
           ...session,
+          autoInstruction: `${event.data.payload?.instruction || "执行当前任务。"}\n\n立即全自动执行当前任务，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。执行过程中保留可读日志；结束时自动更新卡片状态、负责人和必要字段，在卡片评论中写明执行纪要、发现的问题、根因、已采取的解决方案、验证结果和剩余风险。若缺少关键外部信息，先尝试可用工具和项目上下文；仍无法解决时将卡片标为 blocked，并在评论中写清问题与可执行解决方案。最终必须输出 task_backfill 块，包含 appendComment，并将 status 设置为 done 或 blocked；需要独立保存的纪要使用 Markdown 附件。`,
           refreshCardContext: () => loadTaskSession(dashiTaskId),
         });
         frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId } }, window.location.origin);

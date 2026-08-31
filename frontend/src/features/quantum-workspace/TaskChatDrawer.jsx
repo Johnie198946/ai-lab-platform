@@ -199,7 +199,7 @@ function TaskGovernancePanel({ project, task, onResolved }) {
   );
 }
 
-export function TaskChatDrawer({ project, process, task, cardContext, refreshCardContext, onClose }) {
+export function TaskChatDrawer({ project, process, task, cardContext, refreshCardContext, autoInstruction = "", onClose }) {
   const [conversation, setConversation] = useState(null);
   const [contextSync, setContextSync] = useState(null);
   const [currentCardContext, setCurrentCardContext] = useState(cardContext);
@@ -217,6 +217,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   const [error, setError] = useState("");
   const [clock, setClock] = useState(Date.now());
   const messagesRef = useRef(null);
+  const autoStartedRef = useRef("");
   const aiEmployee = conversation?.binding?.ai_employee || null;
   const assistantLabel = aiEmployee
     ? `${aiEmployee.display_name} · AI 员工`
@@ -262,10 +263,11 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
     return () => window.clearInterval(timer);
   }, [busy]);
 
-  const send = async (event) => {
+  const send = async (event, explicitText = "", automatic = false) => {
     event.preventDefault();
-    if (!question.trim() || !conversation || busy) return;
-    const text = question.trim();
+    const requestedText = explicitText.trim() || question.trim();
+    if (!requestedText || !conversation || busy) return;
+    const text = requestedText;
     const requestId = `qw-chat-${crypto.randomUUID()}`;
     setQuestion("");
     setBusy(true);
@@ -275,7 +277,42 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       const startedAt = Date.now();
       setClock(startedAt);
       setMessages((current) => [...current, { id: requestId, role: "user", content: text }, { id: `${requestId}-assistant`, role: "assistant", content: "", pending: true, execution: createHermesExecution("正在同步卡片增量", startedAt) }]);
-      const finalEvent = await platformApi.streamTaskMessage(activeConversation.id, { question: text, request_id: requestId }, (streamEvent) => {
+      if (automatic) {
+        await platformApi.startTaskAutoExecution(activeConversation.id, {
+          instruction: text,
+          request_id: requestId,
+        });
+        let executionState = null;
+        for (let attempt = 0; attempt < 900; attempt += 1) {
+          executionState = await platformApi.getTaskAutoExecution(activeConversation.id);
+          setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? {
+            ...message,
+            execution: {
+              ...message.execution,
+              current: executionState.state === "queued" ? "后台任务已排队" : "后台持续执行中",
+              elapsedMs: Date.now() - startedAt,
+            },
+          } : message));
+          if (["completed", "failed"].includes(executionState.state)) break;
+          await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        }
+        if (executionState?.state !== "completed") {
+          throw new Error(executionState?.error || "后台自动执行未在时限内完成；任务仍保留服务端状态。" );
+        }
+        const [persisted, refreshed] = await Promise.all([
+          platformApi.listTaskMessages(activeConversation.id),
+          refreshCardContext(),
+        ]);
+        setMessages(restoreTaskMessages(persisted));
+        setCurrentCardContext(refreshed.cardContext);
+        setGovernanceTask(refreshed.task);
+        setMessages((current) => [...current, {
+          id: `${requestId}-applied`, role: "assistant",
+          content: "后台自动执行完成，任务卡片、执行日志、问题与解决方案及纪要已回填。",
+        }]);
+        return;
+      }
+      const finalEvent = await platformApi.streamTaskMessage(activeConversation.id, { question: text, request_id: requestId, trigger: "user" }, (streamEvent) => {
         setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? updateHermesExecution(message, streamEvent, { context: "正在同步卡片上下文与权限", reasoning: "Hermes 正在理解任务", professional: "已识别为任务操作，租户技能可以参与" }) : message));
         if (streamEvent.type === "delta" && streamEvent.content) {
           setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, content: `${message.content}${streamEvent.content}` } : message));
@@ -313,8 +350,17 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, content: "流式连接失败，消息未被冒充为成功。", pending: false, failed: true } : message));
     } finally {
       setBusy(false);
+      if (automatic) setProposalBusy("");
     }
   };
+
+  useEffect(() => {
+    if (!conversation || !autoInstruction || busy) return;
+    const executionKey = `${task.id}:${conversation.id}`;
+    if (autoStartedRef.current === executionKey) return;
+    autoStartedRef.current = executionKey;
+    void send({ preventDefault() {} }, autoInstruction, true);
+  }, [autoInstruction, conversation, task.id]);
 
   const refreshContext = async () => {
     if (!refreshCardContext || contextRefreshing || busy) return;

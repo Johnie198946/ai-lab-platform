@@ -3522,7 +3522,7 @@ export function App() {
           <div ref={dragRegionRef} className="workspace-drag-region" aria-hidden="true" />
 
           <div className="header-actions">
-            {selectedProject && (
+            {selectedProject && host !== "qws" && (
               <ProjectAutomationMenu
                 automation={selectedProjectAutomation}
                 models={automationModels}

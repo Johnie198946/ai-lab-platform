@@ -1,4 +1,4 @@
-import { ChevronLeft, FileText, GitBranch, LayoutDashboard, Route, Zap } from "lucide-react";
+import { ChevronLeft, GitBranch, LayoutDashboard, Route } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { platformApi } from "../../services/platformApi";
@@ -7,7 +7,7 @@ import { AIResourceWorkbench } from "./AIResourceWorkbench";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
 import { ProjectDocuments } from "./ProjectDocuments";
-import { ProjectAutomations } from "./ProjectAutomations";
+
 import { DashiTaskboardHost } from "./DashiTaskboardHost";
 import { StageRail } from "./StageRail";
 import { TaskChatDrawer } from "./TaskChatDrawer";
@@ -32,7 +32,7 @@ export function ProjectWorkspacePage() {
   const [dialogError, setDialogError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
-  const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/documents") ? "documents" : location.pathname.includes("/automation") ? "automation" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
+  const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
 
   const load = useCallback(async () => {
     setError("");
@@ -245,20 +245,23 @@ export function ProjectWorkspacePage() {
         <div className="qw-view-tabs">
           <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>
           <NavLink to={`/projects/${projectId}/graph/workflow`}><GitBranch size={15} />Workflow</NavLink>
-          <NavLink to={`/projects/${projectId}/documents`}><FileText size={15} />Documents</NavLink>
-          <NavLink to={`/projects/${projectId}/automation`}><Zap size={15} />Automation</NavLink>
           <NavLink to={`/projects/${projectId}/graph/ai-resource`}><Route size={15} />AI Resource</NavLink>
         </div>
         <StageRail process={process} selectedStageId={selectedStageId} onSelect={setSelectedStageId} onSaveRole={saveProjectRole} />
       </div>
       {error && <p className="qw-error page">{error}</p>}
-      {view === "taskboard" && <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />}
+      {view === "taskboard" && <div className="qw-taskboard-workspace">
+        <DashiTaskboardHost project={project} onOpenTaskChat={setSelectedTaskSession} />
+        <section className="qw-taskboard-documents" aria-label="Taskboard 项目文档">
+          <header><span className="qw-eyebrow">Taskboard · Project documents</span><h2>项目文档</h2><p>执行日志、纪要和项目文档统一留在 Taskboard 工作区。</p></header>
+          <ProjectDocuments projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />
+        </section>
+      </div>}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
-      {view === "documents" && <ProjectDocuments projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />}
-      {view === "automation" && <ProjectAutomations projectId={projectId} onRevisionChange={(revision) => setProcess((current) => ({ ...current, process_revision: revision }))} />}
+
       {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} process={process} onSave={saveWorkflowGraph} />}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
-      {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} onClose={() => setSelectedTaskSession(null)} />}
+      {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} autoInstruction={selectedTaskSession.autoInstruction} onClose={() => setSelectedTaskSession(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}
       {newTaskOpen && <NewProjectTaskDialog stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setNewTaskOpen(false)} onSubmit={createTask} />}
       {bindTask && <BindWorkflowDialog task={bindTask} workflows={workflows} busy={dialogBusy} error={dialogError} onClose={() => setBindTask(null)} onBind={bindWorkflow} onCreateAndBind={createAndBindWorkflow} />}

@@ -32,7 +32,7 @@ export function AuthProvider({ children }) {
       }
 
       try {
-        const user = await platformApi.getMe({
+        const user = await platformApi.getSessionMe({
           accessToken: storedSession.accessToken ?? "",
           skipSessionAuth: true,
         });
@@ -63,7 +63,7 @@ export function AuthProvider({ children }) {
 
   const login = async ({ identifier, password }) => {
     const accessToken = await platformApi.authenticate({ identifier, password });
-    const user = await platformApi.getMe({
+    const user = await platformApi.getSessionMe({
       accessToken,
       skipSessionAuth: true,
     });
@@ -80,7 +80,7 @@ export function AuthProvider({ children }) {
 
   const loginWithPhone = async ({ phone, code }) => {
     const accessToken = await platformApi.authenticatePhone({ phone, code });
-    const user = await platformApi.getMe({ accessToken, skipSessionAuth: true });
+    const user = await platformApi.getSessionMe({ accessToken, skipSessionAuth: true });
     const session = buildAuthSession({
       accessToken,
       identifier: phone,
@@ -94,7 +94,7 @@ export function AuthProvider({ children }) {
 
   const loginWithOAuthTicket = async ({ ticket }) => {
     const accessToken = await platformApi.completeOAuth({ ticket });
-    const user = await platformApi.getMe({ accessToken, skipSessionAuth: true });
+    const user = await platformApi.getSessionMe({ accessToken, skipSessionAuth: true });
     const session = buildAuthSession({
       accessToken,
       identifier: user?.username || "oauth-user",
@@ -107,7 +107,7 @@ export function AuthProvider({ children }) {
   };
 
   const loginWithToken = async ({ accessToken, identifier = "token-user" }) => {
-    const user = await platformApi.getMe({
+    const user = await platformApi.getSessionMe({
       accessToken,
       skipSessionAuth: true,
     });
@@ -123,7 +123,7 @@ export function AuthProvider({ children }) {
   };
 
   const loginDev = async () => {
-    const user = await platformApi.getMe({
+    const user = await platformApi.getSessionMe({
       accessToken: "",
       skipSessionAuth: true,
     });
