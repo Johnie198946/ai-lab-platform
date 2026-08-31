@@ -40,6 +40,7 @@ from backend.api.quantum_workspace import (  # noqa: E402
 from backend.services.workspace_process import instantiate_project_blueprint, persist_process_revision  # noqa: E402
 from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
+from backend.models.tenant_agent import TenantAgentModel  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
     WorkspaceBusinessIntake,
     WorkspaceCardSessionRegistry,
@@ -1250,6 +1251,28 @@ def test_business_intake_draft_requires_review_and_applies_atomically(_reset_dat
     assert {item["employee_id"] for item in ensured.json()["ai_employees"]} == {
         item["employee_id"] for item in employees
     }
+
+    async def employee_capabilities():
+        async with SessionLocal() as db:
+            rows = (
+                await db.scalars(
+                    select(TenantAgentModel).where(
+                        TenantAgentModel.id.in_({
+                            item["employee_id"] for item in employees
+                        })
+                    )
+                )
+            ).all()
+            return [row.composition_manifest for row in rows]
+
+    manifests = asyncio.run(employee_capabilities())
+    assert manifests
+    assert all(manifest["allow_network"] is True for manifest in manifests)
+    assert all(
+        {"web_search", "web_extract", "knowledge_search", "skill_load"}
+        <= set(manifest["allowed_tools"])
+        for manifest in manifests
+    )
 
     repeated = client.post(
         f"/api/v1/projects/{project_id}/process-drafts/{draft['id']}/apply",

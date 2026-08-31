@@ -701,10 +701,23 @@ async def _ensure_project_ai_employees(
         _employee_payload(row)["display_name"] for row in by_role.values()
     }
     employee_tools = [
-        tool for tool in SAFE_GLOBAL_TOOLS if tool in {"knowledge_search", "skill_load"}
+        tool
+        for tool in SAFE_GLOBAL_TOOLS
+        if tool in {"web_search", "web_extract", "knowledge_search", "skill_load"}
     ]
     for role in role_names:
         if role in by_role:
+            existing = by_role[role]
+            manifest = dict(existing.composition_manifest or {})
+            if (
+                manifest.get("allowed_tools") != employee_tools
+                or manifest.get("allow_network") is not True
+            ):
+                existing.composition_manifest = {
+                    **manifest,
+                    "allowed_tools": employee_tools,
+                    "allow_network": True,
+                }
             continue
         employee_id = hashlib.sha256(
             f"qws-employee:{tenant_key}:{user_id}:{project.id}:{role}".encode("utf-8")
@@ -736,7 +749,7 @@ async def _ensure_project_ai_employees(
             composition_manifest={
                 "allowed_tools": employee_tools,
                 "capability_agent_ids": [base_agent_id],
-                "allow_network": False,
+                "allow_network": True,
                 "delegation": {"max_concurrent_children": 0, "max_spawn_depth": 0},
                 "qws_employee": {
                     "project_id": project.id,
