@@ -1,7 +1,7 @@
 ---
 title: Agent OS 通用降级、微信浏览器回退与飞书 Owner 超管修复
 task_id: agent-os-general-fallback-feishu-admin-20260831
-status: TESTED
+status: VERIFIED
 date: 2026-08-31
 tags:
   - ops/change-manifest
@@ -74,14 +74,15 @@ tags:
 - branch: `main`
 - base: `8667a45fd8f7f048e015263c55ec4db6f20581ac`
 - plugin_version: `1.5.0`
-- status: `TESTED`
-- implementation_commit: 待提交
-- remote_sha: 待推送核验
-- mac_before: 待部署记录
-- mac_after: 待部署记录
-- server_before: 待部署记录
-- server_after: 待部署记录
-- rollback_point: 待建立
+- status: `VERIFIED`
+- implementation_commits: `776216bcb1cf7920146ba18de306983b672e04a9`、`40cdeecab0a429f1d4f5585d4454ff9097247b0f`、`cf6e7095f340c46c1ab1594f26d3d47124213837`
+- remote_sha: `cf6e7095f340c46c1ab1594f26d3d47124213837`（运行代码；最终 manifest-only SHA 另行读回）
+- mac_before: active plugin `1.4.13`；router SHA-256 `b3a30eb92a2e9382ee1813c690bf482cbfe3e63565cbce609dbbe1314aeeef54`；Gateway PID `16734`。
+- mac_after: active plugin `1.5.0`；router SHA-256 `e5144ae4378e0cc9a4f6b3bdd102d5f8824e83684ecd7f82b8aead8b7029ff91`；Gateway PID `24353`，launchd supervised。
+- server_before: release `/opt/releases/ai-lab-platform-8667a45fd8f7.GV4We8`；`.deployed-sha=8667a45fd8f7f048e015263c55ec4db6f20581ac`；active plugin `1.4.13`；router SHA-256 `a5ac7ccb9e00026b94b252d0b771882300a50b53ef043212a2ae0dd2e775fe07`。
+- server_after: 平台 release 与 `.deployed-sha` 不变；窄插件升级为 `1.5.0`；router SHA-256 `e5144ae4378e0cc9a4f6b3bdd102d5f8824e83684ecd7f82b8aead8b7029ff91`；`hermes-bridge.service=active`；健康接口 `healthy`。
+- functional_check: Mac `普通笔记→local_owner/OPTIONAL/write_allowed=true`；Mac `明确必须子代理→CALL/write_allowed=false`；云端 `cloud_multi_tenant Feishu→approved_user/write_allowed=false`；微信真实文章 `23,848` 字符、`captcha=false`。
+- rollback_point: Mac `/Users/dengzhaoyu/.hermes/plugin-rollbacks/ai-lab-capabilities-before-cf6e7095f340c46c1ab1594f26d3d47124213837`；服务器 `/root/.hermes/plugin-rollbacks/ai-lab-capabilities-before-cf6e7095f340c46c1ab1594f26d3d47124213837`。
 - remaining_risks: Python 3.12 全局环境仍有本次之前已存在的多组依赖版本告警；当前 `browser_exec` 实际抓取已通过，不在本任务中升级全部全局依赖以避免扩大变更面。
 
 ## 费用
