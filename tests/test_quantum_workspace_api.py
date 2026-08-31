@@ -41,6 +41,7 @@ from backend.services.workspace_process import instantiate_project_blueprint, pe
 from backend.db import SessionLocal  # noqa: E402
 from backend.models.workflow import WorkflowDefinition  # noqa: E402
 from backend.models.tenant_agent import TenantAgentModel  # noqa: E402
+from backend.services.qws_ai_employee_migration import migrate_qws_ai_employee_capabilities  # noqa: E402
 from backend.models.workspace import (  # noqa: E402
     WorkspaceBusinessIntake,
     WorkspaceCardSessionRegistry,
@@ -1272,6 +1273,28 @@ def test_business_intake_draft_requires_review_and_applies_atomically(_reset_dat
         {"web_search", "web_extract", "knowledge_search", "skill_load"}
         <= set(manifest["allowed_tools"])
         for manifest in manifests
+    )
+
+    async def downgrade_then_migrate():
+        employee_id = employees[0]["employee_id"]
+        async with SessionLocal() as db:
+            row = await db.get(TenantAgentModel, employee_id)
+            row.composition_manifest = {
+                **(row.composition_manifest or {}),
+                "allowed_tools": ["knowledge_search"],
+                "allow_network": False,
+            }
+            await db.commit()
+        migrated = await migrate_qws_ai_employee_capabilities()
+        async with SessionLocal() as db:
+            row = await db.get(TenantAgentModel, employee_id)
+            return migrated, row.composition_manifest
+
+    migrated, upgraded_manifest = asyncio.run(downgrade_then_migrate())
+    assert migrated >= 1
+    assert upgraded_manifest["allow_network"] is True
+    assert {"web_search", "web_extract", "knowledge_search", "skill_load"} <= set(
+        upgraded_manifest["allowed_tools"]
     )
 
     repeated = client.post(

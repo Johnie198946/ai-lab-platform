@@ -75,6 +75,16 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("Legacy workflow migration failed; continuing startup")
         try:
+            from backend.services.qws_ai_employee_migration import (
+                migrate_qws_ai_employee_capabilities,
+            )
+
+            migrated = await migrate_qws_ai_employee_capabilities()
+            if migrated:
+                logger.info("Upgraded %s QWS AI employees to safe baseline tools", migrated)
+        except Exception:
+            logger.exception("QWS AI employee capability migration failed; continuing startup")
+        try:
             from backend.api.workflows import resume_pending_planning
 
             await resume_pending_planning()
