@@ -706,13 +706,28 @@ def _skill_routing_enabled(agent: EffectiveAgent, skill_id: str | None) -> bool:
 
 
 _SKILL_MANAGEMENT_INTENT = re.compile(
-    r"(?:创建|新建|生成|做|建|更新|修改|删除|create|update|delete).{0,12}(?:技能|skill)",
+    r"(?:创建|新建|生成|做|建|更新|修改|删除|create|update|delete).{0,80}(?:技能|skill)",
     re.IGNORECASE,
 )
 
 
 def _is_skill_management_request(text: str) -> bool:
-    return bool(_SKILL_MANAGEMENT_INTENT.search(text or ""))
+    return "tenant_skill_manage" in (text or "") or bool(
+        _SKILL_MANAGEMENT_INTENT.search(text or "")
+    )
+
+
+def _skill_management_decision(
+    question: str, decision: TriageDecision
+) -> TriageDecision:
+    if not _is_skill_management_request(question):
+        return decision
+    return TriageDecision(
+        PROFESSIONAL_TASK,
+        max(0.99, decision.confidence),
+        "tenant_skill_management",
+        (),
+    )
 
 
 def _classify_stream_request(
@@ -738,6 +753,7 @@ def _classify_stream_request(
         ),
         explicit_skill=bool(skill_id),
     )
+    decision = _skill_management_decision(question or req.question, decision)
     if trusted_professional_surface and decision.route_class == GENERAL_QA:
         return TriageDecision(
             PROFESSIONAL_TASK,
@@ -853,6 +869,7 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         ),
         explicit_skill=bool(skill_id),
     )
+    triage = _skill_management_decision(req.question, triage)
     main_agent_config = _triaged_agent_config(
         agent,
         triage,

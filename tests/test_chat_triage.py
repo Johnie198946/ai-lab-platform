@@ -58,11 +58,22 @@ def test_explicit_capability_is_professional_but_does_not_self_grant():
 
 
 def test_skill_management_intent_stays_in_authenticated_main_agent():
-    from backend.api.chat import _is_skill_management_request
+    from backend.api.chat import (
+        _is_skill_management_request,
+        _skill_management_decision,
+    )
 
     assert _is_skill_management_request("确认后创建一个行程技能")
     assert _is_skill_management_request("update this skill")
+    assert _is_skill_management_request(
+        "请创建一个名为 qa-itinerary-12345678 的租户私有技能，必须调用 tenant_skill_manage"
+    )
     assert not _is_skill_management_request("调用行程技能帮我规划")
+    original = classify_request("请创建一个行程技能")
+    routed = _skill_management_decision("请创建一个行程技能", original)
+    assert routed.route_class == PROFESSIONAL_TASK
+    assert routed.reason_code == "tenant_skill_management"
+    assert routed.evidence_requirements == ()
 
 
 def test_explicit_skill_agent_keeps_skill_discovery_enabled():
