@@ -34,7 +34,7 @@ RUN echo $'server {\n\
         proxy_buffering off;\n\
         client_max_body_size 30M;\n\
         add_header X-Frame-Options "SAMEORIGIN" always;\n\
-        add_header Content-Security-Policy "frame-ancestors 'self'" always;\n\
+        add_header Content-Security-Policy "frame-ancestors $scheme://$host" always;\n\
         add_header X-Content-Type-Options "nosniff" always;\n\
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
     }\n\
@@ -156,7 +156,7 @@ server {\n\
         proxy_buffering off;\n\
         client_max_body_size 30M;\n\
         add_header X-Frame-Options "SAMEORIGIN" always;\n\
-        add_header Content-Security-Policy "frame-ancestors 'self'" always;\n\
+        add_header Content-Security-Policy "frame-ancestors $scheme://$host" always;\n\
         add_header X-Content-Type-Options "nosniff" always;\n\
         add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
     }\n\

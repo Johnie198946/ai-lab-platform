@@ -122,7 +122,7 @@ test("same-origin Taskboard iframe is not blocked by the production proxy", () =
   for (const block of taskboardBlocks) {
     assert.match(block, /proxy_hide_header X-Frame-Options/);
     assert.match(block, /add_header X-Frame-Options "SAMEORIGIN" always/);
-    assert.match(block, /Content-Security-Policy "frame-ancestors 'self'"/);
+    assert.match(block, /Content-Security-Policy "frame-ancestors \$scheme:\/\/\$host"/);
   }
 });
 
