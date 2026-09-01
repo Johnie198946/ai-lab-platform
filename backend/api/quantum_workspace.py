@@ -131,6 +131,7 @@ _AUTO_EXECUTION_SEMAPHORE = asyncio.Semaphore(
 _TASKBOARD_INTERNAL_URL = os.getenv(
     "DASHI_TASKBOARD_INTERNAL_URL", "http://taskboard:47823"
 ).rstrip("/")
+_TASKBOARD_INTERNAL_TOKEN = os.getenv("HERMES_BRIDGE_INTERNAL_TOKEN", "")
 
 _AI_EMPLOYEE_NAMES = (
     "林知远", "苏明澈", "顾言川", "沈嘉禾", "周景行", "许清和",
@@ -5773,6 +5774,7 @@ async def _apply_taskboard_backfill(
     expected_version: int | None,
     self_changes: dict[str, Any],
     authorization: str,
+    ai_employee: dict[str, Any] | None = None,
     comment_prefix: str = "AI 回填（经用户确认）",
 ) -> dict[str, Any]:
     timeout = httpx.Timeout(30, connect=10)
@@ -5804,6 +5806,12 @@ async def _apply_taskboard_backfill(
             "Cookie": f"qws-taskboard-session={session_token}",
             "Host": "127.0.0.1",
         }
+        if ai_employee and _TASKBOARD_INTERNAL_TOKEN:
+            headers.update({
+                "X-QWS-AI-Employee-Token": _TASKBOARD_INTERNAL_TOKEN,
+                "X-QWS-AI-Employee-Id": str(ai_employee.get("employee_id") or ai_employee.get("agent_id") or ""),
+                "X-QWS-AI-Employee-Name": quote(str(ai_employee.get("display_name") or "AI 员工"), safe=""),
+            })
 
         async def call(
             method: str,
@@ -7440,6 +7448,7 @@ async def apply_task_backfill_proposal(
         task_id = conversation.task_id
         expected_version = proposal.base_card_version
         self_changes = dict(proposal.self_changes or {})
+        ai_employee = dict((conversation.binding or {}).get("ai_employee") or {}) or None
         latest_context = (
             await db.scalars(
                 select(WorkspaceTaskConversationContext)
@@ -7457,6 +7466,7 @@ async def apply_task_backfill_proposal(
         expected_version=expected_version,
         self_changes=self_changes,
         authorization=authorization,
+        ai_employee=ai_employee,
     )
     return {"proposal_id": proposal_id, "applied_evidence": evidence}
 
@@ -7615,7 +7625,7 @@ async def _read_taskboard_task(
 
 async def _review_task_identity(
     conversation_id: str, payload: dict[str, Any]
-) -> tuple[str, str, bool]:
+) -> tuple[str, str, bool, dict[str, Any] | None]:
     async with SessionLocal() as db:
         conversation = await _conversation_for_tenant(
             db, conversation_id, *_scope(payload)
@@ -7636,7 +7646,8 @@ async def _review_task_identity(
             " ".join(card.get("acceptance_criteria") or []),
         ])
         is_review = re.search(r"审核|验收|评审|复核|review|acceptance", text, re.IGNORECASE) is not None
-        return conversation.project_id, conversation.task_id, is_review
+        ai_employee = dict((conversation.binding or {}).get("ai_employee") or {}) or None
+        return conversation.project_id, conversation.task_id, is_review, ai_employee
 
 
 def _review_dependencies_ready(task: dict[str, Any]) -> bool:
@@ -7651,7 +7662,7 @@ def _review_dependencies_ready(task: dict[str, Any]) -> bool:
 async def _wait_for_review_dependencies(
     conversation_id: str, payload: dict[str, Any], authorization: str,
 ) -> None:
-    project_id, task_id, is_review = await _review_task_identity(
+    project_id, task_id, is_review, _ = await _review_task_identity(
         conversation_id, payload
     )
     if not is_review:
@@ -7673,7 +7684,7 @@ async def _run_task_auto_execution_unlimited(
         await _set_auto_execution_state(
             conversation_id, state="running", request_id=body.request_id
         )
-        project_id, task_id, _ = await _review_task_identity(
+        project_id, task_id, _, ai_employee = await _review_task_identity(
             conversation_id, payload
         )
         await _apply_taskboard_backfill(
@@ -7682,6 +7693,7 @@ async def _run_task_auto_execution_unlimited(
             expected_version=None,
             self_changes={"status": "in_progress"},
             authorization=authorization,
+            ai_employee=ai_employee,
             comment_prefix="AI 自动执行",
         )
         assistant_request_id = body.request_id
@@ -7763,6 +7775,7 @@ async def _run_task_auto_execution_unlimited(
                 expected_version=None,
                 self_changes={"appendComment": str(routed["content"])},
                 authorization=authorization,
+                ai_employee=ai_employee,
                 comment_prefix="AI 审核评论",
             )
 
@@ -7773,6 +7786,7 @@ async def _run_task_auto_execution_unlimited(
                 expected_version=expected_version,
                 self_changes=self_changes,
                 authorization=authorization,
+                ai_employee=ai_employee,
                 comment_prefix="AI 自动执行",
             )
         except HTTPException as exc:
@@ -7788,6 +7802,7 @@ async def _run_task_auto_execution_unlimited(
                     expected_version=None,
                     self_changes=self_changes,
                     authorization=authorization,
+                    ai_employee=ai_employee,
                     comment_prefix="AI 自动执行",
                 )
             else:
@@ -8224,7 +8239,7 @@ async def stream_task_message(
             "When this conversation establishes material information that belongs on the current card, or the user asks to update/write back, finish the human-readable answer with exactly one fenced task_backfill JSON block. Do not require the user to repeat a special command after answering a clarification.",
             "Use description for the complete, durable task narrative. Merge confirmed new facts with useful existing description content; never replace it with a fragment. Use appendComment only when the user explicitly requests a comment or audit note; never use a comment as a substitute for the correct field.",
             "Use full replacement values for labels and dates. Use exact task IDs from session_directory for existing relations. Use createIssues for newly discovered work and choose sub_issue, blocks, blocked_by, or related according to its relationship to the current card. addAttachments may contain only useful generated text artifacts.",
-            "When work is complete, put each substantive textual deliverable in addAttachments, update the status to in_review or done according to the card acceptance criteria, and route the handoff summary to the exact downstream task session when one exists. State clearly whether the current card is complete or who must act next.",
+            "When work is complete, put every substantive textual deliverable in addAttachments; comments are audit notes and never count as deliverables. Do not set status to in_review or done when expected task_deliverables exist but no existing or newly generated attachment contains the actual result. Update the status to in_review or done according to the card acceptance criteria, and route the handoff summary to the exact downstream task session when one exists. State clearly whether the current card is complete or who must act next.",
             'Schema: {"summary":"...","self_changes":{"title"?:str,"description"?:str,"status"?:"backlog|todo|in_progress|in_review|blocked|done|canceled","priority"?:"none|urgent|high|medium|low","labels"?:str[],"assigneeTarget"?:"current-user|ai-employee:<employee_id>","developmentContext"?:({"type":"branch","branch":str}|{"type":"worktree","path":str,"branch":str|null}|null),"startDate"?:"YYYY-MM-DD"|null,"dueDate"?:"YYYY-MM-DD"|null,"recurrence"?:({"interval":int,"unit":"day|week|month|year"}|null),"appendComment"?:str,"createIssues"?:[{"title":str,"description"?:str,"status"?:str,"priority"?:str,"labels"?:str[],"assigneeTarget"?:str,"developmentContext"?:object|null,"startDate"?:str|null,"dueDate"?:str|null,"recurrence"?:object|null,"relation":"sub_issue|blocks|blocked_by|related"}],"addAttachments"?:[{"filename":str,"contentType":"text/plain|text/markdown|text/csv|application/json","content":str}],"relationChanges"?:{"add"?:[{"type":"parent|blocks|blocked_by|related","target_task_id":str}],"remove"?:[{"type":"parent|blocks|blocked_by|related","target_task_id":str}]}},"routes":[{"target_task_id":"...","content":"..."}]}. Use only exact employee_id values from project_ai_employees.',
             (
                 "The user explicitly initiated this card execution. The resulting task_backfill is applied automatically after a successful terminal response."

@@ -16,6 +16,8 @@ const close = (server) => new Promise((resolve, reject) => server.close((error) 
 
 test("QWS mode authenticates through AI Lab and isolates tenant taskboard data", async () => {
   const dataDirectory = await mkdtemp(path.join(os.tmpdir(), "qws-taskboard-test-"));
+  const previousInternalToken = process.env.HERMES_BRIDGE_INTERNAL_TOKEN;
+  process.env.HERMES_BRIDGE_INTERNAL_TOKEN = "qws-test-internal-token";
   let canonicalRevision = 1;
   const identityServer = createServer((request, response) => {
     const tenant = request.headers.authorization === "Bearer tenant-b" ? "tenant-b" : "tenant-a";
@@ -136,6 +138,23 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     assert.equal(runtimeTask.relations.blockedBy.length, 1);
     assert.equal(runtimeTask.relations.parent?.id, canonicalTask.id);
 
+    const aiCommentResponse = await fetch(`${origin}/api/tasks/${canonicalTask.id}/comments`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie: cookieA,
+        "x-qws-ai-employee-token": "qws-test-internal-token",
+        "x-qws-ai-employee-id": "a".repeat(32),
+        "x-qws-ai-employee-name": encodeURIComponent("林知远"),
+      },
+      body: JSON.stringify({ body: "AI 自动执行\n\n已完成需求核验。" }),
+    });
+    assert.equal(aiCommentResponse.status, 201);
+    const aiComment = (await aiCommentResponse.json()).comment;
+    assert.equal(aiComment.authorType, "agent");
+    assert.equal(aiComment.authorId, "a".repeat(32));
+    assert.equal(aiComment.authorName, "林知远");
+
     const blockedCard = await fetch(`${origin}/api/tasks/${canonicalTask.id}`, {
       method: "PATCH",
       headers: { "content-type": "application/json", cookie: cookieA },
@@ -221,6 +240,8 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     const projectsB = await fetch(`${origin}/api/projects`, { headers: { cookie: cookieB } }).then((response) => response.json());
     assert.equal(projectsB.projects.some((project) => project.id === "qws-tenant-a-prj-sync"), false);
   } finally {
+    if (previousInternalToken === undefined) delete process.env.HERMES_BRIDGE_INTERNAL_TOKEN;
+    else process.env.HERMES_BRIDGE_INTERNAL_TOKEN = previousInternalToken;
     await app.close();
     await close(identityServer);
     await rm(dataDirectory, { recursive: true, force: true });

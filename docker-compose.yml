@@ -206,6 +206,7 @@ services:
       CODEX_TASKBOARD_VERSION: qws-dashi-5c96d1a
       CODEX_TASKBOARD_QWS_MODE: "true"
       AI_LAB_INTERNAL_BASE_URL: http://api:8000
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
     volumes:
       - taskboard_data:/data
       - /opt/ai-lab-platform:/workspace:ro

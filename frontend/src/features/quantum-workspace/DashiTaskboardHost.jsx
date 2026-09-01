@@ -16,7 +16,7 @@ const isReviewTask = (task) => /审核|验收|评审|复核|review|acceptance/i.
 
 const batchAutoInstruction = (task) => isReviewTask(task)
   ? `立即执行审核任务《${task.title}》。先确认所有 blockedBy 上游任务已完成；系统会在依赖完成前保持本卡在待办队列。审核时逐项检查每个上游任务的交付物和验收标准，并在 routes 中按 session_directory 的精确 target_task_id 为每个被审核任务写入明确评论：通过项写依据，不通过项写问题、整改方案和复核条件。若存在必须由用户决定且无法自动消除的分歧，将本卡 status 设为 in_review（等你确认）；若全部可自动验收则设为 done；若客观阻塞则设为 blocked。appendComment 必须写审核纪要、结论和剩余风险，最终只输出一个合法 task_backfill。`
-  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。优先使用项目知识与安全公开网络工具完成事实核查和交付。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；独立成果使用 Markdown 附件。`;
+  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。优先使用项目知识与安全公开网络工具完成事实核查和交付。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；每项实质性交付成果必须写入 addAttachments，不能只写在评论里。`;
 
 
 function resolveDashiTheme() {
@@ -360,7 +360,9 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
           const todoTasks = (tasksPayload.tasks || []).filter((item) =>
             item.status === "backlog" && !item.archivedAt,
           );
-          const results = await Promise.allSettled(todoTasks.map(async (item) => {
+          const readyTasks = todoTasks.filter((item) => (item.relations?.blockedBy || []).every((blocker) => blocker.status === "done"));
+          const queued = todoTasks.length - readyTasks.length;
+          const results = await Promise.allSettled(readyTasks.map(async (item) => {
             let lastError;
             for (let attempt = 0; attempt < 3; attempt += 1) {
               try {
@@ -387,10 +389,10 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
           }));
           const started = results.filter((result) => result.status === "fulfilled").length;
           const failed = results.length - started;
-          setState(`已启动 ${started} 个待办任务${failed ? `，${failed} 个启动失败` : ""}`);
+          setState(`已启动 ${started} 个依赖就绪任务${queued ? `，${queued} 个前向依赖任务留在待办队列` : ""}${failed ? `，${failed} 个启动失败` : ""}`);
           frame.postMessage({
             type: "taskboard:project-todos-started",
-            payload: { total: todoTasks.length, started, failed },
+            payload: { total: todoTasks.length, started, queued, failed },
           }, window.location.origin);
           window.setTimeout(() => setState(""), 8000);
         } catch (reason) {
@@ -435,7 +437,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
         const session = await loadTaskSession(dashiTaskId);
         onOpenTaskChat?.({
           ...session,
-          autoInstruction: `${event.data.payload?.instruction || "执行当前任务。"}\n\n立即全自动执行当前任务，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。执行过程中保留可读日志；结束时自动更新卡片状态、负责人和必要字段，在卡片评论中写明执行纪要、发现的问题、根因、已采取的解决方案、验证结果和剩余风险。若缺少关键外部信息，先尝试可用工具和项目上下文；仍无法解决时将卡片标为 blocked，并在评论中写清问题与可执行解决方案。最终必须输出 task_backfill 块，包含 appendComment，并将 status 设置为 done 或 blocked；需要独立保存的纪要使用 Markdown 附件。`,
+          autoInstruction: `${event.data.payload?.instruction || "执行当前任务。"}\n\n立即全自动执行当前任务，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。执行过程中保留可读日志；结束时自动更新卡片状态、负责人和必要字段，在卡片评论中写明执行纪要、发现的问题、根因、已采取的解决方案、验证结果和剩余风险。若缺少关键外部信息，先尝试可用工具和项目上下文；仍无法解决时将卡片标为 blocked，并在评论中写清问题与可执行解决方案。最终必须输出 task_backfill 块，包含 appendComment，并将 status 设置为 done 或 blocked；每项实质性交付成果必须写入 addAttachments，不能只写在评论里。`,
           refreshCardContext: () => loadTaskSession(dashiTaskId),
         });
         frame.postMessage({ type: "taskboard:thread-prepared", payload: { taskId: dashiTaskId } }, window.location.origin);

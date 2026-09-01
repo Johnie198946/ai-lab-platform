@@ -1183,7 +1183,7 @@ export function TaskDetail({
               <div className="attachments-heading issue-attachment-controls">
                 {visibleTaskAttachments.length > 0 && (
                   <div>
-                    <h2 id="attachments-heading">{text("附件", "Attachments")}</h2>
+                    <h2 id="attachments-heading">{text(currentTask.status === "done" ? "任务交付件" : "附件与交付件", currentTask.status === "done" ? "Task deliverables" : "Attachments and deliverables")}</h2>
                     <span>{visibleTaskAttachments.length}</span>
                   </div>
                 )}

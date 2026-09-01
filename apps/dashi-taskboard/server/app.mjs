@@ -598,7 +598,7 @@ function actorFromRequest(request) {
     }
     avatarUrl = parsed.toString();
   }
-  return { type: "user", id, name, avatarUrl };
+  return { type: requestHeader(request, "x-taskboard-actor-type") === "agent" ? "agent" : "user", id, name, avatarUrl };
 }
 
 function parseAssigneeTarget(value) {
@@ -2389,14 +2389,24 @@ export function createTaskboardServer(options = {}) {
         const session = qwsSessionFromRequest(request);
         if (!session) throw new ApiError(401, "QWS_AUTH_REQUIRED", "请从 QuantumWorkspace 打开 Taskboard");
         requestScope.enterWith(session.resources);
-        request.headers["x-taskboard-user-id"] = String(
-          session.identity.user_id || session.identity.username || "qws-user",
-        ).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-|-$/g, "").slice(0, 96) || "qws-user";
-        request.headers["x-taskboard-user-name"] = encodeURIComponent(session.identity.username || "QWS 用户");
-        if (session.identity.avatar_url) {
-          request.headers["x-taskboard-user-avatar"] = session.identity.avatar_url;
-        } else {
+        const internalToken = process.env.HERMES_BRIDGE_INTERNAL_TOKEN || "";
+        const aiEmployeeAuthorized = internalToken
+          && requestHeader(request, "x-qws-ai-employee-token") === internalToken
+          && requestHeader(request, "x-qws-ai-employee-id")
+          && requestHeader(request, "x-qws-ai-employee-name");
+        if (aiEmployeeAuthorized) {
+          request.headers["x-taskboard-user-id"] = String(requestHeader(request, "x-qws-ai-employee-id"));
+          request.headers["x-taskboard-user-name"] = String(requestHeader(request, "x-qws-ai-employee-name"));
+          request.headers["x-taskboard-actor-type"] = "agent";
           delete request.headers["x-taskboard-user-avatar"];
+        } else {
+          request.headers["x-taskboard-user-id"] = String(
+            session.identity.user_id || session.identity.username || "qws-user",
+          ).toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-|-$/g, "").slice(0, 96) || "qws-user";
+          request.headers["x-taskboard-user-name"] = encodeURIComponent(session.identity.username || "QWS 用户");
+          delete request.headers["x-taskboard-actor-type"];
+          if (session.identity.avatar_url) request.headers["x-taskboard-user-avatar"] = session.identity.avatar_url;
+          else delete request.headers["x-taskboard-user-avatar"];
         }
       }
       const configuredTrustedOrigin = resolved.trustedOrigins.has(origin);

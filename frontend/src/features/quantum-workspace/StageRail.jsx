@@ -233,8 +233,12 @@ function RoleOverviewDialog({ process, stages, onClose, onSaveRole }) {
   );
 }
 
-function StageDetail({ stage, index, onClose }) {
-  const owners = [...new Set(stage.tasks.map(ownerOf).filter((owner) => owner !== "待分配"))];
+function StageDetail({ stage, index, employeesById, onClose }) {
+  const ownerLabel = (task) => {
+    const employee = employeesById.get(task.assignee_id);
+    return employee ? `${employee.display_name} · ${employee.job_title}` : task.assignee_role || "待分配";
+  };
+  const owners = [...new Set(stage.tasks.map(ownerLabel).filter((owner) => owner !== "待分配"))];
   return (
     <section id={`qw-stage-detail-${stage.id}`} className="qw-stage-detail" aria-label={`${stage.name}阶段详情`}>
       <header>
@@ -269,7 +273,7 @@ function StageDetail({ stage, index, onClose }) {
         <section>
           <h3>责任分工</h3>
           <div className="qw-stage-owner-list">
-            {stage.tasks.map((task) => <div key={task.id}><UserRound size={14} /><span><strong>{ownerOf(task)}</strong><small>{task.title}</small></span></div>)}
+            {stage.tasks.map((task) => <div key={task.id}><UserRound size={14} /><span><strong>{ownerLabel(task)}</strong><small>{task.title}</small></span></div>)}
             {stage.gates.map((gate) => <div key={gate.id}><ShieldCheck size={14} /><span><strong>{gate.responsible_role || "待分配"}</strong><small>{gate.node_type} · {gate.name}</small></span></div>)}
             {!stage.tasks.length && !stage.gates.length && <p className="qw-stage-empty">暂无责任分工。</p>}
           </div>
@@ -281,18 +285,20 @@ function StageDetail({ stage, index, onClose }) {
 
 export function StageRail({ process, selectedStageId, onSelect, onSaveRole }) {
   const stages = buildStageRail(process);
+  const [expanded, setExpanded] = useState(false);
   const [roleOverviewOpen, setRoleOverviewOpen] = useState(false);
   const roleCount = useMemo(() => buildRoleOverview(process, stages).length, [process, stages]);
+  const employeesById = useMemo(() => new Map((process.ai_employees || []).map((employee) => [employee.employee_id, employee])), [process.ai_employees]);
   const selectedIndex = stages.findIndex((stage) => stage.id === selectedStageId);
   const selectedStage = selectedIndex >= 0 ? stages[selectedIndex] : null;
   if (!stages.length) return null;
   return (
-    <div className={`qw-stage-explorer ${selectedStage ? "is-open" : ""}`}>
+    <div className={`qw-stage-explorer ${expanded ? "is-expanded" : "is-collapsed"} ${selectedStage ? "is-open" : ""}`}>
       <div className="qw-stage-rail-head">
         <div><span className="qw-eyebrow">Project process</span><strong>项目流程</strong></div>
-        <div className="qw-stage-rail-actions"><span>点击节点查看内容与负责人</span><button type="button" onClick={() => setRoleOverviewOpen(true)}><UsersRound size={14} />角色全景<strong>{roleCount}</strong></button></div>
+        <div className="qw-stage-rail-actions"><span>{expanded ? "点击节点查看内容与负责人" : "工作状态下已收起"}</span><button type="button" onClick={() => setRoleOverviewOpen(true)}><UsersRound size={14} />角色全景<strong>{roleCount}</strong></button><button type="button" aria-expanded={expanded} onClick={() => { setExpanded((current) => !current); if (expanded) onSelect?.(null); }}><Layers3 size={14} />{expanded ? "收起流程" : "查看流程"}<ChevronRight className="qw-stage-toggle-chevron" size={14} /></button></div>
       </div>
-      <nav className="qw-stage-rail" aria-label="IPD 项目流程">
+      {expanded && <nav className="qw-stage-rail" aria-label="项目流程">
         {stages.map((stage, index) => {
           const ownerCount = new Set(stage.tasks.map(ownerOf).filter((owner) => owner !== "待分配")).size;
           const active = selectedStageId === stage.id;
@@ -313,8 +319,8 @@ export function StageRail({ process, selectedStageId, onSelect, onSaveRole }) {
             </button>
           );
         })}
-      </nav>
-      {selectedStage && <StageDetail stage={selectedStage} index={selectedIndex} onClose={() => onSelect?.(null)} />}
+      </nav>}
+      {expanded && selectedStage && <StageDetail stage={selectedStage} index={selectedIndex} employeesById={employeesById} onClose={() => onSelect?.(null)} />}
       {roleOverviewOpen && <RoleOverviewDialog process={process} stages={stages} onClose={() => setRoleOverviewOpen(false)} onSaveRole={onSaveRole} />}
     </div>
   );

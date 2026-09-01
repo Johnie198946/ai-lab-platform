@@ -208,6 +208,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   const [proposals, setProposals] = useState([]);
   const [question, setQuestion] = useState("");
   const [busy, setBusy] = useState(false);
+  const [autoBusy, setAutoBusy] = useState(false);
   const [proposalBusy, setProposalBusy] = useState("");
   const [clarification, setClarification] = useState(null);
   const [clarificationBusy, setClarificationBusy] = useState(false);
@@ -217,6 +218,8 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   const [error, setError] = useState("");
   const [clock, setClock] = useState(Date.now());
   const messagesRef = useRef(null);
+  const followsLatestRef = useRef(true);
+  const forceLatestRef = useRef(false);
   const autoStartedRef = useRef("");
   const aiEmployee = conversation?.binding?.ai_employee || null;
   const assistantLabel = aiEmployee
@@ -254,7 +257,10 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   }, [cardContext, project.id, task.id, task.workflow_id]);
 
   useEffect(() => {
-    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
+    const element = messagesRef.current;
+    if (!element || (!followsLatestRef.current && !forceLatestRef.current)) return;
+    element.scrollTo({ top: element.scrollHeight });
+    forceLatestRef.current = false;
   }, [messages]);
 
   useEffect(() => {
@@ -266,16 +272,17 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
   const send = async (event, explicitText = "", automatic = false) => {
     event.preventDefault();
     const requestedText = explicitText.trim() || question.trim();
-    if (!requestedText || !conversation || busy) return;
+    if (!requestedText || !conversation || (automatic ? autoBusy : busy)) return;
     const text = requestedText;
     const requestId = `qw-chat-${crypto.randomUUID()}`;
     setQuestion("");
-    setBusy(true);
+    (automatic ? setAutoBusy : setBusy)(true);
     setError("");
     try {
       const activeConversation = conversation;
       const startedAt = Date.now();
       setClock(startedAt);
+      forceLatestRef.current = true;
       setMessages((current) => [...current, { id: requestId, role: "user", content: text }, { id: `${requestId}-assistant`, role: "assistant", content: "", pending: true, execution: createHermesExecution("正在同步卡片增量", startedAt) }]);
       if (automatic) {
         await platformApi.startTaskAutoExecution(activeConversation.id, {
@@ -349,18 +356,18 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       setError(reason.message);
       setMessages((current) => current.map((message) => message.id === `${requestId}-assistant` ? { ...message, content: "流式连接失败，消息未被冒充为成功。", pending: false, failed: true } : message));
     } finally {
-      setBusy(false);
+      (automatic ? setAutoBusy : setBusy)(false);
       if (automatic) setProposalBusy("");
     }
   };
 
   useEffect(() => {
-    if (!conversation || !autoInstruction || busy) return;
+    if (!conversation || !autoInstruction || autoBusy) return;
     const executionKey = `${task.id}:${conversation.id}`;
     if (autoStartedRef.current === executionKey) return;
     autoStartedRef.current = executionKey;
     void send({ preventDefault() {} }, autoInstruction, true);
-  }, [autoInstruction, conversation, task.id]);
+  }, [autoInstruction, conversation, task.id, autoBusy]);
 
   const refreshContext = async () => {
     if (!refreshCardContext || contextRefreshing || busy) return;
@@ -449,7 +456,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
       <header><div><span className="qw-eyebrow">AI Lab · AI 员工 Session</span><h3>{task.title}</h3></div><div className="qw-chat-header-actions"><button type="button" disabled={!refreshCardContext || contextRefreshing || busy} onClick={refreshContext} aria-label="刷新任务上下文" title="仅在卡片内容变化后刷新"><RefreshCw size={16} />{contextRefreshing ? "同步中" : "刷新上下文"}</button><button type="button" onClick={onClose} aria-label="关闭任务对话"><X size={18} /></button></div></header>
       <div className="qw-binding">{aiEmployee && <span>{aiEmployee.display_name} · AI 员工 · {aiEmployee.job_title}</span>}<span>task · {task.id.slice(-8)}</span><span>card v{currentCardContext?.task?.version ?? "-"}</span><span>workflow · {task.workflow_id ? task.workflow_id.slice(-8) : "UNCONNECTED"}</span><span>revision · {process.process_revision}</span>{contextSync && <span>context v{contextSync.revision} · {contextSync.mode === "full" ? "首次全量" : contextSync.mode === "incremental" ? `增量 +${contextSync.changes_count}` : "已是最新"}</span>}</div>
       <TaskGovernancePanel project={project} task={governanceTask} onResolved={refreshContext} />
-      <div className="qw-chat-messages" ref={messagesRef} aria-live="polite">
+      <div className="qw-chat-messages" ref={messagesRef} aria-live="polite" onScroll={(event) => { const element = event.currentTarget; followsLatestRef.current = element.scrollHeight - element.scrollTop - element.clientHeight < 48; }}>
         {!messages.length && <div className="qw-chat-empty"><Bot size={22} /><strong>项目、当前任务和直接依赖已绑定</strong><span>上下文按 revision/hash 留痕；连续交流复用快照，卡片变化后再点“刷新上下文”。要求 AI 回填时会先生成方案，确认后才写入。</span></div>}
         {messages.map((message) => {
           return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : ""}`}><small>{message.role === "user" ? "你" : assistantLabel}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} />}<p>{message.role === "assistant" ? visibleAssistantContent(message.content) || (message.waitingForClarification ? "请先回答下方问题，AI 会把结论整理到正确字段。" : message.pending ? "正在处理当前任务…" : "") : message.content}</p></article>;
@@ -463,7 +470,7 @@ export function TaskChatDrawer({ project, process, task, cardContext, refreshCar
         </section>)}
       </div>
       {error && <p className="qw-error compact" role="alert">{error}</p>}
-      <form className="qw-chat-form" onSubmit={send}><label className="qw-sr-only" htmlFor="qw-task-chat-question">围绕当前任务提问</label><textarea id="qw-task-chat-question" rows={2} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={conversation ? "围绕当前任务提问；如需写入，请明确说“生成回填方案”…" : "正在建立服务端绑定…"} disabled={!conversation || busy} /><button className="qw-button primary" aria-label="发送消息" disabled={!conversation || busy || !question.trim()}><Send size={16} /></button></form>
+      <form className="qw-chat-form" onSubmit={send}><label className="qw-sr-only" htmlFor="qw-task-chat-question">围绕当前任务提问</label><textarea id="qw-task-chat-question" rows={2} value={question} onChange={(e) => setQuestion(e.target.value)} placeholder={conversation ? (autoBusy ? "AI 员工正在执行；你仍可继续提问…" : "围绕当前任务提问；如需写入，请明确说“生成回填方案”…") : "正在建立服务端绑定…"} disabled={!conversation || busy} /><button className="qw-button primary" aria-label="发送消息" disabled={!conversation || busy || !question.trim()}><Send size={16} /></button></form>
     </aside>
   );
 }
