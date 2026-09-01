@@ -39,6 +39,14 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=256m
+      - /root/.cache:rw,noexec,nosuid,size=256m
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -96,7 +104,7 @@ services:
       - /root/.hermes/skills:/root/.hermes/skills  # skills 目录可写
       - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro  # config 只读
       - /root/.hermes/profiles:/root/.hermes/profiles  # profiles 配置
-      - /opt/ai-lab-platform:/opt/ai-lab-platform  # CWD 挂载（意见 #1）
+      - /opt/ai-lab-platform:/opt/ai-lab-platform:ro  # 代码真源只读；运行数据走 /app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:

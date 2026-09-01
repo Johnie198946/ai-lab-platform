@@ -1,0 +1,11 @@
+[Unit]
+Description=Run AI Lab TLS renewal every six hours
+
+[Timer]
+OnCalendar=*-*-* 00/6:25:00
+RandomizedDelaySec=1800
+Persistent=true
+Unit=ai-lab-certbot-renew.service
+
+[Install]
+WantedBy=timers.target

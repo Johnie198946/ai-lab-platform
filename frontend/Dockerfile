@@ -217,6 +217,11 @@ server {\n\
     location ^~ /hermes/ { return 404; }\n\
     location ~* \\.(html)$ {\n\
         root   /usr/share/nginx/html;\n\
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n\
+        add_header X-Content-Type-Options "nosniff" always;\n\
+        add_header X-Frame-Options "DENY" always;\n\
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
+        add_header Permissions-Policy "camera=(), microphone=(self), geolocation=()" always;\n\
         add_header Cache-Control "no-cache, no-store, must-revalidate";\n\
         add_header Pragma "no-cache";\n\
         add_header Expires 0;\n\
