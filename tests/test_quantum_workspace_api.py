@@ -2966,6 +2966,18 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     assert captured["session_id"] == conversation["binding"]["session_id"]
     assert captured["client_session_context"].session_id == captured["session_id"]
     assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["client_session_context"].messages[0].content
+    transferred_context = "".join(
+        message.content for message in captured["client_session_context"].messages
+    )
+    assert '"project_overview"' in transferred_context
+    assert '"project_documents"' in transferred_context
+    assert '"project_execution_log"' in transferred_context
+    assert '"session_directory"' in transferred_context
+    assert "Do not infer the whole project from the current card alone" in captured["question"]
+    assert "senior project colleague, not as a system debugger" in captured["question"]
+    assert "AUTO_EXECUTE=false is an instruction for this conversational turn only" in captured["question"]
+    assert "INTERACTIVE_MODE=true" in captured["question"]
+    assert "AUTO_EXECUTE=false. If essential card facts are missing" not in captured["question"]
     assert captured["allow_agent_invocation"] is False
     assert captured["allow_agency"] is False
     assert captured["trusted_professional_surface"] is True
