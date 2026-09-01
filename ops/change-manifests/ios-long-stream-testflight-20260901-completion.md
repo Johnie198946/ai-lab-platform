@@ -32,5 +32,22 @@
 
 ## Delivery receipt
 
-- GitHub push, signed archive, simulator installation, TestFlight upload/readback, and tester-group assignment are recorded after those operations complete.
+- archive_source_sha: `a317bb09893fda4ccdf4646517dfafcd8d79b765`
+- GitHub main readback after source push: `a317bb09893fda4ccdf4646517dfafcd8d79b765`
+- archive_path: `ios/build/AIPlatformApp.xcarchive`
+- archive_result: `** ARCHIVE SUCCEEDED **`
+- archive_readback: bundle ID `com.ailab.AIPlatformApp`, version `1.0.3`, build `6`, team `AALA948YY5`, `ITSAppUsesNonExemptEncryption=false`
+- archive_signature: Apple Development archive for team `AALA948YY5`; local strict verification reports `CSSMERR_TP_NOT_TRUSTED`, while Organizer automatic App Store Connect export succeeded and App Store Connect reports the uploaded binary as verified.
+- ExportOptions: `method=app-store-connect`, `destination=upload`, `signingStyle=automatic`, `teamID=AALA948YY5`, `uploadSymbols=true`, `manageAppVersionAndBuildNumber=false`
+- command-line export: unavailable because the CLI Xcode account returned `Failed to Use Accounts`
+- Organizer fallback: `AIPlatformApp 1.0.3 (6) uploaded`; archive status `Uploaded to Apple`
+- App Store Connect build UUID: `633388dd-56d7-4c94-98b2-573687c41706`
+- App Store Connect processing readback: version `1.0.3`, build `6`, upload status `完成`, binary status `已验证`
+- App Store Connect compliance readback: `App 使用非豁免类加密 = 否`; no missing-compliance action is present
+- internal group: `核心测试`, 1 tester; tester readback shows `已安装 1.0.3 (6)` on 2026-09-01
+- external group: `外部测试员`, 4 testers; build `1.0.3 (6)` readback is `正在测试` and expires in 90 days
+- external test note: long-answer disclosure/copy, long-stream scrolling responsiveness, and new-phone OTP login/session persistence
+- tester notification: automatic tester notification remained enabled when the external test note was submitted
+- simulator: latest Debug `1.0.3 (6)` installed in place on `AIPlatform Preview`, preserving app data; launch PID `74274`
+- receipt_commit: the commit containing this completed manifest and `ios/ExportOptions.plist`; exact remote SHA is reported in the final task handoff.
 - No backend or production deployment is part of this change.
