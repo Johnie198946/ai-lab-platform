@@ -23,6 +23,8 @@ RUN echo $'server {\n\
     }\n\
     location /taskboard/ {\n\
         proxy_pass http://taskboard:47823/;\n\
+        proxy_hide_header X-Frame-Options;\n\
+        proxy_hide_header Content-Security-Policy;\n\
         proxy_http_version 1.1;\n\
         proxy_set_header Host 127.0.0.1;\n\
         proxy_set_header Origin http://127.0.0.1;\n\
@@ -31,6 +33,10 @@ RUN echo $'server {\n\
         proxy_read_timeout 3600s;\n\
         proxy_buffering off;\n\
         client_max_body_size 30M;\n\
+        add_header X-Frame-Options "SAMEORIGIN" always;\n\
+        add_header Content-Security-Policy "frame-ancestors 'self'" always;\n\
+        add_header X-Content-Type-Options "nosniff" always;\n\
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
     }\n\
     location /api/ {\n\
         proxy_pass http://api:8000/api/;\n\
@@ -139,6 +145,8 @@ server {\n\
     }\n\
     location /taskboard/ {\n\
         proxy_pass http://taskboard:47823/;\n\
+        proxy_hide_header X-Frame-Options;\n\
+        proxy_hide_header Content-Security-Policy;\n\
         proxy_http_version 1.1;\n\
         proxy_set_header Host 127.0.0.1;\n\
         proxy_set_header Origin http://127.0.0.1;\n\
@@ -147,6 +155,10 @@ server {\n\
         proxy_read_timeout 3600s;\n\
         proxy_buffering off;\n\
         client_max_body_size 30M;\n\
+        add_header X-Frame-Options "SAMEORIGIN" always;\n\
+        add_header Content-Security-Policy "frame-ancestors 'self'" always;\n\
+        add_header X-Content-Type-Options "nosniff" always;\n\
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
     }\n\
     location /api/ {\n\
         proxy_pass http://api:8000/api/;\n\

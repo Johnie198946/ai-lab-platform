@@ -4525,6 +4525,16 @@ def _build_in_process_agent(
             )
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
     toolsets_list = _apply_triage_toolset_policy(toolsets_list, triage)
+    fast_general = bool(
+        route_class == GENERAL_QA
+        and not evidence_requirements
+        and not client_context_enabled
+        and not tenant_skill_enabled
+        and not delegation_tool_enabled
+    )
+    if fast_general:
+        # Hermes remains the only Runtime; this only selects its minimal prompt/tool lane.
+        toolsets_list = []
     if client_context_enabled:
         # The signed iOS snapshot is authoritative for this request. Do not let
         # Hermes memory/session_search reintroduce unrelated historical turns.
@@ -4651,8 +4661,14 @@ def _build_in_process_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
-        request_overrides=_cache_request_overrides(cfg_model, str(runtime.get("provider") or "")),
+        request_overrides=_cache_request_overrides(
+            cfg_model,
+            str(runtime.get("provider") or ""),
+            {"service_tier": "priority"} if fast_general else None,
+        ),
         ephemeral_system_prompt=(
+            "你是 Hermes 快速问答模式。直接、准确、简洁回答当前问题；不调用工具、不委派、不追问。"
+            if fast_general else (
             CLARIFY_GATE_PROMPT
             + "\n\n当前 Agent 配置（服务端已校验）：\n"
             + str(agent_config.get("prompt") or "")[:3000]
@@ -4711,6 +4727,7 @@ def _build_in_process_agent(
                 if knowledge_action_enabled else ""
             )
             + _triage_system_directive(triage)
+            )
         ),
         clarify_callback=_clarify_cb,
         stream_delta_callback=_delta_cb,
