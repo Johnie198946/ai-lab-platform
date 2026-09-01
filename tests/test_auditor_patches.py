@@ -88,6 +88,21 @@ class TestAuditorPatches(unittest.TestCase):
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
 
+    def test_wiki_only_v3_matrix_is_a_supported_runtime_contract(self):
+        tmp = Path(tempfile.mkdtemp(prefix="wiki-only-v3-matrix-"))
+        try:
+            matrix_path = tmp / "knowledge_matrix.json"
+            matrix_path.write_text(json.dumps({
+                "version": "3.0-wiki-only",
+                "generated_at": "2026-09-01T00:00:00Z",
+                "categories": {"方法论": []},
+                "entity_index": {},
+                "stats": {"total_documents": 1},
+            }), encoding="utf-8")
+            self.assertEqual(audit_matrix(matrix_path), [])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

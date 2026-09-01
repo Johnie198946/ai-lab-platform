@@ -17,6 +17,7 @@
 7. Review execution receives upstream descriptions, comments and readable attachment content; `routes` are written as real comments on each reviewed card. User-only decisions end in `in_review`; automatic acceptance ends in `done`.
 8. Dashboard completion, status metrics and live summary derive directly from the same `tasks` collection used by the board, including done/todo/waiting-claim/in-progress/review/blocked counts.
 9. Concurrent/replayed QWS session sync normalizes symmetric relation keys and treats an already-existing verified relation as idempotent success, eliminating `409 RELATION_EXISTS` during page bootstrap.
+10. Deployment audit accepts the production-compatible `3.0-wiki-only` knowledge matrix contract after validating the same required keys, document count, categories and entity index; unknown versions remain fail-closed.
 
 ## Changed files
 
@@ -33,6 +34,8 @@
 - `frontend/src/features/quantum-workspace/ProjectWorkspacePage.jsx`
 - `backend/api/quantum_workspace.py`
 - `tests/test_quantum_workspace_api.py`
+- `scripts/audit_runtime_contracts.py`
+- `tests/test_auditor_patches.py`
 - `ops/change-manifests/20260901-qws-taskboard-ux-five-items-completion.md`
 
 ## Verification
@@ -46,6 +49,7 @@
 - backend QuantumWorkspace suites — PASS (`63 passed`)
 - Taskboard status/QWS integration suites — PASS (`14 passed`)
 - concurrent session relation replay regression — PASS
+- runtime contract audit tests — PASS (`4 passed`); production matrix shape verified (`265` documents)
 
 ## Delivery
 

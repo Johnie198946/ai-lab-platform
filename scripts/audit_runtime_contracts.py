@@ -42,7 +42,7 @@ def audit_matrix(matrix_path: Path) -> list[str]:
         issues.append(f"matrix missing keys: {sorted(missing)}")
 
     version = str(matrix.get("version", ""))
-    if version not in {"2.0", "2.1"}:
+    if version not in {"2.0", "2.1", "3.0-wiki-only"}:
         issues.append(f"unsupported matrix version: {version}")
 
     stats = matrix.get("stats") or {}
