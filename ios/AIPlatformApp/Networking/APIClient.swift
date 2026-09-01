@@ -84,6 +84,23 @@ public struct HotMemoryCompactResponse: Decodable, Sendable {
     public let maxChars: Int
 }
 
+public struct CloudKnowledgeNoteDTO: Codable, Identifiable, Hashable, Sendable {
+    public let noteId: String
+    public let markdown: String
+    public let contentHash: String
+    public let updatedAt: String?
+    public let archived: Bool
+    public let mergedIntoNoteId: String?
+
+    public var id: String { noteId }
+}
+
+public struct CloudKnowledgeNotesResponse: Codable, Sendable {
+    public let items: [CloudKnowledgeNoteDTO]
+    public let count: Int
+    public let compileStatus: String
+}
+
 public struct UsageDailyDTO: Codable, Identifiable, Hashable {
     public var id: String { date }
     public let date: String
@@ -2199,6 +2216,16 @@ public final class APIClient: ObservableObject {
                 contentHash: digest,
                 updatedAt: formatter.string(from: updatedAt)
             )
+        )
+    }
+
+    public func fetchKnowledgeNotes(includeArchived: Bool = true) async throws -> CloudKnowledgeNotesResponse {
+        try await request(
+            CloudKnowledgeNotesResponse.self,
+            path: "me/knowledge-notes",
+            queryItems: [
+                URLQueryItem(name: "include_archived", value: includeArchived ? "true" : "false")
+            ]
         )
     }
 

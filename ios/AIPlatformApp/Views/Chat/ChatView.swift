@@ -59,6 +59,9 @@ public struct ChatView: View {
                         onHistoryTap: { showingSessionDrawer = true },
                         onClearTap: { isShowingClearAlert = true }
                     )
+                    if currentTopic == nil, let resumableTopic {
+                        topicResumeShelf(resumableTopic)
+                    }
                     if let topic = currentTopic {
                         topicControlBar(topic)
                     }
@@ -120,10 +123,8 @@ public struct ChatView: View {
                     onKnowledgeReferenced: { item in coordinator.referenceKnowledge(item) }
                 )
             }
-            .sheet(isPresented: $showingTopicDiscussion, onDismiss: returnToTopicParent) {
+            .fullScreenCover(isPresented: $showingTopicDiscussion, onDismiss: returnToTopicParent) {
                 TargetedTopicDiscussionSheet(coordinator: coordinator)
-                    .presentationDetents([.fraction(0.8)])
-                    .presentationDragIndicator(.visible)
             }
             .sheet(isPresented: $showingSessionDrawer) {
                 SessionDrawerSheet(
@@ -191,6 +192,8 @@ public struct ChatView: View {
                     InboxFileManager.shared.cleanupStaleInboxFiles()
                     coordinator.reconcileRestoredClarify()
                     coordinator.reconcileActiveRun()
+                } else if phase == .background {
+                    coordinator.prepareForBackground()
                 }
             }
             .onDisappear {
@@ -208,8 +211,46 @@ public struct ChatView: View {
         return topic
     }
 
+    private var resumableTopic: TopicSessionMetadata? {
+        sessionManager.visibleTopics.first(where: { $0.state != .queued })
+    }
+
     private func dismissKeyboard() {
         dismissKeyboardToken &+= 1
+    }
+
+    @ViewBuilder
+    private func topicResumeShelf(_ topic: TopicSessionMetadata) -> some View {
+        Button {
+            coordinator.openTopic(topic)
+            showingTopicDiscussion = true
+        } label: {
+            HStack(spacing: AppTheme.Spacing.sm) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.quantumBlue)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("继续针对性话题")
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text(String(topic.sourceText.prefix(56)))
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+            .padding(.horizontal, AppTheme.Spacing.md)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(AppTheme.Colors.surfaceTint)
+        .overlay(alignment: .bottom) { Divider().opacity(0.55) }
+        .accessibilityHint("在独立页面中继续该话题")
     }
 
     @ViewBuilder
@@ -316,41 +357,70 @@ private struct TargetedTopicDiscussionSheet: View {
     @State private var isVoicePressing = false
     @State private var dismissKeyboardToken = 0
 
+    private var topic: TopicSessionMetadata? {
+        coordinator.sessionManager.topicSessions[coordinator.sessionManager.activeSessionID()]
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Label("针对性话题", systemImage: "bubble.left.and.bubble.right.fill")
-                    .font(.headline)
-                Spacer()
-                Button("结束并整理") { coordinator.endCurrentTopic() }
-                    .font(.caption.weight(.semibold))
-                Button("返回") { dismiss() }
-            }
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, AppTheme.Spacing.sm)
-            .background(AppTheme.Colors.surfaceTint)
+        NavigationStack {
+            VStack(spacing: 0) {
+                if let topic {
+                    HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                        Image(systemName: "quote.opening")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.quantumBlue)
+                            .frame(width: 28, height: 28)
+                            .background(AppTheme.Colors.surfaceTint)
+                            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("源自原对话")
+                                .font(AppTheme.Typography.micro.weight(.semibold))
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                            Text(String(topic.sourceText.prefix(120)))
+                                .font(AppTheme.Typography.supporting)
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                .lineLimit(3)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(.horizontal, AppTheme.Spacing.md)
+                    .padding(.vertical, AppTheme.Spacing.sm)
+                    .background(AppTheme.Colors.surfaceTint.opacity(0.72))
+                }
 
-            ChatMessageStreamView(coordinator: coordinator) {
-                dismissKeyboardToken &+= 1
-            }
-
-            ChatInputBar(
-                inputText: $draft,
-                quotedContext: $coordinator.quotedContext,
-                isVoicePressing: $isVoicePressing,
-                speechService: speechService,
-                isGenerating: coordinator.isGenerating,
-                dismissKeyboardToken: dismissKeyboardToken,
-                onSend: {
-                    guard let text = ChatDraftSubmission.consume(&draft) else { return }
-                    coordinator.sendMessage(text: text)
+                ChatMessageStreamView(coordinator: coordinator) {
                     dismissKeyboardToken &+= 1
-                },
-                onVoicePressChanged: { _ in },
-                onPlusTap: {}
-            )
+                }
+
+                ChatInputBar(
+                    inputText: $draft,
+                    quotedContext: $coordinator.quotedContext,
+                    isVoicePressing: $isVoicePressing,
+                    speechService: speechService,
+                    isGenerating: coordinator.isGenerating,
+                    dismissKeyboardToken: dismissKeyboardToken,
+                    onSend: {
+                        guard let text = ChatDraftSubmission.consume(&draft) else { return }
+                        coordinator.sendMessage(text: text)
+                        dismissKeyboardToken &+= 1
+                    },
+                    onVoicePressChanged: { _ in },
+                    onPlusTap: {}
+                )
+            }
+            .background(AppTheme.Colors.background)
+            .navigationTitle("针对性话题")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("返回") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("整理入库") { coordinator.endCurrentTopic() }
+                        .font(.subheadline.weight(.semibold))
+                }
+            }
         }
-        .background(AppTheme.Colors.background)
     }
 }
 

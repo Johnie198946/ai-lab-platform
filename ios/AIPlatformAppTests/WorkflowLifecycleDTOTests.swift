@@ -1022,4 +1022,27 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertNil(ChatDraftSubmission.consume(&draft))
         XCTAssertEqual(draft, "   \n ")
     }
+
+    func testCloudKnowledgeSnapshotDecodesForReinstallRestore() throws {
+        let data = Data("""
+        {
+          "items": [{
+            "note_id": "note-1",
+            "markdown": "---\\nid: note-1\\ntitle: 私有笔记\\n---\\n正文",
+            "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "updated_at": "2026-09-01T12:00:00.000Z",
+            "archived": false,
+            "merged_into_note_id": null
+          }],
+          "count": 1,
+          "compile_status": "private_index_ready"
+        }
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let response = try decoder.decode(CloudKnowledgeNotesResponse.self, from: data)
+        XCTAssertEqual(response.count, 1)
+        XCTAssertEqual(response.items.first?.noteId, "note-1")
+        XCTAssertEqual(response.compileStatus, "private_index_ready")
+    }
 }

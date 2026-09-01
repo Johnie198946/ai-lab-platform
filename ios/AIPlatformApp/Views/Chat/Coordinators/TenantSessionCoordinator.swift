@@ -422,6 +422,24 @@ public final class TenantSessionCoordinator: ObservableObject {
         isLatestPage = true
     }
 
+    /// Locking the screen suspends iOS networking. Checkpoint and detach the client
+    /// subscription while preserving the server Run, then reconcile it on foreground.
+    public func prepareForBackground() {
+        guard let req = inflight else {
+            commitSession()
+            return
+        }
+        let outputId = outputMessageId(for: req)
+        drainDeltaBuffer(messageId: outputId)
+        commitSession()
+        startBackgroundRunMonitor(req: req, outputMessageId: outputId)
+        currentChatTask?.cancel()
+        currentChatTask = nil
+        stopStatusPolling()
+        isGenerating = false
+        inflight = nil
+    }
+
     public func cancelAllTasksAndAnimations() {
         currentChatTask?.cancel()
         currentChatTask = nil

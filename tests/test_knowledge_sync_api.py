@@ -97,6 +97,18 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
         assert private_index["document_count"] == 1
         assert private_index["documents"][0]["id"] == "note-1"
 
+        listed = _request("GET", "/api/v1/me/knowledge-notes")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["count"] == 1
+        assert listed.json()["items"] == [{
+            "note_id": "note-1",
+            "markdown": markdown,
+            "content_hash": digest,
+            "updated_at": listed.json()["items"][0]["updated_at"],
+            "archived": False,
+            "merged_into_note_id": None,
+        }]
+
 
 def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
     import backend.api.auth as auth
@@ -133,6 +145,14 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
         )
         assert archived.status_code == 200
         assert archived.json()["changed"] is True
+        archived_snapshot = _request("GET", "/api/v1/me/knowledge-notes")
+        assert archived_snapshot.status_code == 200
+        assert archived_snapshot.json()["items"][0]["archived"] is True
+        assert archived_snapshot.json()["items"][0]["merged_into_note_id"] == "merged-note"
+        active_only = _request(
+            "GET", "/api/v1/me/knowledge-notes", params={"include_archived": "false"}
+        )
+        assert active_only.json()["count"] == 0
         repeated = _request(
             "POST", "/api/v1/me/knowledge-notes/old-note/archive",
             json={"merged_into_note_id": "merged-note"},

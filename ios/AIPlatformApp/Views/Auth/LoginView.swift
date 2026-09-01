@@ -534,6 +534,7 @@ public struct LoginView: View {
             tenantKey: profile.tenantKey,
             userId: profile.userId
         )
+        await KnowledgeNoteStore.shared.restoreFromCloud()
         appState.isDevMode = isDeveloper
         isLoading = false
         #if os(iOS)

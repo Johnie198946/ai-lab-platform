@@ -46,6 +46,29 @@ class NoteArchiveRequest(BaseModel):
     merged_into_note_id: str = Field(..., min_length=1, max_length=128)
 
 
+def _read_metadata(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _note_snapshot(note_path: Path, metadata_path: Path, *, archived: bool) -> dict[str, Any]:
+    content = note_path.read_text(encoding="utf-8")
+    metadata = _read_metadata(metadata_path)
+    return {
+        "note_id": note_path.stem,
+        "markdown": content,
+        "content_hash": _digest(content.encode("utf-8")),
+        "updated_at": metadata.get("client_updated_at") or metadata.get("synced_at"),
+        "archived": archived,
+        "merged_into_note_id": metadata.get("merged_into_note_id"),
+    }
+
+
 def _sync_root() -> Path:
     return sync_root()
 
@@ -88,6 +111,35 @@ def _archived_paths(tenant_key: str, user_id: str, note_id: str) -> tuple[Path, 
     if not _NOTE_ID.fullmatch(note_id):
         raise HTTPException(status_code=422, detail={"code": "invalid_note_id"})
     return archived_note_paths(tenant_key, user_id, note_id, _sync_root())
+
+
+@router.get("")
+async def list_synced_notes(
+    include_archived: bool = True,
+    payload: dict[str, Any] = Depends(require_auth),
+) -> dict[str, Any]:
+    """Return the authenticated account's durable note snapshot for device restore."""
+    tenant_key = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    directory = note_directory(tenant_key, user_id, _sync_root())
+    items = [
+        _note_snapshot(path, path.with_suffix(".sync.json"), archived=False)
+        for path in sorted(directory.glob("*.md"))
+        if path.is_file() and not path.is_symlink()
+    ] if directory.is_dir() else []
+    if include_archived:
+        archive = directory / ".archive"
+        if archive.is_dir():
+            items.extend(
+                _note_snapshot(path, path.with_suffix(".sync.json"), archived=True)
+                for path in sorted(archive.glob("*.md"))
+                if path.is_file() and not path.is_symlink()
+            )
+    return {
+        "items": items,
+        "count": len(items),
+        "compile_status": "private_index_ready",
+    }
 
 
 @router.put("/{note_id}")

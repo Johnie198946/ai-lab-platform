@@ -188,6 +188,48 @@ public final class KnowledgeNoteStore: ObservableObject {
         lastError = nil
     }
 
+    /// Restore the authenticated account's durable server snapshot after login or reinstall.
+    /// Existing local edits only yield to a strictly newer cloud copy.
+    public func restoreFromCloud() async {
+        guard accountFingerprint != "unconfigured" else { return }
+        let expectedFingerprint = accountFingerprint
+        do {
+            let response = try await APIClient.shared.fetchKnowledgeNotes()
+            guard accountFingerprint == expectedFingerprint else { return }
+            for snapshot in response.items {
+                try applyCloudSnapshot(snapshot)
+            }
+            reload()
+            lastError = nil
+        } catch {
+            guard accountFingerprint == expectedFingerprint else { return }
+            lastError = "云端笔记暂未同步：\(error.localizedDescription)"
+        }
+    }
+
+    private func applyCloudSnapshot(_ snapshot: CloudKnowledgeNoteDTO) throws {
+        if let existing = anyNote(id: snapshot.noteId) {
+            let localHash = SHA256.hash(data: Data(markdown(for: existing).utf8))
+                .map { String(format: "%02x", $0) }.joined()
+            if localHash == snapshot.contentHash { return }
+            let remoteUpdatedAt = snapshot.updatedAt.flatMap(Self.parseServerDate)
+            if remoteUpdatedAt == nil || remoteUpdatedAt! <= existing.updatedAt { return }
+            try? fileManager.removeItem(at: existing.fileURL)
+        }
+
+        let directory = snapshot.archived ? archiveDirectory : vaultDirectory
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("\(snapshot.noteId).md")
+        try snapshot.markdown.write(to: destination, atomically: true, encoding: .utf8)
+    }
+
+    private static func parseServerDate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
     public func markdown(for note: KnowledgeNote) -> String {
         encode(note)
     }

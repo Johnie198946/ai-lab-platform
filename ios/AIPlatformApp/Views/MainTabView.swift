@@ -55,7 +55,7 @@ public struct MainTabView: View {
         .safeAreaInset(edge: .bottom, spacing: 18) {
             if !keyboardObserver.isKeyboardVisible {
                 VStack(spacing: AppTheme.Spacing.xs) {
-                    if !sessionManager.visibleTopics.isEmpty {
+                    if !sessionManager.visibleTopics.isEmpty && appState.activeTab != 0 {
                         TopicSessionMiniBar(
                             topics: sessionManager.visibleTopics,
                             onOpen: { topic in

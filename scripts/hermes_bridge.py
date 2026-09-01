@@ -165,8 +165,9 @@ WORKFLOW_NODE_MAX_ITERATIONS = max(
 IN_PROCESS_STREAM_ENABLED = os.environ.get("HERMES_IN_PROCESS_STREAM", "false") == "true"
 # SSE keepalive 注释帧间隔（对齐 Hermes CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS=30.0）
 STREAM_KEEPALIVE_SECONDS = float(os.environ.get("HERMES_STREAM_KEEPALIVE", "30"))
-# 单次流式总时长上限（超时 → watchdog interrupt + error 帧）
-STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "720"))
+# 单次流式总时长上限（超时 → watchdog interrupt + error 帧）。
+# iOS 锁屏会 detach 客户端订阅；服务端 Run 允许继续最多 1 小时。
+STREAM_MAX_DURATION_SECONDS = int(os.environ.get("HERMES_STREAM_MAX_DURATION", "3600"))
 # watchdog 扫描间隔（秒）：detached run 超时判定精度；G-10 压缩测试可覆盖
 WATCHDOG_INTERVAL_SECONDS = float(os.environ.get("HERMES_WATCHDOG_INTERVAL", "10"))
 # clarify 等待用户响应超时（默认 180s，替代 Hermes 原生 3600s）
@@ -2871,9 +2872,9 @@ def _query_status(
     - consumed   : 消费水位线标记（consume=1 推进）
 
     timeout 判定（单一时钟源，对齐 watchdog）：
-    - run 存在   → run.start_ts 超 STREAM_MAX_DURATION_SECONDS(720s) → timeout，
+    - run 存在   → run.start_ts 超 STREAM_MAX_DURATION_SECONDS → timeout，
                    命中同时 interrupt+discard（复用 watchdog 路径）
-    - run 不存在 → 会话 ended 无答案 / 最后消息超 720s 无更新 → timeout
+    - run 不存在 → 会话 ended 无答案 / 最后消息超同一运行时上限无更新 → timeout
                   （bridge 重启后旧 run 进程消亡，无双 run，按 state.db 判定）
     显式移除历史「>300s 无更新」stale 判定。
     """

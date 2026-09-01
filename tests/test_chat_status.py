@@ -92,7 +92,7 @@ class TestQueryStatusStateMachine(unittest.TestCase):
                 (2, "sid_completed", "assistant", "最终答案", "思考过程", None, None, now - 4, 1),
                 (3, "sid_running", "user", "问题", None, None, None, now - 3, 1),
                 (4, "sid_running", "tool", None, None, "read_file", None, now - 2, 1),
-                (5, "sid_stale", "tool", None, None, "web_search", None, now - 800, 1),
+                (5, "sid_stale", "tool", None, None, "web_search", None, now - 4_000, 1),
                 (6, "sid_ended", "tool", None, None, "read_file", None, now - 1, 1),
             ],
             self.tmp.name,
@@ -136,7 +136,7 @@ class TestQueryStatusStateMachine(unittest.TestCase):
         self.assertEqual(result["answer"], "")
 
     def test_timeout_when_stale(self):
-        # v5 单一时钟源：最后消息超 720s（STREAM_MAX_DURATION_SECONDS）无更新 → timeout
+        # v5 单一时钟源：最后消息超运行时上限无更新 → timeout
         result = self._query("sid_stale")
         self.assertEqual(result["status"], "timeout")
         self.assertEqual(result["phase"], "timeout")
@@ -159,7 +159,7 @@ class TestQueryStatusTetrad(unittest.TestCase):
                 ("sid_tool", None, 0),
                 ("sid_completed", None, 0),
                 ("sid_recent_stale", None, 0),   # 400s 旧消息：v5 不再判 timeout
-                ("sid_timeout", None, 0),        # 800s 旧消息：判 timeout
+                ("sid_timeout", None, 0),        # 4000s 旧消息：判 timeout
             ],
             [
                 (1, "sid_boot", "user", "模糊需求", None, None, None, now - 2, 1),
@@ -171,7 +171,7 @@ class TestQueryStatusTetrad(unittest.TestCase):
                 (7, "sid_completed", "user", "问题", None, None, None, now - 5, 1),
                 (8, "sid_completed", "assistant", "最终答案", "思考过程", None, None, now - 4, 1),
                 (9, "sid_recent_stale", "tool", None, None, "web_search", None, now - 400, 1),
-                (10, "sid_timeout", "tool", None, None, "web_search", None, now - 800, 1),
+                (10, "sid_timeout", "tool", None, None, "web_search", None, now - 4_000, 1),
             ],
             self.tmp.name,
         )

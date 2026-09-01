@@ -106,6 +106,11 @@ public struct AppRootCoordinatorView: View {
                 isVipLane: false
             )
             appState.isGuestMode = false
+            KnowledgeNoteStore.shared.activate(
+                tenantKey: profile.tenantKey,
+                userId: profile.userId
+            )
+            await KnowledgeNoteStore.shared.restoreFromCloud()
         } catch {
             // APIClient 会把真实 401 汇入 needsReauth；离线/超时保留 Keychain 登录态。
         }
