@@ -40,7 +40,7 @@ services:
       dockerfile: backend/Dockerfile
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -226,9 +226,8 @@ services:
     ports:
       - "80:80"
       - "443:443"
-      - "9443:9443"
-      - "9080:9080"
-      - "9081:9081"
+      - "127.0.0.1:9080:9080"
+      - "127.0.0.1:9081:9081"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:

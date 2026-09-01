@@ -15,6 +15,7 @@ COPY frontend/nginx/ailab.crt /etc/nginx/ssl/ailab.crt
 COPY frontend/nginx/ailab.key /etc/nginx/ssl/ailab.key
 RUN echo $'server {\n\
     listen 80;\n\
+    return 308 https://$host$request_uri;\n\
     location / {\n\
         root   /usr/share/nginx/html;\n\
         index  index.html index.htm;\n\
@@ -97,19 +98,7 @@ RUN echo $'server {\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
-    location /hermes/ {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_set_header X-Real-IP $remote_addr;\n\
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-        proxy_set_header X-Forwarded-Proto $scheme;\n\
-        proxy_set_header X-Forwarded-Host $host;\n\
-        proxy_read_timeout 600s;\n\
-        proxy_buffering off;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-    }\n\
+    location ^~ /hermes/ { return 404; }\n\
 }\n\
 # B-2-1 最小 server 块：Quantum fork 官方 Web 引擎（iOS WebContainer 入口）\n\
 # location /api/ → host.docker.internal:9119（serve 无前缀逻辑；WS Upgrade 头透传）\n\
@@ -134,29 +123,15 @@ server {\n\
         proxy_buffering off;\n\
     }\n\
 }\n\
-# 官方 Hermes Dashboard 独立入口（根路径反代·serve 无前缀逻辑·登录正常）\n\
-server {\n\
-    listen 9443 ssl;\n\
-    ssl_certificate     /etc/nginx/ssl/ailab.crt;\n\
-    ssl_certificate_key /etc/nginx/ssl/ailab.key;\n\
-    location / {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_set_header X-Real-IP $remote_addr;\n\
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-        proxy_set_header X-Forwarded-Proto $scheme;\n\
-        proxy_set_header X-Forwarded-Host $host;\n\
-        proxy_read_timeout 600s;\n\
-        proxy_buffering off;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-    }\n\
-}\n\
 server {\n\
     listen 443 ssl;\n\
     ssl_certificate     /etc/nginx/ssl/ailab.crt;\n\
     ssl_certificate_key /etc/nginx/ssl/ailab.key;\n\
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;\n\
+    add_header X-Content-Type-Options "nosniff" always;\n\
+    add_header X-Frame-Options "DENY" always;\n\
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;\n\
+    add_header Permissions-Policy "camera=(), microphone=(self), geolocation=()" always;\n\
     location / {\n\
         root   /usr/share/nginx/html;\n\
         index  index.html index.htm;\n\
@@ -239,19 +214,7 @@ server {\n\
         proxy_set_header X-Real-IP $remote_addr;\n\
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
     }\n\
-    location /hermes/ {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_set_header X-Real-IP $remote_addr;\n\
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n\
-        proxy_set_header X-Forwarded-Proto $scheme;\n\
-        proxy_set_header X-Forwarded-Host $host;\n\
-        proxy_read_timeout 600s;\n\
-        proxy_buffering off;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-    }\n\
+    location ^~ /hermes/ { return 404; }\n\
     location ~* \\.(html)$ {\n\
         root   /usr/share/nginx/html;\n\
         add_header Cache-Control "no-cache, no-store, must-revalidate";\n\
@@ -282,5 +245,5 @@ server {\n\
         proxy_buffering off;\n\
     }\n\
 }\n' > /etc/nginx/conf.d/default.conf
-EXPOSE 80 443 9443 9080 9081
+EXPOSE 80 443 9080 9081
 CMD ["nginx", "-g", "daemon off;"]
