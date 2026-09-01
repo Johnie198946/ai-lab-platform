@@ -1,15 +1,17 @@
 # QWS project-wide AI employee context and plain-language answers
 
 task_id: qws-project-wide-ai-context-20260901
-status: TESTED
+status: VERIFIED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828
 head_before: fe8a27f4bbe7ccbb185d9e8f0af442206f1696bc
-implementation_commit: pending
-remote_sha: fe8a27f4bbe7ccbb185d9e8f0af442206f1696bc before this change
-server_before: pending inspection
-server_after: not deployed
-rollback_point: pending inspection
+implementation_commit: b370db44c6014ec6f2e606f0798843fdecc10fc3
+remote_sha: b370db44c6014ec6f2e606f0798843fdecc10fc3 verified before deployment
+server_before: fe8a27f4bbe7ccbb185d9e8f0af442206f1696bc
+server_after: b370db44c6014ec6f2e606f0798843fdecc10fc3
+release: /opt/releases/ai-lab-platform-b370db44c601.jp63pu
+rollback_point: /opt/releases/ai-lab-platform-fe8a27f4bbe7.DpZQXr
+health_check: API ready; API container healthy; Hermes Bridge healthy
 manifest: ops/change-manifests/qws-project-wide-ai-context-20260901-completion.md
 
 ## Changes
@@ -30,9 +32,13 @@ manifest: ops/change-manifests/qws-project-wide-ai-context-20260901-completion.m
 - Frontend production build: passed.
 - Regression asserts the transferred Hermes context contains `project_overview`, `project_documents`, `project_execution_log`, and `session_directory`.
 - Regression asserts the plain-language project-answer protocol and internal-flag interpretation rules are present.
+- Deployment runtime contract audit: passed.
+- Production source inspection confirmed all project-context and plain-language protocol markers.
+- API `/ready`: `ready`.
+- Hermes Bridge `/health`: `ok`.
+- API container: `healthy`.
 
-## Remaining before VERIFIED
+## Remaining risk
 
-- Commit and push only this task's files.
-- Deploy the exact GitHub SHA.
-- Verify server SHA, API readiness, Hermes Bridge health and production source markers.
+- Existing task conversations receive the new project-wide context on the next card refresh/open; prior answers are not retroactively rewritten.
+- Project documents are intentionally bounded to eight prioritized canonical/ready documents and 6,000 characters each to stay within the Hermes Session context budget.
