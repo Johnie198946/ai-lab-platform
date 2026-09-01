@@ -1,0 +1,31 @@
+You are performing the mandatory pre-implementation design gate for QWS Business Result Workspace v1.3 in this real repository.
+
+FIRST inspect the actual source files, especially:
+- frontend/src/features/quantum-workspace/quantumWorkspace.css
+- frontend/src/features/quantum-workspace/ProjectWorkspacePage.jsx
+- frontend/src/features/quantum-workspace/ProjectGraph.jsx
+- frontend/src/features/quantum-workspace/AIResourceWorkbench.jsx
+- frontend/src/services/platformApi.js
+- any existing SIM Workbench components/styles found by repository search
+
+Then create ONLY these two design deliverables (do not edit React, backend, tests, or any other files):
+1. docs/design/qws-business-result-workspace-v2.md
+2. docs/design/qws-business-result-workspace-v2.html
+
+Requirements:
+- This is a single-file, directly previewable HTML prototype and a matching design specification grounded in the actual source you inspected.
+- Keep top-level QWS navigation exactly Taskboard | Workflow | AI Resource. Add only Workflow sub-tabs: 流程 | 运行与结果.
+- Match existing light SIM/QWS tokens and visual language: use actual --qw-* colors, white/#fafbfc surfaces, 1px light borders, 7-12px radii, light shadows, 20-24px headings and 12-14px body; preserve responsive breakpoints 1180/900/760/560 and no page horizontal overflow.
+- Cover all eight named UI states in the HTML with a visible state switcher and realistic conservative copy: loading, empty, error, unauthorized, running, unsupported, awaiting_review, completed.
+- Main result view order: execution context; one-sentence conclusion; what happened; business impact; risks/limitations; at most 3 next steps; direct evidence; default-collapsed technical records.
+- Main view speaks business language. Keep NodeRun, digest, receipt, provider/model, token/cost, IDs only in collapsed technical records.
+- Truth labels: LIVE=真实执行中, REPLAY=已记录的真实执行, UNCONNECTED=暂无可核验结果. Do not claim SIMULATION because v1 has no trustworthy persistent source; an unsupported simulation must show UNCONNECTED and “暂无可核验仿真来源”.
+- No metrics, percentages, improvement/reduction/optimization claims without metric evidence. Artifact creation must not be described as business outcome achieved.
+- Demonstrate read-only Workflow and Execution selectors. No approval/reject/report/write controls, no RunGroup/N:M concepts.
+- Include accessibility details: keyboard-usable controls, visible focus, aria-live status, semantic details/summary; explain responsive behavior.
+- The Markdown must explicitly cite which real source selectors/tokens/patterns were inspected and reused, and include a state-by-state copy/behavior table plus implementation handoff notes.
+- The HTML must be self-contained (inline CSS/JS, no CDN/assets), polished enough for user preview, and include all 8 states in the implementation rather than only describing them.
+
+The currently untracked docs/design/evidence/qws-business-result-workspace-v2-* files were created for and belong exclusively to this authorized task. Preserve them unchanged; their ownership is explicitly confirmed. Do not fetch, pull, synchronize, stage, commit, reset, or stash. The repository base/main/clean prerequisite was already independently verified immediately before these evidence files were created. Proceed non-interactively and do not ask for confirmation.
+
+Do not implement production code in this run. At the end, summarize inspected source files and created design files.

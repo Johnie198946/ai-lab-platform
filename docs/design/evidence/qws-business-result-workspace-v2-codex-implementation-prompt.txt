@@ -1,0 +1,72 @@
+You are implementing the approved QWS Business Result Workspace v1.3 after the mandatory design gate has completed. Work in the real repository and inspect actual models, APIs, tests, and generated design first.
+
+Governance:
+- Authorized repo/base: /private/tmp/ai-lab-platform-qws-result-20260902, branch main, base 2210b21417f00fea3f6e475f84b3f29e579770e9.
+- Existing untracked docs/design outputs and evidence belong to this task. Preserve them.
+- Do not fetch/pull, stage, commit, push, deploy, reset, or stash. Never use git add.
+- Strictly edit/create ONLY these paths:
+  frontend/src/features/quantum-workspace/ProjectWorkspacePage.jsx
+  frontend/src/features/quantum-workspace/ProjectGraph.jsx
+  frontend/src/features/quantum-workspace/BusinessResultWorkspace.jsx
+  frontend/src/features/quantum-workspace/quantumWorkspace.css
+  frontend/src/services/platformApi.js
+  frontend/src/features/quantum-workspace/AIResourceWorkbench.jsx (only if needed to remove a fixed misleading result fallback)
+  backend/services/workflow_insights.py
+  backend/services/workflow_contract.py
+  backend/api/workflows.py
+  backend/services/workflow_executor.py (only if minimally needed to preserve receipt/evidence refs)
+  tests/test_workflow_insights.py
+  tests/test_workflow_contract.py
+  tests/test_workflows_api.py
+  tests/test_workflow_event_projection.py
+  frontend/tests/quantum-workspace.test.mjs
+  frontend/tests/architect-contract.test.mjs
+  docs/design/evidence/qws-business-result-workspace-v2-codex-implementation-* (the shell owns prompt/command/log; do not overwrite them)
+- Do not edit design MD/HTML in this implementation run; they are approved gate outputs.
+
+TDD is mandatory:
+1. Inspect real code and contracts.
+2. Add focused tests first for each vertical behavior.
+3. Run focused tests and record genuine expected RED failures in this terminal log.
+4. Implement minimal production code.
+5. Re-run until GREEN, then run all required focused gates and build.
+Do not weaken existing assertions to make tests pass.
+
+Backend contract:
+- Add GET /api/v1/projects/{project_id}/workflow-executions/{execution_id}/business-result-summary.
+- First call existing _project_for_access(db, project_id, tenant_key, user_id, "project:read"). Then load Execution and require execution.workflow_id to be bound in current project.process_snapshot tasks[].workflow_id OR a WorkspaceProcessRevision.legacy_snapshot for that same project. Current/history absent => 404. Never rely only on tenant or owned_execution.
+- Response is deterministic BusinessResultSummary with schema_version, summary_id, source_digest, workflow_id, execution_id, execution_status, generated_at, truth_mode, one_sentence_conclusion {text,support_status,evidence_ids}, what_happened, business_impact, evidence, risks_and_limitations, recommended_next_steps, technical_facts_ref and per-collection total_count/has_more metadata.
+- Hard array limits: what_happened 7, business_impact 6, evidence 20, risks 6, next_steps 3. Queries must be filtered by execution_id, never load all tenant events and filter in memory.
+- Evidence only from current Execution DB WorkflowEvent, Artifact, and Approval records actually queried. Event must belong to execution. Artifact must belong to execution and have non-empty content_hash to support claims. Unknown lineage/verification remains unknown; do not invent validation fields.
+- Receipt validity only from existing execution.hermes_session_id, execution.bridge_event_seq, and actual WorkflowEvent payload fields. Validate only persisted facts: Hermes Bridge source, execution/run ID if present must match, session identifier if present must match, seq must not regress. Do not fabricate signatures/receipt fields. Invalid/missing => UNCONNECTED plus risk.
+- Truth supports LIVE, REPLAY, UNCONNECTED only. LIVE for active real execution with valid receipt; REPLAY for terminal persisted real execution with valid receipt. Any status/caller claim of simulation without trusted persistent source => UNCONNECTED and risk exact copy “暂无可核验仿真来源”. Never output SIMULATION.
+- summary_id and source_digest derive from canonical factual inputs and exclude generated_at/projection time. Repeated projection with same DB facts must be stable.
+- Conservative deterministic language only; no LLM. No metric Evidence means business_impact unknown and no words that claim 提升/降低/优化 or percentages. Artifact generated is not business outcome achieved. Only state completion, named nodes/steps, count of hash-valid artifacts, errors/risks, awaiting approval/review.
+- No new write endpoint, N:M model, RunGroup, report generation, approval/reject write operation, new Runtime, or duplicate truth persistence.
+- Prefer existing models/serialization conventions; do not add files or migrations.
+
+Frontend:
+- Keep top nav exactly Taskboard | Workflow | AI Resource.
+- Inside Workflow add sub-tabs 流程 | 运行与结果.
+- Add BusinessResultWorkspace.jsx using only read APIs and actual project-bound workflows/executions exposed by the approved endpoint/API support. Multi-Workflow and multi-Execution selection must be explicit/read-only. Do not guess workflows by title or expose tenant-wide candidates; derive current project bindings from process_snapshot and summary/list endpoint behavior available in real code. If a minimal read-only list route is needed, it must stay in backend/api/workflows.py and be project scoped with the same access/binding guarantees; no write route.
+- Preserve ProjectGraph mounting/state while switching tabs (hide rather than unmount or otherwise persist canvas selection/layout). Handle request race/cancellation so stale execution responses cannot overwrite current selection.
+- Main order/content: execution context, one-sentence conclusion, what happened, business impact, risks/limitations, max 3 next steps, direct evidence, default-collapsed technical records. Technical IDs/receipt/digest/model/token/cost only in collapsed details.
+- Follow approved docs/design/qws-business-result-workspace-v2.md and real --qw-* light token style; responsive 1180/900/760/560, no page horizontal overflow, visible focus, semantic labels/details, aria-live.
+- Cover UI states loading, empty, error, unauthorized, running, unsupported, awaiting_review, completed. Do not show mock/fixed success numbers or business traces. Unauthorized must clear prior sensitive summary.
+- Do not add approve/reject/report/run/write controls.
+
+Required tests / adversarial cases:
+- project member access; same-tenant non-member denied; same-tenant execution bound to another project denied; history binding via WorkspaceProcessRevision legacy_snapshot succeeds.
+- valid receipt LIVE and REPLAY; forged source/session/run/execution, regressing seq, missing fields fail closed; simulation fail closed.
+- cross-execution/missing-hash artifact cannot support; stable summary_id/source_digest; upper bounds and has_more; no forbidden causal claims without metric evidence.
+- frontend component/API existence; all 8 states; no mock result fallback; two sub-tabs; graph state preserved while switching; race handling; keyboard/accessibility contracts.
+
+Run these exact gates before finishing and report actual output in your final response (all remains captured by the shell run log):
+pytest tests/test_workflow_insights.py tests/test_workflow_contract.py -v
+pytest tests/test_workflows_api.py tests/test_workflow_event_projection.py -v
+python3 -m py_compile backend/services/workflow_insights.py backend/services/workflow_contract.py backend/api/workflows.py
+node --test frontend/tests/quantum-workspace.test.mjs
+node --test frontend/tests/architect-contract.test.mjs
+cd frontend && npm run build
+
+Finally run git status --short and git diff --check, verify every changed/untracked path is inside the whitelist, and summarize files changed, RED evidence, GREEN gate results, and residual risks. Do not create the completion manifest; the parent agent will do that after independent review.

@@ -60,11 +60,69 @@ def truth_for_execution(*, status: str | None, hermes_receipt: Any) -> str:
     """Derive conservative server truth; only a running receipt can be LIVE."""
     normalized = str(status or "").strip().lower()
     has_receipt = bool(hermes_receipt)
-    if normalized == "simulation":
-        return "SIMULATION"
     if normalized == "running" and has_receipt:
         return "LIVE"
     if normalized in {"awaiting_review", "completed", "succeeded", "failed", "cancelled"} and has_receipt:
+        return "REPLAY"
+    return "UNCONNECTED"
+
+
+def validate_business_result_receipt(
+    *,
+    execution_id: str,
+    hermes_session_id: str | None,
+    bridge_event_seq: int | None,
+    events: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate only persisted Hermes Bridge facts for a result projection."""
+    expected_session = str(hermes_session_id or "").strip()
+    expected_seq = int(bridge_event_seq or 0)
+    if not expected_session or expected_seq < 1:
+        return {"valid": False, "last_seq": 0, "reason": "missing persisted bridge receipt"}
+
+    receipt_events: list[tuple[int, dict[str, Any]]] = []
+    for event in events:
+        payload = event.get("payload") if isinstance(event, dict) else None
+        payload = payload if isinstance(payload, dict) else {}
+        if "bridge_seq" not in payload:
+            continue
+        try:
+            seq = int(payload["bridge_seq"])
+        except (TypeError, ValueError):
+            return {"valid": False, "last_seq": 0, "reason": "invalid bridge sequence"}
+        receipt_events.append((seq, payload))
+
+    if not receipt_events:
+        return {"valid": False, "last_seq": 0, "reason": "missing bridge event facts"}
+
+    last_seq = 0
+    for seq, payload in receipt_events:
+        source = str(payload.get("source") or "").strip().lower().replace(" ", "_")
+        if source != "hermes_bridge" or seq < 1 or seq <= last_seq:
+            return {"valid": False, "last_seq": last_seq, "reason": "invalid or regressing bridge event"}
+        for key in ("execution_id", "run_id"):
+            value = payload.get(key)
+            if value not in (None, "") and str(value) != execution_id:
+                return {"valid": False, "last_seq": last_seq, "reason": f"mismatched {key}"}
+        for key in ("session_id", "hermes_session_id"):
+            value = payload.get(key)
+            if value not in (None, "") and str(value) != expected_session:
+                return {"valid": False, "last_seq": last_seq, "reason": f"mismatched {key}"}
+        last_seq = seq
+
+    if last_seq != expected_seq:
+        return {"valid": False, "last_seq": last_seq, "reason": "bridge sequence does not match execution"}
+    return {"valid": True, "last_seq": last_seq, "reason": None}
+
+
+def business_result_truth(*, status: str | None, receipt_valid: bool) -> str:
+    """Business-result truth is deliberately narrower than simulation tooling."""
+    normalized = str(status or "").strip().lower()
+    if not receipt_valid or normalized == "simulation":
+        return "UNCONNECTED"
+    if normalized in {"running", "queued"}:
+        return "LIVE" if normalized == "running" else "UNCONNECTED"
+    if normalized in {"awaiting_review", "completed", "succeeded", "failed", "cancelled"}:
         return "REPLAY"
     return "UNCONNECTED"
 
@@ -75,7 +133,7 @@ def isolated_round_trip_input(
     """Build a JSON-isolated non-LIVE fixture without invoking any runtime."""
     if truth == "LIVE":
         raise PlanContractError("LIVE round trips require a real Hermes receipt")
-    if truth not in {"REPLAY", "SIMULATION", "UNCONNECTED"}:
+    if truth not in {"REPLAY", "UNCONNECTED"}:
         raise PlanContractError("unknown truth state")
     if not isinstance(plan, dict) or not isinstance(supplied_inputs, dict):
         raise TypeError("plan and supplied_inputs must be JSON objects")

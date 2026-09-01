@@ -89,6 +89,15 @@ def test_truth_requires_receipt_before_live_and_replays_terminal_receipts():
     assert contract.truth_for_execution(status="completed", hermes_receipt="receipt-1") == "REPLAY"
 
 
+def test_simulation_status_and_caller_truth_fail_closed_without_persisted_source():
+    contract = contract_module()
+    assert contract.truth_for_execution(status="simulation", hermes_receipt="receipt-1") == "UNCONNECTED"
+    with pytest.raises(contract.PlanContractError):
+        contract.isolated_round_trip_input(
+            plan={"nodes": [], "edges": []}, supplied_inputs={}, truth="SIMULATION"
+        )
+
+
 def test_non_live_round_trip_is_pure_input_synthesis():
     contract = contract_module()
     result = contract.isolated_round_trip_input(
@@ -127,3 +136,49 @@ def test_missing_expected_hash_and_revision_are_rejected():
     contract = contract_module()
     with pytest.raises(contract.PlanContractError):
         contract.require_compare_and_set_inputs(expected_hash=None, expected_revision=None)
+
+
+def test_business_result_truth_accepts_only_valid_persisted_bridge_facts():
+    contract = contract_module()
+    valid_events = [
+        {"id": 1, "payload": {"source": "hermes_bridge", "bridge_seq": 1, "execution_id": "exec-1", "hermes_session_id": "session-1"}},
+        {"id": 2, "payload": {"source": "hermes_bridge", "bridge_seq": 2, "run_id": "exec-1", "session_id": "session-1"}},
+    ]
+    receipt = contract.validate_business_result_receipt(
+        execution_id="exec-1",
+        hermes_session_id="session-1",
+        bridge_event_seq=2,
+        events=valid_events,
+    )
+    assert receipt["valid"] is True
+    assert contract.business_result_truth(status="running", receipt_valid=True) == "LIVE"
+    assert contract.business_result_truth(status="completed", receipt_valid=True) == "REPLAY"
+
+
+@pytest.mark.parametrize(
+    "events,session,bridge_seq",
+    [
+        ([{"id": 1, "payload": {"source": "browser", "bridge_seq": 1}}], "s", 1),
+        ([{"id": 1, "payload": {"source": "hermes_bridge", "bridge_seq": 1, "session_id": "forged"}}], "s", 1),
+        ([{"id": 1, "payload": {"source": "hermes_bridge", "bridge_seq": 1, "execution_id": "forged"}}], "s", 1),
+        ([{"id": 1, "payload": {"source": "hermes_bridge", "bridge_seq": 2}}, {"id": 2, "payload": {"source": "hermes_bridge", "bridge_seq": 1}}], "s", 2),
+        ([{"id": 1, "payload": {"source": "hermes_bridge"}}], "s", 1),
+        ([], "s", 1),
+        ([{"id": 1, "payload": {"source": "hermes_bridge", "bridge_seq": 1}}], None, 1),
+    ],
+)
+def test_business_result_receipt_fails_closed_for_forgery_regression_or_missing_facts(events, session, bridge_seq):
+    contract = contract_module()
+    receipt = contract.validate_business_result_receipt(
+        execution_id="exec-1",
+        hermes_session_id=session,
+        bridge_event_seq=bridge_seq,
+        events=events,
+    )
+    assert receipt["valid"] is False
+    assert contract.business_result_truth(status="running", receipt_valid=False) == "UNCONNECTED"
+
+
+def test_business_result_truth_never_emits_simulation():
+    contract = contract_module()
+    assert contract.business_result_truth(status="simulation", receipt_valid=True) == "UNCONNECTED"

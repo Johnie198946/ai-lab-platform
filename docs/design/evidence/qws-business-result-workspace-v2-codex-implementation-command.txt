@@ -1,0 +1,5 @@
+Working directory: /private/tmp/ai-lab-platform-qws-result-20260902
+Codex version: codex-cli 0.149.0
+
+Implementation command:
+/usr/bin/script -q docs/design/evidence/qws-business-result-workspace-v2-codex-implementation-run.log /bin/sh -c 'codex exec --sandbox workspace-write - < docs/design/evidence/qws-business-result-workspace-v2-codex-implementation-prompt.txt'

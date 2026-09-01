@@ -166,3 +166,33 @@ test("task drawer exposes server-backed Challenge decisions and relation drift",
   assert.match(api, /decideProjectTaskDeliveryManifest/);
   assert.match(api, /challenge-reviews\/\$\{reviewId\}\/decision/);
 });
+
+test("Workflow exposes a preserved graph and read-only business result workspace", () => {
+  const page = readFileSync(new URL("../src/features/quantum-workspace/ProjectWorkspacePage.jsx", import.meta.url), "utf8");
+  const result = readFileSync(new URL("../src/features/quantum-workspace/BusinessResultWorkspace.jsx", import.meta.url), "utf8");
+  const api = readFileSync(new URL("../src/services/platformApi.js", import.meta.url), "utf8");
+  assert.match(page, />流程</);
+  assert.match(page, />运行与结果</);
+  assert.match(page, /hidden=\{workflowSubView !== "process"\}/);
+  assert.match(page, /<ProjectGraph/);
+  assert.match(page, /<BusinessResultWorkspace/);
+  assert.match(result, /AbortController/);
+  assert.match(result, /requestSerialRef/);
+  assert.match(result, /aria-live="polite"/);
+  assert.match(result, /<details/);
+  assert.match(result, /<summary>技术记录/);
+  assert.match(api, /listProjectWorkflowExecutions/);
+  assert.match(api, /getProjectBusinessResultSummary/);
+});
+
+test("business result workspace covers eight honest states and has no write controls or mock outcomes", () => {
+  const source = readFileSync(new URL("../src/features/quantum-workspace/BusinessResultWorkspace.jsx", import.meta.url), "utf8");
+  for (const state of ["loading", "empty", "error", "unauthorized", "running", "unsupported", "awaiting_review", "completed"]) {
+    assert.match(source, new RegExp(`\\b${state}\\b`));
+  }
+  assert.match(source, /暂无可核验仿真来源/);
+  assert.match(source, /UNCONNECTED/);
+  assert.doesNotMatch(source, /SIMULATION/);
+  assert.doesNotMatch(source, /批准|驳回|生成报告|重新运行/);
+  assert.doesNotMatch(source, /(?:提升|降低|优化)\s*\d|\d+(?:\.\d+)?[%％]/);
+});

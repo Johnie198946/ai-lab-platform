@@ -4,6 +4,7 @@ import { Link, NavLink, useLocation, useParams, useSearchParams } from "react-ro
 import { platformApi } from "../../services/platformApi";
 import { BusinessIntakePanel } from "./BusinessIntakePanel";
 import { AIResourceWorkbench } from "./AIResourceWorkbench";
+import { BusinessResultWorkspace } from "./BusinessResultWorkspace";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
 
@@ -32,6 +33,7 @@ export function ProjectWorkspacePage() {
   const [dialogError, setDialogError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [workflowSubView, setWorkflowSubView] = useState("process");
   const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
 
   const load = useCallback(async () => {
@@ -259,7 +261,14 @@ export function ProjectWorkspacePage() {
       </div>}
       {view === "schedule" && viewData && <ProjectSchedule schedule={viewData} focusTaskId={searchParams.get("focus_task_id")} />}
 
-      {view === "graph" && viewType === "workflow" && viewData && <ProjectGraph graph={viewData} process={process} onSave={saveWorkflowGraph} />}
+      {view === "graph" && viewType === "workflow" && viewData && <>
+        <nav className="qw-workflow-subtabs" aria-label="Workflow 视图">
+          <button type="button" className={workflowSubView === "process" ? "active" : ""} aria-pressed={workflowSubView === "process"} onClick={() => setWorkflowSubView("process")}>流程</button>
+          <button type="button" className={workflowSubView === "results" ? "active" : ""} aria-pressed={workflowSubView === "results"} onClick={() => setWorkflowSubView("results")}>运行与结果</button>
+        </nav>
+        <div hidden={workflowSubView !== "process"}><ProjectGraph graph={viewData} process={process} onSave={saveWorkflowGraph} /></div>
+        <div hidden={workflowSubView !== "results"}><BusinessResultWorkspace projectId={projectId} /></div>
+      </>}
       {view === "graph" && viewType === "ai-resource" && viewData && <AIResourceWorkbench resourceData={viewData} onRecommend={recommendResourcePlan} onSave={saveResourcePlan} onGenerateDataset={generateSimulationDataset} onAskContext={askResourceContext} />}
       {selectedTaskSession && <TaskChatDrawer project={project} process={process} task={selectedTaskSession.task} cardContext={selectedTaskSession.cardContext} refreshCardContext={selectedTaskSession.refreshCardContext} autoInstruction={selectedTaskSession.autoInstruction} onClose={() => setSelectedTaskSession(null)} />}
       {editTask && <EditProjectTaskDialog task={editTask} stages={process.stages || []} busy={dialogBusy} error={dialogError} onClose={() => setEditTask(null)} onSubmit={editTaskDetails} />}

@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QWS Business Result Workspace v1.3 — Design Prototype</title>
+  <style>
+    :root {
+      --qw-ink:#15171b; --qw-muted:#69707d; --qw-line:#e2e5ea; --qw-soft:#f5f6f8;
+      --qw-blue:#2f6fed; --qw-cyan:#10a8a0; --qw-magenta:#c83f8c; --qw-red:#c63f4a;
+      --qw-amber:#b4690e; --qw-green:#277a52; --surface:#fff; --page:#fafbfc;
+      --focus:#7ea5f5; --shadow:0 2px 8px rgba(20,27,40,.035);
+    }
+    * { box-sizing:border-box; }
+    html,body { margin:0; min-width:0; max-width:100%; overflow-x:hidden; }
+    body { min-height:100vh; background:var(--page); color:var(--qw-ink); font:13px/1.6 Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    button,select { font:inherit; }
+    button,select,summary { touch-action:manipulation; }
+    button:focus-visible,select:focus-visible,summary:focus-visible,a:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+    .skip-link { position:fixed; left:12px; top:-60px; z-index:100; padding:10px 14px; border-radius:7px; background:var(--qw-ink); color:#fff; }
+    .skip-link:focus { top:12px; }
+    .app-header { min-height:64px; display:flex; align-items:center; gap:28px; padding:10px 28px; border-bottom:1px solid var(--qw-line); background:#fff; }
+    .brand { display:flex; align-items:center; gap:10px; flex:none; font-size:15px; font-weight:750; letter-spacing:-.02em; }
+    .spectrum { display:flex; gap:2px; }
+    .spectrum i { display:block; width:5px; height:18px; border-radius:1px; background:var(--qw-blue); }
+    .spectrum i:nth-child(2){background:var(--qw-cyan)} .spectrum i:nth-child(3){background:var(--qw-magenta)}
+    .global-context { margin-left:auto; color:var(--qw-muted); font-size:12px; white-space:nowrap; }
+    .project-header { display:flex; justify-content:space-between; align-items:center; gap:24px; padding:22px 28px 18px; background:#fff; }
+    .eyebrow { color:#7a818d; font-size:10px; font-weight:800; letter-spacing:.14em; text-transform:uppercase; }
+    .project-header h1 { margin:4px 0; font-size:24px; line-height:1.2; letter-spacing:-.035em; }
+    .project-header p { margin:0; color:var(--qw-muted); font-size:12px; }
+    .revision { text-align:right; }
+    .revision span { display:block; color:#8b929c; font-size:9px; letter-spacing:.1em; text-transform:uppercase; }
+    .revision strong { font-size:22px; }
+    .sticky-nav { position:sticky; top:0; z-index:40; background:#fff; box-shadow:0 8px 22px rgba(30,41,59,.06); }
+    .top-nav,.sub-nav { display:flex; align-items:center; gap:3px; min-width:0; padding:0 24px; border-top:1px solid #f0f1f3; border-bottom:1px solid var(--qw-line); background:#fff; }
+    .top-nav a,.sub-nav button { min-height:44px; display:inline-flex; align-items:center; border:0; border-radius:4px; padding:6px 12px; background:transparent; color:#555d69; font-weight:650; text-decoration:none; cursor:pointer; }
+    .top-nav a.active { background:#f1f3f6; color:var(--qw-ink); }
+    .sub-nav { justify-content:center; border-top:0; background:#fbfcfd; }
+    .sub-nav button { position:relative; border-radius:0; }
+    .sub-nav button[aria-selected="true"] { color:var(--qw-ink); background:#fff; }
+    .sub-nav button[aria-selected="true"]::after { content:""; position:absolute; right:10px; bottom:0; left:10px; height:2px; background:var(--qw-blue); }
+    .prototype-bar { padding:14px 24px; border-bottom:1px solid var(--qw-line); background:#f8faff; }
+    .prototype-bar-inner { width:min(1280px,100%); margin:auto; display:flex; align-items:flex-start; gap:18px; }
+    .prototype-note { flex:0 0 210px; padding-top:4px; }
+    .prototype-note strong,.prototype-note small { display:block; }
+    .prototype-note strong { font-size:12px; }
+    .prototype-note small { margin-top:2px; color:var(--qw-muted); font-size:12px; }
+    .state-switcher { flex:1; display:flex; flex-wrap:wrap; gap:8px; min-width:0; }
+    .state-switcher button { min-height:44px; border:1px solid #d9e1ed; border-radius:7px; padding:8px 11px; background:#fff; color:#4d5866; font-size:12px; font-weight:700; cursor:pointer; transition:background-color .18s ease,border-color .18s ease; }
+    .state-switcher button:hover { border-color:#9eb5df; background:#eef3fc; }
+    .state-switcher button[aria-pressed="true"] { border-color:#9bb7ef; background:#eef3ff; color:#285dbd; box-shadow:inset 0 -2px 0 var(--qw-blue); }
+    main { width:min(1280px,calc(100% - 48px)); margin:18px auto 40px; min-width:0; }
+    .workspace { overflow:hidden; border:1px solid var(--qw-line); border-radius:12px; background:#fff; box-shadow:var(--shadow); }
+    .workspace-head { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:18px 22px; border-bottom:1px solid var(--qw-line); }
+    .workspace-head h2 { margin:4px 0 2px; font-size:22px; line-height:1.25; letter-spacing:-.03em; }
+    .workspace-head p { max-width:720px; margin:0; color:var(--qw-muted); font-size:12px; }
+    .readonly-chip { flex:none; border:1px solid var(--qw-line); border-radius:99px; padding:5px 9px; background:#f8f9fb; color:#5f6876; font-size:10px; font-weight:800; letter-spacing:.04em; }
+    .context-panel { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; gap:12px; align-items:end; padding:16px 22px; border-bottom:1px solid var(--qw-line); background:#fafbfc; }
+    .field { min-width:0; }
+    .field label { display:block; margin-bottom:5px; color:#505762; font-size:12px; font-weight:700; }
+    .field select { width:100%; height:44px; border:1px solid #d6dae1; border-radius:7px; padding:0 36px 0 11px; background:#fff; color:var(--qw-ink); cursor:pointer; }
+    .field small { display:block; margin-top:4px; color:var(--qw-muted); font-size:12px; }
+    .truth { min-height:44px; display:inline-flex; align-items:center; gap:8px; align-self:start; border:1px solid var(--qw-line); border-radius:99px; padding:7px 11px; background:#fff; white-space:nowrap; }
+    .truth::before { content:""; width:8px; height:8px; flex:none; border-radius:50%; background:#8a929e; }
+    .truth b { font-size:10px; letter-spacing:.08em; }
+    .truth span { color:var(--qw-muted); font-size:12px; }
+    .truth.live { border-color:#9bd8d4; background:#f0fbfa; } .truth.live::before { background:var(--qw-cyan); box-shadow:0 0 0 3px rgba(16,168,160,.12); }
+    .truth.replay { border-color:#b9ccef; background:#f3f6fd; } .truth.replay::before { background:var(--qw-blue); }
+    .truth.unconnected { border-color:#d8dce2; background:#f6f7f8; }
+    .status-region { min-height:520px; min-width:0; }
+    .result-layout { display:grid; grid-template-columns:minmax(0,1.68fr) minmax(280px,.72fr); min-width:0; }
+    .result-main { min-width:0; padding:24px; }
+    .result-aside { min-width:0; padding:20px; border-left:1px solid var(--qw-line); background:#fafbfc; }
+    .conclusion { margin-bottom:22px; padding:18px 20px; border:1px solid #d7e2f7; border-left:3px solid var(--qw-blue); border-radius:10px; background:#f8faff; }
+    .section-kicker { display:block; margin-bottom:5px; color:#6f7890; font-size:10px; font-weight:800; letter-spacing:.1em; text-transform:uppercase; }
+    .conclusion h3 { max-width:76ch; margin:0; font-size:20px; line-height:1.45; letter-spacing:-.02em; }
+    .content-section { padding:18px 0; border-top:1px solid #edf0f3; }
+    .content-section:first-of-type { border-top:0; }
+    .content-section h3,.result-aside h3 { margin:0 0 9px; font-size:14px; }
+    .content-section p,.result-aside p { margin:0; color:#4e5662; font-size:13px; line-height:1.7; }
+    .plain-list,.step-list,.evidence-list { margin:0; padding:0; list-style:none; }
+    .plain-list { display:grid; gap:8px; }
+    .plain-list li { position:relative; padding-left:17px; color:#4e5662; }
+    .plain-list li::before { content:""; position:absolute; left:2px; top:.72em; width:5px; height:5px; border-radius:50%; background:#8ca6d5; }
+    .step-list { display:grid; gap:8px; counter-reset:steps; }
+    .step-list li { display:grid; grid-template-columns:24px minmax(0,1fr); gap:8px; align-items:start; color:#4e5662; counter-increment:steps; }
+    .step-list li::before { content:counter(steps); width:22px; height:22px; display:grid; place-items:center; border:1px solid #cdd9f5; border-radius:50%; background:#f3f6fd; color:#285dbd; font-size:10px; font-weight:800; }
+    .evidence-list { display:grid; gap:8px; }
+    .evidence-list li { padding:11px 12px; border:1px solid #e1e5eb; border-radius:8px; background:#fff; }
+    .evidence-list strong,.evidence-list span { display:block; overflow-wrap:anywhere; }
+    .evidence-list strong { font-size:12px; }
+    .evidence-list span { margin-top:3px; color:var(--qw-muted); font-size:12px; }
+    details.tech { margin-top:14px; border:1px solid var(--qw-line); border-radius:8px; background:#fff; }
+    details.tech summary { min-height:44px; display:flex; align-items:center; padding:9px 12px; color:#4f5865; font-size:12px; font-weight:700; cursor:pointer; }
+    details.tech summary::after { content:"展开"; margin-left:auto; color:var(--qw-muted); font-size:11px; font-weight:500; }
+    details.tech[open] summary::after { content:"收起"; }
+    .tech-body { padding:0 12px 12px; border-top:1px solid #edf0f3; color:#596270; font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap:anywhere; }
+    .tech-body dl { margin:8px 0 0; }
+    .tech-body div { display:grid; grid-template-columns:120px minmax(0,1fr); gap:10px; padding:6px 0; border-bottom:1px solid #f0f2f4; }
+    .tech-body dt { color:#7b8490; } .tech-body dd { margin:0; color:#303640; }
+    .state-card { min-height:480px; display:grid; place-items:center; padding:36px 22px; text-align:center; }
+    .state-card-inner { width:min(560px,100%); }
+    .state-mark { width:42px; height:42px; display:grid; place-items:center; margin:0 auto 14px; border:1px solid #dce2eb; border-radius:10px; background:#f6f8fb; color:#596575; font-size:12px; font-weight:850; letter-spacing:.04em; }
+    .state-card h3 { margin:0; font-size:20px; }
+    .state-card p { margin:9px auto 0; color:var(--qw-muted); font-size:13px; line-height:1.7; }
+    .state-card.error .state-mark { border-color:#f0c4c9; background:#fff1f2; color:#9f2632; }
+    .state-card.warning .state-mark { border-color:#efd49f; background:#fff8e8; color:#8f5708; }
+    .state-card .truth { margin-top:18px; }
+    .skeleton-wrap { min-height:480px; padding:28px 24px; }
+    .skeleton { height:14px; margin-bottom:12px; border-radius:7px; background:#edf0f4; animation:pulse 1.3s ease-in-out infinite alternate; }
+    .skeleton.hero { width:74%; height:82px; border-radius:10px; }
+    .skeleton.medium { width:56%; } .skeleton.short { width:34%; }
+    @keyframes pulse { to { opacity:.45; } }
+    .sr-only { position:absolute!important; width:1px!important; height:1px!important; padding:0!important; margin:-1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; border:0!important; }
+    @media(max-width:1180px) {
+      .prototype-bar-inner { display:block; } .prototype-note { margin-bottom:10px; }
+      .result-layout { grid-template-columns:1fr; } .result-aside { border-top:1px solid var(--qw-line); border-left:0; }
+    }
+    @media(max-width:900px) {
+      .context-panel { grid-template-columns:1fr; align-items:start; }
+      .truth { justify-self:start; } .evidence-list { grid-template-columns:1fr; }
+    }
+    @media(max-width:760px) {
+      .app-header,.project-header { align-items:flex-start; flex-direction:column; gap:10px; padding-right:18px; padding-left:18px; }
+      .global-context { margin-left:0; white-space:normal; } .revision { text-align:left; }
+      .top-nav,.sub-nav { flex-wrap:wrap; padding:0 12px; }
+      .prototype-bar { padding:12px; } main { width:calc(100% - 24px); margin-top:12px; }
+      .workspace-head { align-items:flex-start; flex-direction:column; gap:10px; padding:16px; }
+      .context-panel,.result-main,.result-aside { padding:16px; }
+    }
+    @media(max-width:560px) {
+      .app-header { padding:10px 12px; } .project-header { padding:16px 12px 13px; }
+      .project-header h1,.workspace-head h2 { font-size:20px; }
+      .top-nav a,.sub-nav button { flex:1 1 auto; justify-content:center; padding-right:8px; padding-left:8px; }
+      .state-switcher { display:grid; grid-template-columns:1fr 1fr; }
+      .state-switcher button { width:100%; }
+      main { width:calc(100% - 12px); margin:6px auto 20px; }
+      .context-panel,.result-main,.result-aside { padding:12px; }
+      .conclusion { padding:15px; } .conclusion h3 { font-size:18px; }
+      .tech-body div { grid-template-columns:1fr; gap:1px; }
+    }
+    @media(prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; transition:none!important; animation:none!important; } }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#result-region">跳到运行结果</a>
+  <header class="app-header">
+    <div class="brand"><span class="spectrum" aria-hidden="true"><i></i><i></i><i></i></span><span>Quantum Workspace</span></div>
+    <div class="global-context">QWS Business Result Workspace · 只读设计原型</div>
+  </header>
+
+  <section class="project-header" aria-labelledby="project-name">
+    <div><span class="eyebrow">Project · QWS-DEMO</span><h1 id="project-name">供应商准入复核工作区</h1><p>以可核验记录呈现执行事实，不替代业务审批或绩效判断。</p></div>
+    <div class="revision"><span>process revision</span><strong>12</strong></div>
+  </section>
+
+  <div class="sticky-nav">
+    <nav class="top-nav" aria-label="QWS 项目导航">
+      <a href="#taskboard">Taskboard</a>
+      <a href="#workflow" class="active" aria-current="page">Workflow</a>
+      <a href="#ai-resource">AI Resource</a>
+    </nav>
+    <nav class="sub-nav" role="tablist" aria-label="Workflow 视图">
+      <button type="button" role="tab" aria-selected="false">流程</button>
+      <button type="button" role="tab" aria-selected="true">运行与结果</button>
+    </nav>
+  </div>
+
+  <section class="prototype-bar" aria-labelledby="switcher-title">
+    <div class="prototype-bar-inner">
+      <div class="prototype-note"><strong id="switcher-title">原型状态切换</strong><small>八种状态均已实现，可用键盘操作</small></div>
+      <div class="state-switcher" role="group" aria-label="选择预览状态">
+        <button type="button" data-state="loading" aria-pressed="false">Loading</button>
+        <button type="button" data-state="empty" aria-pressed="false">Empty</button>
+        <button type="button" data-state="error" aria-pressed="false">Error</button>
+        <button type="button" data-state="unauthorized" aria-pressed="false">Unauthorized</button>
+        <button type="button" data-state="running" aria-pressed="false">Running</button>
+        <button type="button" data-state="unsupported" aria-pressed="false">Unsupported</button>
+        <button type="button" data-state="awaiting_review" aria-pressed="false">Awaiting review</button>
+        <button type="button" data-state="completed" aria-pressed="true">Completed</button>
+      </div>
+    </div>
+  </section>
+
+  <main id="result-region" tabindex="-1">
+    <section class="workspace" aria-labelledby="workspace-title">
+      <header class="workspace-head">
+        <div><span class="eyebrow">Business result workspace</span><h2 id="workspace-title">运行与结果</h2><p>查看一次真实执行留下的业务结论、限制与直接证据。此页面不执行审批或写入。</p></div>
+        <span class="readonly-chip">READ ONLY · 只读</span>
+      </header>
+      <div class="context-panel" aria-label="执行上下文">
+        <div class="field"><label for="workflow-select">Workflow（只读浏览）</label><select id="workflow-select"><option>供应商准入材料复核</option><option>合同要点整理</option></select><small>切换已有 Workflow，不修改流程。</small></div>
+        <div class="field"><label for="execution-select">Execution（只读浏览）</label><select id="execution-select"><option>最新记录 · 2026-09-02 10:18</option><option>历史记录 · 2026-09-01 16:40</option></select><small>切换已记录执行，不创建或重跑。</small></div>
+        <div id="truth-label" class="truth replay" aria-label="真实性：REPLAY，已记录的真实执行"><b>REPLAY</b><span>已记录的真实执行</span></div>
+      </div>
+      <div id="live-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></div>
+      <div id="status-region" class="status-region"></div>
+    </section>
+  </main>
+
+  <script>
+    (() => {
+      const stateLabels = {
+        loading:"加载中", empty:"无记录", error:"读取错误", unauthorized:"无查看权限",
+        running:"真实执行中", unsupported:"不支持的仿真来源", awaiting_review:"等待业务复核", completed:"已完成"
+      };
+      const truthMap = {
+        live:{code:"LIVE", label:"真实执行中"},
+        replay:{code:"REPLAY", label:"已记录的真实执行"},
+        unconnected:{code:"UNCONNECTED", label:"暂无可核验结果"}
+      };
+      const tech = (kind) => {
+        const values = kind === "running" ? {
+          "NodeRun":"nr_live_7b12","digest":"sha256:2b9a…8e14","receipt":"rcpt_live_1038",
+          "provider/model":"enterprise-router / qws-general","token/cost":"1,840 tokens / ¥0.04（记录值）",
+          "execution ID":"exec_20260902_1018","workflow ID":"wf_vendor_review"
+        } : {
+          "NodeRun":"nr_recorded_6f03","digest":"sha256:91ce…44a0","receipt":"rcpt_20260902_1026",
+          "provider/model":"enterprise-router / qws-general","token/cost":"3,120 tokens / ¥0.07（记录值）",
+          "execution ID":"exec_20260902_1018","workflow ID":"wf_vendor_review"
+        };
+        return `<details class="tech"><summary>技术记录 <span class="sr-only">，默认折叠</span></summary><div class="tech-body"><dl>${Object.entries(values).map(([k,v])=>`<div><dt>${k}</dt><dd>${v}</dd></div>`).join("")}</dl></div></details>`;
+      };
+      const resultView = (data) => `
+        <div class="result-layout">
+          <article class="result-main">
+            <section class="conclusion"><span class="section-kicker">一句话结论</span><h3>${data.conclusion}</h3></section>
+            <section class="content-section"><h3>发生了什么</h3><ul class="plain-list">${data.happened.map(x=>`<li>${x}</li>`).join("")}</ul></section>
+            <section class="content-section"><h3>业务影响</h3><p>${data.impact}</p></section>
+            <section class="content-section"><h3>风险与限制</h3><ul class="plain-list">${data.risks.map(x=>`<li>${x}</li>`).join("")}</ul></section>
+            <section class="content-section"><h3>下一步</h3><ol class="step-list">${data.steps.slice(0,3).map(x=>`<li>${x}</li>`).join("")}</ol></section>
+          </article>
+          <aside class="result-aside" aria-label="证据与技术记录">
+            <h3>直接证据</h3><p>${data.evidenceIntro}</p>
+            <ul class="evidence-list">${data.evidence.map(x=>`<li><strong>${x[0]}</strong><span>${x[1]}</span></li>`).join("")}</ul>
+            ${tech(data.techKind)}
+          </aside>
+        </div>`;
+      const states = {
+        loading:{truth:"unconnected", executionDisabled:true, render:()=>`<div class="skeleton-wrap" aria-label="正在读取可核验运行记录"><div class="skeleton short"></div><div class="skeleton hero"></div><div class="skeleton medium"></div><div class="skeleton"></div><div class="skeleton medium"></div></div>`},
+        empty:{truth:"unconnected", executionDisabled:true, render:()=>`<div class="state-card"><div class="state-card-inner"><div class="state-mark" aria-hidden="true">EMPTY</div><h3>当前 Workflow 还没有可查看的真实执行记录</h3><p>Execution 选择器中暂无记录。真实执行被记录后，可在这里查看业务结论与证据；本页面不提供运行操作。</p><div class="truth unconnected"><b>UNCONNECTED</b><span>暂无可核验结果</span></div></div></div>`},
+        error:{truth:"unconnected", executionDisabled:true, render:()=>`<div class="state-card error"><div class="state-card-inner"><div class="state-mark" aria-hidden="true">ERROR</div><h3>暂时无法读取运行结果</h3><p>当前未取得可核验记录，因此没有据此生成任何业务结论。请稍后重新打开，或联系项目管理员检查读取服务。</p><div class="truth unconnected"><b>UNCONNECTED</b><span>暂无可核验结果</span></div></div></div>`},
+        unauthorized:{truth:"unconnected", executionDisabled:true, render:()=>`<div class="state-card warning"><div class="state-card-inner"><div class="state-mark" aria-hidden="true">403</div><h3>你没有查看此执行结果的权限</h3><p>为避免泄露，本状态不展示结果摘要、证据名称或技术记录。请联系项目管理员确认项目访问范围。</p><div class="truth unconnected"><b>UNCONNECTED</b><span>暂无可核验结果</span></div></div></div>`},
+        running:{truth:"live", render:()=>resultView({
+          conclusion:"真实执行仍在进行，目前只能确认材料读取与规则核对已经留下记录，最终结论尚未形成。",
+          happened:["已读取本次授权范围内的供应商申请材料。","正在按既有准入规则整理需要人工确认的材料缺口。","后续步骤尚未结束，当前内容可能继续变化。"],
+          impact:"执行尚未结束，且当前没有业务指标证据，因此无法判断周期、风险或成本是否发生变化。",
+          risks:["当前视图是进行中的阶段性记录，不是最终结果。","来源材料的时效性仍需业务人员确认。","任何材料清单都不等同于供应商已通过准入。"],
+          steps:["等待真实执行结束后查看已记录结果。","业务负责人复核来源材料是否仍然有效。","如发现来源范围不完整，记录缺失范围供后续处理。"],
+          evidenceIntro:"仅列出当前已记录事实；未完成内容不作为证据。",
+          evidence:[["申请材料读取记录","真实执行中 · 已记录"],["准入规则版本快照","真实执行中 · 已记录"]], techKind:"running"})},
+        unsupported:{truth:"unconnected", executionDisabled:true, render:()=>`<div class="state-card warning"><div class="state-card-inner"><div class="state-mark" aria-hidden="true">N/A</div><h3>暂无可核验仿真来源</h3><p>当前版本没有可信、持久的仿真结果事实源。AI Resource 中的演示、规划或合成数据不会在这里被表述为业务结果。</p><div class="truth unconnected"><b>UNCONNECTED</b><span>暂无可核验结果</span></div></div></div>`},
+        awaiting_review:{truth:"replay", render:()=>resultView({
+          conclusion:"真实执行已形成待复核的材料缺口清单，但供应商是否满足准入要求仍需业务负责人判断。",
+          happened:["读取并整理了本次授权范围内的申请材料。","将需人工确认的材料缺口写入复核清单。","保存了与本次执行对应的来源记录。"],
+          impact:"现有证据只证明待复核材料已经形成；没有指标证据表明准入周期缩短、风险降低或成本变化。",
+          risks:["清单可能受来源材料时效性影响。","未提供的材料不能被推断为不符合要求。","待复核材料不是批准或驳回结论。"],
+          steps:["业务负责人核对清单与原始材料。","确认哪些材料需要供应商补充。","将复核判断记录到既有业务系统。"],
+          evidenceIntro:"以下内容已随真实执行记录，可用于人工复核。",
+          evidence:[["供应商材料缺口清单","待业务复核 · 已记录"],["申请材料读取记录","来源记录 · 已记录"],["准入规则版本快照","规则依据 · 已记录"]], techKind:"replay"})},
+        completed:{truth:"replay", render:()=>resultView({
+          conclusion:"本次真实执行已整理出需人工确认的供应商材料缺口并形成复核清单；是否通过准入仍由业务负责人判断。",
+          happened:["读取了本次授权范围内的供应商申请材料。","依据已记录的准入规则整理了需确认的材料缺口。","生成复核清单并与来源记录一同保存。"],
+          impact:"当前证据只证明复核材料已经形成，尚无指标证据证明周期缩短、风险降低、成本变化或其他业务改善。",
+          risks:["来源材料可能在执行完成后发生更新。","材料缺口需要结合供应商补充说明判断。","复核清单是辅助材料，不是业务批准结论。"],
+          steps:["业务负责人核对复核清单与原始材料。","联系供应商补充经确认缺失的材料。","材料更新后，通过既有流程产生新的真实执行记录。"],
+          evidenceIntro:"产物与来源记录可供核验，但产物创建本身不代表业务目标已达成。",
+          evidence:[["供应商材料缺口复核清单","执行产物 · 已记录"],["申请材料读取记录","来源记录 · 已记录"],["准入规则版本快照","规则依据 · 已记录"]], techKind:"replay"})}
+      };
+
+      const region = document.getElementById("status-region");
+      const announcement = document.getElementById("live-announcement");
+      const truthEl = document.getElementById("truth-label");
+      const executionSelect = document.getElementById("execution-select");
+      const buttons = [...document.querySelectorAll("[data-state]")];
+      function setState(name, announce=true) {
+        const state = states[name] || states.completed;
+        const truth = truthMap[state.truth];
+        buttons.forEach(button=>button.setAttribute("aria-pressed",String(button.dataset.state===name)));
+        truthEl.className=`truth ${state.truth}`;
+        truthEl.setAttribute("aria-label",`真实性：${truth.code}，${truth.label}`);
+        truthEl.innerHTML=`<b>${truth.code}</b><span>${truth.label}</span>`;
+        executionSelect.disabled=Boolean(state.executionDisabled);
+        executionSelect.title=state.executionDisabled?"当前状态没有可浏览的执行记录":"切换已记录执行";
+        if(name==="empty") executionSelect.innerHTML="<option>暂无执行记录</option>";
+        else if(name==="unsupported") executionSelect.innerHTML="<option>仿真来源未接入</option>";
+        else if(name==="unauthorized") executionSelect.innerHTML="<option>无权查看</option>";
+        else if(name==="error" || name==="loading") executionSelect.innerHTML="<option>正在等待可核验记录</option>";
+        else executionSelect.innerHTML="<option>最新记录 · 2026-09-02 10:18</option><option>历史记录 · 2026-09-01 16:40</option>";
+        region.innerHTML=state.render();
+        if(announce) announcement.textContent=`已切换到${stateLabels[name]}状态。真实性：${truth.label}。`;
+      }
+      buttons.forEach(button=>button.addEventListener("click",()=>setState(button.dataset.state)));
+      document.getElementById("workflow-select").addEventListener("change",()=>{ announcement.textContent="已切换只读 Workflow 视图，未修改任何记录。"; });
+      executionSelect.addEventListener("change",()=>{ announcement.textContent="已切换只读 Execution 视图，未修改任何记录。"; });
+      setState("completed",false);
+    })();
+  </script>
+</body>
+</html>

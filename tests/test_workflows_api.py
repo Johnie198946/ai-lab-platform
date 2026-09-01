@@ -8,6 +8,7 @@ import json
 import os
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
@@ -128,6 +129,164 @@ class TestWorkflowsAPI(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 201, response.text)
         return response.json()["workflow"]
+
+    def seed_project_result(self, *, history=False, add_member=False):
+        from backend.db import SessionLocal, canonical_plan_hash
+        from backend.models.workflow import (
+            WorkflowArtifact,
+            WorkflowDefinition,
+            WorkflowEvent,
+            WorkflowExecution,
+            WorkflowPlanVersion,
+        )
+        from backend.models.workspace import (
+            WorkspaceProcessRevision,
+            WorkspaceProject,
+            WorkspaceProjectConfigRevision,
+            WorkspaceProjectMember,
+        )
+
+        suffix = uuid.uuid4().hex[:12]
+        project_id = f"qwp_{suffix}"
+        workflow_id = f"wfw_{suffix}"
+        plan_id = f"wfp_{suffix}"
+        execution_id = f"wfr_{suffix}"
+
+        async def seed():
+            async with SessionLocal() as db:
+                snapshot = {"tasks": [] if history else [{"id": "task-1", "workflow_id": workflow_id}]}
+                project = WorkspaceProject(
+                    id=project_id,
+                    tenant_key="tenant-alpha",
+                    owner_user_id="alpha",
+                    request_id=f"request-{suffix}",
+                    name="结果项目",
+                    goal="核验执行结果",
+                    process_revision=1,
+                    process_snapshot=snapshot,
+                )
+                db.add(project)
+                if add_member:
+                    db.add(WorkspaceProjectMember(
+                        id=f"member_{suffix}", tenant_key="tenant-alpha", project_id=project_id,
+                        user_id="gamma", request_id=f"member-request-{suffix}", role="member",
+                        scopes=["project:read"], status="ACTIVE",
+                    ))
+                db.add(WorkflowDefinition(
+                    id=workflow_id, tenant_key="tenant-alpha", created_by="alpha",
+                    title="项目绑定流程", description="形成可复核材料", status="ready",
+                ))
+                dsl = {"nodes": [], "edges": []}
+                db.add(WorkflowPlanVersion(
+                    id=plan_id, workflow_id=workflow_id, version=1, dsl=dsl,
+                    content_hash=canonical_plan_hash(dsl), goal="形成材料", deliverable="复核材料",
+                ))
+                db.add(WorkflowExecution(
+                    id=execution_id, workflow_id=workflow_id, plan_id=plan_id,
+                    tenant_key="tenant-alpha", status="completed", idempotency_key=f"idem-{suffix}",
+                    hermes_session_id=f"session-{suffix}", bridge_event_seq=2,
+                ))
+                await db.flush()
+                db.add_all([
+                    WorkflowEvent(
+                        execution_id=execution_id, event_type="run_started", message="开始执行",
+                        payload={"source": "hermes_bridge", "bridge_seq": 1, "execution_id": execution_id, "hermes_session_id": f"session-{suffix}"},
+                    ),
+                    WorkflowEvent(
+                        execution_id=execution_id, event_type="run_completed", message="执行结束",
+                        payload={"source": "hermes_bridge", "bridge_seq": 2, "run_id": execution_id, "session_id": f"session-{suffix}"},
+                    ),
+                    WorkflowArtifact(
+                        id=f"wfa_{suffix}", execution_id=execution_id, kind="document", title="复核材料",
+                        relative_path="result.md", content_hash="a" * 64,
+                    ),
+                ])
+                if history:
+                    config_id = f"config_{suffix}"
+                    db.add(WorkspaceProjectConfigRevision(
+                        id=config_id, project_id=project_id, revision=1,
+                        canonical_hash="b" * 64, snapshot=snapshot,
+                    ))
+                    await db.flush()
+                    db.add(WorkspaceProcessRevision(
+                        id=f"process_{suffix}", project_id=project_id, config_revision_id=config_id,
+                        revision=1, canonical_hash="c" * 64,
+                        legacy_snapshot={"tasks": [{"id": "task-old", "workflow_id": workflow_id}]},
+                    ))
+                await db.commit()
+        asyncio.run(seed())
+        return project_id, workflow_id, execution_id
+
+    def test_project_business_result_requires_membership_and_project_binding(self):
+        project_id, workflow_id, execution_id = self.seed_project_result(add_member=True)
+        path = f"/api/v1/projects/{project_id}/workflow-executions/{execution_id}/business-result-summary"
+        owner = self.request("GET", path)
+        self.assertEqual(owner.status_code, 200, owner.text)
+        member = self.request("GET", path, sub="gamma")
+        self.assertEqual(member.status_code, 200, member.text)
+        self.assertEqual(member.json()["truth_mode"], "REPLAY")
+        self.assertEqual(member.json()["workflow_id"], workflow_id)
+
+        memberless_project, _, _ = self.seed_project_result(add_member=False)
+        denied = self.request(
+            "GET",
+            f"/api/v1/projects/{memberless_project}/workflow-executions/{execution_id}/business-result-summary",
+            sub="gamma",
+        )
+        self.assertIn(denied.status_code, {403, 404})
+
+        other_project, _, _ = self.seed_project_result(add_member=False)
+        cross_project = self.request(
+            "GET",
+            f"/api/v1/projects/{other_project}/workflow-executions/{execution_id}/business-result-summary",
+        )
+        self.assertEqual(cross_project.status_code, 404, cross_project.text)
+
+    def test_project_business_result_accepts_history_binding_and_lists_only_project_records(self):
+        project_id, workflow_id, execution_id = self.seed_project_result(history=True)
+        listed = self.request("GET", f"/api/v1/projects/{project_id}/workflow-executions")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual([item["id"] for item in listed.json()["workflows"]], [workflow_id])
+        self.assertEqual(listed.json()["workflows"][0]["executions"][0]["id"], execution_id)
+        summary = self.request(
+            "GET",
+            f"/api/v1/projects/{project_id}/workflow-executions/{execution_id}/business-result-summary",
+        )
+        self.assertEqual(summary.status_code, 200, summary.text)
+        self.assertNotIn("SIMULATION", summary.text)
+
+    def test_project_business_result_bounds_persisted_facts_and_shows_recent_events(self):
+        from backend.db import SessionLocal
+        from backend.models.workflow import WorkflowEvent
+
+        project_id, _, execution_id = self.seed_project_result()
+
+        async def add_events():
+            async with SessionLocal() as db:
+                db.add_all([
+                    WorkflowEvent(
+                        execution_id=execution_id,
+                        event_type="business_update",
+                        message=f"业务进展 {index:03d}",
+                        payload={"source": "business_projection"},
+                    )
+                    for index in range(205)
+                ])
+                await db.commit()
+
+        asyncio.run(add_events())
+        response = self.request(
+            "GET",
+            f"/api/v1/projects/{project_id}/workflow-executions/{execution_id}/business-result-summary",
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        technical = body["technical_facts_ref"]
+        self.assertEqual(technical["event_total"], 207)
+        self.assertEqual(technical["event_loaded"], 200)
+        self.assertTrue(technical["event_has_more"])
+        self.assertLessEqual(len(body["what_happened"]), 7)
+        self.assertEqual(body["what_happened"][0]["text"], "业务进展 204")
 
     def advance_to_confirmation(self):
         workflow = self.create()

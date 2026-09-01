@@ -38,6 +38,8 @@ from backend.models.workflow import (
     WorkflowPlanVersion,
     WorkflowSessionMessage,
 )
+from backend.models.workspace import WorkspaceProcessRevision
+from backend.api.quantum_workspace import _project_for_access
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.workflow_artifacts import (
     artifact_extension,
@@ -59,7 +61,9 @@ from backend.services.workflow_contract import (
     assert_plan_binding,
     canonical_plan_hash,
     require_compare_and_set_inputs,
+    business_result_truth,
     truth_for_execution,
+    validate_business_result_receipt,
 )
 from backend.services.workflow_planning import (
     backfill_orphaned_planning_jobs,
@@ -79,6 +83,7 @@ from backend.services.showroom_workflow_bridge import (
     seed_workflow_description,
 )
 from backend.services.workflow_insights import (
+    build_business_result_summary,
     build_explain_context_snapshot,
     compile_evidence_bound_report,
 )
@@ -210,6 +215,35 @@ def workflow_out(row: WorkflowDefinition) -> dict[str, Any]:
 
 def current_user(payload: dict[str, Any]) -> str:
     return str(payload.get("user_id") or payload.get("sub") or "")
+
+
+def _workflow_ids_from_snapshot(snapshot: Any) -> set[str]:
+    if not isinstance(snapshot, dict):
+        return set()
+    tasks = snapshot.get("tasks")
+    if not isinstance(tasks, list):
+        return set()
+    return {
+        str(task.get("workflow_id"))
+        for task in tasks
+        if isinstance(task, dict) and task.get("workflow_id")
+    }
+
+
+async def _project_bound_workflow_ids(db, project) -> set[str]:
+    workflow_ids = _workflow_ids_from_snapshot(project.process_snapshot or {})
+    history = list(
+        (
+            await db.execute(
+                select(WorkspaceProcessRevision.legacy_snapshot).where(
+                    WorkspaceProcessRevision.project_id == project.id
+                )
+            )
+        ).scalars().all()
+    )
+    for snapshot in history:
+        workflow_ids.update(_workflow_ids_from_snapshot(snapshot))
+    return workflow_ids
 
 
 def clarification_out(row: WorkflowClarificationSession) -> dict[str, Any]:
@@ -1082,6 +1116,222 @@ async def active_workflow_activities(payload: dict = Depends(require_auth)):
                 }
             )
         return result
+
+
+@router.get("/projects/{project_id}/workflow-executions")
+async def list_project_workflow_executions(
+    project_id: str, payload: dict = Depends(require_auth)
+):
+    """List only executions whose workflow is bound to this project now or historically."""
+    tenant_key = tenant()
+    user_id = current_user(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
+        workflow_ids = await _project_bound_workflow_ids(db, project)
+        if not workflow_ids:
+            return {"project_id": project.id, "workflows": []}
+        workflows = list(
+            (
+                await db.execute(
+                    select(WorkflowDefinition)
+                    .where(
+                        WorkflowDefinition.id.in_(workflow_ids),
+                        WorkflowDefinition.tenant_key == tenant_key,
+                    )
+                    .order_by(WorkflowDefinition.updated_at.desc())
+                )
+            ).scalars().all()
+        )
+        executions = list(
+            (
+                await db.execute(
+                    select(WorkflowExecution)
+                    .where(
+                        WorkflowExecution.workflow_id.in_(workflow_ids),
+                        WorkflowExecution.tenant_key == tenant_key,
+                    )
+                    .order_by(WorkflowExecution.created_at.desc())
+                )
+            ).scalars().all()
+        )
+        by_workflow: dict[str, list[dict[str, Any]]] = {
+            workflow_id: [] for workflow_id in workflow_ids
+        }
+        for execution in executions:
+            by_workflow.setdefault(execution.workflow_id, []).append({
+                "id": execution.id,
+                "workflow_id": execution.workflow_id,
+                "status": execution.status,
+                "created_at": execution.created_at.isoformat() if execution.created_at else None,
+                "started_at": execution.started_at.isoformat() if execution.started_at else None,
+                "finished_at": execution.finished_at.isoformat() if execution.finished_at else None,
+            })
+        return {
+            "project_id": project.id,
+            "workflows": [
+                {
+                    "id": workflow.id,
+                    "title": workflow.title,
+                    "status": workflow.status,
+                    "executions": by_workflow.get(workflow.id, []),
+                }
+                for workflow in workflows
+            ],
+        }
+
+
+@router.get(
+    "/projects/{project_id}/workflow-executions/{execution_id}/business-result-summary"
+)
+async def get_project_business_result_summary(
+    project_id: str, execution_id: str, payload: dict = Depends(require_auth)
+):
+    """Return a deterministic evidence-bound projection for one project execution."""
+    tenant_key = tenant()
+    user_id = current_user(payload)
+    async with SessionLocal() as db:
+        project = await _project_for_access(
+            db, project_id, tenant_key, user_id, "project:read"
+        )
+        execution = await db.scalar(
+            select(WorkflowExecution).where(
+                WorkflowExecution.id == execution_id,
+                WorkflowExecution.tenant_key == tenant_key,
+            )
+        )
+        if execution is None:
+            raise HTTPException(status_code=404, detail="execution not found")
+        workflow_ids = await _project_bound_workflow_ids(db, project)
+        if execution.workflow_id not in workflow_ids:
+            raise HTTPException(status_code=404, detail="execution not bound to project")
+
+        event_total = int(
+            await db.scalar(
+                select(func.count(WorkflowEvent.id)).where(
+                    WorkflowEvent.execution_id == execution.id
+                )
+            ) or 0
+        )
+        artifact_total = int(
+            await db.scalar(
+                select(func.count(WorkflowArtifact.id)).where(
+                    WorkflowArtifact.execution_id == execution.id,
+                    WorkflowArtifact.content_hash != "",
+                )
+            ) or 0
+        )
+        approval_total = int(
+            await db.scalar(
+                select(func.count(WorkflowApproval.id)).where(
+                    WorkflowApproval.execution_id == execution.id
+                )
+            ) or 0
+        )
+        events = list(reversed(list(
+            (
+                await db.execute(
+                    select(WorkflowEvent)
+                    .where(WorkflowEvent.execution_id == execution.id)
+                    .order_by(WorkflowEvent.id.desc())
+                    .limit(200)
+                )
+            ).scalars().all()
+        )))
+        artifacts = list(
+            (
+                await db.execute(
+                    select(WorkflowArtifact)
+                    .where(
+                        WorkflowArtifact.execution_id == execution.id,
+                        WorkflowArtifact.content_hash != "",
+                    )
+                    .order_by(WorkflowArtifact.created_at.desc(), WorkflowArtifact.id.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+        )
+        approvals = list(
+            (
+                await db.execute(
+                    select(WorkflowApproval)
+                    .where(WorkflowApproval.execution_id == execution.id)
+                    .order_by(WorkflowApproval.created_at.desc(), WorkflowApproval.id.desc())
+                    .limit(20)
+                )
+            ).scalars().all()
+        )
+        event_facts = [
+            {
+                "id": row.id,
+                "execution_id": row.execution_id,
+                "event_type": row.event_type,
+                "message": row.message,
+                "payload": row.payload or {},
+                "created_at": row.created_at,
+            }
+            for row in events
+        ]
+        receipt = validate_business_result_receipt(
+            execution_id=execution.id,
+            hermes_session_id=execution.hermes_session_id,
+            bridge_event_seq=execution.bridge_event_seq,
+            events=event_facts,
+        )
+        truth_mode = business_result_truth(
+            status=execution.status, receipt_valid=bool(receipt["valid"])
+        )
+        return build_business_result_summary(
+            workflow_id=execution.workflow_id,
+            execution_id=execution.id,
+            execution_status=execution.status,
+            truth_mode=truth_mode,
+            receipt=receipt,
+            events=event_facts,
+            artifacts=[
+                {
+                    "id": row.id,
+                    "execution_id": row.execution_id,
+                    "kind": row.kind,
+                    "title": row.title,
+                    "content_hash": row.content_hash,
+                    "created_at": row.created_at,
+                }
+                for row in artifacts
+            ],
+            approvals=[
+                {
+                    "id": row.id,
+                    "execution_id": row.execution_id,
+                    "approval_type": row.approval_type,
+                    "decision": row.decision,
+                    "created_at": row.created_at,
+                }
+                for row in approvals
+            ],
+            technical_facts={
+                "workflow_id": execution.workflow_id,
+                "execution_id": execution.id,
+                "plan_id": execution.plan_id,
+                "receipt": receipt,
+                "source_digest_basis": "persisted_execution_events_artifacts_approvals",
+                "provider": execution.provider_used or None,
+                "model": execution.model_used or None,
+                "token_used": int(execution.token_used or 0),
+                "estimated_cost_usd": float(execution.estimated_cost_usd or 0),
+                "event_total": event_total,
+                "event_loaded": len(events),
+                "event_has_more": event_total > len(events),
+                "artifact_total": artifact_total,
+                "artifact_loaded": len(artifacts),
+                "artifact_has_more": artifact_total > len(artifacts),
+                "approval_total": approval_total,
+                "approval_loaded": len(approvals),
+                "approval_has_more": approval_total > len(approvals),
+            },
+            generated_at=now(),
+        )
 
 
 @router.get("/workflows")

@@ -31,6 +31,8 @@ const extractAccessToken = (payload) =>
 
 const request = async (path, options = {}) => {
   const controller = new AbortController();
+  const cancelFromCaller = () => controller.abort();
+  options.signal?.addEventListener("abort", cancelFromCaller, { once: true });
   const timeoutId = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
@@ -77,6 +79,7 @@ const request = async (path, options = {}) => {
     throw new PlatformApiError(error.message || "无法连接 ai-lab-platform。");
   } finally {
     window.clearTimeout(timeoutId);
+    options.signal?.removeEventListener("abort", cancelFromCaller);
   }
 };
 
@@ -385,6 +388,12 @@ export const platformApi = {
   },
   getExecutionEvidenceReport(executionId) {
     return request(`/api/v1/workflow-executions/${executionId}/evidence-report`);
+  },
+  listProjectWorkflowExecutions(projectId, options = {}) {
+    return request(`/api/v1/projects/${projectId}/workflow-executions`, options);
+  },
+  getProjectBusinessResultSummary(projectId, executionId, options = {}) {
+    return request(`/api/v1/projects/${projectId}/workflow-executions/${encodeURIComponent(executionId)}/business-result-summary`, options);
   },
   listProjectTemplates() {
     return request("/api/v1/project-templates");
