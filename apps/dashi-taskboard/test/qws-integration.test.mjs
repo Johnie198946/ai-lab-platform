@@ -138,12 +138,20 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     });
     assert.equal(blockedCard.status, 200);
     canonicalRevision = 2;
-    const resyncedSession = await fetch(`${origin}/api/qws/session`, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
-      body: JSON.stringify({ project_id: "prj-sync" }),
-    });
+    const [resyncedSession, concurrentReplay] = await Promise.all([
+      fetch(`${origin}/api/qws/session`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
+        body: JSON.stringify({ project_id: "prj-sync" }),
+      }),
+      fetch(`${origin}/api/qws/session`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer tenant-a" },
+        body: JSON.stringify({ project_id: "prj-sync" }),
+      }),
+    ]);
     assert.equal(resyncedSession.status, 200);
+    assert.equal(concurrentReplay.status, 200, "concurrent QWS session sync is an idempotent replay");
     const tasksAfterResync = await fetch(`${origin}/api/tasks?projectId=qws-tenant-a-prj-sync&archived=false`, {
       headers: { cookie: cookieA },
     }).then((response) => response.json());

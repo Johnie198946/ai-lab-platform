@@ -1915,9 +1915,7 @@ export function createTaskboardServer(options = {}) {
         for (const relation of desiredRelations.get(task.id) || []) {
           const relatedId = cardIdsByQwsTaskId.get(relation.target_task_id);
           if (!taskId || !relatedId) continue;
-          const relationKey = relation.type === "related"
-            ? `related:${[taskId, relatedId].sort().join(":")}`
-            : `${relation.type}:${taskId}:${relatedId}`;
+          const relationKey = canonicalRelationKey(relation.type, taskId, relatedId);
           if (createdRelationKeys.has(relationKey)) continue;
           const current = database.getTask(taskId);
           const relationExists = relation.type === "parent"
@@ -1931,7 +1929,20 @@ export function createTaskboardServer(options = {}) {
             createdRelationKeys.add(relationKey);
             continue;
           }
-          database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "manual");
+          try {
+            database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "manual");
+          } catch (error) {
+            if (!(error instanceof ApiError) || error.code !== "RELATION_EXISTS") throw error;
+            const replay = database.getTask(taskId);
+            const replayExists = relation.type === "parent"
+              ? replay.relations.parent?.id === relatedId
+              : relation.type === "blocked_by"
+                ? replay.relations.blockedBy.some((item) => item.id === relatedId)
+                : relation.type === "blocks"
+                  ? replay.relations.blocks.some((item) => item.id === relatedId)
+                  : replay.relations.related.some((item) => item.id === relatedId);
+            if (!replayExists) throw error;
+          }
           createdRelationKeys.add(relationKey);
         }
       }

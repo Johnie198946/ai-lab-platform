@@ -16,10 +16,13 @@
 6. Batch start queues review/acceptance cards but keeps them in todo until every `blockedBy` upstream card is `done`; only then does the backend move the review card to `in_progress` and execute it.
 7. Review execution receives upstream descriptions, comments and readable attachment content; `routes` are written as real comments on each reviewed card. User-only decisions end in `in_review`; automatic acceptance ends in `done`.
 8. Dashboard completion, status metrics and live summary derive directly from the same `tasks` collection used by the board, including done/todo/waiting-claim/in-progress/review/blocked counts.
+9. Concurrent/replayed QWS session sync normalizes symmetric relation keys and treats an already-existing verified relation as idempotent success, eliminating `409 RELATION_EXISTS` during page bootstrap.
 
 ## Changed files
 
 - `apps/dashi-taskboard/web/src/App.tsx`
+- `apps/dashi-taskboard/server/app.mjs`
+- `apps/dashi-taskboard/test/qws-integration.test.mjs`
 - `apps/dashi-taskboard/web/src/components/TaskCard.tsx`
 - `apps/dashi-taskboard/web/src/components/TaskDetail.tsx`
 - `apps/dashi-taskboard/web/src/components/DashboardView.tsx`
@@ -42,6 +45,7 @@
 - `git diff --check` — PASS
 - backend QuantumWorkspace suites — PASS (`63 passed`)
 - Taskboard status/QWS integration suites — PASS (`14 passed`)
+- concurrent session relation replay regression — PASS
 
 ## Delivery
 
