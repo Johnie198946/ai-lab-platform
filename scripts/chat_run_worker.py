@@ -160,7 +160,8 @@ def main() -> None:
     gateway = DurableClarifyGateway(store)
     bridge._get_clarify_gateway = lambda: gateway
     store.recover_after_restart()
-    bridge._prewarm_bridge_agent()
+    warmup = bridge._prewarm_bridge_agent()
+    warmup.join(timeout=90)
     futures = set()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="durable-chat") as pool:
         while True:

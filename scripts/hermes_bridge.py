@@ -3796,8 +3796,8 @@ def _hermes_session_for_request(
     return _resolve_hermes_session(user_id)
 
 
-def _prewarm_bridge_agent() -> None:
-    """Bridge 启动预热（实例池化准备）：预先导入核心库与构建单例，消除首次请求 3~4s 冷启动。"""
+def _prewarm_bridge_agent() -> threading.Thread:
+    """Start prewarm and return its thread so durable workers may gate queue claims."""
     def _warmup_worker():
         try:
             t0 = time.monotonic()
@@ -3819,7 +3819,9 @@ def _prewarm_bridge_agent() -> None:
         except Exception as e:
             print(f"[bridge] 实例预热失败·忽略: {e}")
 
-    threading.Thread(target=_warmup_worker, daemon=True, name="bridge-prewarm").start()
+    thread = threading.Thread(target=_warmup_worker, daemon=True, name="bridge-prewarm")
+    thread.start()
+    return thread
 
 
 def _create_thread_local_session_db():
@@ -4666,6 +4668,7 @@ def _build_in_process_agent(
             str(runtime.get("provider") or ""),
             {"service_tier": "priority"} if fast_general else None,
         ),
+        service_tier="priority" if fast_general else "",
         ephemeral_system_prompt=(
             "你是 Hermes 快速问答模式。直接、准确、简洁回答当前问题；不调用工具、不委派、不追问。"
             if fast_general else (
