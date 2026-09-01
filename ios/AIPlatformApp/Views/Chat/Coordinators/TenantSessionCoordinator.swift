@@ -165,6 +165,15 @@ public final class TenantSessionCoordinator: ObservableObject {
             $0.clarifyBlock == nil && ($0.role == .interrupted || $0.pending || $0.isStreaming)
         }) else { return }
         let outputId = messages[outputIndex].id
+        if let runId = messages[outputIndex].runId, !runId.isEmpty {
+            startDurableRunMonitor(
+                runId: runId,
+                sessionId: sid,
+                outputMessageId: outputId,
+                after: messages[outputIndex].lastEventSequence
+            )
+            return
+        }
         guard let userMessage = messages[..<outputIndex].last(where: { $0.role == .user })
             ?? sessionManager.previousUserMessage(before: outputId, sessionId: sid) else { return }
         let agentId = sessionManager.agentId(for: sid)
@@ -207,6 +216,70 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
             } catch {
                 // 网络不确定时保持可恢复标记，绝不创建第二个 Run。
+            }
+        }
+    }
+
+    private func startDurableRunMonitor(
+        runId: String,
+        sessionId: String,
+        outputMessageId: String,
+        after eventSequence: Int
+    ) {
+        let taskEpoch = tenantEpoch
+        statusPollTask?.cancel()
+        statusPollTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var cursor = eventSequence
+            while !Task.isCancelled, self.tenantEpoch == taskEpoch {
+                do {
+                    let replay = try await APIClient.shared.fetchDurableChatRun(
+                        runId: runId,
+                        after: cursor
+                    )
+                    guard self.sessionManager.activeSessionID() == sessionId,
+                          let index = self.messages.firstIndex(where: { $0.id == outputMessageId })
+                    else { return }
+                    cursor = max(cursor, replay.run.eventSequence)
+                    self.messages[index].runId = runId
+                    self.messages[index].lastEventSequence = cursor
+                    let status = replay.run.status
+                    if status == "completed" {
+                        self.messages[index].role = .assistant
+                        self.messages[index].content = replay.run.finalAnswer
+                        self.messages[index].pending = false
+                        self.messages[index].isStreaming = false
+                        self.messages[index].degraded = false
+                        self.commitSession()
+                        self.finishGeneration()
+                        return
+                    }
+                    if status == "failed" || status == "cancelled" {
+                        self.messages[index].role = .interrupted
+                        self.messages[index].pending = false
+                        self.messages[index].isStreaming = false
+                        self.messages[index].degraded = status == "failed"
+                        if self.messages[index].content.isEmpty {
+                            self.messages[index].content = status == "cancelled"
+                                ? "任务已取消"
+                                : "任务执行失败（\(replay.run.errorCode)）"
+                        }
+                        self.commitSession()
+                        self.finishGeneration()
+                        return
+                    }
+                    self.messages[index].role = .assistant
+                    if !replay.run.partialAnswer.isEmpty {
+                        self.messages[index].content = replay.run.partialAnswer
+                    }
+                    self.messages[index].pending = true
+                    self.messages[index].isStreaming = true
+                    self.isGenerating = true
+                    self.commitSession()
+                } catch {
+                    // Offline/unknown keeps the persisted cursor for the next foreground reconciliation.
+                }
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
             }
         }
     }
@@ -803,6 +876,16 @@ public final class TenantSessionCoordinator: ObservableObject {
 
                 let outputId = outputMessageId(for: req)
                 switch event {
+                case .runCursor(let runId, let eventSequence):
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
+                        messages[idx].runId = runId
+                        messages[idx].lastEventSequence = max(
+                            messages[idx].lastEventSequence,
+                            eventSequence
+                        )
+                        commitSession()
+                    }
+
                 case .delta(let content):
                     deltaBuffer += content
                     scheduleContentFlush(messageId: outputId, taskEpoch: taskEpoch)

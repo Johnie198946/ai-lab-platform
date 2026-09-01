@@ -93,6 +93,11 @@ HERMES_BRIDGE_CANCEL_URL = os.environ.get(
     "HERMES_BRIDGE_CANCEL_URL",
     "http://host.docker.internal:9118/v1/chat/stream/cancel",
 )
+HERMES_BRIDGE_RUN_URL = os.environ.get(
+    "HERMES_BRIDGE_RUN_URL",
+    "http://host.docker.internal:9118/v1/chat/runs",
+)
+HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
 STREAM_IDLE_TIMEOUT = 240
@@ -1020,6 +1025,37 @@ async def chat_status(
     return data
 
 
+@router.get("/runs/{run_id}")
+async def durable_run_replay(
+    run_id: str,
+    after: int = 0,
+    payload=Depends(require_auth),
+) -> Dict[str, Any]:
+    """Authenticated replay proxy; run_id alone never grants access."""
+    if not HERMES_BRIDGE_INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="bridge internal token is not configured")
+    tenant_id = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    if not tenant_id or not user_id:
+        raise HTTPException(status_code=403, detail="owner context unavailable")
+    headers = {
+        "X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN,
+        "X-Tenant-Id": tenant_id,
+        "X-User-Id": user_id,
+    }
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{HERMES_BRIDGE_RUN_URL}/{run_id}",
+            params={"after": max(0, after)},
+            headers=headers,
+        )
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="run not found")
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Hermes Run replay failed")
+    return response.json()
+
+
 # ---------------------------------------------------------------------------
 # v7 真实流式端点（SSE 透传·对齐 bridge 事件协议）
 # ---------------------------------------------------------------------------
@@ -1466,31 +1502,16 @@ async def stream_chat(
                 except StopAsyncIteration:
                     break
                 except TimeoutError:
-                    try:
-                        async with httpx.AsyncClient(timeout=5) as client:
-                            await client.post(
-                                HERMES_BRIDGE_CANCEL_URL,
-                                json={"session_id": isolated_session_id},
-                            )
-                    except Exception:
-                        pass
+                    # Transport/UI timeout never owns the durable Run lifecycle.
+                    # Re-open the same idempotent subscription and keep the Worker alive;
+                    # Hermes provider fallback remains responsible for model failover.
                     await bridge_stream.aclose()
-                    event = {
-                        "type": "error",
-                        "code": "first_activity_timeout",
-                        "message": (
-                            f"AI 在 {int(first_activity_timeout_seconds or 0)} 秒内"
-                            "未开始生成内容或调用技能，本次运行已停止，请重试。"
-                        ),
-                    }
-                    await record_llm_usage(
-                        auth_payload=payload,
-                        usage_payload=None,
-                        latency_ms=round((time.perf_counter() - started) * 1000),
-                        success=False,
+                    yield f"data: {json.dumps({'type': 'status', 'phase': 'slow_path', 'detail': '首字响应较慢，正在切换备用执行通道…'}, ensure_ascii=False)}\n\n"
+                    bridge_stream = _call_bridge_stream(
+                        routed_goal, isolated_session_id, **kwargs
                     )
-                    yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-                    break
+                    first_activity_deadline = None
+                    continue
                 event = _stream_event(frame)
                 if event and event.get("type") in {
                     "delta",
@@ -1570,10 +1591,12 @@ async def chat_clarify_submit(
     本地会话 ID 会导致 resolve 失配 → 502「选项提交失败」）。
     """
     policy = await _resolve_chat_policy(payload)
+    tenant_id = str(payload.get("tenant_key") or "public")
+    owner_user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
     isolated = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version,
-        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+        tenant_id, policy.policy_version,
+        owner_user_id,
     )
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
@@ -1582,6 +1605,11 @@ async def chat_clarify_submit(
                 "session_id": isolated,
                 "response": req.response,
                 "clarify_id": req.clarify_id,
+            },
+            headers={
+                "X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN,
+                "X-Tenant-Id": tenant_id,
+                "X-User-Id": owner_user_id,
             },
         )
         if r.status_code == 200:
@@ -1595,15 +1623,22 @@ async def chat_stream_cancel(
 ) -> Dict[str, Any]:
     """取消在途流式：透传 bridge interrupt（服务端回收线程与内存）。"""
     policy = await _resolve_chat_policy(payload)
+    tenant_id = str(payload.get("tenant_key") or "public")
+    owner_user_id = str(payload.get("user_id") or payload.get("sub") or "anonymous")
     isolated = _tenant_namespaced_session(
         derive_isolated_session_id(req.agent_id, req.session_id),
-        str(payload.get("tenant_key") or "public"), policy.policy_version,
-        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+        tenant_id, policy.policy_version,
+        owner_user_id,
     )
     async with httpx.AsyncClient(timeout=15) as client:
         r = await client.post(
             HERMES_BRIDGE_CANCEL_URL,
             json={"session_id": isolated},
+            headers={
+                "X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN,
+                "X-Tenant-Id": tenant_id,
+                "X-User-Id": owner_user_id,
+            },
         )
         _streaming_sessions.discard(isolated)
         if r.status_code == 200:

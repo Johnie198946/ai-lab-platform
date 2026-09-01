@@ -686,6 +686,22 @@ public struct ChatStatusDTO: Codable {
     public let consumed: Bool?
 }
 
+public struct DurableChatRunDTO: Codable, Sendable {
+    public let runId: String
+    public let status: String
+    public let eventSequence: Int
+    public let partialAnswer: String
+    public let finalAnswer: String
+    public let queuePosition: Int
+    public let attempt: Int
+    public let errorCode: String
+}
+
+public struct DurableChatReplayDTO: Codable, Sendable {
+    public let run: DurableChatRunDTO
+    public let droppedEventCount: Int
+}
+
 public struct ClarifySubmitResult: Codable, Sendable {
     public let ok: Bool
     public let state: String
@@ -1350,13 +1366,11 @@ public enum KeychainStore {
         // 登录凭证需要跨进程重启保留，同时不随 iCloud/设备迁移导出。
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         let status = SecItemAdd(attributes as CFDictionary, nil)
-        if status == errSecSuccess {
-            UserDefaults.standard.removeObject(forKey: "auth.jwt.fallback")
-            return true
-        }
-        // 模拟器/无 keychain 环境兜底到 UserDefaults
-        UserDefaults.standard.set(value, forKey: "auth.jwt.fallback")
-        return false
+        // Authentication material must never fall back to UserDefaults.  That
+        // store is neither a credential vault nor protected by Keychain access
+        // controls.  Remove any token left by older builds and fail closed.
+        UserDefaults.standard.removeObject(forKey: "auth.jwt.fallback")
+        return status == errSecSuccess
     }
 
     public static func load() -> String? {
@@ -1371,9 +1385,12 @@ public enum KeychainStore {
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecSuccess, let data = result as? Data,
            let token = String(data: data, encoding: .utf8) {
+            UserDefaults.standard.removeObject(forKey: "auth.jwt.fallback")
             return token
         }
-        return UserDefaults.standard.string(forKey: "auth.jwt.fallback")
+        // Purge insecure legacy storage instead of reviving a bearer token from it.
+        UserDefaults.standard.removeObject(forKey: "auth.jwt.fallback")
+        return nil
     }
 
     public static func delete() {
@@ -2431,6 +2448,7 @@ public final class APIClient: ObservableObject {
 
     /// 流式事件类型（对齐后端 bridge 事件协议）
     public enum StreamEvent {
+        case runCursor(runId: String, eventSequence: Int)
         case delta(String)
         case thought(String)
         case toolStart(id: String, tool: String, label: String)
@@ -2661,6 +2679,12 @@ public final class APIClient: ObservableObject {
                             if let data = payload.data(using: .utf8),
                                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                                let event = StreamEvent.parse(json) {
+                                if let runId = json["run_id"] as? String, !runId.isEmpty {
+                                    continuation.yield(.runCursor(
+                                        runId: runId,
+                                        eventSequence: json["event_sequence"] as? Int ?? 0
+                                    ))
+                                }
                                 continuation.yield(event)
                             }
                         } else {
@@ -2670,6 +2694,12 @@ public final class APIClient: ObservableObject {
                                let data = buffer.dropFirst(6).data(using: .utf8),
                                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                                let event = StreamEvent.parse(json) {
+                                if let runId = json["run_id"] as? String, !runId.isEmpty {
+                                    continuation.yield(.runCursor(
+                                        runId: runId,
+                                        eventSequence: json["event_sequence"] as? Int ?? 0
+                                    ))
+                                }
                                 continuation.yield(event)
                                 buffer = ""
                             }
@@ -2745,6 +2775,35 @@ public final class APIClient: ObservableObject {
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
         let data = try await perform(request, session: chatSession, canRetry: false)
         return try decoder.decode(ClarifySubmitResult.self, from: data)
+    }
+
+    public func fetchDurableChatRun(
+        runId: String,
+        after eventSequence: Int
+    ) async throws -> DurableChatReplayDTO {
+        let url = baseURL
+            .appendingPathComponent("api/chat/runs")
+            .appendingPathComponent(encodedPath(runId))
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        components?.queryItems = [
+            URLQueryItem(name: "after", value: String(max(0, eventSequence)))
+        ]
+        guard let resolved = components?.url else { throw APIError.invalidURL }
+        var request = URLRequest(url: resolved)
+        request.timeoutInterval = 20
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw APIError.network("无效响应")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            throw http.statusCode == 401
+                ? APIError.unauthorized
+                : APIError.server(http.statusCode, "Run 回放失败")
+        }
+        return try decoder.decode(DurableChatReplayDTO.self, from: data)
     }
 
     /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。

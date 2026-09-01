@@ -1045,4 +1045,47 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(response.items.first?.noteId, "note-1")
         XCTAssertEqual(response.compileStatus, "private_index_ready")
     }
+
+    func testDurableRunCursorPersistsAcrossColdStart() throws {
+        let message = ChatMessage(
+            id: "assistant-1", sessionId: "session-1", role: .assistant,
+            content: "部分回答", isStreaming: true, pending: true,
+            runId: "run-123", lastEventSequence: 42
+        )
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let restored = try decoder.decode(
+            PersistedMessage.self,
+            from: encoder.encode(PersistedMessage(message))
+        ).toChatMessage(sessionId: "session-1")
+        XCTAssertEqual(restored.runId, "run-123")
+        XCTAssertEqual(restored.lastEventSequence, 42)
+    }
+
+    func testDurableRunReplaySnapshotDecodes() throws {
+        let data = Data("""
+        {
+          "run": {
+            "run_id": "run-123",
+            "status": "running",
+            "event_sequence": 7,
+            "partial_answer": "部分回答",
+            "final_answer": "",
+            "queue_position": 0,
+            "attempt": 1,
+            "error_code": ""
+          },
+          "events": [],
+          "dropped_event_count": 0
+        }
+        """.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let replay = try decoder.decode(DurableChatReplayDTO.self, from: data)
+        XCTAssertEqual(replay.run.runId, "run-123")
+        XCTAssertEqual(replay.run.eventSequence, 7)
+        XCTAssertEqual(replay.droppedEventCount, 0)
+    }
 }

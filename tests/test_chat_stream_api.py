@@ -534,9 +534,9 @@ async def test_internal_stream_stops_when_no_model_or_tool_activity(monkeypatch)
     )
     body = "".join([frame async for frame in response.body_iterator])
 
-    assert '"code": "first_activity_timeout"' in body
-    assert "too late" not in body
-    assert cancelled
+    assert '"phase": "slow_path"' in body
+    assert "too late" in body
+    assert not cancelled
 
 
 @pytest.mark.asyncio

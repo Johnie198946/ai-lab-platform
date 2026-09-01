@@ -97,6 +97,10 @@ from backend.services.skill_router import (  # noqa: E402
     load_routing_overrides,
     rank_skill_candidates,
 )
+try:  # module import in tests versus direct systemd script execution
+    from scripts.chat_run_store import DurableChatRunStore  # noqa: E402
+except ModuleNotFoundError:  # pragma: no cover - direct ``python scripts/hermes_bridge.py``
+    from chat_run_store import DurableChatRunStore  # type: ignore[no-redef]  # noqa: E402
 
 app = FastAPI(title="Hermes Bridge v6.0")
 
@@ -178,8 +182,17 @@ DRILL_ME_MAX_ROUNDS = max(
     DRILL_ME_MIN_ROUNDS,
     int(os.environ.get("HERMES_DRILL_ME_MAX_ROUNDS", "5")),
 )
-# 事件队列容量（线程 → async 桥）
-STREAM_QUEUE_CAPACITY = 1024
+# 事件队列采用无界传输缓冲；正文真相源同时写入 SQLite Run 日志。
+# Hermes 的单次输出由 max_tokens/总时限约束，禁止以丢正文换取内存保护。
+STREAM_QUEUE_CAPACITY = 0
+HERMES_CHAT_RUN_DB = Path(
+    os.environ.get(
+        "HERMES_CHAT_RUN_DB",
+        "/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3",
+    )
+)
+DURABLE_CHAT_WORKER_ENABLED = os.environ.get("HERMES_DURABLE_CHAT_WORKER", "false") == "true"
+_chat_run_store: DurableChatRunStore | None = None
 
 # 持久工作流运行投影。Hermes 负责计划节点推进、工具与模型调用；平台 Worker
 # 只通过内部 API 投递并同步这些事件，避免 FastAPI 与 Hermes 各维护一套编排器。
@@ -3222,6 +3235,11 @@ async def _stream_from_serve(goal: str, session_id: str | None = None):
 
 @app.on_event("startup")
 async def _startup():
+    global _chat_run_store
+    _chat_run_store = DurableChatRunStore(HERMES_CHAT_RUN_DB)
+    stalled = _chat_run_store.recover_after_restart()
+    if stalled:
+        print(f"[bridge] durable chat runs: {stalled} orphaned run(s) marked stalled")
     _load_mapping()
     _load_state_db_mapping()
     _load_watermarks()
@@ -3248,6 +3266,85 @@ async def _startup():
         f"[bridge] watchdog 已启动: 间隔 {WATCHDOG_INTERVAL_SECONDS}s"
         f"·detached 超时 {STREAM_MAX_DURATION_SECONDS}s"
     )
+
+
+def _durable_replay_sse(run_id: str, owner_hash: str):
+    """Replay a duplicate request without starting another Hermes execution."""
+    if _chat_run_store is None:
+        return
+    snapshot = _chat_run_store.get(run_id, tenant_user_hash=owner_hash)
+    for event in _chat_run_store.events_after(run_id, 0, tenant_user_hash=owner_hash):
+        yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    if snapshot["status"] in {"queued", "running"}:
+        yield f"data: {json.dumps({'type': 'status', 'phase': snapshot['status'], 'detail': '相同任务已在执行', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
+    elif snapshot["status"] == "stalled":
+        yield f"data: {json.dumps({'type': 'error', 'code': 'stalled', 'message': '任务在 Worker 重启后等待有界恢复', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
+
+
+async def _durable_subscribe_sse(run_id: str, owner_hash: str, after: int = 0):
+    """Replay and follow a persisted Run; disconnecting never owns its lifecycle."""
+    cursor = max(0, int(after))
+    yielded_any = False
+    while True:
+        if _chat_run_store is None:
+            yield f"data: {json.dumps({'type': 'error', 'code': 'run_store_unavailable', 'message': '持久任务存储不可用'}, ensure_ascii=False)}\n\n"
+            return
+        try:
+            events = _chat_run_store.events_after(run_id, cursor, tenant_user_hash=owner_hash)
+            snapshot = _chat_run_store.get(run_id, tenant_user_hash=owner_hash)
+        except (KeyError, PermissionError):
+            yield f"data: {json.dumps({'type': 'error', 'code': 'run_not_found', 'message': '任务不存在'}, ensure_ascii=False)}\n\n"
+            return
+        for event in events:
+            yielded_any = True
+            cursor = max(cursor, int(event.get('event_sequence') or 0))
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        status = str(snapshot.get("status") or "")
+        if status in {"completed", "failed", "cancelled"}:
+            return
+        if not yielded_any:
+            yielded_any = True
+            yield f"data: {json.dumps({'type': 'status', 'phase': status or 'queued', 'detail': '任务已进入服务端持久队列', 'run_id': run_id, 'event_sequence': cursor}, ensure_ascii=False)}\n\n"
+        await asyncio.sleep(0.15)
+
+
+@app.get("/v1/chat/runs/{run_id}")
+async def durable_chat_run(
+    run_id: str,
+    after: int = Query(0, ge=0),
+    x_knowledge_capability: str | None = Header(None),
+    x_hermes_internal_token: str | None = Header(None),
+    x_tenant_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+):
+    """Return an owner-authorized snapshot plus replay events after sequence N."""
+    if _chat_run_store is None:
+        raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+    try:
+        if x_hermes_internal_token:
+            _require_internal_strict(x_hermes_internal_token)
+            tenant_id = str(x_tenant_id or "")
+            user_id = str(x_user_id or "")
+            if not tenant_id or not user_id:
+                raise HTTPException(status_code=403, detail="owner_context_required")
+        else:
+            if not x_knowledge_capability:
+                raise HTTPException(status_code=401, detail="knowledge_capability_required")
+            claims = verify_capability(x_knowledge_capability)
+            tenant_id = str(claims.get("tenant_key") or "")
+            user_id = str(claims.get("user_id") or "")
+            if not tenant_id or not user_id:
+                raise HTTPException(status_code=403, detail="knowledge_scope_denied")
+        owner_hash = _chat_run_store.tenant_user_hash(tenant_id, user_id)
+        snapshot = _chat_run_store.get(run_id, tenant_user_hash=owner_hash)
+        events = _chat_run_store.events_after(run_id, after, tenant_user_hash=owner_hash)
+    except PermissionError as exc:
+        raise HTTPException(status_code=404, detail="run_not_found") from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run_not_found") from exc
+    except KnowledgeScopeDenied as exc:
+        raise HTTPException(status_code=403, detail="knowledge_scope_denied") from exc
+    return {"run": snapshot, "events": events, "dropped_event_count": 0}
 
 
 @app.post("/v1/chat/stream")
@@ -3281,6 +3378,46 @@ async def chat_stream(body: GoalRequest):
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
     if IN_PROCESS_STREAM_ENABLED:
+        if DURABLE_CHAT_WORKER_ENABLED:
+            if _chat_run_store is None:
+                raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+            request_id = body.request_id or uuid.uuid4().hex
+            tenant_id = str((knowledge_claims or client_context_claims or {}).get("tenant_key") or "public")
+            owner_user_id = str((knowledge_claims or client_context_claims or {}).get("user_id") or user_id)
+            owner_hash = _chat_run_store.tenant_user_hash(tenant_id, owner_user_id)
+            if body.regenerate:
+                _chat_run_store.cancel_active_session(owner_hash, user_id, code="superseded_by_regenerate")
+            durable_run, _ = _chat_run_store.create_or_get(
+                tenant_user_hash=owner_hash,
+                tenant_id=tenant_id,
+                user_id=owner_user_id,
+                user_key=user_id,
+                session_id=user_id,
+                request_id=request_id,
+                execution_payload={
+                    "goal": goal,
+                    "agent_config": body.agent_config,
+                    "knowledge_claims": knowledge_claims,
+                    "client_session_context": body.client_session_context,
+                    "client_context_claims": client_context_claims,
+                    "knowledge_action_enabled": (
+                        client_context_claims is not None
+                        and "knowledge_action_v1" in set(body.client_capabilities)
+                    ),
+                },
+            )
+            run_id = str(durable_run["run_id"])
+            return StreamingResponse(
+                _durable_subscribe_sse(run_id, owner_hash),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                    "X-Session-ID": user_id,
+                    "X-Run-ID": run_id,
+                },
+            )
         # 并发防护（G-6）：同 session 已有活跃 run（attached 或 detached 后台保活中）
         # → 返回 running 状态事件流，绝不启动第二个 agent
         # 例外：regenerate=true（重新生成）→ 作废旧 run 后全新执行，不被防护拦截
@@ -3306,12 +3443,37 @@ async def chat_stream(body: GoalRequest):
                     old_agent.interrupt(message="superseded-by-regenerate")
             except Exception:
                 pass
+            if existing.get("queue") is not None:
+                _qput(existing["queue"], {"type": "cancelled", "code": "superseded_by_regenerate"})
             _stream_run_discard(user_id, existing.get("run_id"))
-        run_id = uuid.uuid4().hex[:12]
+        request_id = body.request_id or uuid.uuid4().hex
+        run_id = uuid.uuid4().hex
+        if _chat_run_store is not None:
+            tenant_id = str((knowledge_claims or client_context_claims or {}).get("tenant_key") or "public")
+            owner_user_id = str((knowledge_claims or client_context_claims or {}).get("user_id") or user_id)
+            owner_hash = _chat_run_store.tenant_user_hash(tenant_id, owner_user_id)
+            durable_run, created = _chat_run_store.create_or_get(
+                tenant_user_hash=owner_hash,
+                session_id=user_id,
+                request_id=request_id,
+                run_id=run_id,
+            )
+            run_id = str(durable_run["run_id"])
+            if not created:
+                return StreamingResponse(
+                    _durable_replay_sse(run_id, owner_hash),
+                    media_type="text/event-stream",
+                    headers={
+                        "Cache-Control": "no-cache",
+                        "Connection": "keep-alive",
+                        "X-Accel-Buffering": "no",
+                        "X-Run-ID": run_id,
+                    },
+                )
         if not _stream_run_reserve(
             user_id,
             run_id,
-            body.request_id,
+            request_id,
             sandbox.state_db if sandbox is not None else STATE_DB,
         ):
             return StreamingResponse(
@@ -3345,6 +3507,7 @@ async def chat_stream(body: GoalRequest):
                     "Connection": "keep-alive",
                     "X-Accel-Buffering": "no",
                     "X-Session-ID": user_id,
+                    "X-Run-ID": run_id,
                 },
             )
         except Exception as stream_err:
@@ -3817,32 +3980,54 @@ def _steer_drill_me_response(response: str, round_number: int, enabled: bool) ->
     )
 
 
-def _qput(stream_q: queue.Queue, item: dict) -> None:
-    """线程安全投递事件；队列满时优先丢队首 delta（正文可帧级重组），
-    绝不丢弃 clarify/done/error/tool_start/status（控制事件丢失 = 卡死）。"""
-    item_type = item.get("type")
-    try:
-        stream_q.put_nowait(item)
-    except queue.Full:
-        if item_type in ("delta",):
-            print("[bridge] ⚠️ 队列满·丢弃 delta（正文帧可重组）")
+class DurableEventQueue(queue.Queue):
+    """Commit 150ms text chunks before transport; control events flush immediately."""
+
+    def __init__(self, run_id: str):
+        super().__init__(maxsize=STREAM_QUEUE_CAPACITY)
+        self.run_id = run_id
+        self._delta_lock = threading.Lock()
+        self._delta_buffer = ""
+        self._last_delta_flush = time.monotonic()
+
+    def _commit_and_enqueue(self, item: dict) -> None:
+        if _chat_run_store is not None:
+            item = _chat_run_store.append_event(self.run_id, item)
+        self.put_nowait(item)
+
+    def flush_delta(self) -> None:
+        with self._delta_lock:
+            content = self._delta_buffer
+            self._delta_buffer = ""
+            self._last_delta_flush = time.monotonic()
+        if content:
+            self._commit_and_enqueue({"type": "delta", "content": content})
+
+    def accept(self, item: dict) -> None:
+        if item.get("type") == "delta":
+            with self._delta_lock:
+                self._delta_buffer += str(item.get("content") or "")
+                due = time.monotonic() - self._last_delta_flush >= 0.15
+            if due:
+                self.flush_delta()
             return
-        # 控制事件：挤出队首 delta 腾位（若无 delta 则丢弃事件并告警）
+        self.flush_delta()
+        self._commit_and_enqueue(item)
+
+
+def _qput(stream_q: queue.Queue, item: dict) -> None:
+    """Persist stable text chunks and every control event; never drop accepted events."""
+    if isinstance(stream_q, DurableEventQueue):
         try:
-            with stream_q.mutex:
-                dropped = None
-                # 队内查找最早的 delta
-                for i, it in enumerate(list(stream_q.queue)):
-                    if it.get("type") == "delta":
-                        dropped = stream_q.queue.pop(i)
-                        break
-                if dropped is not None:
-                    stream_q.queue.append(item)
-                    print(f"[bridge] ⚠️ 队列满·挤出旧 delta 保 {item_type}")
-                    return
-        except Exception:
-            pass
-        print(f"[bridge] ⚠️ 流式事件队列满·丢弃事件: {item_type}")
+            stream_q.accept(item)
+        except KeyError:
+            # Unit/direct compatibility path without a pre-created durable Run.
+            stream_q.put_nowait(item)
+        except RuntimeError:
+            # A losing worker may finish after explicit cancellation/regeneration.
+            return
+        return
+    stream_q.put_nowait(item)
 
 
 def _stream_run_register(user_id: str, state: dict) -> None:
@@ -4788,11 +4973,11 @@ def _sse_from_in_process(
     # 知识库检索纪律注入（仅 bridge/iOS 通道）：对齐微信通道的知识库体验，
     # 强制模型先查 wiki 再作答、单关键词搜索、0 命中二次核验
     goal = KB_RETRIEVAL_DISCIPLINE + "\n\n【用户问题】" + goal
-    stream_q: queue.Queue = queue.Queue(maxsize=STREAM_QUEUE_CAPACITY)
+    run_id = reserved_run_id or uuid.uuid4().hex
+    stream_q: queue.Queue = DurableEventQueue(run_id)
     agent_holder: list = [None]
     start_ts = time.monotonic()
     last_keepalive_ts = time.monotonic()
-    run_id = reserved_run_id or uuid.uuid4().hex[:12]
 
     # 首帧状态（worker 启动前入队 → SSE 首帧即 boot，<10ms 真实构建状态）
     _qput(stream_q, {"type": "status", "phase": "boot", "detail": "正在初始化推理引擎…"})
@@ -4886,14 +5071,32 @@ class CancelRequest(BaseModel):
 
 
 @app.post("/v1/chat/clarify")
-async def clarify_resolve(body: ClarifyResolveRequest):
-    """澄清响应提交：解锁阻塞的 agent 线程（不占 session 锁·thread-safe）。
+async def clarify_resolve(
+    body: ClarifyResolveRequest,
+    x_hermes_internal_token: str | None = Header(None),
+    x_tenant_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+):
+    """Resume a pending HITL action through the owner-authenticated channel."""
+    _require_internal_strict(x_hermes_internal_token)
+    if DURABLE_CHAT_WORKER_ENABLED and _chat_run_store is not None:
+        tenant_id = str(x_tenant_id or "")
+        user_id = str(x_user_id or "")
+        if not tenant_id or not user_id:
+            raise HTTPException(status_code=403, detail="owner_context_required")
+        owner_hash = _chat_run_store.tenant_user_hash(tenant_id, user_id)
+        ok = _chat_run_store.resolve_clarify(
+            tenant_user_hash=owner_hash,
+            session_id=body.session_id,
+            response=body.response,
+            clarify_id=body.clarify_id,
+        )
+        return {
+            "ok": ok,
+            "state": "accepted" if ok else "no_pending",
+            "clarify_id": body.clarify_id,
+        }
 
-    失败分类（reason 三态，G-7）：
-    - rejected   → 存在 pending clarify 但响应被拒（多选卡片收到自由文本）
-    - expired    → 曾发出 clarify 但已超时被 wait_for_response 清理（卡片过期）
-    - no_pending → 当前无任何 pending clarify（从未发出或已消费）
-    """
     cg = _get_clarify_gateway()
 
     # 多步 Clarify 精确寻址（P0 根治）：优先按 clarify_id 直连 resolve——
@@ -4962,8 +5165,25 @@ async def clarify_resolve(body: ClarifyResolveRequest):
 
 
 @app.post("/v1/chat/stream/cancel")
-async def stream_cancel(body: CancelRequest):
-    """取消在途流式：interrupt agent + 强制解锁 clarify + 清理状态。"""
+async def stream_cancel(
+    body: CancelRequest,
+    x_hermes_internal_token: str | None = Header(None),
+    x_tenant_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+):
+    """Only an authenticated user action can cancel a durable Run."""
+    _require_internal_strict(x_hermes_internal_token)
+    if DURABLE_CHAT_WORKER_ENABLED and _chat_run_store is not None:
+        tenant_id = str(x_tenant_id or "")
+        user_id = str(x_user_id or "")
+        if not tenant_id or not user_id:
+            raise HTTPException(status_code=403, detail="owner_context_required")
+        owner_hash = _chat_run_store.tenant_user_hash(tenant_id, user_id)
+        cancelled = _chat_run_store.cancel_active_session(
+            owner_hash, body.session_id, code="user_cancelled"
+        )
+        return {"ok": True, "cancelled_run_ids": cancelled}
+
     cg = _get_clarify_gateway()
 
     run = _stream_run_get(body.session_id)
@@ -4979,6 +5199,7 @@ async def stream_cancel(body: CancelRequest):
             cg.clear_session(body.session_id)
         except Exception:
             pass
+        _qput(run["queue"], {"type": "cancelled", "code": "user_cancelled"})
         _stream_run_discard(body.session_id, run.get("run_id"))
     return {"ok": True}
 

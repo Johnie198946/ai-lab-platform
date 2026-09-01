@@ -444,9 +444,13 @@ class TestClarifyResolveReason(unittest.TestCase):
     def _resolve(self, session_id="s1", response="x"):
         import scripts.hermes_bridge as bridge
 
-        return asyncio.run(bridge.clarify_resolve(
-            bridge.ClarifyResolveRequest(session_id=session_id, response=response)
-        ))
+        with patch.object(bridge, "HERMES_BRIDGE_INTERNAL_TOKEN", "test-token"):
+            return asyncio.run(bridge.clarify_resolve(
+                bridge.ClarifyResolveRequest(
+                    session_id=session_id, response=response, clarify_id=None
+                ),
+                x_hermes_internal_token="test-token",
+            ))
 
     def _mock_cg(self):
         """注入 mock clarify_gateway 模块（patch 模块级缓存引用）。"""

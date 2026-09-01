@@ -559,6 +559,8 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
     public var executingAgentId: String?
     public var executingAgentName: String?
     public var delegatedBy: String?
+    public var runId: String?
+    public var lastEventSequence: Int
 
     public init(
         id: String = UUID().uuidString,
@@ -575,7 +577,9 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         reasoningDuration: Int? = nil,
         executingAgentId: String? = nil,
         executingAgentName: String? = nil,
-        delegatedBy: String? = nil
+        delegatedBy: String? = nil,
+        runId: String? = nil,
+        lastEventSequence: Int = 0
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -592,6 +596,8 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         self.executingAgentId = executingAgentId
         self.executingAgentName = executingAgentName
         self.delegatedBy = delegatedBy
+        self.runId = runId
+        self.lastEventSequence = lastEventSequence
     }
 }
 
@@ -611,6 +617,8 @@ public struct PersistedMessage: Codable, Sendable {
     public let executingAgentId: String?
     public let executingAgentName: String?
     public let delegatedBy: String?
+    public let runId: String?
+    public let lastEventSequence: Int?
     public let clarify: PersistedClarify?
     public let noteDraft: NoteDraftBlock?
     public let knowledgeAction: KnowledgeActionBlock?
@@ -627,6 +635,8 @@ public struct PersistedMessage: Codable, Sendable {
         self.executingAgentId = m.executingAgentId
         self.executingAgentName = m.executingAgentName
         self.delegatedBy = m.delegatedBy
+        self.runId = m.runId
+        self.lastEventSequence = m.lastEventSequence
         self.clarify = m.clarifyBlock.map(PersistedClarify.init)
         self.noteDraft = m.blocks.compactMap {
             if case .noteDraft(let draft) = $0 { return draft }
@@ -651,7 +661,9 @@ public struct PersistedMessage: Codable, Sendable {
             reasoningDuration: reasoningDuration,
             executingAgentId: executingAgentId,
             executingAgentName: executingAgentName,
-            delegatedBy: delegatedBy
+            delegatedBy: delegatedBy,
+            runId: runId,
+            lastEventSequence: lastEventSequence ?? 0
         )
         if let clarify {
             message.blocks = [.clarify(clarify.toClarifyBlock(defaultSessionId: sessionId))]
