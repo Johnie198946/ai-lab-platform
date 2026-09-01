@@ -1930,7 +1930,7 @@ export function createTaskboardServer(options = {}) {
             continue;
           }
           try {
-            database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "manual");
+            database.addTaskRelation(taskId, current.version, relation.type, relatedId, null, null, actor, "manual", true);
           } catch (error) {
             if (!(error instanceof ApiError) || error.code !== "RELATION_EXISTS") throw error;
             const replay = database.getTask(taskId);

@@ -39,6 +39,10 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
           start_date: canonicalRevision > 1 ? "2026-09-01" : null,
           due_date: canonicalRevision > 1 ? "2026-09-01" : null,
           development_context: { type: "branch", branch: "codex/runtime-task" },
+          relations: canonicalRevision < 3 ? [
+            { type: "parent", target_task_id: "task-1" },
+            { type: "blocked_by", target_task_id: "task-1" },
+          ] : [],
         }],
         dependencies: canonicalRevision === 2
           ? [{ from_task_id: "task-1", to_task_id: "task-2" }]
@@ -129,7 +133,8 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       type: "branch",
       branch: "codex/runtime-task",
     });
-    assert.equal(runtimeTask.relations.blockedBy.length, 0);
+    assert.equal(runtimeTask.relations.blockedBy.length, 1);
+    assert.equal(runtimeTask.relations.parent?.id, canonicalTask.id);
 
     const blockedCard = await fetch(`${origin}/api/tasks/${canonicalTask.id}`, {
       method: "PATCH",

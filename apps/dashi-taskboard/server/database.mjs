@@ -2423,7 +2423,7 @@ export class TaskboardDatabase {
     }
   }
 
-  addTaskRelation(id, version, type, relatedId, threadId, threadBinding, actor, origin = "manual") {
+  addTaskRelation(id, version, type, relatedId, threadId, threadBinding, actor, origin = "manual", idempotent = false) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const task = this.#requireTask(id);
@@ -2444,6 +2444,10 @@ export class TaskboardDatabase {
           WHERE relation_type = 'parent' AND target_task_id = ?
         `).get(task.id);
         if (existing?.source_task_id === relatedTask.id) {
+          if (idempotent) {
+            this.database.exec("COMMIT");
+            return { task: this.getTask(task.id), relatedTask: this.getTask(relatedTask.id) };
+          }
           throw new ApiError(409, "RELATION_EXISTS", "This parent relation already exists");
         }
         if (existing) {
@@ -2462,6 +2466,10 @@ export class TaskboardDatabase {
           WHERE relation_type = ? AND source_task_id = ? AND target_task_id = ?
         `).get(relationType, sourceTaskId, targetTaskId);
         if (existing) {
+          if (idempotent) {
+            this.database.exec("COMMIT");
+            return { task: this.getTask(task.id), relatedTask: this.getTask(relatedTask.id) };
+          }
           throw new ApiError(409, "RELATION_EXISTS", "This issue relation already exists");
         }
       }
