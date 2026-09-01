@@ -226,6 +226,28 @@ def test_hermes_blueprint_default_schedule_follows_dependencies_and_workdays():
     assert process["calendar"]["schedule_source"] == "SYSTEM_DEFAULT"
 
 
+def test_hermes_blueprint_shifts_conflicting_explicit_dates_after_blocker():
+    process = instantiate_project_blueprint({
+        "project_goal": "按依赖修正 AI 生成的冲突日期",
+        "stages": [{"key": "delivery", "name": "交付"}],
+        "tasks": [
+            {
+                "key": "prepare", "stage_key": "delivery", "title": "准备",
+                "start_date": "2026-09-01", "due_date": "2026-09-05",
+            },
+            {
+                "key": "review", "stage_key": "delivery", "title": "验收",
+                "start_date": "2026-09-03", "due_date": "2026-09-04",
+                "relations": [{"type": "blocked_by", "target_key": "prepare"}],
+            },
+        ],
+    }, schedule_anchor=date(2026, 9, 1))
+    review = process["tasks"][1]
+    assert review["start_date"] == "2026-09-07"
+    assert review["due_date"] == "2026-09-08"
+    assert review["schedule_source"] == "BLUEPRINT_ADJUSTED_FOR_DEPENDENCY"
+
+
 def test_process_revision_flushes_fk_targets_before_dependencies():
     class ScalarRows:
         def all(self):

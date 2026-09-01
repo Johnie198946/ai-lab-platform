@@ -90,16 +90,28 @@ def apply_default_schedule(process: dict[str, Any], anchor: date) -> dict[str, A
             earliest = _workday(anchor)
             if predecessor_due:
                 earliest = _workday(max(value for value in predecessor_due if value is not None) + timedelta(days=1))
+            if explicit_start and explicit_due and explicit_due < explicit_start:
+                raise ValueError("task due_date cannot precede start_date")
             start = explicit_start or earliest
+            dependency_shift = timedelta(0)
             if start < earliest:
-                raise ValueError("task start_date cannot precede a blocking task")
-            due = explicit_due or _add_workdays(start, duration - 1)
+                dependency_shift = earliest - start
+                start = earliest
+            due = (
+                explicit_due + dependency_shift
+                if explicit_due
+                else _add_workdays(start, duration - 1)
+            )
             if due < start:
                 raise ValueError("task due_date cannot precede start_date")
             task["start_date"] = task["planned_start_at"] = start.isoformat()
             task["due_date"] = task["planned_finish_at"] = due.isoformat()
             task["unscheduled_reason"] = None
-            task["schedule_source"] = "BLUEPRINT" if explicit_start or explicit_due else "SYSTEM_DEFAULT"
+            task["schedule_source"] = (
+                "BLUEPRINT_ADJUSTED_FOR_DEPENDENCY"
+                if dependency_shift
+                else "BLUEPRINT" if explicit_start or explicit_due else "SYSTEM_DEFAULT"
+            )
             pending.remove(task_id)
             scheduled.add(task_id)
 

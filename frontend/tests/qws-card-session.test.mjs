@@ -32,6 +32,10 @@ const homeSource = await readFile(
   new URL("../src/features/quantum-workspace/WorkspaceHomePage.jsx", import.meta.url),
   "utf8",
 );
+const frontendDockerfile = await readFile(
+  new URL("../Dockerfile", import.meta.url),
+  "utf8",
+);
 const backendSource = await readFile(
   new URL("../../backend/api/quantum_workspace.py", import.meta.url),
   "utf8",
@@ -110,6 +114,22 @@ test("card session renders and submits Hermes clarification instead of waiting s
   assert.match(clarificationSource, /请补充具体信息/);
   assert.match(clarificationSource, /这段内容会原样交给 Hermes/);
   assert.match(clarificationSource, /composedResponse/);
+});
+
+test("same-origin Taskboard iframe is not blocked by the production proxy", () => {
+  const taskboardBlocks = frontendDockerfile.match(/location \/taskboard\/ \{[\s\S]*?    \}\\n\\/g) || [];
+  assert.equal(taskboardBlocks.length, 2);
+  for (const block of taskboardBlocks) {
+    assert.match(block, /proxy_hide_header X-Frame-Options/);
+    assert.match(block, /add_header X-Frame-Options "SAMEORIGIN" always/);
+    assert.match(block, /Content-Security-Policy "frame-ancestors 'self'"/);
+  }
+});
+
+test("planning stream follows new output but completed review keeps user scroll position", () => {
+  assert.match(planningSource, /messages\.some\(\(item\) => item\.role === "assistant" && item\.pending\)/);
+  assert.match(planningSource, /scrollTo\(\{ top: messagesRef\.current\.scrollHeight \}\)/);
+  assert.doesNotMatch(planningSource, /useEffect\(\(\) => \{ messagesRef\.current\?\.scrollTo/);
 });
 
 test("new projects automatically enter the shared Hermes clarification protocol", () => {

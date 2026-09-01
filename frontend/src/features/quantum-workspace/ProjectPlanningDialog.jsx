@@ -75,7 +75,10 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
     return () => { active = false; };
   }, [project?.id]);
 
-  useEffect(() => { messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight }); }, [messages]);
+  useEffect(() => {
+    if (!messages.some((item) => item.role === "assistant" && item.pending)) return;
+    messagesRef.current?.scrollTo({ top: messagesRef.current.scrollHeight });
+  }, [messages]);
 
   useEffect(() => {
     if (!busy) return undefined;
