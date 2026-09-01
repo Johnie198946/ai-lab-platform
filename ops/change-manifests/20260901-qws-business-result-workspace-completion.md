@@ -1,12 +1,18 @@
 # QWS Business Result Workspace Completion Manifest
 
 - task_id: `20260901-qws-business-result-workspace`
-- status: `TESTED`
+- status: `DEPLOYED_AWAITING_FINAL_RECEIPT_SHA`
 - branch: `main`
 - worktree: `/private/tmp/ai-lab-platform-qws-result-20260902`
-- base_sha: `2210b21417f00fea3f6e475f84b3f29e579770e9`
+- base_sha: `2aaaab5e27f07786c49880e40eed915ec7c12e32`
+- code_commit_sha: `38e660b65d3c10e33a8905f5f473a471f1e664dd`
+- github_remote_sha_after_code_push: `38e660b65d3c10e33a8905f5f473a471f1e664dd`
+- server_before: `2aaaab5e27f07786c49880e40eed915ec7c12e32`
+- server_after_code_deploy: `38e660b65d3c10e33a8905f5f473a471f1e664dd`
+- server_release: `/opt/releases/ai-lab-platform-38e660b65d3c.fColYu`
+- server_rollback_point: `/opt/releases/ai-lab-platform-2aaaab5e27f0.juyKvD`
 - change_type: `CODE_RELEASE`
-- rollback_point: `2210b21417f00fea3f6e475f84b3f29e579770e9`
+- rollback_point: `2aaaab5e27f07786c49880e40eed915ec7c12e32`
 - scope: QWS Workflow内只读业务结果工作区、Project作用域结果API、业务化确定性摘要、Codex页面设计
 
 ## Governance
@@ -113,6 +119,19 @@ Playwright无头打开真实Vite React页面并通过开发态session读取隔�
 - 截图：`/private/tmp/qws-result-react-e2e-v2.png`；
 - vision审查：`PASS`，无Must-Fix。
 
+### Production deployment verification
+
+- standard deploy: `bash scripts/update.sh 38e660b65d3c10e33a8905f5f473a471f1e664dd`
+- `.deployed-sha`: `38e660b65d3c10e33a8905f5f473a471f1e664dd`
+- active release: `/opt/releases/ai-lab-platform-38e660b65d3c.fColYu`
+- API health: `{"status":"ok","version":"0.8.0"}`
+- Bridge health: `status=ok`, `workflow_orchestration=true`
+- API container source anchor `business-result-summary`: present
+- API container source anchor `build_business_result_summary`: present
+- production OpenAPI route: present
+- first deploy attempt without SHA: safely rejected before mutation because the release script requires one exact 40-character SHA
+- protected production project fixture was not asserted in this manifest; local isolated real API/React E2E is the functional proof, while production route/source/health are the deployment proof.
+
 ## Known limitations
 
 - 本切片只读；不含结果审批写入、RunGroup、N:M映射、报告生成。
@@ -123,7 +142,7 @@ Playwright无头打开真实Vite React页面并通过开发态session读取隔�
 ## Release state
 
 - local tests: passed
-- commit: pending
-- GitHub push: pending
-- deployment: pending
-- remote functional verification: pending
+- code commit: pushed and remote SHA verified
+- deployment: code commit deployed
+- final manifest receipt commit: pending
+- final receipt SHA deployment: pending
