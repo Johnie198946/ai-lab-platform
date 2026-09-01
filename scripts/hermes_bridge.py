@@ -4417,6 +4417,8 @@ def _build_in_process_agent(
     composition = agent_config.get("composition") or {}
     triage = _request_triage(agent_config)
     route_class = triage.get("route_class") if triage else None
+    if route_class == GENERAL_QA:
+        cfg_model = os.environ.get("HERMES_FAST_CHAT_MODEL", "gpt-5.4-nano")
     evidence_requirements = set(
         (triage or {}).get("evidence_requirements") or []
     )

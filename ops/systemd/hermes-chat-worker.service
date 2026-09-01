@@ -5,17 +5,18 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/opt/ai-lab-platform
+WorkingDirectory=/opt/hermes
 EnvironmentFile=/opt/ai-lab-platform/.env
 Environment=PYTHONUNBUFFERED=1
 Environment=AI_LAB_AGENT_OS_MODE=cloud_multi_tenant
 Environment=HERMES_CHAT_RUN_DB=/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3
 Environment=HERMES_CHAT_MAX_PARALLEL_PER_USER=3
+Environment=HERMES_FAST_CHAT_MODEL=gpt-5.4-nano
 Environment=HTTP_PROXY=http://127.0.0.1:7890
 Environment=HTTPS_PROXY=http://127.0.0.1:7890
 Environment=ALL_PROXY=http://127.0.0.1:7890
 Environment=NO_PROXY=127.0.0.1,localhost
-ExecStart=/opt/hermes/venv/bin/python3 /opt/ai-lab-platform/scripts/chat_run_worker.py
+ExecStart=/opt/hermes/venv/bin/python3 -c "import sys; sys.path.append('/opt/ai-lab-platform'); from scripts.chat_run_worker import main; main()"
 Restart=always
 RestartSec=5
 NoNewPrivileges=true
