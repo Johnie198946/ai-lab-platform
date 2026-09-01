@@ -1,16 +1,16 @@
 # qws-ios-background-topic-note-persistence-20260901 Completion
 
 - task_id: qws-ios-background-topic-note-persistence-20260901
-- status: TESTED
+- status: DEPLOYED
 - branch: main
 - worktree: /Users/dengzhaoyu/Projects/quantumworkspace-agent-os-20260828
-- head/local_commit: pending
-- remote_sha: pending
-- server_before: pending
-- server_after: pending
-- health_check: targeted Python 122 passed; iOS XCTest 54 passed
-- functional_check: source build/test passed; production bridge logs prove SSE disconnect is detach; simulator app installed but authenticated visual E2E is not yet complete
-- rollback_point: current GitHub main 9f090630de960f30fee621a1a203a9a677a916bc
+- head/local_commit: 0fe388ea4afd4d124c3d08f5c7228bb272029032 (implementation); production receipt parent 3bf7f94fa215cf6a4df04af29a901855c66484fd
+- remote_sha: 3bf7f94fa215cf6a4df04af29a901855c66484fd before this receipt update
+- server_before: 6563de015933 (rollback release `/opt/releases/ai-lab-platform-6563de015933.m9Jz4b`)
+- server_after: 3bf7f94fa215cf6a4df04af29a901855c66484fd
+- health_check: API ready; bridge ok; runtime contract audit passed; watchdog detached timeout 3600s
+- functional_check: cloud note PUT→GET snapshot hash match→trash passed; targeted Python 122 passed; iOS XCTest 54 passed; simulator app installed, but authenticated topic visual E2E remains a TestFlight gate
+- rollback_point: `/opt/releases/ai-lab-platform-6563de015933.m9Jz4b`; systemd override backup `/opt/rollback/hermes-bridge-override-20260901-2205.conf`
 - manifest: ops/change-manifests/qws-ios-background-topic-note-persistence-20260901-completion.md
 - remaining_risks: do not upload TestFlight until real simulator login + topic creation + lock/background/foreground + note reinstall restore are visually verified
 
