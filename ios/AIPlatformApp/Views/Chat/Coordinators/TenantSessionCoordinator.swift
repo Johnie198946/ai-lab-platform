@@ -250,6 +250,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.messages[index].pending = false
                         self.messages[index].isStreaming = false
                         self.messages[index].degraded = false
+                        self.messages[index].settleReasoningForCompletion()
+                        self.finalizeReasoningDuration(for: outputMessageId)
                         self.commitSession()
                         self.finishGeneration()
                         return
@@ -1069,6 +1071,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         }
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
+                        messages[idx].settleReasoningForCompletion()
                         receivedTerminalEvent = !messages[idx].content.isEmpty
                     }
 
@@ -1164,7 +1167,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         messages[idx].pending = false
         messages[idx].isStreaming = false
         messages[idx].degraded = false
-        messages[idx].blocks = []
+        messages[idx].settleReasoningForCompletion()
         finalizeReasoningDuration(for: outputMessageId)
         commitSession()
     }
@@ -1600,7 +1603,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                             self.messages[idx].content = answer
                             self.messages[idx].pending = false
                             self.messages[idx].isStreaming = false
-                            self.messages[idx].blocks = []
+                            self.messages[idx].settleReasoningForCompletion()
+                            self.finalizeReasoningDuration(for: outputMessageId)
                         }
                         self.commitSession()
                         if self.inflight?.id == requestId { self.finishGeneration() }
@@ -1836,7 +1840,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                 break
             }
         }
-        update(&steps)
+        guard let updatedSteps = ReasoningStepMutation.applying(update, to: steps) else { return }
+        steps = updatedSteps
         if let rIdx = reasoningBlockIdx {
             blocks[rIdx] = .reasoning(steps)
         } else if !steps.isEmpty {
@@ -2132,8 +2137,11 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     /// 流式/非流式完成时，为消息落盘真实思考耗时（无记录时不伪造）。
     private func finalizeReasoningDuration(for messageId: String) {
-        guard let start = generationStartDate,
-              let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        if !messages[idx].isStreaming && !messages[idx].pending {
+            messages[idx].settleReasoningForCompletion()
+        }
+        guard let start = generationStartDate else { return }
         let seconds = Int(Date().timeIntervalSince(start))
         if seconds >= 0, messages[idx].reasoningDuration == nil {
             messages[idx].reasoningDuration = seconds

@@ -1306,7 +1306,8 @@ public final class SessionManager: ObservableObject {
     public func applyCompletedStatus(sessionId: String, requestId: String, answer: String) {
         let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
             var updated = existing; updated.content = answer; updated.pending = false
-            updated.isStreaming = false; updated.degraded = false; return updated
+            updated.isStreaming = false; updated.degraded = false
+            updated.settleReasoningForCompletion(); return updated
         } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: answer, pending: false)
         updateStoredMessage(message, sessionId: sessionId)
     }

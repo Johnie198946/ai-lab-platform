@@ -195,3 +195,35 @@ public struct ReasoningStepRow: View {
         }
     }
 }
+
+enum ReasoningStepMutation {
+    /// Returns nil when an update is a no-op, allowing streaming callers to
+    /// avoid publishing an identical message tree for every SSE token.
+    static func applying(
+        _ update: (inout [ReasoningStep]) -> Void,
+        to steps: [ReasoningStep]
+    ) -> [ReasoningStep]? {
+        var updated = steps
+        update(&updated)
+        return updated == steps ? nil : updated
+    }
+}
+
+extension ChatMessage {
+    /// A terminal answer and a running reasoning row must never coexist.
+    /// Stream recovery can finish without delivering the SSE `done` frame, so
+    /// completion paths normalize the persisted reasoning block as an invariant.
+    mutating func settleReasoningForCompletion() {
+        blocks = blocks.map { block in
+            guard case .reasoning(var steps) = block else { return block }
+            for index in steps.indices where steps[index].status == "running" {
+                steps[index].status = "done"
+                if steps[index].title == "正在生成回答…"
+                    || steps[index].title == "正在生成回答..." {
+                    steps[index].title = "回答已生成"
+                }
+            }
+            return .reasoning(steps)
+        }
+    }
+}

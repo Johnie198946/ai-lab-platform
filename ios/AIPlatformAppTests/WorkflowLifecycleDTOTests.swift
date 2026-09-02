@@ -60,6 +60,68 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertFalse(partial.usesPendingPlaceholder)
     }
 
+    func testReasoningStepMutationSkipsRepeatedStreamingState() {
+        let original = [
+            ReasoningStep(
+                type: .thought,
+                title: "正在生成回答…",
+                detail: "",
+                status: "running"
+            )
+        ]
+
+        let noChange = ReasoningStepMutation.applying({ steps in
+            steps[0].title = "正在生成回答…"
+            steps[0].status = "running"
+        }, to: original)
+        let changed = ReasoningStepMutation.applying({ steps in
+            steps[0].status = "done"
+        }, to: original)
+
+        XCTAssertNil(noChange)
+        XCTAssertEqual(changed?.first?.status, "done")
+    }
+
+    func testTerminalMessageSettlesGeneratingAnswerReasoning() {
+        var message = ChatMessage(
+            role: .assistant,
+            content: "完整回答",
+            isStreaming: false,
+            blocks: [.reasoning([
+                ReasoningStep(
+                    type: .thought,
+                    title: "正在生成回答…",
+                    detail: "",
+                    status: "running"
+                )
+            ])],
+            pending: false
+        )
+
+        message.settleReasoningForCompletion()
+
+        guard case .reasoning(let steps) = message.blocks.first else {
+            return XCTFail("reasoning block missing")
+        }
+        XCTAssertEqual(steps.first?.title, "回答已生成")
+        XCTAssertEqual(steps.first?.status, "done")
+    }
+
+    func testTerminalMessagePreservesCompletedReasoningCopy() {
+        var message = ChatMessage(
+            role: .assistant,
+            content: "完整回答",
+            blocks: [.reasoning([
+                ReasoningStep(type: .toolCall, title: "检索完成", detail: "来源", status: "done")
+            ])]
+        )
+
+        let original = message.blocks
+        message.settleReasoningForCompletion()
+
+        XCTAssertEqual(message.blocks, original)
+    }
+
     func testKnowledgeAccessDecodesRuntimeEffectiveKnowledge() throws {
         let data = Data("""
         {
