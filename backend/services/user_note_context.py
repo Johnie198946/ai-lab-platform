@@ -107,6 +107,74 @@ def compile_private_note_index(
     return payload
 
 
+def persist_generated_private_note(
+    *, tenant_key: str, user_id: str, session_id: str, request_id: str,
+    kind: str, content: str, confidence: float, root: Path | None = None,
+) -> dict[str, Any] | None:
+    """Idempotently ingest an authorized high-confidence result as private knowledge."""
+    body = str(content or "").strip()
+    if confidence < 0.60 or not body:
+        return None
+    note_id = "auto-" + hashlib.sha256(
+        f"{tenant_key}\0{user_id}\0{session_id}\0{request_id}".encode()
+    ).hexdigest()[:24]
+    path, metadata_path = note_paths(tenant_key, user_id, note_id, root)
+    if path.is_file():
+        raw = path.read_bytes()
+        index = compile_private_note_index(tenant_key, user_id, root)
+        return {
+            "note_id": note_id,
+            "content_hash": hashlib.sha256(raw).hexdigest(),
+            "private_index_hash": index["index_hash"],
+        }
+    title_line = next((line.strip("# *\t") for line in body.splitlines() if line.strip()), "研究结果")
+    title = title_line[:120].replace('"', "'")
+    now = datetime.now(timezone.utc).isoformat()
+    markdown = (
+        "---\n"
+        f"id: {note_id}\n"
+        f"title: \"{title}\"\n"
+        f"created: {now}\nupdated: {now}\n"
+        f"source_session_id: \"{session_id}\"\n"
+        f"source_request_id: \"{request_id}\"\n"
+        f"confidence: {confidence:.2f}\n"
+        "security_level: red\nclassification_status: approved\n"
+        f"tags:\n  - auto-ingested\n  - {kind}\n---\n\n{body}\n"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for target, text in (
+        (path, markdown),
+        (metadata_path, json.dumps({
+            "version": 1, "note_id": note_id, "owner_user_id": user_id,
+            "content_hash": hashlib.sha256(markdown.encode()).hexdigest(),
+            "synced_at": now, "source": "assistant_high_confidence",
+            "source_session_id": session_id, "source_request_id": request_id,
+            "confidence": round(confidence, 2), "kind": kind,
+            "ingest_target": "private_user_knowledge",
+        }, ensure_ascii=False, indent=2)),
+    ):
+        descriptor, temporary = tempfile.mkstemp(
+            dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp"
+        )
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                handle.write(text)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+        finally:
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+    index = compile_private_note_index(tenant_key, user_id, root)
+    return {
+        "note_id": note_id,
+        "content_hash": hashlib.sha256(markdown.encode()).hexdigest(),
+        "private_index_hash": index["index_hash"],
+    }
+
+
 def _frontmatter_value(markdown: str, key: str) -> str:
     match = re.search(
         rf"^---\s*$.*?^\s*{re.escape(key)}\s*:\s*(.+?)\s*$.*?^---\s*$",

@@ -5,7 +5,9 @@ import pytest
 from backend.api.chat import ChatContextScope, LocalNoteContext, _resolve_source_context
 from backend.services.knowledge_policy import KnowledgePolicy
 from backend.services.knowledge_policy import verify_capability
-from backend.services.user_note_context import note_paths, search_user_notes
+from backend.services.user_note_context import (
+    note_paths, search_user_notes, persist_generated_private_note,
+)
 from backend.services.user_note_context import (
     LOCAL_NOTE_CONTEXT_MAX_CHARS,
     render_local_note_context,
@@ -53,6 +55,34 @@ def test_render_local_context_compacts_long_note_and_preserves_tasks():
     assert "## 最后待办" in context
     assert "- [ ] 给客户发送复盘" in context
     assert context.endswith("</local_notes>")
+
+
+def test_high_confidence_research_is_idempotently_ingested_as_private_knowledge(tmp_path: Path):
+    content = "# 华为半年报分析\n\n" + "有证据支撑的经营分析。" * 20
+    first = persist_generated_private_note(
+        tenant_key="tenant-a", user_id="user-a", session_id="session-1",
+        request_id="request-1", kind="research", content=content,
+        confidence=0.84, root=tmp_path,
+    )
+    second = persist_generated_private_note(
+        tenant_key="tenant-a", user_id="user-a", session_id="session-1",
+        request_id="request-1", kind="research", content=content,
+        confidence=0.84, root=tmp_path,
+    )
+    assert first == second
+    assert first is not None
+    note, metadata = note_paths("tenant-a", "user-a", first["note_id"], tmp_path)
+    assert note.is_file() and metadata.is_file()
+    assert "security_level: red" in note.read_text(encoding="utf-8")
+    assert not note_paths("tenant-a", "user-b", first["note_id"], tmp_path)[0].exists()
+
+
+def test_low_confidence_result_is_not_ingested(tmp_path: Path):
+    assert persist_generated_private_note(
+        tenant_key="tenant-a", user_id="user-a", session_id="session-1",
+        request_id="request-2", kind="solution", content="方案正文",
+        confidence=0.59, root=tmp_path,
+    ) is None
 
 
 @pytest.mark.asyncio

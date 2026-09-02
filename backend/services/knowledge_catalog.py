@@ -141,9 +141,8 @@ def base_knowledge_status(vault: Path | None = None) -> dict[str, Any]:
     manifest = load_manifest(vault)
     documents = [
         item
-        for item in manifest.get("documents", [])
+        for item in document_index(vault).values()
         if isinstance(item, dict)
-        and item.get("knowledge_level") == "K5"
         and item.get("classification_status") == "approved"
         and item.get("security_level") == "green"
         and item.get("path")

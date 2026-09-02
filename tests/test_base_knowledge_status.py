@@ -69,6 +69,14 @@ class TestBaseKnowledgeStatus(unittest.TestCase):
         self.assertEqual(status["category_count"], 2)
         self.assertNotIn("knowledge/methodology/entitlement/pro", status["categories"])
 
+    def test_approved_green_documents_are_visible_regardless_of_knowledge_level(self):
+        document = self._document(1, "knowledge/methodology/public")
+        document["knowledge_level"] = "K3"
+        self._write([document])
+        status = base_knowledge_status(self.vault)
+        self.assertEqual(status["document_count"], 1)
+        self.assertEqual(status["categories"], ["knowledge/methodology/public"])
+
     def test_invalid_rebuild_keeps_last_valid_projection(self):
         self._write([
             self._document(index, "knowledge/methodology/public")
