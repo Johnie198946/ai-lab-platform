@@ -1,14 +1,14 @@
 # QWS planning, Taskboard execution context and visibility fixes
 
 task_id: qws-web-direct-fixes-20260902
-status: TESTED
+status: DEPLOYED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-ios-stream-state-20260902
 head_before: 0304517330b3ef8d5d818ae69930e2abb6f416cd
 remote_before: 0304517330b3ef8d5d818ae69930e2abb6f416cd
-server_before: pending
-server_after: pending
-rollback_point: pending
+server_before: /opt/releases/ai-lab-platform-05fde44ea5fc.JXrKak (05fde44ea5fc15ae0abfe1a9278e269fd7e5ea64)
+server_after: /opt/releases/ai-lab-platform-134344d6f0a6.0Csgq5 (134344d6f0a6a6c31cb3389552260b7c3daca2ad)
+rollback_point: /opt/releases/ai-lab-platform-05fde44ea5fc.JXrKak
 
 ## Scope and diagnosis
 
@@ -66,11 +66,11 @@ rollback_point: pending
 
 ## Delivery
 
-implementation_commit: pending
-remote_sha: pending
-deployment: pending
-health_check: pending
-functional_check: pending
+implementation_commit: 134344d6f0a6a6c31cb3389552260b7c3daca2ad
+remote_sha: 134344d6f0a6a6c31cb3389552260b7c3daca2ad verified with `git ls-remote` before deployment
+deployment: immutable exact-SHA release `/opt/releases/ai-lab-platform-134344d6f0a6.0Csgq5`
+health_check: API `/ready=ready`; API and Taskboard containers healthy; Hermes Bridge `/health=ok`; runtime contract audit passed
+functional_check: deployed source contains the project-history/context and non-blocking policy markers; public Taskboard loaded the six default main columns in the required order; authenticated pre-fix evidence and post-fix static/runtime evidence are preserved. A post-fix AI rerun was not performed because the automated browser session lost authentication after deployment.
 
 ## Remaining risk
 
