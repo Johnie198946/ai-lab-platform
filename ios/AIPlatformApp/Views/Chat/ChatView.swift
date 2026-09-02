@@ -59,9 +59,6 @@ public struct ChatView: View {
                         onHistoryTap: { showingSessionDrawer = true },
                         onClearTap: { isShowingClearAlert = true }
                     )
-                    if currentTopic == nil, let resumableTopic {
-                        topicResumeShelf(resumableTopic)
-                    }
                     if let topic = currentTopic {
                         topicControlBar(topic)
                     }
@@ -130,8 +127,13 @@ public struct ChatView: View {
                 SessionDrawerSheet(
                     sessionManager: coordinator.sessionManager,
                     onSelect: { id in
-                        coordinator.switchSession(to: id)
-                        coordinator.reconcileActiveRun()
+                        if let topic = sessionManager.topicSessions[id], topic.state != .queued {
+                            coordinator.openTopic(topic)
+                            showingTopicDiscussion = true
+                        } else {
+                            coordinator.switchSession(to: id)
+                            coordinator.reconcileActiveRun()
+                        }
                         showingSessionDrawer = false
                     },
                     onNew: {
@@ -211,46 +213,8 @@ public struct ChatView: View {
         return topic
     }
 
-    private var resumableTopic: TopicSessionMetadata? {
-        sessionManager.visibleTopics.first(where: { $0.state != .queued })
-    }
-
     private func dismissKeyboard() {
         dismissKeyboardToken &+= 1
-    }
-
-    @ViewBuilder
-    private func topicResumeShelf(_ topic: TopicSessionMetadata) -> some View {
-        Button {
-            coordinator.openTopic(topic)
-            showingTopicDiscussion = true
-        } label: {
-            HStack(spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "arrow.turn.down.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.quantumBlue)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("继续针对性话题")
-                        .font(AppTheme.Typography.micro.weight(.semibold))
-                        .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text(String(topic.sourceText.prefix(56)))
-                        .font(AppTheme.Typography.micro)
-                        .foregroundStyle(AppTheme.Colors.textSecondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 0)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-            }
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .background(AppTheme.Colors.surfaceTint)
-        .overlay(alignment: .bottom) { Divider().opacity(0.55) }
-        .accessibilityHint("在独立页面中继续该话题")
     }
 
     @ViewBuilder

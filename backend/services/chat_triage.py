@@ -71,7 +71,7 @@ _CONSTRAINT_RE = re.compile(
     re.IGNORECASE,
 )
 _FRESH_RE = re.compile(
-    r"(?:最新|今天|今日|当前|现在|近期|最近|实时|新闻|价格|行情|版本|发布于|"
+    r"(?:最新|今天|今日|今年|本年|本季度|本财年|当前|现在|近期|最近|实时|新闻|价格|行情|版本|发布于|"
     r"截至|latest|today|current|recent|news|price|version)",
     re.IGNORECASE,
 )
@@ -83,6 +83,11 @@ _PUBLIC_RESEARCH_RE = re.compile(
 _INTERNAL_RE = re.compile(
     r"(?:内部|公司资料|企业知识|知识库|Wiki|笔记|我们(?:之前|聊过|的资料)|"
     r"internal|knowledge base|notes?)",
+    re.IGNORECASE,
+)
+_BUSINESS_FACT_RE = re.compile(
+    r"(?:财报|年报|半年报|季报|营收|营业收入|收入情况|净利润|毛利率|现金流|"
+    r"出货量|市场份额|经营情况|业绩|产品线|客户情况|项目进展|竞争格局)",
     re.IGNORECASE,
 )
 
@@ -119,10 +124,13 @@ def _evidence_requirements(text: str) -> tuple[str, ...]:
     requirements: list[str] = []
     if _URL_RE.search(text):
         requirements.append("web_extract")
+    # Business/company facts are local-knowledge-first by default. Freshness is
+    # orthogonal: when both apply Hermes searches authorized knowledge first,
+    # then supplements gaps from the public web.
+    if _INTERNAL_RE.search(text) or _BUSINESS_FACT_RE.search(text):
+        requirements.append("knowledge_search")
     if _FRESH_RE.search(text) or _PUBLIC_RESEARCH_RE.search(text):
         requirements.append("web_search")
-    if _INTERNAL_RE.search(text):
-        requirements.append("knowledge_search")
     return tuple(dict.fromkeys(requirements))
 
 

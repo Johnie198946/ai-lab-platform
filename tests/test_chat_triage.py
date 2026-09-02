@@ -76,6 +76,14 @@ def test_skill_management_intent_stays_in_authenticated_main_agent():
     assert routed.evidence_requirements == ()
 
 
+def test_business_financial_questions_are_local_first_then_web_when_fresh():
+    first = classify_request("华为财报发了，发现他是不是不行了")
+    follow_up = classify_request("你知道他今年营收情况吗？")
+
+    assert first.evidence_requirements == ("knowledge_search",)
+    assert follow_up.evidence_requirements == ("knowledge_search", "web_search")
+
+
 def test_explicit_skill_agent_keeps_skill_discovery_enabled():
     from backend.api.chat import _skill_routing_enabled
     from backend.services.agent_capabilities import EffectiveAgent

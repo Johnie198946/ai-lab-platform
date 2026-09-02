@@ -46,8 +46,43 @@ public struct SessionDrawerSheet: View {
                 }
                 .pickerStyle(.segmented)
 
+                if lifecycle == .active, !sessionManager.visibleTopics.isEmpty {
+                    Section("针对性话题") {
+                        ForEach(sessionManager.visibleTopics) { topic in
+                            Button {
+                                if topic.state != .queued { onSelect(topic.sessionId) }
+                            } label: {
+                                HStack(spacing: AppTheme.Spacing.sm) {
+                                    Image(systemName: topic.state == .queued
+                                          ? "clock.badge"
+                                          : "arrow.turn.down.right")
+                                        .foregroundStyle(AppTheme.Colors.quantumBlue)
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(String(topic.sourceText.prefix(64)))
+                                            .font(.system(size: 14, weight: .medium))
+                                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                                            .lineLimit(1)
+                                        Text(topic.state == .queued ? "等待执行槽位" : "独立分支 · 点击继续")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(AppTheme.Colors.textTertiary)
+                                    }
+                                    Spacer(minLength: 0)
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(topic.state == .queued)
+                        }
+                    }
+                }
+
                 Section(lifecycle == .active ? "历史会话" : lifecycle == .archived ? "已归档" : "可恢复会话") {
-                    ForEach(sessionManager.sortedSessionIDs(status: lifecycle, query: searchText), id: \.self) { id in
+                    ForEach(sessionManager.sortedSessionIDs(status: lifecycle, query: searchText).filter {
+                        sessionManager.topicSessions[$0] == nil
+                    }, id: \.self) { id in
                         Button {
                             if lifecycle == .active { onSelect(id) }
                         } label: {

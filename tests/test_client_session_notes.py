@@ -19,6 +19,22 @@ from backend.services.knowledge_action_capability import (
 )
 
 
+def test_recent_conversation_context_preserves_pronoun_anchor():
+    import json
+    import scripts.hermes_bridge as bridge
+
+    rendered = bridge._recent_conversation_context({
+        "messages": [
+            {"role": "user", "content": "华为财报发了，发现他是不是不行了"},
+            {"role": "assistant", "content": "我们先结合华为半年报分析。"},
+        ]
+    })
+    messages = json.loads(rendered)
+    assert messages[-1]["role"] == "assistant"
+    assert "华为" in messages[-1]["content"]
+    assert sum(len(item["content"]) for item in messages) <= 6_000
+
+
 def test_session_namespace_includes_user_boundary():
     first = _tenant_namespaced_session("main_agent-same", "tenant-a", "policy", "user-a")
     second = _tenant_namespaced_session("main_agent-same", "tenant-a", "policy", "user-b")
