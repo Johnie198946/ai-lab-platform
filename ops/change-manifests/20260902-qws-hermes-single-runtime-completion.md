@@ -71,11 +71,19 @@
 
 ## Post-verification hardening — 2026-09-03
 
-- status: `TESTED` (deployment pending)
+- status: `VERIFIED`
 - base: `bf2f47590ac211c6c7c4533feebf1662cf84309b`
+- implementation_commits: `9f67f59aa26245951e5d2956e9ddaba046edcc95`, `93dad2a8c823ac1cda19016933bf75152d17fc4c`
 - Prevented long client session IDs with shared prefixes from colliding after the 100-character server limit by hashing the complete logical base.
 - Made legacy policy-alias migration fail closed when multiple valid aliases resolve to different Hermes sessions; JSON insertion order is never used as evidence.
 - Made durable event delivery protocol-based rather than class-identity-based, preserving terminal events across Bridge reload/rolling worker boundaries.
 - Implemented real first-use migration/disaster recovery: signed client user/assistant messages are imported into the newly created Hermes SessionDB session before its stable mapping is published. Empty normal capability envelopes import nothing.
+- Added SessionDB compatibility: newer Hermes uses `append_messages_batch`; the deployed legacy Hermes uses `append_message` per row and publishes the stable mapping only after the import succeeds.
 - Verification: tracked Python 3.11 suite `1083 passed, 2 skipped`; focused Bridge/QWS/durable ordering suite `58 passed`; iOS full XCTest `59 passed, 0 failures`; `git diff --check` passed.
-- deployment: pending exact-SHA follow-up deployment; the receipt update will record final remote SHA, release, health and functional checks.
+- server_before: `/opt/releases/ai-lab-platform-bf2f47590ac2.0dM1v9`
+- server_after_code: `/opt/releases/ai-lab-platform-93dad2a8c823.XXyU7J`
+- rollback_point: `/opt/releases/ai-lab-platform-9f67f59aa262.xQL4sl` (immediate), with `bf2f475` retained as the pre-hardening release.
+- health_check: `.deployed-sha=93dad2a8c823ac1cda19016933bf75152d17fc4c`; API `/ready=ready/0.8.0`; Bridge `/health=ok`; public HTTPS `/health` HTTP 200; `hermes-bridge`, `hermes-chat-worker`, `hermes-serve`, and `hermes-gateway` active.
+- functional_check: production API generated distinct hashes for two 100+ character session IDs with a shared prefix; the server's actual legacy `/opt/hermes` SessionDB imported `user:口令=银杏-4729` and `assistant:已记住` into a temporary native session and read both rows back exactly.
+- simulator_boundary: app launched normally to the folded login entry and production 401 correctly cleared the stale token; no current real login token was available, so no new TestFlight build was uploaded and logged-in iOS chat was not claimed as re-verified.
+- final_receipt: the documentation successor commit containing this receipt is deployed through the same exact-SHA path; its SHA/release are reported in the completion response because a commit cannot contain its own hash.
