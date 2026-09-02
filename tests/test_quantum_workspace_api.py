@@ -2992,10 +2992,12 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         message.content for message in captured["client_session_context"].messages
     )
     assert '"project_overview"' in transferred_context
+    assert '"project_planning_history"' in transferred_context
     assert '"project_documents"' in transferred_context
     assert '"project_execution_log"' in transferred_context
     assert '"session_directory"' in transferred_context
     assert "Do not infer the whole project from the current card alone" in captured["question"]
+    assert "Also read project_planning_history" in captured["question"]
     assert "senior project colleague, not as a system debugger" in captured["question"]
     assert "AUTO_EXECUTE=false is an instruction for this conversational turn only" in captured["question"]
     assert "INTERACTIVE_MODE=true" in captured["question"]
@@ -3025,6 +3027,18 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
     ).json()
     assert len(replay_messages) == 2
+
+    continued = client.post(
+        f"/api/v1/task-conversations/{conversation['id']}/messages/stream",
+        json={"question": "继续核对项目概览", "request_id": "chat-request-0002"},
+    )
+    assert continued.status_code == 200
+    assert captured["calls"] == 2
+    repeated_context = "".join(
+        message.content for message in captured["client_session_context"].messages
+    )
+    assert '"project_overview"' in repeated_context
+    assert '"project_planning_history"' in repeated_context
 
 
 def test_task_auto_execution_runs_server_side_and_applies_backfill(
@@ -3110,6 +3124,8 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
     assert captured["applied"]["self_changes"]["status"] == "done"
     assert captured["stream_calls"] == 2
     assert any("AUTO_EXECUTE=true. Continue autonomously until done." in question for question in captured["questions"])
+    assert any("Missing non-essential detail is not a blocker" in question for question in captured["questions"])
+    assert any("An omitted travel year" in question for question in captured["questions"])
     assert "修复上一轮自动执行结果" in captured["questions"][-1]
     messages = client.get(
         f"/api/v1/task-conversations/{conversation['id']}/messages"

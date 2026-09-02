@@ -260,6 +260,7 @@ export function ProjectGraph({ graph, process, onSave }) {
 
   const deleteSelectedNode = () => {
     if (!selectedNode) return;
+    if (!window.confirm(`确认删除节点“${selectedNode.data.label || "未命名步骤"}”？与它相连的连线也会删除。`)) return;
     setNodes((current) => current.filter((node) => node.id !== selectedNode.id));
     setEdges((current) => current.filter((edge) => edge.source !== selectedNode.id && edge.target !== selectedNode.id));
     setSelectedNodeId(null);
@@ -346,7 +347,7 @@ export function ProjectGraph({ graph, process, onSave }) {
       </div>
       <aside className="qw-workflow-inspector">
         {!selectedNode ? <div className="qw-workflow-inspector-empty"><Sparkles size={22} /><strong>选择一个节点进行配置</strong><p>每个步骤都可以明确参与角色、工具、输入数据、设备环境、交付物和验收标准。</p><div><span><UsersRound size={13} />谁参与</span><span><Wrench size={13} />用什么工具</span><span><Database size={13} />使用什么数据</span><span><HardDrive size={13} />在哪种设备/环境</span><span><PackageCheck size={13} />交付什么</span></div></div> : <div className="qw-workflow-inspector-form">
-          <header><span className={`tone-${kindMeta[selectedNode.data.kind]?.tone || "teal"}`}>{(() => { const Icon = kindMeta[selectedNode.data.kind]?.icon || Zap; return <Icon size={16} />; })()}</span><div><strong>节点配置</strong><small>{kindMeta[selectedNode.data.kind]?.label}</small></div><button type="button" onClick={deleteSelectedNode} aria-label="删除当前节点"><Trash2 size={15} /></button></header>
+          <header><span className={`tone-${kindMeta[selectedNode.data.kind]?.tone || "teal"}`}>{(() => { const Icon = kindMeta[selectedNode.data.kind]?.icon || Zap; return <Icon size={16} />; })()}</span><div><strong>节点配置</strong><small>{kindMeta[selectedNode.data.kind]?.label}</small></div><button className="qw-workflow-delete-node" type="button" onClick={deleteSelectedNode}><Trash2 size={14} /><span>删除节点</span></button></header>
           <label className="qw-workflow-field"><span>步骤名称</span><input value={selectedNode.data.label || ""} onChange={(event) => updateNodeData("label", event.target.value)} placeholder="例如：收集并确认访客需求" /></label>
           <label className="qw-workflow-field"><span>步骤说明</span><textarea rows={3} value={selectedNode.data.description || ""} onChange={(event) => updateNodeData("description", event.target.value)} placeholder="说明这一步做什么、何时完成" /></label>
           <label className="qw-workflow-field"><span>执行方式</span><select value={selectedNode.data.execution_mode || "human_ai"} onChange={(event) => updateNodeData("execution_mode", event.target.value)}><option value="human_ai">人机协同</option><option value="human">人工执行</option><option value="ai">AI 自动执行</option></select></label>

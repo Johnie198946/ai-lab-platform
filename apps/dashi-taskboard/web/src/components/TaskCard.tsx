@@ -199,24 +199,39 @@ function ProcessingProgress({
 function ProcessingStatusRow({
   presentation,
   now,
+  onOpenDetails,
   onOpenConversation,
 }: {
   presentation: TaskCardPresentation;
   now: number;
+  onOpenDetails: () => void;
   onOpenConversation: (conversation: TaskConversationItem) => void;
 }) {
   const { text } = useTaskboardI18n();
   const elapsed = elapsedTime(presentation.processing.startedAt, now);
   const running = presentation.processing.running;
   return (
-    <div className={`task-processing-row${running ? " is-running" : " is-paused"}`}>
+    <div className={`task-processing-row${running ? " is-running" : " is-idle"}`}>
       {running && <img className="task-processing-glyph" src={processingAnimation} alt="" aria-hidden="true" />}
       <span className="task-processing-label">
         {running
           ? (elapsed ? text(`已处理 ${elapsed}...`, `Processing for ${elapsed}...`) : text("正在处理...", "Processing..."))
-          : text("暂停处理", "Processing paused")}
+          : text("处理中 · 暂无执行动态", "In progress · No execution activity")}
       </span>
       <span className="task-processing-spacer" aria-hidden="true" />
+      <button
+        className="task-progress-log-link"
+        type="button"
+        draggable={false}
+        onPointerDown={(event) => event.stopPropagation()}
+        onDragStart={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.stopPropagation();
+          onOpenDetails();
+        }}
+      >
+        {text("查看进展与日志", "View progress and logs")}
+      </button>
       {presentation.conversations.length > 0 && (
         <TaskConversationMenu
           conversations={presentation.conversations}
@@ -603,6 +618,7 @@ export function TaskCard({
           <ProcessingStatusRow
             presentation={presentation}
             now={now}
+            onOpenDetails={() => onEdit(task)}
             onOpenConversation={onOpenConversation}
           />
         </>

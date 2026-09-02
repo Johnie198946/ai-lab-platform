@@ -3,9 +3,21 @@ import { useEffect, useState } from "react";
 import { ProjectBlueprintProtocol } from "./ProjectBlueprintProtocol";
 
 const unique = (values = []) => [...new Set(values.map((value) => String(value || "").trim()).filter(Boolean))];
-const lines = (value) => String(value || "").split("\n").map((item) => item.trim()).filter(Boolean);
+const draftLines = (value) => String(value || "").split("\n");
 const clone = (value) => JSON.parse(JSON.stringify(value || {}));
 const nextKey = (prefix) => `${prefix}-${crypto.randomUUID().slice(0, 8)}`;
+const normalizedBlueprint = (blueprint) => ({
+  ...blueprint,
+  stages: (blueprint.stages || []).map((stage) => ({
+    ...stage,
+    acceptance_criteria: unique(stage.acceptance_criteria),
+  })),
+  tasks: (blueprint.tasks || []).map((task) => ({
+    ...task,
+    deliverables: unique(task.deliverables),
+    acceptance_criteria: unique(task.acceptance_criteria),
+  })),
+});
 
 function BlueprintEditor({ blueprint, onCancel, onSave }) {
   const [draft, setDraft] = useState(() => clone(blueprint));
@@ -23,15 +35,15 @@ function BlueprintEditor({ blueprint, onCancel, onSave }) {
     <div className="qw-blueprint-editor-head"><div><strong>人工修订需求确认单</strong><small>保存后的内容就是派发真源，不再回用 AI 旧稿。</small></div><button type="button" onClick={onCancel} aria-label="取消编辑"><X size={16} /></button></div>
     <label>项目目标<textarea rows="4" value={draft.project_goal || ""} onChange={(event) => setDraft({ ...draft, project_goal: event.target.value })} /></label>
     <section><header><div><strong>任务阶段</strong><small>名称、目标和阶段验收均可改。</small></div><button type="button" onClick={() => setDraft((current) => ({ ...current, stages: [...stages, { key: nextKey("stage"), name: "新阶段", goal: "", acceptance_criteria: [] }] }))}><Plus size={13} />新增阶段</button></header>
-      {stages.map((stage, index) => <article key={stage.key || index} className="qw-blueprint-edit-card"><div><strong>阶段 {index + 1}</strong><button type="button" onClick={() => removeStage(index)} aria-label={`删除阶段 ${index + 1}`}><Trash2 size={13} /></button></div><label>阶段名称<input value={stage.name || ""} onChange={(event) => updateStage(index, { name: event.target.value })} /></label><label>阶段目标<textarea rows="2" value={stage.goal || ""} onChange={(event) => updateStage(index, { goal: event.target.value })} /></label><label>阶段验收标准（每行一条）<textarea rows="3" value={(stage.acceptance_criteria || []).join("\n")} onChange={(event) => updateStage(index, { acceptance_criteria: lines(event.target.value) })} /></label></article>)}
+      {stages.map((stage, index) => <article key={stage.key || index} className="qw-blueprint-edit-card"><div><strong>阶段 {index + 1}</strong><button type="button" onClick={() => removeStage(index)} aria-label={`删除阶段 ${index + 1}`}><Trash2 size={13} /></button></div><label>阶段名称<input value={stage.name || ""} onChange={(event) => updateStage(index, { name: event.target.value })} /></label><label>阶段目标<textarea rows="2" value={stage.goal || ""} onChange={(event) => updateStage(index, { goal: event.target.value })} /></label><label>阶段验收标准（每行一条）<textarea rows="3" value={(stage.acceptance_criteria || []).join("\n")} onChange={(event) => updateStage(index, { acceptance_criteria: draftLines(event.target.value) })} /></label></article>)}
     </section>
     <section><header><div><strong>任务与角色</strong><small>负责人角色、说明、交付物和验收标准均可改。</small></div><button type="button" disabled={!stages.length} onClick={() => setDraft((current) => ({ ...current, tasks: [...tasks, { key: nextKey("task"), stage_key: stages[0]?.key, title: "新任务", description: "", role: "", deliverables: [], acceptance_criteria: [] }] }))}><Plus size={13} />新增任务</button></header>
-      {tasks.map((task, index) => <article key={task.key || index} className="qw-blueprint-edit-card task"><div><strong>任务 {index + 1}</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, tasks: tasks.filter((_, itemIndex) => itemIndex !== index) }))} aria-label={`删除任务 ${index + 1}`}><Trash2 size={13} /></button></div><label>所属阶段<select value={task.stage_key || ""} onChange={(event) => updateTask(index, { stage_key: event.target.value })}>{stages.map((stage) => <option key={stage.key} value={stage.key}>{stage.name || stage.key}</option>)}</select></label><label>任务名称<input value={task.title || ""} onChange={(event) => updateTask(index, { title: event.target.value })} /></label><label>负责人角色<input value={task.role || ""} onChange={(event) => updateTask(index, { role: event.target.value })} /></label><label>任务说明<textarea rows="2" value={task.description || task.goal || ""} onChange={(event) => updateTask(index, { description: event.target.value })} /></label><label>交付物（每行一项）<textarea rows="3" value={(task.deliverables || []).join("\n")} onChange={(event) => updateTask(index, { deliverables: lines(event.target.value) })} /></label><label>验收标准（每行一条）<textarea rows="3" value={(task.acceptance_criteria || []).join("\n")} onChange={(event) => updateTask(index, { acceptance_criteria: lines(event.target.value) })} /></label></article>)}
+      {tasks.map((task, index) => <article key={task.key || index} className="qw-blueprint-edit-card task"><div><strong>任务 {index + 1}</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, tasks: tasks.filter((_, itemIndex) => itemIndex !== index) }))} aria-label={`删除任务 ${index + 1}`}><Trash2 size={13} /></button></div><label>所属阶段<select value={task.stage_key || ""} onChange={(event) => updateTask(index, { stage_key: event.target.value })}>{stages.map((stage) => <option key={stage.key} value={stage.key}>{stage.name || stage.key}</option>)}</select></label><label>任务名称<input value={task.title || ""} onChange={(event) => updateTask(index, { title: event.target.value })} /></label><label>负责人角色<input value={task.role || ""} onChange={(event) => updateTask(index, { role: event.target.value })} /></label><label>任务说明<textarea rows="2" value={task.description || task.goal || ""} onChange={(event) => updateTask(index, { description: event.target.value })} /></label><label>交付物（每行一项）<textarea rows="3" value={(task.deliverables || []).join("\n")} onChange={(event) => updateTask(index, { deliverables: draftLines(event.target.value) })} /></label><label>验收标准（每行一条）<textarea rows="3" value={(task.acceptance_criteria || []).join("\n")} onChange={(event) => updateTask(index, { acceptance_criteria: draftLines(event.target.value) })} /></label></article>)}
     </section>
     <section><header><div><strong>项目文档</strong><small>可修改蓝图要求建立的文档；系统另生成顶设和逐任务记录。</small></div><button type="button" onClick={() => setDraft((current) => ({ ...current, documents: [...documents, { id: nextKey("doc"), title: "新文档", content: "" }] }))}><Plus size={13} />新增文档</button></header>
       {documents.map((document, index) => <article key={document.id || index} className="qw-blueprint-edit-card document"><div><strong>文档 {index + 1}</strong><button type="button" onClick={() => setDraft((current) => ({ ...current, documents: documents.filter((_, itemIndex) => itemIndex !== index) }))} aria-label={`删除文档 ${index + 1}`}><Trash2 size={13} /></button></div><label>文档名称<input value={document.title || ""} onChange={(event) => updateDocument(index, { title: event.target.value })} /></label><label>文档初始内容<textarea rows="4" value={document.content || ""} onChange={(event) => updateDocument(index, { content: event.target.value })} /></label></article>)}
     </section>
-    <footer><button type="button" className="qw-button subtle" onClick={onCancel}>取消</button><button type="button" className="qw-button primary" disabled={!String(draft.project_goal || "").trim() || !stages.length || !tasks.length} onClick={() => onSave(draft)}><Save size={14} />保存人工修订</button></footer>
+    <footer><button type="button" className="qw-button subtle" onClick={onCancel}>取消</button><button type="button" className="qw-button primary" disabled={!String(draft.project_goal || "").trim() || !stages.length || !tasks.length} onClick={() => onSave(normalizedBlueprint(draft))}><Save size={14} />保存人工修订</button></footer>
   </div>;
 }
 

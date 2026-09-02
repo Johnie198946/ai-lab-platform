@@ -117,6 +117,9 @@ test("Workflow is an editable stage-aware node studio with persisted responsibil
   assert.match(workflowSource, /设备 \/ 环境/);
   assert.match(workflowSource, /交付物/);
   assert.match(workflowSource, /验收标准/);
+  assert.match(workflowSource, /删除节点/);
+  assert.match(workflowSource, /window\.confirm/);
+  assert.match(workflowSource, /edge\.source !== selectedNode\.id && edge\.target !== selectedNode\.id/);
   assert.match(pageSource, /saveWorkflowGraph/);
   assert.match(apiSource, /graphs\/workflow/);
   assert.match(styles, /\.qw-workflow-layout\{display:grid;grid-template-columns:/);

@@ -24,8 +24,9 @@ function cssBlock(selector) {
 }
 
 test("the issue workspace projects configured statuses into adaptive main and secondary groups", () => {
-  assert.deepEqual(statusList("MAIN_STATUSES"), ["todo", "in_progress", "blocked", "in_review"]);
-  assert.deepEqual(statusList("SECONDARY_STATUSES"), ["backlog", "done", "canceled"]);
+  assert.match(appSource, /taskboard\.project-board-display-settings\.v4/);
+  assert.deepEqual(statusList("MAIN_STATUSES"), ["todo", "backlog", "in_progress", "blocked", "in_review", "done"]);
+  assert.deepEqual(statusList("SECONDARY_STATUSES"), ["canceled"]);
   assert.match(statusSource, /satisfies readonly TaskStatus\[\]/);
   assert.match(appSource, /const mainBoardItems = boardDisplaySettings\.mainStatuses/);
   assert.match(appSource, /mainBoardItems\.map\(\(item\) => item === "archived" \? \([\s\S]*?<BoardColumn/);
@@ -38,7 +39,7 @@ test("the issue workspace projects configured statuses into adaptive main and se
 
 test("other tasks is a closed-by-default non-modal panel with archived issues", () => {
   assert.match(appSource, /useState\(false\)/);
-  assert.match(appSource, /useState<OtherTaskTab>\("backlog"\)/);
+  assert.match(appSource, /useState<OtherTaskTab>\("canceled"\)/);
   assert.match(appSource, /const otherTaskTabs = boardDisplaySettings\.sidebarStatuses/);
   assert.match(appSource, /className=\{`other-tasks-trigger\$\{otherTasksOpen \? " is-open" : ""\}`\}/);
   assert.match(appSource, /aria-controls="other-tasks-panel"/);

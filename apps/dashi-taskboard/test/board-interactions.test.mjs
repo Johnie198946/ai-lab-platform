@@ -54,6 +54,13 @@ test("main issue cards stay compact while sidebar cards show ownership and creat
   assert.match(detailSource, /currentTask\.createdAt/);
 });
 
+test("in-progress cards distinguish business state from a real run and link to existing detail logs", () => {
+  assert.match(cardSource, /处理中 · 暂无执行动态/);
+  assert.doesNotMatch(cardSource, /暂停处理|Processing paused/);
+  assert.match(cardSource, /查看进展与日志/);
+  assert.match(cardSource, /onOpenDetails=\{\(\) => onEdit\(task\)\}/);
+});
+
 test("native select options remain readable in dark theme", () => {
   assert.match(styles, /:root\[data-theme="dark"\] select \{[\s\S]*?color-scheme: dark/);
   assert.match(styles, /:root\[data-theme="dark"\] select option \{[\s\S]*?background-color: var\(--surface-raised\);[\s\S]*?color: var\(--text-primary\)/);

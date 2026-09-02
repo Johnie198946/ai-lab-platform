@@ -9350,10 +9350,14 @@ kbd {
 
 .task-processing-row .task-processing-label {
   flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   color: #a4a4a4;
   font-size: 11px;
   font-weight: 500;
   line-height: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-processing-row.is-running .task-processing-label {
@@ -9371,6 +9375,31 @@ kbd {
   -webkit-background-clip: text;
   background-clip: text;
   animation: task-processing-sheen 1.9s linear infinite;
+}
+
+.task-progress-log-link {
+  position: relative;
+  z-index: 2;
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  padding: 2px 0;
+  color: var(--accent);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.task-progress-log-link:hover {
+  text-decoration: underline;
+}
+
+.task-progress-log-link:focus-visible {
+  border-radius: 3px;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .task-processing-spacer,

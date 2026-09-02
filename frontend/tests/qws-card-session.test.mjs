@@ -51,6 +51,17 @@ test("opening a card session never creates a canonical task in the web host", ()
   assert.match(hostSource, /body: JSON\.stringify\(\{ project_id: project\.id \}\)/);
 });
 
+test("single-card execution opens the live progress drawer instead of starting invisibly", () => {
+  const start = hostSource.indexOf('event.data.type === "taskboard:run-task"');
+  const end = hostSource.indexOf('event.data.type === "taskboard:run-project-todos"');
+  const singleRunHandler = hostSource.slice(start, end);
+  assert.match(singleRunHandler, /onOpenTaskChat\?\.\(\{/);
+  assert.match(singleRunHandler, /autoInstruction: batchAutoInstruction/);
+  assert.match(singleRunHandler, /refreshCardContext/);
+  assert.match(singleRunHandler, /可实时查看进度与失败日志/);
+  assert.doesNotMatch(singleRunHandler, /startTaskAutoExecution/);
+});
+
 test("card session sends versionable full card context to the backend", () => {
   for (const field of [
     "business_goal",
@@ -71,6 +82,8 @@ test("card session sends versionable full card context to the backend", () => {
   ]) assert.match(hostSource, new RegExp(field));
   assert.match(drawerSource, /card_context: cardContext/);
   assert.match(drawerSource, /contextSync\.mode === "incremental"/);
+  assert.match(hostSource, /项目概览、项目纲领文档、相关任务档案与规划历史已作为本次只读上下文直接提供/);
+  assert.match(hostSource, /非关键或可后补的信息不得作为阻塞理由/);
 });
 
 test("card backfill requires confirmation and routes overflow through session inbox", () => {
@@ -260,7 +273,12 @@ test("confirmed blueprint is fully human-editable and dispatches the saved revis
   assert.match(blueprintReviewSource, /新增文档/);
   assert.match(blueprintReviewSource, /验收标准（每行一条）/);
   assert.match(blueprintReviewSource, /交付物（每行一项）/);
+  assert.match(blueprintReviewSource, /const draftLines = \(value\) => String\(value \|\| ""\)\.split\("\\n"\)/);
+  assert.match(blueprintReviewSource, /onSave\(normalizedBlueprint\(draft\)\)/);
   assert.match(planningSource, /reviewBlueprint/);
   assert.match(planningSource, /blueprint: reviewBlueprint/);
+  assert.match(planningSource, /project_blueprint_revision/);
+  assert.match(planningSource, /检查人工修改/);
+  assert.match(planningSource, /保留用户改动，修复受影响字段/);
   assert.match(planningSource, /严格按你在当前页面保存后的需求确认单/);
 });

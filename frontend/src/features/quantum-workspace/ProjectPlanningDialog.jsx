@@ -44,10 +44,12 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
   const latestBlueprintMessage = blueprintMessages.at(-1);
   const latestBlueprintVersion = blueprintMessages.length;
   const [reviewBlueprint, setReviewBlueprint] = useState(null);
+  const [reviewBlueprintEdited, setReviewBlueprintEdited] = useState(false);
 
   useEffect(() => {
     const generated = latestBlueprintMessage ? extractProjectBlueprint(latestBlueprintMessage.content) : null;
     setReviewBlueprint(generated ? structuredClone(generated) : null);
+    setReviewBlueprintEdited(false);
   }, [latestBlueprintMessage?.id]);
 
   useEffect(() => {
@@ -187,6 +189,18 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
     } catch (reason) { setError(reason.message); setBusy(false); }
   };
 
+  const recheckBlueprint = async () => {
+    if (!conversation || busy) return;
+    const text = reviewBlueprintEdited && reviewBlueprint
+      ? `请以以下用户人工修订后的需求确认单为当前真源，逐项检查一致性、依赖、日期、任务职责、交付物和验收标准；保留用户改动，修复受影响字段，并返回一份完整替代蓝图。\n\n\`\`\`project_blueprint_revision\n${JSON.stringify(reviewBlueprint, null, 2)}\n\`\`\``
+      : "基于当前项目名称、描述和既有对话，判断能否收敛需求并完成全部字段：能则直接生成完整项目蓝图；不能则继续向我提出最关键的问题，直至需求收敛。";
+    await runStream(conversation, {
+      text,
+      requestId: `project-plan-${crypto.randomUUID()}`,
+      showUser: !reviewBlueprintEdited,
+    });
+  };
+
   return <div className="qw-modal qw-planning-modal" role="dialog" aria-modal="true" aria-labelledby="project-planning-title"><section className="qw-planning-card">
     <header><div><span className="qw-eyebrow">Hermes · Project planning session</span><h2 id="project-planning-title">{project ? project.name : "创建项目"}</h2></div><button type="button" onClick={onClose} aria-label="关闭"><X size={18} /></button></header>
     {!project ? <form className="qw-planning-seed" onSubmit={create}><div><Sparkles size={20} /><strong>先给 Hermes 一个起点</strong><p>创建草稿后进入持续对话，流程节点不会由前端写死。</p></div><label>项目名称<input value={name} onChange={(event) => setName(event.target.value)} required maxLength={160} autoFocus /></label><label>初始业务目标<textarea value={goal} onChange={(event) => setGoal(event.target.value)} required rows={5} maxLength={4000} /></label>{error && <p className="qw-error" role="alert">{error}</p>}<button className="qw-button primary wide" disabled={busy}>{busy ? "创建会话中…" : "创建并开始需求收敛"}</button></form> : <>
@@ -200,12 +214,12 @@ export function ProjectPlanningDialog({ template, initialProject, onClose, onCha
           : message.content;
         const renderedAnswer = visibleAnswer || (message.waitingForClarification ? "请回答下方问题，Hermes 会继续评估。" : message.pending ? "正在检查需求完整度…" : message.failed ? "本轮未完成，请按提示重试。" : message.incomplete ? "本轮没有形成可验证蓝图，请补充信息或重试。" : "蓝图已生成，请确认派发。");
         const isCurrentBlueprint = message.id === latestBlueprintMessage?.id;
-        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : message.incomplete ? "incomplete" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}{message.role === "assistant" ? <div className="qw-message-markdown"><ReactMarkdown>{renderedAnswer}</ReactMarkdown></div> : <p>{renderedAnswer}</p>}{protocol && !blueprint && <ProjectBlueprintProtocol protocol={protocol.payload} complete={protocol.complete} dispatchable={false} />}{blueprint && <ProjectBlueprintReview blueprint={isCurrentBlueprint && reviewBlueprint ? reviewBlueprint : blueprint} onChange={isCurrentBlueprint ? setReviewBlueprint : undefined} version={blueprintIndex + 1} current={isCurrentBlueprint} dispatchable={message.request_id === blueprintRequestId} />}</article>;
+        return <article key={message.id} className={`qw-message ${message.role} ${message.failed ? "failed" : message.incomplete ? "incomplete" : ""}`}><small>{message.role === "user" ? "你" : "Hermes · AI Lab"}</small>{message.role === "assistant" && <HermesExecutionTrace execution={message.execution} pending={message.pending} waitingForClarification={message.waitingForClarification} clock={clock} variant="planning" />}{message.role === "assistant" ? <div className="qw-message-markdown"><ReactMarkdown>{renderedAnswer}</ReactMarkdown></div> : <p>{renderedAnswer}</p>}{protocol && !blueprint && <ProjectBlueprintProtocol protocol={protocol.payload} complete={protocol.complete} dispatchable={false} />}{blueprint && <ProjectBlueprintReview blueprint={isCurrentBlueprint && reviewBlueprint ? reviewBlueprint : blueprint} onChange={isCurrentBlueprint ? (value) => { setReviewBlueprint(value); setReviewBlueprintEdited(true); setPlanningNotice("人工修改已保存。直接派发将使用此版本；如需 Hermes 联动调整受影响内容，请点“检查人工修改”。"); } : undefined} version={blueprintIndex + 1} current={isCurrentBlueprint} dispatchable={message.request_id === blueprintRequestId} />}</article>;
       })}<HermesClarificationCard clarification={clarification} busy={clarificationBusy} responseText={clarificationText} onResponseTextChange={setClarificationText} selections={clarificationSelections} onSelectionsChange={setClarificationSelections} onSubmit={submitClarification} idPrefix="qw-project-clarification" continuationLabel="回答后，Hermes 会继续检查需求；信息足够时自动生成蓝图。" /></div>
       {error && <p className="qw-error compact" role="alert">{error}</p>}
       {planningNotice && <p className="qw-planning-notice" role="status">{planningNotice}</p>}
       <form className="qw-planning-composer" onSubmit={send}><label className="qw-sr-only" htmlFor="project-planning-question">项目需求</label><textarea id="project-planning-question" rows={3} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder={clarification ? "请先回答上方澄清问题…" : latestBlueprintVersion ? `继续补充或修订收敛单 v${latestBlueprintVersion}，也可以直接粘贴你的流程…` : "补充目标、范围、角色、日期、验收或依赖…"} disabled={!conversation || busy || !!clarification} /><button className="qw-button primary" aria-label="发送" disabled={!conversation || busy || !!clarification || !question.trim()}><Send size={16} /></button></form>
-      <footer><button type="button" className="qw-button subtle" disabled={!conversation || busy} onClick={() => send(null, "基于当前项目名称、描述和既有对话，判断能否收敛需求并完成全部字段：能则直接生成完整项目蓝图；不能则继续向我提出最关键的问题，直至需求收敛。")}>{resumeNeeded ? "继续 AI 生成" : blueprintRequestId ? "重新检查蓝图" : "检查并生成蓝图"}</button><button type="button" className="qw-button primary" disabled={!blueprintRequestId || busy} onClick={dispatch}>{busy ? "正在派发…" : "确认并派发项目"}</button></footer>
+      <footer><button type="button" className="qw-button subtle" disabled={!conversation || busy} onClick={recheckBlueprint}>{reviewBlueprintEdited ? "检查人工修改" : resumeNeeded ? "继续 AI 生成" : blueprintRequestId ? "重新检查蓝图" : "检查并生成蓝图"}</button><button type="button" className="qw-button primary" disabled={!blueprintRequestId || busy} onClick={dispatch}>{busy ? "正在派发…" : "确认并派发项目"}</button></footer>
     </>}
   </section></div>;
 }

@@ -16,7 +16,7 @@ const isReviewTask = (task) => /审核|验收|评审|复核|review|acceptance/i.
 
 const batchAutoInstruction = (task) => isReviewTask(task)
   ? `立即执行审核任务《${task.title}》。先确认所有 blockedBy 上游任务已完成；系统会在依赖完成前保持本卡在待办队列。审核时逐项检查每个上游任务的交付物和验收标准，并在 routes 中按 session_directory 的精确 target_task_id 为每个被审核任务写入明确评论：通过项写依据，不通过项写问题、整改方案和复核条件。若存在必须由用户决定且无法自动消除的分歧，将本卡 status 设为 in_review（等你确认）；若全部可自动验收则设为 done；若客观阻塞则设为 blocked。appendComment 必须写审核纪要、结论和剩余风险，最终只输出一个合法 task_backfill。`
-  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。优先使用项目知识与安全公开网络工具完成事实核查和交付。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；每项实质性交付成果必须写入 addAttachments，不能只写在评论里。`;
+  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。项目概览、项目纲领文档、相关任务档案与规划历史已作为本次只读上下文直接提供，不需要另行调用“项目概览读取工具”；先逐项读取这些内容，再使用安全公开网络工具完成事实核查和交付。非关键或可后补的信息不得作为阻塞理由：基于已确认事实继续执行，将合理暂定项与待补字段明确标注即可。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review，只有真实外部/安全/权限/依赖障碍导致任务无法实质推进时才使用 blocked；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；每项实质性交付成果必须写入 addAttachments，不能只写在评论里。`;
 
 
 function resolveDashiTheme() {
@@ -327,21 +327,15 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
       if (event.data.type === "taskboard:run-task") {
         const dashiTaskId = event.data.payload?.taskId;
         setError("");
-        setState("正在启动此任务…");
+        setState("正在打开任务执行进度…");
         try {
           const session = await loadTaskSession(dashiTaskId);
-          const conversation = await platformApi.openTaskConversation({
-            project_id: project.id,
-            task_id: session.task.id,
-            workflow_id: session.task.workflow_id,
-            agent_version: "hermes-current",
-            card_context: session.cardContext,
+          onOpenTaskChat?.({
+            ...session,
+            autoInstruction: batchAutoInstruction(session.task),
+            refreshCardContext: () => loadTaskSession(dashiTaskId),
           });
-          await platformApi.startTaskAutoExecution(conversation.id, {
-            instruction: batchAutoInstruction(session.task),
-            request_id: `qw-single-${crypto.randomUUID()}`,
-          });
-          setState(`任务《${session.task.title}》已开始执行，可在卡片中查看实时进度`);
+          setState(`任务《${session.task.title}》已进入执行窗口，可实时查看进度与失败日志`);
           frame.postMessage({ type: "taskboard:task-started", payload: { taskId: dashiTaskId } }, window.location.origin);
           window.setTimeout(() => setState(""), 5000);
         } catch (reason) {
