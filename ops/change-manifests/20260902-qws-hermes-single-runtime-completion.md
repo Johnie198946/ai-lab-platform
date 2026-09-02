@@ -22,6 +22,9 @@
 - QWS business facts are visible to Hermes only for the current model call. Hermes native `persist_user_message` stores the clean turn, so the business snapshot does not pollute or replace the native dialogue history.
 - `client_session_context` is retained only for migration/recovery and client-local note data.
 - `policy_version` remains checked on every request but no longer forks logical session identity; old policy-scoped session mappings migrate on first lookup.
+- Bridge now explicitly loads the mapped session's messages from Hermes SessionDB and passes them as Hermes `conversation_history`; restoring only the session ID is not treated as a valid resume.
+- A mapped session whose history cannot be read fails closed instead of silently starting a blank turn.
+- Immutable deployment restarts `hermes-chat-worker.service` as well as Bridge, preventing the durable worker from executing a new payload with stale in-memory code.
 
 ## Files in task scope
 
@@ -40,7 +43,7 @@
 
 ## Verification
 
-- Tracked backend suite in isolated Python 3.11 environment: `1074 passed, 2 skipped`.
+- Tracked backend suite in isolated Python 3.11 environment: `1080 passed, 2 skipped`.
 - QWS API suite: `48 passed`.
 - QWS/Bridge/session targeted suite: `128 passed`.
 - Frontend suite: `148 passed`.
@@ -49,7 +52,7 @@
 - iOS `WorkflowLifecycleDTOTests`: `53 passed, 0 failures`.
 - Python compile checks: passed.
 - `git diff --check`: passed.
-- Production Hermes runtime compatibility: server `AIAgent.run_conversation` signature includes `persist_user_message`.
+- Production Hermes runtime compatibility: server `AIAgent.run_conversation` signature includes `conversation_history` and `persist_user_message`.
 
 ## Baseline exclusions
 

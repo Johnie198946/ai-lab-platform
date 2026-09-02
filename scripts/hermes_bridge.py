@@ -5019,6 +5019,15 @@ def _run_agent_sync(
                 "skill_candidates": list(route_context.get("skill_candidates") or []),
             })
         agent_holder[0] = agent
+        conversation_history = None
+        if hermes_sid:
+            try:
+                conversation_history = session_db.get_messages(hermes_sid)
+            except Exception as exc:
+                # A mapped session without readable native history must fail
+                # closed. Starting a blank turn here silently recreates the
+                # exact split-brain context bug this Bridge exists to prevent.
+                raise RuntimeError("hermes_session_history_unavailable") from exc
         persistent_goal = _triage_route_marker(applied_triage) + goal
         if qws_business_context is not None:
             # Hermes sees current signed QWS facts for this request, while its
@@ -5027,10 +5036,14 @@ def _run_agent_sync(
             # transcript or a cache-breaking mutable system prompt.
             result = agent.run_conversation(
                 _with_qws_business_context(persistent_goal, qws_business_context),
+                conversation_history=conversation_history,
                 persist_user_message=persistent_goal,
             )
         else:
-            result = agent.run_conversation(persistent_goal)
+            result = agent.run_conversation(
+                persistent_goal,
+                conversation_history=conversation_history,
+            )
         result_dict = result if isinstance(result, dict) else {}
         final = (
             result_dict.get("final_response") or ""

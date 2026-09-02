@@ -38,6 +38,7 @@ restart_hermes_runtime() {
   systemctl restart hermes-serve-forward.service
   systemctl restart hermes-gateway.service
   systemctl restart hermes-bridge.service
+  systemctl restart hermes-chat-worker.service
 }
 
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then

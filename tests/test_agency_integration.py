@@ -810,7 +810,7 @@ def test_bridge_declares_finite_session_before_running_agent(monkeypatch, tmp_pa
     class FakeAgent:
         session_id = "parent-session"
 
-        def run_conversation(self, _goal):
+        def run_conversation(self, _goal, **_kwargs):
             return {"final_response": "done"}
 
         def close(self):

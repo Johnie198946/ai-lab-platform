@@ -2,6 +2,7 @@ import json
 import queue
 import sys
 import types
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -111,8 +112,15 @@ def test_bridge_exposes_qws_facts_ephemerally_but_persists_clean_turn(
     class FakeAgent:
         session_id = "hermes-native-session"
 
-        def run_conversation(self, model_goal, *, persist_user_message=None):
+        def run_conversation(
+            self,
+            model_goal,
+            *,
+            conversation_history=None,
+            persist_user_message=None,
+        ):
             observed["model_goal"] = model_goal
+            observed["conversation_history"] = conversation_history
             observed["persist_user_message"] = persist_user_message
             return {"final_response": "done"}
 
@@ -120,6 +128,13 @@ def test_bridge_exposes_qws_facts_ephemerally_but_persists_clean_turn(
             return None
 
     class FakeSessionDB:
+        def get_messages(self, session_id):
+            observed["history_session_id"] = session_id
+            return [
+                {"role": "user", "content": "验收口令是银杏-4729"},
+                {"role": "assistant", "content": "已记住"},
+            ]
+
         def close(self):
             return None
 
@@ -143,7 +158,67 @@ def test_bridge_exposes_qws_facts_ephemerally_but_persists_clean_turn(
 
     assert "[QWS_REQUEST_SCOPED_BUSINESS_CONTEXT]" in str(observed["model_goal"])
     assert '"qws_task_id":"task-1"' in str(observed["model_goal"])
+    assert observed["history_session_id"] == "hermes-native-session"
+    assert observed["conversation_history"] == [
+        {"role": "user", "content": "验收口令是银杏-4729"},
+        {"role": "assistant", "content": "已记住"},
+    ]
     assert observed["persist_user_message"] == "按照刚才第二种方案继续"
     assert "QWS_REQUEST_SCOPED_BUSINESS_CONTEXT" not in str(
         observed["persist_user_message"]
     )
+
+
+def test_bridge_fails_closed_when_mapped_history_cannot_be_loaded(
+    monkeypatch, tmp_path
+) -> None:
+    gateway = types.ModuleType("gateway")
+    gateway.__path__ = []
+    session_context = types.ModuleType("gateway.session_context")
+    session_context.declare_stateless_channel = lambda: None
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", session_context)
+
+    class FakeAgent:
+        session_id = "hermes-native-session"
+
+        def run_conversation(self, *_args, **_kwargs):
+            raise AssertionError("model must not run without readable native history")
+
+        def close(self):
+            return None
+
+    class BrokenSessionDB:
+        def get_messages(self, _session_id):
+            raise OSError("database unavailable")
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        bridge,
+        "_build_in_process_agent",
+        lambda *_args, **_kwargs: (FakeAgent(), BrokenSessionDB(), {"triage": None}),
+    )
+    monkeypatch.setattr(bridge, "_update_session_mapping", lambda *_args: None)
+
+    events: queue.Queue = queue.Queue()
+    bridge._run_agent_sync(
+        "继续",
+        "stable-qws-session",
+        "hermes-native-session",
+        events,
+        [None],
+        sandbox=types.SimpleNamespace(state_db=tmp_path / "state.db"),
+    )
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    error = next(item for item in emitted if item.get("type") == "error")
+    assert error["message"] == "hermes_session_history_unavailable"
+
+
+def test_deployment_restarts_durable_chat_worker() -> None:
+    update_script = Path("scripts/update.sh").read_text(encoding="utf-8")
+    assert "systemctl restart hermes-bridge.service" in update_script
+    assert "systemctl restart hermes-chat-worker.service" in update_script
