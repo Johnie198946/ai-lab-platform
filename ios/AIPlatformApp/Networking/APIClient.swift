@@ -2392,7 +2392,8 @@ public final class APIClient: ObservableObject {
         sessionId: String? = nil,
         quotedContext: String? = nil,
         agentId: String? = nil,
-        contextScope: ChatContextScopeDTO = ChatContextScopeDTO()
+        contextScope: ChatContextScopeDTO = ChatContextScopeDTO(),
+        clientSessionContext: ClientSessionContextDTO? = nil
     ) async throws -> ChatResponseDTO {
         let url = baseURL.appendingPathComponent("api/chat")
         var request = URLRequest(url: url)
@@ -2410,7 +2411,8 @@ public final class APIClient: ObservableObject {
                 sessionId: sessionId,
                 quotedContext: quotedContext,
                 agentId: agentId,
-                contextScope: contextScope
+                contextScope: contextScope,
+                clientSessionContext: clientSessionContext
             )
         )
 

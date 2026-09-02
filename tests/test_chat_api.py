@@ -177,8 +177,8 @@ class TestChatAPIEndpoint(unittest.TestCase):
         self.assertTrue(body["answer"].startswith("我们基于 [[wiki/DeepSeek]]"))
         # 验证 2：citations 结构化字段正确下沉
         self.assertEqual(body["citations"], ["wiki/DeepSeek", "wiki/算力调度"])
-        # 验证 3：session_id 隔离
-        self.assertRegex(body["session_id"], r"^t[0-9a-f]{12}-u[0-9a-f]{12}-p[0-9a-f]{12}-main_agent-")
+        # 验证 3：session_id 按 tenant/user/agent 隔离，权限版本变化不切断会话
+        self.assertRegex(body["session_id"], r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-")
 
     def test_chat_does_not_prepend_role_prefix_to_goal(self):
         captured_goal = {}

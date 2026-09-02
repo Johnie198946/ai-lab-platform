@@ -2673,7 +2673,7 @@ def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
         req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
         captured["question"] = req.question
-        captured["context"] = req.client_session_context
+        captured["context"] = req.qws_business_context
         captured["trusted_professional_surface"] = kwargs.get(
             "trusted_professional_surface"
         )
@@ -2698,7 +2698,8 @@ def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
     assert "已读取纯卡片会话" in streamed.text
     assert card_id in captured["question"]
     assert "TASK_SESSION_SKILL_REQUESTED=true" in captured["question"]
-    assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["context"].messages[0].content
+    assert captured["context"].session_id == opened.json()["binding"]["session_id"]
+    assert captured["context"].snapshot["task"]["qws_task_id"] == card_id
     assert captured["trusted_professional_surface"] is True
     assert captured["first_activity_timeout_seconds"] == 60
 
@@ -2846,7 +2847,7 @@ def test_card_backfill_applies_only_self_and_routes_overflow_to_target_session(
     async def capture_target(
         req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
     ):
-        captured["context"] = req.client_session_context
+        captured["context"] = req.qws_business_context
 
         async def events():
             yield 'data: {"type":"done","answer":"已接收跨卡工作"}\n\n'
@@ -2859,7 +2860,7 @@ def test_card_backfill_applies_only_self_and_routes_overflow_to_target_session(
         json={"question": "读取新工作", "request_id": "target-inbox-message-0001"},
     )
     assert delivered.status_code == 200
-    transferred = "\n".join(message.content for message in captured["context"].messages)
+    transferred = json.dumps(captured["context"].snapshot, ensure_ascii=False)
     assert "实现新增的人脸识别接口" in transferred
     assert source_id in transferred
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
@@ -2960,6 +2961,9 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         captured["knowledge_query"] = knowledge_query
         captured["session_id"] = req.session_id
         captured["client_session_context"] = req.client_session_context
+        captured["qws_business_context"] = req.qws_business_context
+        captured.setdefault("session_ids", []).append(req.session_id)
+        captured.setdefault("business_contexts", []).append(req.qws_business_context)
         captured["allow_agent_invocation"] = allow_agent_invocation
         captured["allow_agency"] = kwargs.get("allow_agency")
         captured["trusted_professional_surface"] = kwargs.get(
@@ -2986,10 +2990,10 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     assert "下一步做什么" in captured["question"]
     assert captured["knowledge_query"] == "下一步做什么？"
     assert captured["session_id"] == conversation["binding"]["session_id"]
-    assert captured["client_session_context"].session_id == captured["session_id"]
-    assert "READ_ONLY_TASK_CARD_CONTEXT" in captured["client_session_context"].messages[0].content
-    transferred_context = "".join(
-        message.content for message in captured["client_session_context"].messages
+    assert captured["client_session_context"] is None
+    assert captured["qws_business_context"].session_id == captured["session_id"]
+    transferred_context = json.dumps(
+        captured["qws_business_context"].snapshot, ensure_ascii=False
     )
     assert '"project_overview"' in transferred_context
     assert '"project_planning_history"' in transferred_context
@@ -3034,8 +3038,17 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     )
     assert continued.status_code == 200
     assert captured["calls"] == 2
-    repeated_context = "".join(
-        message.content for message in captured["client_session_context"].messages
+    assert captured["session_ids"] == [
+        conversation["binding"]["session_id"],
+        conversation["binding"]["session_id"],
+    ]
+    assert all(context is not None for context in captured["business_contexts"])
+    assert all(
+        context.session_id == conversation["binding"]["session_id"]
+        for context in captured["business_contexts"]
+    )
+    repeated_context = json.dumps(
+        captured["qws_business_context"].snapshot, ensure_ascii=False
     )
     assert '"project_overview"' in repeated_context
     assert '"project_planning_history"' in repeated_context
@@ -3063,6 +3076,9 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
     ):
         captured["question"] = req.question
         captured.setdefault("questions", []).append(req.question)
+        captured.setdefault("session_ids", []).append(req.session_id)
+        captured.setdefault("client_contexts", []).append(req.client_session_context)
+        captured.setdefault("business_contexts", []).append(req.qws_business_context)
         captured["stream_calls"] = captured.get("stream_calls", 0) + 1
 
         async def events():
@@ -3123,6 +3139,16 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
     assert captured["applied"]["authorization"] == "Bearer test-token"
     assert captured["applied"]["self_changes"]["status"] == "done"
     assert captured["stream_calls"] == 2
+    assert captured["session_ids"] == [
+        conversation["binding"]["session_id"],
+        conversation["binding"]["session_id"],
+    ]
+    assert captured["client_contexts"] == [None, None]
+    assert all(context is not None for context in captured["business_contexts"])
+    assert all(
+        context.session_id == conversation["binding"]["session_id"]
+        for context in captured["business_contexts"]
+    )
     assert any("AUTO_EXECUTE=true. Continue autonomously until done." in question for question in captured["questions"])
     assert any("Missing non-essential detail is not a blocker" in question for question in captured["questions"])
     assert any("An omitted travel year" in question for question in captured["questions"])

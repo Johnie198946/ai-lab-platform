@@ -24,13 +24,18 @@ class ClientContextDenied(ValueError):
     code = "client_context_denied"
 
 
+class QWSBusinessContextDenied(ValueError):
+    code = "qws_business_context_denied"
+
+
 def context_digest(context: dict[str, Any]) -> str:
     raw = json.dumps(context, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def mint_client_context_capability(
+def _mint_context_capability(
     *,
+    audience: str,
     tenant_key: str,
     user_id: str,
     session_id: str,
@@ -42,7 +47,7 @@ def mint_client_context_capability(
     now = int(time.time())
     payload = {
         "v": 1,
-        "aud": "hermes-client-context",
+        "aud": audience,
         "tenant_key": tenant_key,
         "user_id": user_id,
         "session_id": session_id,
@@ -58,6 +63,51 @@ def mint_client_context_capability(
     return (
         f"{encoded.decode()}."
         f"{base64.urlsafe_b64encode(signature).rstrip(b'=').decode()}"
+    )
+
+
+def mint_client_context_capability(
+    *,
+    tenant_key: str,
+    user_id: str,
+    session_id: str,
+    request_id: str,
+    policy_version: str,
+    context_hash: str,
+    ttl_seconds: int | None = None,
+) -> str:
+    return _mint_context_capability(
+        audience="hermes-client-context",
+        tenant_key=tenant_key,
+        user_id=user_id,
+        session_id=session_id,
+        request_id=request_id,
+        policy_version=policy_version,
+        context_hash=context_hash,
+        ttl_seconds=ttl_seconds,
+    )
+
+
+def mint_qws_business_context_capability(
+    *,
+    tenant_key: str,
+    user_id: str,
+    session_id: str,
+    request_id: str,
+    policy_version: str,
+    context_hash: str,
+    ttl_seconds: int | None = None,
+) -> str:
+    """Sign request-scoped QWS facts without granting transcript authority."""
+    return _mint_context_capability(
+        audience="hermes-qws-business-context",
+        tenant_key=tenant_key,
+        user_id=user_id,
+        session_id=session_id,
+        request_id=request_id,
+        policy_version=policy_version,
+        context_hash=context_hash,
+        ttl_seconds=ttl_seconds,
     )
 
 
@@ -82,3 +132,26 @@ def verify_client_context_capability(token: str) -> dict[str, Any]:
         return payload
     except Exception as exc:
         raise ClientContextDenied("client context capability denied") from exc
+
+
+def verify_qws_business_context_capability(token: str) -> dict[str, Any]:
+    try:
+        encoded_text, signature_text = token.split(".", 1)
+        encoded = encoded_text.encode()
+        expected = hmac.new(CLIENT_CONTEXT_SECRET.encode(), encoded, hashlib.sha256).digest()
+        signature = base64.urlsafe_b64decode(
+            signature_text + "=" * (-len(signature_text) % 4)
+        )
+        if not hmac.compare_digest(expected, signature):
+            raise ValueError("signature mismatch")
+        raw = base64.urlsafe_b64decode(
+            encoded_text + "=" * (-len(encoded_text) % 4)
+        )
+        payload = json.loads(raw)
+        if payload.get("aud") != "hermes-qws-business-context":
+            raise ValueError("audience mismatch")
+        if int(payload.get("exp") or 0) <= int(time.time()):
+            raise ValueError("capability expired")
+        return payload
+    except Exception as exc:
+        raise QWSBusinessContextDenied("QWS business context capability denied") from exc

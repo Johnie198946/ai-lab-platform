@@ -577,7 +577,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
             result = asyncio.run(chat_status("sid", consume=False, payload={}))
         self.assertEqual(result["status"], "running")
         session = mock.call_args.args[0]
-        self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-p[0-9a-z]+-main_agent-sid$")
+        self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
         self.assertEqual(mock.call_args.kwargs, {"consume": False, "offset": 0})
 
     def test_chat_status_route_consume_forward(self):
@@ -587,7 +587,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         with patch("backend.api.chat._call_hermes_status", return_value=fake) as mock:
             asyncio.run(chat_status("sid", consume=True, payload={}))
         session = mock.call_args.args[0]
-        self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-p[0-9a-z]+-main_agent-sid$")
+        self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
         self.assertEqual(mock.call_args.kwargs, {"consume": True, "offset": 0})
 
     def test_chat_status_route_offset_forward(self):
@@ -599,7 +599,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
             result = asyncio.run(chat_status("sid", consume=False, offset=42, payload={}))
         self.assertEqual(result["phase"], "tool")
         session = mock.call_args.args[0]
-        self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-p[0-9a-z]+-main_agent-sid$")
+        self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
         self.assertEqual(mock.call_args.kwargs, {"consume": False, "offset": 42})
 
 

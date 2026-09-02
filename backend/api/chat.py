@@ -37,6 +37,7 @@ from backend.services.knowledge_policy import KnowledgePolicy, mint_capability, 
 from backend.services.client_context_capability import (
     context_digest,
     mint_client_context_capability,
+    mint_qws_business_context_capability,
 )
 from backend.services.knowledge_action_capability import (
     action_digest as knowledge_action_digest,
@@ -216,6 +217,28 @@ class ClientSessionContext(BaseModel):
     # It is covered by the signed client-context capability and never becomes
     # a tenant Wiki source.
     local_notes: List[LocalNoteContext] = Field(default_factory=list, max_length=50)
+
+
+class QWSBusinessContext(BaseModel):
+    """Request-scoped QWS facts; never a replacement conversation transcript."""
+
+    session_id: str = Field(..., min_length=1, max_length=100)
+    revision: int = Field(..., ge=1)
+    context_hash: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    snapshot: Dict[str, Any]
+
+
+def _validated_qws_business_context(
+    context: QWSBusinessContext | None, client_session_id: str | None
+) -> dict[str, Any] | None:
+    if context is None:
+        return None
+    if not client_session_id or context.session_id != client_session_id:
+        raise HTTPException(status_code=422, detail="qws_business_context_mismatch")
+    payload = context.model_dump()
+    if len(json.dumps(payload, ensure_ascii=False, separators=(",", ":"))) > 120_000:
+        raise HTTPException(status_code=413, detail="qws_business_context_too_large")
+    return payload
 
 
 def _validated_client_session_context(
@@ -521,16 +544,22 @@ def derive_isolated_session_id(
 def _tenant_namespaced_session(
     base: str, tenant_key: str, policy_version: str, user_id: str = "anonymous"
 ) -> str:
+    """Build a stable tenant/user conversation identity.
+
+    ``policy_version`` remains a call-site compatibility argument because access
+    policy is revalidated every turn, but it is deliberately not part of session
+    identity. A permission refresh must not fork Hermes conversation history.
+    """
     base = re.sub(
         r"^t[0-9a-f]{12}-u[0-9a-f]{12}-p[0-9a-z]{1,24}-", "", base, count=1
     )
+    base = re.sub(r"^t[0-9a-f]{12}-u[0-9a-f]{12}-", "", base, count=1)
     # Do not reuse legacy tenant-only session keys: users inside one tenant must
     # never be able to collide by supplying the same client session UUID.
     base = re.sub(r"^t[0-9a-f]{12}-p[0-9a-z]{1,24}-", "", base, count=1)
     tenant_namespace = hashlib.sha256(tenant_key.encode()).hexdigest()[:12]
     user_namespace = hashlib.sha256(user_id.encode()).hexdigest()[:12]
-    safe_policy = re.sub(r"[^0-9a-z]", "", policy_version.lower())[:12] or "legacy"
-    return f"t{tenant_namespace}-u{user_namespace}-p{safe_policy}-{base}"[:100]
+    return f"t{tenant_namespace}-u{user_namespace}-{base}"[:100]
 
 
 async def _resolve_chat_policy(payload: Dict[str, Any]) -> KnowledgePolicy:
@@ -1072,6 +1101,9 @@ class StreamRequest(BaseModel):
     regenerate: bool = False
     context_scope: ChatContextScope = Field(default_factory=ChatContextScope)
     client_session_context: Optional[ClientSessionContext] = None
+    # Only trusted server-side QWS adapters may populate request-scoped business
+    # facts. Conversation history remains exclusively in Hermes SessionDB.
+    qws_business_context: Optional[QWSBusinessContext] = None
     client_capabilities: List[str] = Field(default_factory=list, max_length=20)
 
 
@@ -1114,6 +1146,8 @@ async def _call_bridge_stream(
     agent_config: Optional[Dict[str, Any]] = None,
     client_session_context: Optional[Dict[str, Any]] = None,
     client_context_capability: Optional[str] = None,
+    qws_business_context: Optional[Dict[str, Any]] = None,
+    qws_context_capability: Optional[str] = None,
     client_capabilities: Optional[List[str]] = None,
 ) -> AsyncIterator[str]:
     """转发 bridge /v1/chat/stream（SSE 透传）。"""
@@ -1133,6 +1167,8 @@ async def _call_bridge_stream(
                 "agent_config": agent_config or {},
                 "client_session_context": client_session_context,
                 "client_context_capability": client_context_capability,
+                "qws_business_context": qws_business_context,
+                "qws_context_capability": qws_context_capability,
                 "client_capabilities": client_capabilities or [],
             },
         ) as resp:
@@ -1272,6 +1308,7 @@ async def stream_chat(
     allow_agent_invocation: bool = True,
     allow_agency: bool = True,
     trusted_professional_surface: bool = False,
+    allow_qws_business_context: bool = False,
     first_activity_timeout_seconds: float | None = None,
 ) -> StreamingResponse:
     """真实流式对话端点（v7）：SSE 透传 bridge 进程内 agent 事件流。
@@ -1324,6 +1361,21 @@ async def stream_chat(
             request_id=effective_request_id,
             policy_version=policy.policy_version,
             context_hash=context_digest(client_context),
+        )
+    if req.qws_business_context is not None and not allow_qws_business_context:
+        raise HTTPException(status_code=403, detail="qws_business_context_not_allowed")
+    qws_business_context = _validated_qws_business_context(
+        req.qws_business_context, req.session_id
+    )
+    qws_context_capability: str | None = None
+    if qws_business_context is not None:
+        qws_context_capability = mint_qws_business_context_capability(
+            tenant_key=str(payload.get("tenant_key") or "public"),
+            user_id=str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+            session_id=isolated_session_id,
+            request_id=effective_request_id,
+            policy_version=policy.policy_version,
+            context_hash=context_digest(qws_business_context),
         )
 
     # 对比分析输出格式引导（呈现优化：表格优于罗列；仅输出格式约束，非意图判断）
@@ -1473,6 +1525,8 @@ async def stream_chat(
                 "agent_config": main_agent_config,
                 "client_session_context": client_context,
                 "client_context_capability": client_context_capability,
+                "qws_business_context": qws_business_context,
+                "qws_context_capability": qws_context_capability,
                 "client_capabilities": req.client_capabilities,
             }
             kwargs["request_id"] = effective_request_id

@@ -249,7 +249,9 @@ test("project planning rejects false done terminals and exposes one controlled r
   assert.match(backendSource, /missing_project_blueprint/);
   assert.match(backendSource, /terminal_type == "planning_incomplete"/);
   assert.match(backendSource, /Do not ask another clarification in this repair pass/);
-  assert.match(backendSource, /stream_context = None if planning_session else hermes_context/);
+  assert.match(backendSource, /Hermes SessionDB is the sole dialogue-history source/);
+  assert.match(backendSource, /qws_business_context=qws_business_context/);
+  assert.match(backendSource, /client_session_context=None/);
   assert.match(planningSource, /eventValue\.type === "planning_incomplete"/);
   assert.match(planningSource, /setPlanningNotice\(detail\)/);
   assert.match(planningSource, /蓝图未通过完整性校验/);

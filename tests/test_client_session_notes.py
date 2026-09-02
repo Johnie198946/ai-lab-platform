@@ -1,4 +1,6 @@
+import inspect
 import json
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -44,14 +46,60 @@ def test_session_namespace_includes_user_boundary():
     assert "-u" in first
 
 
-def test_snapshot_request_never_resumes_mapped_hermes_history(monkeypatch):
+def test_session_namespace_survives_policy_refresh():
+    before = _tenant_namespaced_session(
+        "main_agent-same", "tenant-a", "policy-v1", "user-a"
+    )
+    after = _tenant_namespaced_session(
+        "main_agent-same", "tenant-a", "policy-v2", "user-a"
+    )
+    assert before == after
+    assert "-p" not in before
+
+
+def test_snapshot_request_resumes_mapped_hermes_history(monkeypatch):
     import scripts.hermes_bridge as bridge
 
     monkeypatch.setattr(bridge, "_resolve_hermes_session", lambda _user_id: "old-hermes-session")
     assert bridge._hermes_session_for_request("isolated-user", None) == "old-hermes-session"
     assert bridge._hermes_session_for_request(
         "isolated-user", {"session_id": "ios-session", "messages": []}
-    ) is None
+    ) == "old-hermes-session"
+
+
+def test_legacy_policy_scoped_mapping_migrates_to_stable_key(monkeypatch):
+    import scripts.hermes_bridge as bridge
+
+    legacy = "t123456789abc-u123456789abc-ppolicyv1-main_agent-session"
+    stable = "t123456789abc-u123456789abc-main_agent-session"
+    monkeypatch.setattr(bridge, "_user_session_map", {legacy: "hermes-session"})
+    monkeypatch.setattr(bridge, "_user_state_db_map", {legacy: "/tmp/tenant.db"})
+    monkeypatch.setattr(bridge, "_session_exists", lambda *_args: True)
+    monkeypatch.setattr(bridge, "_save_mapping", lambda: None)
+    monkeypatch.setattr(bridge, "_save_state_db_mapping", lambda: None)
+
+    assert bridge._resolve_hermes_session(stable) == "hermes-session"
+    assert bridge._user_session_map[stable] == "hermes-session"
+    assert bridge._user_state_db_map[stable] == "/tmp/tenant.db"
+
+
+def test_client_context_cannot_replace_native_hermes_runtime():
+    import scripts.hermes_bridge as bridge
+
+    build_source = inspect.getsource(bridge._build_in_process_agent)
+    run_source = inspect.getsource(bridge._run_agent_sync)
+    assert 'item not in {"memory", "session_search"}' not in build_source
+    assert "_recent_conversation_context(client_session_context)" not in run_source
+    assert "if agent_sid and client_session_context is None" not in run_source
+
+
+def test_ios_normal_send_does_not_export_sqlite_transcript():
+    coordinator = Path(
+        "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift"
+    ).read_text(encoding="utf-8")
+    assert "nextClientSessionContext ?? sessionManager.clientSessionContext" not in coordinator
+    assert "messages: recoveryContext?.messages ?? []" in coordinator
+    assert "sessionId: sid" in coordinator
 
 
 def test_note_draft_request_detection_and_title_fallback():

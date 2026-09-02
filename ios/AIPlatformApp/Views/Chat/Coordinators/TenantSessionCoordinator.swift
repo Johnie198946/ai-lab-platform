@@ -669,7 +669,10 @@ public final class TenantSessionCoordinator: ObservableObject {
             return
         }
 
-        let clientSessionContext = nextClientSessionContext ?? sessionManager.clientSessionContext(for: sid)
+        // Hermes SessionDB is the sole conversation runtime. Normal sends carry
+        // only a signed capability envelope; a transcript is attached solely
+        // when an explicit migration/recovery workflow supplied one.
+        let recoveryContext = nextClientSessionContext
         nextClientSessionContext = nil
         var localNoteSnapshot: [ChatLocalNoteDTO] = []
         var localNoteCharacters = 0
@@ -694,10 +697,10 @@ public final class TenantSessionCoordinator: ObservableObject {
             }
         }
         let enrichedClientSessionContext = ClientSessionContextDTO(
-            sessionId: clientSessionContext.sessionId,
-            messages: clientSessionContext.messages,
-            truncated: clientSessionContext.truncated,
-            sourceSessions: clientSessionContext.sourceSessions,
+            sessionId: sid,
+            messages: recoveryContext?.messages ?? [],
+            truncated: recoveryContext?.truncated ?? false,
+            sourceSessions: recoveryContext?.sourceSessions ?? [],
             localNotes: localNoteSnapshot
         )
         messages.append(ChatMessage(sessionId: sid, role: .user, content: text, quotedContext: quote))
@@ -705,19 +708,43 @@ public final class TenantSessionCoordinator: ObservableObject {
         quotedContext = nil
         commitSession()
 
+        submitGeneration(
+            text: text,
+            quote: quote,
+            regenerate: regenerate,
+            contextScope: contextScope,
+            clientSessionContext: enrichedClientSessionContext
+        )
+    }
+
+    private func submitGeneration(
+        text: String,
+        quote: QuotedContext?,
+        regenerate: Bool = false,
+        contextScope: ChatContextScopeDTO = ChatContextScopeDTO(),
+        clientSessionContext: ClientSessionContextDTO? = nil
+    ) {
         if isGenerating && !regenerate {
-            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote, contextScope: contextScope, clientSessionContext: enrichedClientSessionContext))
+            pendingQueue.append(PendingItem(
+                id: UUID().uuidString,
+                text: text,
+                quote: quote,
+                contextScope: contextScope,
+                clientSessionContext: clientSessionContext
+            ))
         } else {
-            startGeneration(text: text, quote: quote, regenerate: regenerate, contextScope: contextScope, clientSessionContext: enrichedClientSessionContext)
+            startGeneration(
+                text: text,
+                quote: quote,
+                regenerate: regenerate,
+                contextScope: contextScope,
+                clientSessionContext: clientSessionContext
+            )
         }
     }
 
     public func dispatchAssistantReply(to text: String, quote: QuotedContext? = nil) {
-        if isGenerating {
-            pendingQueue.append(PendingItem(id: UUID().uuidString, text: text, quote: quote))
-        } else {
-            startGeneration(text: text, quote: quote)
-        }
+        submitGeneration(text: text, quote: quote)
     }
 
     public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil) {
@@ -729,10 +756,15 @@ public final class TenantSessionCoordinator: ObservableObject {
         lastStreamCheckpoint = .distantPast
         lastCheckpointCharacterCount = 0
         let sid = sessionManager.activeSessionID()
+        let runtimeClientContext = clientSessionContext ?? ClientSessionContextDTO(
+            sessionId: sid,
+            messages: [],
+            truncated: false
+        )
         let req = InFlightRequest(
             id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
             regenerate: regenerate, agentId: appState?.selectedAgentId,
-            contextScope: contextScope, clientSessionContext: clientSessionContext
+            contextScope: contextScope, clientSessionContext: runtimeClientContext
         )
         inflight = req
         streamOutputMessageIds[req.id] = req.id
@@ -1172,202 +1204,6 @@ public final class TenantSessionCoordinator: ObservableObject {
         commitSession()
     }
 
-    private func runInFlight(_ req: InFlightRequest, taskEpoch: Int) async {
-        if demoMode {
-            await appendDemoReply(req: req)
-            return
-        }
-        do {
-            let resp = try await APIClient.shared.chat(
-                question: req.text,
-                sessionId: req.sessionId,
-                quotedContext: req.quote?.text,
-                agentId: req.agentId
-            )
-            guard self.tenantEpoch == taskEpoch else { return }
-            await handleSuccess(req: req, response: resp, taskEpoch: taskEpoch)
-        } catch {
-            guard self.tenantEpoch == taskEpoch else { return }
-            await handleError(req: req, error: error, taskEpoch: taskEpoch)
-        }
-    }
-
-    private func handleSuccess(req: InFlightRequest, response: ChatResponseDTO, taskEpoch: Int) async {
-        guard self.tenantEpoch == taskEpoch else { return }
-        let outputId = outputMessageId(for: req)
-
-        if inflight?.id != req.id {
-            sessionManager.applyResponse(sessionId: req.sessionId, requestId: req.id, response: response)
-            return
-        }
-
-        guard req.sessionId == sessionManager.activeSessionID() else {
-            sessionManager.applyResponse(sessionId: req.sessionId, requestId: req.id, response: response)
-            finishGeneration()
-            return
-        }
-
-        if let route = response.resolvedAgent,
-           let idx = messages.firstIndex(where: { $0.id == outputId }) {
-            messages[idx].executingAgentId = route.id
-            messages[idx].executingAgentName = route.name
-            messages[idx].delegatedBy = response.delegatedBy
-        }
-
-        if response.degraded == true {
-            if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-                messages[idx].content = response.answer.isEmpty ? "服务暂时不可用，请稍后重试" : response.answer
-                messages[idx].degraded = true
-                messages[idx].pending = false
-                messages[idx].isStreaming = false
-                messages[idx].blocks = []
-            }
-            inflight = nil
-            finalizeReasoningDuration(for: outputId)
-            commitSession()
-            finishGeneration()
-            return
-        }
-
-        if response.answer.contains("已为您创建专属 Agent 切片") {
-            NotificationCenter.default.post(name: .tenantAgentsDidUpdate, object: nil)
-        }
-
-        let steps = (response.reasoning ?? []).map { $0.toReasoningStep() }
-        if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-            messages[idx].blocks = steps.isEmpty ? [] : [.reasoning([])]
-        }
-        inflight = nil
-
-        if let payload = response.clarify, !payload.question.isEmpty {
-            let clarify = ClarifyBlock(
-                clarifyId: payload.clarifyId,
-                requestId: req.id,
-                sessionId: req.sessionId,
-                agentId: req.agentId,
-                expiresInSeconds: payload.expiresInSeconds,
-                question: payload.question,
-                choices: payload.choices.isEmpty ? [] : payload.choices,
-                multiSelect: payload.multiSelect,
-                submitLabel: "确认选择",
-                source: payload.source ?? "bridge"
-            )
-            if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-                var blocks = messages[idx].blocks
-                blocks.append(.clarify(clarify))
-                messages[idx].content = response.answer.isEmpty ? "" : String(response.answer.prefix(40))
-                messages[idx].blocks = blocks
-                messages[idx].pending = false
-                messages[idx].isStreaming = false
-            }
-            finalizeReasoningDuration(for: outputId)
-            commitSession()
-            finishGeneration()
-            return
-        }
-
-        if !steps.isEmpty {
-            await revealReasoning(messageId: outputId, steps: steps)
-        }
-
-        await typewriter(messageId: outputId, answer: response.answer)
-
-        if let idx = messages.firstIndex(where: { $0.id == outputId }) {
-            messages[idx].pending = false
-        }
-        finalizeReasoningDuration(for: outputId)
-        commitSession()
-        finishGeneration()
-    }
-
-    private func handleError(req: InFlightRequest, error: Error, taskEpoch: Int) async {
-        guard self.tenantEpoch == taskEpoch else { return }
-
-        if inflight?.id != req.id {
-            let text: String
-            if let apiErr = error as? APIError, case .timeout = apiErr {
-                text = "响应超时，请重试"
-            } else {
-                text = "服务暂时不可用，请稍后重试"
-            }
-            sessionManager.applyDegraded(sessionId: req.sessionId, requestId: req.id, text: text)
-            return
-        }
-
-        guard req.sessionId == sessionManager.activeSessionID() else {
-            let text: String
-            if let apiErr = error as? APIError, case .timeout = apiErr {
-                text = "响应超时，请重试"
-            } else {
-                text = "服务暂时不可用，请稍后重试"
-            }
-            sessionManager.applyDegraded(sessionId: req.sessionId, requestId: req.id, text: text)
-            finishGeneration()
-            return
-        }
-
-        if (error as? URLError)?.code == .cancelled || error is CancellationError {
-            markCancelled(req: req)
-            return
-        }
-
-        switch error {
-        case APIError.unauthorized:
-            isGenerating = false
-            inflight = nil
-            currentChatTask = nil
-            waitingSeconds = 0
-        case APIError.knowledgeScopeChanged:
-            inflight?.phase = .serverError("套餐或知识权限已变化，请刷新知识权限后重试")
-            showToast("套餐或知识权限已变化，请刷新知识权限后重试")
-            NotificationCenter.default.post(name: .knowledgeAccessDidChange, object: nil)
-        case APIError.timeout:
-            inflight?.phase = .timeout
-        case APIError.server(let code, _) where code == 404:
-            await handleNotFound(req: req, taskEpoch: taskEpoch)
-        case APIError.server(let code, _):
-            inflight?.phase = .serverError("服务端错误 \(code)")
-        case APIError.network:
-            inflight?.phase = .networkError
-        case APIError.decoding, APIError.invalidURL:
-            inflight?.phase = .serverError("数据解析失败")
-        default:
-            inflight?.phase = .serverError(error.localizedDescription)
-        }
-    }
-
-    private func handleNotFound(req: InFlightRequest, taskEpoch: Int) async {
-        if req.didRetry404 {
-            showToast("会话失效，已开启新会话")
-            finishGeneration()
-            return
-        }
-        appState?.chatSessionId = nil
-        var updated = req
-        updated.didRetry404 = true
-        inflight = updated
-
-        do {
-            let resp = try await APIClient.shared.chat(
-                question: updated.text,
-                requestId: updated.id,
-                sessionId: nil,
-                quotedContext: updated.quote?.text,
-                agentId: updated.agentId
-            )
-            guard self.tenantEpoch == taskEpoch else { return }
-            await handleSuccess(req: updated, response: resp, taskEpoch: taskEpoch)
-        } catch {
-            guard self.tenantEpoch == taskEpoch else { return }
-            if let apiErr = error as? APIError, case .server(let code, _) = apiErr, code == 404 {
-                showToast("会话失效，已开启新会话")
-                finishGeneration()
-            } else {
-                await handleError(req: updated, error: error, taskEpoch: taskEpoch)
-            }
-        }
-    }
-
     // MARK: - Clarify 选项卡会话推进（原 SSE 解锁续跑）
 
     public func sendClarifySelection(messageId: String, selection: String) {
@@ -1383,11 +1219,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             markClarifySubmitted(messageIndex: idx, selection: selection)
             messages.append(ChatMessage(sessionId: sid, role: .user, content: selection))
             commitSession()
-            if isGenerating {
-                pendingQueue.append(PendingItem(id: UUID().uuidString, text: selection, quote: nil))
-            } else {
-                startGeneration(text: selection, quote: nil)
-            }
+            submitGeneration(text: selection, quote: nil)
             return
         }
 
@@ -1725,7 +1557,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.messages.removeSubrange(currentIdx...)
             }
             self.commitSession()
-            self.startGeneration(text: prompt, quote: quote, regenerate: true)
+            self.submitGeneration(text: prompt, quote: quote, regenerate: true)
         }
     }
 
@@ -2018,7 +1850,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             }
             self.hasNewerMessages = false
             self.isLatestPage = true
-            self.startGeneration(
+            self.submitGeneration(
                 text: userMessage.content, quote: userMessage.quotedContext, regenerate: true
             )
         }
@@ -2032,7 +1864,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         waitingSeconds = 0
         let taskEpoch = self.tenantEpoch
         currentChatTask = Task {
-            await runInFlight(req, taskEpoch: taskEpoch)
+            await runInFlightStreamed(req, taskEpoch: taskEpoch)
         }
         startStatusPolling(req: req, taskEpoch: taskEpoch)
     }

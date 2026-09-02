@@ -115,11 +115,12 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     payload = run.get("execution_payload") or json.loads(run.get("execution_payload_json") or "{}")
     claims = dict(payload.get("knowledge_claims") or {})
     client_claims = dict(payload.get("client_context_claims") or {})
+    qws_claims = dict(payload.get("qws_context_claims") or {})
     user_key = str(run.get("user_key") or run.get("session_id") or "")
     sandbox = bridge._tenant_sandbox_from_claims(
         subject_id=user_key,
         knowledge_claims=claims or None,
-        client_claims=client_claims or None,
+        client_claims=client_claims or qws_claims or None,
     )
     sink = DurableEventSink(run_id)
     agent_holder: list[Any] = [None]
@@ -137,6 +138,7 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
             _renew_knowledge_capability(claims), claims or None,
             payload.get("client_session_context"), client_claims or None, sandbox,
             bool(payload.get("knowledge_action_enabled")),
+            payload.get("qws_business_context"),
         )
         snapshot = store.get_unchecked(run_id)
         triage = dict((payload.get("agent_config") or {}).get("triage") or {})
