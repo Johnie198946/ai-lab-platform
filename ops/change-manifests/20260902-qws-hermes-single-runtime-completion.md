@@ -1,15 +1,15 @@
 # QWS Hermes Single Runtime Completion
 
 - task_id: `qws-hermes-single-runtime-20260902`
-- status: `TESTED`
+- status: `VERIFIED`
 - timestamp: `2026-09-03 00:02 +0800`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Desktop/AI Lab/quantumworkspace-m0`
 - start_head: `738ffe74e279e45857b1205a6b6dedc9eec974ce`
-- local_commit: `pending`
-- remote_sha: `738ffe74e279e45857b1205a6b6dedc9eec974ce`
+- implementation_commits: `190eafcc05ad3aa3ef91640769de0db411ae9626`, `cf7a120ec3f9ec4d972f1a462d566014867035dd`
+- remote_sha_at_functional_verification: `cf7a120ec3f9ec4d972f1a462d566014867035dd`
 - server_before: `/opt/releases/ai-lab-platform-738ffe74e279.y2FLP8`
-- server_after: `not deployed`
+- server_after_code: `/opt/releases/ai-lab-platform-cf7a120ec3f9.SUGECc`
 - rollback_point: `/opt/releases/ai-lab-platform-738ffe74e279.y2FLP8`
 
 ## Architecture restored
@@ -58,8 +58,13 @@
 
 - The working tree contains pre-existing untracked duplicate files and an unrelated `tests/test_quantum_workspace_api 2.py`. Full unfiltered pytest discovers that duplicate and reports four stale-contract failures; the complete tracked test suite passes. None of those pre-existing files was modified or staged.
 
-## Remaining verification
+## Production verification receipts
 
-- Push the reviewed commit to GitHub `main` and verify remote SHA.
-- Deploy that exact SHA through the immutable release script.
-- Run production health checks, production contract tests, a real two-turn Hermes continuity probe, and SessionDB persistence inspection.
+- GitHub `main`, local HEAD, and deployed `.deployed-sha` matched `cf7a120ec3f9ec4d972f1a462d566014867035dd` at functional verification time.
+- Production API `/ready`: `ready/0.8.0`; Bridge `/health`: `ok`, streaming enabled; public HTTPS `/health`: HTTP 200.
+- `hermes-bridge`, `hermes-chat-worker`, `hermes-serve`, and `hermes-gateway` were all active.
+- Real production two-turn probe reused Hermes session `20260903_002301_544dd5`:
+  - turn 1: `口令=银杏-4729;状态=in_progress`
+  - turn 2: `口令=银杏-4729;状态=blocked`
+- SessionDB readback contained exactly four user/assistant rows for the probe, preserved the first-turn code, and contained no `QWS_REQUEST_SCOPED_BUSINESS_CONTEXT` envelope.
+- This manifest's final documentation commit is a code-identical successor and is deployed once more through the exact-SHA release path; its final SHA/release are recorded in the task completion response because a commit cannot embed its own hash.
