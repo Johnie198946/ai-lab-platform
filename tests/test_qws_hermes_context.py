@@ -198,11 +198,11 @@ def test_first_recovery_snapshot_is_imported_into_native_sessiondb(
             assert session_id == "new-hermes-session"
             return len(self.messages)
 
-        def append_messages_batch(self, session_id, messages):
+        def append_message(self, session_id, *, role, content):
             assert session_id == "new-hermes-session"
-            self.messages.extend(messages)
-            observed["imported"] = list(messages)
-            return len(messages)
+            self.messages.append({"role": role, "content": content})
+            observed["imported"] = list(self.messages)
+            return len(self.messages)
 
         def get_messages(self, session_id):
             assert session_id == "new-hermes-session"

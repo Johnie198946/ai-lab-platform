@@ -2789,6 +2789,25 @@ def _stable_session_key(user_id: str) -> str:
     return f"{match.group(1)}-{match.group(2)}"
 
 
+def _append_session_messages(
+    session_db: Any, session_id: str, messages: list[dict[str, str]]
+) -> int:
+    """Import recovery history across supported Hermes SessionDB versions."""
+    append_batch = getattr(session_db, "append_messages_batch", None)
+    if callable(append_batch):
+        result = append_batch(session_id, messages)
+        return result if isinstance(result, int) else len(messages)
+    appended = 0
+    for message in messages:
+        session_db.append_message(
+            session_id,
+            role=message["role"],
+            content=message["content"],
+        )
+        appended += 1
+    return appended
+
+
 def _resolve_hermes_session(user_id: str) -> str | None:
     """Resolve a user's session in the same state.db where it was created."""
     hermes_sid = _user_session_map.get(user_id)
@@ -5036,7 +5055,7 @@ def _run_agent_sync(
             if migration_messages:
                 if session_db.message_count(agent_sid) != 0:
                     raise RuntimeError("hermes_migration_target_not_empty")
-                session_db.append_messages_batch(agent_sid, migration_messages)
+                _append_session_messages(session_db, agent_sid, migration_messages)
                 migrated_history = True
                 client_tool_context = getattr(_client_context_tool_context, "value", None)
                 if isinstance(client_tool_context, dict):
