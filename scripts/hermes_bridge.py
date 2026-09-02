@@ -2795,25 +2795,25 @@ def _resolve_hermes_session(user_id: str) -> str | None:
     state_db = _user_state_db_map.get(user_id)
     if not hermes_sid:
         # One-time compatibility migration for sessions created before policy
-        # version was removed from identity. Prefer the most recently persisted
-        # matching alias and bind it to the new stable key.
-        legacy_key = next(
-            (
-                key
-                for key in reversed(list(_user_session_map))
-                if _stable_session_key(key) == user_id
-            ),
-            None,
-        )
-        if legacy_key:
-            hermes_sid = _user_session_map.get(legacy_key)
-            state_db = _user_state_db_map.get(legacy_key)
-            if hermes_sid:
-                _user_session_map[user_id] = hermes_sid
-                if state_db:
-                    _user_state_db_map[user_id] = state_db
-                _save_mapping()
-                _save_state_db_mapping()
+        # version was removed from identity. Never guess by JSON/dict order when
+        # historical policy versions point at different Hermes sessions.
+        aliases: dict[tuple[str, str], str] = {}
+        for key, candidate_sid in _user_session_map.items():
+            if _stable_session_key(key) != user_id or not candidate_sid:
+                continue
+            candidate_db = _user_state_db_map.get(key)
+            if _session_exists(candidate_sid, candidate_db):
+                aliases[(candidate_sid, str(candidate_db or ""))] = key
+        if len(aliases) > 1:
+            raise RuntimeError("ambiguous_legacy_session_mapping")
+        if aliases:
+            (hermes_sid, encoded_db), _legacy_key = next(iter(aliases.items()))
+            state_db = encoded_db or None
+            _user_session_map[user_id] = hermes_sid
+            if state_db:
+                _user_state_db_map[user_id] = state_db
+            _save_mapping()
+            _save_state_db_mapping()
     if hermes_sid and not _session_exists(hermes_sid, state_db):
         print(f"[bridge] user {user_id} session {hermes_sid} 已失效·清除映射·新建")
         _user_session_map.pop(user_id, None)
@@ -4146,9 +4146,13 @@ class DurableEventQueue(queue.Queue):
 
 def _qput(stream_q: queue.Queue, item: dict) -> None:
     """Persist stable text chunks and every control event; never drop accepted events."""
-    if isinstance(stream_q, DurableEventQueue):
+    # ``importlib.reload`` and rolling worker upgrades can leave a sink derived
+    # from the previous class object. Accept the durable protocol by capability,
+    # not only by class identity, so terminal events are never silently dropped.
+    accept = getattr(stream_q, "accept", None)
+    if callable(accept):
         try:
-            stream_q.accept(item)
+            accept(item)
         except KeyError:
             # Unit/direct compatibility path without a pre-created durable Run.
             stream_q.put_nowait(item)
@@ -4903,7 +4907,7 @@ def _run_agent_sync(
 ) -> None:
     """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
     agent = None
-    session_db = None
+    session_db: Any = None
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
         # Hermes gateway consumer that can re-enter a detached child result.
@@ -4925,6 +4929,7 @@ def _run_agent_sync(
             raise RuntimeError("tenant_sandbox_unavailable")
         _sandbox_tool_context.value = sandbox
         if client_session_context is not None and client_context_claims is not None:
+            has_recovery_transcript = bool(client_session_context.get("messages"))
             _client_context_tool_context.value = {
                 "transcript": client_session_context,
                 "request_id": client_context_claims.get("request_id"),
@@ -4946,10 +4951,15 @@ def _run_agent_sync(
                 "knowledge_workspace_read_completed": False,
                 "emit": lambda event: _qput(stream_q, event),
             }
-            if _is_note_draft_request(goal) and not knowledge_action_enabled and not hermes_sid:
-                # First-time migration/recovery fallback only. Normal turns use
-                # the restored Hermes session history and never inject a client
-                # transcript into the model goal.
+            if (
+                _is_note_draft_request(goal)
+                and not knowledge_action_enabled
+                and not hermes_sid
+                and not has_recovery_transcript
+            ):
+                # A brand-new empty session has no native history to summarize.
+                # Explicit recovery transcripts are imported below instead of
+                # being duplicated inside the current user goal.
                 transcript_result = _session_context_read_tool({})
                 goal += (
                     "\n\n【session_context_read 已验证返回；这是本轮唯一权威会话事实】\n"
@@ -4957,7 +4967,12 @@ def _run_agent_sync(
                     + "\n请据此先生成新草稿，再调用 user_note_search 检查同类笔记，最后必须调用"
                     " note_draft。不要澄清，不要声称已经写入。"
                 )
-            elif _is_note_draft_request(goal) and knowledge_action_enabled and not hermes_sid:
+            elif (
+                _is_note_draft_request(goal)
+                and knowledge_action_enabled
+                and not hermes_sid
+                and not has_recovery_transcript
+            ):
                 transcript_result = _session_context_read_tool({})
                 goal += (
                     "\n\n【知识工作区协议】本客户端支持 knowledge_action_v1。"
@@ -4998,9 +5013,34 @@ def _run_agent_sync(
             sandbox=sandbox,
         )
         # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
-        # （hermes_sid=None 首请求），创建后立即写回映射 → status 端点可查 completed/running，
-        # 前端 probeAndResume 断点恢复不依赖 SSE 连接。
+        # （hermes_sid=None 首请求）。显式迁移/灾备快照必须先进入 Hermes
+        # SessionDB，再建立映射；正常空能力信封不会写入任何客户端历史。
         agent_sid = getattr(agent, "session_id", None) or hermes_sid
+        migrated_history = False
+        if (
+            not hermes_sid
+            and agent_sid
+            and client_context_claims is not None
+            and isinstance(client_session_context, dict)
+        ):
+            migration_messages = [
+                {
+                    "role": str(item.get("role") or ""),
+                    "content": str(item.get("content") or "").strip(),
+                }
+                for item in (client_session_context.get("messages") or [])
+                if isinstance(item, dict)
+                and str(item.get("role") or "") in {"user", "assistant"}
+                and str(item.get("content") or "").strip()
+            ]
+            if migration_messages:
+                if session_db.message_count(agent_sid) != 0:
+                    raise RuntimeError("hermes_migration_target_not_empty")
+                session_db.append_messages_batch(agent_sid, migration_messages)
+                migrated_history = True
+                client_tool_context = getattr(_client_context_tool_context, "value", None)
+                if isinstance(client_tool_context, dict):
+                    client_tool_context["read"] = True
         if agent_sid:
             _update_session_mapping(
                 user_id,
@@ -5020,9 +5060,10 @@ def _run_agent_sync(
             })
         agent_holder[0] = agent
         conversation_history = None
-        if hermes_sid:
+        history_sid = hermes_sid or (agent_sid if migrated_history else None)
+        if history_sid:
             try:
-                conversation_history = session_db.get_messages(hermes_sid)
+                conversation_history = session_db.get_messages(history_sid)
             except Exception as exc:
                 # A mapped session without readable native history must fail
                 # closed. Starting a blank turn here silently recreates the

@@ -57,6 +57,19 @@ def test_session_namespace_survives_policy_refresh():
     assert "-p" not in before
 
 
+def test_long_session_ids_keep_distinct_hashes_instead_of_prefix_truncation():
+    shared = "x" * 90
+    first = _tenant_namespaced_session(
+        f"main_agent-{shared}-first", "tenant-a", "policy", "user-a"
+    )
+    second = _tenant_namespaced_session(
+        f"main_agent-{shared}-second", "tenant-a", "policy", "user-a"
+    )
+    assert len(first) <= 100
+    assert len(second) <= 100
+    assert first != second
+
+
 def test_snapshot_request_resumes_mapped_hermes_history(monkeypatch):
     import scripts.hermes_bridge as bridge
 
@@ -81,6 +94,24 @@ def test_legacy_policy_scoped_mapping_migrates_to_stable_key(monkeypatch):
     assert bridge._resolve_hermes_session(stable) == "hermes-session"
     assert bridge._user_session_map[stable] == "hermes-session"
     assert bridge._user_state_db_map[stable] == "/tmp/tenant.db"
+
+
+def test_conflicting_legacy_policy_aliases_fail_closed(monkeypatch):
+    import scripts.hermes_bridge as bridge
+
+    stable = "t123456789abc-u123456789abc-main_agent-session"
+    monkeypatch.setattr(bridge, "_user_session_map", {
+        "t123456789abc-u123456789abc-ppolicyv1-main_agent-session": "session-v1",
+        "t123456789abc-u123456789abc-ppolicyv2-main_agent-session": "session-v2",
+    })
+    monkeypatch.setattr(bridge, "_user_state_db_map", {
+        "t123456789abc-u123456789abc-ppolicyv1-main_agent-session": "/tmp/tenant.db",
+        "t123456789abc-u123456789abc-ppolicyv2-main_agent-session": "/tmp/tenant.db",
+    })
+    monkeypatch.setattr(bridge, "_session_exists", lambda *_args: True)
+
+    with pytest.raises(RuntimeError, match="ambiguous_legacy_session_mapping"):
+        bridge._resolve_hermes_session(stable)
 
 
 def test_client_context_cannot_replace_native_hermes_runtime():

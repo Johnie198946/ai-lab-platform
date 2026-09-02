@@ -559,7 +559,15 @@ def _tenant_namespaced_session(
     base = re.sub(r"^t[0-9a-f]{12}-p[0-9a-z]{1,24}-", "", base, count=1)
     tenant_namespace = hashlib.sha256(tenant_key.encode()).hexdigest()[:12]
     user_namespace = hashlib.sha256(user_id.encode()).hexdigest()[:12]
-    return f"t{tenant_namespace}-u{user_namespace}-{base}"[:100]
+    namespace = f"t{tenant_namespace}-u{user_namespace}"
+    candidate = f"{namespace}-{base}"
+    if len(candidate) <= 100:
+        return candidate
+    # Truncating the raw client id can merge distinct long ids that share a
+    # prefix. Preserve a readable agent lane and hash the complete base instead.
+    lane = base.split("-", 1)[0][:24] or "session"
+    digest = hashlib.sha256(base.encode()).hexdigest()[:40]
+    return f"{namespace}-{lane}-h{digest}"
 
 
 async def _resolve_chat_policy(payload: Dict[str, Any]) -> KnowledgePolicy:

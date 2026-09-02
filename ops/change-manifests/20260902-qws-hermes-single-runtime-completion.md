@@ -68,3 +68,14 @@
   - turn 2: `口令=银杏-4729;状态=blocked`
 - SessionDB readback contained exactly four user/assistant rows for the probe, preserved the first-turn code, and contained no `QWS_REQUEST_SCOPED_BUSINESS_CONTEXT` envelope.
 - This manifest's final documentation commit is a code-identical successor and is deployed once more through the exact-SHA release path; its final SHA/release are recorded in the task completion response because a commit cannot embed its own hash.
+
+## Post-verification hardening — 2026-09-03
+
+- status: `TESTED` (deployment pending)
+- base: `bf2f47590ac211c6c7c4533feebf1662cf84309b`
+- Prevented long client session IDs with shared prefixes from colliding after the 100-character server limit by hashing the complete logical base.
+- Made legacy policy-alias migration fail closed when multiple valid aliases resolve to different Hermes sessions; JSON insertion order is never used as evidence.
+- Made durable event delivery protocol-based rather than class-identity-based, preserving terminal events across Bridge reload/rolling worker boundaries.
+- Implemented real first-use migration/disaster recovery: signed client user/assistant messages are imported into the newly created Hermes SessionDB session before its stable mapping is published. Empty normal capability envelopes import nothing.
+- Verification: tracked Python 3.11 suite `1083 passed, 2 skipped`; focused Bridge/QWS/durable ordering suite `58 passed`; iOS full XCTest `59 passed, 0 failures`; `git diff --check` passed.
+- deployment: pending exact-SHA follow-up deployment; the receipt update will record final remote SHA, release, health and functional checks.

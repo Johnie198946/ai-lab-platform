@@ -3,6 +3,7 @@ import queue
 import sys
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi import HTTPException
@@ -105,7 +106,7 @@ def test_bridge_exposes_qws_facts_ephemerally_but_persists_clean_turn(
     gateway = types.ModuleType("gateway")
     gateway.__path__ = []
     session_context = types.ModuleType("gateway.session_context")
-    session_context.declare_stateless_channel = lambda: None
+    setattr(session_context, "declare_stateless_channel", lambda: None)
     monkeypatch.setitem(sys.modules, "gateway", gateway)
     monkeypatch.setitem(sys.modules, "gateway.session_context", session_context)
 
@@ -152,7 +153,7 @@ def test_bridge_exposes_qws_facts_ephemerally_but_persists_clean_turn(
         "hermes-native-session",
         events,
         [None],
-        sandbox=types.SimpleNamespace(state_db=tmp_path / "state.db"),
+        sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
         qws_business_context=_business_context(),
     )
 
@@ -169,13 +170,85 @@ def test_bridge_exposes_qws_facts_ephemerally_but_persists_clean_turn(
     )
 
 
+def test_first_recovery_snapshot_is_imported_into_native_sessiondb(
+    monkeypatch, tmp_path
+) -> None:
+    observed: dict[str, object] = {}
+    gateway = types.ModuleType("gateway")
+    gateway.__path__ = []
+    session_context = types.ModuleType("gateway.session_context")
+    setattr(session_context, "declare_stateless_channel", lambda: None)
+    monkeypatch.setitem(sys.modules, "gateway", gateway)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", session_context)
+
+    class FakeAgent:
+        session_id = "new-hermes-session"
+
+        def run_conversation(self, _goal, *, conversation_history=None, **_kwargs):
+            observed["conversation_history"] = conversation_history
+            return {"final_response": "done"}
+
+        def close(self):
+            return None
+
+    class FakeSessionDB:
+        messages: list[dict[str, str]] = []
+
+        def message_count(self, session_id):
+            assert session_id == "new-hermes-session"
+            return len(self.messages)
+
+        def append_messages_batch(self, session_id, messages):
+            assert session_id == "new-hermes-session"
+            self.messages.extend(messages)
+            observed["imported"] = list(messages)
+            return len(messages)
+
+        def get_messages(self, session_id):
+            assert session_id == "new-hermes-session"
+            return list(self.messages)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        bridge,
+        "_build_in_process_agent",
+        lambda *_args, **_kwargs: (FakeAgent(), FakeSessionDB(), {"triage": None}),
+    )
+    monkeypatch.setattr(bridge, "_update_session_mapping", lambda *_args: None)
+
+    bridge._run_agent_sync(
+        "继续上次对话",
+        "stable-ios-session",
+        None,
+        queue.Queue(),
+        [None],
+        client_session_context={
+            "session_id": "ios-session",
+            "messages": [
+                {"role": "user", "content": "验收口令是银杏-4729"},
+                {"role": "assistant", "content": "已记住"},
+            ],
+        },
+        client_context_claims={"tenant_key": "tenant-a", "user_id": "user-a"},
+        sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
+    )
+
+    assert observed["imported"] == [
+        {"role": "user", "content": "验收口令是银杏-4729"},
+        {"role": "assistant", "content": "已记住"},
+    ]
+    assert observed["conversation_history"] == observed["imported"]
+
+
 def test_bridge_fails_closed_when_mapped_history_cannot_be_loaded(
     monkeypatch, tmp_path
 ) -> None:
     gateway = types.ModuleType("gateway")
     gateway.__path__ = []
     session_context = types.ModuleType("gateway.session_context")
-    session_context.declare_stateless_channel = lambda: None
+    setattr(session_context, "declare_stateless_channel", lambda: None)
     monkeypatch.setitem(sys.modules, "gateway", gateway)
     monkeypatch.setitem(sys.modules, "gateway.session_context", session_context)
 
@@ -209,7 +282,7 @@ def test_bridge_fails_closed_when_mapped_history_cannot_be_loaded(
         "hermes-native-session",
         events,
         [None],
-        sandbox=types.SimpleNamespace(state_db=tmp_path / "state.db"),
+        sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
     )
     emitted = []
     while not events.empty():
