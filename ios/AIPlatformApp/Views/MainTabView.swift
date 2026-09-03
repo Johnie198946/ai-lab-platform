@@ -304,6 +304,7 @@ private struct QuantumFloatingTabBar: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(SoftButtonStyle())
+                .accessibilityIdentifier("main-tab-\(index)")
                 .accessibilityLabel(item.title)
                 .accessibilityAddTraits(selection == index ? .isSelected : [])
             }

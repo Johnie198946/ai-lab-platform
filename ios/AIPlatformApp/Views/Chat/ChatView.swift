@@ -156,6 +156,7 @@ public struct ChatView: View {
             }
             .onAppear {
                 coordinator.appState = appState
+                coordinator.synchronizeLocalAccount()
                 coordinator.restoreActiveSession()
                 coordinator.refreshQuickCommands()
                 coordinator.handlePendingAgent()
@@ -173,6 +174,16 @@ public struct ChatView: View {
             }
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
             .onChange(of: appState.pendingTopicSessionId) { _, _ in handlePendingTopic() }
+            .onChange(of: appState.currentTenantKey) { _, _ in
+                coordinator.synchronizeLocalAccount()
+                coordinator.reconcileRestoredClarify()
+                coordinator.reconcileActiveRun()
+            }
+            .onChange(of: appState.currentUserId) { _, _ in
+                coordinator.synchronizeLocalAccount()
+                coordinator.reconcileRestoredClarify()
+                coordinator.reconcileActiveRun()
+            }
             .onChange(of: appState.activeTab) { _, tab in
                 if tab == 0 {
                     coordinator.reconcileActiveRun()
@@ -208,6 +219,10 @@ public struct ChatView: View {
                 }
             }
             .onDisappear {
+                // SwiftUI can remove this tab before the child's activeTab
+                // onChange handler runs. Always detach the iOS transport here;
+                // Hermes keeps owning and executing the same durable Run.
+                coordinator.prepareForBackground()
                 isVoicePressing = false
                 if speechService.state != .idle {
                     speechService.cancel()

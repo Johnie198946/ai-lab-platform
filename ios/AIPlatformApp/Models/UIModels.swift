@@ -822,6 +822,9 @@ public final class SessionManager: ObservableObject {
     /// All SQLite writes share one background tail so rapid SSE/UI updates stay ordered
     /// without blocking the MainActor before the network request starts.
     private var persistenceTail: Task<Void, Never>? = nil
+    private var accountEpoch: Int = 0
+
+    public var activeAccountFingerprint: String { accountFingerprint }
 
     private init() {
         do { store = try ChatHistoryStore(databaseURL: Self.historyURL(fingerprint: accountFingerprint), performLegacyMigration: false) }
@@ -837,8 +840,7 @@ public final class SessionManager: ObservableObject {
     public func activateAccount(tenantKey: String, userId: String) {
         let fingerprint = "\(Self.namespace(tenantKey))-\(Self.namespace(userId))"
         guard fingerprint != accountFingerprint else { return }
-        persistenceTail?.cancel()
-        persistenceTail = nil
+        accountEpoch &+= 1
         guard let nextStore = try? ChatHistoryStore(
             databaseURL: Self.historyURL(fingerprint: fingerprint),
             performLegacyMigration: false
@@ -860,8 +862,7 @@ public final class SessionManager: ObservableObject {
     }
 
     public func deactivateAccount() {
-        persistenceTail?.cancel()
-        persistenceTail = nil
+        accountEpoch &+= 1
         sessions.removeAll()
         sessionTitles.removeAll()
         sessionUpdatedAt.removeAll()
@@ -1030,7 +1031,7 @@ public final class SessionManager: ObservableObject {
 
     public func deleteSession(_ id: String) {
         let removedTopicOccupied = topicSessions[id].map { $0.state == .active || $0.state == .ending } ?? false
-        try? store.delete(id)
+        enqueueStoreMutation { store in try? store.delete(id) }
         sessions.removeValue(forKey: id)
         sessionTitles.removeValue(forKey: id)
         sessionUpdatedAt.removeValue(forKey: id)
@@ -1201,11 +1202,16 @@ public final class SessionManager: ObservableObject {
         let dirty = messages.filter { known[$0.id] != fingerprint($0) }
         guard !dirty.isEmpty else { return }
 
+        enqueuePersistence(dirty, for: id)
+    }
+
+    private func enqueuePersistence(_ dirty: [ChatMessage], for id: String) {
         let fingerprints = Dictionary(
             uniqueKeysWithValues: dirty.map { ($0.id, fingerprint($0)) }
         )
         let previous = persistenceTail
         let store = self.store
+        let expectedAccountEpoch = accountEpoch
         persistenceTail = Task.detached(priority: .utility) { [weak self] in
             await previous?.value
             guard !Task.isCancelled else { return }
@@ -1215,17 +1221,68 @@ public final class SessionManager: ObservableObject {
                 sessionId: id,
                 fingerprints: fingerprints,
                 messageCount: count,
-                summary: summary
+                summary: summary,
+                expectedAccountEpoch: expectedAccountEpoch
             )
         }
+    }
+
+    private func enqueueStoreMutation(
+        _ operation: @escaping @Sendable (ChatHistoryStore) -> Void
+    ) {
+        let previous = persistenceTail
+        let store = self.store
+        persistenceTail = Task.detached(priority: .utility) {
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            operation(store)
+        }
+    }
+
+    /// Crash-safe UI projection checkpoint taken immediately before a Hermes Run starts.
+    /// It stores only the user message and pending request identity; Hermes SessionDB
+    /// remains the authoritative conversation/runtime state.
+    @discardableResult
+    public func checkpointRunProjection(_ messages: [ChatMessage], for id: String) async -> Bool {
+        guard !messages.isEmpty else { return false }
+        let fingerprints = Dictionary(
+            uniqueKeysWithValues: messages.map { ($0.id, fingerprint($0)) }
+        )
+        let previous = persistenceTail
+        let store = self.store
+        let expectedAccountEpoch = accountEpoch
+        let write = Task.detached(priority: .userInitiated) {
+            () -> (count: Int, summary: StoredSessionSummary?)? in
+            await previous?.value
+            guard !Task.isCancelled,
+                  let count = try? store.upsert(messages, sessionId: id) else { return nil }
+            return (count, try? store.summary(sessionId: id))
+        }
+        let completion = Task { @MainActor [weak self] () -> Bool in
+            guard let result = await write.value,
+                  let self,
+                  self.accountEpoch == expectedAccountEpoch else { return false }
+            self.finishPersistence(
+                sessionId: id,
+                fingerprints: fingerprints,
+                messageCount: result.count,
+                summary: result.summary,
+                expectedAccountEpoch: expectedAccountEpoch
+            )
+            return true
+        }
+        persistenceTail = Task { _ = await completion.value }
+        return await completion.value
     }
 
     private func finishPersistence(
         sessionId: String,
         fingerprints: [String: Int],
         messageCount: Int,
-        summary: StoredSessionSummary?
+        summary: StoredSessionSummary?,
+        expectedAccountEpoch: Int
     ) {
+        guard accountEpoch == expectedAccountEpoch else { return }
         var known = persistedFingerprints[sessionId] ?? [:]
         for (messageId, storedFingerprint) in fingerprints {
             guard let current = sessions[sessionId]?.first(where: { $0.id == messageId }),
@@ -1251,16 +1308,40 @@ public final class SessionManager: ObservableObject {
     }
 
     public func truncateMessages(from messageId: String, sessionId: String) {
-        try? store.truncate(sessionId: sessionId, from: messageId)
-        sessionMessageCounts[sessionId] = (try? store.count(sessionId)) ?? 0
+        if var cached = sessions[sessionId],
+           let index = cached.firstIndex(where: { $0.id == messageId }) {
+            cached.removeSubrange(index...)
+            sessions[sessionId] = cached
+        }
         persistedFingerprints[sessionId]?.removeAll()
+        let previous = persistenceTail
+        let store = self.store
+        let expectedAccountEpoch = accountEpoch
+        persistenceTail = Task.detached(priority: .utility) { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            guard (try? store.truncate(sessionId: sessionId, from: messageId)) != nil else {
+                return
+            }
+            let count = (try? store.count(sessionId)) ?? 0
+            let summary = try? store.summary(sessionId: sessionId)
+            await self?.finishPersistence(
+                sessionId: sessionId,
+                fingerprints: [:],
+                messageCount: count,
+                summary: summary,
+                expectedAccountEpoch: expectedAccountEpoch
+            )
+        }
     }
 
     public func clearSession(_ id: String) {
-        try? store.clear(id)
         sessions[id] = []
         persistedFingerprints[id] = [:]
-        refreshMetadata(for: id)
+        sessionMessageCounts[id] = 0
+        sessionTitles[id] = "新会话"
+        sessionUpdatedAt[id] = Date()
+        enqueueStoreMutation { store in try? store.clear(id) }
     }
 
     /// 会话屏障：在途请求被切换拦截时，在原会话把 pending 占位替换为 .interrupted（不静默丢弃）。
@@ -1284,7 +1365,7 @@ public final class SessionManager: ObservableObject {
 
     /// 把归属会话中 requestId 对应的 pending 占位替换为真实响应（切走后由 handleSuccess 调用）。
     public func applyResponse(sessionId: String, requestId: String, response: ChatResponseDTO) {
-        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+        let message = sessions[sessionId]?.first(where: { $0.id == requestId }).map { existing in
             var updated = existing
             updated.content = response.answer; updated.pending = false; updated.isStreaming = false
             updated.degraded = response.degraded == true; updated.executingAgentId = response.resolvedAgent?.id
@@ -1292,7 +1373,7 @@ public final class SessionManager: ObservableObject {
             updated.blocks = []
             return updated
         } ?? ChatMessage(
-                sessionId: sessionId, role: .assistant,
+                id: requestId, sessionId: sessionId, role: .assistant,
                 content: response.answer, pending: false,
                 degraded: response.degraded == true,
                 executingAgentId: response.resolvedAgent?.id,
@@ -1304,30 +1385,28 @@ public final class SessionManager: ObservableObject {
 
     /// 断点续接已完成（status=completed）时，把结果写归属会话（切走后由 applyCompletedStatus 调用）。
     public func applyCompletedStatus(sessionId: String, requestId: String, answer: String) {
-        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+        let message = sessions[sessionId]?.first(where: { $0.id == requestId }).map { existing in
             var updated = existing; updated.content = answer; updated.pending = false
             updated.isStreaming = false; updated.degraded = false
             updated.settleReasoningForCompletion(); return updated
-        } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: answer, pending: false)
+        } ?? ChatMessage(id: requestId, sessionId: sessionId, role: .assistant, content: answer, pending: false)
         updateStoredMessage(message, sessionId: sessionId)
     }
 
     /// 切走后任务失败：把 degraded 卡写归属会话（不中断、不静默）。
     public func applyDegraded(sessionId: String, requestId: String, text: String) {
-        let message = (try? store.message(sessionId: sessionId, id: requestId)).map { existing in
+        let message = sessions[sessionId]?.first(where: { $0.id == requestId }).map { existing in
             var updated = existing; updated.content = text; updated.pending = false
             updated.isStreaming = false; updated.degraded = true; return updated
-        } ?? ChatMessage(sessionId: sessionId, role: .assistant, content: text, pending: false, degraded: true)
+        } ?? ChatMessage(id: requestId, sessionId: sessionId, role: .assistant, content: text, pending: false, degraded: true)
         updateStoredMessage(message, sessionId: sessionId)
     }
 
     private func updateStoredMessage(_ message: ChatMessage, sessionId: String) {
-        guard (try? store.upsert([message], sessionId: sessionId)) != nil else { return }
-        persistedFingerprints[sessionId, default: [:]][message.id] = fingerprint(message)
         if var cached = sessions[sessionId], let index = cached.firstIndex(where: { $0.id == message.id }) {
             cached[index] = message; sessions[sessionId] = cached
         }
-        refreshMetadata(for: sessionId)
+        enqueuePersistence([message], for: sessionId)
     }
 
     private func refreshMetadata(for id: String) {

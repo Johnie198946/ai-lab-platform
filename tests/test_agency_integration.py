@@ -20,6 +20,7 @@ from scripts.hermes_bridge import (
     _request_triage,
     _run_agent_sync,
     _triage_route_marker,
+    _triage_system_directive,
 )
 
 
@@ -653,6 +654,48 @@ def test_bridge_applies_fail_closed_toolsets_from_server_triage():
     assert "delegation" not in _apply_triage_toolset_policy(all_tools, no_agency)
     assert "tenant_skills" in _apply_triage_toolset_policy(all_tools, no_agency)
 
+
+def test_note_route_keeps_note_tools_and_removes_agency_for_every_triage_class():
+    selected = [
+        "memory", "knowledge_gateway", "client_context", "delegation",
+        "agency_agents", "ai_lab",
+    ]
+    triages = [
+        None,
+        _request_triage({"triage": {
+            "route_class": "CASUAL",
+            "reason_code": "conversation_marker",
+            "evidence_requirements": [],
+            "agency_enabled": False,
+        }}),
+        _request_triage({"triage": {
+            "route_class": "GENERAL_QA",
+            "reason_code": "general_question",
+            "evidence_requirements": [],
+            "agency_enabled": False,
+        }}),
+        _request_triage({"triage": {
+            "route_class": "PROFESSIONAL_TASK",
+            "reason_code": "professional_action_and_deliverable",
+            "evidence_requirements": [],
+            "agency_enabled": True,
+        }}),
+    ]
+    for triage in triages:
+        routed = _apply_triage_toolset_policy(
+            selected, triage, note_draft_request=True
+        )
+        assert "knowledge_gateway" in routed
+        assert "client_context" in routed
+        assert "delegation" not in routed
+        assert "agency_agents" not in routed
+        assert "ai_lab" not in routed
+        directive = _triage_system_directive(
+            triage, note_draft_request=True
+        )
+        if triage is not None:
+            assert "user_note_search" in directive
+            assert "不搜索、不加载 Skill、不调用 Agent" not in directive
 
 def test_agency_tool_event_exposes_only_selected_route_target():
     events: queue.Queue = queue.Queue()

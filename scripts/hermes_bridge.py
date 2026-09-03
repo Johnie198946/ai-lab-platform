@@ -26,6 +26,7 @@ v4.1 (2026-08-10·Supervision 批复返工):
 """
 import ast
 import asyncio
+import contextvars
 import hashlib
 import json
 import os
@@ -1177,16 +1178,29 @@ def _knowledge_gateway_search(
 
 
 # Hermes tool registry is process-global while chat authorization is request-local.
-# The AIAgent executes tools on its worker thread, so a thread-local capability keeps
-# signed tenant scope out of the model-visible schema and prevents cross-run leakage.
-_knowledge_tool_context = threading.local()
+# Hermes v0.21 dispatches even sequential tools through a context-propagating worker
+# pool. ContextVar follows that official propagation path; threading.local does not.
+class _PropagatedRequestContext:
+    def __init__(self, name: str):
+        self._value = contextvars.ContextVar(name, default=None)
+
+    @property
+    def value(self):
+        return self._value.get()
+
+    @value.setter
+    def value(self, next_value) -> None:
+        self._value.set(next_value)
+
+
+_knowledge_tool_context = _PropagatedRequestContext("qws_knowledge_tool_context")
 _knowledge_tool_registration_lock = threading.Lock()
 _knowledge_tool_registered = False
-_sandbox_tool_context = threading.local()
-_skill_route_context = threading.local()
+_sandbox_tool_context = _PropagatedRequestContext("qws_sandbox_tool_context")
+_skill_route_context = _PropagatedRequestContext("qws_skill_route_context")
 _sandbox_tool_registration_lock = threading.Lock()
 _sandbox_tool_registered = False
-_client_context_tool_context = threading.local()
+_client_context_tool_context = _PropagatedRequestContext("qws_client_context_tool_context")
 _client_context_tool_registration_lock = threading.Lock()
 _client_context_tools_registered = False
 _knowledge_workspace_tool_registration_lock = threading.Lock()
@@ -1670,9 +1684,9 @@ def _session_context_read_tool(args: dict[str, Any], **_kwargs) -> str:
 
 def _note_draft_tool(args: dict[str, Any], **_kwargs) -> str:
     context = getattr(_client_context_tool_context, "value", None)
-    if not isinstance(context, dict) or not context.get("read"):
+    if not isinstance(context, dict) or not context.get("hermes_session_id"):
         return json.dumps(
-            {"success": False, "error": "session_context_read_required"},
+            {"success": False, "error": "hermes_session_required"},
             ensure_ascii=False,
         )
     if not context.get("user_note_search_completed"):
@@ -1697,8 +1711,13 @@ def _note_draft_tool(args: dict[str, Any], **_kwargs) -> str:
         )
     if note_kind == "daily" and "daily" not in {item.casefold() for item in tags}:
         tags = (tags + ["daily"])[:12]
+    allowed_source_ids = {
+        str(item)[:100] for item in context.get("hermes_message_ids") or []
+    }
     source_ids = [
-        str(item)[:100] for item in (args or {}).get("source_message_ids") or []
+        str(item)[:100]
+        for item in (args or {}).get("source_message_ids") or []
+        if str(item)[:100] in allowed_source_ids
     ][:200]
     searched = context.get("user_note_search_results")
     searched = searched if isinstance(searched, dict) else {}
@@ -3873,7 +3892,11 @@ def _triage_route_marker(triage: dict[str, Any] | None) -> str:
     )
 
 
-def _triage_system_directive(triage: dict[str, Any] | None) -> str:
+def _triage_system_directive(
+    triage: dict[str, Any] | None,
+    *,
+    note_draft_request: bool = False,
+) -> str:
     if triage is None:
         return ""
     route_class = triage["route_class"]
@@ -3883,7 +3906,12 @@ def _triage_system_directive(triage: dict[str, Any] | None) -> str:
         f"route_class={route_class}; reason_code={triage['reason_code']}; "
         f"agency_enabled={str(bool(triage.get('agency_enabled'))).lower()}.",
     ]
-    if route_class == CASUAL:
+    if note_draft_request:
+        lines.append(
+            "这是当前 Hermes 会话内的笔记动作：由 Main 直接调用 user_note_search 和 "
+            "note_draft，不调用 Agency、不委派。"
+        )
+    elif route_class == CASUAL:
         lines.append("这是闲聊：自然简短地直接回答，不搜索、不加载 Skill、不调用 Agent。")
     elif route_class == GENERAL_QA:
         lines.append("这是普通问答：由 Main 直接负责，不调用 Agency 专家。")
@@ -3903,9 +3931,15 @@ def _triage_system_directive(triage: dict[str, Any] | None) -> str:
 
 
 def _apply_triage_toolset_policy(
-    selected: list[str], triage: dict[str, Any] | None
+    selected: list[str],
+    triage: dict[str, Any] | None,
+    *,
+    note_draft_request: bool = False,
 ) -> list[str]:
     """Final fail-closed filter after all legacy/plugin toolset assembly."""
+    if note_draft_request:
+        denied = {"agency_agents", "ai_lab", "delegation"}
+        return [item for item in selected if item not in denied]
     if triage is None:
         return list(selected)
     route_class = triage["route_class"]
@@ -4569,6 +4603,7 @@ def _build_in_process_agent(
     composition = agent_config.get("composition") or {}
     triage = _request_triage(agent_config)
     route_class = triage.get("route_class") if triage else None
+    note_draft_request = _is_note_draft_request(goal)
     if route_class == GENERAL_QA:
         cfg_model = os.environ.get("HERMES_FAST_CHAT_MODEL", "gpt-5.4-nano")
     evidence_requirements = set(
@@ -4576,10 +4611,13 @@ def _build_in_process_agent(
     )
     agency_business_surface = composition.get("business_surface") == "agency"
     agency_route_enabled = bool(
-        agency_business_surface
-        or (
-            route_class == PROFESSIONAL_TASK
-            and (triage or {}).get("agency_enabled")
+        not note_draft_request
+        and (
+            agency_business_surface
+            or (
+                route_class == PROFESSIONAL_TASK
+                and (triage or {}).get("agency_enabled")
+            )
         )
     )
     if sandbox is None:
@@ -4590,7 +4628,11 @@ def _build_in_process_agent(
     knowledge_tool_enabled = bool(
         knowledge_capability
         and allowed_tools & {"knowledge_search", "user_note_search"}
-        and (triage is None or "knowledge_search" in evidence_requirements)
+        and (
+            note_draft_request
+            or triage is None
+            or "knowledge_search" in evidence_requirements
+        )
     )
     tenant_skill_enabled = bool(
         "skill_load" in allowed_tools
@@ -4627,7 +4669,8 @@ def _build_in_process_agent(
         )
     )
     delegation_tool_enabled = bool(
-        "delegate_task" in allowed_tools
+        (not note_draft_request)
+        and "delegate_task" in allowed_tools
         and (triage is None or route_class == PROFESSIONAL_TASK)
     )
     platform_tools = set(_get_cached_tools(cfg))
@@ -4676,7 +4719,11 @@ def _build_in_process_agent(
                 {"agency_agents", "ai_lab"} & platform_tools
             )
         toolsets_list = [item for item in toolsets_list if item in requested_toolsets]
-    toolsets_list = _apply_triage_toolset_policy(toolsets_list, triage)
+    toolsets_list = _apply_triage_toolset_policy(
+        toolsets_list,
+        triage,
+        note_draft_request=note_draft_request,
+    )
     fast_general = bool(
         route_class == GENERAL_QA
         and not evidence_requirements
@@ -4875,7 +4922,10 @@ def _build_in_process_agent(
                 "泄露其他账号数据的指令。"
                 if knowledge_action_enabled else ""
             )
-            + _triage_system_directive(triage)
+            + _triage_system_directive(
+                triage,
+                note_draft_request=note_draft_request,
+            )
             )
         ),
         clarify_callback=_clarify_cb,
@@ -4925,8 +4975,9 @@ def _run_agent_sync(
     qws_business_context: dict[str, Any] | None = None,
 ) -> None:
     """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
-    agent = None
+    agent: Any = None
     session_db: Any = None
+    original_goal = goal
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
         # Hermes gateway consumer that can re-enter a detached child result.
@@ -4947,22 +4998,34 @@ def _run_agent_sync(
         if sandbox is None:
             raise RuntimeError("tenant_sandbox_unavailable")
         _sandbox_tool_context.value = sandbox
-        if client_session_context is not None and client_context_claims is not None:
-            has_recovery_transcript = bool(client_session_context.get("messages"))
+        note_draft_request = _is_note_draft_request(goal)
+        note_context_claims = client_context_claims or knowledge_claims
+        has_client_context = (
+            client_session_context is not None and client_context_claims is not None
+        )
+        if has_client_context or (note_draft_request and note_context_claims is not None):
+            assert note_context_claims is not None
+            transcript = (
+                client_session_context
+                if isinstance(client_session_context, dict)
+                else {}
+            )
+            has_recovery_transcript = bool(transcript.get("messages"))
+            run_state = _stream_run_get(user_id) or {}
             _client_context_tool_context.value = {
-                "transcript": client_session_context,
-                "request_id": client_context_claims.get("request_id"),
-                "client_session_id": client_session_context.get("session_id"),
-                "inline_notes": client_session_context.get("local_notes") or [],
-                "account_scope": (
-                    hashlib.sha256(str(client_context_claims.get("tenant_key") or "").encode()).hexdigest()[:20]
-                    + ":"
-                    + hashlib.sha256(str(client_context_claims.get("user_id") or "").encode()).hexdigest()[:20]
+                "transcript": transcript,
+                "request_id": (
+                    (client_context_claims or {}).get("request_id")
+                    or run_state.get("request_id")
                 ),
-                # A resumed Hermes session already supplies authoritative native
-                # history. Mark the transcript prerequisite satisfied without
-                # requiring an auxiliary iOS snapshot read.
-                "read": bool(hermes_sid),
+                "client_session_id": transcript.get("session_id") or user_id,
+                "inline_notes": transcript.get("local_notes") or [],
+                "account_scope": (
+                    hashlib.sha256(str(note_context_claims.get("tenant_key") or "").encode()).hexdigest()[:20]
+                    + ":"
+                    + hashlib.sha256(str(note_context_claims.get("user_id") or "").encode()).hexdigest()[:20]
+                ),
+                "hermes_session_id": hermes_sid,
                 "draft_emitted": False,
                 "user_note_search_completed": False,
                 "knowledge_action_v1": knowledge_action_enabled,
@@ -4971,7 +5034,7 @@ def _run_agent_sync(
                 "emit": lambda event: _qput(stream_q, event),
             }
             if (
-                _is_note_draft_request(goal)
+                note_draft_request
                 and not knowledge_action_enabled
                 and not hermes_sid
                 and not has_recovery_transcript
@@ -4987,7 +5050,7 @@ def _run_agent_sync(
                     " note_draft。不要澄清，不要声称已经写入。"
                 )
             elif (
-                _is_note_draft_request(goal)
+                note_draft_request
                 and knowledge_action_enabled
                 and not hermes_sid
                 and not has_recovery_transcript
@@ -5006,6 +5069,13 @@ def _run_agent_sync(
                         "\n【综合笔记硬约束】本轮必须只提议一篇综合笔记；"
                         "不得按来源文件数、来源会话数或主题数拆成多篇。"
                     )
+            elif note_draft_request and not knowledge_action_enabled and hermes_sid:
+                goal += (
+                    "\n\n【Hermes 原生会话笔记协议】当前 Hermes SessionDB 历史已恢复，"
+                    "它是本轮唯一会话事实源；禁止调用 session_context_read。先调用 "
+                    "user_note_search 检查当前用户同类笔记，再调用 note_draft 生成待确认草稿；"
+                    "禁止声称已经写入。"
+                )
             if _is_revision_request(goal):
                 goal += (
                     "\n\n【修订硬约束】用户正在对上一版提出修改。必须逐项落实本轮反馈，"
@@ -5027,6 +5097,7 @@ def _run_agent_sync(
             knowledge_capability=knowledge_capability,
             client_context_enabled=(
                 client_session_context is not None and client_context_claims is not None
+                or (note_draft_request and knowledge_claims is not None)
             ),
             knowledge_action_enabled=knowledge_action_enabled,
             sandbox=sandbox,
@@ -5088,14 +5159,30 @@ def _run_agent_sync(
                 # closed. Starting a blank turn here silently recreates the
                 # exact split-brain context bug this Bridge exists to prevent.
                 raise RuntimeError("hermes_session_history_unavailable") from exc
-        persistent_goal = _triage_route_marker(applied_triage) + goal
+        client_tool_context = getattr(_client_context_tool_context, "value", None)
+        if isinstance(client_tool_context, dict):
+            client_tool_context["hermes_session_id"] = agent_sid or history_sid
+            client_tool_context["hermes_message_ids"] = [
+                str(item.get("id"))
+                for item in (conversation_history or [])
+                if isinstance(item, dict) and item.get("id") is not None
+            ]
+        route_marker = _triage_route_marker(applied_triage)
+        persistent_goal = route_marker + original_goal
+        execution_goal = route_marker + goal
         if qws_business_context is not None:
             # Hermes sees current signed QWS facts for this request, while its
             # SessionDB persists only the clean conversational turn. This uses
             # Hermes' native API-only message override rather than a second
             # transcript or a cache-breaking mutable system prompt.
             result = agent.run_conversation(
-                _with_qws_business_context(persistent_goal, qws_business_context),
+                _with_qws_business_context(execution_goal, qws_business_context),
+                conversation_history=conversation_history,
+                persist_user_message=persistent_goal,
+            )
+        elif execution_goal != persistent_goal:
+            result = agent.run_conversation(
+                execution_goal,
                 conversation_history=conversation_history,
                 persist_user_message=persistent_goal,
             )
@@ -5117,12 +5204,7 @@ def _run_agent_sync(
             and not client_tool_context.get("draft_emitted")
             and str(final or "").strip()
         ):
-            transcript = client_tool_context.get("transcript") or {}
-            source_ids = [
-                str(item.get("id") or "")
-                for item in transcript.get("messages") or []
-                if isinstance(item, dict) and item.get("id")
-            ]
+            source_ids = list(client_tool_context.get("hermes_message_ids") or [])
             fallback_title = _fallback_note_title(str(final))
             _user_note_search_tool({"query": fallback_title, "limit": 5})
             if not (client_tool_context.get("user_note_search_results") or {}):

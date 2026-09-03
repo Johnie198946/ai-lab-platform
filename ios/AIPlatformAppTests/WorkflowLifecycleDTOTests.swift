@@ -3,6 +3,23 @@ import SwiftUI
 import SQLite3
 @testable import AIPlatformApp
 
+private final class LockedErrorBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [Error] = []
+
+    func append(_ error: Error) {
+        lock.lock()
+        storage.append(error)
+        lock.unlock()
+    }
+
+    var isEmpty: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage.isEmpty
+    }
+}
+
 final class WorkflowLifecycleDTOTests: XCTestCase {
     private func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
@@ -916,6 +933,194 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(try store.message(sessionId: sessionId, id: "assistant")?.content, "第二版")
     }
 
+    func testChatHistoryStoreSerializesConcurrentTransactionsAndStatusBackfill() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chat-history-concurrent-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy", isDirectory: true),
+            performLegacyMigration: false
+        )
+        let sessionId = "concurrent-session"
+        let messages = (0..<40).map { index in
+            ChatMessage(
+                id: "m-\(index)", sessionId: sessionId, role: .assistant,
+                content: "pending-\(index)", pending: true
+            )
+        }
+        let errors = LockedErrorBox()
+        let queue = DispatchQueue(label: "chat-history-concurrent", attributes: .concurrent)
+        let firstBatch = DispatchGroup()
+        for message in messages {
+            firstBatch.enter()
+            queue.async {
+                defer { firstBatch.leave() }
+                do { try store.upsert([message], sessionId: sessionId) }
+                catch { errors.append(error) }
+            }
+        }
+        XCTAssertEqual(firstBatch.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertEqual(try store.count(sessionId), 40)
+
+        try store.clear(sessionId)
+        try store.upsert(messages, sessionId: sessionId)
+
+        let secondBatch = DispatchGroup()
+        secondBatch.enter()
+        queue.async {
+            defer { secondBatch.leave() }
+            do { try store.truncate(sessionId: sessionId, from: "m-20") }
+            catch { errors.append(error) }
+        }
+        for message in messages.prefix(20) {
+            secondBatch.enter()
+            queue.async {
+                defer { secondBatch.leave() }
+                var settled = message
+                settled.content = "settled-\(message.id)"
+                settled.pending = false
+                do { try store.upsert([settled], sessionId: sessionId) }
+                catch { errors.append(error) }
+            }
+        }
+        XCTAssertEqual(secondBatch.wait(timeout: .now() + 10), .success)
+        XCTAssertTrue(errors.isEmpty)
+        XCTAssertEqual(try store.count(sessionId), 20)
+        for index in 0..<20 {
+            let stored = try XCTUnwrap(store.message(sessionId: sessionId, id: "m-\(index)"))
+            XCTAssertFalse(stored.pending)
+            XCTAssertEqual(stored.content, "settled-m-\(index)")
+        }
+    }
+
+    @MainActor
+    func testLeavingDuringCheckpointDoesNotPollOrCancelUnsubmittedRun() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chat-checkpoint-leave-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy", isDirectory: true),
+            performLegacyMigration: false
+        )
+        let sessionId = "checkpoint-session"
+        let user = ChatMessage(
+            id: "checkpoint-user", sessionId: sessionId,
+            role: .user, content: "继续执行"
+        )
+        try store.upsert([user], sessionId: sessionId)
+        let manager = SessionManager(store: store)
+        let otherSessionId = manager.createSession()
+        manager.switchTo(sessionId)
+        let coordinator = TenantSessionCoordinator(sessionManager: manager)
+
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+
+        coordinator.startGeneration(
+            text: user.content,
+            quote: nil,
+            userMessageId: user.id
+        )
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertTrue(coordinator.isCheckpointingRunForTesting)
+        coordinator.prepareForBackground()
+        XCTAssertTrue(coordinator.isCheckpointingRunForTesting)
+        XCTAssertTrue(coordinator.isGenerating)
+        XCTAssertEqual(coordinator.backgroundMonitorCountForTesting, 0)
+        coordinator.switchSession(to: otherSessionId)
+        XCTAssertEqual(manager.activeSessionID(), otherSessionId)
+        XCTAssertTrue(coordinator.isCheckpointingRunForTesting)
+        XCTAssertTrue(coordinator.isGenerating)
+        XCTAssertEqual(coordinator.backgroundMonitorCountForTesting, 0)
+        XCTAssertTrue(TenantSessionCoordinator.shouldContinueSubmissionAfterCheckpoint(
+            isCancelled: false,
+            epochMatches: true,
+            activeSessionMatches: false,
+            detachRequested: true
+        ))
+        XCTAssertFalse(TenantSessionCoordinator.shouldContinueSubmissionAfterCheckpoint(
+            isCancelled: false,
+            epochMatches: true,
+            activeSessionMatches: false,
+            detachRequested: false
+        ))
+
+        coordinator.cancelAllTasksAndAnimations()
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+    }
+
+    @MainActor
+    func testSessionManagerOrdersTruncateAndStatusAfterOlderSnapshots() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chat-ordered-writes-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy", isDirectory: true),
+            performLegacyMigration: false
+        )
+        let sessionId = "ordered-session"
+        let user = ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "问题")
+        let pending = ChatMessage(
+            id: "request", sessionId: sessionId, role: .assistant,
+            content: "", isStreaming: true, pending: true
+        )
+        try store.upsert([user, pending], sessionId: sessionId)
+        let manager = SessionManager(store: store)
+
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        var stale = pending
+        stale.content = "stale"
+        manager.setMessages([user, stale], for: sessionId)
+        manager.truncateMessages(from: pending.id, sessionId: sessionId)
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+        XCTAssertNil(try store.message(sessionId: sessionId, id: pending.id))
+
+        let pendingStatus = ChatMessage(
+            id: "request-2", sessionId: sessionId, role: .assistant,
+            content: "", isStreaming: true, pending: true
+        )
+        try store.upsert([pendingStatus], sessionId: sessionId)
+        manager.cacheVisibleMessages([user, pendingStatus], for: sessionId)
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        var olderSnapshot = pendingStatus
+        olderSnapshot.content = "older"
+        manager.setMessages([user, olderSnapshot], for: sessionId)
+        manager.applyCompletedStatus(
+            sessionId: sessionId,
+            requestId: pendingStatus.id,
+            answer: "Hermes completed"
+        )
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+        let completed = try XCTUnwrap(
+            store.message(sessionId: sessionId, id: pendingStatus.id)
+        )
+        XCTAssertEqual(completed.content, "Hermes completed")
+        XCTAssertFalse(completed.pending)
+        XCTAssertFalse(completed.isStreaming)
+
+        manager.clearSession(sessionId)
+        manager.deactivateAccount()
+        await manager.flushPendingPersistence()
+        XCTAssertEqual(try store.count(sessionId), 0)
+    }
+
     @MainActor
     func testSessionManagerDoesNotBlockMainActorWhenSQLiteWriterIsBusy() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -1113,6 +1318,59 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
             reconcilingMessageIDs: [message.id],
             backgroundProcessingSessionIDs: []
         ))
+    }
+
+    func testRunReconciliationOwnerIsNotDuplicated() {
+        let messageID = "assistant-recovery"
+        XCTAssertTrue(TenantSessionCoordinator.shouldStartRunReconciliation(
+            messageId: messageID,
+            reconcilingMessageIDs: []
+        ))
+        XCTAssertFalse(TenantSessionCoordinator.shouldStartRunReconciliation(
+            messageId: messageID,
+            reconcilingMessageIDs: [messageID]
+        ))
+    }
+
+    func testRecoveredRunMonitorRemainsPresentationOwnerAfterProbeHandoff() {
+        let message = ChatMessage(
+            id: "recovered-monitor", sessionId: "session", role: .assistant,
+            content: "", isStreaming: true, pending: true
+        )
+        XCTAssertTrue(TenantSessionCoordinator.isProcessingExistingRun(
+            message,
+            reconcilingMessageIDs: [message.id],
+            backgroundProcessingSessionIDs: []
+        ))
+    }
+
+    @MainActor
+    func testRunProjectionCheckpointSurvivesImmediateReopenWithoutAsyncFlush() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let legacyURL = root.appendingPathComponent("legacy")
+        let store = try ChatHistoryStore(databaseURL: databaseURL, legacyDirectory: legacyURL)
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+        let projection = [
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "长任务"),
+            ChatMessage(
+                id: "request", sessionId: sessionId, role: .assistant,
+                content: "", isStreaming: true, pending: true
+            )
+        ]
+
+        let checkpointed = await manager.checkpointRunProjection(projection, for: sessionId)
+        XCTAssertTrue(checkpointed)
+
+        let reopened = try ChatHistoryStore(
+            databaseURL: databaseURL, legacyDirectory: legacyURL,
+            performLegacyMigration: false
+        )
+        let restored = try reopened.latest(sessionId: sessionId).messages
+        XCTAssertEqual(restored.map(\.id), ["user", "request"])
+        XCTAssertTrue(restored.last?.pending == true)
     }
 
     @MainActor

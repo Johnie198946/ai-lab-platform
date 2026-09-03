@@ -176,7 +176,7 @@ def test_client_context_capability_binds_context_and_rejects_tamper():
         verify_client_context_capability(token + "tampered")
 
 
-def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
+def test_note_draft_requires_native_hermes_session_and_emits_unsaved_event():
     import scripts.hermes_bridge as bridge
 
     events = []
@@ -201,22 +201,24 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         "request_id": "request-1234",
         "client_session_id": "session-a",
         "account_scope": "tenant:user",
+        "hermes_session_id": "hermes-session-a",
+        "hermes_message_ids": ["m1"],
         "read": False,
         "user_note_search_completed": False,
         "emit": events.append,
     }
     try:
-        denied = json.loads(bridge._note_draft_tool({"title": "超聚变", "markdown": "正文"}))
-        assert denied["error"] == "session_context_read_required"
+        search_denied = json.loads(bridge._note_draft_tool({
+            "title": "超聚变", "markdown": "正文",
+        }))
+        assert search_denied["error"] == "user_note_search_required"
+        # Explicit migration/recovery transcripts remain readable, but they are
+        # not the prerequisite for a note drafted from Hermes native history.
         transcript = json.loads(bridge._session_context_read_tool({}))
         assert transcript["messages"][0]["content"] == "超聚变是一家公司"
         assert [item["session_id"] for item in transcript["source_sessions"]] == [
             "source-1", "source-2"
         ]
-        search_denied = json.loads(bridge._note_draft_tool({
-            "title": "超聚变", "markdown": "正文",
-        }))
-        assert search_denied["error"] == "user_note_search_required"
         bridge._client_context_tool_context.value["user_note_search_completed"] = True
         result = json.loads(bridge._note_draft_tool({
             "title": "超聚变",
@@ -228,9 +230,132 @@ def test_note_draft_requires_transcript_read_and_emits_unsaved_event():
         assert result["status"] == "awaiting_user_confirmation"
         assert events[0]["type"] == "note_draft"
         assert events[0]["account_scope"] == "tenant:user"
+        assert events[0]["source_message_ids"] == ["m1"]
         assert bridge._client_context_tool_context.value["draft_emitted"] is True
     finally:
         bridge._client_context_tool_context.value = None
+
+
+def test_request_context_propagates_to_hermes_tool_worker_threads():
+    import concurrent.futures
+    import contextvars
+    import scripts.hermes_bridge as bridge
+
+    def capture():
+        knowledge_context = bridge._knowledge_tool_context.value
+        client_context = bridge._client_context_tool_context.value
+        assert isinstance(knowledge_context, dict)
+        assert isinstance(client_context, dict)
+        return (
+            knowledge_context["capability"],
+            client_context["hermes_session_id"],
+        )
+
+    bridge._knowledge_tool_context.value = {"capability": "cap-a"}
+    bridge._client_context_tool_context.value = {"hermes_session_id": "session-a"}
+    context_a = contextvars.copy_context()
+    bridge._knowledge_tool_context.value = {"capability": "cap-b"}
+    bridge._client_context_tool_context.value = {"hermes_session_id": "session-b"}
+    context_b = contextvars.copy_context()
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+            assert pool.submit(context_a.run, capture).result() == ("cap-a", "session-a")
+            assert pool.submit(context_b.run, capture).result() == ("cap-b", "session-b")
+    finally:
+        bridge._knowledge_tool_context.value = None
+        bridge._client_context_tool_context.value = None
+
+
+def test_note_draft_runs_from_native_hermes_history_without_client_snapshot(
+    monkeypatch, tmp_path,
+):
+    import concurrent.futures
+    import queue
+    import sys
+    import types
+    import contextvars
+    from typing import Any, cast
+    import scripts.hermes_bridge as bridge
+
+    observed = {}
+
+    class FakeSessionDB:
+        def get_messages(self, session_id):
+            assert session_id == "hermes-native-session"
+            return [
+                {"id": 1, "role": "user", "content": "NOTE-SEED-9F3A"},
+                {"id": 2, "role": "assistant", "content": "已记住"},
+            ]
+
+        def close(self):
+            return None
+
+    class FakeAgent:
+        session_id = "hermes-native-session"
+
+        def run_conversation(self, goal, **kwargs):
+            observed["goal"] = goal
+            observed["persist_user_message"] = kwargs.get("persist_user_message")
+
+            def execute_note_tools():
+                search = json.loads(bridge._user_note_search_tool({
+                    "query": "Hermes唯一Runtime验收-9F3A",
+                }))
+                assert search["success"] is True
+                return json.loads(bridge._note_draft_tool({
+                    "title": "Hermes唯一Runtime验收-9F3A",
+                    "markdown": "# Hermes唯一Runtime验收-9F3A\n\nNOTE-SEED-9F3A",
+                    "source_message_ids": ["1", "2"],
+                }))
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                request_context = contextvars.copy_context()
+                draft = pool.submit(request_context.run, execute_note_tools).result()
+            assert draft["status"] == "awaiting_user_confirmation"
+            return {"final_response": "草稿已生成"}
+
+        def close(self):
+            return None
+
+    def fake_build(*_args, **kwargs):
+        observed["client_context_enabled"] = kwargs["client_context_enabled"]
+        return FakeAgent(), FakeSessionDB(), {"triage": None}
+
+    monkeypatch.setattr(bridge, "_build_in_process_agent", fake_build)
+    monkeypatch.setattr(bridge, "_knowledge_gateway_search", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(bridge, "_update_session_mapping", lambda *_args: None)
+    gateway_context = types.ModuleType("gateway.session_context")
+    setattr(gateway_context, "declare_stateless_channel", lambda: None)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", gateway_context)
+
+    events = queue.Queue()
+    bridge._run_agent_sync(
+        "请把本次对话保存为笔记",
+        "stable-ios-session",
+        "hermes-native-session",
+        events,
+        [None],
+        knowledge_capability="signed-capability",
+        knowledge_claims={
+            "tenant_key": "tenant-a",
+            "user_id": "user-a",
+            "sources": ["user_notes"],
+            "scopes": ["private"],
+        },
+        client_session_context=None,
+        client_context_claims=None,
+        sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
+    )
+
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    assert observed["client_context_enabled"] is True
+    assert "禁止调用 session_context_read" in observed["goal"]
+    assert "Hermes 原生会话笔记协议" not in observed["persist_user_message"]
+    draft_event = next(item for item in emitted if item.get("type") == "note_draft")
+    assert draft_event["source_message_ids"] == ["1", "2"]
+    assert emitted[-1]["type"] == "done"
 
 
 def test_sandbox_identity_rejects_cross_user_claim_mix():
@@ -365,7 +490,7 @@ def test_note_draft_only_accepts_merge_candidates_from_current_search():
         "request_id": "request-merge",
         "client_session_id": "s",
         "account_scope": "tenant:user",
-        "read": True,
+        "hermes_session_id": "hermes-merge-session",
         "user_note_search_completed": True,
         "emit": events.append,
         "user_note_search_results": {
@@ -401,7 +526,7 @@ def test_note_update_requires_current_user_search_target_and_emits_binding():
         "request_id": "request-update",
         "client_session_id": "s",
         "account_scope": "tenant:user",
-        "read": True,
+        "hermes_session_id": "hermes-update-session",
         "user_note_search_completed": True,
         "emit": events.append,
         "user_note_search_results": {
@@ -446,7 +571,7 @@ def test_daily_note_draft_adds_daily_tag_and_preserves_markdown_features():
         "request_id": "request-daily",
         "client_session_id": "s",
         "account_scope": "tenant:user",
-        "read": True,
+        "hermes_session_id": "hermes-daily-session",
         "user_note_search_completed": True,
         "user_note_search_results": {},
         "emit": events.append,

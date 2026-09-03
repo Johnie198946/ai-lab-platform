@@ -43,7 +43,15 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// 租户与会话隔离 Epoch 屏障（递增令牌）
     private var tenantEpoch: Int = 0
     private var generationStartDate: Date? = nil
-    private var currentChatTask: Task<Void, Never>? = nil
+    private var currentChatTask: Task<Void, Never>?
+    private var checkpointingRequestId: String?
+    private var awaitingRunAcceptanceRequestId: String?
+    private var detachAfterCheckpoint = false
+#if DEBUG
+    var isCheckpointingRunForTesting: Bool { checkpointingRequestId != nil }
+    var isAwaitingRunAcceptanceForTesting: Bool { awaitingRunAcceptanceRequestId != nil }
+    var backgroundMonitorCountForTesting: Int { backgroundRunMonitors.count }
+#endif
     private var statusPollTask: Task<Void, Never>? = nil
     private var clarifySubmissionTask: Task<Void, Never>? = nil
     /// Agent 请求 ID -> 当前 UI 输出消息 ID。Clarify 后仍消费同一 SSE，但把续写放到用户选择之后。
@@ -63,11 +71,13 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var accountCancellable: AnyCancellable?
     /// Avoid synchronous SQLite rehydration every time SwiftUI merely presents the same Tab again.
     private var loadedSessionId: String? = nil
+    private var loadedAccountFingerprint: String? = nil
 
     public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
         self.sessionManager = sessionManager ?? SessionManager.shared
         self.appState = appState
         restoreActiveSession()
+        loadedAccountFingerprint = self.sessionManager.activeAccountFingerprint
         refreshQuickCommands()
         accountCancellable = NotificationCenter.default.publisher(for: .localAccountDidChange)
             .sink { [weak self] _ in
@@ -80,6 +90,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         // account lifecycle to follow. Ignore process-wide account notifications
         // until ChatView binds the real AppState on appear.
         guard appState != nil else { return }
+        let accountFingerprint = sessionManager.activeAccountFingerprint
+        guard accountFingerprint != loadedAccountFingerprint else { return }
+        loadedAccountFingerprint = accountFingerprint
         tenantEpoch += 1
         cancelAllTasksAndAnimations()
         for task in backgroundRunMonitors.values { task.cancel() }
@@ -95,6 +108,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         if appState?.isLoggedIn == true {
             restoreActiveSession(force: true)
         }
+    }
+
+    public func synchronizeLocalAccount() {
+        handleLocalAccountChange()
     }
 
     // MARK: - 会话恢复与持久化
@@ -167,11 +184,24 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func reconcileActiveRun() {
         guard !isGenerating, APIClient.shared.currentToken() != nil else { return }
         let sid = sessionManager.activeSessionID()
-        backgroundProcessingSessionIDs.remove(sid)
         guard let outputIndex = messages.lastIndex(where: {
             $0.clarifyBlock == nil && ($0.role == .interrupted || $0.pending || $0.isStreaming)
         }) else { return }
         let outputId = messages[outputIndex].id
+        // ChatView can invoke reconciliation from onAppear, activeTab and
+        // scenePhase in the same run-loop turn. A second owner would cancel the
+        // first monitor, whose defer would then remove the shared presentation
+        // marker and leave a real Hermes Run polling with no visible state.
+        guard Self.shouldStartRunReconciliation(
+            messageId: outputId,
+            reconcilingMessageIDs: reconcilingMessageIDs
+        ) else { return }
+        if let req = backgroundRunRequests[sid], backgroundRunMonitors[sid] != nil {
+            inflight = req
+            isGenerating = true
+            reconcilingMessageIDs.insert(outputId)
+            return
+        }
         if let runId = messages[outputIndex].runId, !runId.isEmpty {
             reconcilingMessageIDs.insert(outputId)
             startDurableRunMonitor(
@@ -190,7 +220,12 @@ public final class TenantSessionCoordinator: ObservableObject {
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.reconcilingMessageIDs.remove(outputId) }
+            var handedOffToRecoveredMonitor = false
+            defer {
+                if !handedOffToRecoveredMonitor {
+                    self.reconcilingMessageIDs.remove(outputId)
+                }
+            }
             do {
                 let status = try await APIClient.shared.fetchChatStatus(
                     sessionId: sid, consume: true, agentId: agentId
@@ -219,6 +254,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.messages[idx].isStreaming = true
                     }
                     self.commitSession()
+                    handedOffToRecoveredMonitor = true
                     self.startRecoveredRunMonitor(
                         requestId: req.id, sessionId: sid,
                         agentId: agentId, outputMessageId: outputId
@@ -377,12 +413,15 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard sessionId != previousSessionId else { return }
 
         sessionPendingQueues[previousSessionId] = pendingQueue
+        let preservesPreAcceptanceSubmission = isPreAcceptanceSubmissionInFlight
         detachCurrentRunForNavigation()
-        tenantEpoch += 1
-        cancelAllTasksAndAnimations()
+        if !preservesPreAcceptanceSubmission {
+            tenantEpoch += 1
+            cancelAllTasksAndAnimations()
+            isGenerating = false
+            inflight = nil
+        }
 
-        isGenerating = false
-        inflight = nil
         pendingQueue = sessionPendingQueues[sessionId] ?? []
         waitingSeconds = 0
         thinkingPhase = nil
@@ -425,12 +464,15 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func newSession(agentId: String? = nil, agentName: String? = nil) {
         let previousSessionId = sessionManager.activeSessionID()
         sessionPendingQueues[previousSessionId] = pendingQueue
+        let preservesPreAcceptanceSubmission = isPreAcceptanceSubmissionInFlight
         detachCurrentRunForNavigation()
-        tenantEpoch += 1
-        cancelAllTasksAndAnimations()
+        if !preservesPreAcceptanceSubmission {
+            tenantEpoch += 1
+            cancelAllTasksAndAnimations()
+            isGenerating = false
+            inflight = nil
+        }
 
-        isGenerating = false
-        inflight = nil
         pendingQueue.removeAll()
         waitingSeconds = 0
         thinkingPhase = nil
@@ -521,6 +563,13 @@ public final class TenantSessionCoordinator: ObservableObject {
         let outputId = outputMessageId(for: req)
         drainDeltaBuffer(messageId: outputId)
         commitSession()
+        if checkpointingRequestId == req.id || awaitingRunAcceptanceRequestId == req.id {
+            // The Bridge has not accepted this Run yet. Keep the checkpoint task
+            // alive; once durable local state exists it will submit the same request
+            // and project it as background work. Never poll a non-existent Run.
+            detachAfterCheckpoint = true
+            return
+        }
         startBackgroundRunMonitor(req: req, outputMessageId: outputId)
         currentChatTask?.cancel()
         currentChatTask = nil
@@ -532,6 +581,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func cancelAllTasksAndAnimations() {
         currentChatTask?.cancel()
         currentChatTask = nil
+        checkpointingRequestId = nil
+        awaitingRunAcceptanceRequestId = nil
+        detachAfterCheckpoint = false
         clarifySubmissionTask?.cancel()
         clarifySubmissionTask = nil
         streamOutputMessageIds.removeAll()
@@ -548,10 +600,20 @@ public final class TenantSessionCoordinator: ObservableObject {
         let outputId = outputMessageId(for: req)
         drainDeltaBuffer(messageId: outputId)
         commitSession()
+        if checkpointingRequestId == req.id || awaitingRunAcceptanceRequestId == req.id {
+            detachAfterCheckpoint = true
+            return
+        }
         startBackgroundRunMonitor(req: req, outputMessageId: outputId)
         currentChatTask?.cancel()
         currentChatTask = nil
         stopStatusPolling()
+    }
+
+    private var isPreAcceptanceSubmissionInFlight: Bool {
+        guard let requestId = inflight?.id else { return false }
+        return checkpointingRequestId == requestId
+            || awaitingRunAcceptanceRequestId == requestId
     }
 
     private func startBackgroundRunMonitor(req: InFlightRequest, outputMessageId: String) {
@@ -564,6 +626,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.backgroundRunMonitors.removeValue(forKey: req.sessionId)
                 self.backgroundRunRequests.removeValue(forKey: req.sessionId)
                 self.backgroundProcessingSessionIDs.remove(req.sessionId)
+                self.reconcilingMessageIDs.remove(outputMessageId)
             }
             var attempts = 0
             while attempts < 360, !Task.isCancelled {
@@ -577,6 +640,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                             requestId: outputMessageId,
                             answer: answer
                         )
+                        if self.sessionManager.activeSessionID() == req.sessionId {
+                            self.applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                            if self.inflight?.sessionId == req.sessionId {
+                                self.finishGeneration()
+                            }
+                        }
                         return
                     }
                     if ["timeout", "not_found"].contains(status.status) {
@@ -585,6 +654,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                             requestId: outputMessageId,
                             text: "任务未能完成，可返回会话后重试"
                         )
+                        if self.sessionManager.activeSessionID() == req.sessionId {
+                            self.restoreActiveSession(force: true)
+                            if self.inflight?.sessionId == req.sessionId {
+                                self.finishGeneration()
+                            }
+                        }
                         return
                     }
                 } catch {
@@ -719,17 +794,25 @@ public final class TenantSessionCoordinator: ObservableObject {
             sourceSessions: recoveryContext?.sourceSessions ?? [],
             localNotes: localNoteSnapshot
         )
-        messages.append(ChatMessage(sessionId: sid, role: .user, content: text, quotedContext: quote))
+        let userMessage = ChatMessage(
+            sessionId: sid, role: .user, content: text, quotedContext: quote
+        )
+        messages.append(userMessage)
         inputText = ""
         quotedContext = nil
-        commitSession()
+        if isGenerating && !regenerate {
+            // Queued messages do not have a Run identity yet; persist them through
+            // the normal ordered writer until the queue starts execution.
+            commitSession()
+        }
 
         submitGeneration(
             text: text,
             quote: quote,
             regenerate: regenerate,
             contextScope: contextScope,
-            clientSessionContext: enrichedClientSessionContext
+            clientSessionContext: enrichedClientSessionContext,
+            userMessageId: userMessage.id
         )
     }
 
@@ -738,11 +821,12 @@ public final class TenantSessionCoordinator: ObservableObject {
         quote: QuotedContext?,
         regenerate: Bool = false,
         contextScope: ChatContextScopeDTO = ChatContextScopeDTO(),
-        clientSessionContext: ClientSessionContextDTO? = nil
+        clientSessionContext: ClientSessionContextDTO? = nil,
+        userMessageId: String? = nil
     ) {
         if isGenerating && !regenerate {
             pendingQueue.append(PendingItem(
-                id: UUID().uuidString,
+                id: userMessageId ?? UUID().uuidString,
                 text: text,
                 quote: quote,
                 contextScope: contextScope,
@@ -754,7 +838,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                 quote: quote,
                 regenerate: regenerate,
                 contextScope: contextScope,
-                clientSessionContext: clientSessionContext
+                clientSessionContext: clientSessionContext,
+                userMessageId: userMessageId
             )
         }
     }
@@ -763,7 +848,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         submitGeneration(text: text, quote: quote)
     }
 
-    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil) {
+    public func startGeneration(text: String, quote: QuotedContext?, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil, userMessageId: String? = nil) {
         isGenerating = true
         waitingSeconds = 0
         thinkingPhase = nil
@@ -802,13 +887,40 @@ public final class TenantSessionCoordinator: ObservableObject {
                 pending: true
             )
         )
-        commitSession()
-
+        let outputMessage = messages.last!
+        let runUserMessage = userMessageId.flatMap { messageId in
+            messages.first(where: { $0.id == messageId && $0.role == .user })
+        } ?? messages.dropLast().last(where: { $0.role == .user })
+        let runProjection = [runUserMessage, outputMessage].compactMap { $0 }
         let taskEpoch = self.tenantEpoch
-        currentChatTask = Task {
-            await runInFlightStreamed(req, taskEpoch: taskEpoch)
+        checkpointingRequestId = req.id
+        currentChatTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let checkpointed = await self.sessionManager.checkpointRunProjection(
+                runProjection, for: sid
+            )
+            guard Self.shouldContinueSubmissionAfterCheckpoint(
+                isCancelled: Task.isCancelled,
+                epochMatches: self.tenantEpoch == taskEpoch,
+                activeSessionMatches: self.sessionManager.activeSessionID() == sid,
+                detachRequested: self.detachAfterCheckpoint
+            ) else { return }
+            guard checkpointed else {
+                if let idx = self.messages.firstIndex(where: { $0.id == req.id }) {
+                    self.messages[idx].role = .interrupted
+                    self.messages[idx].content = "本地恢复点写入失败，任务未启动"
+                    self.messages[idx].pending = false
+                    self.messages[idx].isStreaming = false
+                }
+                self.showToast("无法安全保存恢复点，未启动任务")
+                self.finishGeneration()
+                return
+            }
+            self.checkpointingRequestId = nil
+            self.awaitingRunAcceptanceRequestId = req.id
+            self.commitSession()
+            await self.runInFlightStreamed(req, taskEpoch: taskEpoch)
         }
-        startStatusPolling(req: req, taskEpoch: taskEpoch)
     }
 
     // MARK: - 流式批量节流
@@ -917,6 +1029,29 @@ public final class TenantSessionCoordinator: ObservableObject {
                     drainDeltaBuffer(messageId: req.id)
                     return
                 }
+                if case .runCursor(let runId, let eventSequence) = event {
+                    awaitingRunAcceptanceRequestId = nil
+                    let outputId = outputMessageId(for: req)
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
+                        messages[idx].runId = runId
+                        messages[idx].lastEventSequence = max(
+                            messages[idx].lastEventSequence,
+                            eventSequence
+                        )
+                        commitSession()
+                    }
+                    if detachAfterCheckpoint || req.sessionId != sessionManager.activeSessionID() {
+                        detachAfterCheckpoint = false
+                        handedOffToStatusRecovery = true
+                        startBackgroundRunMonitor(req: req, outputMessageId: outputId)
+                        currentChatTask = nil
+                        stopStatusPolling()
+                        isGenerating = false
+                        inflight = nil
+                        return
+                    }
+                    startStatusPolling(req: req, taskEpoch: taskEpoch)
+                }
                 guard req.sessionId == sessionManager.activeSessionID() else {
                     drainDeltaBuffer(messageId: outputMessageId(for: req))
                     sessionManager.markInterrupted(sessionId: req.sessionId)
@@ -934,6 +1069,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                             eventSequence
                         )
                         commitSession()
+                    }
+                    if detachAfterCheckpoint {
+                        detachAfterCheckpoint = false
+                        backgroundProcessingSessionIDs.insert(req.sessionId)
                     }
 
                 case .delta(let content):
@@ -1172,10 +1311,25 @@ public final class TenantSessionCoordinator: ObservableObject {
                 sessionId: req.sessionId, consume: true, agentId: req.agentId
             )
             if status.status == "completed", let answer = status.answer, !answer.isEmpty {
-                applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                if sessionManager.activeSessionID() == req.sessionId {
+                    applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                } else {
+                    sessionManager.applyCompletedStatus(
+                        sessionId: req.sessionId,
+                        requestId: outputMessageId,
+                        answer: answer
+                    )
+                }
                 return false
             }
             if status.status == "running" {
+                if sessionManager.activeSessionID() != req.sessionId {
+                    startBackgroundRunMonitor(req: req, outputMessageId: outputMessageId)
+                    currentChatTask = nil
+                    isGenerating = false
+                    inflight = nil
+                    return true
+                }
                 if let idx = messages.firstIndex(where: { $0.id == outputMessageId }) {
                     if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         messages[idx].content = "连接暂时中断，正在后台继续。返回本页后会恢复同一任务。"
@@ -1194,6 +1348,22 @@ public final class TenantSessionCoordinator: ObservableObject {
             }
         } catch {
             // 状态查询也断网：持久化 interrupted，回前台后 reconcileActiveRun 再对账。
+        }
+        if sessionManager.activeSessionID() != req.sessionId {
+            if var stored = sessionManager.storedMessage(
+                id: outputMessageId,
+                sessionId: req.sessionId
+            ) {
+                if stored.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    stored.content = "连接暂时中断，已保留当前任务。请稍后返回本页恢复。"
+                }
+                stored.role = .interrupted
+                stored.pending = false
+                stored.isStreaming = false
+                stored.degraded = false
+                sessionManager.updateMessage(stored, sessionId: req.sessionId)
+            }
+            return false
         }
         if let idx = messages.firstIndex(where: { $0.id == outputMessageId }) {
             if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1434,9 +1604,11 @@ public final class TenantSessionCoordinator: ObservableObject {
         agentId: String?,
         outputMessageId: String
     ) {
+        reconcilingMessageIDs.insert(outputMessageId)
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.reconcilingMessageIDs.remove(outputMessageId) }
             var attempts = 0
             // Bridge watchdog 的服务端上限为 720s；monitor 覆盖完整窗口，避免长调研在 3 分钟处假中断。
             while attempts < 360 && !Task.isCancelled {
@@ -1813,6 +1985,22 @@ public final class TenantSessionCoordinator: ObservableObject {
             || (message.pending && backgroundProcessingSessionIDs.contains(message.sessionId))
     }
 
+    nonisolated static func shouldStartRunReconciliation(
+        messageId: String,
+        reconcilingMessageIDs: Set<String>
+    ) -> Bool {
+        !reconcilingMessageIDs.contains(messageId)
+    }
+
+    nonisolated static func shouldContinueSubmissionAfterCheckpoint(
+        isCancelled: Bool,
+        epochMatches: Bool,
+        activeSessionMatches: Bool,
+        detachRequested: Bool
+    ) -> Bool {
+        !isCancelled && epochMatches && (activeSessionMatches || detachRequested)
+    }
+
     /// 重新生成先对账 server-side Run：completed 回填，running 恢复同一 request 的 monitor；
     /// 只有 Bridge 明确返回 timeout/not_found 时才携带 regenerate=true 创建新 Run。
     public func retryMessage(_ messageId: String) {
@@ -1837,7 +2025,12 @@ public final class TenantSessionCoordinator: ObservableObject {
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.reconcilingMessageIDs.remove(messageId) }
+            var handedOffToRecoveredMonitor = false
+            defer {
+                if !handedOffToRecoveredMonitor {
+                    self.reconcilingMessageIDs.remove(messageId)
+                }
+            }
             do {
                 let status = try await APIClient.shared.fetchChatStatus(
                     sessionId: sid, consume: true, agentId: agentId
@@ -1862,6 +2055,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.messages[currentIdx].degraded = false
                     }
                     self.commitSession()
+                    handedOffToRecoveredMonitor = true
                     self.startRecoveredRunMonitor(
                         requestId: req.id, sessionId: sid,
                         agentId: agentId, outputMessageId: messageId
@@ -1996,9 +2190,16 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     private func finishGeneration() {
+        let finishedSessionId = inflight?.sessionId
         isGenerating = false
         inflight = nil
         currentChatTask = nil
+        checkpointingRequestId = nil
+        awaitingRunAcceptanceRequestId = nil
+        detachAfterCheckpoint = false
+        if let finishedSessionId {
+            backgroundProcessingSessionIDs.remove(finishedSessionId)
+        }
         waitingSeconds = 0
         generationStartDate = nil
         stopStatusPolling()
@@ -2025,7 +2226,8 @@ public final class TenantSessionCoordinator: ObservableObject {
             text: next.text,
             quote: next.quote,
             contextScope: next.contextScope,
-            clientSessionContext: next.clientSessionContext
+            clientSessionContext: next.clientSessionContext,
+            userMessageId: next.id
         )
     }
 

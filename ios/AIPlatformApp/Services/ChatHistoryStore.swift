@@ -25,13 +25,15 @@ public struct StoredSessionSummary: Sendable {
     public let trashedAt: Date?
 }
 
-/// Indexed local history. SessionManager serializes access on MainActor; SQLite supplies atomic writes.
+/// Indexed local history. A recursive connection lock serializes complete SQLite
+/// transactions across MainActor reads and detached persistence writes.
 public final class ChatHistoryStore: @unchecked Sendable {
     public static let pageMessageLimit = 24
     public static let pageCharacterLimit = 80_000
 
     private var db: OpaquePointer?
     private let legacyDirectory: URL
+    private let connectionLock = NSRecursiveLock()
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
     private static let encoder: JSONEncoder = { let x = JSONEncoder(); x.dateEncodingStrategy = .iso8601; return x }()
     private static let decoder: JSONDecoder = { let x = JSONDecoder(); x.dateDecodingStrategy = .iso8601; return x }()
@@ -44,7 +46,7 @@ public final class ChatHistoryStore: @unchecked Sendable {
         try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         let flags = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX
         guard sqlite3_open_v2(url.path, &db, flags, nil) == SQLITE_OK else { throw error("open") }
-        try exec("PRAGMA foreign_keys=ON"); try exec("PRAGMA journal_mode=WAL"); try exec("PRAGMA synchronous=NORMAL"); try exec("PRAGMA busy_timeout=5000")
+        try exec("PRAGMA foreign_keys=ON"); try exec("PRAGMA journal_mode=WAL"); try exec("PRAGMA synchronous=NORMAL"); try exec("PRAGMA busy_timeout=100")
         try schema()
         if performLegacyMigration { try migrateLegacySessions() }
     }
@@ -298,10 +300,48 @@ public final class ChatHistoryStore: @unchecked Sendable {
     private func sequence(_ sid:String,_ mid:String)throws->Int64?{try query("SELECT sequence FROM messages WHERE session_id=? AND message_id=? LIMIT 1",{s in bind(sid,s,1);bind(mid,s,2)}){sqlite3_column_int64($0,0)}.first}
     private func exists(_ sid:String,_ c:String,_ n:Int64)throws->Bool{try int64("SELECT EXISTS(SELECT 1 FROM messages WHERE session_id=? AND \(c) LIMIT 1)",{s in bind(sid,s,1);sqlite3_bind_int64(s,2,n)}) != 0}
     private func decode(_ s:OpaquePointer?,_ c:Int32,_ sid:String)->ChatMessage{let n=Int(sqlite3_column_bytes(s,c));let d=Data(bytes:sqlite3_column_blob(s,c),count:n);return (try? Self.decoder.decode(PersistedMessage.self,from:d).toChatMessage(sessionId:sid)) ?? ChatMessage(sessionId:sid,role:.assistant,content:"历史消息读取失败")}
-    private func transaction(_ body:()throws->Void)throws{try exec("BEGIN IMMEDIATE");do{try body();try exec("COMMIT")}catch{try? exec("ROLLBACK");throw error}}
-    private func exec(_ sql:String)throws{guard sqlite3_exec(db,sql,nil,nil,nil)==SQLITE_OK else{throw error(sql)}}
-    private func run(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in})throws{var s:OpaquePointer?;guard sqlite3_prepare_v2(db,sql,-1,&s,nil)==SQLITE_OK else{throw error(sql)};defer{sqlite3_finalize(s)};binds(s);guard sqlite3_step(s)==SQLITE_DONE else{throw error(sql)}}
-    private func query<T>(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in},_ map:(OpaquePointer?)->T)throws->[T]{var s:OpaquePointer?;guard sqlite3_prepare_v2(db,sql,-1,&s,nil)==SQLITE_OK else{throw error(sql)};defer{sqlite3_finalize(s)};binds(s);var r:[T]=[];while sqlite3_step(s)==SQLITE_ROW{r.append(map(s))};return r}
+    private func withConnectionLock<T>(_ body: () throws -> T) rethrows -> T {
+        connectionLock.lock()
+        defer { connectionLock.unlock() }
+        return try body()
+    }
+    private func transaction(_ body:()throws->Void)throws {
+        try withConnectionLock {
+            try exec("BEGIN IMMEDIATE")
+            do {
+                try body()
+                try exec("COMMIT")
+            } catch {
+                try? exec("ROLLBACK")
+                throw error
+            }
+        }
+    }
+    private func exec(_ sql:String)throws {
+        try withConnectionLock {
+            guard sqlite3_exec(db,sql,nil,nil,nil)==SQLITE_OK else{throw error(sql)}
+        }
+    }
+    private func run(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in})throws {
+        try withConnectionLock {
+            var s:OpaquePointer?
+            guard sqlite3_prepare_v2(db,sql,-1,&s,nil)==SQLITE_OK else{throw error(sql)}
+            defer{sqlite3_finalize(s)}
+            binds(s)
+            guard sqlite3_step(s)==SQLITE_DONE else{throw error(sql)}
+        }
+    }
+    private func query<T>(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in},_ map:(OpaquePointer?)->T)throws->[T] {
+        try withConnectionLock {
+            var s:OpaquePointer?
+            guard sqlite3_prepare_v2(db,sql,-1,&s,nil)==SQLITE_OK else{throw error(sql)}
+            defer{sqlite3_finalize(s)}
+            binds(s)
+            var r:[T]=[]
+            while sqlite3_step(s)==SQLITE_ROW{r.append(map(s))}
+            return r
+        }
+    }
     private func int64(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in})throws->Int64{try query(sql,binds){sqlite3_column_int64($0,0)}.first ?? 0}
     private func bind(_ x:String,_ s:OpaquePointer?,_ i:Int32){sqlite3_bind_text(s,i,x,-1,Self.transient)}
     private func bind(_ x:Data,_ s:OpaquePointer?,_ i:Int32){_ = x.withUnsafeBytes{sqlite3_bind_blob(s,i,$0.baseAddress,Int32($0.count),Self.transient)}}
