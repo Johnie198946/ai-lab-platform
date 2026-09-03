@@ -5926,7 +5926,8 @@ def _task_from_card_context(
         return None
     if str(card.get("qws_task_id") or "") != expected_task_id:
         return None
-    qws = card.get("qws") if isinstance(card.get("qws"), dict) else {}
+    qws_value = card.get("qws")
+    qws: dict[str, Any] = qws_value if isinstance(qws_value, dict) else {}
     descriptions = card.get("descriptions") if isinstance(card.get("descriptions"), list) else []
     summary = next(
         (
@@ -5939,6 +5940,7 @@ def _task_from_card_context(
     assignee = card.get("assignee") if isinstance(card.get("assignee"), dict) else {}
     return {
         "id": expected_task_id,
+        "canonical_task_id": str(qws.get("canonical_task_id") or "") or None,
         "title": str(card.get("title") or "Taskboard card"),
         "summary": summary,
         "status": str(card.get("status") or "UNSPECIFIED"),
@@ -7205,8 +7207,14 @@ async def open_task_conversation(
                 }
                 existing = legacy
         if existing is not None:
+            existing_id = existing.id
             existing.binding = {
                 **(existing.binding or {}),
+                **(
+                    {"canonical_task_id": canonical_task_id}
+                    if canonical_task_id
+                    else {}
+                ),
                 "agent_id": ai_employee["agent_id"] if ai_employee else None,
                 "ai_employee": ai_employee,
             }
@@ -7223,7 +7231,7 @@ async def open_task_conversation(
                 await db.rollback()
                 existing = await db.scalar(
                     select(WorkspaceTaskConversation).where(
-                        WorkspaceTaskConversation.id == existing.id,
+                        WorkspaceTaskConversation.id == existing_id,
                         WorkspaceTaskConversation.tenant_key == tenant_key,
                         WorkspaceTaskConversation.user_id == user_id,
                     )
@@ -7261,6 +7269,7 @@ async def open_task_conversation(
             "process_revision": project_process_revision,
             "stage_id": task["stage_id"],
             "task_id": task["id"],
+            "canonical_task_id": task.get("canonical_task_id"),
             "workflow_id": task.get("workflow_id"),
             "execution_id": None,
             "session_id": session_id,

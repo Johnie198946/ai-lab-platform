@@ -357,6 +357,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
           const queued = todoTasks.length - readyTasks.length;
           const results = await Promise.allSettled(readyTasks.map(async (item) => {
             let lastError;
+            const requestId = `qw-batch-${crypto.randomUUID()}`;
             for (let attempt = 0; attempt < 3; attempt += 1) {
               try {
                 const session = await loadTaskSession(item.id);
@@ -369,7 +370,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
                 });
                 return await platformApi.startTaskAutoExecution(conversation.id, {
                   instruction: batchAutoInstruction(item),
-                  request_id: `qw-batch-${crypto.randomUUID()}`,
+                  request_id: requestId,
                 });
               } catch (reason) {
                 lastError = reason;

@@ -51,6 +51,7 @@ from backend.models.workspace import (  # noqa: E402
     WorkspaceProcessDraft,
     WorkspaceProject,
     WorkspaceTaskConversation,
+    WorkspaceTaskConversationContext,
     WorkspaceTaskMessage,
 )
 
@@ -2548,6 +2549,115 @@ def test_concurrent_task_conversation_open_replays_without_500(
     responses = asyncio.run(race())
     assert sorted(response.status_code for response in responses) == [200, 201]
     assert len({response.json()["id"] for response in responses}) == 1
+
+
+def test_concurrent_existing_context_open_replays_without_500(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "existing-context-race")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    request = {
+        "project_id": project_id,
+        "task_id": task["id"],
+        "workflow_id": task["workflow_id"],
+        "agent_version": "hermes-current",
+        "card_context": {
+            "schema_version": 1,
+            "project": {"id": project_id, "name": "Context race"},
+            "task": {
+                "qws_task_id": task["id"],
+                "dashi_task_id": task["id"],
+                "title": task["title"],
+                "descriptions": [],
+                "comments": [],
+            },
+        },
+    }
+    assert client.post("/api/v1/task-conversations", json=request).status_code == 201
+    request["card_context"]["task"]["comments"] = [
+        {"id": "same-comment", "body": "same concurrent update"}
+    ]
+    original_commit = AsyncSession.commit
+    reached = 0
+    release = asyncio.Event()
+
+    async def synchronized_commit(session):
+        nonlocal reached
+        if any(isinstance(item, WorkspaceTaskConversationContext) for item in session.new):
+            reached += 1
+            if reached == 2:
+                release.set()
+            else:
+                await release.wait()
+        return await original_commit(session)
+
+    monkeypatch.setattr(AsyncSession, "commit", synchronized_commit)
+
+    async def race():
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+            return await asyncio.gather(
+                async_client.post("/api/v1/task-conversations", json=request),
+                async_client.post("/api/v1/task-conversations", json=request),
+            )
+
+    responses = asyncio.run(race())
+    assert [response.status_code for response in responses] == [200, 200]
+    assert len({response.json()["id"] for response in responses}) == 1
+
+
+def test_taskboard_conversation_binds_canonical_task_for_hermes_auto_execution(
+    _reset_database, monkeypatch
+):
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "taskboard-canonical-binding")
+    _confirm_legacy_intent(client, project_id)
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    card_id = str(uuid4())
+    request = {
+        "project_id": project_id,
+        "task_id": card_id,
+        "workflow_id": task["workflow_id"],
+        "agent_version": "hermes-current",
+        "card_context": {
+            "schema_version": 2,
+            "project": {"id": project_id, "name": "Canonical binding"},
+            "task": {
+                "qws_task_id": card_id,
+                "dashi_task_id": card_id,
+                "title": task["title"],
+                "descriptions": [],
+                "comments": [],
+                "qws": {
+                    "canonical_task_id": task["id"],
+                    "stage_id": task["stage_id"],
+                    "workflow_id": task["workflow_id"],
+                },
+            },
+        },
+    }
+    legacy_request = json.loads(json.dumps(request))
+    legacy_request["card_context"]["task"]["qws"].pop("canonical_task_id")
+    legacy = client.post("/api/v1/task-conversations", json=legacy_request)
+    assert legacy.status_code == 201, legacy.text
+    assert not legacy.json()["binding"].get("canonical_task_id")
+
+    opened = client.post("/api/v1/task-conversations", json=request)
+    assert opened.status_code == 200, opened.text
+    assert opened.json()["id"] == legacy.json()["id"]
+    assert opened.json()["binding"]["canonical_task_id"] == task["id"]
+
+    async def no_op_auto_execution(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(qws_api, "_run_task_auto_execution", no_op_auto_execution)
+    started = client.post(
+        f"/api/v1/task-conversations/{opened.json()['id']}/auto-execute",
+        headers={"Authorization": "Bearer test-token"},
+        json={"instruction": "通过 Hermes 执行", "request_id": "canonical-auto-0001"},
+    )
+    assert started.status_code == 202, started.text
 
 
 def test_task_conversation_card_context_is_full_then_incremental(_reset_database):

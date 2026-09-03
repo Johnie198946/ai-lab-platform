@@ -62,6 +62,16 @@ test("single-card execution opens the live progress drawer instead of starting i
   assert.doesNotMatch(singleRunHandler, /startTaskAutoExecution/);
 });
 
+test("batch auto-execution retries one stable Hermes request id per task", () => {
+  const start = hostSource.indexOf('event.data.type === "taskboard:run-project-todos"');
+  const end = hostSource.indexOf('event.data.type === "taskboard:qws-command"');
+  const batchHandler = hostSource.slice(start, end);
+  const requestId = batchHandler.indexOf('const requestId = `qw-batch-${crypto.randomUUID()}`;');
+  const retryLoop = batchHandler.indexOf('for (let attempt = 0; attempt < 3; attempt += 1)');
+  assert.ok(requestId >= 0 && requestId < retryLoop);
+  assert.match(batchHandler, /request_id: requestId/);
+});
+
 test("card session sends versionable full card context to the backend", () => {
   for (const field of [
     "business_goal",
