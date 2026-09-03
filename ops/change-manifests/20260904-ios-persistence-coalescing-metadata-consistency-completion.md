@@ -1,15 +1,17 @@
 # 20260904 iOS persistence coalescing and metadata consistency completion
 
 - task_id: `20260904-ios-persistence-coalescing-metadata-consistency`
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Desktop/AI Lab/quantumworkspace-m0`
-- implementation_commit: the commit containing this file; resolve with `git log -1 --format=%H -- ops/change-manifests/20260904-ios-persistence-coalescing-metadata-consistency-completion.md`
+- implementation_commit: `1dbefe4047ca7a782324d9fc9b78829601f7b869`
+- receipt_commit: the latest commit containing this file; resolve with `git log -1 --format=%H -- ops/change-manifests/20260904-ios-persistence-coalescing-metadata-consistency-completion.md`
 - baseline: `f9c871ba760875fd1490a62d21ade07c4ac83f23`
-- remote_sha: pending push and `git ls-remote` verification
-- server_before: pending
-- server_after: pending
-- rollback_point: pending
+- remote_sha_after_implementation: `1dbefe4047ca7a782324d9fc9b78829601f7b869`
+- server_before: `f9c871ba760875fd1490a62d21ade07c4ac83f23`
+- server_after_implementation: `1dbefe4047ca7a782324d9fc9b78829601f7b869`
+- final_server_after: receipt commit containing this file; verified separately after exact-SHA receipt deployment
+- rollback_point: `/opt/releases/ai-lab-platform-f9c871ba7608.VNMoY1`
 
 ## Scope
 
@@ -32,6 +34,12 @@ Hermes remains the only AI runtime. These changes affect only iOS UI/offline/Run
 - High-frequency regression drives 1,000 stream updates while SQLite is busy and asserts bounded pending/scheduled writes plus final cursor/content durability.
 - Metadata regression locks SQLite and verifies topic/lifecycle/organized memory remains at the prior durable value until a successful write.
 - Cross-account regression forces the first SQLite busy timeout before account switching and verifies the bounded retry writes only to the captured original store.
+- GitHub implementation SHA was verified with `git ls-remote` before deployment.
+- Production exact-SHA deployment completed; server marker matched the implementation SHA.
+- Production public `/health`: HTTP 200 with `{"status":"ok","version":"0.8.0"}`.
+- Production API-container `/ready`: HTTP 200 with `{"status":"ready","version":"0.8.0"}`.
+- `hermes-serve`, `hermes-bridge`, and `hermes-chat-worker`: all `active`.
+- `DEV_LOGIN_ENABLED=false`; a schema-valid `/api/v1/dev-login` request returned HTTP 404 (`开发者登录未启用`).
 
 ## Test environment note
 
