@@ -73,6 +73,10 @@ def test_high_confidence_research_is_idempotently_ingested_as_private_knowledge(
     assert first is not None
     note, metadata = note_paths("tenant-a", "user-a", first["note_id"], tmp_path)
     assert note.is_file() and metadata.is_file()
+    assert note.stat().st_mode & 0o777 == 0o644
+    assert metadata.stat().st_mode & 0o777 == 0o644
+    assert note.parent.stat().st_mode & 0o777 == 0o755
+    assert (note.parent / ".private-index.json").stat().st_mode & 0o777 == 0o644
     assert "security_level: red" in note.read_text(encoding="utf-8")
     assert not note_paths("tenant-a", "user-b", first["note_id"], tmp_path)[0].exists()
 

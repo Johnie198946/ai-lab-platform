@@ -175,3 +175,34 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
         assert not (owner_dir / "old-note.md").exists()
         assert (owner_dir / ".trash" / "old-note.md").is_file()
         assert json.loads((owner_dir / ".private-index.json").read_text())["document_count"] == 0
+
+
+def test_unreadable_note_returns_retryable_storage_error_without_leaking_path():
+    import backend.api.auth as auth
+    import backend.api.knowledge_sync as sync
+
+    async def resolver(_user_id):
+        return {
+            "tenant_key": "tenant-a", "org_id": "org-a",
+            "is_super_admin": False, "categories": set(),
+        }
+
+    with tempfile.TemporaryDirectory() as directory, \
+         patch.object(auth, "tenant_resolver", side_effect=resolver), \
+         patch.object(sync, "_sync_root", return_value=Path(directory)):
+        owner_dir = Path(directory) / sync.namespace("tenant-a") / sync.namespace("sync-user")
+        owner_dir.mkdir(parents=True)
+        note = owner_dir / "blocked.md"
+        note.write_text("private")
+        note.chmod(0)
+        try:
+            response = _request("GET", "/api/v1/me/knowledge-notes")
+        finally:
+            note.chmod(0o600)
+        assert response.status_code == 503
+        assert response.json()["detail"] == {
+            "code": "note_storage_permission_denied",
+            "message": "笔记存储权限异常，请修复共享数据目录权限后重试",
+            "retryable": True,
+        }
+        assert str(note) not in response.text

@@ -173,6 +173,15 @@ public struct ChatView: View {
             }
             .onChange(of: appState.pendingChatPrompt) { _, _ in coordinator.handlePendingPrompt() }
             .onChange(of: appState.pendingTopicSessionId) { _, _ in handlePendingTopic() }
+            .onChange(of: appState.activeTab) { _, tab in
+                if tab == 0 {
+                    coordinator.reconcileActiveRun()
+                } else {
+                    // Tab navigation detaches only the iOS transport. Hermes owns
+                    // and continues the existing Run; the chat shows background state.
+                    coordinator.prepareForBackground()
+                }
+            }
             .onChange(of: coordinator.inputText) { _, newValue in
                 // Session restore, prompts, chips and voice input can update
                 // the coordinator outside the TextField.

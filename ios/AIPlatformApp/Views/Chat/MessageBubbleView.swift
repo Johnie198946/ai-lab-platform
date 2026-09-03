@@ -32,6 +32,7 @@ struct BoundedTextPreview: Equatable {
 enum LongMessagePresentation {
     static let longAnswerCharacterThreshold = 4_000
     static let streamingCharacterLimit = 2_400
+    static let streamingExpansionStep = 2_400
     static let collapsedCharacterLimit = 800
 
     static func isLong(_ text: String, limit: Int = longAnswerCharacterThreshold) -> Bool {
@@ -45,6 +46,9 @@ enum LongMessagePresentation {
     }
 
     static func streamingPreview(_ text: String, limit: Int = streamingCharacterLimit) -> BoundedTextPreview {
+        guard limit > 0 else {
+            return BoundedTextPreview(content: "", omittedPrefix: !text.isEmpty)
+        }
         guard isLong(text, limit: limit) else {
             return BoundedTextPreview(content: text, omittedPrefix: false)
         }
@@ -53,6 +57,7 @@ enum LongMessagePresentation {
     }
 
     static func collapsedPreview(_ text: String, limit: Int = collapsedCharacterLimit) -> String {
+        guard limit > 0 else { return "" }
         guard isLong(text, limit: limit) else { return text }
         let boundary = text.index(text.startIndex, offsetBy: limit)
         let rawPrefix = String(text[..<boundary])
@@ -66,6 +71,11 @@ enum LongMessagePresentation {
             return String(rawPrefix[..<paragraphBreak.lowerBound])
         }
         return rawPrefix
+    }
+
+    static func nextStreamingLimit(current: Int, contentCount: Int) -> Int {
+        guard current < contentCount else { return max(0, contentCount) }
+        return current + min(streamingExpansionStep, contentCount - current)
     }
 }
 
@@ -97,6 +107,7 @@ public struct MessageBubbleView: View {
     @State private var quoteFragmentDraft = ""
     @State private var isChoosingQuoteFragment = false
     @State private var isShowingFullAnswer = false
+    @State private var streamingCharacterLimit = LongMessagePresentation.streamingCharacterLimit
 
     public init(
         message: ChatMessage,
@@ -204,10 +215,22 @@ public struct MessageBubbleView: View {
                         // a bounded tail grows. Keeping the rendered subtree capped
                         // prevents a very long answer from monopolizing layout.
                         if streamingPreview.omittedPrefix {
-                            Label("前文已暂时折叠，完整内容会在生成结束后保留", systemImage: "text.append")
-                                .font(AppTheme.Typography.supporting.weight(.medium))
-                                .foregroundStyle(AppTheme.Colors.textSecondary)
-                                .accessibilityLabel("长回答生成中，前文已暂时折叠")
+                            VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+                                Label("前文已折叠，Hermes 仍在后台生成", systemImage: "text.append")
+                                    .font(AppTheme.Typography.supporting.weight(.medium))
+                                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                                Button {
+                                    streamingCharacterLimit = LongMessagePresentation.nextStreamingLimit(
+                                        current: streamingCharacterLimit,
+                                        contentCount: message.content.count
+                                    )
+                                } label: {
+                                    Label("向前展开一部分", systemImage: "chevron.up")
+                                        .font(AppTheme.Typography.supporting.weight(.semibold))
+                                }
+                                .buttonStyle(SoftButtonStyle())
+                                .accessibilityHint("每次多显示一段已收到的内容，不影响 Hermes 继续生成")
+                            }
                         }
                         ForEach(Array(streamingTextChunks.enumerated()), id: \.offset) { _, chunk in
                             Text(chunk)
@@ -338,7 +361,10 @@ public struct MessageBubbleView: View {
     }
 
     private var streamingPreview: BoundedTextPreview {
-        LongMessagePresentation.streamingPreview(message.content)
+        LongMessagePresentation.streamingPreview(
+            message.content,
+            limit: streamingCharacterLimit
+        )
     }
 
     private var streamingTextChunks: [String] {
@@ -476,6 +502,9 @@ private struct LongAnswerSheet: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+                    // Parse once into semantic blocks, then instantiate each Markdown
+                    // view lazily. Tables, headings, lists and links keep their meaning
+                    // without building one monolithic Markdown layout tree.
                     ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                         MarkdownBlockCard(block: block)
                     }

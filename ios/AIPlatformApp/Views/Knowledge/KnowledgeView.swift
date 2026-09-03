@@ -110,7 +110,7 @@ public struct KnowledgeView: View {
                 }
             }
             .refreshable {
-                store.reload()
+                await refreshNotes()
             }
             .navigationDestination(for: String.self) { noteID in
                 KnowledgeNoteEditor(noteID: noteID)
@@ -136,13 +136,15 @@ public struct KnowledgeView: View {
                 get: { store.lastError != nil },
                 set: { if !$0 { store.clearError() } }
             )) {
-                Button("重新加载") { store.reload() }
+                Button("重试云端同步") {
+                    Task { await refreshNotes() }
+                }
                 Button("关闭", role: .cancel) { store.clearError() }
             } message: {
                 Text(store.lastError ?? "请稍后重试")
             }
             .task {
-                await syncLocalNotes()
+                await refreshNotes()
             }
             .sheet(isPresented: $showingArchive) {
                 KnowledgeArchiveView()
@@ -511,6 +513,14 @@ public struct KnowledgeView: View {
                 id: note.id, mergedIntoNoteId: mergedIntoNoteId
             )
         }
+    }
+
+    /// Pull first so server notes created by a Hermes-backed chat run appear
+    /// immediately. iOS only owns local Markdown presentation and transport.
+    private func refreshNotes() async {
+        await store.restoreFromCloud()
+        guard store.lastError == nil else { return }
+        await syncLocalNotes()
     }
 }
 

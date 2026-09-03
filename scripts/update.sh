@@ -197,9 +197,11 @@ docker compose -p "$COMPOSE_PROJECT" exec -T api \
   python scripts/audit_runtime_contracts.py --data-dir /app/data
 printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
 
-echo "==> [4b/6] 建立 Hermes Vault 可见性链接"
+echo "==> [4b/6] 建立 Hermes Vault 可见性链接并修复笔记共享权限"
 VAULT_ROOT="$DATA_TARGET/vault"
 bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
+python3 scripts/repair_user_note_permissions.py \
+  "$VAULT_ROOT/raw/dialogues/tenants"
 
 echo "==> [5/6] 原子切换 release 并重启 Hermes runtime"
 LINK_TMP="$APP_LINK.next.$$"

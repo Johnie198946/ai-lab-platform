@@ -513,6 +513,9 @@ def test_capability_hook_uses_only_exact_agency_slugs_for_professional_turn(monk
     assert "AI_LAB_AGENCY_SPECIALIST=trend-researcher" in delegate_context
     assert "agency_agents_load" in delegate_context
     assert '{"agent":"trend-researcher"}' in delegate_context
+    assert "exact verified specialist slug" in delegate_context
+    assert "do not search the catalog" in delegate_context
+    assert "never claim that the catalog returned no slug" in delegate_context
     assert "engineering-trend-researcher" not in result["context"]
 
 

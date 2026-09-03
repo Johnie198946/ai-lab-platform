@@ -101,7 +101,9 @@ public struct ChatMessageStreamView: View {
 
     @ViewBuilder
     private func messageRow(_ message: ChatMessage) -> some View {
-        if message.role == .interrupted {
+        if coordinator.isProcessingExistingRun(message) {
+            BackgroundProcessingCardView()
+        } else if message.role == .interrupted {
             InterruptedCardView(onRetry: { coordinator.retryMessage(message.id) })
         } else if message.degraded {
             DegradedCardView(

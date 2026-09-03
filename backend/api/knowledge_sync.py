@@ -83,6 +83,14 @@ def _digest(content: bytes) -> str:
 
 def _atomic_write(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    # API and the Hermes-backed durable worker may run under different UIDs
+    # while sharing this tenant-scoped bind mount. Keep opaque hash directories
+    # traversable and note transport files readable; authorization remains at
+    # the endpoint/capability layer, never at a client-provided path.
+    try:
+        path.parent.chmod(0o755)
+    except OSError:
+        pass
     if path.exists() and path.is_symlink():
         raise HTTPException(status_code=409, detail={"code": "unsafe_sync_target"})
     descriptor, temporary = tempfile.mkstemp(
@@ -93,6 +101,7 @@ def _atomic_write(path: Path, content: bytes) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
         os.replace(temporary, path)
     finally:
         try:
@@ -122,19 +131,39 @@ async def list_synced_notes(
     tenant_key = str(payload.get("tenant_key") or "")
     user_id = str(payload.get("user_id") or payload.get("sub") or "")
     directory = note_directory(tenant_key, user_id, _sync_root())
-    items = [
-        _note_snapshot(path, path.with_suffix(".sync.json"), archived=False)
-        for path in sorted(directory.glob("*.md"))
-        if path.is_file() and not path.is_symlink()
-    ] if directory.is_dir() else []
+    try:
+        items = [
+            _note_snapshot(path, path.with_suffix(".sync.json"), archived=False)
+            for path in sorted(directory.glob("*.md"))
+            if path.is_file() and not path.is_symlink()
+        ] if directory.is_dir() else []
+    except PermissionError as error:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "note_storage_permission_denied",
+                "message": "笔记存储权限异常，请修复共享数据目录权限后重试",
+                "retryable": True,
+            },
+        ) from error
     if include_archived:
         archive = directory / ".archive"
         if archive.is_dir():
-            items.extend(
-                _note_snapshot(path, path.with_suffix(".sync.json"), archived=True)
-                for path in sorted(archive.glob("*.md"))
-                if path.is_file() and not path.is_symlink()
-            )
+            try:
+                items.extend(
+                    _note_snapshot(path, path.with_suffix(".sync.json"), archived=True)
+                    for path in sorted(archive.glob("*.md"))
+                    if path.is_file() and not path.is_symlink()
+                )
+            except PermissionError as error:
+                raise HTTPException(
+                    status_code=503,
+                    detail={
+                        "code": "note_storage_permission_denied",
+                        "message": "笔记存储权限异常，请修复共享数据目录权限后重试",
+                        "retryable": True,
+                    },
+                ) from error
     return {
         "items": items,
         "count": len(items),

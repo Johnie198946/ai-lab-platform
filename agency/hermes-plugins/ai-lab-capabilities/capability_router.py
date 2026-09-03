@@ -827,9 +827,13 @@ def _candidate_context(
                     "goal": query[:4000],
                     "context": (
                         f"AI_LAB_AGENCY_SPECIALIST={slug}\n"
-                        "You are an isolated child Agent. First call "
+                        "You are an isolated child Agent. The exact verified specialist slug "
+                        "is already supplied above; do not search the catalog for another slug. "
+                        "First call "
                         f'agency_agents_load with arguments {{"agent":"{slug}"}}. '
                         "Use the loaded specialist instructions to complete the goal. "
+                        "If the load tool fails, complete the goal directly with Hermes and report "
+                        "only the actual tool failure; never claim that the catalog returned no slug. "
                         "Return a non-empty final result and do not delegate again."
                     ),
                 }],

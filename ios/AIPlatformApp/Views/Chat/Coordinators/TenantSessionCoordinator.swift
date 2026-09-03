@@ -32,6 +32,10 @@ public final class TenantSessionCoordinator: ObservableObject {
     @Published public private(set) var isLatestPage: Bool = true
     @Published public private(set) var historyPageIdentity = UUID()
     @Published public private(set) var historyPageStartsAtBottom: Bool = true
+    /// Presentation-only recovery state. Hermes remains the sole runtime; iOS
+    /// merely shows that it is reconciling or monitoring the existing Run.
+    @Published public private(set) var reconcilingMessageIDs: Set<String> = []
+    @Published public private(set) var backgroundProcessingSessionIDs: Set<String> = []
 
     public let sessionManager: SessionManager
     public weak var appState: AppState?
@@ -81,6 +85,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         for task in backgroundRunMonitors.values { task.cancel() }
         backgroundRunMonitors.removeAll()
         backgroundRunRequests.removeAll()
+        reconcilingMessageIDs.removeAll()
+        backgroundProcessingSessionIDs.removeAll()
         isGenerating = false
         inflight = nil
         pendingQueue.removeAll()
@@ -161,11 +167,13 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func reconcileActiveRun() {
         guard !isGenerating, APIClient.shared.currentToken() != nil else { return }
         let sid = sessionManager.activeSessionID()
+        backgroundProcessingSessionIDs.remove(sid)
         guard let outputIndex = messages.lastIndex(where: {
             $0.clarifyBlock == nil && ($0.role == .interrupted || $0.pending || $0.isStreaming)
         }) else { return }
         let outputId = messages[outputIndex].id
         if let runId = messages[outputIndex].runId, !runId.isEmpty {
+            reconcilingMessageIDs.insert(outputId)
             startDurableRunMonitor(
                 runId: runId,
                 sessionId: sid,
@@ -178,9 +186,11 @@ public final class TenantSessionCoordinator: ObservableObject {
             ?? sessionManager.previousUserMessage(before: outputId, sessionId: sid) else { return }
         let agentId = sessionManager.agentId(for: sid)
         let taskEpoch = tenantEpoch
+        reconcilingMessageIDs.insert(outputId)
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.reconcilingMessageIDs.remove(outputId) }
             do {
                 let status = try await APIClient.shared.fetchChatStatus(
                     sessionId: sid, consume: true, agentId: agentId
@@ -230,6 +240,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.reconcilingMessageIDs.remove(outputMessageId) }
             var cursor = eventSequence
             while !Task.isCancelled, self.tenantEpoch == taskEpoch {
                 do {
@@ -440,6 +451,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         backgroundRunMonitors[sessionId]?.cancel()
         backgroundRunMonitors.removeValue(forKey: sessionId)
         backgroundRunRequests.removeValue(forKey: sessionId)
+        backgroundProcessingSessionIDs.remove(sessionId)
         sessionPendingQueues.removeValue(forKey: sessionId)
         if sessionId == sessionManager.activeSessionID() {
             newSession()
@@ -502,6 +514,8 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func prepareForBackground() {
         guard let req = inflight else {
             commitSession()
+            stopStatusPolling()
+            isGenerating = false
             return
         }
         let outputId = outputMessageId(for: req)
@@ -541,6 +555,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     private func startBackgroundRunMonitor(req: InFlightRequest, outputMessageId: String) {
+        backgroundProcessingSessionIDs.insert(req.sessionId)
         guard backgroundRunMonitors[req.sessionId] == nil else { return }
         backgroundRunRequests[req.sessionId] = req
         backgroundRunMonitors[req.sessionId] = Task { @MainActor [weak self] in
@@ -548,6 +563,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             defer {
                 self.backgroundRunMonitors.removeValue(forKey: req.sessionId)
                 self.backgroundRunRequests.removeValue(forKey: req.sessionId)
+                self.backgroundProcessingSessionIDs.remove(req.sessionId)
             }
             var attempts = 0
             while attempts < 360, !Task.isCancelled {
@@ -1780,10 +1796,30 @@ public final class TenantSessionCoordinator: ObservableObject {
         ["timeout", "not_found"].contains(status)
     }
 
+    public func isProcessingExistingRun(_ message: ChatMessage) -> Bool {
+        Self.isProcessingExistingRun(
+            message,
+            reconcilingMessageIDs: reconcilingMessageIDs,
+            backgroundProcessingSessionIDs: backgroundProcessingSessionIDs
+        )
+    }
+
+    nonisolated static func isProcessingExistingRun(
+        _ message: ChatMessage,
+        reconcilingMessageIDs: Set<String>,
+        backgroundProcessingSessionIDs: Set<String>
+    ) -> Bool {
+        reconcilingMessageIDs.contains(message.id)
+            || (message.pending && backgroundProcessingSessionIDs.contains(message.sessionId))
+    }
+
     /// 重新生成先对账 server-side Run：completed 回填，running 恢复同一 request 的 monitor；
     /// 只有 Bridge 明确返回 timeout/not_found 时才携带 regenerate=true 创建新 Run。
     public func retryMessage(_ messageId: String) {
-        guard !isGenerating else { return }
+        guard !isGenerating else {
+            showToast("原任务仍在 Hermes 后台处理中，无需重复执行")
+            return
+        }
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
         let sid = sessionManager.activeSessionID()
         let visibleUser = messages[..<idx].last(where: { $0.role == .user })
@@ -1797,9 +1833,11 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
 
         isGenerating = true // 防止重复点击并发探测/重跑
+        reconcilingMessageIDs.insert(messageId)
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
+            defer { self.reconcilingMessageIDs.remove(messageId) }
             do {
                 let status = try await APIClient.shared.fetchChatStatus(
                     sessionId: sid, consume: true, agentId: agentId

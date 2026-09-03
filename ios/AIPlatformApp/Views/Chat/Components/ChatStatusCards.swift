@@ -554,6 +554,40 @@ public struct DegradedCardView: View {
     }
 }
 
+public struct BackgroundProcessingCardView: View {
+    public init() {}
+
+    public var body: some View {
+        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+            QuantumAvatarView(size: 32).padding(.top, 2)
+            HStack(spacing: AppTheme.Spacing.sm) {
+                ProgressView()
+                    .controlSize(.small)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Hermes 正在后台处理")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppTheme.Colors.textPrimary)
+                    Text("正在恢复同一任务的进度，不会重复创建运行。结果返回后会自动更新。")
+                        .font(.system(size: 12))
+                        .foregroundColor(AppTheme.Colors.textSecondary)
+                }
+            }
+            .padding(AppTheme.Spacing.md)
+            .background(AppTheme.Colors.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
+                    .stroke(AppTheme.Colors.quantumBlue.opacity(0.25), lineWidth: 0.5)
+            )
+            Spacer(minLength: 44)
+        }
+        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.vertical, AppTheme.Spacing.xs)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Hermes 正在后台处理，结果返回后会自动更新")
+    }
+}
+
 public struct InterruptedCardView: View {
     public let onRetry: () -> Void
 

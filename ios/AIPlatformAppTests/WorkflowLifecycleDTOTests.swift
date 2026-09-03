@@ -1051,6 +1051,80 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(preview.content, content)
     }
 
+    func testStreamingPreviewExpandsBackwardInBoundedSteps() {
+        let content = String(repeating: "前", count: 2_400)
+            + String(repeating: "中", count: 2_400)
+            + String(repeating: "后", count: 2_400)
+
+        let initial = LongMessagePresentation.streamingPreview(content, limit: 2_400)
+        let expanded = LongMessagePresentation.streamingPreview(content, limit: 4_800)
+        let complete = LongMessagePresentation.streamingPreview(content, limit: 7_200)
+
+        XCTAssertTrue(initial.omittedPrefix)
+        XCTAssertEqual(initial.content, String(repeating: "后", count: 2_400))
+        XCTAssertTrue(expanded.omittedPrefix)
+        XCTAssertEqual(expanded.content, String(repeating: "中", count: 2_400) + String(repeating: "后", count: 2_400))
+        XCTAssertFalse(complete.omittedPrefix)
+        XCTAssertEqual(complete.content, content)
+        XCTAssertEqual(LongMessagePresentation.nextStreamingLimit(current: 2_400, contentCount: 7_200), 4_800)
+        XCTAssertEqual(LongMessagePresentation.nextStreamingLimit(current: 4_800, contentCount: 7_200), 7_200)
+        XCTAssertEqual(LongMessagePresentation.nextStreamingLimit(current: 7_200, contentCount: 7_200), 7_200)
+    }
+
+    func testLongPreviewHandlesExtendedGraphemeClustersWithoutIndexCrash() {
+        let content = String(repeating: "👨‍👩‍👧‍👦e\u{301}", count: 2_100)
+        let streaming = LongMessagePresentation.streamingPreview(content)
+        let collapsed = LongMessagePresentation.collapsedPreview(content)
+
+        XCTAssertEqual(streaming.content.count, LongMessagePresentation.streamingCharacterLimit)
+        XCTAssertEqual(collapsed.count, LongMessagePresentation.collapsedCharacterLimit)
+        XCTAssertEqual(LongMessagePresentation.streamingPreview(content, limit: -1).content, "")
+        XCTAssertEqual(LongMessagePresentation.collapsedPreview(content, limit: -1), "")
+    }
+
+    func testLongAnswerSemanticBlocksPreserveMarkdownStructure() {
+        let markdown = """
+        # 标题
+
+        - [链接](https://example.com)
+        - 列表项
+
+        | 名称 | 值 |
+        | --- | --- |
+        | A | 1 |
+        """ + String(repeating: "\n\n正文", count: 2_000)
+        let blocks = MarkdownBlockParser.shared.parse(
+            markdown,
+            messageId: "long-semantic-\(UUID().uuidString)"
+        )
+
+        XCTAssertTrue(blocks.contains { if case .heading = $0 { return true }; return false })
+        XCTAssertTrue(blocks.contains { if case .bulletList = $0 { return true }; return false })
+        XCTAssertTrue(blocks.contains { if case .table = $0 { return true }; return false })
+    }
+
+    func testRecoveredRunPresentationReplacesInterruptedCard() {
+        let message = ChatMessage(
+            id: "recovering", sessionId: "session", role: .interrupted,
+            content: "连接中断"
+        )
+        XCTAssertTrue(TenantSessionCoordinator.isProcessingExistingRun(
+            message,
+            reconcilingMessageIDs: [message.id],
+            backgroundProcessingSessionIDs: []
+        ))
+    }
+
+    @MainActor
+    func testRetryWhileGeneratingShowsHintWithoutChangingRunState() {
+        let coordinator = TenantSessionCoordinator()
+        coordinator.isGenerating = true
+        coordinator.retryMessage("existing-run")
+
+        XCTAssertTrue(coordinator.isGenerating)
+        XCTAssertEqual(coordinator.toastMessage, "原任务仍在 Hermes 后台处理中，无需重复执行")
+    }
+
     func testCompletedLongAnswerUsesBoundedSemanticPreview() {
         let first = String(repeating: "甲", count: 800)
         let second = String(repeating: "乙", count: 4_000)

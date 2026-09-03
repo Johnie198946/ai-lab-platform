@@ -63,6 +63,10 @@ def compile_private_note_index(
     """Compile active user notes into a deterministic private retrieval manifest."""
     directory = note_directory(tenant_key, user_id, root)
     directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.chmod(0o755)
+    except OSError:
+        pass
     items: list[dict[str, Any]] = []
     for path in sorted(directory.glob("*.md")):
         if not path.is_file() or path.is_symlink():
@@ -98,6 +102,7 @@ def compile_private_note_index(
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temporary, 0o644)
         os.replace(temporary, directory / ".private-index.json")
     finally:
         try:
@@ -142,6 +147,10 @@ def persist_generated_private_note(
         f"tags:\n  - auto-ingested\n  - {kind}\n---\n\n{body}\n"
     )
     path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        path.parent.chmod(0o755)
+    except OSError:
+        pass
     for target, text in (
         (path, markdown),
         (metadata_path, json.dumps({
@@ -161,6 +170,7 @@ def persist_generated_private_note(
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
+            os.chmod(temporary, 0o644)
             os.replace(temporary, target)
         finally:
             try:
