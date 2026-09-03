@@ -160,7 +160,8 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
       headers: { "content-type": "application/json", cookie: cookieA },
       body: JSON.stringify({ version: canonicalTask.version, status: "blocked" }),
     });
-    assert.equal(blockedCard.status, 200);
+    assert.equal(blockedCard.status, 409);
+    assert.equal((await blockedCard.json()).error.code, "QWS_COMMAND_REQUIRED");
     canonicalRevision = 2;
     const [resyncedSession, concurrentReplay] = await Promise.all([
       fetch(`${origin}/api/qws/session`, {
@@ -181,8 +182,8 @@ test("QWS mode authenticates through AI Lab and isolates tenant taskboard data",
     }).then((response) => response.json());
     assert.equal(
       tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id).status,
-      "blocked",
-      "a runtime blocker must not return to waiting-for-claim after QWS refresh",
+      "backlog",
+      "Taskboard never overrides the QWS canonical runtime status",
     );
     const canonicalAfterResync = tasksAfterResync.tasks.find((task) => task.id === canonicalTask.id);
     const runtimeAfterResync = tasksAfterResync.tasks.find((task) => task.id === runtimeTask.id);

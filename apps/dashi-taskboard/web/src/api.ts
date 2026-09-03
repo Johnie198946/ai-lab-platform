@@ -80,6 +80,46 @@ export function resolveTaskboardWebSocketUrl(path: string): string {
   return url.href;
 }
 
+function isEmbeddedQwsProject(projectId: string | undefined): boolean {
+  return Boolean(projectId?.startsWith("qws-") && window.parent !== window);
+}
+
+async function requestQwsCommand<T>(
+  action: string,
+  payload: Record<string, unknown>,
+): Promise<T> {
+  const requestId = crypto.randomUUID();
+  return new Promise<T>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener("message", receive);
+      reject(new ApiError(504, { error: { code: "QWS_COMMAND_TIMEOUT", message: apiText("QWS 命令超时", "QWS command timed out") } }));
+    }, 30_000);
+    const receive = (event: MessageEvent) => {
+      if (event.source !== window.parent || event.data?.type !== "taskboard:qws-command-result") return;
+      if (event.data?.payload?.requestId !== requestId) return;
+      window.clearTimeout(timeout);
+      window.removeEventListener("message", receive);
+      const result = event.data.payload;
+      if (!result.ok) {
+        reject(new ApiError(result.proposal ? 202 : (result.status || 409), {
+          error: {
+            code: result.proposal ? "QWS_CHANGE_PROPOSAL_CREATED" : (result.code || "QWS_COMMAND_FAILED"),
+            message: result.message || apiText("QWS 命令失败", "QWS command failed"),
+            details: result.details || result.proposalData,
+          },
+        }));
+        return;
+      }
+      resolve(result.data as T);
+    };
+    window.addEventListener("message", receive);
+    window.parent.postMessage({
+      type: "taskboard:qws-command",
+      payload: { requestId, action, ...payload },
+    }, window.location.origin);
+  });
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -571,6 +611,9 @@ export function listArchivedTasks(projectId?: string, signal?: AbortSignal): Pro
 }
 
 export async function createTask(projectId: string, draft: TaskDraft, threadId?: string): Promise<Task> {
+  if (isEmbeddedQwsProject(projectId)) {
+    return requestQwsCommand<Task>("create", { projectId, draft, threadId });
+  }
   const data = await request<{ task: Task }>("/api/tasks", {
     method: "POST",
     body: JSON.stringify({ projectId, ...draft, ...(threadId ? { threadId } : {}) }),
@@ -582,6 +625,9 @@ export async function applyProjectSchedule(
   projectId: string,
   entries: Array<{ id: string; version: number; startDate: string; dueDate: string; sortOrder: number }>,
 ): Promise<{ tasks: Task[]; applied: number; appliedAt: string; receipt: { id: string; projectId: string; revision: number; status: "applied"; createdAt: string } }> {
+  if (isEmbeddedQwsProject(projectId)) {
+    return requestQwsCommand("schedule", { projectId, entries });
+  }
   return request(`/api/projects/${encodeURIComponent(projectId)}/schedule`, {
     method: "POST",
     body: JSON.stringify({ entries }),
@@ -589,6 +635,9 @@ export async function applyProjectSchedule(
 }
 
 export async function updateTask(task: Task, draft: TaskDraft, threadId?: string): Promise<Task> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    return requestQwsCommand<Task>("update", { task, draft, threadId });
+  }
   const data = await request<{ task: Task }>(`/api/tasks/${encodeURIComponent(task.id)}`, {
     method: "PATCH",
     body: JSON.stringify({ version: task.version, ...draft, ...(threadId ? { threadId } : {}) }),
@@ -603,6 +652,9 @@ export async function moveTask(
   threadBinding?: CodexThreadBinding | null,
   threadId?: string,
 ): Promise<Task> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    return requestQwsCommand<Task>("move", { task, status, sortOrder, threadBinding, threadId });
+  }
   const data = await request<{ task: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/move`,
     {
@@ -620,6 +672,9 @@ export async function moveTask(
 }
 
 export async function archiveTask(task: Task, threadId?: string): Promise<Task> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    return requestQwsCommand<Task>("archive", { task, threadId });
+  }
   const data = await request<{ task: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/archive`,
     {
@@ -631,6 +686,9 @@ export async function archiveTask(task: Task, threadId?: string): Promise<Task> 
 }
 
 export async function restoreTask(task: Task, threadId?: string): Promise<Task> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    return requestQwsCommand<Task>("restore", { task, threadId });
+  }
   const data = await request<{ task: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/restore`,
     {
@@ -642,6 +700,10 @@ export async function restoreTask(task: Task, threadId?: string): Promise<Task> 
 }
 
 export async function deleteArchivedTask(task: Task): Promise<void> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    await requestQwsCommand<void>("delete", { task });
+    return;
+  }
   await request(`/api/tasks/${encodeURIComponent(task.id)}`, {
     method: "DELETE",
     body: JSON.stringify({ version: task.version }),
@@ -655,6 +717,9 @@ export async function addTaskRelation(
   threadId?: string,
   origin?: IssueRelationOrigin,
 ): Promise<{ task: Task; relatedTask: Task }> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    return requestQwsCommand("add-relation", { task, type, relatedTaskId, threadId, origin });
+  }
   return request<{ task: Task; relatedTask: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/relations/${type}/${encodeURIComponent(relatedTaskId)}`,
     {
@@ -675,6 +740,9 @@ export async function removeTaskRelation(
   threadId?: string,
   origin?: IssueRelationOrigin,
 ): Promise<{ task: Task; relatedTask: Task }> {
+  if (isEmbeddedQwsProject(task.projectId)) {
+    return requestQwsCommand("remove-relation", { task, type, relatedTaskId, threadId, origin });
+  }
   return request<{ task: Task; relatedTask: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/relations/${type}/${encodeURIComponent(relatedTaskId)}`,
     {

@@ -108,13 +108,19 @@ def test_ipd_template_instantiates_one_idempotent_project(_reset_database):
 def test_project_home_supports_update_and_owner_delete(_reset_database):
     client = _reset_database
     project_id = _create_project(client, "home-crud")
+    confirmed = _confirm_legacy_intent(client, project_id)
     updated = client.patch(
         f"/api/v1/projects/{project_id}",
-        json={"name": "新项目名", "goal": "更新后的业务目标", "desired_outputs": ["项目文档"]},
+        json={
+            "request_id": "home-project-update-0001",
+            "expected_revision": confirmed["process_revision"],
+            "name": "新项目名", "goal": "更新后的业务目标",
+            "desired_outputs": ["项目文档"],
+        },
     )
-    assert updated.status_code == 200
-    assert updated.json()["name"] == "新项目名"
-    assert updated.json()["desired_outputs"] == ["项目文档"]
+    approved = _approve_intent_proposal(client, project_id, updated)
+    assert approved["project"]["name"] == "新项目名"
+    assert approved["project"]["desired_outputs"] == ["项目文档"]
     deleted = client.delete(
         f"/api/v1/projects/{project_id}",
         headers={"X-QWS-Confirm-Project-Id": project_id},
@@ -137,6 +143,7 @@ def test_workspace_bootstrap_returns_project_and_process_in_one_request(_reset_d
 def test_project_role_update_persists_revision_and_revalidates(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "role-revision")
+    _confirm_legacy_intent(client, project_id)
     before = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap").json()
     process = before["process"]
     old_role = next(task["assignee_role"] for task in process["tasks"] if task.get("assignee_role"))
@@ -150,11 +157,9 @@ def test_project_role_update_persists_revision_and_revalidates(_reset_database):
             "collaboration_boundaries": ["不替代专业验收人"],
         },
     )
-    assert updated.status_code == 200, updated.text
-    payload = updated.json()
+    assert updated.json()["validation"]["operation"] == "ROLE_UPDATE"
+    payload = _approve_intent_proposal(client, project_id, updated)
     assert payload["process_revision"] == process["process_revision"] + 1
-    assert payload["role"]["name"] == "项目总负责人"
-    assert payload["validation"]["operation"] == "ROLE_UPDATE"
 
     after = client.get(f"/api/v1/projects/{project_id}/workspace-bootstrap").json()["process"]
     assert after["process_revision"] == payload["process_revision"]
@@ -840,7 +845,7 @@ def test_project_documents_assets_and_distillation_are_source_grounded(_reset_da
 
     listed = client.get(f"/api/v1/projects/{project_id}/documents")
     assert listed.status_code == 200
-    assert listed.json()["truth_contract"] == "READABLE_PROJECTION_ONLY"
+    assert listed.json()["truth_contract"] == "QWS_INTENT_GOVERNED_READ_ONLY_MASTER"
     assert listed.json()["graph"]["broken_links"][0]["target_title"] == "交付清单"
 
     exported = client.get(f"/api/v1/projects/{project_id}/documents/brief/obsidian")
@@ -1633,6 +1638,37 @@ def _create_applied_process(client, suffix="views"):
     return project_id, result
 
 
+def _confirm_legacy_intent(client, project_id):
+    process = client.get(f"/api/v1/projects/{project_id}/process").json()
+    migration = client.post(
+        f"/api/v1/projects/{project_id}/intent/migration-draft"
+    ).json()
+    confirmed = client.post(
+        f"/api/v1/projects/{project_id}/intent/confirm",
+        json={
+            "expected_process_revision": process["process_revision"],
+            "snapshot": migration["snapshot"],
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    return confirmed.json()
+
+
+def _approve_intent_proposal(client, project_id, response):
+    assert response.status_code == 202, response.text
+    proposal = response.json()["proposal"]
+    approved = client.post(
+        f"/api/v1/projects/{project_id}/change-proposals/{proposal['id']}/decision",
+        json={
+            "expected_process_revision": proposal["base_process_revision"],
+            "decision": "APPROVE",
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["proposal"]["status"] == "APPROVED"
+    return approved.json()
+
+
 def test_taskboard_schedule_and_graph_share_one_revision(_reset_database):
     client = _reset_database
     project_id, applied = _create_applied_process(client)
@@ -1687,12 +1723,13 @@ def test_workflow_designer_persists_configured_nodes_edges_and_rejects_stale_rev
 ):
     client = _reset_database
     project_id, applied = _create_applied_process(client, "workflow-designer")
+    confirmed = _confirm_legacy_intent(client, project_id)
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     stage = process["stages"][0]
     trigger_id = f"workflow_start_{stage['id']}"
     action_id = "workflow_node_define_requirements"
     payload = {
-        "expected_revision": applied["process_revision"],
+        "expected_revision": confirmed["process_revision"],
         "nodes": [
             {
                 "id": trigger_id,
@@ -1744,10 +1781,11 @@ def test_workflow_designer_persists_configured_nodes_edges_and_rejects_stale_rev
         f"/api/v1/projects/{project_id}/graphs/workflow",
         json=payload,
     )
-    assert saved.status_code == 200, saved.text
-    assert saved.json()["process_revision"] == applied["process_revision"] + 1
-    assert saved.json()["source_status"] == "USER_CONFIGURED"
-    configured = next(node for node in saved.json()["nodes"] if node["id"] == action_id)
+    proposal_payload = saved.json()
+    approved = _approve_intent_proposal(client, project_id, saved)
+    assert approved["process_revision"] == confirmed["process_revision"] + 1
+    assert proposal_payload["workflow_preview"]["source_status"] == "USER_CONFIGURED"
+    configured = next(node for node in proposal_payload["workflow_preview"]["nodes"] if node["id"] == action_id)
     assert configured["data"]["participants"] == ["产品负责人", "业务代表"]
     assert configured["data"]["tools"] == ["访谈模板", "需求评审清单"]
     assert configured["data"]["data_sources"] == ["客户档案", "历史访谈"]
@@ -1764,15 +1802,15 @@ def test_workflow_designer_persists_configured_nodes_edges_and_rejects_stale_rev
 
     reloaded = client.get(f"/api/v1/projects/{project_id}/graphs/workflow")
     assert reloaded.status_code == 200
-    assert reloaded.json()["nodes"] == saved.json()["nodes"]
-    assert reloaded.json()["edges"] == saved.json()["edges"]
+    assert reloaded.json()["nodes"] == proposal_payload["workflow_preview"]["nodes"]
+    assert reloaded.json()["edges"] == proposal_payload["workflow_preview"]["edges"]
 
     stale = client.put(
         f"/api/v1/projects/{project_id}/graphs/workflow",
         json=payload,
     )
     assert stale.status_code == 409
-    assert stale.json()["detail"]["server_revision"] == saved.json()["process_revision"]
+    assert stale.json()["detail"]["server_revision"] == approved["process_revision"]
 
 
 def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
@@ -1899,22 +1937,26 @@ def test_ai_resource_plan_is_versioned_recommended_and_user_configurable(
 def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "dashi-parity")
+    confirmed = _confirm_legacy_intent(client, project_id)
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     stage = process["stages"][0]
 
     created_task = client.post(
         f"/api/v1/projects/{project_id}/tasks",
         json={
-            "expected_revision": 1,
+            "expected_revision": confirmed["process_revision"],
             "stage_id": stage["id"],
             "title": "客户证据复核",
             "summary": "核验真实客户证据并形成可审阅结论",
             "assignee_role": "研究负责人",
         },
     )
-    assert created_task.status_code == 201
-    assert created_task.json()["process_revision"] == 2
-    task = created_task.json()["task"]
+    created = _approve_intent_proposal(client, project_id, created_task)
+    assert created["process_revision"] == confirmed["process_revision"] + 1
+    task = next(
+        item for item in client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"]
+        if item["title"] == "客户证据复核"
+    )
     assert task["status"] == "WAITING_CLAIM"
     assert task["workflow_status"] == "UNCONNECTED"
 
@@ -1922,7 +1964,7 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
         f"/api/v1/projects/{project_id}/process"
     )
     assert process_after_create.status_code == 200, process_after_create.text
-    assert process_after_create.json()["process_revision"] == 2
+    assert process_after_create.json()["process_revision"] == created["process_revision"]
 
     schedule = client.get(f"/api/v1/projects/{project_id}/schedule").json()
     assert next(item for item in schedule["tasks"] if item["id"] == task["id"])["schedule_status"] == "UNSCHEDULED"
@@ -1963,18 +2005,22 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
 
     bound = client.put(
         f"/api/v1/projects/{project_id}/tasks/{task['id']}/workflow",
-        json={"expected_revision": 2, "workflow_id": workflow["id"]},
+        json={"expected_revision": created["process_revision"], "workflow_id": workflow["id"]},
     )
-    assert bound.status_code == 200, bound.text
-    assert bound.json()["process_revision"] == 3
-    assert bound.json()["task"]["workflow_id"] == workflow["id"]
-    assert bound.json()["task"]["workflow_status"] == workflow["status"]
+    bound_result = _approve_intent_proposal(client, project_id, bound)
+    assert bound_result["process_revision"] == created["process_revision"] + 1
+    rebound_task = next(
+        item for item in client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"]
+        if item["id"] == task["id"]
+    )
+    assert rebound_task["workflow_id"] == workflow["id"]
+    assert rebound_task["workflow_status"] == workflow["status"]
 
     process_after_bind = client.get(
         f"/api/v1/projects/{project_id}/process"
     )
     assert process_after_bind.status_code == 200, process_after_bind.text
-    assert process_after_bind.json()["process_revision"] == 3
+    assert process_after_bind.json()["process_revision"] == bound_result["process_revision"]
 
     reopened = client.post(
         "/api/v1/task-conversations",
@@ -1987,11 +2033,11 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
     )
     assert reopened.status_code == 200
     assert reopened.json()["binding"]["workflow_id"] == workflow["id"]
-    assert reopened.json()["binding"]["process_revision"] == 3
+    assert reopened.json()["binding"]["process_revision"] == bound_result["process_revision"]
 
     duplicate = client.put(
         f"/api/v1/projects/{project_id}/tasks/{process['tasks'][0]['id']}/workflow",
-        json={"expected_revision": 3, "workflow_id": workflow["id"]},
+        json={"expected_revision": bound_result["process_revision"], "workflow_id": workflow["id"]},
     )
     assert duplicate.status_code == 409
     assert duplicate.json()["detail"] == "workflow already binds another project task"
@@ -2000,6 +2046,7 @@ def test_taskboard_can_create_tasks_and_bind_owned_canonical_workflows(_reset_da
 def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "merge-loop")
+    confirmed_intent = _confirm_legacy_intent(client, project_id)
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     primary, secondary = process["tasks"][:2]
     source_artifact = client.post(
@@ -2017,7 +2064,7 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
         f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
         json={
             "request_id": "merge-preview-0001",
-            "expected_revision": 1,
+            "expected_revision": confirmed_intent["process_revision"],
             "secondary_task_id": secondary["id"],
             "expected_primary_revision": 1,
             "expected_secondary_revision": 1,
@@ -2029,7 +2076,7 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
         f"/api/v1/projects/{project_id}/tasks/{primary['id']}/merge-previews",
         json={
             "request_id": "merge-preview-0001",
-            "expected_revision": 1,
+            "expected_revision": confirmed_intent["process_revision"],
             "secondary_task_id": secondary["id"],
             "expected_primary_revision": 1,
             "expected_secondary_revision": 1,
@@ -2043,12 +2090,12 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     }
     applied = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
-        json={"request_id": "merge-apply-0001", "expected_revision": 2, "field_choices": choices},
+        json={"request_id": "merge-apply-0001", "expected_revision": preview_response.json()["process_revision"], "field_choices": choices},
     )
-    assert applied.status_code == 200, applied.text
-    assert applied.json()["merge"]["status"] == "APPLIED"
-    assert applied.json()["secondary_task"]["status"] == "MERGED"
-    assert applied.json()["secondary_task"]["redirect_to_task_id"] == primary["id"]
+    assert applied.json()["merge_preview"]["status"] == "APPLIED"
+    assert applied.json()["secondary_task_preview"]["status"] == "MERGED"
+    assert applied.json()["secondary_task_preview"]["redirect_to_task_id"] == primary["id"]
+    applied_result = _approve_intent_proposal(client, project_id, applied)
     merged_task = client.get(
         f"/api/v1/projects/{project_id}/tasks/{secondary['id']}"
     )
@@ -2061,7 +2108,7 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     assert merged_node["task_status"] == "MERGED"
     blocked_update = client.patch(
         f"/api/v1/projects/{project_id}/tasks/{secondary['id']}/card-summary",
-        json={"expected_revision": 3, "progress": "不应写入"},
+        json={"expected_revision": applied_result["process_revision"], "progress": "不应写入"},
     )
     assert blocked_update.status_code == 409
     assert blocked_update.json()["detail"]["error"] == "merged_task_is_read_only"
@@ -2107,39 +2154,40 @@ def test_task_merge_preview_apply_redirect_and_revert(_reset_database):
     assert manifests.json() == []
     replayed = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
-        json={"request_id": "merge-apply-0001", "expected_revision": 2, "field_choices": choices},
+        json={"request_id": "merge-apply-0001", "expected_revision": preview_response.json()["process_revision"], "field_choices": choices},
     )
     assert replayed.status_code == 200
-    assert replayed.json()["process_revision"] == 3
+    assert replayed.json()["process_revision"] == applied_result["process_revision"]
     drifted_apply = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/apply",
-        json={"request_id": "merge-apply-drift", "expected_revision": 2, "field_choices": choices},
+        json={"request_id": "merge-apply-drift", "expected_revision": preview_response.json()["process_revision"], "field_choices": choices},
     )
     assert drifted_apply.status_code == 409
 
     reverted = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
-        json={"request_id": "merge-revert-0001", "expected_revision": 3},
+        json={"request_id": "merge-revert-0001", "expected_revision": applied_result["process_revision"]},
     )
-    assert reverted.status_code == 200, reverted.text
-    assert reverted.json()["merge"]["status"] == "REVERTED"
-    assert reverted.json()["secondary_task"]["status"] == secondary["status"]
-    assert "redirect_to_task_id" not in reverted.json()["secondary_task"]
+    assert reverted.json()["merge_preview"]["status"] == "REVERTED"
+    assert reverted.json()["secondary_task_preview"]["status"] == secondary["status"]
+    assert "redirect_to_task_id" not in reverted.json()["secondary_task_preview"]
+    reverted_result = _approve_intent_proposal(client, project_id, reverted)
     restored_task = client.get(
         f"/api/v1/projects/{project_id}/tasks/{secondary['id']}"
     ).json()
     assert "redirect" not in restored_task
     replayed_revert = client.post(
         f"/api/v1/projects/{project_id}/task-merges/{preview['id']}/revert",
-        json={"request_id": "merge-revert-0001", "expected_revision": 3},
+        json={"request_id": "merge-revert-0001", "expected_revision": applied_result["process_revision"]},
     )
     assert replayed_revert.status_code == 200
-    assert replayed_revert.json()["process_revision"] == 4
+    assert replayed_revert.json()["process_revision"] == reverted_result["process_revision"]
 
 
 def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relation(_reset_database):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "operating-loop")
+    confirmed_intent = _confirm_legacy_intent(client, project_id)
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     source = process["tasks"][0]
     target = process["tasks"][1]
@@ -2147,7 +2195,7 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
     lease = client.post(
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/execution-lease",
         json={
-            "expected_revision": 1,
+            "expected_revision": confirmed_intent["process_revision"],
             "expected_task_revision": 1,
             "session_id": "session-primary",
             "actor_id": "hermes-agent",
@@ -2155,7 +2203,7 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
         },
     )
     assert lease.status_code == 200, lease.text
-    assert lease.json()["process_revision"] == 2
+    assert lease.json()["process_revision"] == confirmed_intent["process_revision"] + 1
     assert lease.json()["task_revision"] == 2
     assert lease.json()["lease"]["session_id"] == "session-primary"
 
@@ -2179,7 +2227,7 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
     proposal = client.post(
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-proposals",
         json={
-            "expected_revision": 2,
+            "expected_revision": lease.json()["process_revision"],
             "expected_task_revision": 2,
             "target_task_id": target["id"],
             "relation_type": "related",
@@ -2189,16 +2237,15 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
             "impact": {"execution": "continue", "scope": "none"},
         },
     )
-    assert proposal.status_code == 201, proposal.text
-    assert proposal.json()["process_revision"] == 3
-    assert proposal.json()["task_revision"] == 3
+    assert proposal.status_code == 202, proposal.text
     assert proposal.json()["proposal"]["status"] == "PROPOSED"
-    assert proposal.json()["proposal"]["requires_user_confirmation"] is True
+    approved_relation = _approve_intent_proposal(client, project_id, proposal)
+    assert approved_relation["process_revision"] == lease.json()["process_revision"] + 1
 
     conflicting_lease = client.post(
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/execution-lease",
         json={
-            "expected_revision": 3,
+            "expected_revision": approved_relation["process_revision"],
             "expected_task_revision": 3,
             "session_id": "session-other",
             "actor_id": "other-agent",
@@ -2208,32 +2255,6 @@ def test_task_operating_loop_api_claims_lease_builds_context_and_proposes_relati
     assert conflicting_lease.status_code == 409
     assert conflicting_lease.json()["detail"]["error"] == "execution_lease_conflict"
 
-    confirmed = client.post(
-        f"/api/v1/projects/{project_id}/relation-proposals/{proposal.json()['proposal']['id']}/decision",
-        json={
-            "request_id": "relation-confirm-0001",
-            "expected_revision": 3,
-            "expected_task_revision": 3,
-            "decision": "CONFIRM",
-            "reason": "用户确认关联",
-        },
-    )
-    assert confirmed.status_code == 200, confirmed.text
-    assert confirmed.json()["process_revision"] == 4
-    assert confirmed.json()["task_revision"] == 4
-    assert confirmed.json()["proposal"]["status"] == "CONFIRMED"
-    replayed_confirmation = client.post(
-        f"/api/v1/projects/{project_id}/relation-proposals/{proposal.json()['proposal']['id']}/decision",
-        json={
-            "request_id": "relation-confirm-0001",
-            "expected_revision": 3,
-            "expected_task_revision": 3,
-            "decision": "CONFIRM",
-            "reason": "用户确认关联",
-        },
-    )
-    assert replayed_confirmation.status_code == 200
-    assert replayed_confirmation.json()["process_revision"] == 4
     confirmed_digest = client.get(
         f"/api/v1/projects/{project_id}/tasks/{source['id']}/relation-digest"
     )
@@ -2704,7 +2725,7 @@ def test_taskboard_only_card_opens_and_streams_without_creating_process_task(
     assert captured["first_activity_timeout_seconds"] == 60
 
 
-def test_card_backfill_applies_only_self_and_routes_overflow_to_target_session(
+def test_unbound_card_backfill_cannot_mutate_qws_or_route_to_hermes(
     _reset_database, monkeypatch
 ):
     client = _reset_database
@@ -2817,54 +2838,9 @@ def test_card_backfill_applies_only_self_and_routes_overflow_to_target_session(
         f"/api/v1/task-conversations/{opened.json()['id']}/backfill-proposals/{proposal['id']}/apply",
         headers={"Authorization": "Bearer test-token"},
     )
-    assert applied.status_code == 200, applied.text
-    assert applied_call["task_id"] == source_id
-    assert applied_call["self_changes"] == {"description": "新需求描述"}
-    assert applied_call["authorization"] == "Bearer test-token"
-
-    updated_context = context(source_id, "需求梳理", "新需求描述", version=2)
-    completed = client.post(
-        f"/api/v1/task-conversations/{opened.json()['id']}/backfill-proposals/{proposal['id']}/complete",
-        json={"card_context": updated_context},
-    )
-    assert completed.status_code == 200, completed.text
-    assert completed.json()["status"] == "applied"
-    assert completed.json()["context_sync"]["mode"] == "incremental"
-
-    target = client.post(
-        "/api/v1/task-conversations",
-        json={
-            "project_id": project_id,
-            "task_id": target_id,
-            "workflow_id": None,
-            "agent_version": "hermes-current",
-            "card_context": context(target_id, "接口开发", "实现接口"),
-        },
-    )
-    assert target.status_code == 201, target.text
-    captured = {}
-
-    async def capture_target(
-        req, payload, *, knowledge_query=None, allow_agent_invocation=True, **kwargs
-    ):
-        captured["context"] = req.qws_business_context
-
-        async def events():
-            yield 'data: {"type":"done","answer":"已接收跨卡工作"}\n\n'
-
-        return StreamingResponse(events(), media_type="text/event-stream")
-
-    monkeypatch.setattr("backend.api.quantum_workspace.stream_chat", capture_target)
-    delivered = client.post(
-        f"/api/v1/task-conversations/{target.json()['id']}/messages/stream",
-        json={"question": "读取新工作", "request_id": "target-inbox-message-0001"},
-    )
-    assert delivered.status_code == 200
-    transferred = json.dumps(captured["context"].snapshot, ensure_ascii=False)
-    assert "实现新增的人脸识别接口" in transferred
-    assert source_id in transferred
-    process = client.get(f"/api/v1/projects/{project_id}/process").json()
-    assert all(task["id"] not in {source_id, target_id} for task in process["tasks"])
+    assert applied.status_code == 409, applied.text
+    assert applied.json()["detail"] == "confirmed_project_intent_required"
+    assert applied_call == {}
 
 
 def test_card_session_keeps_legacy_canonical_conversation_history(_reset_database):
@@ -2933,6 +2909,7 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
 ):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "chat")
+    _confirm_legacy_intent(client, project_id)
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     task = process["tasks"][0]
 
@@ -2996,12 +2973,18 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
         captured["qws_business_context"].snapshot, ensure_ascii=False
     )
     assert '"project_overview"' in transferred_context
-    assert '"project_planning_history"' in transferred_context
+    assert captured["qws_business_context"].snapshot["project_planning_history"] == []
     assert '"project_documents"' in transferred_context
     assert '"project_execution_log"' in transferred_context
     assert '"session_directory"' in transferred_context
-    assert "Do not infer the whole project from the current card alone" in captured["question"]
-    assert "Also read project_planning_history" in captured["question"]
+    assert "do not infer the whole project from the current card alone" in captured["question"]
+    assert "project_documents and session_directory are compact indexes" in captured["question"]
+    assert captured["qws_business_context"].snapshot["intent_capsule"]["intent_revision"] == 1
+    assert len(json.dumps(
+        captured["qws_business_context"].snapshot,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()) <= 24 * 1024
     assert "senior project colleague, not as a system debugger" in captured["question"]
     assert "AUTO_EXECUTE=false is an instruction for this conversational turn only" in captured["question"]
     assert "INTERACTIVE_MODE=true" in captured["question"]
@@ -3032,6 +3015,21 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     ).json()
     assert len(replay_messages) == 2
 
+    latest = client.get(f"/api/v1/projects/{project_id}/process").json()
+    latest_task = next(item for item in latest["tasks"] if item["id"] == task["id"])
+    intent_upgrade = client.put(
+        f"/api/v1/projects/{project_id}/tasks/{task['id']}",
+        json={
+            "request_id": "chat-intent-upgrade-0001",
+            "expected_revision": latest["process_revision"],
+            "stage_id": latest_task["stage_id"],
+            "title": latest_task["title"],
+            "summary": "升级后的任务合同",
+            "assignee_role": latest_task.get("assignee_role"),
+        },
+    )
+    _approve_intent_proposal(client, project_id, intent_upgrade)
+
     continued = client.post(
         f"/api/v1/task-conversations/{conversation['id']}/messages/stream",
         json={"question": "继续核对项目概览", "request_id": "chat-request-0002"},
@@ -3052,6 +3050,8 @@ def test_task_chat_is_server_bound_and_persists_real_stream_messages(
     )
     assert '"project_overview"' in repeated_context
     assert '"project_planning_history"' in repeated_context
+    assert captured["qws_business_context"].snapshot["intent_capsule"]["intent_revision"] == 2
+    assert "升级后的任务合同" in repeated_context
 
 
 def test_task_auto_execution_runs_server_side_and_applies_backfill(
@@ -3059,6 +3059,7 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
 ):
     client = _reset_database
     project_id, _ = _create_applied_process(client, "auto-execution")
+    _confirm_legacy_intent(client, project_id)
     task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
     conversation = client.post(
         "/api/v1/task-conversations",
@@ -3133,11 +3134,15 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
             break
         time.sleep(0.01)
     assert state["state"] == "completed", state
-    assert len(captured["apply_calls"]) == 3
-    assert captured["apply_calls"][0]["self_changes"] == {"status": "in_progress"}
+    assert len(captured["apply_calls"]) == 2
+    assert captured["apply_calls"][0]["self_changes"] == {}
     assert captured["applied"]["expected_version"] is None
     assert captured["applied"]["authorization"] == "Bearer test-token"
-    assert captured["applied"]["self_changes"]["status"] == "done"
+    assert "status" not in captured["applied"]["self_changes"]
+    assert "执行日志" in captured["applied"]["self_changes"]["appendComment"]
+    qws_task = client.get(f"/api/v1/projects/{project_id}/tasks/{task['id']}").json()
+    assert qws_task["status"] == "ACCEPTANCE_REVIEW"
+    assert qws_task["runtime_facts"][-1]["intent_revision"] == 1
     assert captured["stream_calls"] == 2
     assert captured["session_ids"] == [
         conversation["binding"]["session_id"],
@@ -3151,7 +3156,6 @@ def test_task_auto_execution_runs_server_side_and_applies_backfill(
     )
     assert any("AUTO_EXECUTE=true. Continue autonomously until done." in question for question in captured["questions"])
     assert any("Missing non-essential detail is not a blocker" in question for question in captured["questions"])
-    assert any("An omitted travel year" in question for question in captured["questions"])
     assert "修复上一轮自动执行结果" in captured["questions"][-1]
     messages = client.get(
         f"/api/v1/task-conversations/{conversation['id']}/messages"
@@ -3274,17 +3278,19 @@ def test_qws_canonical_relation_backfill_is_fail_closed() -> None:
         }
     }
     _enforce_qws_relation_backfill_contract(snapshot, {"description": "safe"})
-    with pytest.raises(HTTPException, match="QWS canonical relations") as relation_error:
+    with pytest.raises(HTTPException) as relation_error:
         _enforce_qws_relation_backfill_contract(
             snapshot,
             {"relationChanges": {"add": [{"type": "blocks", "target_task_id": "t2"}]}},
         )
     assert relation_error.value.status_code == 409
-    with pytest.raises(HTTPException, match="QWS canonical relations"):
+    assert "QWS canonical relations" in relation_error.value.detail
+    with pytest.raises(HTTPException) as create_error:
         _enforce_qws_relation_backfill_contract(
             snapshot,
             {"createIssues": [{"title": "child", "relation": "sub_issue"}]},
         )
+    assert "QWS canonical relations" in create_error.value.detail
 
 
 def test_agent_task_writes_require_current_lease_epoch() -> None:
@@ -3299,18 +3305,145 @@ def test_agent_task_writes_require_current_lease_epoch() -> None:
     }
     payload = {"principal_type": "agent", "sub": "agent-a"}
     _enforce_agent_lease_fence(task, payload, session_id="session-new", lease_epoch=4)
-    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+    with pytest.raises(HTTPException) as stale_session:
         _enforce_agent_lease_fence(task, payload, session_id="session-old", lease_epoch=3)
-    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+    assert stale_session.value.detail == "execution_lease_fence_required"
+    with pytest.raises(HTTPException) as missing_principal:
         _enforce_agent_lease_fence(task, {}, session_id="session-new", lease_epoch=4)
-    with pytest.raises(HTTPException, match="execution_lease_fence_required"):
+    assert missing_principal.value.detail == "execution_lease_fence_required"
+    with pytest.raises(HTTPException) as wrong_agent:
         _enforce_agent_lease_fence(
             task, {"principal_type": "agent", "sub": "agent-b"},
             session_id="session-new", lease_epoch=4,
         )
+    assert wrong_agent.value.detail == "execution_lease_fence_required"
     _enforce_agent_lease_fence(
         task,
         {"principal_type": "human", "sub": "user-a", "amr": ["pwd"]},
         session_id=None,
         lease_epoch=None,
     )
+
+
+def test_legacy_intent_confirmation_then_task_proposal_applies_atomically(
+    _reset_database,
+) -> None:
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "intent-governance")
+    before = client.get(f"/api/v1/projects/{project_id}/process").json()
+    migration = client.post(f"/api/v1/projects/{project_id}/intent/migration-draft")
+    assert migration.status_code == 201, migration.text
+    assert migration.json()["status"] == "DRAFT"
+    assert migration.json()["revision"] == 0
+
+    confirmed = client.post(
+        f"/api/v1/projects/{project_id}/intent/confirm",
+        json={
+            "expected_process_revision": before["process_revision"],
+            "snapshot": migration.json()["snapshot"],
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    current = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert current["intent_revision"] == 1
+    master = next(
+        item for item in current["documents"]
+        if item.get("document_type") == "PROJECT_MASTER"
+    )
+    assert master["read_only_projection"] is True
+    direct_master_edit = client.put(
+        f"/api/v1/projects/{project_id}/documents/{master['id']}",
+        json={
+            "expected_revision": current["process_revision"],
+            "title": "Bypass",
+            "content": "# silently changed",
+            "status": "ARCHIVED",
+            "source_refs": [],
+        },
+    )
+    assert direct_master_edit.status_code == 409
+    assert direct_master_edit.json()["detail"] == "project_master_is_read_only_use_change_proposal"
+    context_section = client.get(
+        f"/api/v1/projects/{project_id}/context-sections/intent?revision=1"
+    )
+    assert context_section.status_code == 200
+    assert context_section.json()["intent_revision"] == 1
+    assert len(json.dumps(
+        context_section.json(), ensure_ascii=False, separators=(",", ":")
+    ).encode()) <= 12 * 1024
+    original_ids = {item["id"] for item in current["tasks"]}
+
+    proposed = client.post(
+        f"/api/v1/projects/{project_id}/tasks",
+        json={
+            "request_id": "intent-task-proposal-0001",
+            "expected_revision": current["process_revision"],
+            "stage_id": current["stages"][0]["id"],
+            "title": "Governed new task",
+            "summary": "Only appears after intent approval",
+        },
+    )
+    assert proposed.status_code == 202, proposed.text
+    assert {item["id"] for item in client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"]} == original_ids
+    replayed = client.post(
+        f"/api/v1/projects/{project_id}/tasks",
+        json={
+            "request_id": "intent-task-proposal-0001",
+            "expected_revision": current["process_revision"],
+            "stage_id": current["stages"][0]["id"],
+            "title": "Governed new task",
+            "summary": "Only appears after intent approval",
+        },
+    )
+    assert replayed.status_code == 202
+    assert replayed.json()["proposal"]["id"] == proposed.json()["proposal"]["id"]
+    drifted = client.post(
+        f"/api/v1/projects/{project_id}/tasks",
+        json={
+            "request_id": "intent-task-proposal-0001",
+            "expected_revision": current["process_revision"],
+            "stage_id": current["stages"][0]["id"],
+            "title": "Different task",
+            "summary": "This payload must not reuse the request id",
+        },
+    )
+    assert drifted.status_code == 409
+    assert drifted.json()["detail"] == "request_id_already_binds_different_project_change"
+
+    approved = client.post(
+        f"/api/v1/projects/{project_id}/change-proposals/{proposed.json()['proposal']['id']}/decision",
+        json={
+            "expected_process_revision": current["process_revision"],
+            "decision": "APPROVE",
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    after = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert after["intent_revision"] == 2
+    assert len(after["tasks"]) == len(original_ids) + 1
+    assert next(item for item in after["documents"] if item.get("document_type") == "PROJECT_MASTER")["intent_revision"] == 2
+
+
+def test_auto_execution_rejects_unconfirmed_legacy_intent(_reset_database) -> None:
+    client = _reset_database
+    project_id, _ = _create_applied_process(client, "unconfirmed-auto")
+    task = client.get(f"/api/v1/projects/{project_id}/process").json()["tasks"][0]
+    conversation = client.post(
+        "/api/v1/task-conversations",
+        json={
+            "project_id": project_id,
+            "task_id": task["id"],
+            "workflow_id": task.get("workflow_id"),
+            "agent_version": "hermes-current",
+        },
+    ).json()
+    started = client.post(
+        f"/api/v1/task-conversations/{conversation['id']}/auto-execute",
+        headers={"Authorization": "Bearer test-token"},
+        json={
+            "instruction": "run",
+            "request_id": "unconfirmed-auto-request-0001",
+        },
+    )
+    assert started.status_code == 409
+    assert started.json()["detail"] == "confirmed_project_intent_required_for_auto_execution"

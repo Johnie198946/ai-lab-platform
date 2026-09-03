@@ -38,7 +38,7 @@ from backend.models.workflow import (
     WorkflowPlanVersion,
     WorkflowSessionMessage,
 )
-from backend.models.workspace import WorkspaceProcessRevision
+from backend.models.workspace import WorkspaceProcessRevision, WorkspaceWorkflowBinding
 from backend.api.quantum_workspace import _project_for_access
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
 from backend.services.workflow_artifacts import (
@@ -1413,6 +1413,15 @@ async def delete_workflow(
         workflow = await owned_workflow(db, workflow_id, payload)
         if workflow.created_by != current_user(payload):
             raise HTTPException(status_code=404, detail="工作流不存在")
+        active_binding = await db.scalar(select(WorkspaceWorkflowBinding).where(
+            WorkspaceWorkflowBinding.workflow_id == workflow.id,
+            WorkspaceWorkflowBinding.status == "ACTIVE",
+        ))
+        if active_binding is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="workflow_is_bound_to_qws_project_use_change_proposal",
+            )
         executions = list(
             (
                 await db.execute(
@@ -2075,6 +2084,20 @@ async def start_workflow(
         if workflow.status not in {"agent_ready", "ready"} or not workflow.active_plan_id:
             raise HTTPException(status_code=409, detail="专属 Agent 尚未就绪")
         plan = await db.get(WorkflowPlanVersion, workflow.active_plan_id)
+        qws_binding = await db.scalar(select(WorkspaceWorkflowBinding).where(
+            WorkspaceWorkflowBinding.workflow_id == workflow.id,
+            WorkspaceWorkflowBinding.status == "ACTIVE",
+        ))
+        if qws_binding is not None and (
+            plan is None
+            or qws_binding.plan_id != plan.id
+            or qws_binding.plan_hash != plan.content_hash
+            or qws_binding.activation_revision != plan.activation_revision
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail="qws_workflow_plan_change_requires_project_proposal",
+            )
         approval = (
             await db.execute(
                 select(WorkflowApproval)

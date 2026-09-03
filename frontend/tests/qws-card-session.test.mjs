@@ -82,7 +82,8 @@ test("card session sends versionable full card context to the backend", () => {
   ]) assert.match(hostSource, new RegExp(field));
   assert.match(drawerSource, /card_context: cardContext/);
   assert.match(drawerSource, /contextSync\.mode === "incremental"/);
-  assert.match(hostSource, /项目概览、项目纲领文档、相关任务档案与规划历史已作为本次只读上下文直接提供/);
+  assert.match(hostSource, /最新已确认 intent_capsule、当前任务合同和紧凑索引/);
+  assert.match(hostSource, /不要重复读取整份顶设或完整规划历史/);
   assert.match(hostSource, /非关键或可后补的信息不得作为阻塞理由/);
 });
 

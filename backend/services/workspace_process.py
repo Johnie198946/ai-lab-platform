@@ -133,7 +133,8 @@ def apply_default_schedule(process: dict[str, Any], anchor: date) -> dict[str, A
 
 
 def instantiate_project_blueprint(
-    blueprint: dict[str, Any], *, schedule_anchor: date | None = None
+    blueprint: dict[str, Any], *, schedule_anchor: date | None = None,
+    previous_process: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compile a reviewed Hermes blueprint into the canonical dynamic process."""
     raw_stages = blueprint.get("stages") or []
@@ -143,6 +144,15 @@ def instantiate_project_blueprint(
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise ValueError("project blueprint requires at least one task")
 
+    previous = previous_process or {}
+    previous_stages = {
+        str(item.get("key")): item for item in previous.get("stages") or []
+        if isinstance(item, dict) and item.get("key")
+    }
+    previous_tasks = {
+        str(item.get("blueprint_key")): item for item in previous.get("tasks") or []
+        if isinstance(item, dict) and item.get("blueprint_key")
+    }
     stage_ids: dict[str, str] = {}
     stages: list[dict[str, Any]] = []
     for index, item in enumerate(raw_stages):
@@ -152,7 +162,8 @@ def instantiate_project_blueprint(
         name = str(item.get("name") or "").strip()
         if not name or key in stage_ids:
             raise ValueError("project blueprint stage names and keys must be unique")
-        stage_id = f"stg_{uuid4().hex}"
+        prior_stage = previous_stages.get(key) or {}
+        stage_id = str(prior_stage.get("id") or f"stg_{uuid4().hex}")
         stage_ids[key] = stage_id
         stages.append({
             "id": stage_id,
@@ -161,12 +172,12 @@ def instantiate_project_blueprint(
             "order": index,
             "goal": str(item.get("goal") or "").strip(),
             "acceptance_criteria": list(item.get("acceptance_criteria") or []),
-            "status": "NOT_STARTED",
-            "progress": 0,
+            "status": prior_stage.get("status") or "NOT_STARTED",
+            "progress": int(prior_stage.get("progress") or 0),
             "planned_start_at": item.get("start_date"),
             "planned_finish_at": item.get("due_date"),
-            "actual_start_at": None,
-            "actual_finish_at": None,
+            "actual_start_at": prior_stage.get("actual_start_at"),
+            "actual_finish_at": prior_stage.get("actual_finish_at"),
             "unscheduled_reason": None if item.get("start_date") and item.get("due_date") else "missing_planned_dates",
         })
 
@@ -184,7 +195,8 @@ def instantiate_project_blueprint(
         title = str(item.get("title") or "").strip()
         if not title or key in task_ids or stage_key not in stage_ids:
             raise ValueError("each project task needs a unique key, title and valid stage_key")
-        task_id = f"tsk_{uuid4().hex}"
+        prior_task = previous_tasks.get(key) or {}
+        task_id = str(prior_task.get("id") or f"tsk_{uuid4().hex}")
         task_ids[key] = task_id
         raw_status = str(item.get("status") or "todo").lower()
         tasks.append({
@@ -195,11 +207,11 @@ def instantiate_project_blueprint(
             "summary": str(item.get("description") or item.get("goal") or "").strip(),
             "goal": str(item.get("goal") or "").strip(),
             "acceptance_criteria": list(item.get("acceptance_criteria") or []),
-            "status": status_map.get(raw_status, "TODO"),
-            "progress": 100 if status_map.get(raw_status, "TODO") == "DONE" else 0,
+            "status": prior_task.get("status") or status_map.get(raw_status, "TODO"),
+            "progress": int(prior_task.get("progress") or (100 if status_map.get(raw_status, "TODO") == "DONE" else 0)),
             "status_source": "REVIEWED_CONFIGURATION",
             "priority": str(item.get("priority") or "none").lower(),
-            "assignee_id": None,
+            "assignee_id": prior_task.get("assignee_id"),
             "assignee_role": str(item.get("role") or "").strip() or None,
             "labels": list(dict.fromkeys(str(value).strip() for value in item.get("labels") or [] if str(value).strip())),
             "development_context": item.get("development_context"),
@@ -212,15 +224,16 @@ def instantiate_project_blueprint(
             "relations": list(item.get("relations") or []),
             "handoff": item.get("handoff") or {},
             "agent_candidates": [],
-            "workflow_id": None,
-            "workflow_status": "UNCONNECTED",
-            "actual_start_at": None,
-            "actual_finish_at": None,
+            "workflow_id": prior_task.get("workflow_id"),
+            "workflow_status": prior_task.get("workflow_status") or "UNCONNECTED",
+            "actual_start_at": prior_task.get("actual_start_at"),
+            "actual_finish_at": prior_task.get("actual_finish_at"),
             "estimated_duration_days": int(item.get("estimated_duration_days") or 1),
             "unscheduled_reason": None if item.get("start_date") and item.get("due_date") else "missing_planned_dates",
             "deliverables": list(item.get("deliverables") or []),
-            "evidence_refs": [],
+            "evidence_refs": list(prior_task.get("evidence_refs") or []),
             "risk": str(item.get("risk") or "LOW").upper(),
+            "task_revision": int(prior_task.get("task_revision") or 1),
         })
 
     dependencies: list[dict[str, str]] = []
@@ -267,14 +280,15 @@ def instantiate_project_blueprint(
             for index in range(1, len(tasks))
         ]
 
-    process_id = f"proc_{uuid4().hex}"
+    process_id = str(previous.get("process_instance_id") or f"proc_{uuid4().hex}")
+    previous_graphs = previous.get("graphs") if isinstance(previous.get("graphs"), dict) else {}
     graphs = {
         "workflow": {
-            "id": f"graph_{uuid4().hex}", "view_type": "workflow", "source_status": "REVIEWED_CONFIGURATION",
+            "id": str(((previous_graphs.get("workflow") or {}).get("id")) or f"graph_{uuid4().hex}"), "view_type": "workflow", "source_status": "REVIEWED_CONFIGURATION",
             "nodes": [{"id": task["id"], "type": "task", "label": task["title"], "status": task["workflow_status"], "task_status": task["status"], "stage_id": task["stage_id"]} for task in tasks],
             "edges": [{"id": f"edge_{index}", "source": item["from_task_id"], "target": item["to_task_id"]} for index, item in enumerate(dependencies)],
         },
-        "ai-resource": {"id": f"graph_{uuid4().hex}", "view_type": "ai-resource", "source_status": "PLANNED", "nodes": [], "edges": []},
+        "ai-resource": {"id": str(((previous_graphs.get("ai-resource") or {}).get("id")) or f"graph_{uuid4().hex}"), "view_type": "ai-resource", "source_status": "PLANNED", "nodes": [], "edges": []},
     }
     supplied_documents = [dict(item) for item in blueprint.get("documents") or [] if isinstance(item, dict)]
     for index, document in enumerate(supplied_documents):
@@ -391,6 +405,28 @@ def instantiate_project_blueprint(
             "single_source_of_truth": str(master_document.get("id")),
             "task_record_required": True,
             "task_record_field": "execution_document_id",
+        },
+        "tombstones": {
+            "tasks": [
+                *[
+                    dict(item) for item in ((previous.get("tombstones") or {}).get("tasks") or [])
+                    if isinstance(item, dict)
+                ],
+                *[
+                    {"id": item.get("id"), "blueprint_key": key, "title": item.get("title"), "reason": "BLUEPRINT_REMOVED"}
+                    for key, item in previous_tasks.items() if key not in task_ids
+                ],
+            ],
+            "stages": [
+                *[
+                    dict(item) for item in ((previous.get("tombstones") or {}).get("stages") or [])
+                    if isinstance(item, dict)
+                ],
+                *[
+                    {"id": item.get("id"), "key": key, "name": item.get("name"), "reason": "BLUEPRINT_REMOVED"}
+                    for key, item in previous_stages.items() if key not in stage_ids
+                ],
+            ],
         },
         "graphs": graphs,
         "calendar": {"timezone": "Asia/Shanghai", "work_calendar_id": None, "non_working_days": [], "status": "PLANNED"},
@@ -594,12 +630,14 @@ def project_config_snapshot(project) -> dict[str, Any]:
     }
 
 
-def create_project_config_revision(project) -> WorkspaceProjectConfigRevision:
-    snapshot = project_config_snapshot(project)
+def create_project_config_revision(
+    project, *, revision: int = 1, snapshot: dict[str, Any] | None = None
+) -> WorkspaceProjectConfigRevision:
+    snapshot = snapshot or project_config_snapshot(project)
     return WorkspaceProjectConfigRevision(
         id=f"cfgrev_{uuid4().hex}",
         project_id=project.id,
-        revision=1,
+        revision=revision,
         canonical_hash=canonical_plan_hash(snapshot),
         snapshot=snapshot,
     )
@@ -614,10 +652,10 @@ async def persist_process_revision(
 ) -> WorkspaceProcessRevision:
     """Append normalized facts while retaining an equivalent legacy projection."""
     config = await db.scalar(
-        select(WorkspaceProjectConfigRevision).where(
-            WorkspaceProjectConfigRevision.project_id == project.id,
-            WorkspaceProjectConfigRevision.revision == 1,
-        )
+        select(WorkspaceProjectConfigRevision)
+        .where(WorkspaceProjectConfigRevision.project_id == project.id)
+        .order_by(WorkspaceProjectConfigRevision.revision.desc())
+        .limit(1)
     )
     if config is None:
         config = create_project_config_revision(project)
@@ -715,15 +753,15 @@ async def persist_process_revision(
 
 async def reconstruct_process_projection(db, project) -> tuple[int, str | None, dict[str, Any]]:
     """Build the legacy response from immutable normalized facts and reject cache drift."""
-    config = await db.scalar(
-        select(WorkspaceProjectConfigRevision).where(
-            WorkspaceProjectConfigRevision.project_id == project.id,
-            WorkspaceProjectConfigRevision.revision == 1,
-        )
-    )
-    if config is None:
-        raise ValueError("project config revision is missing")
     if project.process_revision == 0:
+        config = await db.scalar(
+            select(WorkspaceProjectConfigRevision)
+            .where(WorkspaceProjectConfigRevision.project_id == project.id)
+            .order_by(WorkspaceProjectConfigRevision.revision.desc())
+            .limit(1)
+        )
+        if config is None:
+            raise ValueError("project config revision is missing")
         return config.revision, None, {
             "process_instance_id": None,
             "stages": [],
@@ -740,6 +778,9 @@ async def reconstruct_process_projection(db, project) -> tuple[int, str | None, 
     )
     if revision is None:
         raise ValueError("normalized process revision is missing")
+    config = await db.get(WorkspaceProjectConfigRevision, revision.config_revision_id)
+    if config is None:
+        raise ValueError("project config revision is missing")
     if canonical_plan_hash(revision.legacy_snapshot or {}) != revision.canonical_hash:
         raise ValueError("immutable process revision hash drift")
     stages = list((await db.scalars(

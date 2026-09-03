@@ -48,6 +48,11 @@ class WorkspaceProject(Base):
     truth_mode: Mapped[str] = mapped_column(String(20), default="PLANNED")
     process_revision: Mapped[int] = mapped_column(Integer, default=0)
     process_snapshot: Mapped[dict] = mapped_column(JSON, default=dict)
+    active_intent_revision: Mapped[int] = mapped_column(Integer, default=0)
+    active_intent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    intent_migration_state: Mapped[str] = mapped_column(
+        String(24), default="PENDING_CONFIRMATION"
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -70,6 +75,87 @@ class WorkspaceProjectConfigRevision(Base):
     canonical_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkspaceProjectIntentRevision(Base):
+    """Immutable, user-confirmed project intent or a migration draft."""
+
+    __tablename__ = "workspace_project_intent_revisions"
+    __table_args__ = (
+        UniqueConstraint("project_id", "revision", name="uq_workspace_project_intent_revision"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    canonical_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    conflicts: Mapped[list] = mapped_column(JSON, default=list)
+    source_process_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    confirmed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkspaceProjectChangeProposal(Base):
+    """Intent-impacting project mutation awaiting explicit human approval."""
+
+    __tablename__ = "workspace_project_change_proposals"
+    __table_args__ = (
+        UniqueConstraint("project_id", "request_id", name="uq_workspace_change_proposal_request"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    request_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="PROPOSED")
+    change_kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    base_intent_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_intent_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    base_process_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    operations: Mapped[list] = mapped_column(JSON, nullable=False)
+    impact: Mapped[dict] = mapped_column(JSON, nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(64), nullable=False)
+    decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WorkspaceWorkflowBinding(Base):
+    """Pinned QWS project/task binding to one approved workflow plan revision."""
+
+    __tablename__ = "workspace_workflow_bindings"
+    __table_args__ = (
+        UniqueConstraint("project_id", "task_id", name="uq_workspace_workflow_binding_task"),
+    )
+
+    id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("workspace_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    task_id: Mapped[str] = mapped_column(String(40), nullable=False, index=True)
+    workflow_id: Mapped[str] = mapped_column(
+        ForeignKey("workflows.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    intent_revision: Mapped[int] = mapped_column(Integer, nullable=False)
+    intent_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    plan_id: Mapped[str | None] = mapped_column(String(48), nullable=True)
+    plan_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    activation_revision: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="ACTIVE")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class WorkspaceProcessRevision(Base):

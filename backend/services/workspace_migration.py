@@ -17,6 +17,9 @@ from backend.models.workspace import (
     WorkspaceProcessRevision,
     WorkspaceProjectApprover,
     WorkspaceProjectConfigRevision,
+    WorkspaceProjectIntentRevision,
+    WorkspaceProjectChangeProposal,
+    WorkspaceWorkflowBinding,
     WorkspaceProjectMember,
     WorkspaceStage,
     WorkspaceTask,
@@ -39,6 +42,9 @@ M05A_TABLES = [
     WorkspaceGateApprover.__table__,
     WorkspaceApprovalDecision.__table__,
     WorkspaceAuditEvent.__table__,
+    WorkspaceProjectIntentRevision.__table__,
+    WorkspaceProjectChangeProposal.__table__,
+    WorkspaceWorkflowBinding.__table__,
 ]
 
 IMMUTABLE_TABLES = (
@@ -490,6 +496,18 @@ def migrate_workspace_schema(
         )
 
     Base.metadata.create_all(connection, tables=M05A_TABLES, checkfirst=True)
+    project_columns = {
+        item["name"] for item in inspect(connection).get_columns("workspace_projects")
+    }
+    for name, definition in {
+        "active_intent_revision": "INTEGER NOT NULL DEFAULT 0",
+        "active_intent_hash": "VARCHAR(64)",
+        "intent_migration_state": "VARCHAR(24) NOT NULL DEFAULT 'PENDING_CONFIRMATION'",
+    }.items():
+        if name not in project_columns:
+            connection.exec_driver_sql(
+                f'ALTER TABLE workspace_projects ADD COLUMN "{name}" {definition}'
+            )
     for row in projects:
         config_id = _backfill_project_config_and_owner(connection, row)
         key = (str(row["id"]), int(row["process_revision"] or 0))

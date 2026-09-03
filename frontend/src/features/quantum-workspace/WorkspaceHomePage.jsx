@@ -13,7 +13,13 @@ const EditProjectForm = ({ project, onClose, onSaved }) => {
   const submit = async (event) => {
     event.preventDefault(); setBusy(true); setError("");
     try {
-      await platformApi.updateProject(project.id, { name, goal, desired_outputs: outputs.split(/[、,，]/).map((item) => item.trim()).filter(Boolean) });
+      const result = await platformApi.updateProject(project.id, {
+        expected_revision: project.process_revision,
+        request_id: `project-edit-${crypto.randomUUID()}`,
+        name, goal,
+        desired_outputs: outputs.split(/[、,，]/).map((item) => item.trim()).filter(Boolean),
+      });
+      if (result?.proposal) window.alert("该修改已生成项目变更提案，请进入项目后批准；当前顶设尚未改变。");
       await onSaved(); onClose();
     } catch (reason) { setError(reason.message); } finally { setBusy(false); }
   };

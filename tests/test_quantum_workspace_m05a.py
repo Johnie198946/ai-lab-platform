@@ -702,6 +702,17 @@ def test_member_and_appointment_payloads_are_complete_and_replay_identically(cli
 
 def test_project_write_member_edits_task_and_persists_normalized_revision(client):
     project_id = _applied_project(client, "member-edit")
+    migration = client.post(
+        f"/api/v1/projects/{project_id}/intent/migration-draft"
+    ).json()
+    confirmed = client.post(
+        f"/api/v1/projects/{project_id}/intent/confirm",
+        json={
+            "expected_process_revision": 1,
+            "snapshot": migration["snapshot"],
+        },
+    )
+    assert confirmed.status_code == 200, confirmed.text
     process = client.get(f"/api/v1/projects/{project_id}/process").json()
     task = process["tasks"][0]
     stage = process["stages"][0]
@@ -728,19 +739,40 @@ def test_project_write_member_edits_task_and_persists_normalized_revision(client
     edited = client.put(
         f"/api/v1/projects/{project_id}/tasks/{task['id']}",
         json={
-            "expected_revision": 1,
+            "expected_revision": confirmed.json()["process_revision"],
             "stage_id": stage["id"],
             "title": "Member edited title",
             "summary": "Member edited summary",
             "assignee_role": "Editor",
         },
     )
-    assert edited.status_code == 200, edited.text
-    assert edited.json()["process_revision"] == 2
+    assert edited.status_code == 202, edited.text
+    proposal = edited.json()["proposal"]
+
+    before_approval = client.get(f"/api/v1/projects/{project_id}/process").json()
+    assert next(
+        item for item in before_approval["tasks"] if item["id"] == task["id"]
+    )["title"] != "Member edited title"
+
+    app.dependency_overrides[require_auth] = lambda: {
+        "tenant_key": "tenant-a", "user_id": "owner-a", "sub": "owner-a",
+        "principal_type": "human", "amr": ["pwd"],
+        "auth_time": int(datetime.now(timezone.utc).timestamp()),
+        "is_super_admin": False,
+    }
+    approved = client.post(
+        f"/api/v1/projects/{project_id}/change-proposals/{proposal['id']}/decision",
+        json={
+            "expected_process_revision": proposal["base_process_revision"],
+            "decision": "APPROVE",
+        },
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["process_revision"] == confirmed.json()["process_revision"] + 1
 
     projected = client.get(f"/api/v1/projects/{project_id}/process")
     assert projected.status_code == 200, projected.text
-    assert projected.json()["process_revision"] == 2
+    assert projected.json()["process_revision"] == approved.json()["process_revision"]
     assert next(
         item for item in projected.json()["tasks"] if item["id"] == task["id"]
     )["title"] == "Member edited title"

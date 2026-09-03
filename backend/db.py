@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = os.environ.get(
@@ -81,6 +82,74 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_showroom_epoch_bigint)
         await conn.run_sync(_migrate_feedback_digest_columns)
         await conn.run_sync(_migrate_workspace_delivery_contract)
+        await conn.run_sync(_migrate_workspace_intent_columns)
+    await _backfill_workspace_intent_drafts()
+
+
+async def _backfill_workspace_intent_drafts() -> None:
+    """Materialize review-only revision-zero drafts for every legacy QWS project."""
+    from backend.models.workspace import WorkspaceProject, WorkspaceProjectIntentRevision
+    from backend.services.project_intent import build_intent_snapshot, intent_conflicts
+
+    async with SessionLocal() as db:
+        projects = list((await db.scalars(select(WorkspaceProject))).all())
+        for project in projects:
+            if int(project.active_intent_revision or 0) > 0:
+                continue
+            existing = await db.scalar(
+                select(WorkspaceProjectIntentRevision.id).where(
+                    WorkspaceProjectIntentRevision.project_id == project.id,
+                    WorkspaceProjectIntentRevision.status == "DRAFT",
+                )
+            )
+            if existing is not None:
+                continue
+            process = project.process_snapshot or {}
+            snapshot = build_intent_snapshot(
+                project_id=project.id,
+                project_name=project.name,
+                project_goal=project.goal,
+                desired_outputs=project.desired_outputs or [],
+                process=process,
+            )
+            try:
+                async with db.begin_nested():
+                    db.add(WorkspaceProjectIntentRevision(
+                        id=f"intent_migration_{hashlib.sha256(project.id.encode()).hexdigest()[:24]}",
+                        tenant_key=project.tenant_key,
+                        project_id=project.id,
+                        revision=0,
+                        status="DRAFT",
+                        canonical_hash=canonical_plan_hash(snapshot),
+                        snapshot=snapshot,
+                        conflicts=intent_conflicts(project.goal, process),
+                        source_process_revision=project.process_revision,
+                        created_by=project.owner_user_id,
+                    ))
+                    project.intent_migration_state = "PENDING_CONFIRMATION"
+                    await db.flush()
+            except IntegrityError:
+                # Another startup process created the same deterministic draft.
+                continue
+        await db.commit()
+
+
+def _migrate_workspace_intent_columns(connection) -> None:
+    """Add nullable/defaulted intent pointers to existing QWS projects."""
+    schema = inspect(connection)
+    if "workspace_projects" not in set(schema.get_table_names()):
+        return
+    existing = {item["name"] for item in schema.get_columns("workspace_projects")}
+    definitions = {
+        "active_intent_revision": "INTEGER NOT NULL DEFAULT 0",
+        "active_intent_hash": "VARCHAR(64)",
+        "intent_migration_state": "VARCHAR(24) NOT NULL DEFAULT 'PENDING_CONFIRMATION'",
+    }
+    for name, definition in definitions.items():
+        if name not in existing:
+            connection.exec_driver_sql(
+                f'ALTER TABLE workspace_projects ADD COLUMN "{name}" {definition}'
+            )
 
 
 def _migrate_workflow_v2_columns(connection) -> None:

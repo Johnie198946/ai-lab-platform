@@ -60,6 +60,8 @@ export function ProjectDocuments({ projectId, onRevisionChange }) {
     [draft.content],
   );
   const backlinks = payload.graph?.backlinks?.[selectedId] || [];
+  const selectedDocument = payload.documents.find((item) => item.id === selectedId);
+  const masterReadOnly = selectedDocument?.document_type === "PROJECT_MASTER";
   return <section className="qw-documents">
     <aside>
       <div><span className="qw-eyebrow">Project documents</span><button type="button" onClick={create}>新建</button></div>
@@ -73,16 +75,17 @@ export function ProjectDocuments({ projectId, onRevisionChange }) {
     </aside>
     <div className="qw-document-editor">
       <header>
-        <input aria-label="文档标题" value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
-        <select aria-label="文档状态" value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
+        <input aria-label="文档标题" disabled={masterReadOnly} value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} />
+        <select aria-label="文档状态" disabled={masterReadOnly} value={draft.status} onChange={(event) => setDraft({ ...draft, status: event.target.value })}>
           <option value="DRAFT">草稿</option><option value="PUBLISHED">发布投影</option><option value="ARCHIVED">归档</option>
         </select>
-        <button className="qw-button primary" type="button" disabled={!selectedId || busy} onClick={save}><Save size={14} />{busy ? "保存中…" : "保存文档"}</button>
+        <button className="qw-button primary" type="button" disabled={!selectedId || busy || masterReadOnly} onClick={save}><Save size={14} />{masterReadOnly ? "只读顶设" : busy ? "保存中…" : "保存文档"}</button>
       </header>
       {error && <p className="qw-error" role="alert">{error}</p>}
-      <label>Source refs（每行一个；发布态必填且服务端验证）<textarea aria-label="文档来源" value={draft.source_refs.join("\n")} onChange={(event) => setDraft({ ...draft, source_refs: lines(event.target.value) })} /></label>
-      <label>Tags（每行一个）<textarea aria-label="文档标签" value={draft.tags.join("\n")} onChange={(event) => setDraft({ ...draft, tags: lines(event.target.value) })} /></label>
-      <textarea className="qw-document-body" aria-label="Markdown 文档正文" value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="使用 Markdown、[[wikilinks]] 与 Obsidian callouts 编辑项目文档…" />
+      {masterReadOnly && <p className="qw-document-readonly">顶设由已确认的项目意图自动生成；请通过项目变更提案修改。</p>}
+      <label>Source refs（每行一个；发布态必填且服务端验证）<textarea aria-label="文档来源" disabled={masterReadOnly} value={draft.source_refs.join("\n")} onChange={(event) => setDraft({ ...draft, source_refs: lines(event.target.value) })} /></label>
+      <label>Tags（每行一个）<textarea aria-label="文档标签" disabled={masterReadOnly} value={draft.tags.join("\n")} onChange={(event) => setDraft({ ...draft, tags: lines(event.target.value) })} /></label>
+      <textarea className="qw-document-body" aria-label="Markdown 文档正文" readOnly={masterReadOnly} value={draft.content} onChange={(event) => setDraft({ ...draft, content: event.target.value })} placeholder="使用 Markdown、[[wikilinks]] 与 Obsidian callouts 编辑项目文档…" />
       <section className="qw-document-links" aria-label="文档链接诊断">
         <strong><Link2 size={14} />链接</strong>
         <span>出链：{wikilinks.length ? wikilinks.join("、") : "无"}</span>

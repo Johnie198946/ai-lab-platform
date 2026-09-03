@@ -1846,13 +1846,15 @@ export function createTaskboardServer(options = {}) {
         const existing = existingTasksByMarker.get(marker);
         if (existing) {
           const changes = {};
-          const preservesRuntimeStatus = ["in_progress", "blocked", "in_review", "done", "canceled"].includes(existing.status)
-            && ["backlog", "todo"].includes(parsed.status);
-          if (existing.status !== parsed.status && !preservesRuntimeStatus) changes.status = parsed.status;
-          if (!existing.developmentContext && parsed.developmentContext) changes.developmentContext = parsed.developmentContext;
-          if (!existing.startDate && parsed.startDate) changes.startDate = parsed.startDate;
-          if (!existing.dueDate && parsed.dueDate) changes.dueDate = parsed.dueDate;
-          if (!existing.recurrence && parsed.recurrence) changes.recurrence = parsed.recurrence;
+          if (existing.title !== parsed.title) changes.title = parsed.title;
+          if (existing.description !== parsed.description) changes.description = parsed.description;
+          if (existing.status !== parsed.status) changes.status = parsed.status;
+          if (existing.priority !== parsed.priority) changes.priority = parsed.priority;
+          if (JSON.stringify(existing.labels || []) !== JSON.stringify(parsed.labels || [])) changes.labels = parsed.labels;
+          if (JSON.stringify(existing.developmentContext) !== JSON.stringify(parsed.developmentContext)) changes.developmentContext = parsed.developmentContext;
+          if (existing.startDate !== parsed.startDate) changes.startDate = parsed.startDate;
+          if (existing.dueDate !== parsed.dueDate) changes.dueDate = parsed.dueDate;
+          if (JSON.stringify(existing.recurrence) !== JSON.stringify(parsed.recurrence)) changes.recurrence = parsed.recurrence;
           if (existing.assignee.type !== assignee.type
             || existing.assignee.id !== assignee.id
             || existing.assignee.name !== assignee.name
@@ -3008,6 +3010,9 @@ export function createTaskboardServer(options = {}) {
           return sendJson(response, 200, { schedule: database.getLatestSchedule(projectId) });
         }
         if (request.method !== "POST") return methodNotAllowed(response, ["GET", "POST"]);
+        if (resolved.qwsMode && projectId.startsWith("qws-")) {
+          throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS project schedules must be changed through a QWS proposal");
+        }
         const body = await readJson(request);
         assertPlainObject(body);
         assertAllowedKeys(body, new Set(["entries"]));
@@ -3104,6 +3109,9 @@ export function createTaskboardServer(options = {}) {
           const actor = actorFromRequest(request);
           const { assigneeTarget, ...parsedInput } = parseTaskCreate(await readJson(request));
           const input = resolveInputThreadBinding(parsedInput);
+          if (resolved.qwsMode && String(input.projectId || "").startsWith("qws-")) {
+            throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS project tasks must be created through the QWS change proposal API");
+          }
           if (input.projectId === JIRA_PROJECT_ID) {
             throw new ApiError(
               409,
@@ -3510,6 +3518,9 @@ export function createTaskboardServer(options = {}) {
           } = resolveInputThreadBinding(parseTaskPatch(await readJson(request)));
           const current = database.getTask(id);
           if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          if (resolved.qwsMode && String(current.projectId || "").startsWith("qws-")) {
+            throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS canonical task fields must be changed through QWS");
+          }
           let jiraChanged = false;
           if (current.source !== "jira" && changes.projectId === JIRA_PROJECT_ID) {
             throw new ApiError(
@@ -3572,6 +3583,9 @@ export function createTaskboardServer(options = {}) {
         }
         if (!action && request.method === "DELETE") {
           const current = database.getTask(id);
+          if (resolved.qwsMode && String(current?.projectId || "").startsWith("qws-")) {
+            throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS canonical tasks cannot be deleted from Taskboard");
+          }
           if (current?.source === "jira") {
             throw new ApiError(409, "JIRA_DELETE_UNAVAILABLE", "Jira 任务不能从 Taskboard 永久删除");
           }
@@ -3591,6 +3605,9 @@ export function createTaskboardServer(options = {}) {
           const move = resolveInputThreadBinding(parseMove(await readJson(request)));
           const current = database.getTask(id);
           if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          if (resolved.qwsMode && String(current.projectId || "").startsWith("qws-")) {
+            throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS canonical task status must be changed through QWS");
+          }
           if (current.source === "jira") {
             if (current.version !== move.version) {
               throw new ApiError(409, "VERSION_CONFLICT", "Task changed since it was last read", {
@@ -3617,6 +3634,9 @@ export function createTaskboardServer(options = {}) {
         }
         if (action === "archive" && request.method === "POST") {
           const current = database.getTask(id);
+          if (resolved.qwsMode && String(current?.projectId || "").startsWith("qws-")) {
+            throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS canonical tasks must be archived through a QWS proposal");
+          }
           if (current?.source === "jira") {
             throw new ApiError(409, "JIRA_ARCHIVE_UNAVAILABLE", "Jira 任务由同步范围自动管理，不能手动归档");
           }
@@ -3635,6 +3655,9 @@ export function createTaskboardServer(options = {}) {
         }
         if (action === "restore" && request.method === "POST") {
           const current = database.getTask(id);
+          if (resolved.qwsMode && String(current?.projectId || "").startsWith("qws-")) {
+            throw new ApiError(409, "QWS_COMMAND_REQUIRED", "QWS canonical tasks must be restored through a QWS proposal");
+          }
           if (current?.source === "jira") {
             throw new ApiError(409, "JIRA_RESTORE_UNAVAILABLE", "Jira 任务由同步范围自动管理，不能手动恢复");
           }

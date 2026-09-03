@@ -7,6 +7,7 @@ import { AIResourceWorkbench } from "./AIResourceWorkbench";
 import { BusinessResultWorkspace } from "./BusinessResultWorkspace";
 import { ProjectGraph } from "./ProjectGraph";
 import { ProjectSchedule } from "./ProjectSchedule";
+import { ProjectGovernancePanel } from "./ProjectGovernancePanel";
 
 
 import { DashiTaskboardHost } from "./DashiTaskboardHost";
@@ -35,6 +36,12 @@ export function ProjectWorkspacePage() {
   const [loading, setLoading] = useState(true);
   const [workflowSubView, setWorkflowSubView] = useState("process");
   const view = location.pathname.includes("/schedule") ? "schedule" : location.pathname.includes("/graph/") ? "graph" : "taskboard";
+  const announceProposal = (result) => {
+    if (!result?.proposal) return false;
+    window.dispatchEvent(new CustomEvent("qws:governance-changed"));
+    setError("该修改会影响项目意图，已生成待确认提案；批准后才会生效。");
+    return true;
+  };
 
   const load = useCallback(async () => {
     setError("");
@@ -80,10 +87,11 @@ export function ProjectWorkspacePage() {
     setDialogBusy(true);
     setDialogError("");
     try {
-      await platformApi.createProjectTask(projectId, {
+      const result = await platformApi.createProjectTask(projectId, {
         expected_revision: process.process_revision,
         ...taskDraft,
       });
+      announceProposal(result);
       setNewTaskOpen(false);
       await load();
     } catch (reason) {
@@ -98,10 +106,11 @@ export function ProjectWorkspacePage() {
     setDialogBusy(true);
     setDialogError("");
     try {
-      await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
+      const result = await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
         expected_revision: process.process_revision,
         workflow_id: workflowId,
       });
+      announceProposal(result);
       setBindTask(null);
       await load();
     } catch (reason) {
@@ -116,7 +125,8 @@ export function ProjectWorkspacePage() {
     setDialogBusy(true);
     setDialogError("");
     try {
-      await platformApi.editProjectTask(projectId, editTask.id, { expected_revision: process.process_revision, ...taskDraft });
+      const result = await platformApi.editProjectTask(projectId, editTask.id, { expected_revision: process.process_revision, ...taskDraft });
+      announceProposal(result);
       setEditTask(null);
       await load();
     } catch (reason) {
@@ -136,10 +146,11 @@ export function ProjectWorkspacePage() {
         clarification_mode: "dynamic",
       });
       const workflow = created.workflow || created;
-      await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
+      const binding = await platformApi.bindProjectTaskWorkflow(projectId, task.id, {
         expected_revision: process.process_revision,
         workflow_id: workflow.id,
       });
+      announceProposal(binding);
       setBindTask(null);
       await load();
     } catch (reason) {
@@ -188,6 +199,7 @@ export function ProjectWorkspacePage() {
         nodes,
         edges,
       });
+      if (announceProposal(result)) return viewData;
       setViewData(result);
       setProcess((current) => ({ ...current, process_revision: result.process_revision }));
       return result;
@@ -227,6 +239,7 @@ export function ProjectWorkspacePage() {
         expected_revision: process.process_revision,
         ...draft,
       });
+      announceProposal(result);
       await load();
       return result;
     } catch (reason) {
@@ -243,6 +256,7 @@ export function ProjectWorkspacePage() {
         <div className="qw-project-title"><Link to="/home" aria-label="返回 Home"><ChevronLeft size={18} /></Link><div><span className="qw-eyebrow">Project · {project.id.slice(-8)}</span><h1>{project.name}</h1><p>{project.goal}</p></div></div>
         <div className="qw-revision"><span>process revision</span><strong>{process.process_revision}</strong></div>
       </div>
+      <ProjectGovernancePanel project={project} process={process} onChanged={load} />
       <div className="qw-project-sticky">
         <div className="qw-view-tabs">
           <NavLink to={`/projects/${projectId}/taskboard`}><LayoutDashboard size={15} />Taskboard</NavLink>

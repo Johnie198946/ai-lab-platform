@@ -16,7 +16,7 @@ const isReviewTask = (task) => /审核|验收|评审|复核|review|acceptance/i.
 
 const batchAutoInstruction = (task) => isReviewTask(task)
   ? `立即执行审核任务《${task.title}》。先确认所有 blockedBy 上游任务已完成；系统会在依赖完成前保持本卡在待办队列。审核时逐项检查每个上游任务的交付物和验收标准，并在 routes 中按 session_directory 的精确 target_task_id 为每个被审核任务写入明确评论：通过项写依据，不通过项写问题、整改方案和复核条件。若存在必须由用户决定且无法自动消除的分歧，将本卡 status 设为 in_review（等你确认）；若全部可自动验收则设为 done；若客观阻塞则设为 blocked。appendComment 必须写审核纪要、结论和剩余风险，最终只输出一个合法 task_backfill。`
-  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。项目概览、项目纲领文档、相关任务档案与规划历史已作为本次只读上下文直接提供，不需要另行调用“项目概览读取工具”；先逐项读取这些内容，再使用安全公开网络工具完成事实核查和交付。非关键或可后补的信息不得作为阻塞理由：基于已确认事实继续执行，将合理暂定项与待补字段明确标注即可。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review，只有真实外部/安全/权限/依赖障碍导致任务无法实质推进时才使用 blocked；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；每项实质性交付成果必须写入 addAttachments，不能只写在评论里。`;
+  : `立即全自动执行任务《${task.title}》，持续工作到完成或确认存在无法自行消除的阻塞。不要等待人工确认，也不要只给建议。以本轮注入的最新已确认 intent_capsule、当前任务合同和紧凑索引为准；缺少必要事实时按 revision 精确读取相关治理章节，不要臆测，也不要重复读取整份顶设或完整规划历史。再使用安全公开网络工具完成事实核查和交付。非关键或可后补的信息不得作为阻塞理由：基于已确认事实继续执行，将合理暂定项与待补字段明确标注即可。执行结束后必须输出 task_backfill：将状态设为 done、in_review 或 blocked；只有确需用户决策时才使用 in_review，只有真实外部/安全/权限/依赖障碍导致任务无法实质推进时才使用 blocked；appendComment 写明执行日志、纪要、问题、根因、已采取的解决方案、验证结果和剩余风险；每项实质性交付成果必须写入 addAttachments，不能只写在评论里。结构性发现只能形成待确认提案，不能借自动执行直接改变项目意图。`;
 
 
 function resolveDashiTheme() {
@@ -73,8 +73,7 @@ function resolveCanonicalTask(dashiTask, qwsTasks) {
   const labels = new Set(dashiTask.labels || []);
   const markerMatches = (qwsTasks || []).filter((item) => labels.has(qwsTaskMarker(item.id)));
   if (markerMatches.length > 1) throw new Error("该卡片绑定了多个 QWS 任务，无法安全打开 AI Session。");
-  const titleMatches = (qwsTasks || []).filter((item) => item.title?.trim() === dashiTask.title?.trim());
-  const canonical = markerMatches[0] || (titleMatches.length === 1 ? titleMatches[0] : null);
+  const canonical = markerMatches[0] || null;
   return {
     id: dashiTask.id,
     canonical_task_id: canonical?.id || null,
@@ -394,6 +393,120 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
         }
         return;
       }
+      if (event.data.type === "taskboard:qws-command") {
+        const command = event.data.payload || {};
+        const respond = (payload) => frame.postMessage({
+          type: "taskboard:qws-command-result",
+          payload: { requestId: command.requestId, ...payload },
+        }, window.location.origin);
+        try {
+          const latestProcess = await platformApi.getProjectProcess(project.id);
+          const stages = latestProcess.stages || [];
+          const commandTask = command.task || null;
+          let canonicalTask = null;
+          if (commandTask) {
+            canonicalTask = resolveCanonicalTask(commandTask, latestProcess.tasks || []);
+            if (!canonicalTask.canonical_task_id) throw new Error("该卡片没有精确的 QWS canonical marker");
+          }
+          let result;
+          if (command.action === "schedule") {
+            const entries = await Promise.all((command.entries || []).map(async (entry) => {
+              const payload = await dashiRequest(`/api/tasks/${encodeURIComponent(entry.id)}`, { user });
+              const canonical = resolveCanonicalTask(payload.task, latestProcess.tasks || []);
+              if (!canonical.canonical_task_id) throw new Error("排期卡片没有精确的 QWS canonical marker");
+              return {
+                task_id: canonical.canonical_task_id,
+                start_date: entry.startDate || null,
+                due_date: entry.dueDate || null,
+              };
+            }));
+            result = await platformApi.proposeProjectSchedule(project.id, {
+              request_id: command.requestId,
+              expected_revision: latestProcess.process_revision,
+              entries,
+            });
+          } else if (command.action === "create") {
+            const stage = stages[0];
+            if (!stage) throw new Error("项目尚未定义任务阶段");
+            const draft = command.draft || {};
+            result = await platformApi.createProjectTask(project.id, {
+              request_id: command.requestId,
+              expected_revision: latestProcess.process_revision,
+              stage_id: stage.id,
+              title: String(draft.title || "").trim(),
+              summary: String(draft.description || draft.title || "").trim(),
+            });
+          } else if (command.action === "update") {
+            const current = (latestProcess.tasks || []).find((item) => item.id === canonicalTask.canonical_task_id);
+            if (!current) throw new Error("QWS canonical task 已不存在");
+            const draft = command.draft || {};
+            result = await platformApi.editProjectTask(project.id, current.id, {
+              request_id: command.requestId,
+              expected_revision: latestProcess.process_revision,
+              stage_id: current.stage_id,
+              title: String(draft.title || current.title).trim(),
+              summary: String(draft.description || current.summary || current.title).trim(),
+              assignee_role: current.assignee_role || null,
+            });
+          } else if (command.action === "move") {
+            const statusMap = {
+              backlog: "TODO", todo: "WAITING_CLAIM", in_progress: "IN_PROGRESS",
+              in_review: "ACCEPTANCE_REVIEW", blocked: "BLOCKED",
+              done: "ACCEPTANCE_REVIEW", canceled: "CANCELLED",
+            };
+            const status = statusMap[command.status];
+            if (!status) throw new Error("不支持的 QWS 任务状态");
+            result = await platformApi.updateProjectTask(project.id, canonicalTask.canonical_task_id, {
+              expected_revision: latestProcess.process_revision,
+              status,
+              ...(status === "BLOCKED" || status === "CANCELLED" ? { reason: "Taskboard 用户命令" } : {}),
+            });
+            await ensureTaskboardSession();
+            const refreshed = await dashiRequest(`/api/tasks/${encodeURIComponent(commandTask.id)}`, { user });
+            respond({ ok: true, data: refreshed.task });
+            onRevisionChange?.();
+            return;
+          } else if (["archive", "restore", "delete"].includes(command.action)) {
+            result = await platformApi.proposeProjectTaskArchive(project.id, canonicalTask.canonical_task_id, {
+              request_id: command.requestId,
+              expected_revision: latestProcess.process_revision,
+              action: command.action === "restore" ? "RESTORE" : "ARCHIVE",
+            });
+          } else if (["add-relation", "remove-relation"].includes(command.action)) {
+            const relatedPayload = await dashiRequest(`/api/tasks/${encodeURIComponent(command.relatedTaskId)}`, { user });
+            const related = resolveCanonicalTask(relatedPayload.task, latestProcess.tasks || []);
+            if (!related.canonical_task_id) throw new Error("关联卡片没有精确的 QWS canonical marker");
+            const source = (latestProcess.tasks || []).find((item) => item.id === canonicalTask.canonical_task_id);
+            const relationMap = { related: "related", blocks: "blocks", blocked_by: "blocked_by", parent: "parent" };
+            result = await platformApi.proposeProjectTaskRelation(project.id, canonicalTask.canonical_task_id, {
+              expected_revision: latestProcess.process_revision,
+              expected_task_revision: source?.task_revision || 1,
+              target_task_id: related.canonical_task_id,
+              relation_type: relationMap[command.type] || "related",
+              action: command.action === "remove-relation" ? "REMOVE" : "ADD",
+              reason: "用户从 QWS Taskboard 发起关系变更",
+              confidence: 1,
+              impact: { source: "dashi_command" },
+            });
+          } else {
+            throw new Error("未知的 QWS Taskboard 命令");
+          }
+          const proposal = result?.proposal || (result?.status === "PENDING" ? result : null);
+          if (!proposal) throw new Error("结构变更未生成项目提案");
+          window.dispatchEvent(new CustomEvent("qws:governance-changed", { detail: { projectId: project.id } }));
+          respond({
+            ok: false,
+            proposal: true,
+            proposalData: proposal,
+            message: "已生成项目变更提案；用户批准前不会修改 QWS 或 Taskboard。",
+          });
+          setState("已生成项目变更提案，等待用户确认");
+          window.setTimeout(() => setState(""), 5000);
+        } catch (reason) {
+          respond({ ok: false, message: reason.message || "QWS 命令失败" });
+        }
+        return;
+      }
       if (event.data.type === "taskboard:frame-awaiting-challenge") {
         frame.postMessage({ type: "taskboard:frame-challenge", payload: { challenge: crypto.randomUUID().replaceAll("-", "") } }, window.location.origin);
         return;
@@ -447,7 +560,7 @@ export function DashiTaskboardHost({ project, onOpenTaskChat, onRevisionChange }
       mediaQuery?.removeEventListener?.("change", handleThemeChange);
       themeObserver?.disconnect();
     };
-  }, [dashiProjectId, loadTaskSession, onOpenTaskChat, openArchitect, project, user]);
+  }, [dashiProjectId, ensureTaskboardSession, loadTaskSession, onOpenTaskChat, onRevisionChange, openArchitect, project, user]);
 
   const src = `/taskboard/?host=qws&lang=zh&project=${encodeURIComponent(dashiProjectId)}`;
   return <section className="qw-dashi-host" aria-label="Dashi Taskboard">

@@ -416,6 +416,21 @@ export const platformApi = {
   getProject(projectId) {
     return request(`/api/v1/projects/${projectId}`);
   },
+  getProjectIntent(projectId) {
+    return request(`/api/v1/projects/${projectId}/intent`);
+  },
+  createProjectIntentMigrationDraft(projectId) {
+    return request(`/api/v1/projects/${projectId}/intent/migration-draft`, { method: "POST", body: {} });
+  },
+  confirmProjectIntent(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/intent/confirm`, { method: "POST", body: payload });
+  },
+  listProjectChangeProposals(projectId) {
+    return request(`/api/v1/projects/${projectId}/change-proposals`);
+  },
+  decideProjectChangeProposal(projectId, proposalId, payload) {
+    return request(`/api/v1/projects/${projectId}/change-proposals/${proposalId}/decision`, { method: "POST", body: payload });
+  },
   getProjectProcess(projectId) {
     return request(`/api/v1/projects/${projectId}/process`);
   },
@@ -532,6 +547,15 @@ export const platformApi = {
   },
   createProjectTask(projectId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks`, { method: "POST", body: payload });
+  },
+  proposeProjectTaskArchive(projectId, taskId, payload) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}/archive-proposal`, { method: "POST", body: payload });
+  },
+  proposeProjectSchedule(projectId, payload) {
+    return request(`/api/v1/projects/${projectId}/schedule-proposal`, { method: "POST", body: payload });
+  },
+  proposeProjectTaskRelation(projectId, taskId, payload) {
+    return request(`/api/v1/projects/${projectId}/tasks/${taskId}/relation-proposals`, { method: "POST", body: payload });
   },
   bindProjectTaskWorkflow(projectId, taskId, payload) {
     return request(`/api/v1/projects/${projectId}/tasks/${taskId}/workflow`, { method: "PUT", body: payload });
