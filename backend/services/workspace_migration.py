@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import inspect, select, text
 
 from backend.db import Base, canonical_plan_hash
+from backend.models.workflow import WorkflowDefinition
 from backend.models.workspace import (
     WorkspaceApprovalDecision,
     WorkspaceAuditEvent,
@@ -30,6 +31,10 @@ from backend.models.workspace import (
 )
 
 M05A_TABLES = [
+    # WorkspaceWorkflowBinding has a RESTRICT FK to the canonical workflow.
+    # Keep the dependency in this constrained create_all set so a standalone
+    # migration process can resolve and order the foreign key metadata.
+    WorkflowDefinition.__table__,
     WorkspaceProjectConfigRevision.__table__,
     WorkspaceProcessRevision.__table__,
     WorkspaceStage.__table__,
