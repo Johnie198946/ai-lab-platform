@@ -7,11 +7,13 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import os
+from datetime import datetime, timezone
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
 from backend.api import auth as auth_api
@@ -151,16 +153,85 @@ def _issue_jwt(
     )
 
 
-@router.post("/dev-login")
-async def dev_login(body: DevLoginRequest):
-    """受控开发账号免短信登录；只有服务端显式配置后才开放。"""
+_TRUSTED_PROXY_NETWORKS = tuple(
+    ipaddress.ip_network(cidr)
+    for cidr in (
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    )
+)
+
+
+def _parse_ip(value: str):
+    try:
+        return ipaddress.ip_address(value.strip())
+    except ValueError:
+        return None
+
+
+def _is_trusted_proxy(value: str) -> bool:
+    address = _parse_ip(value)
+    return address is not None and any(
+        address.version == network.version and address in network
+        for network in _TRUSTED_PROXY_NETWORKS
+    )
+
+
+def _request_source_ip(request: Request) -> str:
+    direct_host = request.client.host if request.client else ""
+    if _is_trusted_proxy(direct_host):
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            first_hop = forwarded_for.split(",", 1)[0].strip()
+            if _parse_ip(first_hop) is not None:
+                return first_hop
+    return direct_host.strip()
+
+
+def _dev_login_expiry(value: str) -> Optional[datetime]:
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    except (OverflowError, ValueError):
+        pass
+    try:
+        parsed = datetime.fromisoformat(raw[:-1] + "+00:00" if raw.endswith("Z") else raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _dev_login_allowed(request: Request) -> bool:
     if os.environ.get("DEV_LOGIN_ENABLED", "false").strip().lower() != "true":
+        return False
+    allowed_ip = os.environ.get("DEV_LOGIN_ALLOWED_IP", "").strip()
+    expiry = _dev_login_expiry(os.environ.get("DEV_LOGIN_EXPIRES_AT", ""))
+    expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
+    expected_code = os.environ.get("DEV_LOGIN_CODE", "").strip()
+    if not allowed_ip or _parse_ip(allowed_ip) is None or expiry is None:
+        return False
+    if not expected_phone or not expected_code or expiry <= datetime.now(timezone.utc):
+        return False
+    return hmac.compare_digest(_request_source_ip(request), allowed_ip)
+
+
+@router.post("/dev-login")
+async def dev_login(body: DevLoginRequest, request: Request):
+    """受控开发账号免短信登录；只有服务端显式配置后才开放。"""
+    if not _dev_login_allowed(request):
         raise HTTPException(status_code=404, detail="开发者登录未启用")
 
     expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
     expected_code = os.environ.get("DEV_LOGIN_CODE", "").strip()
-    if not expected_phone or not expected_code:
-        raise HTTPException(status_code=503, detail="开发者登录配置不完整")
     if not hmac.compare_digest(body.phone.strip(), expected_phone) or not hmac.compare_digest(
         body.verification_code.strip(), expected_code
     ):

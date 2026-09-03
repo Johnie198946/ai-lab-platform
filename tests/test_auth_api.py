@@ -2,6 +2,7 @@
 import asyncio
 import os
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -40,7 +41,7 @@ class TestAuthAPI(unittest.TestCase):
 
         from backend.main import app
 
-        self._transport = httpx.ASGITransport(app=app)
+        self._app = app
 
     def tearDown(self):
         import backend.api.auth as auth
@@ -48,8 +49,10 @@ class TestAuthAPI(unittest.TestCase):
         auth.tenant_resolver = self._old_resolver
 
     async def _request(self, method, path, **kwargs):
+        source = kwargs.pop("_source", ("127.0.0.1", 123))
+        transport = httpx.ASGITransport(app=self._app, client=source)
         async with httpx.AsyncClient(
-            transport=self._transport,
+            transport=transport,
             base_url="http://testserver",
         ) as client:
             return await client.request(method, path, **kwargs)
@@ -147,7 +150,62 @@ class TestAuthAPI(unittest.TestCase):
             r = self.request(
                 "POST",
                 "/api/v1/dev-login",
-                json={"phone": "13800138000", "verification_code": "246810"},
+                json={"phone": "15500000000", "verification_code": "135790"},
+            )
+        self.assertEqual(r.status_code, 404)
+
+    def _dev_login_environment(self, **overrides):
+        values = {
+            "DEV_LOGIN_ENABLED": "true",
+            "DEV_LOGIN_PHONE": "15500000000",
+            "DEV_LOGIN_CODE": "135790",
+            "DEV_LOGIN_USER_ID": "test-dev-user",
+            "DEV_LOGIN_USERNAME": "测试开发者",
+            "DEV_LOGIN_ALLOWED_IP": "203.0.113.10",
+            "DEV_LOGIN_EXPIRES_AT": (
+                datetime.now(timezone.utc) + timedelta(minutes=10)
+            ).isoformat(),
+        }
+        values.update(overrides)
+        return values
+
+    def _post_dev_login(self, **kwargs):
+        return self.request(
+            "POST",
+            "/api/v1/dev-login",
+            json={"phone": "15500000000", "verification_code": "135790"},
+            **kwargs,
+        )
+
+    def test_dev_login_fails_closed_without_allowed_ip(self):
+        with patch.dict(
+            os.environ,
+            self._dev_login_environment(DEV_LOGIN_ALLOWED_IP=""),
+            clear=False,
+        ):
+            r = self._post_dev_login(_source=("203.0.113.10", 123))
+        self.assertEqual(r.status_code, 404)
+
+    def test_dev_login_fails_closed_when_expired(self):
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+        with patch.dict(
+            os.environ,
+            self._dev_login_environment(DEV_LOGIN_EXPIRES_AT=expired),
+            clear=False,
+        ):
+            r = self._post_dev_login(_source=("203.0.113.10", 123))
+        self.assertEqual(r.status_code, 404)
+
+    def test_dev_login_rejects_wrong_source_ip(self):
+        with patch.dict(os.environ, self._dev_login_environment(), clear=False):
+            r = self._post_dev_login(_source=("203.0.113.11", 123))
+        self.assertEqual(r.status_code, 404)
+
+    def test_dev_login_ignores_forged_xff_from_untrusted_client(self):
+        with patch.dict(os.environ, self._dev_login_environment(), clear=False):
+            r = self._post_dev_login(
+                _source=("198.51.100.20", 123),
+                headers={"X-Forwarded-For": "203.0.113.10"},
             )
         self.assertEqual(r.status_code, 404)
 
@@ -155,31 +213,30 @@ class TestAuthAPI(unittest.TestCase):
         import backend.api.register as register
 
         async def fake_provision(user_id):
-            self.assertEqual(user_id, "dev-user")
-            return "u-dev-user"
+            self.assertEqual(user_id, "test-dev-user")
+            return "u-test-dev"
 
         with patch.dict(
             os.environ,
             {
-                "DEV_LOGIN_ENABLED": "true",
-                "DEV_LOGIN_PHONE": "13800138000",
-                "DEV_LOGIN_CODE": "246810",
-                "DEV_LOGIN_USER_ID": "dev-user",
-                "DEV_LOGIN_USERNAME": "开发者",
+                **self._dev_login_environment(
+                    DEV_LOGIN_EXPIRES_AT=str(
+                        int((datetime.now(timezone.utc) + timedelta(minutes=10)).timestamp())
+                    )
+                ),
                 # Simulate an environment rotation without restarting the verifier.
                 "AUTHEN_JWT_SECRET": "rotated-after-import",
             },
             clear=False,
         ), patch.object(register, "_provision_tenant", fake_provision):
-            r = self.request(
-                "POST",
-                "/api/v1/dev-login",
-                json={"phone": "13800138000", "verification_code": "246810"},
+            r = self._post_dev_login(
+                _source=("172.20.0.5", 123),
+                headers={"X-Forwarded-For": "203.0.113.10, 172.20.0.4"},
             )
         self.assertEqual(r.status_code, 200)
         token = r.json()["token"]
         self.assertTrue(token)
-        self.assertEqual(r.json()["tenant_key"], "u-dev-user")
+        self.assertEqual(r.json()["tenant_key"], "u-test-dev")
         from jose import jwt as jose_jwt
         import backend.api.auth as auth
         claims = jose_jwt.decode(
@@ -189,7 +246,7 @@ class TestAuthAPI(unittest.TestCase):
             audience=auth.AUTHEN_JWT_AUDIENCE,
             issuer=auth.AUTHEN_JWT_ISSUER,
         )
-        self.assertEqual(claims["sub"], "dev-user")
+        self.assertEqual(claims["sub"], "test-dev-user")
         self.assertEqual(claims["token_use"], "access")
         protected = self.request(
             "GET",

@@ -48,7 +48,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.ailab.AIPlatformApp
         MARKETING_VERSION: "1.0.3"
-        CURRENT_PROJECT_VERSION: "6"
+        CURRENT_PROJECT_VERSION: "7"
         DEVELOPMENT_TEAM: AALA948YY5
         CODE_SIGN_STYLE: Automatic
         SWIFT_VERSION: "5.9"
