@@ -6,7 +6,7 @@ tags:
   - hermes
   - runtime
   - knowledge
-status: tested
+status: verified
 ---
 
 # iOS Hermes 单 Runtime 稳定性修复交付收据
@@ -17,15 +17,15 @@ status: tested
 ## 任务身份
 
 - task_id: `20260903-ios-hermes-single-runtime-resilience`
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Desktop/AI Lab/quantumworkspace-m0`
 - start_head: `23265d9e8d3f301c89d4c15dde4840dc3976600e`
-- local_commit: `pending`
-- remote_sha: `pending`
+- local_commit: `36fd4eca34f7f2293e1ca4650dd35deaaf5c66bb`
+- remote_sha: `36fd4eca34f7f2293e1ca4650dd35deaaf5c66bb`
 - server_before: `12df7f57f00d86731236ea7c7314c9b29df48fb9`
-- server_after: `pending`
-- rollback_point: `pending`
+- server_after: `36fd4eca34f7f2293e1ca4650dd35deaaf5c66bb`
+- rollback_point: `/opt/ai-lab-rollbacks/20260904-ios-hermes-native-20260903T182802Z`
 
 ## 修复范围
 
@@ -48,14 +48,20 @@ status: tested
 - 覆盖回归：持久 Run cursor 冷启动恢复、pre-acceptance导航、跨会话 status 回填、有序 truncate/status/clear、并发 SQLite事务、恢复态替代中断卡、运行中重试、长流限长/分段展开/Unicode/Markdown、云端知识快照、Hermes原生笔记与 ContextVar tool worker传播。
 - `python -m py_compile`、`bash -n scripts/update.sh`、`git diff --check`：通过。
 
-## 待完成外部验收
+## 外部验收
 
-- GitHub push 与远端 SHA 读回。
-- 生产部署回滚点、历史 0600 笔记迁移、API/Bridge/worker 健康检查。
-- 模拟器真实受限登录后的知识同步、长流式输出、切 Tab/恢复与同一 Hermes SessionDB/Run 对账。
-- 临时开发登录必须在验收后关闭并读回 404。
+- GitHub `main`、本地提交与部署 SHA均核对为 `36fd4eca34f7f2293e1ca4650dd35deaaf5c66bb`。
+- 生产健康：API `/ready` 返回 `{"status":"ready","version":"0.8.0"}`；Bridge `/health` 返回 `status=ok, version=v6.0`；`hermes-serve`、`hermes-bridge`、`hermes-chat-worker` 均为 `active`。
+- 历史笔记权限迁移：部署输出 `directories=6 files=16 skipped_symlinks=0`；旧 0600故障文件已变为0644并由 API容器读取成功。
+- 模拟器真实受限登录 XCUITest：
+  - `testRunSurvivesTabAndColdStart`：`38.461s`，切 Tab、冷启动、同一 Hermes Run、无“响应已中断”，通过。
+  - `testHermesNoteAppearsInKnowledge`：`56.122s`，Hermes原生会话生成草稿、用户确认、同步、知识页可见，通过。
+  - `testLongStreamUsesBoundedExpansion`：`103.112s`，真实240行 Hermes流进入有界展示、完成后“展开全文”与全文页，通过。
+- 笔记服务端验证：`PUT /api/v1/me/knowledge-notes/96086a64-0566-4d35-95c3-13528554e2a6` 返回200；GET快照 `count=3`且 items包含该 ID；服务器对应用户目录文件存在并包含验收标题。
+- 生产日志（验收窗口）中 `knowledge_scope_unavailable`、`session_context_read_required`、`agent not found` 均为0。
+- 临时开发登录已恢复 `DEV_LOGIN_ENABLED=false`，allowlist/expiry移除，`/api/v1/dev-login`读回404；临时环境备份已删除。
 
-## 当前风险
+## 剩余风险
 
-- 当前本轮补充修复仅为 `TESTED`，尚未提交、推送或部署；生产仍运行 `12df7f57`。
-- 模拟器端到端验收依赖生产新版本，不能用单元测试替代。
+- 最新 iOS源码已在模拟器真实验收，但尚未另行上传新的 TestFlight build；当前 TestFlight `1.0.3 (7)` 不包含本轮 iOS代码。
+- Bridge status在超长单次生成期间仍可能受 Hermes执行耗时影响；iOS现在保持同一 Run并显示后台态，不会以 regenerate覆盖。
