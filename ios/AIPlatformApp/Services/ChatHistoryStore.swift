@@ -91,10 +91,36 @@ public final class ChatHistoryStore: @unchecked Sendable {
         }
     }
 
-    public func updateTopic(_ topic: TopicSessionMetadata) throws {
+    public func createTopicSession(
+        id: String,
+        agentId: String,
+        agentName: String,
+        topic: TopicSessionMetadata
+    ) throws {
         let payload = try Self.encoder.encode(topic)
-        try run("UPDATE sessions SET topic_payload=?,updated_at=? WHERE id=?") { s in
-            bind(payload,s,1); sqlite3_bind_double(s,2,Date().timeIntervalSince1970); bind(topic.sessionId,s,3)
+        try transaction {
+            try run("INSERT INTO sessions(id,title,updated_at,message_count,next_sequence,agent_id,agent_name) VALUES(?,?,?,?,?,?,?)") { s in
+                bind(id,s,1); bind("新会话",s,2); sqlite3_bind_double(s,3,Date().timeIntervalSince1970)
+                sqlite3_bind_int64(s,4,0); sqlite3_bind_int64(s,5,0); bind(agentId,s,6); bind(agentName,s,7)
+            }
+            try runRequiringChange("UPDATE sessions SET topic_payload=?,updated_at=? WHERE id=?") { s in
+                bind(payload,s,1); sqlite3_bind_double(s,2,Date().timeIntervalSince1970); bind(id,s,3)
+            }
+        }
+    }
+
+    public func updateTopic(_ topic: TopicSessionMetadata) throws {
+        try updateTopics([topic])
+    }
+
+    public func updateTopics(_ topics: [TopicSessionMetadata]) throws {
+        let encoded = try topics.map { ($0.sessionId, try Self.encoder.encode($0)) }
+        try transaction {
+            for (sessionId, payload) in encoded {
+                try runRequiringChange("UPDATE sessions SET topic_payload=?,updated_at=? WHERE id=?") { s in
+                    bind(payload,s,1); sqlite3_bind_double(s,2,Date().timeIntervalSince1970); bind(sessionId,s,3)
+                }
+            }
         }
     }
 
@@ -158,10 +184,20 @@ public final class ChatHistoryStore: @unchecked Sendable {
             try run("UPDATE sessions SET title='新会话',message_count=0,next_sequence=0,updated_at=? WHERE id=?") { s in sqlite3_bind_double(s,1,Date().timeIntervalSince1970); bind(id,s,2) }
         }
     }
-    public func delete(_ id: String) throws { try run("DELETE FROM sessions WHERE id=?") { bind(id,$0,1) } }
+    public func delete(_ id: String, promoting topic: TopicSessionMetadata? = nil) throws {
+        let promotedPayload = try topic.map { try Self.encoder.encode($0) }
+        try transaction {
+            try run("DELETE FROM sessions WHERE id=?") { bind(id,$0,1) }
+            if let topic, let promotedPayload {
+                try runRequiringChange("UPDATE sessions SET topic_payload=?,updated_at=? WHERE id=?") { s in
+                    bind(promotedPayload,s,1); sqlite3_bind_double(s,2,Date().timeIntervalSince1970); bind(topic.sessionId,s,3)
+                }
+            }
+        }
+    }
     public func setLifecycle(_ status: SessionLifecycleStatus, sessionId: String) throws {
         let now = Date().timeIntervalSince1970
-        try run("UPDATE sessions SET lifecycle_status=?,archived_at=?,trashed_at=? WHERE id=?") { s in
+        try runRequiringChange("UPDATE sessions SET lifecycle_status=?,archived_at=?,trashed_at=? WHERE id=?") { s in
             bind(status.rawValue, s, 1)
             if status == .archived { sqlite3_bind_double(s, 2, now) } else { sqlite3_bind_null(s, 2) }
             if status == .trashed { sqlite3_bind_double(s, 3, now) } else { sqlite3_bind_null(s, 3) }
@@ -172,7 +208,7 @@ public final class ChatHistoryStore: @unchecked Sendable {
         let now = Date().timeIntervalSince1970
         try transaction {
             for id in sessionIds {
-                try run("UPDATE sessions SET organized_at=? WHERE id=?") { s in
+                try runRequiringChange("UPDATE sessions SET organized_at=? WHERE id=?") { s in
                     sqlite3_bind_double(s, 1, now); bind(id, s, 2)
                 }
             }
@@ -330,6 +366,12 @@ public final class ChatHistoryStore: @unchecked Sendable {
             defer{sqlite3_finalize(s)}
             binds(s)
             guard sqlite3_step(s)==SQLITE_DONE else{throw error(sql)}
+        }
+    }
+    private func runRequiringChange(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in})throws {
+        try withConnectionLock {
+            try run(sql, binds)
+            guard sqlite3_changes(db) > 0 else { throw error("no rows changed: \(sql)") }
         }
     }
     private func query<T>(_ sql:String,_ binds:(OpaquePointer?)->Void={_ in},_ map:(OpaquePointer?)->T)throws->[T] {

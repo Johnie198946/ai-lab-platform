@@ -815,14 +815,40 @@ public final class SessionManager: ObservableObject {
     @Published public private(set) var topicSessions: [String: TopicSessionMetadata] = [:]
     @Published public private(set) var sessionLifecycle: [String: SessionLifecycleStatus] = [:]
     @Published public private(set) var sessionOrganizedAt: [String: Date] = [:]
+    private var pendingTopicPromotionSessionIDs: Set<String> = []
 
     private var store: ChatHistoryStore
     private var accountFingerprint = "unconfigured"
     private var persistedFingerprints: [String: [String: Int]] = [:]
+    private struct PersistenceWriteKey: Hashable, Sendable {
+        let sessionId: String
+        let accountEpoch: Int
+        let sessionEpoch: Int
+    }
+    private struct PendingPersistenceWrite: Sendable {
+        private(set) var order: [String] = []
+        private(set) var messagesById: [String: ChatMessage] = [:]
+
+        mutating func merge(_ messages: [ChatMessage]) {
+            for message in messages {
+                if messagesById[message.id] == nil { order.append(message.id) }
+                messagesById[message.id] = message
+            }
+        }
+
+        var messages: [ChatMessage] { order.compactMap { messagesById[$0] } }
+    }
+    private enum PersistenceDrainAction: Sendable { case stop, continueBeforeBarrier }
+    /// A stream may update the same assistant message hundreds of times. Keep only
+    /// the latest not-yet-written snapshot for each account/session epoch instead
+    /// of allocating one Task per SSE delta.
+    private var pendingPersistenceWrites: [PersistenceWriteKey: PendingPersistenceWrite] = [:]
+    private var scheduledPersistenceWrites: Set<PersistenceWriteKey> = []
     /// All SQLite writes share one background tail so rapid SSE/UI updates and
     /// A → B → A account transitions stay globally ordered. Account changes must
     /// never cancel or replace this tail: each task captures its own account store.
     private var persistenceTail: Task<Void, Never>? = nil
+    private var persistenceTaskGeneration: UInt64 = 0
     private var accountEpoch: Int = 0
     /// Invalidates stale completion projections after a destructive session mutation.
     private var sessionPersistenceEpoch: [String: Int] = [:]
@@ -852,6 +878,7 @@ public final class SessionManager: ObservableObject {
         accountEpoch &+= 1
         store = nextStore
         accountFingerprint = fingerprint
+        pendingTopicPromotionSessionIDs.removeAll()
         sessions.removeAll()
         sessionTitles.removeAll()
         sessionUpdatedAt.removeAll()
@@ -885,6 +912,7 @@ public final class SessionManager: ObservableObject {
 
     public func deactivateAccount() {
         accountEpoch &+= 1
+        pendingTopicPromotionSessionIDs.removeAll()
         sessions.removeAll()
         sessionTitles.removeAll()
         sessionUpdatedAt.removeAll()
@@ -959,10 +987,10 @@ public final class SessionManager: ObservableObject {
     public static let maximumActiveTopics = 3
 
     @discardableResult
-    public func startTopic(parentSessionId: String, sourceMessage: ChatMessage) -> TopicSessionMetadata {
-        let previousSessionId = activeSessionId
+    public func startTopic(parentSessionId: String, sourceMessage: ChatMessage) -> TopicSessionMetadata? {
         let activeCount = topicSessions.values.filter { $0.state == .active || $0.state == .ending }.count
-        let id = createSession(agentId: agentId(for: parentSessionId), agentName: agentName(for: parentSessionId))
+            + pendingTopicPromotionSessionIDs.count
+        let id = UUID().uuidString
         let quote = sourceMessage.quoteContext
         let topic = TopicSessionMetadata(
             sessionId: id,
@@ -972,13 +1000,21 @@ public final class SessionManager: ObservableObject {
             sourceBlockSummary: quote.blockSummary,
             state: activeCount < Self.maximumActiveTopics ? .active : .queued
         )
+        guard (try? store.createTopicSession(
+            id: id,
+            agentId: agentId(for: parentSessionId),
+            agentName: agentName(for: parentSessionId),
+            topic: topic
+        )) != nil else { return nil }
+        sessions[id] = []
+        sessionTitles[id] = "新会话"
+        sessionUpdatedAt[id] = Date()
+        sessionMessageCounts[id] = 0
+        sessionLifecycle[id] = .active
+        sessionAgentIds[id] = agentId(for: parentSessionId)
+        sessionAgentNames[id] = agentName(for: parentSessionId)
         topicSessions[id] = topic
-        if (try? store.updateTopic(topic)) != nil {
-            sessionMetadataEpoch[id, default: 0] &+= 1
-        }
-        // createSession owns the normal session lifecycle and temporarily selects it;
-        // restore the caller so the coordinator performs the only visible switch.
-        if let previousSessionId { activeSessionId = previousSessionId }
+        sessionMetadataEpoch[id, default: 0] &+= 1
         return topic
     }
 
@@ -991,32 +1027,37 @@ public final class SessionManager: ObservableObject {
     public func markTopicEnding(_ sessionId: String) {
         guard var topic = topicSessions[sessionId], topic.state == .active else { return }
         topic.state = .ending
+        guard (try? store.updateTopic(topic)) != nil else { return }
         topicSessions[sessionId] = topic
-        if (try? store.updateTopic(topic)) != nil {
-            sessionMetadataEpoch[sessionId, default: 0] &+= 1
-        }
+        sessionMetadataEpoch[sessionId, default: 0] &+= 1
     }
 
     public func finishTopic(_ sessionId: String) {
-        guard var topic = topicSessions[sessionId] else { return }
+        guard var topic = topicSessions[sessionId],
+              topic.state == .active || topic.state == .ending else { return }
         topic.state = .ended
+        let occupiedAfterEnding = topicSessions.values.filter {
+            $0.sessionId != sessionId && ($0.state == .active || $0.state == .ending)
+        }.count
+        var promoted = occupiedAfterEnding < Self.maximumActiveTopics
+            ? topicSessions.values
+                .filter({
+                    $0.state == .queued
+                        && !pendingTopicPromotionSessionIDs.contains($0.sessionId)
+                })
+                .min(by: { $0.createdAt < $1.createdAt })
+            : nil
+        promoted?.state = .active
+        let updates = [topic] + (promoted.map { [$0] } ?? [])
+        guard (try? store.updateTopics(updates)) != nil else { return }
         topicSessions[sessionId] = topic
-        if (try? store.updateTopic(topic)) != nil {
-            sessionMetadataEpoch[sessionId, default: 0] &+= 1
+        sessionMetadataEpoch[sessionId, default: 0] &+= 1
+        if let promoted {
+            topicSessions[promoted.sessionId] = promoted
+            sessionMetadataEpoch[promoted.sessionId, default: 0] &+= 1
         }
-        promoteNextTopicIfNeeded()
     }
 
-    private func promoteNextTopicIfNeeded() {
-        let occupied = topicSessions.values.filter { $0.state == .active || $0.state == .ending }.count
-        guard occupied < Self.maximumActiveTopics,
-              var next = topicSessions.values.filter({ $0.state == .queued }).min(by: { $0.createdAt < $1.createdAt }) else { return }
-        next.state = .active
-        topicSessions[next.sessionId] = next
-        if (try? store.updateTopic(next)) != nil {
-            sessionMetadataEpoch[next.sessionId, default: 0] &+= 1
-        }
-    }
 
     public func topicQuote(for sessionId: String) -> QuotedContext? {
         guard let topic = topicSessions[sessionId] else { return nil }
@@ -1029,18 +1070,18 @@ public final class SessionManager: ObservableObject {
             loadMetadata()
         }
         if (sessionLifecycle[id] ?? .active) != .active {
-            let persisted = (try? store.setLifecycle(.active, sessionId: id)) != nil
+            guard (try? store.setLifecycle(.active, sessionId: id)) != nil else { return }
             sessionLifecycle[id] = .active
-            if persisted { sessionMetadataEpoch[id, default: 0] &+= 1 }
+            sessionMetadataEpoch[id, default: 0] &+= 1
         }
         activeSessionId = id
     }
 
     public func setLifecycle(_ status: SessionLifecycleStatus, for id: String) {
         guard sessionTitles[id] != nil else { return }
-        let persisted = (try? store.setLifecycle(status, sessionId: id)) != nil
+        guard (try? store.setLifecycle(status, sessionId: id)) != nil else { return }
         sessionLifecycle[id] = status
-        if persisted { sessionMetadataEpoch[id, default: 0] &+= 1 }
+        sessionMetadataEpoch[id, default: 0] &+= 1
         if status != .active, activeSessionId == id {
             activeSessionId = sortedSessionIDs(status: .active).first
             if activeSessionId == nil { _ = createSession() }
@@ -1050,11 +1091,11 @@ public final class SessionManager: ObservableObject {
     public func markOrganized(_ ids: [String]) {
         let valid = ids.filter { sessionTitles[$0] != nil }
         guard !valid.isEmpty else { return }
-        let persisted = (try? store.markOrganized(valid)) != nil
+        guard (try? store.markOrganized(valid)) != nil else { return }
         let now = Date()
         for id in valid {
             sessionOrganizedAt[id] = now
-            if persisted { sessionMetadataEpoch[id, default: 0] &+= 1 }
+            sessionMetadataEpoch[id, default: 0] &+= 1
         }
     }
 
@@ -1067,9 +1108,28 @@ public final class SessionManager: ObservableObject {
     }
 
     public func deleteSession(_ id: String) {
+        guard sessionTitles[id] != nil else { return }
         let removedTopicOccupied = topicSessions[id].map { $0.state == .active || $0.state == .ending } ?? false
+        let queuedTopicBeforePromotion = removedTopicOccupied
+            ? topicSessions.values
+                .filter({
+                    $0.sessionId != id && $0.state == .queued
+                        && !pendingTopicPromotionSessionIDs.contains($0.sessionId)
+                })
+                .min(by: { $0.createdAt < $1.createdAt })
+            : nil
+        var promotedTopic = queuedTopicBeforePromotion
+        promotedTopic?.state = .active
+        if let queuedTopicBeforePromotion {
+            pendingTopicPromotionSessionIDs.insert(queuedTopicBeforePromotion.sessionId)
+        }
         sessionPersistenceEpoch[id, default: 0] &+= 1
-        enqueueDestructiveMutation(.delete, sessionId: id)
+        enqueueDestructiveMutation(
+            .delete,
+            sessionId: id,
+            promotedTopic: promotedTopic,
+            queuedTopicBeforePromotion: queuedTopicBeforePromotion
+        )
         sessions.removeValue(forKey: id)
         sessionTitles.removeValue(forKey: id)
         sessionUpdatedAt.removeValue(forKey: id)
@@ -1084,7 +1144,6 @@ public final class SessionManager: ObservableObject {
             activeSessionId = latestSessionID()
             if activeSessionId == nil { _ = createSession() }
         }
-        if removedTopicOccupied { promoteNextTopicIfNeeded() }
     }
 
     /// 按 updatedAt 倒序的会话 id 列表（供抽屉排序）。
@@ -1245,34 +1304,127 @@ public final class SessionManager: ObservableObject {
 
     private func enqueuePersistence(_ dirty: [ChatMessage], for id: String) {
         guard sessionTitles[id] != nil else { return }
-        let fingerprints = Dictionary(
-            uniqueKeysWithValues: dirty.map { ($0.id, fingerprint($0)) }
+        let key = PersistenceWriteKey(
+            sessionId: id,
+            accountEpoch: accountEpoch,
+            sessionEpoch: sessionPersistenceEpoch[id, default: 0]
         )
+        var pending = pendingPersistenceWrites[key] ?? PendingPersistenceWrite()
+        pending.merge(dirty)
+        pendingPersistenceWrites[key] = pending
+        guard scheduledPersistenceWrites.insert(key).inserted else { return }
+        schedulePersistenceDrain(for: key, store: store)
+    }
+
+    private func schedulePersistenceDrain(
+        for key: PersistenceWriteKey,
+        store: ChatHistoryStore
+    ) {
         let previous = persistenceTail
-        let store = self.store
-        let expectedAccountEpoch = accountEpoch
-        let expectedSessionEpoch = sessionPersistenceEpoch[id, default: 0]
         persistenceTail = Task.detached(priority: .utility) { [weak self] in
             await previous?.value
             guard !Task.isCancelled else { return }
-            guard let count = try? store.upsert(dirty, sessionId: id) else { return }
-            let summary = try? store.summary(sessionId: id)
-            await self?.finishPersistence(
-                sessionId: id,
-                fingerprints: fingerprints,
-                messageCount: count,
-                summary: summary,
-                expectedAccountEpoch: expectedAccountEpoch,
-                expectedSessionEpoch: expectedSessionEpoch
-            )
+            var consecutiveFailures = 0
+            while let batch = await self?.takePendingPersistence(for: key) {
+                let messages = batch.messages
+                let fingerprints = await self?.persistenceFingerprints(for: messages) ?? [:]
+                let count = try? store.upsert(messages, sessionId: key.sessionId)
+                let summary = count == nil ? nil : try? store.summary(sessionId: key.sessionId)
+                consecutiveFailures = count == nil ? consecutiveFailures + 1 : 0
+                let action = await self?.finishPersistenceDrain(
+                    key: key,
+                    store: store,
+                    batch: batch,
+                    fingerprints: fingerprints,
+                    messageCount: count,
+                    summary: summary,
+                    retryFailedBatch: count == nil && consecutiveFailures < 3
+                ) ?? .stop
+                if action == .stop { return }
+            }
+            await self?.finishEmptyPersistenceDrain(key: key, store: store)
         }
+        persistenceTaskGeneration &+= 1
+    }
+
+    private func takePendingPersistence(
+        for key: PersistenceWriteKey
+    ) -> PendingPersistenceWrite? {
+        pendingPersistenceWrites.removeValue(forKey: key)
+    }
+
+    private func persistenceFingerprints(
+        for messages: [ChatMessage]
+    ) -> [String: Int] {
+        Dictionary(uniqueKeysWithValues: messages.map { ($0.id, fingerprint($0)) })
+    }
+
+    private func finishPersistenceDrain(
+        key: PersistenceWriteKey,
+        store: ChatHistoryStore,
+        batch: PendingPersistenceWrite,
+        fingerprints: [String: Int],
+        messageCount: Int?,
+        summary: StoredSessionSummary?,
+        retryFailedBatch: Bool
+    ) -> PersistenceDrainAction {
+        if let messageCount {
+            finishPersistence(
+                sessionId: key.sessionId,
+                fingerprints: fingerprints,
+                messageCount: messageCount,
+                summary: summary,
+                expectedAccountEpoch: key.accountEpoch,
+                expectedSessionEpoch: key.sessionEpoch
+            )
+        } else if retryFailedBatch {
+            // Retry transient SQLite failures inside the same ordered tail so
+            // account changes and destructive barriers cannot overtake them.
+            // The caller caps attempts, preventing permanent-error churn.
+            var retry = batch
+            if let newer = pendingPersistenceWrites.removeValue(forKey: key) {
+                retry.merge(newer.messages)
+            }
+            pendingPersistenceWrites[key] = retry
+        }
+        guard pendingPersistenceWrites[key] != nil else {
+            scheduledPersistenceWrites.remove(key)
+            return .stop
+        }
+        // A same-session barrier has already been appended to the global tail.
+        // Drain its sealed predecessor here so it cannot run after the barrier.
+        if accountEpoch != key.accountEpoch
+            || sessionPersistenceEpoch[key.sessionId, default: 0] != key.sessionEpoch {
+            return .continueBeforeBarrier
+        }
+        if retryFailedBatch {
+            return .continueBeforeBarrier
+        }
+        // No barrier: move the latest snapshot behind other sessions' work so
+        // one long stream cannot monopolize the global SQLite writer.
+        scheduledPersistenceWrites.remove(key)
+        guard scheduledPersistenceWrites.insert(key).inserted else { return .stop }
+        schedulePersistenceDrain(for: key, store: store)
+        return .stop
+    }
+
+    private func finishEmptyPersistenceDrain(
+        key: PersistenceWriteKey,
+        store: ChatHistoryStore
+    ) {
+        scheduledPersistenceWrites.remove(key)
+        guard pendingPersistenceWrites[key] != nil,
+              scheduledPersistenceWrites.insert(key).inserted else { return }
+        schedulePersistenceDrain(for: key, store: store)
     }
 
     private enum DestructiveMutation: Sendable, Equatable { case clear, delete }
 
     private func enqueueDestructiveMutation(
         _ mutation: DestructiveMutation,
-        sessionId: String
+        sessionId: String,
+        promotedTopic: TopicSessionMetadata? = nil,
+        queuedTopicBeforePromotion: TopicSessionMetadata? = nil
     ) {
         let previous = persistenceTail
         let store = self.store
@@ -1285,11 +1437,13 @@ public final class SessionManager: ObservableObject {
             do {
                 switch mutation {
                 case .clear: try store.clear(sessionId)
-                case .delete: try store.delete(sessionId)
+                case .delete: try store.delete(sessionId, promoting: promotedTopic)
                 }
                 await self?.finishSuccessfulDestructiveMutation(
                     mutation,
                     sessionId: sessionId,
+                    promotedTopic: promotedTopic,
+                    queuedTopicBeforePromotion: queuedTopicBeforePromotion,
                     expectedAccountEpoch: expectedAccountEpoch,
                     expectedSessionEpoch: expectedSessionEpoch,
                     expectedMetadataEpoch: expectedMetadataEpoch
@@ -1300,6 +1454,7 @@ public final class SessionManager: ObservableObject {
                 await self?.restoreFailedDestructiveMutation(
                     mutation,
                     sessionId: sessionId,
+                    promotedTopic: promotedTopic,
                     summary: summary,
                     page: page,
                     expectedAccountEpoch: expectedAccountEpoch,
@@ -1308,20 +1463,31 @@ public final class SessionManager: ObservableObject {
                 )
             }
         }
+        persistenceTaskGeneration &+= 1
     }
 
     private func finishSuccessfulDestructiveMutation(
         _ mutation: DestructiveMutation,
         sessionId: String,
+        promotedTopic: TopicSessionMetadata?,
+        queuedTopicBeforePromotion: TopicSessionMetadata?,
         expectedAccountEpoch: Int,
         expectedSessionEpoch: Int,
         expectedMetadataEpoch: Int
     ) {
-        guard mutation == .delete,
-              accountEpoch == expectedAccountEpoch,
+        guard mutation == .delete, accountEpoch == expectedAccountEpoch else { return }
+        if let promotedTopic {
+            pendingTopicPromotionSessionIDs.remove(promotedTopic.sessionId)
+        }
+        guard
               sessionPersistenceEpoch[sessionId, default: 0] == expectedSessionEpoch,
               sessionMetadataEpoch[sessionId, default: 0] == expectedMetadataEpoch,
               sessionTitles[sessionId] == nil else { return }
+        if let promotedTopic, let queuedTopicBeforePromotion,
+           topicSessions[promotedTopic.sessionId] == queuedTopicBeforePromotion {
+            topicSessions[promotedTopic.sessionId] = promotedTopic
+            sessionMetadataEpoch[promotedTopic.sessionId, default: 0] &+= 1
+        }
         sessionPersistenceEpoch.removeValue(forKey: sessionId)
         sessionMetadataEpoch.removeValue(forKey: sessionId)
     }
@@ -1330,14 +1496,18 @@ public final class SessionManager: ObservableObject {
     private func restoreFailedDestructiveMutation(
         _ mutation: DestructiveMutation,
         sessionId: String,
+        promotedTopic: TopicSessionMetadata?,
         summary: StoredSessionSummary?,
         page: StoredMessagePage?,
         expectedAccountEpoch: Int,
         expectedSessionEpoch: Int,
         expectedMetadataEpoch: Int
     ) {
-        guard accountEpoch == expectedAccountEpoch,
-              sessionPersistenceEpoch[sessionId, default: 0] == expectedSessionEpoch,
+        guard accountEpoch == expectedAccountEpoch else { return }
+        if let promotedTopic {
+            pendingTopicPromotionSessionIDs.remove(promotedTopic.sessionId)
+        }
+        guard sessionPersistenceEpoch[sessionId, default: 0] == expectedSessionEpoch,
               sessionMetadataEpoch[sessionId, default: 0] == expectedMetadataEpoch,
               let summary else { return }
         let currentMessages = sessions[sessionId] ?? []
@@ -1405,6 +1575,7 @@ public final class SessionManager: ObservableObject {
                 baselineMetadataEpochs: baselineMetadataEpochs
             )
         }
+        persistenceTaskGeneration &+= 1
     }
 
     private func finishAccountReconciliation(
@@ -1466,6 +1637,7 @@ public final class SessionManager: ObservableObject {
     @discardableResult
     public func checkpointRunProjection(_ messages: [ChatMessage], for id: String) async -> Bool {
         guard !messages.isEmpty else { return false }
+        sessionPersistenceEpoch[id, default: 0] &+= 1
         let fingerprints = Dictionary(
             uniqueKeysWithValues: messages.map { ($0.id, fingerprint($0)) }
         )
@@ -1496,6 +1668,7 @@ public final class SessionManager: ObservableObject {
             return true
         }
         persistenceTail = Task { _ = await completion.value }
+        persistenceTaskGeneration &+= 1
         return await completion.value
     }
 
@@ -1527,7 +1700,23 @@ public final class SessionManager: ObservableObject {
 
     /// Test/lifecycle barrier for callers that need durable completion explicitly.
     public func flushPendingPersistence() async {
-        await persistenceTail?.value
+        while true {
+            let generation = persistenceTaskGeneration
+            await persistenceTail?.value
+            if generation == persistenceTaskGeneration { return }
+        }
+    }
+
+    var pendingPersistenceSnapshotCountForTesting: Int {
+        pendingPersistenceWrites.count
+    }
+
+    var scheduledPersistenceWriteCountForTesting: Int {
+        scheduledPersistenceWrites.count
+    }
+
+    var persistenceTaskGenerationForTesting: UInt64 {
+        persistenceTaskGeneration
     }
 
     public func previousUserMessage(before messageId: String, sessionId: String) -> ChatMessage? {
@@ -1535,6 +1724,7 @@ public final class SessionManager: ObservableObject {
     }
 
     public func truncateMessages(from messageId: String, sessionId: String) {
+        sessionPersistenceEpoch[sessionId, default: 0] &+= 1
         if var cached = sessions[sessionId],
            let index = cached.firstIndex(where: { $0.id == messageId }) {
             cached.removeSubrange(index...)
@@ -1562,6 +1752,7 @@ public final class SessionManager: ObservableObject {
                 expectedSessionEpoch: expectedSessionEpoch
             )
         }
+        persistenceTaskGeneration &+= 1
     }
 
     public func clearSession(_ id: String) {

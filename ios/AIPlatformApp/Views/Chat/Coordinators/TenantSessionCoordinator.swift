@@ -436,7 +436,10 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     public func startTargetedTopic(from message: ChatMessage) {
         let parentId = sessionManager.activeSessionID()
-        let topic = sessionManager.startTopic(parentSessionId: parentId, sourceMessage: message)
+        guard let topic = sessionManager.startTopic(parentSessionId: parentId, sourceMessage: message) else {
+            showToast("话题创建失败，请稍后重试")
+            return
+        }
         if topic.state == .queued {
             showToast("并行话题已满（最多 3 个），已加入队列")
             return
