@@ -405,7 +405,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         sessionManager.setMessages(messages, for: sid)
         guard isLatestPage else { return }
         trimVisibleMessageWindow()
-        sessionManager.cacheVisibleMessages(messages, for: sid)
+        // commitSession queues persistence; only its completion may mark this snapshot durable.
+        sessionManager.cacheVisibleMessages(messages, for: sid, markAsPersisted: false)
     }
 
     public func switchSession(to sessionId: String) {

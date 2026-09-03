@@ -98,6 +98,7 @@ public final class ChatHistoryStore: @unchecked Sendable {
         }
     }
 
+
     public func latest(sessionId: String) throws -> StoredMessagePage { try page(sessionId, clause: "", anchor: nil, descending: true) }
     public func before(sessionId: String, messageId: String) throws -> StoredMessagePage {
         guard let n = try sequence(sessionId, messageId) else { return try latest(sessionId: sessionId) }

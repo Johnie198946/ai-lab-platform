@@ -3908,8 +3908,8 @@ def _triage_system_directive(
     ]
     if note_draft_request:
         lines.append(
-            "这是当前 Hermes 会话内的笔记动作：由 Main 直接调用 user_note_search 和 "
-            "note_draft，不调用 Agency、不委派。"
+            "这是当前 Hermes 会话内的笔记动作：Main 必须依次调用 user_note_search 和 "
+            "note_draft 生成待用户确认的草稿，不得只返回 Markdown；不调用 Agency、不委派。"
         )
     elif route_class == CASUAL:
         lines.append("这是闲聊：自然简短地直接回答，不搜索、不加载 Skill、不调用 Agent。")

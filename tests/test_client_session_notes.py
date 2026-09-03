@@ -358,6 +358,7 @@ def test_note_draft_runs_from_native_hermes_history_without_client_snapshot(
     assert emitted[-1]["type"] == "done"
 
 
+
 def test_sandbox_identity_rejects_cross_user_claim_mix():
     import scripts.hermes_bridge as bridge
 

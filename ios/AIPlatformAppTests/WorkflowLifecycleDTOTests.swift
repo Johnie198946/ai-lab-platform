@@ -933,6 +933,303 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(try store.message(sessionId: sessionId, id: "assistant")?.content, "第二版")
     }
 
+    @MainActor
+    func testSessionManagerPersistsRunCursorOnlyChanges() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+        var pending = ChatMessage(
+            id: "cursor-message", sessionId: sessionId, role: .assistant,
+            content: "部分回答", isStreaming: true, pending: true
+        )
+        manager.setMessages([pending], for: sessionId)
+        await manager.flushPendingPersistence()
+
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        pending.runId = "run-durable"
+        pending.lastEventSequence = 17
+        manager.setMessages([pending], for: sessionId)
+        manager.cacheVisibleMessages([pending], for: sessionId, markAsPersisted: false)
+        await manager.flushPendingPersistence()
+        XCTAssertNil(try store.message(sessionId: sessionId, id: pending.id)?.runId)
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+
+        // An identical projection must retry because the failed write was never marked durable.
+        manager.setMessages([pending], for: sessionId)
+        manager.cacheVisibleMessages([pending], for: sessionId, markAsPersisted: false)
+        await manager.flushPendingPersistence()
+
+        let restored = try XCTUnwrap(store.message(sessionId: sessionId, id: pending.id))
+        XCTAssertEqual(restored.runId, "run-durable")
+        XCTAssertEqual(restored.lastEventSequence, 17)
+    }
+
+    @MainActor
+    func testAccountTransitionsRetainQueuedWritesUntilDurable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+
+        manager.setMessages([
+            ChatMessage(id: "switch-write", sessionId: sessionId, role: .user, content: "切换前消息")
+        ], for: sessionId)
+        let tenantA = "tenant-\(UUID().uuidString)"
+        let userA = "user-\(UUID().uuidString)"
+        manager.activateAccount(tenantKey: tenantA, userId: userA)
+        let activatedFingerprint = manager.activeAccountFingerprint
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let activatedAccountDirectory = documents
+            .appendingPathComponent("ChatHistory/accounts/\(activatedFingerprint)")
+        let activatedDatabaseURL = activatedAccountDirectory.appendingPathComponent("history.sqlite")
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+        XCTAssertEqual(
+            try store.message(sessionId: sessionId, id: "switch-write")?.content,
+            "切换前消息"
+        )
+
+        var activatedLockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(activatedDatabaseURL.path, &activatedLockDatabase), SQLITE_OK)
+        defer { sqlite3_close(activatedLockDatabase) }
+
+        let revisitSessionId = manager.createSession()
+        let clearAfterRevisitSessionId = manager.createSession()
+        let deleteAfterRevisitSessionId = manager.createSession()
+        XCTAssertEqual(
+            sqlite3_exec(activatedLockDatabase, "BEGIN IMMEDIATE", nil, nil, nil),
+            SQLITE_OK
+        )
+        let revisited = ChatMessage(
+            id: "revisit-write", sessionId: revisitSessionId,
+            role: .assistant, content: "旧游标", isStreaming: true, pending: true,
+            runId: "run-old", lastEventSequence: 1
+        )
+        manager.setMessages([revisited], for: revisitSessionId)
+        manager.setMessages([
+            ChatMessage(
+                id: "revisit-clear", sessionId: clearAfterRevisitSessionId,
+                role: .user, content: "切回后清空"
+            )
+        ], for: clearAfterRevisitSessionId)
+        manager.setMessages([
+            ChatMessage(
+                id: "revisit-delete", sessionId: deleteAfterRevisitSessionId,
+                role: .user, content: "切回后删除"
+            )
+        ], for: deleteAfterRevisitSessionId)
+        manager.activateAccount(
+            tenantKey: "tenant-b-\(UUID().uuidString)",
+            userId: "user-b-\(UUID().uuidString)"
+        )
+        manager.activateAccount(tenantKey: tenantA, userId: userA)
+        XCTAssertTrue(manager.messages(for: revisitSessionId).isEmpty)
+        manager.switchTo(revisitSessionId)
+        manager.markOrganized([revisitSessionId])
+        manager.clearSession(clearAfterRevisitSessionId)
+        manager.deleteSession(deleteAfterRevisitSessionId)
+        XCTAssertEqual(
+            sqlite3_exec(activatedLockDatabase, "COMMIT", nil, nil, nil),
+            SQLITE_OK
+        )
+        await manager.flushPendingPersistence()
+        let revisitedStore = try ChatHistoryStore(
+            databaseURL: activatedDatabaseURL,
+            performLegacyMigration: false
+        )
+        let storedRevisit = try XCTUnwrap(
+            revisitedStore.message(sessionId: revisitSessionId, id: revisited.id)
+        )
+        XCTAssertEqual(storedRevisit.content, "旧游标")
+        XCTAssertEqual(storedRevisit.runId, "run-old")
+        XCTAssertEqual(storedRevisit.lastEventSequence, 1)
+        let refreshedRevisit = try XCTUnwrap(
+            manager.messages(for: revisitSessionId).first(where: { $0.id == revisited.id })
+        )
+        XCTAssertEqual(refreshedRevisit.runId, "run-old")
+        XCTAssertEqual(refreshedRevisit.lastEventSequence, 1)
+        XCTAssertNil(manager.sessionOrganizedAt[revisitSessionId])
+        XCTAssertEqual(try revisitedStore.count(clearAfterRevisitSessionId), 0)
+        XCTAssertEqual(manager.sessionMessageCounts[clearAfterRevisitSessionId], 0)
+        XCTAssertEqual(manager.sessionTitles[clearAfterRevisitSessionId], "新会话")
+        XCTAssertNil(try revisitedStore.summary(sessionId: deleteAfterRevisitSessionId))
+        XCTAssertNil(manager.sessionTitles[deleteAfterRevisitSessionId])
+
+        let activatedSessionId = manager.createSession()
+        XCTAssertEqual(
+            sqlite3_exec(activatedLockDatabase, "BEGIN IMMEDIATE", nil, nil, nil),
+            SQLITE_OK
+        )
+        manager.setMessages([
+            ChatMessage(
+                id: "logout-write", sessionId: activatedSessionId,
+                role: .user, content: "退出前消息"
+            )
+        ], for: activatedSessionId)
+        manager.deactivateAccount()
+        XCTAssertEqual(
+            sqlite3_exec(activatedLockDatabase, "COMMIT", nil, nil, nil),
+            SQLITE_OK
+        )
+        await manager.flushPendingPersistence()
+        let activatedStore = try ChatHistoryStore(
+            databaseURL: activatedDatabaseURL,
+            performLegacyMigration: false
+        )
+        XCTAssertEqual(
+            try activatedStore.message(sessionId: activatedSessionId, id: "logout-write")?.content,
+            "退出前消息"
+        )
+    }
+
+    @MainActor
+    func testFailedClearAndDeleteRestoreDurableProjection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+        let cleared = manager.createSession()
+        let deleted = manager.createSession()
+        let survivor = manager.createSession()
+        manager.setMessages([
+            ChatMessage(id: "clear-message", sessionId: cleared, role: .user, content: "保留清空数据")
+        ], for: cleared)
+        let deletedMessages = (0..<30).map { index in
+            ChatMessage(
+                id: "delete-message-\(index)", sessionId: deleted,
+                role: .user, content: "保留删除数据 \(index)",
+                createdAt: Date(timeIntervalSince1970: TimeInterval(index + 1))
+            )
+        }
+        manager.setMessages(deletedMessages, for: deleted)
+        await manager.flushPendingPersistence()
+
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        manager.clearSession(cleared)
+        manager.switchTo(survivor)
+        manager.deleteSession(deleted)
+        await manager.flushPendingPersistence()
+
+        XCTAssertEqual(manager.messages(for: cleared).first?.content, "保留清空数据")
+        XCTAssertFalse(manager.messages(for: deleted).isEmpty)
+        XCTAssertEqual(manager.sessionMessageCounts[deleted], 30)
+        XCTAssertNotNil(manager.sessionTitles[deleted])
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(try store.count(cleared), 1)
+        XCTAssertEqual(try store.count(deleted), 30)
+    }
+
+    @MainActor
+    func testFailedClearMergesMessagesSentWhileMutationWasBlocked() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+        let oldMessage = ChatMessage(
+            id: "before-clear", sessionId: sessionId,
+            role: .user, content: "清空前消息"
+        )
+        manager.setMessages([oldMessage], for: sessionId)
+        await manager.flushPendingPersistence()
+
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+
+        manager.clearSession(sessionId)
+        let newMessage = ChatMessage(
+            id: "after-clear", sessionId: sessionId,
+            role: .user, content: "清空失败后的新消息"
+        )
+        manager.setMessages([newMessage], for: sessionId)
+
+        // Keep the lock until the failed clear callback has merged the durable
+        // message with the newer in-memory message. This avoids timing the
+        // assertion against scheduler latency.
+        let expectedContents = Set(["清空前消息", "清空失败后的新消息"])
+        for _ in 0..<100 where Set(manager.messages(for: sessionId).map(\.content)) != expectedContents {
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTAssertEqual(Set(manager.messages(for: sessionId).map(\.content)), expectedContents)
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+
+        XCTAssertEqual(Set(manager.messages(for: sessionId).map(\.id)), ["before-clear", "after-clear"])
+        XCTAssertEqual(try store.count(sessionId), 2)
+        XCTAssertNotNil(try store.message(sessionId: sessionId, id: oldMessage.id))
+        XCTAssertNotNil(try store.message(sessionId: sessionId, id: newMessage.id))
+    }
+
+    @MainActor
+    func testClearAndDeleteIgnoreOlderPersistenceCompletions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let store = try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy")
+        )
+        let manager = SessionManager(store: store)
+
+        let cleared = manager.createSession()
+        var lockDatabase: OpaquePointer?
+        XCTAssertEqual(sqlite3_open(databaseURL.path, &lockDatabase), SQLITE_OK)
+        defer { sqlite3_close(lockDatabase) }
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        manager.setMessages([
+            ChatMessage(id: "stale-clear", sessionId: cleared, role: .user, content: "不应恢复的标题")
+        ], for: cleared)
+        manager.clearSession(cleared)
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+        XCTAssertEqual(try store.count(cleared), 0)
+        XCTAssertEqual(manager.sessionMessageCounts[cleared], 0)
+        XCTAssertEqual(manager.sessionTitles[cleared], "新会话")
+
+        let deleted = manager.createSession()
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "BEGIN IMMEDIATE", nil, nil, nil), SQLITE_OK)
+        manager.setMessages([
+            ChatMessage(id: "stale-delete", sessionId: deleted, role: .user, content: "不得复活")
+        ], for: deleted)
+        manager.deleteSession(deleted)
+        XCTAssertEqual(sqlite3_exec(lockDatabase, "COMMIT", nil, nil, nil), SQLITE_OK)
+        await manager.flushPendingPersistence()
+        XCTAssertNil(try store.summary(sessionId: deleted))
+        XCTAssertNil(manager.sessionTitles[deleted])
+        XCTAssertNil(manager.sessionMessageCounts[deleted])
+    }
+
     func testChatHistoryStoreSerializesConcurrentTransactionsAndStatusBackfill() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("chat-history-concurrent-\(UUID().uuidString)", isDirectory: true)
