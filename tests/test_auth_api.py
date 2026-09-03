@@ -209,6 +209,14 @@ class TestAuthAPI(unittest.TestCase):
             )
         self.assertEqual(r.status_code, 404)
 
+    def test_dev_login_rejects_prepended_xff_preserved_by_trusted_proxy(self):
+        with patch.dict(os.environ, self._dev_login_environment(), clear=False):
+            r = self._post_dev_login(
+                _source=("172.20.0.5", 123),
+                headers={"X-Forwarded-For": "203.0.113.10, 198.51.100.20"},
+            )
+        self.assertEqual(r.status_code, 404)
+
     def test_dev_login_issues_token_when_explicitly_enabled(self):
         import backend.api.register as register
 

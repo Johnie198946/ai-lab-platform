@@ -187,9 +187,16 @@ def _request_source_ip(request: Request) -> str:
     if _is_trusted_proxy(direct_host):
         forwarded_for = request.headers.get("x-forwarded-for", "")
         if forwarded_for:
-            first_hop = forwarded_for.split(",", 1)[0].strip()
-            if _parse_ip(first_hop) is not None:
-                return first_hop
+            hops = [hop.strip() for hop in forwarded_for.split(",")]
+            if not hops or any(_parse_ip(hop) is None for hop in hops):
+                return ""
+            # nginx's $proxy_add_x_forwarded_for preserves a client-supplied
+            # header before appending the real peer. Reject a chain containing
+            # an extra untrusted hop so a public client cannot prepend the
+            # allowlisted address. Legitimate proxy chains must be private.
+            if any(not _is_trusted_proxy(hop) for hop in hops[1:]):
+                return ""
+            return hops[0]
     return direct_host.strip()
 
 

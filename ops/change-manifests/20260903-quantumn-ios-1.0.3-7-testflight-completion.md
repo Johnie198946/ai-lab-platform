@@ -16,13 +16,13 @@
 
 - Governance gate confirmed the sole worktree on `main`; local and `origin/main` both started at `5b8157905e87c3d540923195681efb7f0f9ec81c`.
 - Existing unrelated untracked files were inventoried and excluded from all task staging.
-- `backend/api/register.py`: developer login now fails closed unless enabled, the allowed source IP is present and matches, and a UTC ISO-8601 or Unix expiry is valid and in the future. The first `X-Forwarded-For` address is accepted only when the direct peer is a loopback/private trusted proxy.
+- `backend/api/register.py`: developer login now fails closed unless enabled, the allowed source IP is present and matches, and a UTC ISO-8601 or Unix expiry is valid and in the future. The first `X-Forwarded-For` address is accepted only when the direct peer is a loopback/private trusted proxy; any additional XFF hop must also be a trusted private proxy, blocking client-prepended addresses preserved by nginx `$proxy_add_x_forwarded_for`.
 - No production developer credential, temporary allowed IP, or token is stored in source or this manifest.
 - `ios/project.yml` and its generated Xcode project set `CURRENT_PROJECT_VERSION=7`; marketing version remains `1.0.3`.
 
 ## Tests and static checks
 
-- `python3 -m pytest tests/test_auth_api.py -q`: `14 passed`; coverage includes default disabled, missing allowed IP, expired window, wrong IP, forged XFF from an untrusted peer, and allowed XFF from a trusted private proxy. Both UTC ISO and Unix expiry forms are exercised.
+- `python3 -m pytest tests/test_auth_api.py -q`: `15 passed`; coverage includes default disabled, missing allowed IP, expired window, wrong IP, forged XFF from an untrusted peer, client-prepended XFF preserved by a trusted nginx proxy, and allowed XFF from a trusted private proxy. Both UTC ISO and Unix expiry forms are exercised.
 - `ruff check backend/api/register.py tests/test_auth_api.py`: passed.
 - `python3 -m py_compile backend/api/register.py tests/test_auth_api.py`: passed.
 - `git diff --check`: passed.
