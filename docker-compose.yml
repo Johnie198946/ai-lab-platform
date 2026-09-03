@@ -70,6 +70,8 @@ services:
       DEV_LOGIN_CODE: ${DEV_LOGIN_CODE:-}
       DEV_LOGIN_USER_ID: ${DEV_LOGIN_USER_ID:-dev-user}
       DEV_LOGIN_USERNAME: ${DEV_LOGIN_USERNAME:-开发者}
+      DEV_LOGIN_ALLOWED_IP: ${DEV_LOGIN_ALLOWED_IP:-}
+      DEV_LOGIN_EXPIRES_AT: ${DEV_LOGIN_EXPIRES_AT:-}
       # Authen 认证服务（宿主机 systemd，经 host.docker.internal 访问）
       AUTHEN_BASE: http://host.docker.internal:8001
       AUTHEN_USER_URL: http://host.docker.internal:8003

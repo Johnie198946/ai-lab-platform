@@ -3,6 +3,7 @@ import asyncio
 import os
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -153,6 +154,11 @@ class TestAuthAPI(unittest.TestCase):
                 json={"phone": "15500000000", "verification_code": "135790"},
             )
         self.assertEqual(r.status_code, 404)
+
+    def test_compose_passes_dev_login_safety_constraints_to_api(self):
+        compose = (Path(__file__).parents[1] / "docker-compose.yml").read_text()
+        self.assertIn("DEV_LOGIN_ALLOWED_IP: ${DEV_LOGIN_ALLOWED_IP:-}", compose)
+        self.assertIn("DEV_LOGIN_EXPIRES_AT: ${DEV_LOGIN_EXPIRES_AT:-}", compose)
 
     def _dev_login_environment(self, **overrides):
         values = {
