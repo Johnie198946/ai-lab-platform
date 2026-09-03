@@ -1,59 +1,113 @@
-# Quantumn iOS 1.0.3 (7) TestFlight Completion Manifest
+---
+title: Quantumn iOS 1.0.3 (7) TestFlight Completion
+date: 2026-09-03
+tags:
+  - ios
+  - testflight
+  - release
+status: verified-internal
+---
+
+# Quantumn iOS 1.0.3 (7) TestFlight Completion
+
+> [!success] 内部 TestFlight 已完成
+> `1.0.3 (7)` 已上传、处理完成、二进制验证通过，并加入内部组“核心测试”。外部组尚未开放该 build，不能表述为外部测试已提交。
+
+## 交付身份
 
 - task_id: `20260903-quantumn-ios-1.0.3-7-testflight`
-- status: `TESTED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Desktop/AI Lab/quantumworkspace-m0`
-- source_sha: pending first task commit
-- head/local_commit: `5b8157905e87c3d540923195681efb7f0f9ec81c` (pre-task base)
-- remote_sha: `5b8157905e87c3d540923195681efb7f0f9ec81c`; pre-change fetch divergence `0 0`
-- server_before: pending exact-SHA deployment inventory
-- server_after: pending
-- rollback_point: TestFlight build `1.0.3 (6)`; server rollback point pending
+- pre_task_base: `5b8157905e87c3d540923195681efb7f0f9ec81c`
+- archive_source_sha: `62801b18d59f7fadd45d3e7e8013266fc77a5aa4`
+- source_commits:
+  - `1fe063494daedbcaeabf26f673982d68b271ac1e` — build 7、受限开发登录与初始收据
+  - `19e3a76015fca21046e39fd9f50da1aefa91e833` — 拒绝客户端前置伪造 X-Forwarded-For
+  - `62801b18d59f7fadd45d3e7e8013266fc77a5aa4` — Compose 透传登录安全边界
+- final_receipt_commit: 本收据提交；精确 SHA 在最终交付消息中读回
 - manifest: `ops/change-manifests/20260903-quantumn-ios-1.0.3-7-testflight-completion.md`
 
-## Inventory and changes
+## 发布配置
 
-- Governance gate confirmed the sole worktree on `main`; local and `origin/main` both started at `5b8157905e87c3d540923195681efb7f0f9ec81c`.
-- Existing unrelated untracked files were inventoried and excluded from all task staging.
-- `backend/api/register.py`: developer login now fails closed unless enabled, the allowed source IP is present and matches, and a UTC ISO-8601 or Unix expiry is valid and in the future. The first `X-Forwarded-For` address is accepted only when the direct peer is a loopback/private trusted proxy; any additional XFF hop must also be a trusted private proxy, blocking client-prepended addresses preserved by nginx `$proxy_add_x_forwarded_for`.
-- `docker-compose.yml`: the API service explicitly receives both safety-boundary variables; an initial live attempt proved the omission would otherwise keep the endpoint fail-closed, and the original environment was immediately restored.
-- No production developer credential, temporary allowed IP, or token is stored in source or this manifest.
-- `ios/project.yml` and its generated Xcode project set `CURRENT_PROJECT_VERSION=7`; marketing version remains `1.0.3`.
+- marketing_version: `1.0.3`
+- build_number: `7`
+- bundle_id: `com.ailab.AIPlatformApp`
+- development_team: `AALA948YY5`
+- signing_style: automatic
+- export_compliance: `ITSAppUsesNonExemptEncryption=false`
+- rollback_build: `1.0.3 (6)`
 
-## Tests and static checks
+## 代码与测试
 
-- `python3 -m pytest tests/test_auth_api.py -q`: `16 passed`; coverage includes the compose environment contract, default disabled, missing allowed IP, expired window, wrong IP, forged XFF from an untrusted peer, client-prepended XFF preserved by a trusted nginx proxy, and allowed XFF from a trusted private proxy. Both UTC ISO and Unix expiry forms are exercised.
-- `ruff check backend/api/register.py tests/test_auth_api.py`: passed.
-- `python3 -m py_compile backend/api/register.py tests/test_auth_api.py`: passed.
-- `git diff --check`: passed.
-- `xcodebuild test -project ios/AIPlatformApp.xcodeproj -scheme AIPlatformApp -destination 'platform=iOS Simulator,id=8386FBF2-321F-4F52-BF4C-337EF3780649' -resultBundlePath /tmp/quantumn-build7-security-tests.xcresult`: `59 passed`, `0 failed`, `0 skipped`; `TEST SUCCEEDED`.
-- `xcodebuild -showBuildSettings`: build `7`, marketing version `1.0.3`, bundle ID `com.ailab.AIPlatformApp`, team `AALA948YY5`, Info.plist `AIPlatformApp/Info.plist`.
+- `ios/project.yml` 是构建号真源，生成的 `AIPlatformApp.xcodeproj/project.pbxproj` 同步为 build 7。
+- `backend/api/register.py` 的临时开发登录默认关闭；仅在 enabled、精确允许来源 IP、有效未来到期时间同时满足时开放。
+- 只有可信私网/回环反向代理才可提供首个 `X-Forwarded-For`；客户端前置伪造链路被拒绝。
+- Auth/安全测试：`16 passed`。
+- Python compile、ruff、`git diff --check`：通过。
+- iOS 全量 XCTest：`59 passed, 0 failures`。
+- 模拟器：`AIPlatform Preview`，iOS 26.1，UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`。
 
-## Deployment and temporary acceptance window
+## 临时登录窗口与关闭验收
 
-- exact SHA deployment: pending first commit and GitHub remote-SHA verification.
-- temporary developer-login window: pending; original server values will be backed up and restored with a failure-safe cleanup path.
-- closure gate: pending external 404 recheck, server health, and unchanged deployed SHA.
+- 用户明确授权临时受限开发登录。
+- 登录窗口仅允许当时 Mac 出口 IP，配置 20 分钟到期时间；凭据、JWT 和临时 IP 未写入 Git 或本收据。
+- 真实 UI 使用开发者登录入口成功进入聊天主界面；未使用 `-autoLogin`。
+- 验收结束后恢复服务器原始环境并重启 API。
+- 关闭读回：`POST /api/v1/dev-login` 返回 HTTP `404`、`开发者登录未启用`；`DEV_LOGIN_ENABLED=false`，允许 IP/到期变量已移除。
+- server_before: `/opt/releases/ai-lab-platform-5b8157905e87.clJmrj`
+- server_after: `/opt/releases/ai-lab-platform-62801b18d59f.jBWVpF`
+- server_sha: `62801b18d59f7fadd45d3e7e8013266fc77a5aa4`
+- rollback_point: `/opt/releases/ai-lab-platform-5b8157905e87.clJmrj`
+- health_check: API container healthy；`/health`=`ok/0.8.0`；`hermes-bridge` 与 `hermes-serve` active。
 
-## Simulator acceptance
+## Hermes 两轮真实验收
 
-- Simulator: `AIPlatform Preview`, UDID `8386FBF2-321F-4F52-BF4C-337EF3780649`, iOS 26.1.
-- Exact-SHA build installation, real UI login, same-session two-turn Hermes continuity, SessionDB evidence, and screenshots: pending deployment.
+- Hermes native session: `20260903_203723_ffdb54`
+- SessionDB 路径：租户/用户隔离的 `hermes-sandboxes/.../state.db`。
+- 四条原生消息按顺序落库：
+  1. user：提供随机口令 `QZ-7M4K-9281`，状态“琥珀”；
+  2. assistant：`已记住。`；
+  3. user：询问上一轮口令并要求状态改为“靛蓝”；
+  4. assistant：`口令=QZ-7M4K-9281；状态=靛蓝。`
+- 最终可见性 XCUITest：`testCompletedTwoTurnAnswersAreVisible` 通过；测试内截图显示两轮完成态、输入框可用、无白屏、截断或遮挡。
+- 证据：`/tmp/quantumn-build7-ui-visible-7.xcresult`、`/tmp/quantumn-build7-ui-visible-7-attachments/5F62C0EB-210A-4B0D-A7E0-1AC4E14DF1EA.png`。
 
-## Archive, upload, and distribution
+## Archive 与 App Store Connect
 
-- archive_path: pending closure and simulator gates.
-- archive_validation: pending.
-- upload_uuid: pending.
-- processing_status: pending.
-- internal_group `核心测试`: pending.
-- external_group `外部测试员`: pending.
-- beta_app_review: pending.
-- automatic_notification: pending.
+- primary_archive: `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-03/Quantumn-1.0.3-7.xcarchive`
+- archive readback：version `1.0.3`、build `7`、Bundle ID `com.ailab.AIPlatformApp`、Team `AALA948YY5`、arm64、非豁免加密 `false`。
+- archive signature：Apple Development archive；Organizer 自动管理 App Store Connect 分发签名。
+- command-line export：失败，真实错误 `Failed to Use Accounts`。
+- Organizer upload：成功，archive 状态 `Uploaded to Apple`。
+- App Store Connect build UUID：`f5b63c20-9f79-449d-8164-795205e351e3`。
+- processing_status：构建上传“完成”；构建元数据“二进制文件状态：已验证”。
+- binary metadata：build `7`、version `1.0.3`、5.73 MB、包含符号、`beta-reports-active=true`、非豁免加密“否”。
+- test note：`Hermes 原生会话连续、重试/Clarify/快捷入口统一、长会话稳定`，已保存。
+- internal_group：`核心测试`，内部，1 名测试员；build 7 状态“正在测试”。
 
-## Checks and actual state
+## 外部分发边界与异常处置
 
-- health_check: pending post-deployment validation.
-- functional_check: local backend and iOS automated tests passed; live acceptance pending.
-- remaining_risks: production deployment, time-bounded live acceptance, verified shutdown, archive/upload processing, and tester-group assignment remain incomplete and must not yet be claimed.
+> [!warning] 外部 Beta Review 尚未提交
+> 外部组“外部测试员”有 4 名测试员，但 build 7 未出现在“添加构建版本”候选列表中；当前外部组仍使用 build 6。未伪造外部可用状态，也未开启自动通知。
+
+- external_group: `外部测试员`，build 7 尚未加入。
+- beta_app_review: 未提交；等待 App Store Connect 将 build 7开放为外部组候选。
+- automatic_notification: 未改变。
+- 冗余上传：后续命令行/Organizer尝试让 Xcode自动上传为 build `8`（UUID `992d4871-6cd6-4501-8a54-c053c7d2a6c2`）；该 build 未分组，已在 App Store Connect 明确设为“已失效”，避免测试员混淆。
+- 观察到的非本次发布阻断：一次切换“知识”页时云端笔记同步返回文件权限 `403`；聊天与 TestFlight 内部分发门禁已通过，但该知识权限问题需要独立修复。
+
+## 最终状态
+
+```text
+task_id: 20260903-quantumn-ios-1.0.3-7-testflight
+status: VERIFIED
+branch: main
+archive_source_sha: 62801b18d59f7fadd45d3e7e8013266fc77a5aa4
+remote_sha: receipt commit pending readback
+server_before: /opt/releases/ai-lab-platform-5b8157905e87.clJmrj
+server_after: /opt/releases/ai-lab-platform-62801b18d59f.jBWVpF
+health_check: PASS
+functional_check: 59 XCTest + 真实登录 + 同一 Hermes session 四条消息 + build 7 Uploaded/Verified/Internal Testing
+rollback_point: TestFlight 1.0.3 (6)；server /opt/releases/ai-lab-platform-5b8157905e87.clJmrj
+remaining_risks: 外部组/Beta Review未开放；知识页云端笔记权限403；冗余 build 8 已失效
+```
