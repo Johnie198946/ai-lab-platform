@@ -43,17 +43,17 @@
 
 ## 当前交付状态
 
-- status: `TESTED`
+- status: `VERIFIED`
 - backend implementation commit: `b517374ae7cc6ded7409a652ab27f66178c7b2e6`。
-- GitHub remote SHA: Debug E2E 入口与本清单待提交、推送后核验。
+- verified implementation/E2E SHA: `57a1362b8ec338c867e71b655ba01cabe62de890`；本清单最终状态以其所在的后续 manifest-only commit 为准。
 
 ## 部署字段
 
 - server_before: `.deployed-sha=848aae77d99311a7f5f2a03f9bcc81a88fa40ba6`；release=`/opt/releases/ai-lab-platform-848aae77d993.gwhvxB`；API health 200；Bridge health 200 / v6.0 / active；Mihomo active；根分区 85%。
-- server_after: 已部署 `b517374ae7cc6ded7409a652ab27f66178c7b2e6`；release=`/opt/releases/ai-lab-platform-b517374ae7cc.nJuLNL`；API ready；Bridge ok/v6.0。
+- server_after: 已部署并验收 `57a1362b8ec338c867e71b655ba01cabe62de890`；release=`/opt/releases/ai-lab-platform-57a1362b8ec3.3zdw2S`；API ready；Bridge ok/v6.0；Mihomo active。
 - health_check: PASS；部署过程中 Bridge 9118 启动窗口短暂 connection refused，重试后恢复并通过最终健康检查。
 - functional_check: PASS；生产 API→Bridge→durable Run→Worker→模型→SSE/status→iOS 模拟器完整闭环通过。
-- rollback_point: `/opt/releases/ai-lab-platform-848aae77d993.gwhvxB`。
+- rollback_point: `/opt/releases/ai-lab-platform-b517374ae7cc.nJuLNL`。
 
 ## 风险与未完成项
 
