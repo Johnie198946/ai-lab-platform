@@ -19,10 +19,19 @@ public struct AIPlatformApp: App {
     public init() {
         let arguments = ProcessInfo.processInfo.arguments
         let hasPersistedSession = !(KeychainStore.load() ?? "").isEmpty
-        _appState = StateObject(wrappedValue: AppState(
-            isLoggedIn: arguments.contains("-autoLogin") || hasPersistedSession,
+#if DEBUG
+        let hasE2EToken = !(ProcessInfo.processInfo.environment["AI_LAB_E2E_TOKEN"] ?? "").isEmpty
+#else
+        let hasE2EToken = false
+#endif
+        let initialState = AppState(
+            isLoggedIn: arguments.contains("-autoLogin") || hasPersistedSession || hasE2EToken,
             activeTab: arguments.contains("-knowledgeTab") ? 2 : 0
-        ))
+        )
+#if DEBUG
+        initialState.pendingChatPrompt = ProcessInfo.processInfo.environment["AI_LAB_E2E_PROMPT"]
+#endif
+        _appState = StateObject(wrappedValue: initialState)
     }
 
     public var body: some Scene {

@@ -1461,7 +1461,12 @@ public final class APIClient: ObservableObject {
     }
 
     public func currentToken() -> String? {
-        KeychainStore.load()
+#if DEBUG
+        if let token = ProcessInfo.processInfo.environment["AI_LAB_E2E_TOKEN"], !token.isEmpty {
+            return token
+        }
+#endif
+        return KeychainStore.load()
     }
 
     public func clearToken() {
