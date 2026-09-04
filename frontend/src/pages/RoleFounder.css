@@ -1,0 +1,374 @@
+.role-founder-container {
+  min-height: 100vh;
+  background-color: #0b0f19;
+  color: #e2e8f0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  position: relative;
+  overflow-x: hidden;
+}
+
+.role-founder-container.loading {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  flex-direction: column;
+  gap: 16px;
+  color: #94a3b8;
+}
+
+.founder-nav {
+  display: flex;
+  align-items: center;
+  padding: 16px 32px;
+  background: rgba(15, 23, 42, 0.8);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid #1e293b;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+
+.founder-nav .back-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #94a3b8;
+  text-decoration: none;
+  font-size: 15px;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.founder-nav .back-button:hover {
+  color: #f8fafc;
+}
+
+.founder-nav .nav-title {
+  margin-left: auto;
+  margin-right: auto;
+  font-weight: 600;
+  font-size: 16px;
+  color: #f8fafc;
+  transform: translateX(-40px);
+}
+
+.founder-main {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 40px 20px;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto;
+  gap: 24px;
+}
+
+/* Common Panel */
+.panel {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.2);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #334155;
+}
+
+.panel-header h2 {
+  font-size: 18px;
+  font-weight: 600;
+  margin: 0;
+  color: #f8fafc;
+}
+
+.text-blue { color: #3b82f6; }
+.text-green { color: #10b981; }
+.text-purple { color: #8b5cf6; }
+.text-orange { color: #f59e0b; }
+.text-red { color: #ef4444; }
+.text-gray { color: #94a3b8; }
+
+/* ROI Metrics */
+.roi-panel {
+  grid-column: 1 / -1;
+}
+
+.metrics-grid {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+}
+
+.metric-item {
+  flex: 1;
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 24px;
+  text-align: center;
+}
+
+.metric-label {
+  font-size: 14px;
+  color: #94a3b8;
+  margin-bottom: 12px;
+}
+
+.metric-value {
+  font-size: 32px;
+  font-weight: 700;
+  font-family: monospace;
+}
+
+/* Timeline */
+.timeline-panel {
+  grid-column: 1 / 2;
+}
+
+.timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.timeline-item {
+  display: flex;
+  gap: 20px;
+}
+
+.timeline-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 24px;
+}
+
+.timeline-line {
+  flex: 1;
+  width: 2px;
+  background: #334155;
+  margin-top: 8px;
+  min-height: 40px;
+}
+
+.timeline-content {
+  flex: 1;
+}
+
+.timeline-content h3 {
+  font-size: 16px;
+  font-weight: 600;
+  margin: 0 0 4px 0;
+  color: #f8fafc;
+}
+
+.timeline-date {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.timeline-status {
+  font-size: 13px;
+  font-weight: 500;
+  color: #cbd5e1;
+  background: #0f172a;
+  padding: 4px 12px;
+  border-radius: 20px;
+  align-self: flex-start;
+  border: 1px solid #334155;
+}
+
+/* Right Column */
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+/* Health Status */
+.health-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.health-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #0f172a;
+  padding: 16px;
+  border-radius: 12px;
+  border: 1px solid #334155;
+}
+
+.health-info h4 {
+  font-size: 15px;
+  margin: 0 0 4px 0;
+  color: #e2e8f0;
+}
+
+.health-info p {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 0;
+}
+
+.health-badge {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.05);
+}
+
+/* Approval */
+.approval-card {
+  background: #0f172a;
+  border: 1px solid #334155;
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.approval-card h3 {
+  font-size: 18px;
+  margin: 0 0 20px 0;
+  color: #f8fafc;
+}
+
+.approval-details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 14px;
+}
+
+.detail-row span {
+  color: #94a3b8;
+}
+
+.detail-row strong {
+  color: #e2e8f0;
+}
+
+.approval-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.approval-actions button {
+  flex: 1;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+  transition: all 0.2s;
+}
+
+.btn-reject {
+  background: transparent;
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.5) !important;
+}
+
+.btn-reject:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.btn-approve {
+  background: #10b981;
+  color: #fff;
+}
+
+.btn-approve:hover {
+  background: #059669;
+}
+
+.approved-stamp {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  color: #10b981;
+  font-weight: 600;
+  font-size: 16px;
+  padding: 12px;
+  background: rgba(16, 185, 129, 0.1);
+  border-radius: 8px;
+  border: 1px dashed rgba(16, 185, 129, 0.3);
+}
+
+/* Digital Advisor */
+.digital-advisor {
+  position: fixed;
+  bottom: 40px;
+  right: 40px;
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  z-index: 1000;
+}
+
+.advisor-bubble {
+  background: #1e293b;
+  padding: 16px 24px;
+  border-radius: 20px 20px 0 20px;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  font-size: 14px;
+  color: #e2e8f0;
+  max-width: 250px;
+  line-height: 1.5;
+  border: 1px solid #334155;
+}
+
+.advisor-avatar {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  border: 3px solid #1e293b;
+}
+
+.advisor-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+.spin-slow {
+  animation: spin 2s linear infinite;
+}
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@media (max-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+  .timeline-panel {
+    grid-column: 1 / -1;
+  }
+}

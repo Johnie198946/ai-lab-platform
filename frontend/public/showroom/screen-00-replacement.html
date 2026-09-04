@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#050609">
+  <title>AI Lab · 从算力到价值</title>
+  <style>
+    :root{color-scheme:dark;--bg:#050609;--paper:#f7f7f5;--ink:#101116;--white:#f7f8fb;--muted:#8d93a3;--line:rgba(255,255,255,.24);--cyan:#43e3db;--blue:#435cff;--violet:#823cff;--pink:#ef3fbd;--aurora:linear-gradient(90deg,var(--blue),var(--violet),var(--pink),var(--cyan));font-family:Inter,"SF Pro Display","PingFang SC","Microsoft YaHei",system-ui,sans-serif}
+    *{box-sizing:border-box}html,body{width:100%;height:100%;margin:0}body{min-width:320px;overflow:hidden;background:var(--bg);color:var(--white)}button{font:inherit;color:inherit}button:focus-visible{outline:2px solid var(--cyan);outline-offset:4px}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+    .cinematic{position:relative;width:100vw;height:100dvh;min-height:560px;overflow:hidden;isolation:isolate;background:radial-gradient(circle at 50% 52%,#0d1020 0,#07080e 25%,var(--bg) 60%)}
+    .grain{position:absolute;z-index:30;inset:0;pointer-events:none;opacity:.018;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 160 160' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+    .brand{position:absolute;z-index:40;top:clamp(22px,3vw,48px);left:clamp(24px,4vw,72px);display:flex;align-items:center;gap:11px;color:rgba(255,255,255,.64);font-size:clamp(10px,.72vw,13px);font-weight:650;letter-spacing:.18em}.brand i{width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 15px var(--cyan)}.brand b{color:#fff;font-weight:760}
+    .utilities{position:absolute;z-index:50;top:clamp(16px,2.2vw,34px);right:clamp(18px,3vw,50px);display:flex;gap:8px;opacity:.58;transition:opacity .2s ease}.utilities:hover,.utilities:focus-within{opacity:1}body.embedded-direct .utilities{right:150px}.utility{width:44px;height:44px;padding:0;border:1px solid rgba(255,255,255,.15);border-radius:50%;display:grid;place-items:center;background:rgba(8,9,14,.58);backdrop-filter:blur(14px);cursor:pointer}.utility:hover{border-color:rgba(255,255,255,.4);background:#151824}.utility svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.utility span{position:absolute;clip:rect(0,0,0,0)}.utility.sound-off::after{content:"";position:absolute;width:5px;height:5px;margin:25px 0 0 25px;border-radius:50%;background:var(--pink);box-shadow:0 0 8px var(--pink)}
+    .progress{position:absolute;z-index:60;left:0;top:0;width:100%;height:1px;background:rgba(255,255,255,.08)}.progress i{display:block;width:100%;height:100%;transform:scaleX(0);transform-origin:left;background:var(--aurora);box-shadow:0 0 9px #685dff}
+    .speed-field{position:absolute;z-index:12;inset:0;overflow:hidden;pointer-events:none;visibility:hidden;opacity:0}.speed-field i{position:absolute;left:50%;top:50%;width:72vw;height:1px;transform:rotate(var(--r)) scaleX(.03);transform-origin:left center;background:linear-gradient(90deg,rgba(255,255,255,.9),rgba(67,92,255,.55) 14%,rgba(130,60,255,.2) 42%,transparent 82%);box-shadow:0 0 8px rgba(85,96,255,.7);will-change:transform,opacity}.speed-field i:nth-child(even){background:linear-gradient(90deg,rgba(255,255,255,.9),rgba(67,227,219,.45) 16%,transparent 78%)}
+    .world{position:absolute;z-index:2;inset:0 auto 0 0;width:600vw;height:100%;will-change:transform}.thread{position:absolute;z-index:0;inset:0;width:100%;height:100%;overflow:visible}.thread-base{fill:none;stroke:rgba(255,255,255,.09);stroke-width:1.1;vector-effect:non-scaling-stroke}.thread-live{fill:none;stroke:url(#threadGradient);stroke-width:1.8;stroke-linecap:round;vector-effect:non-scaling-stroke;filter:url(#lineGlow)}
+    .spark{position:absolute;z-index:20;left:50%;top:55%;width:10px;height:10px;margin:-5px;border-radius:50%;background:#fff;box-shadow:0 0 0 7px rgba(255,255,255,.035),0 0 18px #fff,0 0 44px var(--blue);will-change:transform}.spark::after{content:"";position:absolute;left:50%;top:50%;width:150px;height:24px;transform:translate(-50%,-50%);border-radius:50%;background:radial-gradient(ellipse,rgba(67,227,219,.58),rgba(67,92,255,.22) 45%,transparent 72%);filter:blur(7px)}
+    .chapter{--x:0;position:absolute;z-index:3;left:calc(var(--x)*100vw);top:0;width:100vw;height:100%;display:grid;place-items:center;padding:clamp(72px,8vw,130px);visibility:hidden}.chapter-inner{position:relative;width:min(83vw,1460px);height:100%;display:grid;place-items:center}.chapter-copy{text-align:center;max-width:1100px}.eyebrow{margin:0 0 15px;color:#969daf;font-size:clamp(10px,.75vw,14px);font-weight:650;letter-spacing:.2em}.chapter h1,.chapter h2{margin:0;font-weight:390;letter-spacing:-.05em;line-height:1.08}.chapter h1{font-size:clamp(46px,6.6vw,118px)}.chapter h2{font-size:clamp(36px,5vw,86px)}.chapter .lead{margin:20px auto 0;max-width:820px;color:#969dac;font-size:clamp(13px,1.05vw,19px);line-height:1.75}.gradient{color:transparent;background:var(--aurora);background-clip:text;-webkit-background-clip:text}.chapter-index{position:absolute;left:0;top:50%;transform:translateY(-50%);color:#73798a;font:500 10px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.14em}.chapter-index::after{content:"";display:block;width:1px;height:58px;margin:12px 0 0 4px;background:linear-gradient(rgba(255,255,255,.35),transparent)}
+    .origin .chapter-copy{transform:translateY(-9vh)}.origin h1{font-size:clamp(52px,7.2vw,128px)}
+    .tf-arch .chapter-inner,.lab-arch .chapter-inner{place-items:stretch}.arch-copy{position:absolute;left:50%;top:14%;width:90%;transform:translateX(-50%);text-align:center}.arch-copy h2{font-size:clamp(30px,3.8vw,67px)}
+    .tf-definition .chapter-copy,.lab-definition .chapter-copy{transform:translateY(-7vh)}.chain{margin-top:38px;display:flex;align-items:center;justify-content:center;gap:clamp(9px,1.4vw,24px);color:#777e90;font:500 clamp(11px,.9vw,16px)/1 ui-monospace,SFMono-Regular,Menlo,monospace;letter-spacing:.08em}.chain b{color:#f2f3f7;font-weight:520}.chain i{width:clamp(20px,4vw,65px);height:1px;background:linear-gradient(90deg,rgba(255,255,255,.12),rgba(255,255,255,.55))}
+    .architecture{position:absolute;left:50%;top:52%;width:min(88vw,1460px);transform:translate(-50%,-50%);display:grid;grid-template-columns:repeat(5,1fr);align-items:center}.architecture::before{content:"";position:absolute;left:8%;right:8%;top:50%;height:1px;background:rgba(255,255,255,.15)}.arch-node{position:relative;z-index:2;min-height:160px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center}.arch-dot{width:12px;height:12px;margin-bottom:20px;border-radius:50%;background:#fff;box-shadow:0 0 18px rgba(255,255,255,.8)}.arch-node.active .arch-dot{background:var(--cyan);box-shadow:0 0 0 7px rgba(67,227,219,.08),0 0 28px var(--blue)}.arch-node b{font-size:clamp(15px,1.25vw,23px);font-weight:520}.arch-node span{margin-top:8px;color:#858c9c;font-size:clamp(10px,.72vw,13px);line-height:1.55}.arch-detail{position:absolute;left:50%;bottom:7%;width:min(82vw,1180px);transform:translateX(-50%);display:grid;grid-template-columns:repeat(3,1fr);gap:10px;text-align:center;color:#828899;font-size:clamp(10px,.75vw,14px)}.arch-detail b{display:block;margin-bottom:7px;color:#d8dbe4;font-weight:520}.tf-arch .arch-detail span{padding:0 15px;border-right:1px solid rgba(255,255,255,.1)}.tf-arch .arch-detail span:last-child{border:0}
+    .lab-arch .architecture{grid-template-columns:1fr 2.7fr 1fr}.lab-core{position:relative;min-height:235px;padding:28px 42px;border-left:1px solid rgba(255,255,255,.16);border-right:1px solid rgba(255,255,255,.16);text-align:center}.lab-core>strong{font-size:clamp(20px,1.8vw,32px);font-weight:480}.ipd{margin-top:34px;display:grid;grid-template-columns:repeat(6,1fr);gap:6px}.ipd span{position:relative;padding-top:22px;color:#858c9d;font-size:clamp(9px,.62vw,12px)}.ipd span::before{content:"";position:absolute;left:50%;top:0;width:7px;height:7px;transform:translateX(-50%);border-radius:50%;background:#5f6575}.ipd span::after{content:"";position:absolute;left:calc(50% + 7px);right:calc(-50% + 7px);top:3px;height:1px;background:rgba(255,255,255,.15)}.ipd span:last-child::after{display:none}.lab-side{text-align:center}.lab-side b{display:block;color:#f1f2f6;font-size:clamp(16px,1.3vw,24px);font-weight:470}.lab-side span{display:block;margin-top:10px;color:#7f8697;font-size:clamp(10px,.75vw,14px);line-height:1.65}.lab-arch .arch-detail{grid-template-columns:repeat(4,1fr)}
+    .final{padding:0}.final .chapter-inner{z-index:3}.final .chapter-copy{transform:translateY(0)}.final-mark{margin:0;color:#111217;font-size:clamp(88px,16vw,285px);font-weight:760;letter-spacing:-.09em;line-height:.8}.final-mark span{color:transparent;background:var(--aurora);background-clip:text;-webkit-background-clip:text}.pixel-swap{position:absolute;z-index:1;inset:-1px;display:grid;grid-template-columns:repeat(16,1fr);grid-template-rows:repeat(10,1fr);background:#050609}.pixel-swap i{background:var(--paper);transform:scale(0);will-change:transform}
+    .caption{position:absolute;z-index:40;left:clamp(24px,4vw,72px);bottom:clamp(22px,3vw,46px);color:#73798b;font-size:10px;letter-spacing:.13em}.caption b{color:#c8cbd4;font-weight:540}
+    @media(max-width:900px){.chapter{padding:80px 35px}.chapter-index{display:none}.architecture{width:94vw}.arch-detail{width:90vw}.utilities{right:18px!important}.brand{max-width:52vw}.ipd{grid-template-columns:repeat(3,1fr);row-gap:18px}.ipd span:nth-child(3)::after,.ipd span:last-child::after{display:none}.lab-core{padding-inline:18px}}
+    @media(prefers-reduced-motion:reduce){.world{transform:translateX(-500vw)!important}.chapter{visibility:hidden!important}.chapter.final{visibility:visible!important;opacity:1!important}.pixel-swap i{transform:scale(1)!important}.final-mark{opacity:1!important;visibility:visible!important}.spark,.thread,.speed-field,.brand,.utilities,.caption{display:none!important}.progress i{transform:scaleX(1)!important}}
+  </style>
+</head>
+<body>
+  <main class="cinematic" id="cinematic" aria-label="AI Lab 入口首屏">
+    <div class="progress" aria-hidden="true"><i id="progressBar"></i></div>
+    <div class="grain" aria-hidden="true"></div>
+    <div class="brand"><i></i><span><b>AI LAB</b> · OPENING</span></div>
+    <nav class="utilities" aria-label="播放控制">
+      <button class="utility sound-off" id="soundButton" aria-label="开启声音" title="声音"><svg viewBox="0 0 24 24"><path d="M5 9v6h4l5 4V5L9 9H5Z"/><path d="M17 9.5c1.4 1.4 1.4 3.6 0 5"/></svg><span>声音</span></button>
+      <button class="utility" id="skipButton" aria-label="跳到最终画面" title="跳过"><svg viewBox="0 0 24 24"><path d="m7 6 8 6-8 6V6ZM18 6v12"/></svg><span>跳过</span></button>
+    </nav>
+    <div class="speed-field" aria-hidden="true">
+      <i style="--r:-27deg"></i><i style="--r:-20deg"></i><i style="--r:-14deg"></i><i style="--r:-8deg"></i><i style="--r:-3deg"></i><i style="--r:4deg"></i><i style="--r:10deg"></i><i style="--r:17deg"></i><i style="--r:24deg"></i><i style="--r:153deg"></i><i style="--r:160deg"></i><i style="--r:167deg"></i><i style="--r:174deg"></i><i style="--r:181deg"></i><i style="--r:188deg"></i><i style="--r:196deg"></i><i style="--r:204deg"></i>
+    </div>
+    <div class="spark" aria-hidden="true"></div>
+    <div class="world" id="world">
+      <svg class="thread" viewBox="0 0 6000 1000" preserveAspectRatio="none" aria-hidden="true">
+        <defs><linearGradient id="threadGradient" x1="0" x2="1"><stop stop-color="#43e3db"/><stop offset=".32" stop-color="#435cff"/><stop offset=".65" stop-color="#ef3fbd"/><stop offset="1" stop-color="#43e3db"/></linearGradient><filter id="lineGlow"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+        <path class="thread-base" d="M0 550 C280 550 330 410 700 510 S1180 570 1500 480 S2030 360 2500 530 S3000 650 3500 470 S4080 330 4500 510 S5050 630 6000 500"/>
+        <path class="thread-live" pathLength="1000" d="M0 550 C280 550 330 410 700 510 S1180 570 1500 480 S2030 360 2500 530 S3000 650 3500 470 S4080 330 4500 510 S5050 630 6000 500"/>
+      </svg>
+
+      <section class="chapter origin" style="--x:0" aria-label="从一瓦算力开始"><div class="chapter-inner"><span class="chapter-index">01 · ORIGIN</span><div class="chapter-copy"><p class="eyebrow reveal">LET'S BEGIN</p><h1 class="reveal">从每一瓦<span class="gradient">算力</span>开始。</h1><p class="lead reveal">一条线，连接计算与真实价值。</p></div></div></section>
+
+      <section class="chapter tf-definition" style="--x:1" aria-label="Token Factory 定义"><div class="chapter-inner"><span class="chapter-index">02 · TOKEN FACTORY</span><div class="chapter-copy"><p class="eyebrow reveal">ENTERPRISE AI PRODUCTION SYSTEM</p><h2 class="reveal">不是一台设备，<br>而是一套<span class="gradient">企业 AI 生产体系。</span></h2><p class="lead reveal">把电力与计算转化为可度量、可运营的 Token，再由 Agent 交付业务结果。</p><div class="chain reveal"><span>WATT</span><i></i><span>FLOPS</span><i></i><b>TOKENS</b><i></i><span>AGENTS</span><i></i><b>VALUES</b></div></div></div></section>
+
+      <section class="chapter tf-arch" style="--x:2" aria-label="Token Factory 架构"><div class="chapter-inner"><span class="chapter-index">03 · ARCHITECTURE</span><header class="arch-copy"><p class="eyebrow reveal">TOKEN FACTORY · ARCHITECTURE</p><h2 class="reveal">让每一瓦算力，都抵达<span class="gradient">真实价值。</span></h2></header><div class="architecture"><div class="arch-node reveal"><i class="arch-dot"></i><b>WATT</b><span>能源输入<br>成本与容量约束</span></div><div class="arch-node reveal"><i class="arch-dot"></i><b>FLOPS</b><span>异构算力<br>统一调度与服务</span></div><div class="arch-node active reveal"><i class="arch-dot"></i><b>TOKENS</b><span>模型推理<br>可计量的智能产能</span></div><div class="arch-node reveal"><i class="arch-dot"></i><b>AGENTS</b><span>智能执行<br>任务编排与安全治理</span></div><div class="arch-node reveal"><i class="arch-dot"></i><b>VALUES</b><span>业务结果<br>每个成功任务的价值</span></div></div><div class="arch-detail"><span class="reveal"><b>生产账</b>算力如何高效产出 Token</span><span class="reveal"><b>消费账</b>谁在什么任务消费 Token</span><span class="reveal"><b>价值账</b>每个成功任务的成本与收益</span></div></div></section>
+
+      <section class="chapter lab-definition" style="--x:3" aria-label="AI Lab 定义"><div class="chapter-inner"><span class="chapter-index">04 · AI LAB</span><div class="chapter-copy"><p class="eyebrow reveal">FROM QUESTION TO PROOF</p><h2 class="reveal">AI Lab，<br>把真实问题变成<span class="gradient">可验证结果。</span></h2><p class="lead reveal">不是概念陈列，而是一条可以现场参与、现场验证、现场带走的共创路径。</p></div></div></section>
+
+      <section class="chapter lab-arch" style="--x:4" aria-label="AI Lab 共创架构"><div class="chapter-inner"><span class="chapter-index">05 · CO-CREATION</span><header class="arch-copy"><p class="eyebrow reveal">AI LAB · CO-CREATION ARCHITECTURE</p><h2 class="reveal">从真实问题，到<span class="gradient">可验证结果。</span></h2></header><div class="architecture"><div class="lab-side reveal"><b>真实业务问题</b><span>目标 · 约束 · 验收标准<br>从客户的一句话开始</span></div><div class="lab-core reveal"><strong>AI Lab 共创引擎</strong><div class="ipd"><span>需求澄清</span><span>概念设计</span><span>方案评审</span><span>开发验证</span><span>试产导入</span><span>上市发布</span></div></div><div class="lab-side reveal"><b>可签收成果</b><span>洞察报告 · 产品方案 · 原型<br>PoC 清单 · 建设建议</span></div></div><div class="arch-detail"><span class="reveal">启发诊断</span><span class="reveal">方案成型</span><span class="reveal">极速原型</span><span class="reveal">知识持续生长</span></div></div></section>
+
+      <section class="chapter final" style="--x:5" aria-label="AI Lab 品牌驻留"><div class="pixel-swap" aria-hidden="true"></div><div class="chapter-inner"><div class="chapter-copy"><p class="final-mark"><span>AI</span> LAB</p></div></div></section>
+    </div>
+    <p class="caption"><b id="captionTitle">ORIGIN</b> · <span id="captionText">从算力出发</span></p>
+    <p class="sr-only" id="liveStatus" aria-live="polite"></p>
+  </main>
+  <script src="./vendor/gsap.min.js"></script>
+  <script>
+    const embeddedMode=new URLSearchParams(location.search).get('embedded');
+    if(embeddedMode==='direct')document.body.classList.add('embedded-direct');
+    const root=document.querySelector('#cinematic');
+    const world=root.querySelector('#world');
+    const chapters=[...root.querySelectorAll('.chapter')];
+    const livePath=root.querySelector('.thread-live');
+    const spark=root.querySelector('.spark');
+    const speedField=root.querySelector('.speed-field');
+    const speedRays=[...speedField.querySelectorAll('i')];
+    const pixelSwap=root.querySelector('.pixel-swap');
+    pixelSwap.innerHTML='<i></i>'.repeat(160);
+    const pixelCells=[...pixelSwap.children];
+    const finalMark=root.querySelector('.final-mark');
+    const progressBar=root.querySelector('#progressBar');
+    const captionTitle=root.querySelector('#captionTitle');
+    const captionText=root.querySelector('#captionText');
+    const liveStatus=root.querySelector('#liveStatus');
+    const soundButton=root.querySelector('#soundButton');
+    const chrome=[root.querySelector('.brand'),root.querySelector('.utilities'),root.querySelector('.caption')];
+    const captions=[['ORIGIN','从算力出发'],['TOKEN FACTORY','企业 AI 生产体系'],['ARCHITECTURE','生产账 · 消费账 · 价值账'],['AI LAB','从问题到验证'],['CO-CREATION','共创路径'],['AI LAB','']];
+    let master,audioContext,audioEnabled=false,pausedByVisibility=false,resizeTimer;
+
+    function setCaption(index){captionTitle.textContent=captions[index][0];captionText.textContent=captions[index][1];liveStatus.textContent=captions[index].join('：')}
+    function tone(kind='node'){
+      if(!audioEnabled||!audioContext)return;
+      const now=audioContext.currentTime,osc=audioContext.createOscillator(),gain=audioContext.createGain(),filter=audioContext.createBiquadFilter();
+      const config={node:[520,760,.18],move:[120,260,.42],open:[180,620,.7],resolve:[260,880,1.2]}[kind]||[440,660,.2];
+      osc.type=kind==='move'?'sine':'triangle';osc.frequency.setValueAtTime(config[0],now);osc.frequency.exponentialRampToValueAtTime(config[1],now+config[2]);filter.type='lowpass';filter.frequency.value=kind==='move'?900:1800;gain.gain.setValueAtTime(.0001,now);gain.gain.exponentialRampToValueAtTime(kind==='resolve'?.055:.035,now+.025);gain.gain.exponentialRampToValueAtTime(.0001,now+config[2]);osc.connect(filter).connect(gain).connect(audioContext.destination);osc.start(now);osc.stop(now+config[2]+.03)
+    }
+    async function toggleSound(){
+      if(!audioContext)audioContext=new(window.AudioContext||window.webkitAudioContext)();
+      if(audioContext.state==='suspended')await audioContext.resume();
+      audioEnabled=!audioEnabled;soundButton.classList.toggle('sound-off',!audioEnabled);soundButton.setAttribute('aria-label',audioEnabled?'关闭声音':'开启声音');if(audioEnabled)tone('open')
+    }
+    function revealChapter(index,{dwell=0,stagger=.16,entry=.65,exit=.3}={}){
+      const chapter=chapters[index],items=chapter.querySelectorAll('.reveal');
+      master.call(()=>{setCaption(index);tone(index>0&&index<5?'open':'node')});
+      master.set(chapter,{autoAlpha:1});
+      master.fromTo(items,{autoAlpha:0,y:18,scale:.985},{autoAlpha:1,y:0,scale:1,duration:entry,stagger,ease:'power2.out'});
+      master.to({}, {duration:dwell});
+      if(index<chapters.length-1)master.to(items,{autoAlpha:0,y:-10,duration:exit,stagger:.018,ease:'power2.in'}).set(chapter,{autoAlpha:0});
+    }
+    function travelTo(index,yPercent){
+      master.call(()=>tone('move'));
+      master.set(speedField,{autoAlpha:1});
+      master.fromTo(speedRays,{scaleX:.03,autoAlpha:0},{scaleX:1.65,autoAlpha:.78,duration:.34,stagger:.008,ease:'power3.in'},'<');
+      master.to(world,{xPercent:-(100/6)*index,duration:.58,ease:'power3.inOut'},'<.05');
+      master.to(spark,{top:yPercent+'%',scale:1.45,duration:.28,ease:'power2.in'},'<');
+      master.to(spark,{scale:1,duration:.22,ease:'power2.out'});
+      master.to(speedField,{autoAlpha:0,duration:.18,ease:'power2.out'},'<').set(speedRays,{scaleX:.03,autoAlpha:0});
+    }
+    function pixelFinish(){
+      const finalChapter=chapters[5];
+      master.call(()=>{setCaption(5);tone('resolve')});
+      master.set(finalChapter,{autoAlpha:1});
+      master.to([...chrome,spark],{autoAlpha:0,duration:.28,ease:'power2.out'});
+      master.fromTo(pixelCells,{scale:0},{scale:1,duration:.24,stagger:{each:.006,from:'random'},ease:'steps(1)'},'<.05');
+      master.fromTo(finalMark,{autoAlpha:0,scale:.96},{autoAlpha:1,scale:1,duration:.8,ease:'power3.out'},'-=.35');
+    }
+    function buildTimeline(){
+      if(master)master.kill();
+      gsap.set(chapters,{autoAlpha:0});gsap.set(chapters[0],{autoAlpha:1});gsap.set(world,{xPercent:0});gsap.set(spark,{top:'55%',scale:1,autoAlpha:1});gsap.set(livePath,{strokeDasharray:1000,strokeDashoffset:1000});gsap.set(chrome,{autoAlpha:1});gsap.set(speedField,{autoAlpha:0});gsap.set(speedRays,{scaleX:.03,autoAlpha:0});gsap.set(pixelCells,{scale:0});gsap.set(finalMark,{autoAlpha:0,scale:.96});
+      master=gsap.timeline({defaults:{overwrite:'auto'},onUpdate(){gsap.set(progressBar,{scaleX:master.progress()});gsap.set(livePath,{strokeDashoffset:1000*(1-master.progress())})}});
+      revealChapter(0,{dwell:.15,stagger:.07,entry:.42,exit:.18});
+      travelTo(1,50);revealChapter(1,{dwell:4.8,stagger:.32,entry:.8,exit:.42});
+      travelTo(2,47);revealChapter(2,{dwell:7.5,stagger:.58,entry:.85,exit:.48});
+      travelTo(3,51);revealChapter(3,{dwell:5.2,stagger:.34,entry:.8,exit:.42});
+      travelTo(4,47);revealChapter(4,{dwell:8.5,stagger:.58,entry:.85,exit:.48});
+      travelTo(5,50);pixelFinish();
+    }
+    function replay(){buildTimeline();master.play(0)}
+    function skip(){master.pause();setCaption(5);chapters.forEach((c,i)=>gsap.set(c,{autoAlpha:i===5?1:0}));gsap.set(world,{xPercent:-(100/6)*5});gsap.set(pixelCells,{scale:1});gsap.set(finalMark,{autoAlpha:1,scale:1});gsap.set([...chrome,spark,speedField],{autoAlpha:0});gsap.set(progressBar,{scaleX:1});tone('resolve')}
+    soundButton.addEventListener('click',toggleSound);root.querySelector('#skipButton').addEventListener('click',skip);
+    document.addEventListener('keydown',event=>{if(event.key.toLowerCase()==='s')toggleSound();if(event.key.toLowerCase()==='r')replay();if(event.key==='Escape')skip();if(event.code==='Space'){event.preventDefault();master.paused(!master.paused())}});
+    document.addEventListener('visibilitychange',()=>{if(document.hidden&&!master.paused()){master.pause();pausedByVisibility=true}else if(!document.hidden&&pausedByVisibility){master.play();pausedByVisibility=false}});
+    window.addEventListener('resize',()=>{clearTimeout(resizeTimer);resizeTimer=setTimeout(()=>{const p=master.progress();buildTimeline();master.progress(p)},180)});
+    window.addEventListener('pagehide',()=>{master?.kill();audioContext?.close()},{once:true});
+    if(matchMedia('(prefers-reduced-motion: reduce)').matches){setCaption(5)}else{buildTimeline()}
+  </script>
+</body>
+</html>

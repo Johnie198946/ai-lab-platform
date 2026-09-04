@@ -1,0 +1,43 @@
+{
+  "name": "ai-lab-platform-frontend",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Frontend console for ai-lab-platform orchestration and role editing.",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && npm run build:showroom-gateway",
+    "build:showroom-gateway": "esbuild src/showroom-hermes-gateway.ts --bundle --format=iife --global-name=HermesShared --outfile=dist/showroom/hermes-gateway.js",
+    "preview": "vite preview",
+    "test": "npm run test:showroom",
+    "test:showroom": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.7.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@gsap/react": "^2.1.2",
+    "@xyflow/react": "^12.8.6",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "framer-motion": "^13.0.0",
+    "gsap": "^3.15.0",
+    "lucide-react": "^1.30.0",
+    "motion": "^12.43.0",
+    "ogl": "^1.0.11",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^7.18.2",
+    "shadcn": "^4.16.2",
+    "tailwind-merge": "^3.6.0",
+    "tw-animate-css": "^1.4.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "autoprefixer": "^10.5.4",
+    "esbuild": "^0.28.1",
+    "postcss": "^8.5.26",
+    "tailwindcss": "^3.4.19",
+    "vite": "^7.1.2"
+  }
+}
