@@ -35,13 +35,43 @@ if [ -z "${SERVER_HOST}" ]; then
 fi
 
 TODAY=$(date '+%Y-%m-%d')
+RUN_ID="$(date '+%Y%m%dT%H%M%S')-$$"
+RECEIPT_DIR="${LOCAL_VAULT_PATH}/raw/sync_receipts"
+RECEIPT_PATH="${RECEIPT_DIR}/${RUN_ID}.json"
 MERGE_DIR="${LOCAL_VAULT_PATH}/raw/待合并/${TODAY}"
 CONFLICT_LIST="${MERGE_DIR}/冲突清单.md"
+
+sha256_tree() {
+  local root="$1"
+  if [ ! -d "$root" ]; then printf 'missing'; return 0; fi
+  (cd "$root" && find . -type f \( -name '*.md' -o -name '*.json' \) -print0 | sort -z | xargs -0 shasum -a 256) | shasum -a 256 | awk '{print $1}'
+}
+
+write_receipt() {
+  local status="$1" reason="${2:-}"
+  mkdir -p "${RECEIPT_DIR}"
+  python3 - "${RECEIPT_PATH}" "$RUN_ID" "$status" "$reason" "${PRE_WIKI_HASH:-missing}" "${POST_WIKI_HASH:-missing}" "${PRE_MATRIX_HASH:-missing}" "${POST_MATRIX_HASH:-missing}" "${CONFLICT_COUNT:-0}" <<'PY'
+import json, os, sys
+p, run_id, status, reason, pre_wiki, post_wiki, pre_matrix, post_matrix, conflicts = sys.argv[1:]
+data = {"run_id": run_id, "source_side": "server", "target_side": "local", "status": status,
+        "reason": reason, "pre_hash": {"wiki": pre_wiki, "knowledge_matrix": pre_matrix},
+        "post_hash": {"wiki": post_wiki, "knowledge_matrix": post_matrix},
+        "conflict_count": int(conflicts), "verified_at": __import__('datetime').datetime.now().astimezone().isoformat()}
+tmp=p+'.tmp-'+str(os.getpid())
+with open(tmp,'w',encoding='utf-8') as f: json.dump(data,f,ensure_ascii=False,indent=2); f.write('\n'); f.flush(); os.fsync(f.fileno())
+os.replace(tmp,p)
+PY
+}
+trap 'rc=$?; POST_WIKI_HASH="$(sha256_tree "${LOCAL_VAULT_PATH}/wiki" 2>/dev/null || printf missing)"; POST_MATRIX_HASH="$(shasum -a 256 "${PROJECT_ROOT}/data/knowledge_matrix.json" 2>/dev/null | cut -c1-64 || printf missing)"; if [ "$rc" -ne 0 ]; then receipt_status="failed"; elif [ "${CONFLICT_COUNT:-0}" -gt 0 ]; then receipt_status="quarantined_conflict"; else receipt_status="accepted"; fi; write_receipt "$receipt_status" "script_exit"; exit "$rc"' EXIT
 
 # 同步目录列表（不含访客画像·访客画像单独处理）
 SYNC_DIRS=("raw" "wiki")
 
-echo "==> [1/4] 冲突检测：比对两端共有文件 MD5..."
+# 回流前快照：用于收据和版本回退审计
+PRE_WIKI_HASH="$(sha256_tree "${LOCAL_VAULT_PATH}/wiki")"
+PRE_MATRIX_HASH="$(shasum -a 256 "${PROJECT_ROOT}/data/knowledge_matrix.json" 2>/dev/null | awk '{print $1}' || printf 'missing')"
+
+ echo "==> [1/4] 冲突检测：比对两端共有文件 MD5..."
 mkdir -p "${MERGE_DIR}"
 
 # 初始化冲突清单
@@ -61,7 +91,7 @@ CONFLICT_FILES=()
 TMP_LOCAL=$(mktemp)
 TMP_SERVER=$(mktemp)
 TMP_CONFLICTS=$(mktemp)
-trap 'rm -f "${TMP_LOCAL}" "${TMP_SERVER}" "${TMP_CONFLICTS}"' EXIT
+trap 'rc=$?; rm -f "${TMP_LOCAL}" "${TMP_SERVER}" "${TMP_CONFLICTS}"; POST_WIKI_HASH="$(sha256_tree "${LOCAL_VAULT_PATH}/wiki" 2>/dev/null || printf missing)"; POST_MATRIX_HASH="$(shasum -a 256 "${PROJECT_ROOT}/data/knowledge_matrix.json" 2>/dev/null | cut -c1-64 || printf missing)"; if [ "$rc" -ne 0 ]; then receipt_status="failed"; elif [ "${CONFLICT_COUNT:-0}" -gt 0 ]; then receipt_status="quarantined_conflict"; else receipt_status="accepted"; fi; write_receipt "$receipt_status" "script_exit"; exit "$rc"' EXIT
 
 for DIR in "${SYNC_DIRS[@]}"; do
   LOCAL_DIR="${LOCAL_VAULT_PATH}/${DIR}"
@@ -178,10 +208,51 @@ rsync -avz --update --timeout=30 \
   ${EXCLUDE_ARGS[@]+"${EXCLUDE_ARGS[@]}"} \
   "${SERVER_USER}@${SERVER_HOST}:${SERVER_VAULT_PATH}/wiki/" "${LOCAL_VAULT_PATH}/wiki/"
 
-# knowledge_matrix.json
-scp -q -o ConnectTimeout=10 \
-  "${SERVER_USER}@${SERVER_HOST}:${SERVER_VAULT_PATH}/knowledge_matrix.json" \
-  "${PROJECT_ROOT}/data/knowledge_matrix.json" 2>/dev/null || true
+# knowledge_matrix.json：先做 hash 门禁，再原子替换，禁止 mtime 误覆盖
+MATRIX_LOCAL="${PROJECT_ROOT}/data/knowledge_matrix.json"
+MATRIX_REMOTE="${SERVER_VAULT_PATH}/knowledge_matrix.json"
+MATRIX_REMOTE_HASH=$(ssh -o ConnectTimeout=10 "${SERVER_USER}@${SERVER_HOST}" \
+  "sha256sum '${MATRIX_REMOTE}' 2>/dev/null | cut -d ' ' -f1 || shasum -a 256 '${MATRIX_REMOTE}' 2>/dev/null | cut -c1-64" 2>/dev/null || true)
+MATRIX_LOCAL_HASH=$(shasum -a 256 "${MATRIX_LOCAL}" 2>/dev/null | cut -c1-64 || true)
+if [ -z "${MATRIX_REMOTE_HASH}" ]; then
+  echo "❌ 无法读取服务器 knowledge_matrix.json hash"
+  exit 1
+elif [ -n "${MATRIX_LOCAL_HASH}" ] && [ "${MATRIX_LOCAL_HASH}" != "${MATRIX_REMOTE_HASH}" ]; then
+  echo "  ⚠️  Matrix hash 冲突：服务器版本隔离，不覆盖本地"
+  mkdir -p "${MERGE_DIR}"
+  MATRIX_MERGE="${MERGE_DIR}/knowledge_matrix.server.json"
+  MATRIX_TMP="${MATRIX_MERGE}.tmp-${RUN_ID}"
+  scp -q -o ConnectTimeout=10 "${SERVER_USER}@${SERVER_HOST}:${MATRIX_REMOTE}" "${MATRIX_TMP}"
+  MATRIX_DOWNLOADED_HASH=$(shasum -a 256 "${MATRIX_TMP}" | cut -c1-64)
+  if [ "${MATRIX_DOWNLOADED_HASH}" != "${MATRIX_REMOTE_HASH}" ]; then
+    rm -f "${MATRIX_TMP}"
+    echo "❌ Matrix 下载 hash 校验失败"
+    exit 1
+  fi
+  mv "${MATRIX_TMP}" "${MATRIX_MERGE}"
+  printf '%s\n' "knowledge_matrix.json" >> "${TMP_CONFLICTS}"
+  CONFLICT_FILES+=("knowledge_matrix.json")
+  CONFLICT_COUNT=$((CONFLICT_COUNT + 1))
+  cat >> "${CONFLICT_LIST}" <<EOF
+### knowledge_matrix.json
+- 本地路径: \`${MATRIX_LOCAL}\`
+- 服务器路径: \`${MATRIX_REMOTE}\`
+- 服务器版备份: \`${MATRIX_MERGE}\`
+- 本地 SHA-256: \`${MATRIX_LOCAL_HASH}\`
+- 服务器 SHA-256: \`${MATRIX_REMOTE_HASH}\`
+
+EOF
+else
+  MATRIX_TMP="${MATRIX_LOCAL}.tmp-${RUN_ID}"
+  scp -q -o ConnectTimeout=10 "${SERVER_USER}@${SERVER_HOST}:${MATRIX_REMOTE}" "${MATRIX_TMP}"
+  MATRIX_DOWNLOADED_HASH=$(shasum -a 256 "${MATRIX_TMP}" | cut -c1-64)
+  if [ "${MATRIX_DOWNLOADED_HASH}" != "${MATRIX_REMOTE_HASH}" ]; then
+    rm -f "${MATRIX_TMP}"
+    echo "❌ Matrix 下载 hash 校验失败"
+    exit 1
+  fi
+  mv "${MATRIX_TMP}" "${MATRIX_LOCAL}"
+fi
 
 echo ""
 echo "==> [3/4] 访客画像回流（服务器→本地·单向）..."
@@ -210,4 +281,5 @@ if [ ${CONFLICT_COUNT} -gt 0 ]; then
   echo "🔔 请人工确认合并后删除待合并区文件。"
   # 输出 JSON 摘要供 cron 微信通知
   echo "CONFLICT_SUMMARY:冲突文件数=${CONFLICT_COUNT},清单路径=${CONFLICT_LIST}"
+  exit 2
 fi
