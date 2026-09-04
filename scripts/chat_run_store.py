@@ -5,6 +5,7 @@ validated by the authenticated API/Bridge boundary. Run IDs are never authorizat
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import sqlite3
@@ -35,6 +36,15 @@ class DurableChatRunStore:
         return conn
 
     def _initialize(self) -> None:
+        lock_path = self.path.with_name(f"{self.path.name}.init.lock")
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                self._initialize_locked()
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+    def _initialize_locked(self) -> None:
         with self._connect() as conn:
             conn.executescript(
                 """
@@ -57,6 +67,7 @@ class DurableChatRunStore:
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     error_code TEXT NOT NULL DEFAULT '',
+                    consumed_at REAL NOT NULL DEFAULT 0,
                     execution_payload_json TEXT NOT NULL DEFAULT '{}',
                     worker_id TEXT NOT NULL DEFAULT '',
                     lease_expires_at REAL NOT NULL DEFAULT 0
@@ -79,6 +90,7 @@ class DurableChatRunStore:
                     session_id TEXT NOT NULL,
                     question TEXT NOT NULL,
                     choices_json TEXT NOT NULL DEFAULT '[]',
+                    multi_select INTEGER NOT NULL DEFAULT 0,
                     response TEXT NOT NULL DEFAULT '',
                     state TEXT NOT NULL DEFAULT 'pending',
                     expires_at REAL NOT NULL,
@@ -86,11 +98,15 @@ class DurableChatRunStore:
                 );
                 """
             )
+            # Bridge and worker initialize this shared database concurrently.
+            # Serialize schema inspection + ALTER so both cannot add the same column.
+            conn.execute("BEGIN IMMEDIATE")
             columns = {row[1] for row in conn.execute("PRAGMA table_info(chat_runs)")}
             additions = {
                 "tenant_id": "TEXT NOT NULL DEFAULT ''",
                 "user_id": "TEXT NOT NULL DEFAULT ''",
                 "user_key": "TEXT NOT NULL DEFAULT ''",
+                "consumed_at": "REAL NOT NULL DEFAULT 0",
                 "execution_payload_json": "TEXT NOT NULL DEFAULT '{}'",
                 "worker_id": "TEXT NOT NULL DEFAULT ''",
                 "lease_expires_at": "REAL NOT NULL DEFAULT 0",
@@ -98,6 +114,15 @@ class DurableChatRunStore:
             for name, declaration in additions.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE chat_runs ADD COLUMN {name} {declaration}")
+            clarify_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(chat_run_clarifications)")
+            }
+            if "multi_select" not in clarify_columns:
+                conn.execute(
+                    "ALTER TABLE chat_run_clarifications "
+                    "ADD COLUMN multi_select INTEGER NOT NULL DEFAULT 0"
+                )
+            conn.execute("COMMIT")
 
     @staticmethod
     def tenant_user_hash(tenant_id: str, user_id: str) -> str:
@@ -301,6 +326,55 @@ class DurableChatRunStore:
                 raise PermissionError(run_id)
             return dict(row)
 
+    def status_snapshot(
+        self, *, tenant_user_hash: str, session_id: str
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None]:
+        """Read Run, control events and pending clarify from one SQLite snapshot."""
+        now = time.time()
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            run_row = conn.execute(
+                """SELECT * FROM chat_runs WHERE tenant_user_hash=? AND session_id=?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (tenant_user_hash, session_id),
+            ).fetchone()
+            if run_row is None:
+                conn.execute("COMMIT")
+                return None, [], None
+            run = dict(run_row)
+            event_rows = conn.execute(
+                """SELECT payload_json FROM chat_run_events
+                   WHERE run_id=? AND event_type IN ('status','tool_start','tool_complete')
+                   ORDER BY sequence""",
+                (run["run_id"],),
+            ).fetchall()
+            clarify_row = conn.execute(
+                """SELECT c.*,r.request_id FROM chat_run_clarifications c
+                   JOIN chat_runs r ON r.run_id=c.run_id
+                   WHERE c.run_id=? AND r.tenant_user_hash=? AND c.state='pending'
+                   AND c.expires_at>? ORDER BY c.updated_at DESC LIMIT 1""",
+                (run["run_id"], tenant_user_hash, now),
+            ).fetchone()
+            conn.execute("COMMIT")
+        events = [json.loads(row[0]) for row in event_rows]
+        clarify = None
+        if clarify_row is not None:
+            clarify = dict(clarify_row)
+            clarify["choices"] = json.loads(clarify.pop("choices_json") or "[]")
+            clarify["expires_in_seconds"] = max(
+                0, int(float(clarify["expires_at"]) - now)
+            )
+        return run, events, clarify
+
+    def mark_consumed(self, run_id: str, *, tenant_user_hash: str) -> bool:
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """UPDATE chat_runs SET consumed_at=?
+                   WHERE run_id=? AND tenant_user_hash=? AND status='completed'""",
+                (time.time(), run_id, tenant_user_hash),
+            )
+            return cursor.rowcount == 1
+
     def get_unchecked(self, run_id: str) -> dict[str, Any]:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM chat_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -311,16 +385,19 @@ class DurableChatRunStore:
     def register_clarify(
         self, *, run_id: str, clarify_id: str, session_id: str,
         question: str, choices: list[str] | None, timeout_seconds: int,
+        multi_select: bool = False,
     ) -> None:
         now = time.time()
         with self._connect() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO chat_run_clarifications(
-                   clarify_id,run_id,session_id,question,choices_json,response,state,expires_at,updated_at
-                   ) VALUES(?,?,?,?,?,'','pending',?,?)""",
+                   clarify_id,run_id,session_id,question,choices_json,multi_select,
+                   response,state,expires_at,updated_at
+                   ) VALUES(?,?,?,?,?,?,'','pending',?,?)""",
                 (
                     clarify_id, run_id, session_id, question,
                     json.dumps(choices or [], ensure_ascii=False),
+                    int(multi_select),
                     now + timeout_seconds, now,
                 ),
             )

@@ -54,6 +54,7 @@ class DurableClarifyGateway:
             question=question,
             choices=list(choices or []),
             timeout_seconds=bridge.CLARIFY_TIMEOUT_SECONDS,
+            multi_select=multi_select,
         )
 
     def wait_for_response(self, clarify_id: str, timeout: float) -> str | None:

@@ -360,7 +360,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             }
             do {
                 let status = try await APIClient.shared.fetchChatStatus(
-                    sessionId: sid, agentId: agentId
+                    sessionId: sid, consume: true, agentId: agentId
                 )
                 guard let currentIdx = self.messages.firstIndex(where: { $0.id == messageId }) else { return }
                 if let pending = status.clarify, pending.clarifyId == block.clarifyId {
@@ -636,7 +636,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             while attempts < 360, !Task.isCancelled {
                 do {
                     let status = try await APIClient.shared.fetchChatStatus(
-                        sessionId: req.sessionId, agentId: req.agentId
+                        sessionId: req.sessionId, consume: true, agentId: req.agentId
                     )
                     if status.status == "completed", let answer = status.answer, !answer.isEmpty {
                         self.sessionManager.applyCompletedStatus(
@@ -1541,7 +1541,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         commitSession()
         do {
             let status = try await APIClient.shared.fetchChatStatus(
-                sessionId: sessionId, agentId: agentId
+                sessionId: sessionId, consume: true, agentId: agentId
             )
             print("[Clarify] reconcile clarify=\(local.clarifyId ?? "legacy") phase=\(status.phase ?? status.status)")
             if status.status == "completed", let answer = status.answer, !answer.isEmpty {
@@ -1620,7 +1620,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 guard !Task.isCancelled else { return }
                 do {
                     let status = try await APIClient.shared.fetchChatStatus(
-                        sessionId: sessionId, agentId: agentId
+                        sessionId: sessionId, consume: true, agentId: agentId
                     )
                     if status.status == "completed", let answer = status.answer, !answer.isEmpty {
                         if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
@@ -1703,7 +1703,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             guard let self else { return }
             do {
                 let status = try await APIClient.shared.fetchChatStatus(
-                    sessionId: sid, agentId: agentId
+                    sessionId: sid, consume: true, agentId: agentId
                 )
                 if status.status == "completed", let answer = status.answer, !answer.isEmpty {
                     self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))

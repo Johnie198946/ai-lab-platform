@@ -459,7 +459,12 @@ async def _call_hermes_recorded(
 
 
 async def _call_hermes_status(
-    session_id: str, consume: bool = False, offset: int = 0
+    session_id: str,
+    consume: bool = False,
+    offset: int = 0,
+    *,
+    tenant_id: str,
+    user_id: str,
 ) -> Optional[Dict[str, Any]]:
     """透传 Bridge 状态回读端点，返回状态机 dict（失败返回 None）。
 
@@ -474,18 +479,27 @@ async def _call_hermes_status(
     if params:
         url += "?" + "&".join(params)
     async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.get(url)
+        r = await client.get(
+            url,
+            headers={
+                "X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN,
+                "X-Tenant-Id": tenant_id,
+                "X-User-Id": user_id,
+            },
+        )
         if r.status_code == 200:
             return r.json()
         return None
 
 
 async def _check_cached_answer(
-    question: str, session_id: str
+    question: str, session_id: str, *, tenant_id: str, user_id: str
 ) -> Optional[ChatResponse]:
     """断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes。"""
     try:
-        data = await _call_hermes_status(session_id, consume=True)
+        data = await _call_hermes_status(
+            session_id, consume=True, tenant_id=tenant_id, user_id=user_id
+        )
     except Exception as e:
         print(f"[chat] 断点检查异常·跳过: {e}")
         return None
@@ -897,7 +911,15 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
     goal += source_context.evidence
 
     # 断点前置检查：已有未消费完整回答 → 0ms 返回，绝不重复调用 Hermes
-    cached = await _check_cached_answer(req.question, isolated_session_id)
+    owner_user_id = str(
+        payload.get("user_id") or payload.get("sub") or isolated_session_id
+    )
+    cached = await _check_cached_answer(
+        req.question,
+        isolated_session_id,
+        tenant_id=str(payload.get("tenant_key") or "public"),
+        user_id=owner_user_id,
+    )
     if cached is not None and invocation.status != "matched":
         cached.feedback_receipt = feedback_payload
         return cached
@@ -1056,7 +1078,14 @@ async def chat_status(
         str(payload.get("tenant_key") or "public"), policy.policy_version,
         str(payload.get("user_id") or payload.get("sub") or "anonymous"),
     )
-    data = await _call_hermes_status(isolated, consume=consume, offset=offset)
+    owner_user_id = str(payload.get("user_id") or payload.get("sub") or isolated)
+    data = await _call_hermes_status(
+        isolated,
+        consume=consume,
+        offset=offset,
+        tenant_id=str(payload.get("tenant_key") or "public"),
+        user_id=owner_user_id,
+    )
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
     return data

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 import queue
 import sqlite3
@@ -503,6 +504,222 @@ class TestBridgeStatusEndpoint(unittest.TestCase):
         self.assertEqual(result["status"], "not_found")
 
 
+class TestDurableBridgeStatus(unittest.TestCase):
+    def setUp(self):
+        import scripts.hermes_bridge as bridge
+
+        self.bridge = bridge
+        self.tmp = tempfile.TemporaryDirectory()
+        self.store = bridge.DurableChatRunStore(Path(self.tmp.name) / "runs.sqlite3")
+        self.tenant_id = "tenant-a"
+        self.user_id = "user-a"
+        tenant_ns = hashlib.sha256(self.tenant_id.encode()).hexdigest()[:12]
+        user_ns = hashlib.sha256(self.user_id.encode()).hexdigest()[:12]
+        self.session_id = f"t{tenant_ns}-u{user_ns}-main_agent-session-1"
+        self.owner = self.store.tenant_user_hash(self.tenant_id, self.user_id)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _status(self, *, consume=0, offset=0, owner_user_id=None):
+        with patch.object(self.bridge, "DURABLE_CHAT_WORKER_ENABLED", True), \
+             patch.object(self.bridge, "HERMES_BRIDGE_INTERNAL_TOKEN", "internal-test"), \
+             patch.object(self.bridge, "_chat_run_store", self.store):
+            return asyncio.run(self.bridge.chat_status(
+                self.session_id,
+                consume,
+                offset,
+                "internal-test",
+                self.tenant_id,
+                owner_user_id or self.user_id,
+            ))
+
+    def test_completed_durable_run_overrides_stale_legacy_running(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-completed",
+        )
+        self.store.append_event(run["run_id"], {
+            "type": "tool_start", "id": "call-1",
+            "tool": "read_file", "label": "读取资料"
+        })
+        self.store.append_event(run["run_id"], {
+            "type": "tool_complete", "id": "call-1", "tool": "read_file"
+        })
+        self.store.append_event(run["run_id"], {"type": "delta", "content": "durable"})
+        self.store.append_event(run["run_id"], {"type": "done", "answer": "durable answer"})
+        self.bridge._user_session_map = {self.session_id: "stale-legacy-session"}
+
+        result = self._status(consume=1)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["answer"], "durable answer")
+        self.assertEqual(result["event_sequence"], 4)
+        self.assertEqual(result["last_message_id"], 4)
+        self.assertEqual(len(result["reasoning"]), 1)
+        self.assertEqual(result["reasoning"][0]["title"], "读取资料")
+        self.assertEqual(result["reasoning"][0]["status"], "completed")
+        self.assertEqual(self._status(offset=4)["reasoning"][0]["title"], "读取资料")
+        self.assertFalse(result["consumed"])
+        self.assertTrue(self._status()["consumed"])
+
+    def test_normal_durable_sse_delivery_marks_run_consumed(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-stream-consume",
+        )
+        self.store.append_event(run["run_id"], {"type": "done", "answer": "answer"})
+
+        async def collect():
+            return [item async for item in self.bridge._durable_subscribe_sse(
+                run["run_id"], self.owner
+            )]
+
+        with patch.object(self.bridge, "_chat_run_store", self.store):
+            frames = asyncio.run(collect())
+
+        self.assertEqual(len(frames), 1)
+        self.assertGreater(
+            self.store.get(run["run_id"], tenant_user_hash=self.owner)["consumed_at"],
+            0,
+        )
+
+    def test_disconnected_before_done_frame_resume_keeps_run_unconsumed(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-stream-disconnect",
+        )
+        self.store.append_event(run["run_id"], {"type": "done", "answer": "answer"})
+
+        async def receive_then_disconnect():
+            stream = self.bridge._durable_subscribe_sse(run["run_id"], self.owner)
+            frame = await stream.__anext__()
+            await stream.aclose()
+            return frame
+
+        with patch.object(self.bridge, "_chat_run_store", self.store):
+            frame = asyncio.run(receive_then_disconnect())
+
+        self.assertIn('"type": "done"', frame)
+        self.assertEqual(
+            self.store.get(run["run_id"], tenant_user_hash=self.owner)["consumed_at"],
+            0,
+        )
+
+    def test_active_status_cursor_offset_and_pending_clarify(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-running",
+        )
+        claimed = self.store.claim_next("worker-test")
+        self.assertEqual(claimed["run_id"], run["run_id"])
+        self.store.append_event(run["run_id"], {
+            "type": "tool_start", "tool": "web_search", "label": "搜索资料"
+        })
+        self.store.register_clarify(
+            run_id=run["run_id"], clarify_id="clarify-1",
+            session_id=self.session_id, question="选哪个？", choices=["A", "B"],
+            timeout_seconds=60, multi_select=True,
+        )
+
+        result = self._status(offset=1)
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(result["run_status"], "running")
+        self.assertEqual(result["phase"], "clarify")
+        self.assertEqual(result["event_sequence"], 1)
+        self.assertEqual(result["reasoning"], [])
+        self.assertEqual(result["clarify"]["clarify_id"], "clarify-1")
+        self.assertTrue(result["clarify"]["multi_select"])
+
+    def test_queued_running_stalled_and_failed_projection(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-statuses",
+        )
+        self.assertEqual(self._status()["run_status"], "queued")
+        self.assertEqual(self._status()["phase"], "queued")
+
+        self.store.claim_next("worker-test")
+        self.assertEqual(self._status()["run_status"], "running")
+        with self.store._connect() as conn:
+            conn.execute(
+                "UPDATE chat_runs SET lease_expires_at=0 WHERE run_id=?",
+                (run["run_id"],),
+            )
+        self.store.recover_after_restart()
+        self.assertEqual(self._status()["run_status"], "stalled")
+        self.assertEqual(self._status()["status"], "running")
+
+        self.store.terminal(run["run_id"], status="failed", error_code="provider")
+        result = self._status()
+        self.assertEqual(result["status"], "timeout")
+        self.assertEqual(result["run_status"], "failed")
+        self.assertEqual(result["phase"], "failed")
+
+    def test_resolved_clarify_does_not_leave_stale_clarify_phase(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-resolved-clarify",
+        )
+        self.store.claim_next("worker-test")
+        self.store.append_event(run["run_id"], {
+            "type": "clarify", "question": "旧问题", "clarify_id": "clarify-old"
+        })
+        self.store.register_clarify(
+            run_id=run["run_id"], clarify_id="clarify-old",
+            session_id=self.session_id, question="旧问题", choices=["A"],
+            timeout_seconds=60,
+        )
+        self.store.resolve_clarify(
+            tenant_user_hash=self.owner, session_id=self.session_id,
+            response="A", clarify_id="clarify-old",
+        )
+        self.store.append_event(run["run_id"], {"type": "delta", "content": "继续执行"})
+
+        result = self._status()
+
+        self.assertIsNone(result["clarify"])
+        self.assertNotEqual(result["phase"], "clarify")
+        self.assertNotEqual(result["latest_step"], "旧问题")
+
+    def test_wrong_owner_cannot_query_session(self):
+        with self.assertRaises(self.bridge.HTTPException) as caught:
+            self._status(owner_user_id="user-b")
+        self.assertEqual(caught.exception.status_code, 404)
+
+    def test_unauthenticated_owner_fallback_uses_isolated_session_identity(self):
+        dev_owner = self.store.tenant_user_hash(self.tenant_id, self.session_id)
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=dev_owner,
+            session_id=self.session_id,
+            request_id="request-dev-owner",
+        )
+        self.store.append_event(run["run_id"], {"type": "done", "answer": "dev answer"})
+        result = self._status(owner_user_id=self.session_id)
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["answer"], "dev answer")
+
+    def test_legacy_status_is_fallback_when_owner_has_no_durable_run(self):
+        now = time.time()
+        db_path = _make_db(
+            [("legacy-session", None, 0)],
+            [(1, "legacy-session", "assistant", "legacy answer", None, None, None, now, 1)],
+            self.tmp.name,
+        )
+        self.bridge._user_session_map = {self.session_id: "legacy-session"}
+        with patch.object(self.bridge, "STATE_DB", db_path):
+            result = self._status()
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["answer"], "legacy answer")
+
+
 class TestMarkConsumed(unittest.TestCase):
     def test_mark_consumed_noop_without_session(self):
         import scripts.hermes_bridge as bridge
@@ -513,6 +730,45 @@ class TestMarkConsumed(unittest.TestCase):
 
 
 class TestChatStatusPassthrough(unittest.TestCase):
+    def test_call_status_sends_internal_token_and_owner_headers(self):
+        import backend.api.chat as chat_api
+
+        calls = []
+
+        class Response:
+            status_code = 200
+
+            @staticmethod
+            def json():
+                return {"status": "running"}
+
+        class Client:
+            def __init__(self, **_kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_args):
+                return None
+
+            async def get(self, url, **kwargs):
+                calls.append((url, kwargs))
+                return Response()
+
+        with patch.object(chat_api, "HERMES_BRIDGE_INTERNAL_TOKEN", "secret-token"), \
+             patch.object(chat_api.httpx, "AsyncClient", Client):
+            result = asyncio.run(chat_api._call_hermes_status(
+                "session-1", tenant_id="tenant-a", user_id="user-a"
+            ))
+
+        self.assertEqual(result["status"], "running")
+        self.assertEqual(calls[0][1]["headers"], {
+            "X-Hermes-Internal-Token": "secret-token",
+            "X-Tenant-Id": "tenant-a",
+            "X-User-Id": "user-a",
+        })
+
     def test_check_cached_answer_returns_completed(self):
         from backend.api.chat import _check_cached_answer
 
@@ -523,7 +779,9 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "consumed": False,
         }
         with patch("backend.api.chat._call_hermes_status", return_value=fake):
-            resp = asyncio.run(_check_cached_answer("问题", "sid"))
+            resp = asyncio.run(_check_cached_answer(
+                "问题", "sid", tenant_id="tenant-a", user_id="user-a"
+            ))
         self.assertIsNotNone(resp)
         self.assertEqual(resp.answer, "已有答案")
         self.assertEqual(resp.reasoning[0].type, "thought")
@@ -538,14 +796,18 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "consumed": True,
         }
         with patch("backend.api.chat._call_hermes_status", return_value=fake):
-            resp = asyncio.run(_check_cached_answer("问题", "sid"))
+            resp = asyncio.run(_check_cached_answer(
+                "问题", "sid", tenant_id="tenant-a", user_id="user-a"
+            ))
         self.assertIsNone(resp)
 
     def test_check_cached_answer_skips_non_completed(self):
         from backend.api.chat import _check_cached_answer
 
         with patch("backend.api.chat._call_hermes_status", return_value={"status": "running"}):
-            resp = asyncio.run(_check_cached_answer("问题", "sid"))
+            resp = asyncio.run(_check_cached_answer(
+                "问题", "sid", tenant_id="tenant-a", user_id="user-a"
+            ))
         self.assertIsNone(resp)
 
     def test_check_cached_answer_skips_empty_answer(self):
@@ -555,7 +817,9 @@ class TestChatStatusPassthrough(unittest.TestCase):
             "backend.api.chat._call_hermes_status",
             return_value={"status": "completed", "answer": "", "reasoning": []},
         ):
-            resp = asyncio.run(_check_cached_answer("问题", "sid"))
+            resp = asyncio.run(_check_cached_answer(
+                "问题", "sid", tenant_id="tenant-a", user_id="user-a"
+            ))
         self.assertIsNone(resp)
 
     def test_chat_returns_cached_without_calling_hermes(self):
@@ -578,7 +842,10 @@ class TestChatStatusPassthrough(unittest.TestCase):
         self.assertEqual(result["status"], "running")
         session = mock.call_args.args[0]
         self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
-        self.assertEqual(mock.call_args.kwargs, {"consume": False, "offset": 0})
+        self.assertEqual(mock.call_args.kwargs, {
+            "consume": False, "offset": 0,
+            "tenant_id": "public", "user_id": session,
+        })
 
     def test_chat_status_route_consume_forward(self):
         from backend.api.chat import chat_status
@@ -588,7 +855,10 @@ class TestChatStatusPassthrough(unittest.TestCase):
             asyncio.run(chat_status("sid", consume=True, payload={}))
         session = mock.call_args.args[0]
         self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
-        self.assertEqual(mock.call_args.kwargs, {"consume": True, "offset": 0})
+        self.assertEqual(mock.call_args.kwargs, {
+            "consume": True, "offset": 0,
+            "tenant_id": "public", "user_id": session,
+        })
 
     def test_chat_status_route_offset_forward(self):
         """方案 v5：offset 参数透传 bridge（reasoning 增量轮询）。"""
@@ -600,7 +870,10 @@ class TestChatStatusPassthrough(unittest.TestCase):
         self.assertEqual(result["phase"], "tool")
         session = mock.call_args.args[0]
         self.assertRegex(session, r"^t[0-9a-f]{12}-u[0-9a-f]{12}-main_agent-sid$")
-        self.assertEqual(mock.call_args.kwargs, {"consume": False, "offset": 42})
+        self.assertEqual(mock.call_args.kwargs, {
+            "consume": False, "offset": 42,
+            "tenant_id": "public", "user_id": session,
+        })
 
 
 class TestInFlightUsers(unittest.TestCase):

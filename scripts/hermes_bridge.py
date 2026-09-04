@@ -3218,6 +3218,108 @@ def _mark_consumed(user_id: str, hermes_sid: str | None) -> None:
         print(f"[bridge] 标记消费失败·忽略: {e}")
 
 
+def _durable_status(
+    session_id: str, tenant_id: str, user_id: str, offset: int = 0
+) -> dict | None:
+    """Project the owner's latest durable Run onto the legacy status contract."""
+    if _chat_run_store is None:
+        raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+    owner_hash = _chat_run_store.tenant_user_hash(tenant_id, user_id)
+    run, events, clarify_row = _chat_run_store.status_snapshot(
+        tenant_user_hash=owner_hash, session_id=session_id
+    )
+    if run is None:
+        return None
+    run_id = str(run["run_id"])
+    exact_status = str(run["status"])
+    status = (
+        "running"
+        if exact_status in {"queued", "running", "stalled"}
+        else exact_status
+    )
+    if exact_status in {"failed", "cancelled"}:
+        # Legacy clients understand timeout as the terminal interrupted state.
+        # Preserve the exact durable state separately in run_status/phase.
+        status = "timeout"
+    phase = exact_status
+    latest_step = ""
+    reasoning = []
+    reasoning_by_call_id = {}
+    for event in events:
+        event_type = str(event.get("type") or "")
+        if event_type == "status":
+            phase = str(event.get("phase") or phase)
+            latest_step = str(event.get("detail") or latest_step)
+        elif event_type == "tool_start":
+            phase = "tool"
+            latest_step = str(event.get("label") or event.get("tool") or "正在执行工具")
+            if exact_status in {"completed", "failed", "cancelled"} or int(
+                event.get("event_sequence") or 0
+            ) > max(0, offset):
+                call_id = str(event.get("id") or "")
+                reasoning.append(
+                    {
+                        "type": "tool_call",
+                        "title": latest_step,
+                        "detail": "",
+                        "status": "running",
+                    }
+                )
+                if call_id:
+                    reasoning_by_call_id[call_id] = len(reasoning) - 1
+        elif event_type == "tool_complete":
+            phase = "tool"
+            latest_step = f"工具执行完成: {event.get('tool') or ''}".rstrip()
+            if exact_status in {"completed", "failed", "cancelled"} or int(
+                event.get("event_sequence") or 0
+            ) > max(0, offset):
+                call_id = str(event.get("id") or "")
+                if call_id and call_id in reasoning_by_call_id:
+                    reasoning[reasoning_by_call_id[call_id]]["status"] = "completed"
+                else:
+                    reasoning.append(
+                        {
+                            "type": "tool_call",
+                            "title": latest_step,
+                            "detail": "",
+                            "status": "completed",
+                        }
+                    )
+    clarify = None
+    if clarify_row is not None:
+        phase = "clarify"
+        clarify = {
+            "clarify_id": clarify_row["clarify_id"],
+            "request_id": clarify_row["request_id"],
+            "question": clarify_row["question"],
+            "choices": clarify_row["choices"],
+            "multi_select": bool(clarify_row["multi_select"]),
+            "expires_in_seconds": clarify_row["expires_in_seconds"],
+        }
+    if exact_status in {"completed", "failed", "cancelled"}:
+        phase = exact_status
+        latest_step = ""
+        clarify = None
+    cursor = int(run["event_sequence"])
+    return {
+        "status": status,
+        "run_status": exact_status,
+        "phase": phase,
+        "answer": str(
+            run["final_answer"]
+            if exact_status == "completed"
+            else run["partial_answer"]
+        ),
+        "reasoning": reasoning,
+        "latest_step": latest_step,
+        "clarify": clarify,
+        "last_message_id": cursor,
+        "event_sequence": cursor,
+        "run_id": run_id,
+        "consumed": float(run.get("consumed_at") or 0) > 0,
+    }
+
+
 # ---------- hermes serve WS PTY 流式调用（v6.0 核心） ----------
 
 def _clean_ansi(text: str) -> str:
@@ -3455,6 +3557,10 @@ async def _durable_subscribe_sse(run_id: str, owner_hash: str, after: int = 0):
             yielded_any = True
             cursor = max(cursor, int(event.get('event_sequence') or 0))
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            if event.get("type") == "done":
+                _chat_run_store.mark_consumed(
+                    run_id, tenant_user_hash=owner_hash
+                )
         status = str(snapshot.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
             return
@@ -5783,7 +5889,14 @@ async def chat(body: GoalRequest):
 
 
 @app.get("/v1/chat/status/{user_id}")
-async def chat_status(user_id: str, consume: int = 0, offset: int = 0):
+async def chat_status(
+    user_id: str,
+    consume: int = 0,
+    offset: int = 0,
+    x_hermes_internal_token: str | None = Header(None),
+    x_tenant_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+):
     """状态回读端点（只读·不写 state.db）。
 
     通过 user_id 锁定 hermes_session_id，返回四元组快照（方案 v5）：
@@ -5791,10 +5904,40 @@ async def chat_status(user_id: str, consume: int = 0, offset: int = 0):
     - consume=1 时，completed 结果顺带推进消费水位线（0ms 断点回读后标记已消费）。
     - offset=N 时，reasoning 仅返回消息 id>N 的新条（增量轮询）。
     """
-    hermes_sid = _user_session_map.get(user_id)
-    result = await asyncio.to_thread(_query_status, hermes_sid, user_id, offset)
+    durable = None
+    tenant_id = ""
+    owner_user_id = ""
+    if DURABLE_CHAT_WORKER_ENABLED:
+        _require_internal_strict(x_hermes_internal_token)
+        tenant_id = str(x_tenant_id or "")
+        owner_user_id = str(x_user_id or "")
+        if not tenant_id or not owner_user_id:
+            raise HTTPException(status_code=403, detail="owner_context_required")
+        owner_prefix = (
+            f"t{hashlib.sha256(tenant_id.encode()).hexdigest()[:12]}-"
+            f"u{hashlib.sha256(owner_user_id.encode()).hexdigest()[:12]}-"
+        )
+        if not user_id.startswith(owner_prefix) and owner_user_id != user_id:
+            raise HTTPException(status_code=404, detail="run_not_found")
+        durable = await asyncio.to_thread(
+            _durable_status, user_id, tenant_id, owner_user_id, offset
+        )
+    if durable is not None:
+        result = durable
+    else:
+        hermes_sid = _user_session_map.get(user_id)
+        result = await asyncio.to_thread(_query_status, hermes_sid, user_id, offset)
     if consume == 1 and result.get("status") == "completed":
-        _mark_consumed(user_id, hermes_sid)
+        if durable is not None:
+            assert _chat_run_store is not None
+            _chat_run_store.mark_consumed(
+                durable["run_id"],
+                tenant_user_hash=_chat_run_store.tenant_user_hash(
+                    tenant_id, owner_user_id
+                ),
+            )
+        else:
+            _mark_consumed(user_id, hermes_sid)
     return result
 
 
