@@ -5,7 +5,7 @@
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Desktop/AI Lab/quantumworkspace-m0`
 - implementation_commit: `1dbefe4047ca7a782324d9fc9b78829601f7b869`
-- testflight_packaging_commit: the commit that changes `CURRENT_PROJECT_VERSION` to `8`; resolve with `git log -1 --format=%H -- ios/AIPlatformApp.xcodeproj/project.pbxproj`
+- testflight_packaging_commit: the commit that changes `CURRENT_PROJECT_VERSION` to `10`; resolve with `git log -1 --format=%H -- ios/AIPlatformApp.xcodeproj/project.pbxproj`
 - receipt_commit: the latest commit containing this file; resolve with `git log -1 --format=%H -- ops/change-manifests/20260904-ios-persistence-coalescing-metadata-consistency-completion.md`
 - baseline: `f9c871ba760875fd1490a62d21ade07c4ac83f23`
 - remote_sha_after_implementation: `1dbefe4047ca7a782324d9fc9b78829601f7b869`
@@ -49,15 +49,17 @@ A broad filesystem-discovered Python run also collected the pre-existing untrack
 ## Remaining risks
 
 - After three consecutive SQLite failures, the batch is intentionally not retried in a background loop; permanent-error churn is bounded. Because the persisted fingerprint is not advanced, the next identical projection retries. Storage failures should still be surfaced through operational logging in a separate observability task.
-- TestFlight release target: Quantumn `1.0.3 (8)`. Archive, upload processing, build UUID, and assignment to the internal group `核心测试` are recorded below after App Store Connect read-back verification.
+- TestFlight release target: Quantumn `1.0.3 (10)`. Archive, upload processing, build UUID, and assignment to the internal group `核心测试` and external group `外部测试员` are recorded below after App Store Connect read-back verification.
 
 ## TestFlight delivery
 
 - source anchor: `1dbefe4047ca7a782324d9fc9b78829601f7b869`
 - marketing version: `1.0.3`
-- build number: `8`
+- build number: `10`
 - archive: pending
 - upload: pending
 - App Store Connect processing: pending
 - build UUID: pending
 - internal group `核心测试`: pending
+- external group `外部测试员`: pending
+- Beta App Review: pending
