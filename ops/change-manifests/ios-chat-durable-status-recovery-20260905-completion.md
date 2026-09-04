@@ -8,7 +8,7 @@
 ## 变更文件
 
 - `backend/api/chat.py`：status 与断点检查向 Bridge 透传内部认证、租户及用户所有权上下文；开发态身份使用物理会话兜底。
-- `scripts/hermes_bridge.py`：durable Run 优先投影为旧 status 契约，包含终态、游标、工具步骤和 pending clarify；严格校验内部调用及 owner；SSE 成功交付 done 后持久标记消费。
+- `scripts/hermes_bridge.py`：durable Run 优先投影为旧 status 契约，包含终态、游标、工具步骤和 pending clarify；严格校验内部调用及 owner；SSE 成功交付 done 后持久标记消费；legacy `_in_flight_users` 仅用于 CLI/WS fallback，durable/in-process early return 不再留下伪 running 标记。
 - `scripts/chat_run_store.py`：在既有 durable store 上增加原子 status snapshot、`consumed_at` 与 clarify `multi_select`；用进程锁串行化 Bridge/Worker 并发 schema migration。
 - `scripts/chat_run_worker.py`：持久化 clarify 的 `multi_select`。
 - `ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift`：所有会展示 completed 回答的 REST 恢复路径显式 `consume: true`，避免下一问题误回放旧答案。
@@ -31,7 +31,8 @@
 ## 测试与校验
 
 - Python 相关回归：`128 passed`。
-- Python 完整回归（仓库指定 Python 3.11 venv，`PYTHONPATH=.`）：`1116 passed, 2 skipped`。
+- 异步只读复核补充门禁：`106 passed`（含 durable stream 不残留 legacy in-flight marker）。
+- Python 完整回归（仓库指定 Python 3.11 venv，`PYTHONPATH=.`）：`1117 passed, 2 skipped`。
 - SQLite 并发 migration 重复验收：`20/20` 通过。
 - Python `py_compile`：PASS。
 - `git diff --check`：PASS。

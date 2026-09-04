@@ -950,6 +950,31 @@ class TestInFlightUsers(unittest.TestCase):
         self.assertNotIn("u_inflight", bridge._in_flight_users)
         self.assertFalse(bridge._is_in_flight("u_inflight"))
 
+    def test_durable_chat_stream_does_not_register_legacy_in_flight(self):
+        """Durable run state replaces the legacy process-local running hint."""
+        import scripts.hermes_bridge as bridge
+        from scripts.chat_run_store import DurableChatRunStore
+        from scripts.hermes_bridge import GoalRequest, chat_stream
+
+        bridge._in_flight_users = {}
+        with tempfile.TemporaryDirectory() as d:
+            store = DurableChatRunStore(str(Path(d) / "runs.sqlite3"))
+            with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
+                 patch.object(bridge, "DURABLE_CHAT_WORKER_ENABLED", True), \
+                 patch.object(bridge, "_chat_run_store", store):
+                response = asyncio.run(chat_stream(GoalRequest(
+                    goal="hi",
+                    session_id="u_durable",
+                    skill_id=None,
+                    regenerate=False,
+                    request_id="request-durable-inflight",
+                    knowledge_query=None,
+                )))
+
+        self.assertEqual(response.headers["x-session-id"], "u_durable")
+        self.assertNotIn("u_durable", bridge._in_flight_users)
+        self.assertFalse(bridge._is_in_flight("u_durable"))
+
 
 if __name__ == "__main__":
     unittest.main()

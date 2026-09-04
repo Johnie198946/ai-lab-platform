@@ -3643,7 +3643,6 @@ async def chat_stream(body: GoalRequest):
         client_claims=client_context_claims or qws_context_claims,
     )
     goal = _expand_requested_skill(body.goal, body.skill_id, sandbox)
-    _mark_in_flight(user_id)
 
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
     if IN_PROCESS_STREAM_ENABLED:
@@ -3793,6 +3792,9 @@ async def chat_stream(body: GoalRequest):
             status_code=503, detail="tenant_sandbox_requires_in_process_runtime"
         )
 
+    # Only the legacy CLI/WS fallback relies on this process-local status hint.
+    # Durable and in-process paths have their own authoritative run state.
+    _mark_in_flight(user_id)
     try:
         hermes_sid = _hermes_session_for_request(user_id, body.client_session_context)
 
