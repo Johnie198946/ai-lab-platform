@@ -85,6 +85,12 @@ _INTERNAL_RE = re.compile(
     r"internal|knowledge base|notes?)",
     re.IGNORECASE,
 )
+_USER_NOTE_RE = re.compile(
+    r"(?:我的|我(?:之前|刚才)?(?:保存|写|记|整理)的|用户|私人|个人|本地)?笔记|"
+    r"(?:my|user|private|personal)\s+notes?\b|"
+    r"(?:从|在)(?:我的|个人|私人)(?:知识|记录)(?:里|中)?",
+    re.IGNORECASE,
+)
 _BUSINESS_FACT_RE = re.compile(
     r"(?:财报|年报|半年报|季报|营收|营业收入|收入情况|净利润|毛利率|现金流|"
     r"出货量|市场份额|经营情况|业绩|产品线|客户情况|项目进展|竞争格局)",
@@ -124,12 +130,19 @@ def _evidence_requirements(text: str) -> tuple[str, ...]:
     requirements: list[str] = []
     if _URL_RE.search(text):
         requirements.append("web_extract")
-    # Business/company facts are local-knowledge-first by default. Freshness is
-    # orthogonal: when both apply Hermes searches authorized knowledge first,
-    # then supplements gaps from the public web.
-    if _INTERNAL_RE.search(text) or _BUSINESS_FACT_RE.search(text):
+    # Business/company facts are local-knowledge-first by default. Personal-note
+    # intent is a separate source and must never be silently routed to Wiki.
+    user_note_intent = bool(_USER_NOTE_RE.search(text))
+    if user_note_intent:
+        requirements.append("user_note_search")
+    elif _INTERNAL_RE.search(text) or _BUSINESS_FACT_RE.search(text):
         requirements.append("knowledge_search")
-    if _FRESH_RE.search(text) or _PUBLIC_RESEARCH_RE.search(text):
+    # English "search my notes" must not open the public-web lane merely because
+    # it contains the verb "search". Explicit freshness language can still ask
+    # Hermes to supplement private notes with current public evidence.
+    if _FRESH_RE.search(text) or (
+        _PUBLIC_RESEARCH_RE.search(text) and not user_note_intent
+    ):
         requirements.append("web_search")
     return tuple(dict.fromkeys(requirements))
 

@@ -526,7 +526,9 @@ public struct LoginView: View {
         _ response: LoginSessionDTO,
         isDeveloper: Bool = false
     ) async throws {
-        APIClient.shared.saveToken(response.token)
+        guard APIClient.shared.saveToken(response.token) else {
+            throw APIError.authenticationRejected("无法安全保存登录凭证，请重试")
+        }
         let profile = try await APIClient.shared.fetchMe()
         appState.currentTenantKey = profile.tenantKey
         appState.currentUserId = profile.userId

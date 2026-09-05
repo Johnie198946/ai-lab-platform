@@ -9,12 +9,22 @@ from urllib.parse import urljoin, urlparse
 
 MAX_REDIRECTS = 5
 MAX_RESPONSE_BYTES = 2_000_000
+MAX_WECHAT_RESPONSE_BYTES = 5_000_000
 DEFAULT_TIMEOUT_SECONDS = 20.0
 ALLOWED_CONTENT_TYPES = (
     "text/",
     "application/json",
     "application/xml",
     "application/xhtml+xml",
+)
+DEFAULT_USER_AGENT = (
+    "AI-Lab-Hermes-Extractor/1.0 "
+    "(+https://github.com/Johnie198946/ai-lab-platform)"
+)
+WECHAT_USER_AGENT = (
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) "
+    "AppleWebKit/605.1.15 Mobile/15E148 MicroMessenger/8.0.49 "
+    "NetType/WIFI Language/zh_CN"
 )
 
 
@@ -86,6 +96,29 @@ def _validate_url(url: str) -> None:
         raise ValueError(str(blocked.get("message") or "Blocked by website policy"))
 
 
+def _request_profile(url: str) -> tuple[dict[str, str], int]:
+    """Use a browser profile only where the publisher requires it."""
+    host = (urlparse(url).hostname or "").casefold()
+    headers = {
+        "User-Agent": DEFAULT_USER_AGENT,
+        "Accept": (
+            "text/html,text/plain,application/xhtml+xml,application/json,"
+            "application/xml;q=0.9,*/*;q=0.1"
+        ),
+    }
+    limit = MAX_RESPONSE_BYTES
+    if host == "mp.weixin.qq.com":
+        headers.update({
+            "User-Agent": WECHAT_USER_AGENT,
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Referer": "https://mp.weixin.qq.com/",
+        })
+        # WeChat embeds large script/config payloads; readable text is much
+        # smaller, but article HTML can exceed the generic 2 MB wire cap.
+        limit = MAX_WECHAT_RESPONSE_BYTES
+    return headers, limit
+
+
 def _decode_response(response: Any, body: bytes) -> tuple[str, str]:
     content_type = str(response.headers.get("content-type") or "").casefold()
     if content_type and not any(item in content_type for item in ALLOWED_CONTENT_TYPES):
@@ -104,14 +137,11 @@ def extract_one(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[s
     import httpx
 
     current = url
-    headers = {
-        "User-Agent": "AI-Lab-Hermes-Extractor/1.0 (+https://github.com/Johnie198946/ai-lab-platform)",
-        "Accept": "text/html,text/plain,application/xhtml+xml,application/json,application/xml;q=0.9,*/*;q=0.1",
-    }
-    with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
+    with httpx.Client(timeout=timeout, follow_redirects=False) as client:
         for redirect_count in range(MAX_REDIRECTS + 1):
             _validate_url(current)
-            with client.stream("GET", current) as response:
+            headers, response_limit = _request_profile(current)
+            with client.stream("GET", current, headers=headers) as response:
                 if response.status_code in {301, 302, 303, 307, 308}:
                     location = response.headers.get("location")
                     if not location:
@@ -124,8 +154,8 @@ def extract_one(url: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS) -> dict[s
                 size = 0
                 for chunk in response.iter_bytes():
                     size += len(chunk)
-                    if size > MAX_RESPONSE_BYTES:
-                        raise ValueError(f"Response exceeds {MAX_RESPONSE_BYTES} byte limit")
+                    if size > response_limit:
+                        raise ValueError(f"Response exceeds {response_limit} byte limit")
                     chunks.append(chunk)
                 body = b"".join(chunks)
                 title, content = _decode_response(response, body)

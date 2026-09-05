@@ -101,6 +101,14 @@ def configure(hermes_home: Path, plugin_source: Path, backup_root: Path) -> dict
         raise ValueError("Hermes web config must be a mapping")
     web["search_backend"] = SEARCH_BACKEND
     web["extract_backend"] = EXTRACT_BACKEND
+    # The Bridge never grants terminal to iOS tenant agents.  Keep Hermes on
+    # its built-in task-isolated browser tools by leaving the backend unset;
+    # ``backend: off`` disables browser_navigate as well and silently defeats
+    # the narrow WeChat verification-page fallback.
+    browser = document.setdefault("browser", {})
+    if not isinstance(browser, dict):
+        raise ValueError("Hermes browser config must be a mapping")
+    browser.pop("backend", None)
     _atomic_yaml(config_path, document)
     return {
         "backup": str(backup),
@@ -108,6 +116,7 @@ def configure(hermes_home: Path, plugin_source: Path, backup_root: Path) -> dict
         "config": str(config_path),
         "search_backend": SEARCH_BACKEND,
         "extract_backend": EXTRACT_BACKEND,
+        "browser_backend": "builtin",
     }
 
 

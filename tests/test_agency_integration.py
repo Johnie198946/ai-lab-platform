@@ -7,6 +7,7 @@ import queue
 import sys
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -17,6 +18,7 @@ from scripts.hermes_bridge import (
     _emit_delegate_receipt,
     _emit_tool_start,
     _include_available_toolsets,
+    _requires_browser_fallback,
     _request_triage,
     _run_agent_sync,
     _triage_route_marker,
@@ -466,8 +468,31 @@ def test_configure_web_extract_preserves_plugins_and_sets_split_backends(tmp_pat
         "search_backend": "ddgs",
         "extract_backend": "ai-lab-native",
     }
+    assert "backend" not in config["browser"]
+    assert result["browser_backend"] == "builtin"
     assert Path(result["backup"]).is_dir()
     assert (home / "plugins/ai-lab-capabilities/native_extract_provider.py").is_file()
+
+
+def test_native_extract_uses_wechat_profile_only_for_wechat_host():
+    path = ROOT / "agency/hermes-plugins/ai-lab-capabilities/native_extract_provider.py"
+    spec = importlib.util.spec_from_file_location("native_extract_provider", path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+
+    wechat_headers, wechat_limit = module._request_profile(
+        "https://mp.weixin.qq.com/s/article-id"
+    )
+    normal_headers, normal_limit = module._request_profile("https://example.com/")
+
+    assert "MicroMessenger/" in wechat_headers["User-Agent"]
+    assert wechat_headers["Referer"] == "https://mp.weixin.qq.com/"
+    assert wechat_limit == module.MAX_WECHAT_RESPONSE_BYTES
+    assert normal_headers["User-Agent"] == module.DEFAULT_USER_AGENT
+    assert "Referer" not in normal_headers
+    assert normal_limit == module.MAX_RESPONSE_BYTES
 
 
 def test_capability_hook_uses_only_exact_agency_slugs_for_professional_turn(monkeypatch):
@@ -694,8 +719,127 @@ def test_note_route_keeps_note_tools_and_removes_agency_for_every_triage_class()
             triage, note_draft_request=True
         )
         if triage is not None:
-            assert "user_note_search" in directive
+            assert "note_draft" in directive
             assert "不搜索、不加载 Skill、不调用 Agent" not in directive
+
+
+def test_user_note_evidence_keeps_private_note_gateway_and_directive():
+    triage = _request_triage({"triage": {
+        "route_class": "GENERAL_QA",
+        "reason_code": "evidence_qa",
+        "evidence_requirements": ["user_note_search"],
+        "agency_enabled": False,
+        "skill_enabled": False,
+    }})
+
+    routed = _apply_triage_toolset_policy(
+        ["clarify", "knowledge_gateway", "web"], triage
+    )
+    directive = _triage_system_directive(triage)
+
+    assert routed == ["clarify", "knowledge_gateway"]
+    assert "必须调用 user_note_search" in directive
+
+
+def test_wechat_browser_fallback_is_host_scoped():
+    assert _requires_browser_fallback(
+        "研究 https://mp.weixin.qq.com/s/example?scene=1"
+    )
+    assert not _requires_browser_fallback("研究 https://example.com/article")
+
+
+def test_wechat_directive_uses_substantive_extract_before_browser_fallback():
+    triage = _request_triage({"triage": {
+        "route_class": "GENERAL_QA",
+        "reason_code": "evidence_qa",
+        "evidence_requirements": ["web_extract", "web_search"],
+        "agency_enabled": False,
+        "skill_enabled": False,
+    }})
+
+    directive = _triage_system_directive(triage)
+
+    assert "必须将其视为成功提取并直接据此回答" in directive
+    assert "禁止在已有正文时声称文章身份或内容无法确认" in directive
+    assert "只有 web_extract 明确报错、正文为空" in directive
+    assert "禁止用无关页面覆盖已经成功提取的微信正文" in directive
+
+
+def test_wechat_goal_adds_builtin_browser_toolset_without_terminal(monkeypatch, tmp_path):
+    captured: dict[str, object] = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    run_agent = types.ModuleType("run_agent")
+    setattr(run_agent, "AIAgent", FakeAgent)
+    monkeypatch.setitem(sys.modules, "run_agent", run_agent)
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._get_cached_config",
+        lambda: {"model": {"default": "test-model"}},
+    )
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._get_cached_runtime",
+        lambda _cfg: {"provider": "test", "api_key": "test", "base_url": None},
+    )
+    monkeypatch.setattr("scripts.hermes_bridge._get_cached_fallback", lambda _cfg: None)
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._get_cached_tools", lambda _cfg: {"web", "browser"}
+    )
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._resolve_dynamic_toolsets", lambda *_: ["web"]
+    )
+    monkeypatch.setattr(
+        "scripts.hermes_bridge._create_sandbox_session_db", lambda _sandbox: object()
+    )
+    monkeypatch.setattr("scripts.hermes_bridge.persist_agent_snapshot", lambda *_: None)
+    monkeypatch.setattr("agent.runtime_cwd.set_session_cwd", lambda _value: None)
+    sandbox = types.SimpleNamespace(
+        root=tmp_path / "tenant-root",
+        state_db=tmp_path / "state.db",
+        hermes_home=tmp_path / "hermes-home",
+    )
+    agent_config = {
+        "allow_network": True,
+        "allowed_tools": ["web_extract", "browser_navigate"],
+        "triage": {
+            "route_class": "GENERAL_QA",
+            "reason_code": "evidence_qa",
+            "evidence_requirements": ["web_extract"],
+            "agency_enabled": False,
+            "skill_enabled": False,
+        },
+    }
+
+    _build_in_process_agent(
+        "研究 https://mp.weixin.qq.com/s/article-id",
+        "client-session",
+        None,
+        queue.Queue(),
+        agent_config=agent_config,
+        sandbox=cast(Any, sandbox),
+    )
+
+    enabled_toolsets = cast(list[str], captured["enabled_toolsets"])
+    assert "web" in enabled_toolsets
+    assert "browser" in enabled_toolsets
+    assert "terminal" not in enabled_toolsets
+
+
+def test_note_directive_anchors_on_nearest_topic_and_requires_merge_confirmation():
+    triage = _request_triage({"triage": {
+        "route_class": "GENERAL_QA",
+        "reason_code": "general_question",
+        "evidence_requirements": [],
+        "agency_enabled": False,
+    }})
+
+    directive = _triage_system_directive(triage, note_draft_request=True)
+
+    assert "距离指令最近的实质性话题" in directive
+    assert "merge_candidates" in directive
+    assert "新建或合并" in directive
 
 def test_agency_tool_event_exposes_only_selected_route_target():
     events: queue.Queue = queue.Queue()

@@ -84,6 +84,19 @@ def test_business_financial_questions_are_local_first_then_web_when_fresh():
     assert follow_up.evidence_requirements == ("knowledge_search", "web_search")
 
 
+def test_personal_note_queries_route_to_user_note_search_not_platform_wiki():
+    decision = classify_request("从我的笔记里找一下鹿儿岛行程")
+
+    assert decision.evidence_requirements == ("user_note_search",)
+
+    english = classify_request("search my notes for the Kagoshima itinerary")
+    assert english.evidence_requirements == ("user_note_search",)
+
+    release_notes = classify_request("查一下平台 release notes")
+    assert "knowledge_search" in release_notes.evidence_requirements
+    assert "user_note_search" not in release_notes.evidence_requirements
+
+
 def test_explicit_skill_agent_keeps_skill_discovery_enabled():
     from backend.api.chat import _skill_routing_enabled
     from backend.services.agent_capabilities import EffectiveAgent

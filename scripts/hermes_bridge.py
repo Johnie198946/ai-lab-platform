@@ -1230,6 +1230,11 @@ def _is_note_draft_request(goal: str) -> bool:
     return bool(_NOTE_DRAFT_REQUEST_RE.search(str(goal or "")))
 
 
+def _requires_browser_fallback(goal: str) -> bool:
+    """Keep browser access fail-closed to known extractor-hostile public URLs."""
+    return bool(re.search(r"https?://mp\.weixin\.qq\.com/", str(goal or ""), re.I))
+
+
 def _is_revision_request(goal: str) -> bool:
     return bool(_REVISION_REQUEST_RE.search(str(goal or "")))
 
@@ -4018,6 +4023,10 @@ def _triage_system_directive(
         lines.append(
             "这是当前 Hermes 会话内的笔记动作：Main 必须依次调用 user_note_search 和 "
             "note_draft 生成待用户确认的草稿，不得只返回 Markdown；不调用 Agency、不委派。"
+            "从本次保存指令向前回溯，以距离指令最近的实质性话题为主题锚点，再审视当前"
+            "Hermes Session 的完整历史，只纳入与锚点相关的消息，不得混入更早的无关话题。"
+            "用该主题检索当前用户笔记；命中真正同主题内容时必须生成 merge_candidates 和"
+            "完整 merged_markdown 供用户选择新建或合并；零命中才只生成新建草稿。"
         )
     elif route_class == CASUAL:
         lines.append("这是闲聊：自然简短地直接回答，不搜索、不加载 Skill、不调用 Agent。")
@@ -4030,11 +4039,28 @@ def _triage_system_directive(
             "父 Agent 只加载提示词不算委派，不得自行拼接 division 前缀。"
         )
     if "web_extract" in evidence:
-        lines.append("用户指定了 URL：回答前必须先调用 web_extract 读取原文。")
+        lines.append(
+            "用户指定了 URL：回答前必须先调用 web_extract 读取原文。若返回结果已包含可识别的"
+            "文章标题、作者/发布者和连续正文，必须将其视为成功提取并直接据此回答；页面尾部的"
+            "微信扫码、点赞、分享等 UI 杂项不构成提取失败，禁止在已有正文时声称文章身份或内容"
+            "无法确认。"
+        )
     if "web_search" in evidence:
         lines.append("该请求需要公开证据：必须调用 web_search；涉及 URL 时在 extract 后扩展。")
     if "knowledge_search" in evidence:
         lines.append("该请求需要内部证据：使用已授权的知识检索工具，零命中时明确说明。")
+    if "user_note_search" in evidence:
+        lines.append(
+            "用户正在查询自己的笔记：必须调用 user_note_search；不得用平台 Wiki 零命中"
+            "替代用户笔记检索。"
+        )
+    if "web_extract" in evidence:
+        lines.append(
+            "若 URL 是微信文章，只有 web_extract 明确报错、正文为空，或结果主体仅为“环境异常/"
+            "访问过于频繁/完成验证”等拦截文案且没有连续文章正文时，才改用 browser_navigate 后"
+            "读取页面快照；仍失败再用 web_search 补证。公开搜索结果若与目标文章标题、发布者不"
+            "一致，必须丢弃，禁止用无关页面覆盖已经成功提取的微信正文。"
+        )
     return "\n".join(lines)
 
 
@@ -4065,7 +4091,7 @@ def _apply_triage_toolset_policy(
         denied.update({"agency_agents", "ai_lab", "delegation"})
     if not evidence & {"web_search", "web_extract"}:
         denied.add("web")
-    if "knowledge_search" not in evidence:
+    if not evidence & {"knowledge_search", "user_note_search"}:
         denied.add("knowledge_gateway")
     if not triage.get("skill_enabled"):
         denied.update({"skills", "tenant_skills"})
@@ -4739,7 +4765,7 @@ def _build_in_process_agent(
         and (
             note_draft_request
             or triage is None
-            or "knowledge_search" in evidence_requirements
+            or evidence_requirements & {"knowledge_search", "user_note_search"}
         )
     )
     tenant_skill_enabled = bool(
@@ -4776,6 +4802,11 @@ def _build_in_process_agent(
             or evidence_requirements & {"web_search", "web_extract"}
         )
     )
+    browser_fallback_requested = bool(
+        _requires_browser_fallback(goal)
+        and agent_config.get("allow_network")
+        and "browser_navigate" in allowed_tools
+    )
     delegation_tool_enabled = bool(
         (not note_draft_request)
         and "delegate_task" in allowed_tools
@@ -4792,6 +4823,13 @@ def _build_in_process_agent(
         raise RuntimeError(
             "web_toolset_unavailable: Hermes sandbox has no usable web provider"
         )
+    if browser_fallback_requested:
+        if "browser" not in platform_tools:
+            raise RuntimeError(
+                "browser_toolset_unavailable: WeChat fallback requires Hermes browser"
+            )
+        if "browser" not in toolsets_list:
+            toolsets_list.append("browser")
     if knowledge_tool_enabled:
         _ensure_knowledge_gateway_tool_registered()
         if "knowledge_gateway" not in toolsets_list:
@@ -4812,6 +4850,8 @@ def _build_in_process_agent(
         requested_toolsets = _tenant_base_toolsets(allowed_tools)
         if network_tool_requested:
             requested_toolsets.add("web")
+        if browser_fallback_requested:
+            requested_toolsets.add("browser")
         if tenant_skill_enabled:
             requested_toolsets.add("tenant_skills")
         if delegation_tool_enabled:

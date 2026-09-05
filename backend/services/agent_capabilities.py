@@ -25,6 +25,9 @@ SAFE_GLOBAL_TOOLS = (
     "skill_load",
     "tenant_skill_manage",
     "delegate_task",
+    # The Bridge enables the browser toolset only for extractor-hostile public
+    # URLs. The built-in backend isolates browser state by Hermes task ID.
+    "browser_navigate",
 )
 PRIVILEGED_TOOLS = ("terminal", "read_file", "write_file", "patch", "knowledge_ingest")
 BASELINE_AGENT_IDS = tuple(str(item["id"]) for item in AGENT_NODES)

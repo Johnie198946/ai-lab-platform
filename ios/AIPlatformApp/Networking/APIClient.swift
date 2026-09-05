@@ -1421,9 +1421,15 @@ public final class APIClient: ObservableObject {
     /// 交互式 Agent SSE 可能跨越多轮 Clarify，资源总时长必须独立于普通问答超时。
     private let streamSession: URLSession
     private let decoder: JSONDecoder
+    /// Keep the freshly issued bearer token in memory as the request-time source
+    /// of truth. Keychain remains the cross-launch persistence layer, but an
+    /// immediate `/me` request must not depend on a second Security-framework
+    /// lookup succeeding in the same login transaction.
+    private var cachedToken: String?
 
     public init(baseURL: URL = URL(string: "https://120.24.248.58")!) {
         self.baseURL = baseURL
+        self.cachedToken = KeychainStore.load()
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
@@ -1456,8 +1462,14 @@ public final class APIClient: ObservableObject {
 
     // MARK: - JWT
 
-    public func saveToken(_ token: String) {
-        KeychainStore.save(token)
+    @discardableResult
+    public func saveToken(_ token: String) -> Bool {
+        guard KeychainStore.save(token) else {
+            cachedToken = nil
+            return false
+        }
+        cachedToken = token
+        return true
     }
 
     public func currentToken() -> String? {
@@ -1466,10 +1478,16 @@ public final class APIClient: ObservableObject {
             return token
         }
 #endif
-        return KeychainStore.load()
+        if let cachedToken, !cachedToken.isEmpty {
+            return cachedToken
+        }
+        let persisted = KeychainStore.load()
+        cachedToken = persisted
+        return persisted
     }
 
     public func clearToken() {
+        cachedToken = nil
         KeychainStore.delete()
     }
 
