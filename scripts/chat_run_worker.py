@@ -232,8 +232,12 @@ def main() -> None:
     warmup = bridge._prewarm_bridge_agent()
     warmup.join(timeout=90)
     futures = set()
+    next_recovery = 0.0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="durable-chat") as pool:
         while True:
+            if time.time() >= next_recovery:
+                store.recover_after_restart()
+                next_recovery = time.time() + 30
             futures = {future for future in futures if not future.done()}
             claimed = False
             while len(futures) < MAX_WORKERS:

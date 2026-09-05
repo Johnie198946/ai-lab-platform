@@ -1,4 +1,5 @@
 import importlib.util
+import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,12 @@ SPEC = importlib.util.spec_from_file_location("chat_run_worker", ROOT / "scripts
 assert SPEC and SPEC.loader
 worker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(worker)
+
+
+def test_worker_periodically_recovers_leases_that_expire_after_restart():
+    source = inspect.getsource(worker.main)
+    assert source.count("recover_after_restart()") == 2
+    assert "next_recovery = time.time() + 30" in source
 
 
 def test_worker_executes_claimed_run_and_persists_terminal(monkeypatch, tmp_path):
