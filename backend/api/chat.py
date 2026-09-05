@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, Iterator, List, Literal, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -496,6 +496,7 @@ async def _call_hermes_status(
     *,
     tenant_id: str,
     user_id: str,
+    answer_blocks_v1: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """透传 Bridge 状态回读端点，返回状态机 dict（失败返回 None）。
 
@@ -507,6 +508,8 @@ async def _call_hermes_status(
         params.append("consume=1")
     if offset:
         params.append(f"offset={offset}")
+    if answer_blocks_v1:
+        params.append("answer_blocks_v1=true")
     if params:
         url += "?" + "&".join(params)
     async with httpx.AsyncClient(timeout=10) as client:
@@ -1109,6 +1112,7 @@ async def chat_status(
     consume: bool = False,
     offset: int = 0,
     agent_id: str | None = None,
+    answer_blocks_v1: bool = False,
     payload=Depends(require_auth),
 ) -> Dict[str, Any]:
     """长任务状态回读：透传 Bridge GET /v1/chat/status/{user_id}。
@@ -1131,6 +1135,7 @@ async def chat_status(
         offset=offset,
         tenant_id=str(payload.get("tenant_key") or "public"),
         user_id=owner_user_id,
+        answer_blocks_v1=answer_blocks_v1,
     )
     if data is None:
         raise HTTPException(status_code=502, detail="Hermes 状态查询失败")
@@ -1141,6 +1146,7 @@ async def chat_status(
 async def durable_run_replay(
     run_id: str,
     after: int = 0,
+    answer_blocks_v1: bool = False,
     payload=Depends(require_auth),
 ) -> Dict[str, Any]:
     """Authenticated replay proxy; run_id alone never grants access."""
@@ -1158,13 +1164,48 @@ async def durable_run_replay(
     async with httpx.AsyncClient(timeout=20) as client:
         response = await client.get(
             f"{HERMES_BRIDGE_RUN_URL}/{run_id}",
-            params={"after": max(0, after)},
+            params={"after": max(0, after), "answer_blocks_v1": answer_blocks_v1},
             headers=headers,
         )
     if response.status_code == 404:
         raise HTTPException(status_code=404, detail="run not found")
     if response.status_code != 200:
         raise HTTPException(status_code=502, detail="Hermes Run replay failed")
+    return response.json()
+
+
+@router.get("/runs/{run_id}/blocks")
+async def durable_run_blocks(
+    run_id: str,
+    cursor: str | None = None,
+    max_blocks: int = Query(10, ge=1, le=20),
+    max_bytes: int = Query(65_536, ge=32_768, le=131_072),
+    payload=Depends(require_auth),
+) -> Dict[str, Any]:
+    """Fetch stored immutable answer blocks; this never invokes Hermes."""
+    if not HERMES_BRIDGE_INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="bridge internal token is not configured")
+    tenant_id = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    if not tenant_id or not user_id:
+        raise HTTPException(status_code=403, detail="owner context unavailable")
+    async with httpx.AsyncClient(timeout=20) as client:
+        response = await client.get(
+            f"{HERMES_BRIDGE_RUN_URL}/{run_id}/blocks",
+            params={
+                "cursor": cursor, "max_blocks": max_blocks, "max_bytes": max_bytes,
+            },
+            headers={
+                "X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN,
+                "X-Tenant-Id": tenant_id, "X-User-Id": user_id,
+            },
+        )
+    if response.status_code == 404:
+        raise HTTPException(status_code=404, detail="run not found")
+    if response.status_code == 409:
+        raise HTTPException(status_code=409, detail=response.json().get("detail"))
+    if response.status_code != 200:
+        raise HTTPException(status_code=502, detail="Hermes block page failed")
     return response.json()
 
 
@@ -1331,6 +1372,25 @@ async def _authorize_knowledge_action_event(
         if not isinstance(step, dict):
             continue
         note_id = step.get("target_note_id")
+        if step.get("kind") == "merge_notes":
+            # Do not sign legacy source-only merges, even when an event bypasses
+            # the Bridge proposal helper. Signed identity must be explicit.
+            if not isinstance(note_id, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", note_id
+            ):
+                raise ValueError("merge_target_required")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(step.get("original_content_hash") or "")):
+                raise ValueError("merge_version_required")
+            merge_sources = step.get("source_note_ids", [])
+            merge_hashes = step.get("source_content_hashes", {})
+            if not isinstance(merge_sources, list) or len(merge_sources) > 16 or not isinstance(merge_hashes, dict):
+                raise ValueError("invalid_merge_sources")
+            if any(not isinstance(value, str) or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value
+            ) for value in merge_sources) or len(set(merge_sources)) != len(merge_sources) or note_id in merge_sources:
+                raise ValueError("invalid_merge_sources")
+            if any(not re.fullmatch(r"[0-9a-f]{64}", str(merge_hashes.get(value) or "")) for value in merge_sources):
+                raise ValueError("merge_version_required")
         if note_id:
             target_hashes[str(note_id)] = (
                 step.get("original_content_hash") or known_hashes.get(str(note_id))

@@ -25,6 +25,7 @@ from backend.models.knowledge_contribution import (
     KnowledgeContributionProjection as Projection,
     KnowledgeContributionBinding as Binding,
     KnowledgeContributionRun as Run,
+    KnowledgeContributionProjectionOperation as Operation,
 )
 
 logger = logging.getLogger(__name__)
@@ -175,6 +176,17 @@ async def enqueue_contribution(candidate: ContributionCandidate) -> dict[str, An
         existing = await db.get(Event, event_id)
         if existing:
             return _summary(existing)
+        previous = list((await db.scalars(select(Event).where(
+            Event.tenant_key == c.tenant_key, Event.user_id == c.user_id,
+            Event.source_surface == c.source_surface, Event.source_kind == c.source_kind,
+            Event.source_id == c.source_id,
+        ))).all())
+        if any(e.source_revision > c.source_revision or
+               (e.source_revision == c.source_revision and
+                (e.content_hash != c.content_hash or e.authorization_epoch == epoch)) for e in previous):
+            raise ValueError("source revision conflict")
+        # A new exact source version invalidates every old dependent body before
+        # the new candidate can be compiled. Never keep stale multi-source text.
         evidence: dict[str, list[str]] = {}
         inherited_synthetic = False
         ancestors: set[str] = set()
@@ -219,6 +231,7 @@ async def enqueue_contribution(candidate: ContributionCandidate) -> dict[str, An
                             "ancestor_source_keys": sorted(ancestors)},
             run_type="knowledge_tenant_compile", status="pending",
         )
+        await _withdraw(db, c.tenant_key, {e.event_id for e in previous}, "stale")
         db.add(event)
         try:
             await db.commit()
@@ -261,7 +274,8 @@ async def _refresh_projections(db, event_ids: set[str]) -> None:
         binding.active = False
     await db.flush()
     for projection_id in {b.projection_id for b in bindings}:
-        projection = await db.get(Projection, projection_id)
+        projection = await db.scalar(select(Projection).where(
+            Projection.projection_id == projection_id).with_for_update())
         active = list((await db.scalars(select(Binding).where(
             Binding.projection_id == projection_id, Binding.active.is_(True)))).all())
         # Multi-source Green is hidden until Hermes recompiles without withdrawn
@@ -270,6 +284,12 @@ async def _refresh_projections(db, event_ids: set[str]) -> None:
         projection.metadata_snapshot = {**projection.metadata_snapshot,
             "enforced_searchable": False, "enforced_summarizable": False,
             "enforced_agent_callable": False, "remaining_event_ids": sorted(b.event_id for b in active)}
+        if projection.status == "recompile_required":
+            for binding in active:
+                event = await db.get(Event, binding.event_id)
+                if event and event.status not in INACTIVE:
+                    event.status = "recompile_pending"
+                    event.business_state = {**event.business_state, "status": "recompile_pending"}
 
 
 async def _withdraw(db, tenant: str, event_ids: set[str], status: str = "withdrawn") -> set[str]:
@@ -378,9 +398,9 @@ async def register_contribution_run(*, tenant_key: str, user_id: str, run_id: st
                 raise ValueError("inactive or unauthorized source")
         run = await db.get(Run, run_id)
         if run:
-            if ((run.tenant_key, run.user_id, run.authorization_epoch, run.event_ids,
-                 _utc(run.expires_at)) != (tenant_key, user_id, epoch, ids, _utc(expires_at))
-                    or run.status != "registered"):
+            if ((run.tenant_key, run.user_id, run.authorization_epoch, run.event_ids)
+                    != (tenant_key, user_id, epoch, ids)
+                    or run.status not in {"registered", "accepted"}):
                 raise ValueError("run binding conflict")
         else:
             run = Run(run_id=run_id, tenant_key=tenant_key, user_id=user_id,
@@ -389,6 +409,141 @@ async def register_contribution_run(*, tenant_key: str, user_id: str, run_id: st
             await db.commit()
         return {"run_id": run_id, "authorization_epoch": epoch, "event_ids": ids,
                 "expires_at": _utc(run.expires_at).isoformat(), "runtime": "hermes"}
+
+
+async def prepare_projection_operation(*, operation_id: str, run_id: str,
+    projection_id: str, artifact_ref: str, operation_stage: str,
+    payload_digest: str, base_digest: str, result_digest: str,
+    intent: dict[str, Any]) -> dict[str, Any]:
+    values = (run_id, projection_id, artifact_ref, operation_stage, payload_digest,
+              base_digest, result_digest, intent)
+    if (not operation_id or len(operation_id) > 96
+            or any(not re.fullmatch(r"[a-f0-9]{64}", value)
+                   for value in (payload_digest, result_digest))
+            or base_digest and not re.fullmatch(r"[a-f0-9]{64}", base_digest)):
+        raise ValueError("invalid projection operation")
+    async with SessionLocal() as db:
+        operation = await db.get(Operation, operation_id)
+        if operation:
+            current = (operation.run_id, operation.projection_id, operation.artifact_ref,
+                       operation.operation_stage, operation.payload_digest,
+                       operation.base_digest, operation.result_digest, operation.intent)
+            if current != values:
+                raise ValueError("projection operation payload conflict")
+            return {"operation_id": operation_id, "status": operation.status,
+                    "base_digest": operation.base_digest}
+        db.add(Operation(operation_id=operation_id, run_id=run_id,
+            projection_id=projection_id, artifact_ref=artifact_ref,
+            operation_stage=operation_stage, payload_digest=payload_digest,
+            base_digest=base_digest, result_digest=result_digest, intent=intent))
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            operation = await db.get(Operation, operation_id)
+            if operation is None or (operation.run_id, operation.projection_id,
+                operation.artifact_ref, operation.operation_stage, operation.payload_digest,
+                operation.base_digest, operation.result_digest, operation.intent) != values:
+                raise ValueError("projection operation payload conflict")
+            return {"operation_id": operation_id, "status": operation.status,
+                    "base_digest": operation.base_digest}
+        return {"operation_id": operation_id, "status": "prepared",
+                "base_digest": base_digest}
+
+
+async def get_projection_operation(operation_id: str) -> dict[str, Any] | None:
+    async with SessionLocal() as db:
+        operation = await db.get(Operation, operation_id)
+        if operation is None:
+            return None
+        return {"operation_id": operation.operation_id, "status": operation.status,
+                "base_digest": operation.base_digest, "intent": dict(operation.intent)}
+
+
+async def mark_projection_operation(operation_id: str, status: str) -> None:
+    order = {"prepared": 0, "file_published": 1, "sql_accepted": 2, "completed": 3,
+             "quarantined": 3}
+    if status not in order:
+        raise ValueError("invalid projection operation status")
+    async with SessionLocal() as db:
+        operation = await db.scalar(select(Operation).where(
+            Operation.operation_id == operation_id).with_for_update())
+        if operation is None:
+            raise ValueError("projection operation not found")
+        if operation.status in {"completed", "quarantined"}:
+            if operation.status != status:
+                raise ValueError("projection operation is terminal")
+            return
+        if order[status] < order[operation.status]:
+            return
+        operation.status = status
+        await db.commit()
+
+
+async def unfinished_projection_operations() -> list[dict[str, str]]:
+    async with SessionLocal() as db:
+        rows = list((await db.scalars(select(Operation).where(
+            Operation.status.notin_(("completed", "quarantined"))
+        ).order_by(Operation.created_at).limit(32))).all())
+        return [{"operation_id": row.operation_id, "run_id": row.run_id,
+                 "status": row.status} for row in rows]
+
+
+async def quarantine_projection_operations(run_id: str) -> None:
+    async with SessionLocal() as db:
+        rows = list((await db.scalars(select(Operation).where(
+            Operation.run_id == run_id,
+            Operation.status.notin_(("completed", "quarantined")),
+        ).with_for_update())).all())
+        for row in rows:
+            row.status = "quarantined"
+        await db.commit()
+
+
+async def _authorized_public_reuse(db, projection: Projection, reference: dict[str, Any]) -> list[Event]:
+    snapshot = projection.metadata_snapshot or {}
+    governance = snapshot.get("governance") or {}
+    receipts = governance.get("stage_receipts") or []
+    receipt_hash = hashlib.sha256(json.dumps(
+        receipts, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+    if (projection.status != "active" or projection.security_level != "green"
+            or reference != {"projection_id": projection.projection_id,
+                "artifact_ref": projection.artifact_ref,
+                "projection_version": snapshot.get("projection_version", ""),
+                "published_body_hash": governance.get("published_body_hash", ""),
+                "review_receipt_hash": receipt_hash,
+                "independent_source_count": snapshot.get("independent_source_count", 0)}):
+        raise ValueError("stale public canonical input")
+    bindings = list((await db.scalars(select(Binding).where(
+        Binding.projection_id == projection.projection_id, Binding.active.is_(True),
+    ))).all())
+    events = [await db.get(Event, binding.event_id) for binding in bindings]
+    dependencies = sorted(snapshot.get("source_dependencies") or [], key=lambda item: item["event_id"])
+    actual = []
+    for event in events:
+        policy = await db.get(Policy, event.tenant_key) if event else None
+        if (not event or event.status in INACTIVE or not _authorized(policy, _now())
+                or event.authorization_epoch != _epoch(policy)
+                or await db.get(Exclusion, event.business_state.get("source_key", ""))):
+            raise ValueError("source revoked")
+        actual.append({"event_id": event.event_id, "source_revision": event.source_revision,
+            "content_hash": event.content_hash,
+            "root_source_fingerprint": event.root_source_fingerprint})
+    if sorted(actual, key=lambda item: item["event_id"]) != dependencies:
+        raise ValueError("stale public canonical input")
+    return events
+
+
+async def authorized_public_reuse_dependencies(reference: dict[str, Any]) -> list[dict[str, Any]]:
+    async with SessionLocal() as db:
+        projection = await db.get(Projection, str(reference.get("projection_id") or ""))
+        if projection is None:
+            raise ValueError("stale public canonical input")
+        events = await _authorized_public_reuse(db, projection, reference)
+        return [{"event_id": event.event_id, "source_revision": event.source_revision,
+            "content_hash": event.content_hash,
+            "root_source_fingerprint": event.root_source_fingerprint} for event in events]
 
 
 async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: str,
@@ -430,24 +585,96 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
         roots = _independent_components(evidence)
         if security_level == "green" and not roots:
             raise ValueError("independent evidence required")
-        existing = await db.get(Projection, projection_id)
+        existing = await db.scalar(select(Projection).where(
+            Projection.projection_id == projection_id).with_for_update())
+        reused_events: list[Event] = []
+        public_reference = governance.get("authorized_public_input")
+        if public_reference is not None and not isinstance(public_reference, dict):
+            raise ValueError("invalid public canonical input")
         if existing:
-            if (run.status != "accepted" or run.projection_id != projection_id
-                or (existing.tenant_key, existing.user_id, existing.artifact_ref, existing.security_level)
-                != (tenant_key, user_id, artifact_ref, security_level)):
+            same_owner = (existing.tenant_key, existing.user_id) == (tenant_key, user_id)
+            if ((existing.artifact_ref, existing.security_level) != (artifact_ref, security_level)
+                    or (not same_owner and security_level != "green")):
                 raise ValueError("immutable projection binding conflict")
-            return _projection_view(existing)
+            if run.status == "accepted" and run.projection_id == projection_id:
+                return _projection_view(existing)
+            canonical = str(governance.get("canonical_identity") or "")
+            snapshot = existing.metadata_snapshot or {}
+            if (not canonical or snapshot.get("canonical_identity") != canonical
+                    or governance.get("base_projection_version") != snapshot.get("projection_version", "")
+                    ):
+                raise ValueError("immutable projection binding conflict")
+            if security_level == "green":
+                if not public_reference:
+                    raise ValueError("public canonical was not supplied to Hermes")
+                reused_events = await _authorized_public_reuse(db, existing, public_reference)
+        elif public_reference:
+            raise ValueError("stale public canonical input")
         if run.status == "accepted":
             raise ValueError("run already bound to another projection")
-        projection = Projection(projection_id=projection_id, tenant_key=tenant_key, user_id=user_id,
-            security_level=security_level, artifact_ref=artifact_ref, read_only=True, status="active",
-            metadata_snapshot={"governance": dict(governance), "independent_roots": roots,
+        accepted_events = list({event.event_id: event for event in reused_events + events}.values())
+        snapshot = {"governance": dict(governance), "independent_roots": roots,
                 "independent_source_count": len(roots), "source_event_ids": run.event_ids,
+                "source_dependencies": [{"event_id": e.event_id, "source_revision": e.source_revision,
+                    "content_hash": e.content_hash, "root_source_fingerprint": e.root_source_fingerprint}
+                    for e in events],
                 "runtime": "hermes", "enforced_searchable": True,
-                "enforced_summarizable": True, "enforced_agent_callable": True})
-        db.add(projection)
-        for event in events:
-            db.add(Binding(projection_id=projection_id, event_id=event.event_id, active=True))
+                "enforced_summarizable": True, "enforced_agent_callable": True,
+                "canonical_identity": governance.get("canonical_identity"),
+                "projection_version": governance.get("result_digest", "")}
+        if existing:
+            projection = existing
+            projection.status = "active"
+            projection.tenant_key, projection.user_id = tenant_key, user_id
+            prior_runs = list((await db.scalars(select(Run).where(
+                Run.projection_id == projection_id, Run.status == "accepted",
+                Run.run_id != run_id,
+            ))).all())
+            for prior_run in prior_runs:
+                prior_run.status = "superseded"
+            old = list((await db.scalars(select(Binding).where(
+                Binding.projection_id == projection_id))).all())
+            by_event = {binding.event_id: binding for binding in old}
+            for binding in old:
+                binding.active = binding.event_id in {event.event_id for event in accepted_events}
+        else:
+            projection = Projection(projection_id=projection_id, tenant_key=tenant_key, user_id=user_id,
+                security_level=security_level, artifact_ref=artifact_ref, read_only=True, status="active",
+                metadata_snapshot=snapshot)
+            db.add(projection)
+            by_event = {}
+        for event in accepted_events:
+            if event.event_id in by_event:
+                by_event[event.event_id].active = True
+            else:
+                db.add(Binding(projection_id=projection_id, event_id=event.event_id, active=True))
+        await db.flush()
+        if security_level == "green":
+            active_bindings = list((await db.scalars(select(Binding).where(
+                Binding.projection_id == projection_id, Binding.active.is_(True),
+            ))).all())
+            active_events = [await db.get(Event, binding.event_id) for binding in active_bindings]
+            for active_event in active_events:
+                active_policy = await db.get(Policy, active_event.tenant_key) if active_event else None
+                if (not active_event or active_event.status in INACTIVE
+                        or not _authorized(active_policy, _now())
+                        or active_event.authorization_epoch != _epoch(active_policy)):
+                    raise ValueError("source revoked")
+            evidence = {}
+            for active_event in active_events:
+                _merge_evidence(evidence, active_event.business_state.get("root_evidence", {}))
+            roots = _independent_components(evidence)
+            snapshot.update({
+                "independent_roots": roots,
+                "independent_source_count": len(roots),
+                "source_event_ids": sorted(event.event_id for event in active_events),
+                "source_dependencies": sorted([{
+                    "event_id": event.event_id, "source_revision": event.source_revision,
+                    "content_hash": event.content_hash,
+                    "root_source_fingerprint": event.root_source_fingerprint,
+                } for event in active_events], key=lambda item: item["event_id"]),
+            })
+        projection.metadata_snapshot = snapshot
         run.status, run.projection_id = "accepted", projection_id
         await db.commit()
         return _projection_view(projection)

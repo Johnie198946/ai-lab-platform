@@ -17,18 +17,31 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 
 from backend.api.tenant import current_visibility
-from backend.services.knowledge_catalog import document_index, load_manifest
+from backend.services.knowledge_catalog import (
+    document_index, load_manifest, filter_database_live_documents,
+    AUTHORIZED_DOCUMENT_PATHS, resolve_authorized_version,
+)
 
-router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+async def _live_read_scope():
+    documents = await filter_database_live_documents(list(document_index(_vault()).values()), _vault())
+    token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(item["path"] for item in documents))
+    try:
+        yield
+    finally:
+        AUTHORIZED_DOCUMENT_PATHS.reset(token)
+
+
+router = APIRouter(prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(_live_read_scope)])
 
 VAULT_ROOT = Path(__file__).resolve().parent.parent.parent / "data" / "vault"
 MATRIX_PATH = (
@@ -63,9 +76,13 @@ def _rel_visible(rel: str, vis: set[str] | frozenset[str] | None) -> bool:
     document = document_index(_vault()).get(rel)
     if document is None:
         return False
-    if vis is None:
-        return True
-    return str(document.get("pack_id") or "") in vis
+    live_paths = AUTHORIZED_DOCUMENT_PATHS.get()
+    if live_paths is not None and rel not in live_paths:
+        return False
+    if document.get("disclosure_granularity") == "summary" and live_paths is None:
+        return False
+    resolved = resolve_authorized_version(rel, {rel: document}, vis)
+    return resolved is not None
 
 
 def _vault() -> Path:
@@ -101,13 +118,21 @@ def _wikilinks(text: str) -> List[str]:
     return [link.strip() for link in links if link.strip()]
 
 
+def _safe_vault_file(vault: Path, relative: str) -> Path | None:
+    try:
+        path = (vault / relative).resolve()
+        return path if vault.resolve() in path.parents and path.is_file() else None
+    except OSError:
+        return None
+
+
 def _visible_wikilinks(text: str, vault: Path) -> List[str]:
     """Return only links whose target is inside the current authorization scope."""
     vis = _visibility()
     visible: List[str] = []
     for link in _wikilinks(text):
         relative = f"wiki/{link}.md"
-        if _rel_visible(relative, vis) and (vault / relative).exists():
+        if _rel_visible(relative, vis) and _safe_vault_file(vault, relative):
             visible.append(link)
     return visible
 
@@ -129,6 +154,16 @@ def _iter_md_files(vault: Path):
         p = vault / rel
         if p.is_file():
             yield p, rel
+
+
+def _model_text(text: str, relative: str, vault: Path) -> str:
+    """Disclosure metadata contains private lineage; it is not model evidence."""
+    body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL)
+    # Omit unauthorized link labels and targets as well as links_out metadata.
+    def link(match):
+        target = match.group(1).split("|")[0].split("#")[0].strip()
+        return match.group(0) if _rel_visible(f"wiki/{target}.md", _visibility()) else ""
+    return re.sub(r"\[\[([^\]]+)\]\]", link, body)
 
 
 def _doc_title(text: str) -> str:
@@ -283,7 +318,7 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
 
     # 2) 矩阵打分（辅助: 补 wiki 未覆盖的分类/文档）
     for path, e in entries.items():
-        if not _rel_visible(path, vis):
+        if not _rel_visible(path, vis) or _safe_vault_file(vault, path) is None:
             continue
         title_low = (e.get("title") or "").lower()
         ents = [str(x).lower() for x in (e.get("entities") or [])]
@@ -318,7 +353,7 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         ent_low = str(ent).lower()
         if ent_low in ql or any(ent_low in t or t in ent_low for t in qtokens):
             for p in paths:
-                if not _rel_visible(p, vis):
+                if not _rel_visible(p, vis) or _safe_vault_file(vault, p) is None:
                     continue
                 if p not in scored:
                     scored[p] = {
@@ -350,9 +385,19 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
         }
 
     documents = document_index(vault)
-    ranked = sorted(scored.values(), key=lambda d: (-d["score"], d["path"]))
+    ranked = sorted(
+        (item for item in scored.values() if _safe_vault_file(vault, item["path"])),
+        key=lambda d: (-d["score"], d["path"]),
+    )
     for item in ranked:
         meta = documents.get(item["path"], {})
+        # Search snippets obey the same link/body boundary, never index lineage.
+        safe_text = _model_text((vault / item["path"]).read_text(encoding="utf-8"), item["path"], vault)
+        item["snippet"] = _snippet(safe_text, qtokens)
+        try:
+            raw = (vault / item["path"]).read_bytes()
+        except OSError:
+            raw = b""
         if not item.get("snippet"):
             try:
                 item["snippet"] = _snippet(
@@ -362,12 +407,20 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
             except OSError:
                 item["snippet"] = ""
         item.update({
+            "knowledge_id": meta.get("knowledge_id") or hashlib.sha256(
+                item["path"].encode()
+            ).hexdigest()[:24],
             "category": meta.get("pack_id", ""),
             "knowledge_level": meta.get("knowledge_level", "K5"),
             "classification_status": meta.get("classification_status", "approved"),
             "security_level": meta.get("security_level", ""),
             "freshness": meta.get("freshness", "unknown"),
             "source_count": int(meta.get("source_count") or 0),
+            "version": hashlib.sha256(raw).hexdigest(),
+            "source_kind": meta.get("source_kind") or "governed_wiki",
+            "citation": f"knowledge:{item['path']}",
+            "conditions": meta.get("conditions") or [],
+            "effective_at": meta.get("effective_at") or meta.get("updated_at"),
         })
     return ranked[:limit]
 
@@ -531,14 +584,22 @@ def get_wiki(slug: str) -> Dict[str, Any]:
     # 防路径穿越（统一 resolve 根，避免 macOS /private 符号链接不一致）
     wiki_root = wiki_dir.resolve()
     target = (wiki_dir / f"{slug}.md").resolve()
-    if not str(target).startswith(str(wiki_root)):
+    if wiki_root not in target.parents:
         raise HTTPException(status_code=403, detail="invalid slug")
     if not target.exists():
         raise HTTPException(status_code=404, detail=f"wiki entry not found: {slug}")
     rel = target.relative_to(wiki_root).as_posix()
     rel = f"wiki/{rel}"
     if not _rel_visible(rel, _visibility()):
-        raise HTTPException(status_code=404, detail=f"wiki entry not found: {slug}")
+        live_paths = AUTHORIZED_DOCUMENT_PATHS.get() or frozenset()
+        resolved = resolve_authorized_version(rel, {
+            key: value for key, value in document_index(vault).items() if key in live_paths
+        }, _visibility())
+        if resolved is None:
+            raise HTTPException(status_code=404, detail="wiki entry unavailable")
+        rel = resolved["path"]
+        target = vault / rel
+        slug = rel.removeprefix("wiki/").removesuffix(".md")
     text = target.read_text(encoding="utf-8", errors="ignore")
     fm = _frontmatter(text)
     body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, flags=re.DOTALL).strip()
@@ -547,7 +608,10 @@ def get_wiki(slug: str) -> Dict[str, Any]:
         "title": fm.get("title", target.stem),
         "status": fm.get("status", "unknown"),
         "tags": fm.get("tags", []),
-        "frontmatter": fm,
+        "frontmatter": {key: fm[key] for key in ("title", "status", "tags", "knowledge_level",
+            "disclosure_granularity", "conditions", "effective_at") if key in fm},
+        "citation": f"knowledge:{rel}",
+        "version": hashlib.sha256(text.encode()).hexdigest(),
         "wikilinks": _visible_wikilinks(text, vault),
-        "content": body,
+        "content": _model_text(text, rel, vault),
     }

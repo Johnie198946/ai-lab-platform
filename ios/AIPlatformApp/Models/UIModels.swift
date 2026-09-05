@@ -561,6 +561,11 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
     public var delegatedBy: String?
     public var runId: String?
     public var lastEventSequence: Int
+    public var answerRevision: Int?
+    public var answerNextCursor: String?
+    public var answerHasMore: Bool
+    public var answerAvailableBlockCount: Int
+    public var answerBlocks: [AnswerBlockDTO]
 
     public init(
         id: String = UUID().uuidString,
@@ -579,7 +584,12 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         executingAgentName: String? = nil,
         delegatedBy: String? = nil,
         runId: String? = nil,
-        lastEventSequence: Int = 0
+        lastEventSequence: Int = 0,
+        answerRevision: Int? = nil,
+        answerNextCursor: String? = nil,
+        answerHasMore: Bool = false,
+        answerAvailableBlockCount: Int = 0,
+        answerBlocks: [AnswerBlockDTO] = []
     ) {
         self.id = id
         self.sessionId = sessionId
@@ -598,6 +608,11 @@ public struct ChatMessage: Identifiable, Sendable, Hashable {
         self.delegatedBy = delegatedBy
         self.runId = runId
         self.lastEventSequence = lastEventSequence
+        self.answerRevision = answerRevision
+        self.answerNextCursor = answerNextCursor
+        self.answerHasMore = answerHasMore
+        self.answerAvailableBlockCount = answerAvailableBlockCount
+        self.answerBlocks = answerBlocks
     }
 }
 
@@ -619,6 +634,11 @@ public struct PersistedMessage: Codable, Sendable {
     public let delegatedBy: String?
     public let runId: String?
     public let lastEventSequence: Int?
+    public let answerRevision: Int?
+    public let answerNextCursor: String?
+    public let answerHasMore: Bool?
+    public let answerAvailableBlockCount: Int?
+    public let answerBlocks: [AnswerBlockDTO]?
     public let clarify: PersistedClarify?
     public let noteDraft: NoteDraftBlock?
     public let knowledgeAction: KnowledgeActionBlock?
@@ -637,6 +657,11 @@ public struct PersistedMessage: Codable, Sendable {
         self.delegatedBy = m.delegatedBy
         self.runId = m.runId
         self.lastEventSequence = m.lastEventSequence
+        self.answerRevision = m.answerRevision
+        self.answerNextCursor = m.answerNextCursor
+        self.answerHasMore = m.answerHasMore
+        self.answerAvailableBlockCount = m.answerAvailableBlockCount
+        self.answerBlocks = m.answerBlocks
         self.clarify = m.clarifyBlock.map(PersistedClarify.init)
         self.noteDraft = m.blocks.compactMap {
             if case .noteDraft(let draft) = $0 { return draft }
@@ -663,7 +688,12 @@ public struct PersistedMessage: Codable, Sendable {
             executingAgentName: executingAgentName,
             delegatedBy: delegatedBy,
             runId: runId,
-            lastEventSequence: lastEventSequence ?? 0
+            lastEventSequence: lastEventSequence ?? 0,
+            answerRevision: answerRevision,
+            answerNextCursor: answerNextCursor,
+            answerHasMore: answerHasMore ?? false,
+            answerAvailableBlockCount: answerAvailableBlockCount ?? 0,
+            answerBlocks: answerBlocks ?? []
         )
         if let clarify {
             message.blocks = [.clarify(clarify.toClarifyBlock(defaultSessionId: sessionId))]

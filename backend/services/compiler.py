@@ -30,6 +30,72 @@ class CompilerService:
         self.llm = llm_client
         self.wiki_root = Path(wiki_root) if wiki_root else WIKI_ROOT
 
+    def apply_verified_increment(self, *, relative_path: str, base_hash: str,
+                                 metadata: Dict, content: str, decision: str,
+                                 dependencies: List[Dict], conflicts: List[str]) -> Dict:
+        """Deterministic apply of a verified Hermes result, not another AI runtime.
+
+        The caller owns admission/authorization. File CAS is cross-process and
+        retries of identical output do not rewrite. Unchanged evidence is not a
+        new independent source. A conflict annotates, never silently reconciles.
+        """
+        import fcntl
+        import yaml
+        from backend.services.knowledge_contribution_artifacts import _atomic_markdown, _render_markdown
+        candidate = self.wiki_root / relative_path
+        if candidate.is_symlink() or any(p.is_symlink() for p in candidate.parents if p != self.wiki_root):
+            raise ValueError("unsafe incremental Wiki symlink")
+        path = candidate.resolve()
+        if self.wiki_root.resolve() not in path.parents or path.suffix != ".md":
+            raise ValueError("invalid incremental Wiki target")
+        if decision not in {"update", "no_increment", "conflict"}:
+            raise ValueError("invalid incremental decision")
+        if not dependencies or any(not all(d.get(k) for k in (
+                "event_id", "source_revision", "content_hash", "root_source_fingerprint")) for d in dependencies):
+            raise ValueError("exact source dependencies required")
+        if decision == "conflict" and not conflicts:
+            raise ValueError("conflict annotation required")
+        self.wiki_root.mkdir(parents=True, exist_ok=True)
+        lock = self.wiki_root / ".incremental-compile.lock"
+        if lock.is_symlink():
+            raise ValueError("unsafe incremental Wiki lock")
+        with lock.open("a+") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            original = path.read_bytes() if path.exists() else b""
+            current = hashlib.sha256(original).hexdigest() if original else ""
+            if decision == "no_increment":
+                if current != base_hash:
+                    raise ValueError("wiki_cas_conflict")
+                if not original:
+                    raise ValueError("no_increment requires existing Wiki")
+                return {"path": relative_path, "changed": False, "version": current}
+            roots = sorted({d["root_source_fingerprint"] for d in dependencies})
+            next_metadata = {**metadata, "source_dependencies": dependencies,
+                             "root_source_fingerprints": roots, "source_count": len(roots),
+                             "conflicts": conflicts, "compiler_contract": "wiki-increment-v1"}
+            if conflicts:
+                content = content.rstrip() + "\n\n> [!warning] Evidence conflict — unresolved\n" + "\n".join(
+                    "> " + line.replace("\n", " ") for line in conflicts)
+            rendered = _render_markdown(next_metadata, content).encode()
+            if original == rendered and metadata.get("projection_operation_id"):
+                return {"path": relative_path, "changed": False, "version": current}
+            if current != base_hash:
+                raise ValueError("wiki_cas_conflict")
+            if original:
+                match = FRONTMATTER_RE.match(original.decode())
+                prior = yaml.safe_load(match.group(1)) if match else {}
+                prior_dependencies = (prior or {}).get("source_dependencies", [])
+                # Retaining evidence from another root requires registering all
+                # sources in the existing Hermes run, not a model-inferred count.
+                roots_in = {d["root_source_fingerprint"] for d in dependencies}
+                if any(d.get("root_source_fingerprint") not in roots_in for d in prior_dependencies):
+                    raise ValueError("incremental source bindings incomplete")
+            _atomic_markdown(path, next_metadata, content,
+                             directory_mode=0o700 if metadata.get("security_level") == "red" else 0o755,
+                             file_mode=0o600 if metadata.get("security_level") == "red" else 0o644)
+            return {"path": relative_path, "changed": True,
+                    "version": hashlib.sha256(path.read_bytes()).hexdigest()}
+
     # ================= 文件系统辅助 =================
 
     def _entity_to_path(self, entity: str) -> Path:

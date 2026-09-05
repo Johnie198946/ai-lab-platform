@@ -96,20 +96,24 @@ async def validate_green_contribution(*, relative_path: str, projection_id: str)
         if (governance.get("candidate_hash") != hashes[0]
                 or governance.get("authorization_epoch") != epochs[0]):
             raise ValueError("candidate hash or authorization epoch mismatch")
-        run = await db.scalar(select(Run).where(Run.projection_id == projection.projection_id))
+        run = await db.scalar(select(Run).where(
+            Run.projection_id == projection.projection_id, Run.status == "accepted"))
         policy = await db.get(Policy, projection.tenant_key)
         if (not run or run.status != "accepted" or run.authorization_epoch != epochs[0]
                 or not policy or not policy.enabled or _epoch(policy) != epochs[0]):
             raise ValueError("durable run or current authorization gate failed")
         bindings = list((await db.scalars(select(Binding).where(
             Binding.projection_id == projection.projection_id,
+            Binding.active.is_(True),
         ))).all())
-        if not bindings or any(binding.active is not True for binding in bindings):
+        if not bindings:
             raise ValueError("active evidence bindings required")
         events = [await db.get(Event, binding.event_id) for binding in bindings]
         blocked = {"withdrawn", "excluded", "archived", "stale", "quarantined", "withdrawing"}
-        if (any(event is None or event.status in blocked
-                or event.authorization_epoch != epochs[0] for event in events)
+        source_policies = [await db.get(Policy, event.tenant_key) if event else None for event in events]
+        if (any(event is None or event.status in blocked or not source_policy
+                or not source_policy.enabled or event.authorization_epoch != _epoch(source_policy)
+                for event, source_policy in zip(events, source_policies))
                 or any(event.business_state.get("synthetic_hypothesis")
                        or event.business_state.get("simulated") for event in events if event)):
             raise ValueError("non-synthetic active real-world evidence required")
@@ -119,6 +123,12 @@ async def validate_green_contribution(*, relative_path: str, projection_id: str)
 def _bind(path, metadata: dict, original: str, projection: Projection) -> None:
     match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", original, re.DOTALL)
     body = original[match.end():] if match else original
+    governance = projection.metadata_snapshot.get("governance") or {}
+    if governance.get("disclosure_granularity") == "summary":
+        metadata.update({key: governance[key] for key in (
+            "disclosure_granularity", "derivation_permitted", "publication_audience", "summary_of")})
+    if projection.metadata_snapshot.get("source_dependencies"):
+        metadata["source_dependencies"] = projection.metadata_snapshot["source_dependencies"]
     metadata.update({
         "publication_policy": CONTRIBUTION_PUBLICATION_POLICY,
         "contribution_projection_id": projection.projection_id,

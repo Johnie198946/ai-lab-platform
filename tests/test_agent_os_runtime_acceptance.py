@@ -9,15 +9,12 @@ import importlib.util
 
 REPO = Path(__file__).resolve().parents[1]
 HERMES_SOURCE = Path.home() / ".hermes" / "hermes-agent"
-HERMES_SITE_PACKAGES = HERMES_SOURCE / "venv" / "lib" / "python3.11" / "site-packages"
 
 
 def test_bridge_bootstrap_resolves_tools_registry_from_hermes() -> None:
     env = os.environ.copy()
     env["HERMES_HOME"] = str(Path.home() / ".hermes")
-    env["PYTHONPATH"] = os.pathsep.join(
-        (str(HERMES_SOURCE), str(HERMES_SITE_PACKAGES), str(REPO))
-    )
+    env["PYTHONPATH"] = os.pathsep.join((str(HERMES_SOURCE), str(REPO)))
     probe = subprocess.run(
         [
             sys.executable,

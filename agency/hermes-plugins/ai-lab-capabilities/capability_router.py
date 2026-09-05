@@ -219,6 +219,10 @@ _DIRECT_RESPONSE_RE = re.compile(
     r"^按你(?:的)?建议(?:做|执行)[！!。,.，\s]*$",
     re.I,
 )
+_PURE_TRANSLATION_RE = re.compile(
+    r"^(?:(?:请|帮我|麻烦)(?:你)?\s*|(?:please|can you|could you)\s+)?"
+    r"(?:翻译|译成|把.{0,80}翻译|translate\b|translation\b)", re.I,
+)
 _SIMPLE_EXPLANATION_RE = re.compile(
     r"^(?:请)?(?:快速|简单|简要|一句话).{0,8}(?:解释|介绍|说明|告诉我)",
     re.I,
@@ -426,6 +430,10 @@ def _skill_route_class(query: str) -> str:
     if not text or _CASUAL_RE.fullmatch(text):
         return "CASUAL"
     if _DIRECT_RESPONSE_RE.fullmatch(text):
+        return "GENERAL_QA"
+    # Quoted source text may contain task verbs; translation alone does not
+    # authorize professional routing or knowledge retrieval for those verbs.
+    if _PURE_TRANSLATION_RE.match(text):
         return "GENERAL_QA"
     if (
         _GENERAL_QA_RE.search(text) or _SIMPLE_EXPLANATION_RE.search(text)
@@ -1523,6 +1531,55 @@ def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: An
         return response_text
 
 
+def _ordinary_knowledge_context(query: str) -> str:
+    """Offer a native reading method independently of task/Agency complexity.
+
+    Discovery is metadata-only: no vault reads, tool dispatch, or new permission
+    grant. The model may select zero or one method after assessing relevance.
+    """
+    text = (query or "").strip()
+    if (
+        not text
+        or _CASUAL_RE.fullmatch(text)
+        or _DIRECT_RESPONSE_RE.fullmatch(text)
+        or re.fullmatch(r"(?:hi|hello|hey|你好|您好|在吗|谢谢|多谢|好的|收到|晚安|早安)[！!。,.，?？\s]*", text, re.I)
+        or _PURE_TRANSLATION_RE.match(text)
+    ):
+        return ""
+    # Only advertise the method if Hermes' native discovery can actually find
+    # it. Never invent an installed skill, expose its body, or rank specialists.
+    skill = next((item for item in _skill_capabilities()
+                  if item.get("name") == "vault-knowledge-retrieval"
+                  and item.get("kind") == "skill"), None)
+    if not skill or _negative_matches(text, skill.get("negative_phrases") or []):
+        return ""
+    card = {
+        "id": "skill:vault-knowledge-retrieval",
+        "kind": "skill",
+        "invoke": {"tool": "skill_view", "arguments": {"name": "vault-knowledge-retrieval"}},
+    }
+    return (
+        "[Hermes ordinary knowledge recommendation — internal routing metadata]\n"
+        "Knowledge need is independent of task complexity. For a substantive question, "
+        "consider relevant personal notes and authorized platform Wiki evidence even when "
+        "the user did not say search or knowledge. Choose zero or one reading method; "
+        "if evidence would help, load the candidate with native skill_view. This is only "
+        "a recommendation: no Skill or source has been read by this hook. Hermes remains "
+        "the only runtime; no Agency/expert selection or delegation is required.\n"
+        "Preserve the user's source constraints: only-my-notes/只看我的笔记 excludes "
+        "platform Wiki and other sources; offline/离线/不要联网 forbids network calls, "
+        "including platform APIs. Use only allowed local copies when offline. "
+        "On the single-owner Mac use existing read_file/search_files permissions; "
+        "on cloud use only tenant-authorized knowledge tools and accessible Wiki, never "
+        "local-owner privileges or filesystem fallbacks to bypass authorization. "
+        "This read-only recommendation grants no permissions or writes, even if the "
+        "loaded method suggests automatic ingestion. Do not force rereads of sufficient "
+        "in-context evidence or fetch restricted data. If sources are unavailable, report "
+        "the limitation; never claim retrieval or citations without actual tool evidence.\n"
+        "Candidates: " + json.dumps([card], ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | None:
     turn_key = str(
         kwargs.get("turn_id") or kwargs.get("task_id") or kwargs.get("session_id") or ""
@@ -1535,6 +1592,11 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
     marker = _TRIAGE_MARKER_RE.match(user_message or "")
     if marker is not None:
         route_class, agency_enabled = marker.groups()
+        if route_class == "GENERAL_QA":
+            context = _ordinary_knowledge_context(_routing_query(
+                _TRIAGE_MARKER_RE.sub("", user_message, count=1)
+            ))
+            return {"context": context} if context else None
         if route_class != "PROFESSIONAL_TASK" or agency_enabled != "1":
             return None
         query = _routing_query(
@@ -1547,7 +1609,11 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
         )
         return {"context": context} if context else None
     if not _LOCAL_ENABLED:
-        if _skill_route_class(user_message) in {"CASUAL", "GENERAL_QA"}:
+        route_class = _skill_route_class(_routing_query(user_message))
+        if route_class == "GENERAL_QA":
+            context = _ordinary_knowledge_context(_routing_query(user_message))
+            return {"context": context} if context else None
+        if route_class == "CASUAL":
             return None
         context = _candidate_context(user_message)
         return {"context": context} if context else None
@@ -1594,7 +1660,12 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
             _LOCAL_TURN_STATES[session_id] = state
     vault_context = _vault_owner_context() if principal == "vault_owner" else ""
     if route_class in {"CASUAL", "GENERAL_QA"}:
-        return {"context": vault_context} if vault_context else None
+        knowledge_context = (
+            _ordinary_knowledge_context(_routing_query(user_message))
+            if route_class == "GENERAL_QA" else ""
+        )
+        context = "\n".join(part for part in (knowledge_context, vault_context) if part)
+        return {"context": context} if context else None
     context = _local_professional_context(_routing_query(user_message), state)
     if vault_context:
         context = f"{context}\n{vault_context}"

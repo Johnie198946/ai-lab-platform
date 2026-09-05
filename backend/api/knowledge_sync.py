@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import fcntl
 import json
 import logging
 import os
@@ -61,6 +62,14 @@ class NoteArchiveRequest(BaseModel):
     expected_content_hash: str | None = Field(None, min_length=64, max_length=64)
 
 
+class NoteMergeRequest(BaseModel):
+    operation_id: str = Field(..., min_length=8, max_length=128)
+    target_note_id: str = Field(..., min_length=1, max_length=128)
+    target_base_hash: str = Field(..., min_length=64, max_length=64)
+    source_versions: dict[str, str] = Field(default_factory=dict, max_length=16)
+    revised_content: str = Field(..., min_length=1, max_length=1_000_000)
+
+
 class UploadedFileContributionRequest(BaseModel):
     tenant_key: str = Field(min_length=1, max_length=128)
     user_id: str = Field(min_length=1, max_length=128)
@@ -103,6 +112,164 @@ def _tenant_namespace(tenant_key: str) -> str:
 
 def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+def _merge_payload_digest(body: NoteMergeRequest) -> str:
+    return _digest(json.dumps(body.model_dump(), sort_keys=True, separators=(",", ":")).encode())
+
+
+async def _finish_merge_outbox(
+    *, journal: dict[str, Any], operation_path: Path, tenant_key: str, user_id: str,
+    body: NoteMergeRequest,
+) -> dict[str, Any]:
+    """Retryable projection work; the completed personal merge never rolls back."""
+    if journal.get("contribution_status") == "scheduled":
+        return journal
+    target_path, target_metadata_path = _paths(tenant_key, user_id, body.target_note_id)
+    target_metadata = _read_metadata(target_metadata_path)
+    try:
+        contribution = await enqueue_note_contribution(
+            tenant_key=tenant_key, user_id=user_id, note_id=body.target_note_id,
+            source_revision=max(1, int(target_metadata.get("contribution_revision") or 1)),
+            content_hash=_digest(target_path.read_bytes()),
+            source_changed_at=datetime.now(timezone.utc),
+        )
+        if contribution:
+            contribution = await schedule_event(
+                contribution, source_content=target_path.read_text(encoding="utf-8")
+            )
+        withdrawn: set[str] = set()
+        for source_id in body.source_versions:
+            _, archived_metadata = _archived_paths(tenant_key, user_id, source_id)
+            withdrawn.update(await _withdraw_note_event(
+                tenant_key=tenant_key, user_id=user_id,
+                metadata=_read_metadata(archived_metadata), permanent=False,
+            ))
+        journal.update({
+            "contribution_status": "scheduled",
+            "contribution_event_id": (contribution or {}).get("event_id"),
+            "withdrawn_contribution_event_ids": sorted(withdrawn),
+        })
+    except Exception as exc:
+        logger.exception("merge contribution outbox remains pending", extra={
+            "operation_id": body.operation_id,
+        })
+        journal.update({
+            "contribution_status": "pending", "contribution_error": type(exc).__name__,
+        })
+    _atomic_write(operation_path, json.dumps(journal, ensure_ascii=False, indent=2).encode())
+    return journal
+
+
+@router.post("/merge")
+async def merge_notes(
+    body: NoteMergeRequest,
+    payload: dict[str, Any] = Depends(require_auth),
+) -> dict[str, Any]:
+    """Recoverable account-local CAS transaction; retrying resumes its journal."""
+    if (
+        not _NOTE_ID.fullmatch(body.operation_id)
+        or not _NOTE_ID.fullmatch(body.target_note_id)
+        or not _SHA256.fullmatch(body.target_base_hash.lower())
+        or body.target_note_id in body.source_versions
+        or any(not _NOTE_ID.fullmatch(note_id) or not _SHA256.fullmatch(version.lower())
+               for note_id, version in body.source_versions.items())
+    ):
+        raise HTTPException(status_code=422, detail={"code": "invalid_merge_contract"})
+    tenant_key = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    directory = note_directory(tenant_key, user_id, _sync_root())
+    operations = directory / ".operations"
+    operations.mkdir(parents=True, exist_ok=True)
+    operation_path = operations / f"{body.operation_id}.json"
+    payload_digest = _merge_payload_digest(body)
+    revised = body.revised_content.encode()
+    revised_hash = _digest(revised)
+    lock_path = directory / ".merge.lock"
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            prior = _read_metadata(operation_path)
+            if prior:
+                if prior.get("payload_digest") != payload_digest:
+                    raise HTTPException(status_code=409, detail={"code": "operation_payload_conflict"})
+                if prior.get("status") == "completed":
+                    # ponytail: account-wide lock serializes merge/outbox replay;
+                    # move scheduling outside the lock if measured latency matters.
+                    return await _finish_merge_outbox(
+                        journal=prior, operation_path=operation_path,
+                        tenant_key=tenant_key, user_id=user_id, body=body,
+                    )
+            target_path, target_metadata_path = _paths(
+                tenant_key, user_id, body.target_note_id
+            )
+            if not target_path.is_file():
+                raise HTTPException(status_code=404, detail={"code": "merge_target_missing"})
+            target_hash = _digest(target_path.read_bytes())
+            if target_hash not in {body.target_base_hash.lower(), revised_hash}:
+                raise HTTPException(status_code=409, detail={
+                    "code": "merge_target_changed", "current_hash": target_hash,
+                })
+            source_states: list[tuple[str, Path, Path, Path, Path]] = []
+            for note_id, expected in body.source_versions.items():
+                note_path, metadata_path = _paths(tenant_key, user_id, note_id)
+                archived_path, archived_metadata = _archived_paths(tenant_key, user_id, note_id)
+                if note_path.is_file() and _digest(note_path.read_bytes()) == expected.lower():
+                    source_states.append((note_id, note_path, metadata_path, archived_path, archived_metadata))
+                    continue
+                archived_state = _read_metadata(archived_metadata)
+                if (archived_path.is_file() and _digest(archived_path.read_bytes()) == expected.lower()
+                        and archived_state.get("merged_into_note_id") == body.target_note_id):
+                    source_states.append((note_id, note_path, metadata_path, archived_path, archived_metadata))
+                    continue
+                raise HTTPException(status_code=409, detail={
+                    "code": "merge_source_changed", "source_note_id": note_id,
+                })
+            journal = {
+                "operation_id": body.operation_id, "payload_digest": payload_digest,
+                "target_note_id": body.target_note_id, "source_note_ids": sorted(body.source_versions),
+                "target_base_hash": body.target_base_hash.lower(), "revised_hash": revised_hash,
+                "status": "applying", "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            _atomic_write(operation_path, json.dumps(journal, ensure_ascii=False, indent=2).encode())
+            if target_hash != revised_hash:
+                _atomic_write(target_path, revised)
+            target_metadata = _read_metadata(target_metadata_path)
+            target_metadata.update({
+                "content_hash": revised_hash,
+                "contribution_revision": int(target_metadata.get("contribution_revision") or 0) + 1,
+                "merge_operation_id": body.operation_id,
+                "synced_at": datetime.now(timezone.utc).isoformat(),
+            })
+            _atomic_write(target_metadata_path, json.dumps(target_metadata, ensure_ascii=False, indent=2).encode())
+            for note_id, note_path, metadata_path, archived_path, archived_metadata in source_states:
+                if note_path.is_file():
+                    archived_path.parent.mkdir(parents=True, exist_ok=True)
+                    os.replace(note_path, archived_path)
+                source_metadata = _read_metadata(metadata_path) or _read_metadata(archived_metadata)
+                source_metadata.update({
+                    "archive_status": "archived", "merged_into_note_id": body.target_note_id,
+                    "merge_operation_id": body.operation_id,
+                    "archived_at": datetime.now(timezone.utc).isoformat(),
+                })
+                _atomic_write(archived_metadata, json.dumps(source_metadata, ensure_ascii=False, indent=2).encode())
+                try:
+                    metadata_path.unlink()
+                except FileNotFoundError:
+                    pass
+            index = compile_private_note_index(tenant_key, user_id, _sync_root())
+            journal.update({
+                "status": "completed", "private_index_hash": index["index_hash"],
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "contribution_status": "pending",
+            })
+            _atomic_write(operation_path, json.dumps(journal, ensure_ascii=False, indent=2).encode())
+            return await _finish_merge_outbox(
+                journal=journal, operation_path=operation_path,
+                tenant_key=tenant_key, user_id=user_id, body=body,
+            )
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 async def _withdraw_note_event(

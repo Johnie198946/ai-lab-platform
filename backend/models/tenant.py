@@ -96,7 +96,7 @@ class KnowledgeAccessAudit(Base):
 
     __tablename__ = "knowledge_access_audits"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True)
     tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     entry_point: Mapped[str] = mapped_column(String(32), nullable=False)
     category: Mapped[str] = mapped_column(String(128), default="")

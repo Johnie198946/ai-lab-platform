@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import AIPlatformApp
 
@@ -117,49 +118,191 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         XCTAssertEqual(store.notes.count, 1_000)
     }
 
-    func testKnowledgeMergeChoosesStablePrimaryAndNeverArchivesIt() {
-        let step = KnowledgeActionStep(
-            kind: "merge_notes",
-            sourceNoteIds: ["note-z", "note-a", "note-z"],
-            markdown: "# merged"
-        )
-        let primary = KnowledgeActionExecutor.mergePrimaryNoteID(
-            step: step, actionId: "action-1", stepIndex: 0
-        )
-        XCTAssertEqual(primary, "note-a")
-        XCTAssertEqual(
-            KnowledgeActionExecutor.mergeArchiveSourceIDs(step: step, primaryID: primary),
-            ["note-z"]
-        )
-
+    func testKnowledgeMergePrimaryRequiresExplicitTarget() {
         let explicit = KnowledgeActionStep(
             kind: "merge_notes",
             targetNoteId: "note-z",
             sourceNoteIds: ["note-a", "note-z"],
             markdown: "# merged"
         )
-        XCTAssertEqual(
-            KnowledgeActionExecutor.mergePrimaryNoteID(
-                step: explicit, actionId: "action-1", stepIndex: 0
-            ),
-            "note-z"
-        )
+        XCTAssertEqual(KnowledgeActionExecutor.mergePrimaryNoteID(step: explicit), "note-z")
         XCTAssertEqual(
             KnowledgeActionExecutor.mergeArchiveSourceIDs(step: explicit, primaryID: "note-z"),
             ["note-a"]
         )
+        XCTAssertNil(KnowledgeActionExecutor.mergePrimaryNoteID(step: .init(
+            kind: "merge_notes", sourceNoteIds: ["note-a"], markdown: "# merged"
+        )))
+        XCTAssertNil(KnowledgeActionExecutor.mergePrimaryNoteID(step: .init(
+            kind: "merge_notes", targetNoteId: " note-z ", markdown: "# merged"
+        )))
+    }
 
-        let noCandidates = KnowledgeActionStep(kind: "merge_notes", markdown: "# merged")
-        let generatedPrimary = KnowledgeActionExecutor.mergePrimaryNoteID(
-            step: noCandidates, actionId: "stable-action", stepIndex: 2
-        )
-        XCTAssertEqual(
-            generatedPrimary,
-            KnowledgeActionExecutor.mergePrimaryNoteID(
-                step: noCandidates, actionId: "stable-action", stepIndex: 2
-            )
-        )
-        XCTAssertTrue(generatedPrimary.hasPrefix("ka-"))
+    func testExplicitTargetOnlyMergeUpdatesInPlaceAndPreservesMetadata() async throws {
+        let (store, executor) = isolatedStoreAndExecutor()
+        defer { removeVault(store) }
+        let target = try XCTUnwrap(store.createNote(
+            id: "target-only", title: "原标题", body: "旧正文", tags: ["原标签"]
+        ))
+        store.togglePin(id: target.id)
+        let before = try XCTUnwrap(store.note(id: target.id))
+        let action = mergeAction(step: .init(
+            kind: "merge_notes", targetNoteId: target.id, title: "新标题",
+            markdown: "# 新标题\n\n合并草稿", originalContentHash: store.contentHash(for: before)
+        ))
+
+        let result = await executor.execute(action)
+        let merged = try XCTUnwrap(store.note(id: target.id))
+        XCTAssertTrue([KnowledgeActionState.synced, .syncPending].contains(result.state))
+        XCTAssertEqual(result.noteIds, [target.id])
+        XCTAssertEqual(merged.body, "# 新标题\n\n合并草稿")
+        XCTAssertEqual(merged.createdAt, before.createdAt)
+        XCTAssertEqual(merged.tags, before.tags)
+        XCTAssertEqual(merged.isPinned, before.isPinned)
+        XCTAssertEqual(Set(store.notes.map(\.id) + store.archivedNotes.map(\.id)), [target.id])
+        XCTAssertFalse(store.notes.contains { $0.id.hasPrefix("ka-") })
+    }
+
+    func testExplicitTargetAndSourceMergeNeverCreatesReplacementID() async throws {
+        let (store, executor) = isolatedStoreAndExecutor()
+        defer { removeVault(store) }
+        let target = try XCTUnwrap(store.createNote(id: "merge-target", title: "目标", body: "旧稿"))
+        let source = try XCTUnwrap(store.createNote(id: "merge-source", title: "来源", body: "材料"))
+        let originalIDs = Set(store.notes.map(\.id))
+        let action = mergeAction(step: .init(
+            kind: "merge_notes", targetNoteId: target.id, sourceNoteIds: [source.id],
+            markdown: "合并完成", originalContentHash: store.contentHash(for: target),
+            sourceContentHashes: [source.id: store.contentHash(for: source)]
+        ))
+
+        let result = await executor.execute(action)
+        XCTAssertTrue([KnowledgeActionState.synced, .syncPending].contains(result.state))
+        XCTAssertEqual(Set(result.noteIds), originalIDs)
+        XCTAssertEqual(store.note(id: target.id)?.body, "合并完成")
+        XCTAssertEqual(Set(store.notes.map(\.id) + store.archivedNotes.map(\.id)), originalIDs)
+        XCTAssertFalse((store.notes + store.archivedNotes).contains { $0.id.hasPrefix("ka-") })
+    }
+
+    func testExecutorUsesAtomicMergeContractWithExactVersions() async throws {
+        let store = KnowledgeNoteStore()
+        store.activate(tenantKey: "merge-contract-\(UUID())", userId: "merge-user")
+        defer { removeVault(store) }
+        let synchronizer = FakeKnowledgeActionSynchronizer()
+        let executor = KnowledgeActionExecutor(store: store, synchronizer: synchronizer)
+        let target = try XCTUnwrap(store.createNote(id: "contract-target", title: "目标", body: "旧稿"))
+        let source = try XCTUnwrap(store.createNote(id: "contract-source", title: "来源", body: "材料"))
+        let targetHash = store.contentHash(for: target)
+        let sourceHash = store.contentHash(for: source)
+        let action = mergeAction(step: .init(
+            kind: "merge_notes", targetNoteId: target.id, sourceNoteIds: [source.id],
+            markdown: "合并完成", originalContentHash: targetHash,
+            sourceContentHashes: [source.id: sourceHash]
+        ))
+
+        let result = await executor.execute(action)
+
+        XCTAssertEqual(result.state, .synced)
+        XCTAssertEqual(synchronizer.mergeRequests.count, 1)
+        let request = try XCTUnwrap(synchronizer.mergeRequests.first)
+        XCTAssertEqual(request.operationId, action.id)
+        XCTAssertEqual(request.targetNoteId, target.id)
+        XCTAssertEqual(request.targetBaseHash, targetHash)
+        XCTAssertEqual(request.sourceVersions, [source.id: sourceHash])
+        XCTAssertEqual(request.revisedContent, store.markdown(for: try XCTUnwrap(store.note(id: target.id))))
+        XCTAssertEqual(synchronizer.legacyMergeMutationCount, 0)
+    }
+
+    func testMergeRejectsMissingMalformedHashesAndSourceOnlyLegacyRequestsBeforeMutation() async throws {
+        let (store, executor) = isolatedStoreAndExecutor()
+        defer { removeVault(store) }
+        let target = try XCTUnwrap(store.createNote(id: "hash-target", title: "目标", body: "原文"))
+        let source = try XCTUnwrap(store.createNote(id: "hash-source", title: "来源", body: "材料"))
+        let targetHash = store.contentHash(for: target)
+        let invalidSteps: [KnowledgeActionStep] = [
+            .init(kind: "merge_notes", sourceNoteIds: [source.id], markdown: "拒绝"),
+            .init(kind: "merge_notes", targetNoteId: target.id, markdown: "拒绝"),
+            .init(kind: "merge_notes", targetNoteId: target.id, markdown: "拒绝", originalContentHash: String(repeating: "A", count: 64)),
+            .init(kind: "merge_notes", targetNoteId: target.id, sourceNoteIds: [source.id], markdown: "拒绝", originalContentHash: targetHash),
+            .init(kind: "merge_notes", targetNoteId: target.id, sourceNoteIds: [source.id], markdown: "拒绝", originalContentHash: targetHash, sourceContentHashes: [source.id: "bad-hash"]),
+        ]
+
+        for step in invalidSteps {
+            let result = await executor.execute(mergeAction(step: step))
+            XCTAssertEqual(result.state, .stale)
+            XCTAssertEqual(store.note(id: target.id)?.body, "原文")
+            XCTAssertEqual(store.note(id: source.id)?.body, "材料")
+            XCTAssertEqual(Set(store.notes.map(\.id)), [target.id, source.id])
+        }
+    }
+
+    func testMergeRejectsMissingOrArchivedTargetBeforeMutation() async throws {
+        let (store, executor) = isolatedStoreAndExecutor()
+        defer { removeVault(store) }
+        let target = try XCTUnwrap(store.createNote(id: "archived-target", title: "目标", body: "原文"))
+        let hash = store.contentHash(for: target)
+        _ = try XCTUnwrap(store.archive(id: target.id, mergedInto: "prior-target"))
+
+        for targetID in [target.id, "missing-target"] {
+            let result = await executor.execute(mergeAction(step: .init(
+                kind: "merge_notes", targetNoteId: targetID, markdown: "拒绝",
+                originalContentHash: hash
+            )))
+            XCTAssertEqual(result.state, .stale)
+        }
+        XCTAssertNil(store.note(id: target.id))
+        XCTAssertEqual(store.archivedNote(id: target.id)?.body, "原文")
+    }
+
+    func testMergeRejectsChangedTargetAndSourceVersionsBeforeMutation() async throws {
+        let (store, executor) = isolatedStoreAndExecutor()
+        defer { removeVault(store) }
+        let target = try XCTUnwrap(store.createNote(id: "changed-target", title: "目标", body: "目标 v1"))
+        let source = try XCTUnwrap(store.createNote(id: "changed-source", title: "来源", body: "来源 v1"))
+        let originalTargetHash = store.contentHash(for: target)
+        let originalSourceHash = store.contentHash(for: source)
+        _ = try XCTUnwrap(store.save(id: target.id, title: target.title, body: "目标 v2", tags: target.tags, isPinned: target.isPinned))
+        var result = await executor.execute(mergeAction(step: .init(
+            kind: "merge_notes", targetNoteId: target.id, sourceNoteIds: [source.id], markdown: "拒绝",
+            originalContentHash: originalTargetHash, sourceContentHashes: [source.id: originalSourceHash]
+        )))
+        XCTAssertEqual(result.state, .stale)
+        XCTAssertEqual(store.note(id: target.id)?.body, "目标 v2")
+
+        let currentTarget = try XCTUnwrap(store.note(id: target.id))
+        _ = try XCTUnwrap(store.save(id: source.id, title: source.title, body: "来源 v2", tags: source.tags, isPinned: source.isPinned))
+        result = await executor.execute(mergeAction(step: .init(
+            kind: "merge_notes", targetNoteId: target.id, sourceNoteIds: [source.id], markdown: "拒绝",
+            originalContentHash: store.contentHash(for: currentTarget), sourceContentHashes: [source.id: originalSourceHash]
+        )))
+        XCTAssertEqual(result.state, .stale)
+        XCTAssertEqual(store.note(id: target.id)?.body, "目标 v2")
+        XCTAssertEqual(store.note(id: source.id)?.body, "来源 v2")
+    }
+
+    func testSourceOnlySavedReceiptIsRejectedDuringRecoveryWithoutCreatingID() async throws {
+        let (store, executor) = isolatedStoreAndExecutor()
+        defer { removeVault(store) }
+        let source = try XCTUnwrap(store.createNote(id: "legacy-source", title: "来源", body: "原文"))
+        let action = mergeAction(step: .init(
+            kind: "merge_notes", sourceNoteIds: [source.id], markdown: "旧版合并",
+            sourceContentHashes: [source.id: store.contentHash(for: source)]
+        ))
+        try FileManager.default.createDirectory(at: store.actionDirectory, withIntermediateDirectories: true)
+        let receipt = try JSONSerialization.data(withJSONObject: [
+            "actionId": action.id,
+            "actionDigest": action.actionDigest,
+            "accountFingerprint": store.accountFingerprint,
+            "status": "local_applied",
+            "resultNoteIds": [source.id],
+            "updatedAt": 0,
+        ])
+        try receipt.write(to: store.actionDirectory.appendingPathComponent("\(action.id).json"), options: .atomic)
+
+        let result = await executor.execute(action)
+        XCTAssertEqual(result.state, .stale)
+        XCTAssertEqual(store.note(id: source.id)?.body, "原文")
+        XCTAssertEqual(store.notes.map(\.id), [source.id])
+        XCTAssertFalse(store.notes.contains { $0.id.hasPrefix("ka-") })
     }
 
     func testServerSyncedNotesParticipateInKnowledgeWorkspaceSnapshot() {
@@ -217,4 +360,79 @@ final class KnowledgeNoteStoreTests: XCTestCase {
             userText: "保存为笔记", hasProposal: true
         ))
     }
+
+    private func isolatedStoreAndExecutor() -> (KnowledgeNoteStore, KnowledgeActionExecutor) {
+        let store = KnowledgeNoteStore()
+        store.activate(tenantKey: "merge-tenant-\(UUID())", userId: "merge-user")
+        return (store, KnowledgeActionExecutor(store: store, synchronizer: FakeKnowledgeActionSynchronizer()))
+    }
+
+    private func removeVault(_ store: KnowledgeNoteStore) {
+        try? FileManager.default.removeItem(at: store.vaultDirectory)
+        store.reload()
+    }
+
+    private func mergeAction(step: KnowledgeActionStep) -> KnowledgeActionBlock {
+        let id = UUID().uuidString.lowercased()
+        return KnowledgeActionBlock(
+            id: id, summary: "合并", steps: [step], actionDigest: "digest-\(id)",
+            transientCapability: "test-capability",
+            expiresAt: Int(Date().timeIntervalSince1970) + 3_600
+        )
+    }
+}
+
+@MainActor
+private final class FakeKnowledgeActionSynchronizer: KnowledgeActionSynchronizing {
+    private var notes: [String: CloudKnowledgeNoteDTO] = [:]
+    private(set) var mergeRequests: [KnowledgeNoteMergeRequestDTO] = []
+    private(set) var legacyMergeMutationCount = 0
+
+    func fetchKnowledgeNotes(includeArchived: Bool) async throws -> CloudKnowledgeNotesResponse {
+        let items = notes.values.filter { includeArchived || !$0.archived }
+        return .init(items: items, count: items.count, compileStatus: "ready")
+    }
+
+    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?) async throws {
+        legacyMergeMutationCount += 1
+        let hash = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
+        notes[id] = .init(
+            noteId: id, markdown: markdown, contentHash: hash, updatedAt: nil,
+            archived: false, mergedIntoNoteId: nil
+        )
+    }
+
+    func archiveKnowledgeNote(id: String, mergedIntoNoteId: String, expectedContentHash: String?) async throws {
+        legacyMergeMutationCount += 1
+        guard let note = notes[id] else { return }
+        notes[id] = .init(
+            noteId: note.noteId, markdown: note.markdown, contentHash: note.contentHash,
+            updatedAt: note.updatedAt, archived: true, mergedIntoNoteId: mergedIntoNoteId
+        )
+    }
+
+    func mergeKnowledgeNotes(_ body: KnowledgeNoteMergeRequestDTO) async throws -> KnowledgeNoteMergeResponseDTO {
+        mergeRequests.append(body)
+        let hash = SHA256.hash(data: Data(body.revisedContent.utf8)).map { String(format: "%02x", $0) }.joined()
+        notes[body.targetNoteId] = .init(
+            noteId: body.targetNoteId, markdown: body.revisedContent, contentHash: hash,
+            updatedAt: nil, archived: false, mergedIntoNoteId: nil
+        )
+        for (id, version) in body.sourceVersions {
+            notes[id] = .init(
+                noteId: id, markdown: "", contentHash: version, updatedAt: nil,
+                archived: true, mergedIntoNoteId: body.targetNoteId
+            )
+        }
+        return .init(
+            operationId: body.operationId, targetNoteId: body.targetNoteId,
+            status: "completed", revisedHash: hash
+        )
+    }
+
+    func restoreKnowledgeNote(id: String) async throws {}
+    func trashKnowledgeNote(id: String) async throws {}
+    func commitKnowledgeAction(id: String, capability: String, actionDigest: String, status: String, resultNoteIds: [String], errorCode: String?) async throws {}
+    func resumeKnowledgeActionSync(id: String, actionDigest: String, status: String, resultNoteIds: [String], errorCode: String?) async throws {}
+    func discardKnowledgeAction(id: String, capability: String, actionDigest: String) async throws {}
 }

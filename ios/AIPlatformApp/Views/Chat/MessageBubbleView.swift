@@ -146,7 +146,13 @@ public struct MessageBubbleView: View {
             .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $isShowingFullAnswer) {
-            LongAnswerSheet(messageId: message.id, content: message.content)
+            LongAnswerSheet(
+                messageId: message.id, content: message.content,
+                serverBlocks: message.answerBlocks,
+                hasMore: message.answerHasMore,
+                loadMore: { context?.onLoadAnswerBlocks?(message.id) },
+                fetchFull: context?.onFetchFullAnswer
+            )
         }
     }
 
@@ -249,7 +255,7 @@ public struct MessageBubbleView: View {
                             .foregroundColor(AppTheme.Colors.textPrimary)
                     }
 
-                    if isLongCompletedAnswer {
+                    if isLongCompletedAnswer || message.answerHasMore {
                         Button {
                             isShowingFullAnswer = true
                         } label: {
@@ -469,12 +475,13 @@ public struct MessageBubbleView: View {
     }
 
     private func copyToClipboard() {
-        #if os(iOS)
-        UIPasteboard.general.string = message.content
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-        #endif
-        isCopied = true
-        Task {
+        Task { @MainActor in
+            let full = (try? await context?.onFetchFullAnswer?(message.id)) ?? message.content
+            #if os(iOS)
+            UIPasteboard.general.string = full
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            #endif
+            isCopied = true
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             isCopied = false
         }
@@ -484,29 +491,45 @@ public struct MessageBubbleView: View {
 private struct LongAnswerSheet: View {
     let messageId: String
     let content: String
-    let cacheKey: String
+    let serverBlocks: [AnswerBlockDTO]
+    let hasMore: Bool
+    let loadMore: () -> Void
+    let fetchFull: ((String) async throws -> String)?
     @Environment(\.dismiss) private var dismiss
     @State private var isCopied = false
+    @State private var isPreparingFullAnswer = false
+    @State private var renderPage = 0
+    private let renderPageSize = 40
 
-    init(messageId: String, content: String) {
-        self.messageId = messageId
-        self.content = content
-        self.cacheKey = "\(messageId)_full_\(content.hashValue)"
+    private var stableBlocks: [AnswerBlockDTO] {
+        serverBlocks.isEmpty
+            ? [.init(blockIndex: 0, kind: "markdown", content: content)]
+            : serverBlocks
     }
 
-    private var blocks: [MarkdownBlock] {
-        MarkdownBlockParser.shared.parse(content, messageId: cacheKey)
+    private var renderedBlocks: ArraySlice<AnswerBlockDTO> {
+        let start = min(renderPage * renderPageSize, max(0, stableBlocks.count - 1))
+        return stableBlocks[start..<min(start + renderPageSize, stableBlocks.count)]
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                    // Parse once into semantic blocks, then instantiate each Markdown
-                    // view lazily. Tables, headings, lists and links keep their meaning
-                    // without building one monolithic Markdown layout tree.
-                    ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                        MarkdownBlockCard(block: block)
+                    if renderPage > 0 {
+                        Button("上一批") { renderPage -= 1 }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    }
+                    ForEach(Array(renderedBlocks), id: \.blockIndex) { block in
+                        StableAnswerBlockView(messageId: messageId, block: block)
+                    }
+                    if (renderPage + 1) * renderPageSize < stableBlocks.count {
+                        Button("下一批") { renderPage += 1 }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                    } else if hasMore {
+                        Button("从服务器加载下一批") { loadMore() }
+                            .frame(maxWidth: .infinity, minHeight: 44)
+                            .accessibilityHint("从服务器读取下一批已存储回答，不会重新生成")
                     }
                 }
                 .textSelection(.enabled)
@@ -523,18 +546,89 @@ private struct LongAnswerSheet: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
-                        #if os(iOS)
-                        UIPasteboard.general.string = content
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        #endif
-                        isCopied = true
+                        prepareFullAnswer(share: false)
                     } label: {
                         Label(isCopied ? "已复制" : "复制全文", systemImage: isCopied ? "checkmark" : "doc.on.doc")
                     }
+                    .disabled(isPreparingFullAnswer)
                     .accessibilityHint("复制完整回答到剪贴板")
+                    Button { prepareFullAnswer(share: true) } label: {
+                        Label("导出全文", systemImage: "square.and.arrow.up")
+                    }
+                    .disabled(isPreparingFullAnswer)
                 }
             }
         }
+    }
+
+    private func prepareFullAnswer(share: Bool) {
+        isPreparingFullAnswer = true
+        Task { @MainActor in
+            let full = (try? await fetchFull?(messageId)) ?? content
+            isPreparingFullAnswer = false
+            #if os(iOS)
+            if share {
+                guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+                      let presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+                presenter.present(UIActivityViewController(activityItems: [full], applicationActivities: nil), animated: true)
+            } else {
+                UIPasteboard.general.string = full
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                isCopied = true
+            }
+            #endif
+        }
+    }
+}
+
+private struct StableAnswerBlockView: View {
+    let messageId: String
+    let block: AnswerBlockDTO
+
+    var body: some View {
+        if block.kind.hasPrefix("code") || block.kind.hasPrefix("table") {
+            StructuredAnswerBlockView(kind: block.kind, content: block.content)
+        } else {
+            ForEach(MarkdownBlockParser.shared.parse(
+                block.content, messageId: "\(messageId)_block_\(block.blockIndex)"
+            )) { parsed in
+                MarkdownBlockCard(block: parsed)
+            }
+        }
+    }
+}
+
+private struct StructuredAnswerBlockView: View {
+    let kind: String
+    let content: String
+    @State private var page = 0
+    private let linePageSize = 120
+
+    private var lines: [Substring] { content.split(separator: "\n", omittingEmptySubsequences: false) }
+    private var pageText: String {
+        let start = min(page * linePageSize, max(0, lines.count - 1))
+        return lines[start..<min(start + linePageSize, lines.count)].joined(separator: "\n")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ScrollView(.horizontal) {
+                Text(pageText).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
+            }
+            if lines.count > linePageSize {
+                HStack {
+                    Button("上一页") { page = max(0, page - 1) }.disabled(page == 0)
+                    Spacer()
+                    Text("\(page + 1) / \((lines.count + linePageSize - 1) / linePageSize)").font(.caption)
+                    Spacer()
+                    Button("下一页") { page += 1 }.disabled((page + 1) * linePageSize >= lines.count)
+                }
+            }
+        }
+        .padding(AppTheme.Spacing.sm)
+        .background(AppTheme.Colors.surfaceTint)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+        .accessibilityLabel(kind.hasPrefix("table") ? "表格分段" : "代码分段")
     }
 }
 

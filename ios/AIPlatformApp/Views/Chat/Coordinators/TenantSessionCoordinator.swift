@@ -138,6 +138,13 @@ public final class TenantSessionCoordinator: ObservableObject {
             },
             onKnowledgeAction: { [weak self] actionId, verb in
                 self?.handleKnowledgeAction(messageId: message?.id, actionId: actionId, verb: verb)
+            },
+            onLoadAnswerBlocks: { [weak self] messageId in
+                self?.loadNextAnswerBlocks(messageId: messageId)
+            },
+            onFetchFullAnswer: { [weak self] messageId in
+                guard let self else { return "" }
+                return try await self.fetchFullAnswer(messageId: messageId)
             }
         )
     }
@@ -232,7 +239,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 )
                 guard self.tenantEpoch == taskEpoch,
                       self.sessionManager.activeSessionID() == sid else { return }
-                if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                     self.applyRecoveredAnswer(answer, outputMessageId: outputId)
                     self.backgroundRunMonitors[sid]?.cancel()
                     self.backgroundRunMonitors.removeValue(forKey: sid)
@@ -291,9 +298,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                     self.messages[index].runId = runId
                     self.messages[index].lastEventSequence = cursor
                     let status = replay.run.status
+                    if let page = replay.run.answerProjection {
+                        self.applyAnswerPage(page, messageIndex: index, replace: true)
+                    }
                     if status == "completed" {
                         self.messages[index].role = .assistant
-                        self.messages[index].content = replay.run.finalAnswer
+                        if let final = replay.run.finalAnswer { self.messages[index].content = final }
                         self.messages[index].pending = false
                         self.messages[index].isStreaming = false
                         self.messages[index].degraded = false
@@ -318,8 +328,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                         return
                     }
                     self.messages[index].role = .assistant
-                    if !replay.run.partialAnswer.isEmpty {
-                        self.messages[index].content = replay.run.partialAnswer
+                    if let partial = replay.run.partialAnswer, !partial.isEmpty {
+                        self.messages[index].content = partial
                     }
                     self.messages[index].pending = true
                     self.messages[index].isStreaming = true
@@ -375,7 +385,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.messages[currentIdx].blocks[blockIdx] = .clarify(restored)
                         self.commitSession()
                     }
-                } else if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                } else if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                     self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
                     self.setClarifyState(messageIndex: currentIdx, state: .expired)
                     self.commitSession()
@@ -638,7 +648,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     let status = try await APIClient.shared.fetchChatStatus(
                         sessionId: req.sessionId, consume: true, agentId: req.agentId
                     )
-                    if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                    if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                         self.sessionManager.applyCompletedStatus(
                             sessionId: req.sessionId,
                             requestId: outputMessageId,
@@ -1405,6 +1415,14 @@ public final class TenantSessionCoordinator: ObservableObject {
                     appState?.pendingKnowledgeNavigation = target
                     appState?.activeTab = 2
 
+                case .answerPage(let page):
+                    drainDeltaBuffer(messageId: outputId)
+                    if let idx = messages.firstIndex(where: { $0.id == outputId }) {
+                        applyAnswerPage(page, messageIndex: idx, replace: true)
+                        messages[idx].pending = page.status != "completed"
+                        messages[idx].isStreaming = page.status != "completed"
+                    }
+
                 case .done(_, let answer):
                     drainDeltaBuffer(messageId: outputId)
                     if let idx = messages.firstIndex(where: { $0.id == outputId }) {
@@ -1474,7 +1492,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             let status = try await APIClient.shared.fetchChatStatus(
                 sessionId: req.sessionId, consume: true, agentId: req.agentId
             )
-            if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+            if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                 if sessionManager.activeSessionID() == req.sessionId {
                     applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
                     if let index = messages.firstIndex(where: { $0.id == outputMessageId }) {
@@ -1558,6 +1576,78 @@ public final class TenantSessionCoordinator: ObservableObject {
         messages[idx].settleReasoningForCompletion()
         finalizeReasoningDuration(for: outputMessageId)
         commitSession()
+    }
+
+    private func applyAnswerPage(
+        _ page: AnswerBlockPageDTO, messageIndex: Int, replace: Bool
+    ) {
+        let content = page.blocks.map(\.content).joined()
+        if replace {
+            messages[messageIndex].content = content
+            messages[messageIndex].answerBlocks = page.blocks
+        } else {
+            messages[messageIndex].content += content
+            messages[messageIndex].answerBlocks.append(contentsOf: page.blocks)
+        }
+        messages[messageIndex].answerRevision = page.revision
+        messages[messageIndex].answerNextCursor = page.nextCursor
+        messages[messageIndex].answerHasMore = page.hasMore
+        messages[messageIndex].answerAvailableBlockCount = page.availableBlockCount
+    }
+
+    public func loadNextAnswerBlocks(messageId: String) {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }),
+              let runId = messages[index].runId,
+              let cursor = messages[index].answerNextCursor,
+              messages[index].answerHasMore else { return }
+        let expectedRevision = messages[index].answerRevision
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let page = try await APIClient.shared.fetchAnswerBlocks(
+                    runId: runId, cursor: cursor
+                )
+                guard let current = self.messages.firstIndex(where: { $0.id == messageId }),
+                      expectedRevision == nil || expectedRevision == page.revision else {
+                    self.showToast("回答版本已变化，请重新打开")
+                    return
+                }
+                self.applyAnswerPage(page, messageIndex: current, replace: false)
+                self.commitSession()
+            } catch APIError.server(409, _) {
+                do {
+                    let first = try await APIClient.shared.fetchAnswerBlocks(runId: runId, cursor: nil)
+                    guard let current = self.messages.firstIndex(where: { $0.id == messageId }) else { return }
+                    self.applyAnswerPage(first, messageIndex: current, replace: true)
+                    self.commitSession()
+                    self.showToast("回答版本已更新，已重新载入")
+                } catch {
+                    self.showToast("回答版本已变化，请重新打开")
+                }
+            } catch {
+                self.showToast("后续内容加载失败，请重试")
+            }
+        }
+    }
+
+    public func fetchFullAnswer(messageId: String) async throws -> String {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return "" }
+        let message = messages[index]
+        guard let runId = message.runId, var cursor = message.answerNextCursor,
+              message.answerHasMore else { return message.content }
+        var content = message.content
+        let revision = message.answerRevision
+        while true {
+            let page = try await APIClient.shared.fetchAnswerBlocks(
+                runId: runId, cursor: cursor, maxBlocks: 20
+            )
+            guard revision == nil || revision == page.revision else {
+                throw APIError.server(409, "answer revision changed")
+            }
+            content += page.blocks.map(\.content).joined()
+            guard page.hasMore, let next = page.nextCursor, next != cursor else { return content }
+            cursor = next
+        }
     }
 
     // MARK: - Clarify 选项卡会话推进（原 SSE 解锁续跑）
@@ -1710,7 +1800,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 sessionId: sessionId, consume: true, agentId: agentId
             )
             print("[Clarify] reconcile clarify=\(local.clarifyId ?? "legacy") phase=\(status.phase ?? status.status)")
-            if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+            if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                 markClarifySubmitted(messageIndex: idx, selection: selection)
                 messages.append(ChatMessage(sessionId: sessionId, role: .assistant, content: answer))
                 commitSession()
@@ -1788,7 +1878,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     let status = try await APIClient.shared.fetchChatStatus(
                         sessionId: sessionId, consume: true, agentId: agentId
                     )
-                    if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                    if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                         if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
                             self.messages[idx].content = answer
                             self.messages[idx].pending = false
@@ -1871,7 +1961,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 let status = try await APIClient.shared.fetchChatStatus(
                     sessionId: sid, consume: true, agentId: agentId
                 )
-                if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                     self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
                     self.commitSession()
                     self.finishGeneration()
@@ -2206,7 +2296,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     sessionId: sid, consume: true, agentId: agentId
                 )
                 guard !Task.isCancelled else { return }
-                if status.status == "completed", let answer = status.answer, !answer.isEmpty {
+                if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                     self.applyRecoveredAnswer(answer, outputMessageId: messageId)
                     self.isGenerating = false
                     return
@@ -2287,7 +2377,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             do {
                 let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true, agentId: req.agentId)
                 if status.status == "completed",
-                   let answer = status.answer, !answer.isEmpty {
+                   let answer = status.loadedAnswer, !answer.isEmpty {
                     await applyCompletedStatus(req: req, status: status)
                     return
                 }
@@ -2301,7 +2391,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard req.sessionId == sessionManager.activeSessionID() else {
             sessionManager.applyCompletedStatus(
                 sessionId: req.sessionId, requestId: req.id,
-                answer: status.answer ?? "服务暂时不可用，请稍后重试"
+                answer: status.loadedAnswer ?? "服务暂时不可用，请稍后重试"
             )
             finishGeneration()
             return
@@ -2315,7 +2405,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         if !steps.isEmpty {
             await revealReasoning(messageId: req.id, steps: steps)
         }
-        await typewriter(messageId: req.id, answer: status.answer ?? "")
+        await typewriter(messageId: req.id, answer: status.loadedAnswer ?? "")
         if let idx = messages.firstIndex(where: { $0.id == req.id }) {
             messages[idx].pending = false
         }

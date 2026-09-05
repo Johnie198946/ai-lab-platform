@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from backend.api import knowledge
 from backend.services.knowledge_catalog import (
-    SEARCH_CACHE, compute_catalog, filter_database_live_documents,
+    SEARCH_CACHE, compute_catalog, filter_database_live_documents, AUTHORIZED_DOCUMENT_PATHS, resolve_authorized_version,
 )
 from backend.api.tenant import current_visibility
 from backend.db import SessionLocal
@@ -72,6 +72,7 @@ class GatewaySearchRequest(BaseModel):
     category_scope: list[str] = Field(default_factory=list)
     sources: list[str] = Field(default_factory=list)
     limit: int = Field(default=10, ge=1, le=20)
+    include_content: bool = False
 
 
 def _verify_authen_signature(body: bytes, signature: str) -> None:
@@ -181,24 +182,62 @@ async def capability_search(
             tenant_key, policy.policy_version, requested, body.query,
             {"tenant_knowledge"},
         )
-        cached = _SEARCH_CACHE.get(key)
-        if cached and cached[0] > time.monotonic():
-            wiki_docs = cached[1][: body.limit]
-        else:
-            token = current_visibility.set(frozenset(requested))
-            try:
-                wiki_docs = knowledge._search_docs(
-                    knowledge._vault(), body.query, body.limit
-                )
-            finally:
-                current_visibility.reset(token)
-            _SEARCH_CACHE[key] = (
-                time.monotonic() + _SEARCH_CACHE_TTL, wiki_docs
-            )
+        live = await filter_database_live_documents(
+            list(knowledge.document_index(knowledge._vault()).values()), knowledge._vault())
+        live_index = {item["path"]: item for item in live}
+        visible_index = {path: item for path, item in live_index.items()
+                         if resolve_authorized_version(path, {path: item}, frozenset(requested))}
+        visible_index = {path: item for path, item in visible_index.items()
+                         if item.get("disclosure_granularity") != "summary"
+                         or item.get("summary_of") not in visible_index}
+        token = current_visibility.set(frozenset(requested))
+        read_token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(visible_index))
+        try:
+            # Cached snippets cannot outlive body/version/label changes. Recompute
+            # from currently approved versions instead of trusting lexical cache.
+            wiki_docs = knowledge._search_docs(knowledge._vault(), body.query, body.limit)
+        finally:
+            AUTHORIZED_DOCUMENT_PATHS.reset(read_token)
+            current_visibility.reset(token)
+        _SEARCH_CACHE.pop(key, None)
         # A lexical cache cannot authorize a document. Recheck durable
         # contribution lifecycle after both cache hits and fresh searches.
         wiki_docs = await filter_database_live_documents(wiki_docs, knowledge._vault())
-        docs.extend({**item, "source": "tenant_knowledge"} for item in wiki_docs)
+        if body.include_content:
+            remaining_chars = 60_000
+            for item in wiki_docs:
+                if remaining_chars <= 0:
+                    item["content_status"] = "budget_exhausted"
+                    continue
+                relative = str(item.get("path") or "")
+                # Re-resolve against the same live authorization/index barrier;
+                # cached search hits alone never grant a body read.
+                if relative not in visible_index or not await filter_database_live_documents([visible_index[relative]], knowledge._vault()):
+                    item["content_status"] = "revoked"
+                    continue
+                try:
+                    text = (knowledge._vault() / relative).read_text(
+                        encoding="utf-8", errors="replace"
+                    )
+                except OSError:
+                    item["content_status"] = "unavailable"
+                    continue
+                visibility_token = current_visibility.set(frozenset(requested))
+                paths_token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(visible_index))
+                try:
+                    text = knowledge._model_text(text, relative, knowledge._vault())
+                finally:
+                    AUTHORIZED_DOCUMENT_PATHS.reset(paths_token)
+                    current_visibility.reset(visibility_token)
+                item["disclosure_granularity"] = visible_index[relative].get("disclosure_granularity", "detail")
+                markdown = text[: min(20_000, remaining_chars)]
+                remaining_chars -= len(markdown)
+                item["markdown"] = markdown
+                item["content_status"] = "complete" if len(markdown) == len(text) else "truncated"
+        private_fields = {"summary_of", "source_dependencies", "publication_audience",
+                          "contribution_projection_id", "publication_policy"}
+        docs.extend({**{k: v for k, v in item.items() if k not in private_fields},
+                     "source": "tenant_knowledge"} for item in wiki_docs)
     if "user_notes" in requested_sources:
         user_id = str(claims.get("user_id") or "")
         if not user_id:

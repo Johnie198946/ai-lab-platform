@@ -3,8 +3,9 @@ import hashlib
 import json
 import os
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import httpx
 
@@ -226,3 +227,79 @@ def test_unreadable_note_returns_retryable_storage_error_without_leaking_path():
             "retryable": True,
         }
         assert str(note) not in response.text
+
+
+def test_merge_is_cas_idempotent_preserves_target_id_and_archives_only_sources():
+    import backend.api.auth as auth
+    import backend.api.knowledge_sync as sync
+
+    async def resolver(_user_id):
+        return {"tenant_key": "tenant-a", "org_id": "org-a", "is_super_admin": False, "categories": set()}
+
+    target, source = "# Target\n\ncreated: keep\n", "# Source\n\nmaterial\n"
+    target_hash = hashlib.sha256(target.encode()).hexdigest()
+    source_hash = hashlib.sha256(source.encode()).hexdigest()
+    revised = "# Target\n\ncreated: keep\n\nmaterial merged\n"
+    with tempfile.TemporaryDirectory() as directory, \
+         patch.object(auth, "tenant_resolver", side_effect=resolver), \
+         patch.object(sync, "_sync_root", return_value=Path(directory)):
+        for note_id, content, digest in (
+            ("target-note", target, target_hash), ("source-note", source, source_hash),
+        ):
+            assert _request("PUT", f"/api/v1/me/knowledge-notes/{note_id}", json={
+                "markdown": content, "content_hash": digest,
+            }).status_code == 200
+        request = {
+            "operation_id": "merge-operation-1", "target_note_id": "target-note",
+            "target_base_hash": target_hash, "source_versions": {"source-note": source_hash},
+            "revised_content": revised,
+        }
+        with patch.object(sync, "enqueue_note_contribution", new=AsyncMock(return_value={"event_id": "merge-event"})), \
+             patch.object(sync, "schedule_event", new=AsyncMock(side_effect=RuntimeError("offline"))):
+            first = _request("POST", "/api/v1/me/knowledge-notes/merge", json=request)
+        second = _request("POST", "/api/v1/me/knowledge-notes/merge", json=request)
+        assert first.status_code == second.status_code == 200
+        assert first.json()["status"] == second.json()["status"] == "completed"
+        assert first.json()["contribution_status"] == "pending"
+        assert second.json()["contribution_status"] == "scheduled"
+        assert first.json()["payload_digest"] == second.json()["payload_digest"]
+        listed = _request("GET", "/api/v1/me/knowledge-notes").json()["items"]
+        by_id = {item["note_id"]: item for item in listed}
+        assert by_id["target-note"]["markdown"] == revised
+        assert by_id["target-note"]["archived"] is False
+        assert by_id["source-note"]["archived"] is True
+        assert by_id["source-note"]["merged_into_note_id"] == "target-note"
+        assert {item["note_id"] for item in listed} == {"target-note", "source-note"}
+        conflicting = dict(request, revised_content="different")
+        conflict = _request("POST", "/api/v1/me/knowledge-notes/merge", json=conflicting)
+        assert conflict.status_code == 409
+        assert conflict.json()["detail"]["code"] == "operation_payload_conflict"
+
+
+def test_concurrent_merges_allow_one_cas_winner():
+    import backend.api.auth as auth
+    import backend.api.knowledge_sync as sync
+
+    async def resolver(_user_id):
+        return {"tenant_key": "tenant-race", "org_id": "org", "is_super_admin": False, "categories": set()}
+
+    original = "# original\n"
+    original_hash = hashlib.sha256(original.encode()).hexdigest()
+    with tempfile.TemporaryDirectory() as directory, \
+         patch.object(auth, "tenant_resolver", side_effect=resolver), \
+         patch.object(sync, "_sync_root", return_value=Path(directory)):
+        assert _request("PUT", "/api/v1/me/knowledge-notes/race-target", json={
+            "markdown": original, "content_hash": original_hash,
+        }).status_code == 200
+
+        def attempt(number: int):
+            return _request("POST", "/api/v1/me/knowledge-notes/merge", json={
+                "operation_id": f"race-operation-{number}",
+                "target_note_id": "race-target", "target_base_hash": original_hash,
+                "source_versions": {}, "revised_content": f"# winner {number}\n",
+            })
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            responses = list(executor.map(attempt, (1, 2)))
+        assert sorted(response.status_code for response in responses) == [200, 409]
+        assert next(response for response in responses if response.status_code == 409).json()["detail"]["code"] == "merge_target_changed"

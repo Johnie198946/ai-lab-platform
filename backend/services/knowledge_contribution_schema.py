@@ -5,10 +5,14 @@ model import. Existing V1 outbox rows retain their IDs and receive an empty epoc
 so no old authorization snapshot can pass the V4 result fence.
 """
 from sqlalchemy import MetaData, Table, inspect, select, literal
-from backend.models.knowledge_contribution import KnowledgeContributionOutbox
+from backend.models.knowledge_contribution import (
+    KnowledgeContributionOutbox, KnowledgeContributionProjection,
+    KnowledgeContributionProjectionOperation,
+)
 
 
 def migrate_knowledge_contribution_v4(connection) -> None:
+    KnowledgeContributionProjectionOperation.__table__.create(connection, checkfirst=True)
     table = KnowledgeContributionOutbox.__table__
     schema = inspect(connection)
     if table.name not in schema.get_table_names():
@@ -47,3 +51,21 @@ def migrate_knowledge_contribution_v4(connection) -> None:
     connection.exec_driver_sql("ALTER TABLE knowledge_contribution_outbox ADD COLUMN IF NOT EXISTS source_changed_at TIMESTAMP WITH TIME ZONE")
     connection.exec_driver_sql("ALTER TABLE knowledge_contribution_outbox DROP CONSTRAINT IF EXISTS uq_knowledge_contribution_source_hash_policy")
     connection.exec_driver_sql("ALTER TABLE knowledge_contribution_outbox ADD CONSTRAINT uq_knowledge_contribution_source_hash_policy UNIQUE (tenant_key, user_id, source_surface, source_kind, source_id, source_revision, content_hash, policy_version, authorization_epoch)")
+
+
+def migrate_legacy_event_projections(connection, *, apply: bool = False) -> list[str]:
+    """List or safely archive legacy Green pages; never rewrite their identities."""
+    table = KnowledgeContributionProjection.__table__
+    if table.name not in inspect(connection).get_table_names():
+        return []
+    rows = connection.execute(select(
+        table.c.projection_id, table.c.security_level, table.c.status,
+        table.c.metadata_snapshot,
+    )).all()
+    legacy = sorted(row.projection_id for row in rows
+                    if row.security_level == "green" and row.status == "active"
+                    and not (row.metadata_snapshot or {}).get("canonical_identity"))
+    if apply and legacy:
+        connection.execute(table.update().where(table.c.projection_id.in_(legacy)).values(
+            status="recompile_required"))
+    return legacy

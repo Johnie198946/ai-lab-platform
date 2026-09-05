@@ -35,6 +35,10 @@ class TestBaseKnowledgeStatus(unittest.TestCase):
         }
 
     def _write(self, documents: list[dict], generated_at: str = "2026-08-20T00:00:00Z") -> None:
+        for document in documents:
+            path = self.vault / document["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"# {document['knowledge_id']}\n", encoding="utf-8")
         (self.vault / "knowledge_catalog.json").write_text(
             json.dumps({
                 "version": "2.0",
@@ -77,7 +81,7 @@ class TestBaseKnowledgeStatus(unittest.TestCase):
         self.assertEqual(status["document_count"], 1)
         self.assertEqual(status["categories"], ["knowledge/methodology/public"])
 
-    def test_invalid_rebuild_keeps_last_valid_projection(self):
+    def test_invalid_rebuild_fails_closed_instead_of_using_stale_projection(self):
         self._write([
             self._document(index, "knowledge/methodology/public")
             for index in range(5)
@@ -87,7 +91,7 @@ class TestBaseKnowledgeStatus(unittest.TestCase):
         (self.vault / "knowledge_catalog.json").write_text("{partial", encoding="utf-8")
         clear_manifest_cache()
         recovered = load_manifest(self.vault)
-        self.assertEqual(len(recovered["documents"]), 5)
+        self.assertEqual(recovered, {})
 
 
 if __name__ == "__main__":

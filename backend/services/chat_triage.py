@@ -126,7 +126,22 @@ class TriageDecision:
         }
 
 
+def _is_supplied_translation(text: str) -> bool:
+    # An explicit single transformation prefix makes following text data.
+    parts = re.split(r"[:：]", text, maxsplit=1)
+    if len(parts) != 2 or not parts[1].strip() or _URL_RE.fullmatch(parts[1].strip()):
+        return False
+    return bool(re.fullmatch(
+        r"(?:请)?(?:把(?:这句话|以下(?:文字|内容|文本))?翻译成(?:中文|英文|英语|日语|法语)|"
+        r"翻译(?:成(?:中文|英文|英语|日语|法语))?|"
+        r"translate(?: the following)?(?: into (?:English|Chinese|French|Japanese))?)",
+        parts[0].strip(), re.IGNORECASE,
+    ))
+
+
 def _evidence_requirements(text: str) -> tuple[str, ...]:
+    if _is_supplied_translation(text):
+        return ()
     requirements: list[str] = []
     if _URL_RE.search(text):
         requirements.append("web_extract")
@@ -163,6 +178,8 @@ def classify_request(
             "explicit_capability",
             evidence,
         )
+    if _is_supplied_translation(text):
+        return TriageDecision(GENERAL_QA, 0.99, "supplied_translation", ())
     if not text:
         return TriageDecision(GENERAL_QA, 0.55, "empty_or_ambiguous", evidence)
     if _DIRECT_RESPONSE_RE.fullmatch(text):

@@ -845,6 +845,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         self.assertEqual(mock.call_args.kwargs, {
             "consume": False, "offset": 0,
             "tenant_id": "public", "user_id": session,
+            "answer_blocks_v1": False,
         })
 
     def test_chat_status_route_consume_forward(self):
@@ -858,6 +859,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         self.assertEqual(mock.call_args.kwargs, {
             "consume": True, "offset": 0,
             "tenant_id": "public", "user_id": session,
+            "answer_blocks_v1": False,
         })
 
     def test_chat_status_route_offset_forward(self):
@@ -873,6 +875,7 @@ class TestChatStatusPassthrough(unittest.TestCase):
         self.assertEqual(mock.call_args.kwargs, {
             "consume": False, "offset": 42,
             "tenant_id": "public", "user_id": session,
+            "answer_blocks_v1": False,
         })
 
 

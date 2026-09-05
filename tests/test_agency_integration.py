@@ -303,8 +303,9 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
     assert not any("router" in name for name in context.tools)
 
 
-def test_capability_hook_abstains_for_server_routed_casual_and_general_turns():
+def test_capability_hook_abstains_without_installed_knowledge_method(monkeypatch):
     router = load_capability_router()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     assert router._pre_llm_call(
         '<<AI_LAB_TRIAGE class="CASUAL" agency="0">>\n你好'
     ) is None
@@ -313,8 +314,9 @@ def test_capability_hook_abstains_for_server_routed_casual_and_general_turns():
     ) is None
 
 
-def test_mac_native_triage_keeps_chat_and_general_qa_direct():
+def test_mac_native_triage_keeps_chat_and_general_qa_direct_without_method(monkeypatch):
     router = load_capability_router()
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     assert router._skill_route_class("你好") == "CASUAL"
     assert router._pre_llm_call("你好") is None
     assert router._skill_route_class("什么是 API") == "GENERAL_QA"
@@ -332,8 +334,11 @@ def test_mac_native_triage_keeps_chat_and_general_qa_direct():
         "简单解释一下什么是 API",
     ],
 )
-def test_mac_native_direct_response_and_simple_qa_never_enter_agent_os(question):
+def test_mac_native_direct_response_and_simple_qa_never_enter_agent_os(question, monkeypatch):
     router = load_capability_router()
+    # Discovery is optional and must not depend on the developer's live skills.
+    # Installed-method ordinary QA is covered by test_mac_ordinary_knowledge_discovery.
+    monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     assert router._skill_route_class(question) in {"CASUAL", "GENERAL_QA"}
     assert router._pre_llm_call(question, session_id="fast-path") is None
     assert router._LOCAL_TURN_STATES["fast-path"]["route_class"] in {

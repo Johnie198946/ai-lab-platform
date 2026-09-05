@@ -178,17 +178,22 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
             "capability": "signed-capability",
             "scopes": ["pack-a", "pack-b"],
         }
-        docs = [{"path": "wiki/a.md", "title": "A", "snippet": "evidence"}]
+        docs = [{
+            "path": "wiki/a.md", "title": "A", "snippet": "evidence",
+            "markdown": "# A\n\nfull evidence", "content_status": "authorized",
+        }]
         with patch.object(bridge, "_knowledge_gateway_search", return_value=docs) as search:
             payload = json.loads(bridge._knowledge_search_tool({"query": "产品 A", "limit": 3}))
         self.assertTrue(payload["success"])
         self.assertEqual(payload["docs"][0]["path"], "wiki/a.md")
+        self.assertEqual(payload["docs"][0]["markdown"], "# A\n\nfull evidence")
         search.assert_called_once_with(
             "signed-capability",
             query="产品 A",
             category_scope=None,
             sources=["tenant_knowledge"],
             limit=3,
+            include_content=True,
         )
 
     def test_search_ignores_non_path_scope_and_uses_capability_default(self):
@@ -205,7 +210,7 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
         self.assertTrue(payload["success"])
         search.assert_called_once_with(
             "signed-capability", query="产品 A", category_scope=None,
-            sources=["tenant_knowledge"], limit=5,
+            sources=["tenant_knowledge"], limit=5, include_content=True,
         )
 
     def test_search_filters_only_with_complete_authorized_path(self):
@@ -226,7 +231,7 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
         search.assert_called_once_with(
             "signed-capability", query="产品 A",
             category_scope=[entitlement_scope, public_scope],
-            sources=["tenant_knowledge"], limit=5,
+            sources=["tenant_knowledge"], limit=5, include_content=True,
         )
 
     def test_search_rejects_complete_path_scope_escalation_and_recommends_web(self):

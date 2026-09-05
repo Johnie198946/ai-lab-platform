@@ -13,7 +13,9 @@ from backend.services.knowledge_contribution import (
     register_contribution_run, accept_contribution_result, withdraw_contribution,
     get_contribution_projection, set_red_source_archived,
 )
-from backend.services.knowledge_contribution_schema import migrate_knowledge_contribution_v4
+from backend.services.knowledge_contribution_schema import (
+    migrate_knowledge_contribution_v4, migrate_legacy_event_projections,
+)
 
 
 def now():
@@ -107,6 +109,10 @@ async def test_lineage_deduplicates_revisions_and_blocks_cycles_cross_scope():
     e1 = await enqueue_contribution(c)
     e2 = await enqueue_contribution(replace(c, source_revision=2, content_hash="b"*64))
     derived = replace(c, source_id="derived", source_kind="task_artifact", parent_event_ids=(e1["event_id"], e2["event_id"]))
+    # Superseded exact source versions no longer qualify as active evidence.
+    with pytest.raises(ValueError, match="inactive lineage parent"):
+        await enqueue_contribution(derived)
+    derived = replace(derived, parent_event_ids=(e2["event_id"],))
     d = await enqueue_contribution(derived)
     async with SessionLocal() as db:
         event = await db.get(Event, d["event_id"])
@@ -231,6 +237,30 @@ def test_v1_schema_migration_preserves_rows_and_is_idempotent():
         row = conn.execute(text("SELECT event_id, authorization_epoch FROM knowledge_contribution_outbox")).one()
         assert tuple(row) == ("legacy", "")
         assert "user_id" in inspect(conn).get_unique_constraints(table.name)[0]["column_names"]
+
+
+def test_projection_journal_schema_and_legacy_canonical_migration_are_safe():
+    from backend.models.knowledge_contribution import KnowledgeContributionProjection
+    engine = create_engine("sqlite://")
+    KnowledgeContributionProjection.__table__.create(engine)
+    with engine.begin() as conn:
+        conn.execute(KnowledgeContributionProjection.__table__.insert().values(
+            projection_id="legacy-event-page", tenant_key="tenant", user_id="owner",
+            security_level="green", artifact_ref="wiki/legacy.md", status="active",
+            read_only=True, metadata_snapshot={"source_event_ids": ["event"]},
+        ))
+        migrate_knowledge_contribution_v4(conn)
+        assert "knowledge_contribution_projection_operations" in inspect(conn).get_table_names()
+        assert migrate_legacy_event_projections(conn) == ["legacy-event-page"]
+        status = conn.execute(text(
+            "SELECT status FROM knowledge_contribution_projections WHERE projection_id='legacy-event-page'"
+        )).scalar_one()
+        assert status == "active"
+        assert migrate_legacy_event_projections(conn, apply=True) == ["legacy-event-page"]
+        status = conn.execute(text(
+            "SELECT status FROM knowledge_contribution_projections WHERE projection_id='legacy-event-page'"
+        )).scalar_one()
+        assert status == "recompile_required"
 
 
 @pytest.mark.asyncio

@@ -121,9 +121,10 @@ def _insert_receipt_fixture(
     )
 
 
-def test_delegate_task_is_blocked_until_selected_skill_really_loads(monkeypatch):
+def test_delegate_task_is_blocked_until_selected_skill_really_loads(monkeypatch, tmp_path):
     router = load_router()
     router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_stats_path", lambda: tmp_path / "stats.json")
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [skill(router)])
     monkeypatch.setattr(router, "_agency_capabilities", agency)
     pre_result = router._pre_llm_call(

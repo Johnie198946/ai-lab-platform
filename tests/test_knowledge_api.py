@@ -192,6 +192,23 @@ class TestKnowledgeAPI(unittest.TestCase):
         self.assertEqual(docs[0]["title"], "模型观察")
         self.assertEqual(docs[0]["category"], "knowledge/methodology/public")
 
+    def test_document_index_rejects_catalog_path_escape(self):
+        from backend.services.knowledge_catalog import clear_manifest_cache, document_index
+
+        outside = self.tmp.parent / f"{self.tmp.name}-secret.md"
+        outside.write_text("restricted original", encoding="utf-8")
+        self.addCleanup(outside.unlink, missing_ok=True)
+        manifest_path = self.tmp / "knowledge_catalog.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["documents"].append({
+            "path": f"../{outside.name}", "pack_id": "knowledge/methodology/public",
+            "classification_status": "approved", "security_level": "green",
+        })
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        clear_manifest_cache()
+
+        self.assertNotIn(f"../{outside.name}", document_index(self.tmp))
+
     def test_natural_language_entity_question_returns_wiki_facts(self):
         """A title hit must include body evidence, not an empty snippet."""
         page = self.tmp / "wiki" / "超聚变.md"

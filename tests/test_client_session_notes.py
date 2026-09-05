@@ -412,10 +412,10 @@ def test_knowledge_workspace_is_personal_read_only_until_proposal():
         "request_id": "request-1234",
         "inline_notes": [{
             "id": "n1", "title": "TokenBox", "markdown": "# TokenBox\n\n旧内容",
-            "content_hash": "hash-1", "tags": ["产品"], "archived": False,
+            "content_hash": "a" * 64, "tags": ["产品"], "archived": False,
         }, {
             "id": "n2", "title": "补充", "markdown": "# 补充\n\n来源内容",
-            "content_hash": "hash-2", "tags": ["产品"], "archived": False,
+            "content_hash": "b" * 64, "tags": ["产品"], "archived": False,
         }],
         "emit": events.append,
     }
@@ -443,7 +443,7 @@ def test_knowledge_workspace_is_personal_read_only_until_proposal():
         }))
         assert proposed["applied"] is False
         assert events[0]["type"] == "knowledge_action_draft"
-        assert events[0]["steps"][0]["original_content_hash"] == "hash-1"
+        assert events[0]["steps"][0]["original_content_hash"] == "a" * 64
         merged = json.loads(bridge._knowledge_action_propose_tool({
             "summary": "合并补充资料",
             "steps": [{
@@ -454,7 +454,7 @@ def test_knowledge_workspace_is_personal_read_only_until_proposal():
             "suggested_navigation": {"destination": "note", "note_id": "n1"},
         }))
         assert merged["success"] is True
-        assert events[1]["steps"][0]["source_content_hashes"] == {"n2": "hash-2"}
+        assert events[1]["steps"][0]["source_content_hashes"] == {"n2": "b" * 64}
     finally:
         bridge._client_context_tool_context.value = None
 

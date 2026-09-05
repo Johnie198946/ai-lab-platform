@@ -101,6 +101,29 @@ public struct CloudKnowledgeNotesResponse: Codable, Sendable {
     public let compileStatus: String
 }
 
+public struct KnowledgeNoteMergeRequestDTO: Encodable, Sendable {
+    public let operationId: String
+    public let targetNoteId: String
+    public let targetBaseHash: String
+    public let sourceVersions: [String: String]
+    public let revisedContent: String
+
+    enum CodingKeys: String, CodingKey {
+        case operationId = "operation_id"
+        case targetNoteId = "target_note_id"
+        case targetBaseHash = "target_base_hash"
+        case sourceVersions = "source_versions"
+        case revisedContent = "revised_content"
+    }
+}
+
+public struct KnowledgeNoteMergeResponseDTO: Decodable, Sendable {
+    public let operationId: String
+    public let targetNoteId: String
+    public let status: String
+    public let revisedHash: String
+}
+
 public struct UsageDailyDTO: Codable, Identifiable, Hashable {
     public var id: String { date }
     public let date: String
@@ -564,7 +587,7 @@ public struct ChatRequestDTO: Encodable {
     public let clientSessionContext: ClientSessionContextDTO?
     public let clientCapabilities: [String]
 
-    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil, clientCapabilities: [String] = ["knowledge_action_v1"]) {
+    public init(question: String, requestId: String? = nil, sessionId: String? = nil, quotedContext: String? = nil, agentId: String? = nil, regenerate: Bool = false, contextScope: ChatContextScopeDTO = ChatContextScopeDTO(), clientSessionContext: ClientSessionContextDTO? = nil, clientCapabilities: [String] = ["knowledge_action_v1", "answer_blocks_v1"]) {
         self.question = question
         self.requestId = requestId
         self.sessionId = sessionId
@@ -684,17 +707,41 @@ public struct ChatStatusDTO: Codable {
     public let clarify: ChatClarifyDTO?
     /// 是否已消费（completed 且水位线已推进）；consume=1 时后端顺带标记
     public let consumed: Bool?
+    public let answerProjection: AnswerBlockPageDTO?
+
+    public var loadedAnswer: String? {
+        answer ?? answerProjection.map { $0.blocks.map(\.content).joined() }
+    }
+}
+
+public struct AnswerBlockDTO: Codable, Sendable, Hashable {
+    public let blockIndex: Int
+    public let kind: String
+    public let content: String
+}
+
+public struct AnswerBlockPageDTO: Codable, Sendable, Hashable {
+    public let messageId: String
+    public let revision: Int
+    public let status: String
+    public let blocks: [AnswerBlockDTO]
+    public let bytes: Int
+    public let loadedBlockCount: Int
+    public let availableBlockCount: Int
+    public let hasMore: Bool
+    public let nextCursor: String?
 }
 
 public struct DurableChatRunDTO: Codable, Sendable {
     public let runId: String
     public let status: String
     public let eventSequence: Int
-    public let partialAnswer: String
-    public let finalAnswer: String
+    public let partialAnswer: String?
+    public let finalAnswer: String?
     public let queuePosition: Int
     public let attempt: Int
     public let errorCode: String
+    public let answerProjection: AnswerBlockPageDTO?
 }
 
 public struct DurableChatReplayDTO: Codable, Sendable {
@@ -2277,6 +2324,15 @@ public final class APIClient: ObservableObject {
         )
     }
 
+    public func mergeKnowledgeNotes(_ body: KnowledgeNoteMergeRequestDTO) async throws -> KnowledgeNoteMergeResponseDTO {
+        try await request(
+            KnowledgeNoteMergeResponseDTO.self,
+            path: "me/knowledge-notes/merge",
+            method: "POST",
+            body: body
+        )
+    }
+
     public func archiveKnowledgeNote(
         id: String,
         mergedIntoNoteId: String,
@@ -2506,6 +2562,7 @@ public final class APIClient: ObservableObject {
         case noteDraft(id: String, title: String, markdown: String, tags: [String], sourceSessionId: String?, sourceMessageIds: [String], accountScope: String?, mergeCandidates: [NoteMergeCandidate], mergedTitle: String?, mergedMarkdown: String?, mergedTags: [String], operation: String?, targetNoteId: String?, targetNoteTitle: String?, targetContentHash: String?)
         case knowledgeActionDraft(KnowledgeActionBlock)
         case knowledgeNavigation(KnowledgeNavigationTarget)
+        case answerPage(AnswerBlockPageDTO)
         case done(sessionId: String?, answer: String?)
         case error(code: String, message: String)
 
@@ -2644,6 +2701,13 @@ public final class APIClient: ObservableObject {
                     noteId: json["note_id"] as? String,
                     query: json["query"] as? String
                 ))
+            case "answer_page":
+                let blockDecoder = JSONDecoder()
+                blockDecoder.keyDecodingStrategy = .convertFromSnakeCase
+                guard let data = try? JSONSerialization.data(withJSONObject: json),
+                      let page = try? blockDecoder.decode(AnswerBlockPageDTO.self, from: data)
+                else { return nil }
+                return .answerPage(page)
             case "done":
                 return .done(
                     sessionId: json["session_id"] as? String,
@@ -2830,7 +2894,8 @@ public final class APIClient: ObservableObject {
             .appendingPathComponent(encodedPath(runId))
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         components?.queryItems = [
-            URLQueryItem(name: "after", value: String(max(0, eventSequence)))
+            URLQueryItem(name: "after", value: String(max(0, eventSequence))),
+            URLQueryItem(name: "answer_blocks_v1", value: "true")
         ]
         guard let resolved = components?.url else { throw APIError.invalidURL }
         var request = URLRequest(url: resolved)
@@ -2850,6 +2915,25 @@ public final class APIClient: ObservableObject {
         return try decoder.decode(DurableChatReplayDTO.self, from: data)
     }
 
+    public func fetchAnswerBlocks(
+        runId: String, cursor: String?, maxBlocks: Int = 10
+    ) async throws -> AnswerBlockPageDTO {
+        let url = baseURL.appendingPathComponent("api/chat/runs")
+            .appendingPathComponent(encodedPath(runId)).appendingPathComponent("blocks")
+        var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var items = [URLQueryItem(name: "max_blocks", value: String(min(max(maxBlocks, 1), 20)))]
+        if let cursor { items.append(URLQueryItem(name: "cursor", value: cursor)) }
+        components?.queryItems = items
+        guard let resolved = components?.url else { throw APIError.invalidURL }
+        var request = URLRequest(url: resolved)
+        request.timeoutInterval = 20
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        let data = try await perform(request, session: session, canRetry: true, reauthOn401: false)
+        return try decoder.decode(AnswerBlockPageDTO.self, from: data)
+    }
+
     /// GET /api/chat/status/{sessionId}：长任务状态回读 / 断点 0ms 探测。
     /// consume=true 时后端顺带将 completed 结果标记为已消费（断点续接后不会误命中旧答案）。
     public func fetchChatStatus(
@@ -2860,14 +2944,12 @@ public final class APIClient: ObservableObject {
         var url = baseURL
             .appendingPathComponent("api/chat/status")
             .appendingPathComponent(sessionId)
-        if consume || agentId != nil {
-            var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
-            var items: [URLQueryItem] = []
-            if consume { items.append(URLQueryItem(name: "consume", value: "1")) }
-            if let agentId { items.append(URLQueryItem(name: "agent_id", value: agentId)) }
-            comps?.queryItems = items
-            if let u = comps?.url { url = u }
-        }
+        var comps = URLComponents(url: url, resolvingAgainstBaseURL: false)
+        var items: [URLQueryItem] = [URLQueryItem(name: "answer_blocks_v1", value: "true")]
+        if consume { items.append(URLQueryItem(name: "consume", value: "1")) }
+        if let agentId { items.append(URLQueryItem(name: "agent_id", value: agentId)) }
+        comps?.queryItems = items
+        if let u = comps?.url { url = u }
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
         request.timeoutInterval = 15

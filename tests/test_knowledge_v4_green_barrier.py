@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+import yaml
 
 from backend.db import SessionLocal
 from backend.models.knowledge_contribution import KnowledgeContributionProjection as Projection
@@ -95,7 +96,9 @@ async def contribution_projection(tmp_path):
         "classification_status: approved\npublication_policy: tenant_contribution_policy_v1\n"
         f"contribution_projection_id: {projection_id}\n"
         "enforced_searchable: true\nenforced_summarizable: true\n"
-        "enforced_agent_callable: true\n---\nsecret contribution\n",
+        "enforced_agent_callable: true\n"
+        + yaml.safe_dump({"source_dependencies": projection["source_dependencies"]})
+        + "---\nsecret contribution\n",
         encoding="utf-8",
     )
     return projection, governance, relative

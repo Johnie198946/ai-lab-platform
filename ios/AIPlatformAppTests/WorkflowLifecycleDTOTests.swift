@@ -21,6 +21,62 @@ private final class LockedErrorBox: @unchecked Sendable {
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
+    func testKnowledgeMergeRequestEncodesOnlyAtomicTransactionContract() throws {
+        let request = KnowledgeNoteMergeRequestDTO(
+            operationId: "operation-1", targetNoteId: "target-1",
+            targetBaseHash: String(repeating: "a", count: 64),
+            sourceVersions: ["source-1": String(repeating: "b", count: 64)],
+            revisedContent: "# Revised"
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), Set([
+            "operation_id", "target_note_id", "target_base_hash", "source_versions", "revised_content"
+        ]))
+        XCTAssertEqual(object["operation_id"] as? String, "operation-1")
+        XCTAssertEqual((object["source_versions"] as? [String: String])?["source-1"], String(repeating: "b", count: 64))
+    }
+
+    func testAnswerPageStreamEventParsesBoundedProjection() throws {
+        let event = try XCTUnwrap(APIClient.StreamEvent.parse([
+            "type": "answer_page",
+            "message_id": "message-1",
+            "revision": 2,
+            "status": "running",
+            "blocks": [["block_index": 0, "kind": "markdown", "content": "第一段\n\n"]],
+            "bytes": 10,
+            "loaded_block_count": 1,
+            "available_block_count": 3,
+            "has_more": true,
+            "next_cursor": "signed.cursor",
+        ]))
+        guard case .answerPage(let page) = event else {
+            return XCTFail("expected answer page")
+        }
+        XCTAssertEqual(page.messageId, "message-1")
+        XCTAssertEqual(page.revision, 2)
+        XCTAssertEqual(page.blocks.first?.content, "第一段\n\n")
+        XCTAssertTrue(page.hasMore)
+        XCTAssertEqual(page.nextCursor, "signed.cursor")
+    }
+
+    func testAnswerBlocksPersistAcrossHistoryRoundTrip() throws {
+        let block = AnswerBlockDTO(blockIndex: 7, kind: "code_segment", content: "print(1)\n")
+        let message = ChatMessage(
+            id: "message-blocks", role: .assistant, content: block.content,
+            answerRevision: 3, answerNextCursor: "cursor", answerHasMore: true,
+            answerAvailableBlockCount: 9, answerBlocks: [block]
+        )
+
+        let restored = try JSONDecoder().decode(
+            PersistedMessage.self, from: JSONEncoder().encode(PersistedMessage(message))
+        ).toChatMessage(sessionId: "session")
+
+        XCTAssertEqual(restored.answerRevision, 3)
+        XCTAssertEqual(restored.answerBlocks, [block])
+        XCTAssertTrue(restored.answerHasMore)
+    }
     private func decoder() -> JSONDecoder {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

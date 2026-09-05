@@ -24,18 +24,21 @@ def test_hermes_knowledge_tool_uses_query_and_capability_default_scope():
     }
     captured = {}
 
-    def fake_search(token, *, query, category_scope, sources, limit):
+    def fake_search(token, *, query, category_scope, sources, limit, include_content):
         captured.update({
             "token": token,
             "query": query,
             "category_scope": category_scope,
             "sources": sources,
             "limit": limit,
+            "include_content": include_content,
         })
         return [{
             "path": "wiki/超聚变.md",
             "title": "超聚变",
             "snippet": "超聚变提供服务器与算力基础设施产品。",
+            "markdown": "# 超聚变\n\n超聚变提供服务器与算力基础设施产品。",
+            "content_status": "authorized",
         }]
 
     try:
@@ -50,7 +53,9 @@ def test_hermes_knowledge_tool_uses_query_and_capability_default_scope():
     assert captured["query"] == "超聚变是做什么的？"
     assert captured["category_scope"] is None
     assert captured["sources"] == ["tenant_knowledge"]
+    assert captured["include_content"] is True
     assert payload["docs"][0]["path"] == "wiki/超聚变.md"
+    assert payload["docs"][0]["content_status"] == "authorized"
 
 
 def test_zero_local_results_recommend_public_web_fallback():

@@ -1156,11 +1156,13 @@ def _knowledge_gateway_search(
     category_scope: list[str] | None = None,
     sources: list[str] | None = None,
     limit: int = 10,
+    include_content: bool = False,
 ) -> list[dict[str, Any]]:
     request_body: dict[str, Any] = {
         "query": query[:200],
         "sources": list(sources or ["tenant_knowledge"]),
         "limit": limit,
+        "include_content": include_content,
     }
     if category_scope is not None:
         request_body["category_scope"] = category_scope
@@ -1319,6 +1321,7 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             ),
             sources=["tenant_knowledge"],
             limit=max(1, min(10, int((args or {}).get("limit") or 5))),
+            include_content=True,
         )
     except PermissionError:
         return json.dumps(
@@ -1347,8 +1350,16 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
                     "path": item.get("path", ""),
                     "title": item.get("title", ""),
                     "snippet": str(item.get("snippet") or "")[:500],
+                    "markdown": str(item.get("markdown") or "")[:20_000],
+                    "content_status": item.get("content_status", "not_requested"),
                     "category": item.get("category", ""),
                     "freshness": item.get("freshness", "unknown"),
+                    "knowledge_id": item.get("knowledge_id", ""),
+                    "version": item.get("version", ""),
+                    "citation": item.get("citation", ""),
+                    "source_kind": item.get("source_kind", "governed_wiki"),
+                    "conditions": item.get("conditions") or [],
+                    "effective_at": item.get("effective_at"),
                 }
                 for item in docs
             ],
@@ -1924,8 +1935,40 @@ def _knowledge_action_propose_tool(args: dict[str, Any], **_kwargs) -> str:
         if kind not in _KNOWLEDGE_MUTATION_KINDS:
             return json.dumps({"success": False, "error": "unsupported_action_kind"})
         target_id = str(raw.get("target_note_id") or "").strip()[:128]
+        if kind == "merge_notes" and not isinstance(raw.get("source_note_ids", []), list):
+            return json.dumps({"success": False, "error": "invalid_merge_sources"})
         source_ids = [str(item)[:128] for item in raw.get("source_note_ids") or []][:16]
         referenced_ids = ([target_id] if target_id else []) + source_ids
+        # A merge updates an explicitly selected existing object. Source-only
+        # legacy requests must not reach clients which synthesize a new ID.
+        if kind == "merge_notes":
+            if not target_id:
+                return json.dumps({"success": False, "error": "merge_target_required"})
+            if str(raw.get("target_note_id")) != target_id or not re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", target_id
+            ):
+                return json.dumps({"success": False, "error": "invalid_merge_target"})
+            raw_sources = raw.get("source_note_ids", [])
+            if not isinstance(raw_sources, list) or raw_sources != source_ids or any(
+                not isinstance(value, str) or not re.fullmatch(
+                    r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value
+                ) for value in raw_sources
+            ):
+                return json.dumps({"success": False, "error": "invalid_merge_sources"})
+            if notes.get(target_id, {}).get("archived"):
+                return json.dumps({"success": False, "error": "merge_target_archived"})
+            if target_id in source_ids:
+                return json.dumps({"success": False, "error": "merge_target_is_source"})
+            if len(source_ids) != len(set(source_ids)):
+                return json.dumps({"success": False, "error": "duplicate_merge_source"})
+            for note_id in referenced_ids:
+                note = notes.get(note_id)
+                if note is not None and not re.fullmatch(
+                    r"[0-9a-f]{64}", str(note.get("content_hash") or "")
+                ):
+                    return json.dumps({"success": False, "error": "merge_version_required"})
+                if note is not None and note.get("archived"):
+                    return json.dumps({"success": False, "error": "merge_source_archived"})
         if kind not in {"create_note", "create_daily_note"} and not referenced_ids:
             return json.dumps({"success": False, "error": "target_note_required"})
         if any(note_id not in notes for note_id in referenced_ids):
@@ -3554,23 +3597,47 @@ async def _startup():
     )
 
 
-def _durable_replay_sse(run_id: str, owner_hash: str):
+def _block_safe_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = event.get("type")
+    if event_type == "delta":
+        return None
+    if event_type == "done":
+        return {key: value for key, value in event.items() if key != "answer"} | {
+            "answer_projection": "blocks_v1"
+        }
+    return event
+
+
+def _durable_replay_sse(run_id: str, owner_hash: str, *, blocks_v1: bool = False):
     """Replay a duplicate request without starting another Hermes execution."""
     if _chat_run_store is None:
         return
     snapshot = _chat_run_store.get(run_id, tenant_user_hash=owner_hash)
+    page_sent = False
     for event in _chat_run_store.events_after(run_id, 0, tenant_user_hash=owner_hash):
+        if blocks_v1:
+            event = _block_safe_event(event)
+            if event is None:
+                continue
         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+    if blocks_v1:
+        page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
+        if page["blocks"]:
+            page_sent = True
+            yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
     if snapshot["status"] in {"queued", "running"}:
         yield f"data: {json.dumps({'type': 'status', 'phase': snapshot['status'], 'detail': '相同任务已在执行', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
     elif snapshot["status"] == "stalled":
         yield f"data: {json.dumps({'type': 'error', 'code': 'stalled', 'message': '任务在 Worker 重启后等待有界恢复', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
 
 
-async def _durable_subscribe_sse(run_id: str, owner_hash: str, after: int = 0):
+async def _durable_subscribe_sse(
+    run_id: str, owner_hash: str, after: int = 0, *, blocks_v1: bool = False
+):
     """Replay and follow a persisted Run; disconnecting never owns its lifecycle."""
     cursor = max(0, int(after))
     yielded_any = False
+    page_sent = False
     while True:
         if _chat_run_store is None:
             yield f"data: {json.dumps({'type': 'error', 'code': 'run_store_unavailable', 'message': '持久任务存储不可用'}, ensure_ascii=False)}\n\n"
@@ -3584,11 +3651,20 @@ async def _durable_subscribe_sse(run_id: str, owner_hash: str, after: int = 0):
         for event in events:
             yielded_any = True
             cursor = max(cursor, int(event.get('event_sequence') or 0))
+            if blocks_v1:
+                event = _block_safe_event(event)
+                if event is None:
+                    continue
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             if event.get("type") == "done":
                 _chat_run_store.mark_consumed(
                     run_id, tenant_user_hash=owner_hash
                 )
+        if blocks_v1 and not page_sent:
+            page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
+            if page["blocks"]:
+                page_sent = True
+                yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
         status = str(snapshot.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
             return
@@ -3606,6 +3682,7 @@ async def durable_chat_run(
     x_hermes_internal_token: str | None = Header(None),
     x_tenant_id: str | None = Header(None),
     x_user_id: str | None = Header(None),
+    answer_blocks_v1: bool = False,
 ):
     """Return an owner-authorized snapshot plus replay events after sequence N."""
     if _chat_run_store is None:
@@ -3634,7 +3711,41 @@ async def durable_chat_run(
         raise HTTPException(status_code=404, detail="run_not_found") from exc
     except KnowledgeScopeDenied as exc:
         raise HTTPException(status_code=403, detail="knowledge_scope_denied") from exc
+    if answer_blocks_v1:
+        snapshot = {key: value for key, value in snapshot.items() if key not in {"partial_answer", "final_answer", "block_buffer"}}
+        events = [safe for event in events if (safe := _block_safe_event(event)) is not None]
+        snapshot["answer_projection"] = _chat_run_store.block_page(
+            run_id, tenant_user_hash=owner_hash
+        )
     return {"run": snapshot, "events": events, "dropped_event_count": 0}
+
+
+@app.get("/v1/chat/runs/{run_id}/blocks")
+async def durable_chat_blocks(
+    run_id: str,
+    cursor: str | None = Query(None),
+    max_blocks: int = Query(10, ge=1, le=20),
+    max_bytes: int = Query(65_536, ge=32_768, le=131_072),
+    x_hermes_internal_token: str | None = Header(None),
+    x_tenant_id: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+):
+    if _chat_run_store is None:
+        raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+    _require_internal_strict(x_hermes_internal_token)
+    tenant_id, user_id = str(x_tenant_id or ""), str(x_user_id or "")
+    if not tenant_id or not user_id:
+        raise HTTPException(status_code=403, detail="owner_context_required")
+    try:
+        return _chat_run_store.block_page(
+            run_id,
+            tenant_user_hash=_chat_run_store.tenant_user_hash(tenant_id, user_id),
+            cursor=cursor, max_blocks=max_blocks, max_bytes=max_bytes,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="run_not_found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @app.post("/v1/chat/stream")
@@ -3703,11 +3814,15 @@ async def chat_stream(body: GoalRequest):
                         client_context_claims is not None
                         and "knowledge_action_v1" in set(body.client_capabilities)
                     ),
+                    "answer_blocks_v1": "answer_blocks_v1" in set(body.client_capabilities),
                 },
             )
             run_id = str(durable_run["run_id"])
             return StreamingResponse(
-                _durable_subscribe_sse(run_id, owner_hash),
+                _durable_subscribe_sse(
+                    run_id, owner_hash,
+                    blocks_v1="answer_blocks_v1" in set(body.client_capabilities),
+                ),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache",
@@ -3757,11 +3872,17 @@ async def chat_stream(body: GoalRequest):
                 session_id=user_id,
                 request_id=request_id,
                 run_id=run_id,
+                execution_payload={
+                    "answer_blocks_v1": "answer_blocks_v1" in set(body.client_capabilities)
+                },
             )
             run_id = str(durable_run["run_id"])
             if not created:
                 return StreamingResponse(
-                    _durable_replay_sse(run_id, owner_hash),
+                    _durable_replay_sse(
+                        run_id, owner_hash,
+                        blocks_v1="answer_blocks_v1" in set(body.client_capabilities),
+                    ),
                     media_type="text/event-stream",
                     headers={
                         "Cache-Control": "no-cache",
@@ -4055,6 +4176,16 @@ def _triage_system_directive(
         lines.append("这是闲聊：自然简短地直接回答，不搜索、不加载 Skill、不调用 Agent。")
     elif route_class == GENERAL_QA:
         lines.append("这是普通问答：由 Main 直接负责，不调用 Agency 专家。")
+        if _knowledge_tools_eligible(triage):
+            lines.append(
+                "知识需求与任务复杂度无关。判断问题是否需要已有知识：若需要，默认联合调用"
+                "user_note_search 定位个人笔记与 knowledge_search 定位当前获准的平台知识；"
+                "不得要求用户说检索口令，也不得因此升级专家流程。纯翻译、改写已给材料等"
+                "不需要额外知识时可直接回答。遵守用户只用个人笔记、仅内部材料或禁止联网"
+                "的范围约束。对候选检查实体、时间、版本、适用条件与其支持的判断；"
+                "搜索片段只用于定位，未取得授权正文时不能声称已完整阅读。受限原文不得"
+                "进入上下文，只有明确获准的概括版本可代替详细版。知识缺口明确保留。"
+            )
     else:
         lines.append(
             "这是专业任务：若 agency_enabled=true，必须按注入候选调用原生 delegate_task，"
@@ -4087,6 +4218,18 @@ def _triage_system_directive(
     return "\n".join(lines)
 
 
+def _knowledge_tools_eligible(triage: dict[str, Any] | None) -> bool:
+    """Knowledge need is Hermes-owned, independent of expert task complexity.
+
+    This only retains already-authorized Gateway tools; it grants neither
+    document access nor a mandatory search for translation or casual turns.
+    """
+    return triage is None or (
+        triage.get("route_class") != CASUAL
+        and triage.get("reason_code") not in {"direct_response", "empty_or_ambiguous"}
+    )
+
+
 def _apply_triage_toolset_policy(
     selected: list[str],
     triage: dict[str, Any] | None,
@@ -4114,7 +4257,7 @@ def _apply_triage_toolset_policy(
         denied.update({"agency_agents", "ai_lab", "delegation"})
     if not evidence & {"web_search", "web_extract"}:
         denied.add("web")
-    if not evidence & {"knowledge_search", "user_note_search"}:
+    if not _knowledge_tools_eligible(triage):
         denied.add("knowledge_gateway")
     if not triage.get("skill_enabled"):
         denied.update({"skills", "tenant_skills"})
@@ -4787,8 +4930,7 @@ def _build_in_process_agent(
         and allowed_tools & {"knowledge_search", "user_note_search"}
         and (
             note_draft_request
-            or triage is None
-            or evidence_requirements & {"knowledge_search", "user_note_search"}
+            or _knowledge_tools_eligible(triage)
         )
     )
     tenant_skill_enabled = bool(
@@ -4900,6 +5042,7 @@ def _build_in_process_agent(
         and not evidence_requirements
         and not client_context_enabled
         and not tenant_skill_enabled
+        and not knowledge_tool_enabled
         and not delegation_tool_enabled
     )
     if fast_general:
@@ -5973,6 +6116,7 @@ async def chat_status(
     x_hermes_internal_token: str | None = Header(None),
     x_tenant_id: str | None = Header(None),
     x_user_id: str | None = Header(None),
+    answer_blocks_v1: bool = False,
 ):
     """状态回读端点（只读·不写 state.db）。
 
@@ -6004,6 +6148,13 @@ async def chat_status(
     else:
         hermes_sid = _user_session_map.get(user_id)
         result = await asyncio.to_thread(_query_status, hermes_sid, user_id, offset)
+    if answer_blocks_v1 and durable is not None:
+        assert _chat_run_store is not None
+        result.pop("answer", None)
+        result["answer_projection"] = _chat_run_store.block_page(
+            durable["run_id"],
+            tenant_user_hash=_chat_run_store.tenant_user_hash(tenant_id, owner_user_id),
+        )
     if consume == 1 and result.get("status") == "completed":
         if durable is not None:
             assert _chat_run_store is not None

@@ -97,3 +97,24 @@ class KnowledgeContributionRun(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     status: Mapped[str] = mapped_column(String(24), default="registered", nullable=False)
     projection_id: Mapped[str | None] = mapped_column(String(96))
+
+
+class KnowledgeContributionProjectionOperation(Base):
+    """Recoverable business projection intent; never stores Hermes continuation state."""
+    __tablename__ = "knowledge_contribution_projection_operations"
+    __table_args__ = (
+        UniqueConstraint("run_id", "operation_stage", name="uq_knowledge_projection_operation_run_stage"),
+    )
+
+    operation_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    run_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    projection_id: Mapped[str] = mapped_column(String(96), nullable=False, index=True)
+    artifact_ref: Mapped[str] = mapped_column(String(512), nullable=False)
+    operation_stage: Mapped[str] = mapped_column(String(24), nullable=False)
+    payload_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), default="prepared", nullable=False, index=True)
+    intent: Mapped[dict] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

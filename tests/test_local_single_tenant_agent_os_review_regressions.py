@@ -60,9 +60,10 @@ def _agency():
     }]
 
 
-def test_delegate_wrappers_cannot_bypass_skill_first_gate(monkeypatch):
+def test_delegate_wrappers_cannot_bypass_skill_first_gate(monkeypatch, tmp_path):
     router = load_router()
     router._LOCAL_TURN_STATES.clear()
+    monkeypatch.setattr(router, "_stats_path", lambda: tmp_path / "stats.json")
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [_skill(router)])
     monkeypatch.setattr(router, "_agency_capabilities", _agency)
     router._pre_llm_call(
