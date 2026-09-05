@@ -37,7 +37,7 @@ def vault_path() -> Path:
 async def reconcile_once(store: DurableChatRunStore) -> int:
     async with SessionLocal() as db:
         rows = list((await db.execute(select(KnowledgeContributionRun).where(
-            KnowledgeContributionRun.status == "running"
+            KnowledgeContributionRun.status.in_(("registered", "running"))
         ).limit(32))).scalars())
     advanced = 0
     for business_run in rows:

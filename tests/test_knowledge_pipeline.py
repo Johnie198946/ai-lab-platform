@@ -91,3 +91,33 @@ async def test_pipeline_never_advances_simulation_to_green(tmp_path):
     stopped = await advance_completed(store, run_id=red["run_id"], vault=tmp_path)
     assert stopped["status"] == "quarantined"
     assert not list((tmp_path / "wiki/contributions").glob("*.md"))
+
+
+@pytest.mark.asyncio
+async def test_supervisor_advances_registered_completed_run(tmp_path, monkeypatch):
+    import backend.services.knowledge_pipeline_supervisor as supervisor
+
+    tenant = "pipeline-" + uuid4().hex
+    changed = datetime.now(timezone.utc)
+    await set_contribution_policy(
+        tenant_key=tenant, enabled=True, agreement_version="v4",
+        effective_at=changed - timedelta(minutes=1),
+    )
+    content = "registered run"
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    event = await enqueue_contribution(ContributionCandidate(
+        tenant, "owner", "feedback", "feedback", "feedback-1", 1, digest, changed,
+    ))
+    assert event is not None
+    store = DurableChatRunStore(tmp_path / "runs.sqlite3")
+    run = await submit_compile(store, event_id=event["event_id"], content=content)
+    complete(store, run["run_id"], COMPILE)
+    seen = []
+
+    async def capture(_store, *, run_id, vault):
+        seen.append((run_id, vault))
+
+    monkeypatch.setattr(supervisor, "advance_completed", capture)
+    monkeypatch.setattr(supervisor, "vault_path", lambda: tmp_path)
+    assert await supervisor.reconcile_once(store) == 1
+    assert seen == [(run["run_id"], tmp_path)]
