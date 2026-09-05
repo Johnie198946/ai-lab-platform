@@ -85,44 +85,46 @@ public struct LoginView: View {
                     .onTapGesture(perform: dismissLoginCard)
 
                 GeometryReader { geometry in
-                    VStack(spacing: isLoginCardVisible ? 10 : 0) {
-                        Spacer(minLength: isLoginCardVisible ? 6 : 0)
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: isLoginCardVisible ? 10 : 0) {
+                            Spacer(minLength: isLoginCardVisible ? 6 : 0)
 
-                        Button(action: revealLoginCard) {
-                            QuantumMagicRingsHero(
-                                isCompact: isLoginCardVisible,
-                                reduceMotion: reduceMotion || isLoginCardVisible
-                            )
-                            .frame(
-                                height: isLoginCardVisible
-                                    ? min(132, geometry.size.height * 0.18)
-                                    : min(390, geometry.size.height * 0.52)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isLoginCardVisible)
-                        .accessibilityLabel("打开登录")
-                        .accessibilityHint("显示手机号登录卡片")
-
-                        if isLoginCardVisible {
-                            loginCard
-                                .transition(
-                                    .asymmetric(
-                                        insertion: .offset(y: geometry.size.height * 0.78)
-                                            .combined(with: .opacity),
-                                        removal: .offset(y: geometry.size.height * 0.24)
-                                            .combined(with: .opacity)
-                                    )
+                            Button(action: revealLoginCard) {
+                                QuantumMagicRingsHero(
+                                    isCompact: isLoginCardVisible,
+                                    reduceMotion: reduceMotion || isLoginCardVisible
                                 )
-                        }
+                                .frame(
+                                    height: isLoginCardVisible
+                                        ? min(132, geometry.size.height * 0.18)
+                                        : min(390, geometry.size.height * 0.52)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isLoginCardVisible)
+                            .accessibilityLabel("打开登录")
+                            .accessibilityHint("显示手机号登录卡片")
 
-                        Spacer(minLength: isLoginCardVisible ? 6 : 0)
+                            if isLoginCardVisible {
+                                loginCard
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .offset(y: geometry.size.height * 0.78)
+                                                .combined(with: .opacity),
+                                            removal: .offset(y: geometry.size.height * 0.24)
+                                                .combined(with: .opacity)
+                                        )
+                                    )
+                            }
+
+                            Spacer(minLength: isLoginCardVisible ? 6 : 0)
+                        }
+                        .padding(.horizontal, max(20, AppTheme.Metrics.contentGutter))
+                        .padding(.top, max(8, geometry.safeAreaInsets.top))
+                        .padding(.bottom, max(8, geometry.safeAreaInsets.bottom))
+                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                     }
-                    .padding(.horizontal, max(20, AppTheme.Metrics.contentGutter))
-                    .padding(.top, max(8, geometry.safeAreaInsets.top))
-                    .padding(.bottom, max(8, geometry.safeAreaInsets.bottom))
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .clipped()
+                    .scrollDismissesKeyboard(.interactively)
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
