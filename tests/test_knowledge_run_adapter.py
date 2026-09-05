@@ -287,6 +287,8 @@ def test_simulated_material_cannot_be_laundered_to_publish(harness):
     sanitized = {**SANITIZE, "fact_classification": "hypothesis", "decision": "quarantine"}
     completed = execute(encoded(sanitized))
     privacy_run = advance(adapter, completed)
+    privacy_payload = json.loads(privacy_run["execution_payload_json"])
+    assert "Domain procedures written as imperatives are knowledge" in privacy_payload["goal"]
     completed = execute(encoded(PRIVACY))
     spec, result = adapter.verified_result(
         completed["run_id"], tenant_id="tenant-a", user_id="user-a",
