@@ -24,6 +24,8 @@ def test_red_is_tenant_scoped_read_only_and_source_ref_is_hashed(tmp_path):
     assert metadata["security_level"] == "red" and metadata["editable"] is False
     assert metadata["source_ref_hash"] == "a" * 64
     assert "source-id" not in text
+    assert (tmp_path / relative).stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / relative).parent.stat().st_mode & 0o777 == 0o700
 
 
 def test_green_pending_file_has_no_private_identity_and_is_not_approved(tmp_path):
@@ -37,3 +39,5 @@ def test_green_pending_file_has_no_private_identity_and_is_not_approved(tmp_path
     assert metadata["approval_source"] == "tenant_contribution_policy_v1"
     assert metadata["owner_tenant"] == "public"
     assert "tenant-secret" not in text and "source-id" not in text
+    assert (tmp_path / relative).stat().st_mode & 0o777 == 0o644
+    assert (tmp_path / relative).parent.stat().st_mode & 0o777 == 0o755

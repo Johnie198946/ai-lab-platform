@@ -17,8 +17,12 @@ import yaml
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$")
 
 
-def _atomic_markdown(path: Path, metadata: dict[str, Any], body: str) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _atomic_markdown(
+    path: Path, metadata: dict[str, Any], body: str, *,
+    directory_mode: int = 0o755, file_mode: int = 0o644,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=directory_mode)
+    os.chmod(path.parent, directory_mode)
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents if parent != path.anchor):
         raise ValueError("unsafe contribution artifact path")
     rendered = "---\n" + yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
@@ -29,7 +33,7 @@ def _atomic_markdown(path: Path, metadata: dict[str, Any], body: str) -> None:
             handle.write(rendered)
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o644)
+        os.chmod(temporary, file_mode)
         os.replace(temporary, path)
     finally:
         try:
@@ -71,7 +75,7 @@ def write_red_projection(
         "confidence": confidence,
         "compiler_version": compiler_version,
         "editable": False,
-    }, content)
+    }, content, directory_mode=0o700, file_mode=0o600)
     return relative.as_posix()
 
 

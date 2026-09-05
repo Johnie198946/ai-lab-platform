@@ -203,6 +203,8 @@ bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid 0 --owner-gid 0 \
   "$VAULT_ROOT/raw/dialogues/tenants"
+install -d -o 0 -g 0 -m 0700 "$VAULT_ROOT/wiki/tenant"
+install -d -o 0 -g 0 -m 0755 "$VAULT_ROOT/wiki/contributions"
 
 echo "==> [5/6] 原子切换 release 并重启 Hermes runtime"
 LINK_TMP="$APP_LINK.next.$$"

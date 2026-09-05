@@ -22,3 +22,9 @@ def test_server_deploy_does_not_manage_periodic_tasks() -> None:
 
     forbidden = ("crontab", "cronjob", "systemctl start cron", "systemctl enable cron")
     assert not any(command in script for command in forbidden)
+
+
+def test_server_deploy_prepares_private_red_and_public_green_projection_roots() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert 'install -d -o 0 -g 0 -m 0700 "$VAULT_ROOT/wiki/tenant"' in script
+    assert 'install -d -o 0 -g 0 -m 0755 "$VAULT_ROOT/wiki/contributions"' in script
