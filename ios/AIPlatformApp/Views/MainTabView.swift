@@ -52,7 +52,7 @@ public struct MainTabView: View {
                 .tag(3)
         }
         .toolbar(.hidden, for: .tabBar)
-        .safeAreaInset(edge: .bottom, spacing: 18) {
+        .safeAreaInset(edge: .bottom, spacing: keyboardObserver.isKeyboardVisible ? 0 : 18) {
             if !keyboardObserver.isKeyboardVisible {
                 VStack(spacing: AppTheme.Spacing.xs) {
                     if let activity = workflowActivities.primaryActivity {
