@@ -34,7 +34,7 @@ All unrelated untracked files are excluded from staging and deployment.
   - readable text: `1,470` characters
   - target title and publisher present
   - challenge markers absent
-- Production platform chat E2E: HTTP 200; response identified the article title, `网信内蒙古`, source attribution, seven cases, summary, core claims, and evidence limits.
+- Production hotfix platform chat E2E: HTTP 200; response identified the article title, `网信内蒙古`, source attribution, seven cases, summary, core claims, and evidence limits.
 
 ## Three-round adversarial gate
 
@@ -59,9 +59,23 @@ Accepted residual risk: publisher anti-bot behavior can change; deterministic ex
 - Verify `.deployed-sha`, active release path, API/Bridge health, source/plugin hashes, and a real WeChat chat result.
 - Roll back through the previous release path emitted by `scripts/update.sh`; the earlier manual hotfix backups remain under `/opt/ai-lab-shared/backups/` and adjacent `.before-*` files.
 
+## Immutable deployment receipt
+
+- First immutable deployment commit: `f4b8a31883aa332a1bf4619fe3aaf8bf1c8edb34`.
+- Active release after first deployment: `/opt/releases/ai-lab-platform-f4b8a31883aa.mt5qnm`.
+- Release Bridge SHA-256: `07fc70ad4a4d8674ac3d6d6ef7436ea801a24f8714f2d5a83bb7b0fc79125306`.
+- Release/runtime extractor SHA-256: `90c72d7e217c23ce0607cb0fcbf309292db964c6c79f2bfd54820034c0753c0e` (equal).
+- API `/ready`: healthy, version `0.8.0`.
+- Hermes Bridge `/health`: healthy, version `v6.0`.
+- Direct runtime extractor: 3,302,718 bytes, 1,470 readable characters, target title present, challenge markers absent.
+- Direct Hermes `web_extract_tool`: returned the target article body.
+- Constrained platform `/api/chat` smoke: HTTP 200 in 60.96 seconds; correctly returned the title, publisher, and first case, with no false verification-page failure.
+
 ## Remaining risks / excluded work
 
 - Alipay OAuth still depends on correcting the application public key in Alipay Open Platform; not resolved by this release.
 - SMS provider throttling remains an external rate-limit condition; not resolved by this release.
 - A signed iOS build has not been uploaded to TestFlight in this release. XCTest success is not TestFlight acceptance.
 - Structured article `citations` may still be empty even when the answer body includes the original URL; article reading itself is verified.
+- One unconstrained long-form post-deployment probe completed HTTP 200 but followed a transient extract error into browser/delegation and returned a false failure. The subsequent direct provider and constrained platform probes passed; repeated long-form robustness remains a reliability risk.
+- Bridge startup logs show unrelated `hermes-internal` plugin and old SQLite WAL-runtime warnings; neither blocked this release probe.
