@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Normalize shared private-note transport permissions without changing ownership.
+"""Normalize shared private-note transport permissions and optional ownership.
 
 Hermes and the API remain responsible for tenant/user authorization. This script
 only makes the server-owned bind mount traversable/readable across their distinct
@@ -18,7 +18,9 @@ FILE_MODE = 0o644
 ALLOWED_SUFFIXES = {".md", ".json"}
 
 
-def repair_tree(root: Path) -> dict[str, int]:
+def repair_tree(
+    root: Path, *, owner_uid: int | None = None, owner_gid: int | None = None
+) -> dict[str, int]:
     counts = {"directories": 0, "files": 0, "skipped_symlinks": 0}
     try:
         root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -30,6 +32,8 @@ def repair_tree(root: Path) -> dict[str, int]:
         raise ValueError("note permission root must be a real directory")
 
     def repair_directory(directory_fd: int) -> None:
+        if owner_uid is not None and owner_gid is not None:
+            os.fchown(directory_fd, owner_uid, owner_gid)
         os.fchmod(directory_fd, DIRECTORY_MODE)
         counts["directories"] += 1
         for name in os.listdir(directory_fd):
@@ -71,6 +75,8 @@ def repair_tree(root: Path) -> dict[str, int]:
                 continue
             try:
                 if stat.S_ISREG(os.fstat(child_fd).st_mode):
+                    if owner_uid is not None and owner_gid is not None:
+                        os.fchown(child_fd, owner_uid, owner_gid)
                     os.fchmod(child_fd, FILE_MODE)
                     counts["files"] += 1
             finally:
@@ -86,8 +92,14 @@ def repair_tree(root: Path) -> dict[str, int]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("root", type=Path)
+    parser.add_argument("--owner-uid", type=int)
+    parser.add_argument("--owner-gid", type=int)
     args = parser.parse_args()
-    counts = repair_tree(args.root)
+    if (args.owner_uid is None) != (args.owner_gid is None):
+        parser.error("--owner-uid and --owner-gid must be provided together")
+    counts = repair_tree(
+        args.root, owner_uid=args.owner_uid, owner_gid=args.owner_gid
+    )
     print(
         "user_note_permissions "
         f"directories={counts['directories']} files={counts['files']} "

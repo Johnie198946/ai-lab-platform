@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -29,6 +30,22 @@ def test_repair_tree_normalizes_notes_metadata_and_directories(tmp_path: Path) -
     assert unrelated.stat().st_mode & 0o777 == 0o600
     assert owner.stat().st_mode & 0o777 == 0o755
     assert archive.stat().st_mode & 0o777 == 0o755
+
+
+def test_repair_tree_can_normalize_runtime_owner_without_following_symlinks(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "tenants"
+    owner = root / "tenant" / "user"
+    owner.mkdir(parents=True)
+    note = owner / "note.md"
+    note.write_text("data", encoding="utf-8")
+
+    repair_tree(root, owner_uid=os.getuid(), owner_gid=os.getgid())
+
+    assert root.stat().st_uid == os.getuid()
+    assert owner.stat().st_gid == os.getgid()
+    assert note.stat().st_uid == os.getuid()
 
 
 def test_repair_tree_does_not_follow_or_modify_symlinks(tmp_path: Path) -> None:
