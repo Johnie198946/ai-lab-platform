@@ -152,7 +152,8 @@ def render_project_master(
             f"- 验收标准：{'；'.join(_strings(item.get('acceptance_criteria'))) or '待补充'}",
         ]) for item in tasks
     ) or "- 暂无任务"
-    list_section = lambda values: "\n".join(f"- {item}" for item in _strings(values)) or "- 无"
+    def list_section(values: Any) -> str:
+        return "\n".join(f"- {item}" for item in _strings(values)) or "- 无"
     content = (
         "# 项目顶层设计（唯一参照）\n\n"
         "> [!important] 只读投影\n"

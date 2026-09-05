@@ -542,7 +542,8 @@ public final class KnowledgeNoteStore: ObservableObject {
         let updated = metadata["updated"].flatMap(isoFormatter.date(from:)) ?? fallbackDate
 
         return KnowledgeNote(
-            id: metadata["id"].flatMap { $0.isEmpty ? nil : $0 } ?? UUID().uuidString.lowercased(),
+            id: metadata["id"].flatMap { $0.isEmpty ? nil : $0 }
+                ?? url.deletingPathExtension().lastPathComponent,
             title: title,
             body: body,
             tags: normalized(frontmatterTags + extractInlineTags(from: body)),

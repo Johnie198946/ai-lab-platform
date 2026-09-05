@@ -8760,7 +8760,6 @@ async def apply_task_backfill_proposal(
         )
         project_id = conversation.project_id
         task_id = conversation.task_id
-        expected_version = proposal.base_card_version
         self_changes = dict(proposal.self_changes or {})
         ai_employee = dict((conversation.binding or {}).get("ai_employee") or {}) or None
     runtime_changes = {
@@ -9080,12 +9079,6 @@ async def _run_task_auto_execution_unlimited(
                 return
             if proposal.status != "proposed":
                 raise RuntimeError("auto execution proposal is not applicable")
-            latest_context = await db.scalar(
-                select(WorkspaceTaskConversationContext)
-                .where(WorkspaceTaskConversationContext.conversation_id == conversation.id)
-                .order_by(WorkspaceTaskConversationContext.revision.desc())
-                .limit(1)
-            )
             project_id = conversation.project_id
             task_id = conversation.task_id
             expected_version = proposal.base_card_version

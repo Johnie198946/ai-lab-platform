@@ -90,18 +90,23 @@ def _write_private_index(directory: Path, *, tenant_key: str, user_id: str,
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.flush(); os.fsync(handle.fileno())
+            handle.flush()
+            os.fsync(handle.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, directory / ".private-index.json")
     finally:
-        try: os.unlink(temporary)
-        except FileNotFoundError: pass
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
     return payload
 
 
 def _read_private_index(path: Path) -> dict[str, Any] | None:
-    try: value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError): return None
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
     return value if isinstance(value, dict) and isinstance(value.get("documents"), list) else None
 
 
@@ -109,8 +114,10 @@ def compile_private_note_index(tenant_key: str, user_id: str, root: Path | None 
     """Rebuild the private index; used for repair and initial creation only."""
     directory = note_directory(tenant_key, user_id, root)
     directory.mkdir(parents=True, exist_ok=True)
-    try: directory.chmod(0o755)
-    except OSError: pass
+    try:
+        directory.chmod(0o755)
+    except OSError:
+        pass
     items = [
         _private_index_item(path, tenant_key=tenant_key, user_id=user_id)
         for path in sorted(directory.glob("*.md"))
@@ -136,9 +143,11 @@ def remove_private_note_index_entry(tenant_key: str, user_id: str, note_id: str,
     """Remove one active note without scanning or rewriting sibling entries."""
     path = private_note_index_path(tenant_key, user_id, root)
     existing = _read_private_index(path)
-    if existing is None: return None
+    if existing is None:
+        return None
     items = [item for item in existing["documents"] if item.get("id") != note_id]
-    if len(items) == len(existing["documents"]): return existing
+    if len(items) == len(existing["documents"]):
+        return existing
     return _write_private_index(path.parent, tenant_key=tenant_key, user_id=user_id, items=items)
 
 

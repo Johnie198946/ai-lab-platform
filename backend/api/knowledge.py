@@ -602,7 +602,6 @@ def get_wiki(slug: str) -> Dict[str, Any]:
         slug = rel.removeprefix("wiki/").removesuffix(".md")
     text = target.read_text(encoding="utf-8", errors="ignore")
     fm = _frontmatter(text)
-    body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, flags=re.DOTALL).strip()
     return {
         "slug": slug,
         "title": fm.get("title", target.stem),

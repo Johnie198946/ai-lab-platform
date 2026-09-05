@@ -3613,7 +3613,6 @@ def _durable_replay_sse(run_id: str, owner_hash: str, *, blocks_v1: bool = False
     if _chat_run_store is None:
         return
     snapshot = _chat_run_store.get(run_id, tenant_user_hash=owner_hash)
-    page_sent = False
     for event in _chat_run_store.events_after(run_id, 0, tenant_user_hash=owner_hash):
         if blocks_v1:
             event = _block_safe_event(event)
@@ -3623,7 +3622,6 @@ def _durable_replay_sse(run_id: str, owner_hash: str, *, blocks_v1: bool = False
     if blocks_v1:
         page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
         if page["blocks"]:
-            page_sent = True
             yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
     if snapshot["status"] in {"queued", "running"}:
         yield f"data: {json.dumps({'type': 'status', 'phase': snapshot['status'], 'detail': '相同任务已在执行', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"

@@ -327,6 +327,26 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         XCTAssertEqual(snapshot.first(where: { $0.id == "server-only" })?.contentHash, server.contentHash)
     }
 
+    func testCloudSnapshotWithoutFrontmatterPreservesServerNoteID() throws {
+        let store = KnowledgeNoteStore.shared
+        store.activate(tenantKey: "cloud-id-tenant-\(UUID())", userId: "cloud-id-user")
+        let snapshot = CloudKnowledgeNoteDTO(
+            noteId: "server-stable-id",
+            markdown: "# 服务端原始笔记\n\n没有 frontmatter。",
+            contentHash: String(repeating: "a", count: 64),
+            updatedAt: "2026-09-06T00:00:00Z",
+            archived: false,
+            mergedIntoNoteId: nil
+        )
+        try store.restoreFromCloudSnapshot(CloudKnowledgeNotesResponse(
+            items: [snapshot], count: 1, compileStatus: "private_index_ready"
+        ))
+        defer { store.moveToTrash(id: snapshot.noteId) }
+
+        XCTAssertEqual(store.note(id: snapshot.noteId)?.id, snapshot.noteId)
+        XCTAssertNil(store.notes.first(where: { $0.fileURL.lastPathComponent == "server-stable-id.md" && $0.id != snapshot.noteId }))
+    }
+
     func testNewerLocalEditWinsOverServerSnapshotOfSameNote() {
         let server = ChatLocalNoteDTO(
             id: "same",

@@ -61,7 +61,7 @@ async def test_pipeline_no_increment_does_not_rewrite_or_advance(tmp_path, monke
         hashlib.sha256(b"Existing evidence").hexdigest(), now))
     seed_run = await submit_compile(store, event_id=seed["event_id"], content="Existing evidence")
     complete(store, seed_run["run_id"], {**COMPILE, "title": "Existing"})
-    seeded = await advance_completed(store, run_id=seed_run["run_id"], vault=tmp_path)
+    await advance_completed(store, run_id=seed_run["run_id"], vault=tmp_path)
     target = next((tmp_path / "wiki/tenant").rglob("*.md"))
     original, mtime = target.read_bytes(), target.stat().st_mtime_ns
     event = await enqueue_contribution(ContributionCandidate(tenant, "owner", "ios", "note", "n2", 1,
@@ -218,7 +218,7 @@ async def test_incremental_is_wired_into_verified_pipeline(tmp_path, monkeypatch
     complete(store, red["run_id"], SANITIZE)
     privacy = await advance_completed(store, run_id=red["run_id"], vault=tmp_path)
     complete(store, privacy["run_id"], PRIVACY)
-    green = await advance_completed(store, run_id=privacy["run_id"], vault=tmp_path)
+    await advance_completed(store, run_id=privacy["run_id"], vault=tmp_path)
     files = list((tmp_path / "wiki/tenant").rglob(candidate["canonical_id"] + ".md"))
     assert len(files) == 1 and "Evidence conflict" in files[0].read_text()
     metadata = yaml.safe_load(files[0].read_text().split("---")[1])

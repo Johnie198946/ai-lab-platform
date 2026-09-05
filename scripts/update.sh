@@ -213,6 +213,11 @@ mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
 configure_cloud_agent_os_mode
 restart_hermes_runtime
+python3 scripts/repair_user_note_permissions.py \
+  --owner-uid 0 --owner-gid 0 \
+  "$VAULT_ROOT/raw/dialogues/tenants"
+docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+  'import pathlib,tempfile; root=pathlib.Path("/app/data/vault/raw/dialogues/tenants"); probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
 
 echo "==> [6/6] 最终健康检查"
 api_status=""

@@ -28,3 +28,12 @@ def test_server_deploy_prepares_private_red_and_public_green_projection_roots() 
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")
     assert 'install -d -o 0 -g 0 -m 0700 "$VAULT_ROOT/wiki/tenant"' in script
     assert 'install -d -o 0 -g 0 -m 0755 "$VAULT_ROOT/wiki/contributions"' in script
+
+
+def test_server_deploy_rechecks_private_note_write_access_after_runtime_restart() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    restart = script.index("restart_hermes_runtime\n", script.index("SWITCHED=1"))
+    second_repair = script.index("repair_user_note_permissions.py", restart)
+    write_probe = script.index(".api-write-probe-", second_repair)
+    final_health = script.index('echo "==> [6/6] 最终健康检查"', write_probe)
+    assert restart < second_repair < write_probe < final_health
