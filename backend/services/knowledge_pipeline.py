@@ -19,7 +19,7 @@ from backend.services.knowledge_contribution_artifacts import (
     stage_green_projection,
     write_red_projection,
 )
-from backend.services.knowledge_run_adapter import KnowledgeRunAdapter, STAGES
+from backend.services.knowledge_run_adapter import KnowledgeRunAdapter, STAGES, digest
 
 
 def _now() -> datetime:
@@ -113,7 +113,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     event = await _event(spec.event_id)
 
     if spec.stage == STAGES[0]:
-        projection_id = "tenant-kn-" + spec.candidate_hash[:32]
+        projection_id = "tenant-kn-" + digest([spec.tenant_id, spec.event_id])[:32]
         artifact_ref = write_red_projection(
             vault, projection_id=projection_id, tenant_key=spec.tenant_id,
             title=result["title"], knowledge_type=result["type"],
@@ -166,7 +166,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     _, compiled = adapter.verified_result(
         compile_run_id, tenant_id=spec.tenant_id, user_id=spec.user_id,
     )
-    projection_id = "kn-" + spec.candidate_hash[:32]
+    projection_id = "kn-" + digest([spec.tenant_id, spec.event_id])[:32]
     artifact_ref = stage_green_projection(
         vault, projection_id=projection_id, title=compiled["title"],
         knowledge_type=compiled["type"], knowledge_level=compiled["knowledge_level"],

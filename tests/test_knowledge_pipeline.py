@@ -67,6 +67,26 @@ async def test_pipeline_compiles_red_then_independent_green_candidate(tmp_path, 
     assert "classification_status: approved" in text
     assert tenant not in text and "note-1" not in text
 
+    # Identical source hashes from different tenants must never share a Red binding.
+    second_tenant = "pipeline-" + uuid4().hex
+    await set_contribution_policy(
+        tenant_key=second_tenant, enabled=True, agreement_version="v4",
+        effective_at=changed - timedelta(minutes=1),
+    )
+    second = await enqueue_contribution(ContributionCandidate(
+        second_tenant, "owner", "feedback", "feedback", "same-content", 1,
+        digest, changed,
+    ))
+    assert second is not None
+    second_run = await submit_compile(
+        store, event_id=second["event_id"], content=content,
+    )
+    complete(store, second_run["run_id"], COMPILE)
+    second_red = await advance_completed(
+        store, run_id=second_run["run_id"], vault=tmp_path,
+    )
+    assert second_red["red_projection_id"] != red["red_projection_id"]
+
 
 @pytest.mark.asyncio
 async def test_pipeline_never_advances_simulation_to_green(tmp_path):
@@ -121,3 +141,38 @@ async def test_supervisor_advances_registered_completed_run(tmp_path, monkeypatc
     monkeypatch.setattr(supervisor, "vault_path", lambda: tmp_path)
     assert await supervisor.reconcile_once(store) == 1
     assert seen == [(run["run_id"], tmp_path)]
+
+
+@pytest.mark.asyncio
+async def test_supervisor_ignores_runs_for_terminal_events(tmp_path, monkeypatch):
+    import backend.services.knowledge_pipeline_supervisor as supervisor
+    from backend.db import SessionLocal
+    from backend.models.knowledge_contribution import KnowledgeContributionOutbox
+    from sqlalchemy import select
+
+    tenant = "pipeline-" + uuid4().hex
+    changed = datetime.now(timezone.utc)
+    await set_contribution_policy(
+        tenant_key=tenant, enabled=True, agreement_version="v4",
+        effective_at=changed - timedelta(minutes=1),
+    )
+    content = "terminal event"
+    digest = hashlib.sha256(content.encode()).hexdigest()
+    event = await enqueue_contribution(ContributionCandidate(
+        tenant, "owner", "feedback", "feedback", "feedback-1", 1, digest, changed,
+    ))
+    assert event is not None
+    store = DurableChatRunStore(tmp_path / "runs.sqlite3")
+    run = await submit_compile(store, event_id=event["event_id"], content=content)
+    complete(store, run["run_id"], COMPILE)
+    async with SessionLocal() as db:
+        row = (await db.execute(select(KnowledgeContributionOutbox).where(
+            KnowledgeContributionOutbox.event_id == event["event_id"]
+        ))).scalar_one()
+        row.status = "quarantined"
+        await db.commit()
+    monkeypatch.setattr(
+        supervisor, "advance_completed",
+        lambda *_args, **_kwargs: pytest.fail("terminal event was advanced"),
+    )
+    assert await supervisor.reconcile_once(store) == 0

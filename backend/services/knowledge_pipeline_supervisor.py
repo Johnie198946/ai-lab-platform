@@ -13,7 +13,10 @@ from pathlib import Path
 from sqlalchemy import select
 
 from backend.db import SessionLocal
-from backend.models.knowledge_contribution import KnowledgeContributionRun
+from backend.models.knowledge_contribution import (
+    KnowledgeContributionOutbox,
+    KnowledgeContributionRun,
+)
 from backend.services.knowledge_pipeline import advance_completed
 from scripts.chat_run_store import DurableChatRunStore
 
@@ -39,8 +42,20 @@ async def reconcile_once(store: DurableChatRunStore) -> int:
         rows = list((await db.execute(select(KnowledgeContributionRun).where(
             KnowledgeContributionRun.status.in_(("registered", "running"))
         ).limit(32))).scalars())
+        active_rows = []
+        for row in rows:
+            event_ids = list(row.event_ids or [])
+            statuses = list((await db.execute(
+                select(KnowledgeContributionOutbox.status).where(
+                    KnowledgeContributionOutbox.event_id.in_(event_ids)
+                )
+            )).scalars()) if event_ids else []
+            if statuses and all(status in {
+                "pending", "compiling", "sanitizing", "privacy_reviewing"
+            } for status in statuses):
+                active_rows.append(row)
     advanced = 0
-    for business_run in rows:
+    for business_run in active_rows:
         try:
             durable = store.get_unchecked(business_run.run_id)
         except KeyError:
