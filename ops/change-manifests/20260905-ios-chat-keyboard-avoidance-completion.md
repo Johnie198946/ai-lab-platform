@@ -37,10 +37,10 @@
 
 ## 交付状态
 
-- current_status: `COMMITTED`
-- commit_sha: `HEAD`（本 manifest 所在提交；完成通报记录解析后的精确 SHA）。
-- GitHub remote/ref/SHA: push 前已核对 `refs/heads/main = f362eb06b96fd3385792ef7cd03065a7885c3af3`；推送后以 `git ls-remote` 和完成通报中的精确 SHA 为准。
-- App Store Connect: build 13 尚未上传；处理、外部测试组和 Beta App Review 尚未执行。
+- current_status: `PUSHED`
+- implementation_commit: `62b7adb357bd5309901d607db76c5013501451dd`。
+- GitHub remote/ref/SHA: 已通过 `git ls-remote` 确认 `refs/heads/main` 与 `refs/heads/codex/ios-note-keyboard-avoidance-20260905` 均为 `62b7adb357bd5309901d607db76c5013501451dd`；最终交付记录提交 SHA 见完成通报。
+- App Store Connect: Organizer 验证成功；`AIPlatformApp 1.0.3 (13)` 于 2026-09-05 23:04 显示 `Uploaded to Apple`。Apple 处理、外部测试组和 Beta App Review 尚未完成。
 
 ## 部署与回滚
 
@@ -52,6 +52,6 @@
 
 ## 风险与未完成项
 
-- 仍需提交并推送精确提交、上传 build 13，并等待 App Store Connect 处理。
+- build 13 已上传，仍需等待 App Store Connect 处理。
 - 仍需将 build 13 加入“外部测试员”组并提交 Beta App Review；只有外部组中实际可测试且物理机回读通过后才能报告 `VERIFIED`。
 - 回滚方式：Git 回退到修复前 SHA，TestFlight 保留/恢复使用 build 12。
