@@ -2843,7 +2843,69 @@ async function listCommentAttachments(env, commentId, after) {
   };
 }
 
-async function uploadAttachment(env, ownerType, ownerId, request) {
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", value);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function enqueueUploadedFileContribution(env, actor, row, body, fileOptOut) {
+  const baseUrl = typeof env.AI_LAB_INTERNAL_URL === "string"
+    ? env.AI_LAB_INTERNAL_URL.replace(/\/$/, "")
+    : "";
+  const token = typeof env.HERMES_BRIDGE_INTERNAL_TOKEN === "string"
+    ? env.HERMES_BRIDGE_INTERNAL_TOKEN
+    : "";
+  const tenantKey = typeof env.AI_LAB_TENANT_KEY === "string"
+    ? env.AI_LAB_TENANT_KEY
+    : "";
+  if (!baseUrl || !token || !tenantKey) return null;
+  try {
+    const contentHash = await sha256Hex(body);
+    const endpoint = fileOptOut
+      ? `${baseUrl}/api/v1/me/knowledge-notes/uploaded-files/${encodeURIComponent(row.id)}/contribution`
+      : `${baseUrl}/api/v1/me/knowledge-notes/uploaded-files/${encodeURIComponent(row.id)}/content`;
+    const response = await fetch(endpoint, fileOptOut ? {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-hermes-internal-token": token,
+        },
+        body: JSON.stringify({
+          tenant_key: tenantKey,
+          user_id: actor.id,
+          source_revision: Number(row.change_revision ?? 1),
+          content_hash: contentHash,
+          source_changed_at: row.created_at,
+          file_opt_out: true,
+        }),
+      } : {
+        method: "POST",
+        headers: {
+          "content-type": row.content_type || "application/octet-stream",
+          "x-hermes-internal-token": token,
+          "x-tenant-key": tenantKey,
+          "x-user-id": actor.id,
+          "x-source-revision": String(Number(row.change_revision ?? 1)),
+          "x-source-changed-at": row.created_at,
+          "x-content-hash": contentHash,
+          "x-file-name": encodeURIComponent(row.filename || row.id),
+        },
+        body,
+      });
+    if (!response.ok) throw new Error(`knowledge contribution bridge failed (${response.status})`);
+    return response.json();
+  } catch (error) {
+    console.error("uploaded file contribution enqueue failed", {
+      attachmentId: row.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+async function uploadAttachment(env, ownerType, ownerId, request, actor) {
   let taskId;
   let commentId = null;
   if (ownerType === "task") {
@@ -2854,6 +2916,9 @@ async function uploadAttachment(env, ownerType, ownerId, request) {
     commentId = comment.id;
   }
   const metadata = parseAttachmentHeaders(request);
+  const fileOptOut = ["1", "true", "yes"].includes(
+    (request.headers.get("x-ai-lab-knowledge-opt-out") ?? "").trim().toLowerCase(),
+  );
   const body = await readAttachment(request);
   const id = uuid();
   await env.ATTACHMENTS.put(id, body, {
@@ -2880,10 +2945,11 @@ async function uploadAttachment(env, ownerType, ownerId, request) {
     throw error;
   }
   const row = await env.DB.prepare("SELECT * FROM attachments WHERE id = ?").bind(id).first();
+  await enqueueUploadedFileContribution(env, actor, row, body, fileOptOut);
   return attachmentFromRow(row);
 }
 
-async function uploadProjectReadmeAttachment(env, projectId, request) {
+async function uploadProjectReadmeAttachment(env, projectId, request, actor) {
   await requireProject(env, projectId);
   const metadata = parseAttachmentHeaders(request);
   if (metadata.kind !== "inline") {
@@ -2893,6 +2959,9 @@ async function uploadProjectReadmeAttachment(env, projectId, request) {
       "Project README attachments must be inline",
     );
   }
+  const fileOptOut = ["1", "true", "yes"].includes(
+    (request.headers.get("x-ai-lab-knowledge-opt-out") ?? "").trim().toLowerCase(),
+  );
   const body = await readAttachment(request);
   const id = uuid();
   await env.ATTACHMENTS.put(id, body, {
@@ -2918,6 +2987,7 @@ async function uploadProjectReadmeAttachment(env, projectId, request) {
   const row = await env.DB.prepare(
     "SELECT * FROM project_readme_attachments WHERE id = ?",
   ).bind(id).first();
+  await enqueueUploadedFileContribution(env, actor, row, body, fileOptOut);
   return projectReadmeAttachmentFromRow(row);
 }
 
@@ -3140,7 +3210,7 @@ async function routeApi(request, env, actor, url) {
     );
     if (request.method !== "POST") methodNotAllowed(["POST"]);
     return json(201, {
-      attachment: await uploadProjectReadmeAttachment(env, projectId, request),
+      attachment: await uploadProjectReadmeAttachment(env, projectId, request, actor),
     });
   }
 
@@ -3267,7 +3337,7 @@ async function routeApi(request, env, actor, url) {
     requireNoQuery(url, "Attachment routes");
     if (request.method === "POST") {
       return json(201, {
-        attachment: await uploadAttachment(env, "comment", commentId, request),
+        attachment: await uploadAttachment(env, "comment", commentId, request, actor),
       });
     }
     methodNotAllowed(["GET", "POST"]);
@@ -3305,7 +3375,7 @@ async function routeApi(request, env, actor, url) {
     requireNoQuery(url, "Attachment routes");
     if (request.method === "POST") {
       return json(201, {
-        attachment: await uploadAttachment(env, "task", taskId, request),
+        attachment: await uploadAttachment(env, "task", taskId, request, actor),
       });
     }
     methodNotAllowed(["GET", "POST"]);

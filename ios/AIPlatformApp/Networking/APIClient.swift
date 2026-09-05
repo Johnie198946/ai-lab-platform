@@ -2230,14 +2230,21 @@ public final class APIClient: ObservableObject {
 
     // MARK: - 对话 / 思维链
 
-    public func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date) async throws {
+    public func syncKnowledgeNote(
+        id: String,
+        markdown: String,
+        updatedAt: Date,
+        baseHash: String? = nil
+    ) async throws {
         struct Body: Encodable {
             let markdown: String
             let contentHash: String
+            let baseHash: String?
             let updatedAt: String
             enum CodingKeys: String, CodingKey {
                 case markdown
                 case contentHash = "content_hash"
+                case baseHash = "base_hash"
                 case updatedAt = "updated_at"
             }
         }
@@ -2254,6 +2261,7 @@ public final class APIClient: ObservableObject {
             body: Body(
                 markdown: markdown,
                 contentHash: digest,
+                baseHash: baseHash,
                 updatedAt: formatter.string(from: updatedAt)
             )
         )
@@ -2269,17 +2277,28 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    public func archiveKnowledgeNote(id: String, mergedIntoNoteId: String) async throws {
+    public func archiveKnowledgeNote(
+        id: String,
+        mergedIntoNoteId: String,
+        expectedContentHash: String? = nil
+    ) async throws {
         struct Body: Encodable {
             let mergedIntoNoteId: String
-            enum CodingKeys: String, CodingKey { case mergedIntoNoteId = "merged_into_note_id" }
+            let expectedContentHash: String?
+            enum CodingKeys: String, CodingKey {
+                case mergedIntoNoteId = "merged_into_note_id"
+                case expectedContentHash = "expected_content_hash"
+            }
         }
         struct Response: Decodable { let archiveStatus: String }
         let _: Response = try await request(
             Response.self,
             path: "me/knowledge-notes/\(encodedPath(id))/archive",
             method: "POST",
-            body: Body(mergedIntoNoteId: mergedIntoNoteId)
+            body: Body(
+                mergedIntoNoteId: mergedIntoNoteId,
+                expectedContentHash: expectedContentHash
+            )
         )
     }
 

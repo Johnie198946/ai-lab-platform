@@ -982,6 +982,153 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
     }
 
+    static func requiresKnowledgeActionProposal(_ text: String) -> Bool {
+        let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !value.isEmpty else { return false }
+        let explicit = ["记下来", "记到笔记", "保存为笔记", "存成笔记", "整理成笔记", "写入知识库"]
+        if explicit.contains(where: value.contains) { return true }
+        let hasKnowledgeObject = value.contains("笔记") || value.contains("知识库")
+            || value.contains("note") || value.contains("knowledge base")
+        let hasMutation = ["保存", "写入", "创建", "新建", "修改", "更新", "重命名", "标签", "置顶", "合并", "归档", "恢复", "删除", "save", "create", "update", "merge", "archive", "restore", "delete"]
+            .contains(where: value.contains)
+        return hasKnowledgeObject && hasMutation
+    }
+
+    static func shouldShowKnowledgeProposalRetry(
+        userText: String,
+        hasProposal: Bool
+    ) -> Bool {
+        requiresKnowledgeActionProposal(userText) && !hasProposal
+    }
+
+    private func markMissingKnowledgeProposalIfNeeded(
+        userText: String,
+        messageIndex: Int
+    ) {
+        guard messages.indices.contains(messageIndex) else { return }
+        let hasProposal = messages[messageIndex].blocks.contains(where: {
+            if case .knowledgeAction = $0 { return true }
+            return false
+        })
+        guard Self.shouldShowKnowledgeProposalRetry(
+            userText: userText, hasProposal: hasProposal
+        ) else { return }
+        messages[messageIndex].content = "未生成可确认的笔记操作方案，请重试。"
+        // ChatMessageStreamView renders degraded messages with DegradedCardView,
+        // whose retry action replays the original user message.
+        messages[messageIndex].degraded = true
+    }
+
+    private func knowledgeWorkspaceContext(
+        base: ClientSessionContextDTO?,
+        request: InFlightRequest,
+        taskEpoch: Int
+    ) async -> ClientSessionContextDTO {
+        let localBeforeFetch = Self.workspaceLocalNotes()
+        var workspaceNotes = Self.mergeWorkspaceNotes(
+            server: [], local: (base?.localNotes ?? []) + localBeforeFetch
+        )
+        do {
+            let response = try await APIClient.shared.fetchKnowledgeNotes(includeArchived: true)
+            guard tenantEpoch == taskEpoch,
+                  sessionManager.activeSessionID() == request.sessionId else {
+                return base ?? ClientSessionContextDTO(
+                    sessionId: request.sessionId, messages: [], truncated: false
+                )
+            }
+            try KnowledgeNoteStore.shared.restoreFromCloudSnapshot(response)
+            let localAfterFetch = Self.workspaceLocalNotes()
+            let serverNotes = response.items.map { snapshot -> ChatLocalNoteDTO in
+                let materialized = KnowledgeNoteStore.shared.anyNote(id: snapshot.noteId)
+                return ChatLocalNoteDTO(
+                    id: snapshot.noteId,
+                    title: materialized?.title ?? snapshot.noteId,
+                    markdown: snapshot.markdown,
+                    updatedAt: snapshot.updatedAt,
+                    contentHash: snapshot.contentHash,
+                    tags: materialized?.tags ?? [],
+                    aliases: materialized?.aliases ?? [],
+                    isPinned: materialized?.isPinned ?? false,
+                    archived: snapshot.archived
+                )
+            }
+            workspaceNotes = Self.mergeWorkspaceNotes(
+                server: serverNotes,
+                local: (base?.localNotes ?? []) + localAfterFetch
+            )
+        } catch {
+            // The authenticated server list is authoritative when available;
+            // offline retries still retain the device snapshot rather than inventing candidates.
+        }
+        return ClientSessionContextDTO(
+            sessionId: request.sessionId,
+            messages: base?.messages ?? [],
+            truncated: base?.truncated ?? false,
+            sourceSessions: base?.sourceSessions ?? [],
+            localNotes: workspaceNotes
+        )
+    }
+
+    static func mergeWorkspaceNotes(
+        server: [ChatLocalNoteDTO],
+        local: [ChatLocalNoteDTO],
+        maximumCount: Int = 50,
+        maximumCharacters: Int = 100_000
+    ) -> [ChatLocalNoteDTO] {
+        var notes: [String: ChatLocalNoteDTO] = [:]
+        for serverNote in server {
+            // The API normally returns one row per note ID. If a transient
+            // active/archive duplicate appears, keep the active row deterministically.
+            if notes[serverNote.id]?.archived == false, serverNote.archived { continue }
+            notes[serverNote.id] = serverNote
+        }
+        for localNote in local {
+            guard let serverNote = notes[localNote.id] else {
+                notes[localNote.id] = localNote
+                continue
+            }
+            if localNote.contentHash == serverNote.contentHash {
+                continue
+            }
+            let localDate = localNote.updatedAt.flatMap(serverDate)
+            let remoteDate = serverNote.updatedAt.flatMap(serverDate)
+            if remoteDate == nil || (localDate != nil && localDate! > remoteDate!) {
+                notes[localNote.id] = localNote
+            }
+        }
+        var characters = 0
+        var result: [ChatLocalNoteDTO] = []
+        for note in notes.values.sorted(by: { $0.id < $1.id }) {
+            guard result.count < maximumCount else { break }
+            guard characters + note.markdown.count <= maximumCharacters else { continue }
+            result.append(note)
+            characters += note.markdown.count
+        }
+        return result
+    }
+
+    private static func workspaceLocalNotes() -> [ChatLocalNoteDTO] {
+        (KnowledgeNoteStore.shared.notes + KnowledgeNoteStore.shared.archivedNotes).map { note in
+            ChatLocalNoteDTO(
+                id: note.id,
+                title: note.title,
+                markdown: KnowledgeNoteStore.shared.markdown(for: note),
+                updatedAt: ISO8601DateFormatter().string(from: note.updatedAt),
+                contentHash: KnowledgeNoteStore.shared.contentHash(for: note),
+                tags: note.tags,
+                aliases: note.aliases,
+                isPinned: note.isPinned,
+                archived: note.archivedAt != nil
+            )
+        }
+    }
+
+    private static func serverDate(_ value: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: value) ?? ISO8601DateFormatter().date(from: value)
+    }
+
     private func runInFlightStreamed(_ req: InFlightRequest, taskEpoch: Int) async {
         var handedOffToStatusRecovery = false
         var receivedTerminalEvent = false
@@ -1013,6 +1160,16 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         deltaBuffer = ""
         flushScheduled = false
+        var clientSessionContext = req.clientSessionContext
+        if Self.requiresKnowledgeActionProposal(req.text) {
+            clientSessionContext = await knowledgeWorkspaceContext(
+                base: clientSessionContext,
+                request: req,
+                taskEpoch: taskEpoch
+            )
+            guard tenantEpoch == taskEpoch,
+                  sessionManager.activeSessionID() == req.sessionId else { return }
+        }
         let stream = APIClient.shared.chatStream(
             question: req.text,
             requestId: req.id,
@@ -1021,7 +1178,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             regenerate: req.regenerate,        // 重新生成：服务端作废旧 run 后全新执行
             agentId: req.agentId,
             contextScope: req.contextScope,
-            clientSessionContext: req.clientSessionContext
+            clientSessionContext: clientSessionContext
         )
         do {
             eventLoop: for try await event in stream {
@@ -1260,6 +1417,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                         if let answer, !answer.isEmpty {
                             messages[idx].content = answer
                         }
+                        markMissingKnowledgeProposalIfNeeded(
+                            userText: req.text, messageIndex: idx
+                        )
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                         messages[idx].settleReasoningForCompletion()
@@ -1317,6 +1477,12 @@ public final class TenantSessionCoordinator: ObservableObject {
             if status.status == "completed", let answer = status.answer, !answer.isEmpty {
                 if sessionManager.activeSessionID() == req.sessionId {
                     applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                    if let index = messages.firstIndex(where: { $0.id == outputMessageId }) {
+                        markMissingKnowledgeProposalIfNeeded(
+                            userText: req.text, messageIndex: index
+                        )
+                        commitSession()
+                    }
                 } else {
                     sessionManager.applyCompletedStatus(
                         sessionId: req.sessionId,

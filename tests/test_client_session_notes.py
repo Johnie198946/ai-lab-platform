@@ -482,6 +482,37 @@ def test_user_note_search_uses_only_signed_user_note_source():
         bridge._knowledge_tool_context.value = None
 
 
+def test_v1_workspace_search_supplements_device_cache_from_private_gateway():
+    import scripts.hermes_bridge as bridge
+
+    bridge._knowledge_tool_context.value = {
+        "capability": "signed", "sources": ["user_notes"],
+    }
+    bridge._client_context_tool_context.value = {
+        "knowledge_action_v1": True, "inline_notes": [],
+    }
+    try:
+        with patch.object(bridge, "_knowledge_gateway_search", return_value=[{
+            "id": "server-note", "title": "TokenOps",
+            "markdown": "# TokenOps\n\n服务端私有内容", "content_hash": "hash-server",
+        }]):
+            result = json.loads(bridge._knowledge_workspace_read_tool({
+                "operation": "search", "query": "TokenOps",
+            }))
+        assert result["success"] is True
+        assert result["notes"][0]["id"] == "server-note"
+        proposed = json.loads(bridge._knowledge_action_propose_tool({
+            "summary": "更新服务端笔记", "steps": [{
+                "kind": "update_note", "target_note_id": "server-note",
+                "markdown": "# TokenOps\n\n更新稿",
+            }],
+        }))
+        assert proposed["success"] is True
+    finally:
+        bridge._knowledge_tool_context.value = None
+        bridge._client_context_tool_context.value = None
+
+
 def test_note_draft_only_accepts_merge_candidates_from_current_search():
     import scripts.hermes_bridge as bridge
 

@@ -17,6 +17,7 @@ import uuid
 import hashlib
 from contextvars import ContextVar
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Dict, Iterator, List, Literal, Optional
 
 import httpx
@@ -65,9 +66,39 @@ from backend.services.chat_triage import (
     classify_request,
 )
 from backend.services.feedback import capture_feedback
+from backend.services.knowledge_contribution import (
+    ContributionCandidate,
+)
+from backend.services.knowledge_candidate_ingest import enqueue_and_schedule
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
 logger = logging.getLogger(__name__)
+
+
+async def _enqueue_chat_message(
+    *, payload: dict[str, Any], session_id: str, request_id: str,
+    role: str, content: str, revision: int = 1,
+    source_changed_at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """Project a message only after its Hermes source operation succeeded."""
+    if not content.strip():
+        return None
+    source_id = f"{session_id}:{request_id}:{role}"
+    if len(source_id) > 128:
+        source_id = "chat-" + hashlib.sha256(source_id.encode()).hexdigest()
+    try:
+        return await enqueue_and_schedule(ContributionCandidate(
+            tenant_key=str(payload.get("tenant_key") or "public"),
+            user_id=str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+            source_surface=_feedback_surface(payload.get("client_capabilities") or []),
+            source_kind="chat_message", source_id=source_id,
+            source_revision=max(1, revision),
+            content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            source_changed_at=source_changed_at or datetime.now(timezone.utc),
+        ), source_content=content)
+    except Exception:
+        logger.exception("chat contribution enqueue failed", extra={"source_id": source_id})
+        return None
 
 _last_hermes_usage: ContextVar[dict[str, Any]] = ContextVar(
     "last_hermes_usage", default={}
@@ -1004,6 +1035,21 @@ async def chat(req: ChatRequest, payload=Depends(require_auth)) -> ChatResponse:
         answer = trim_boilerplate(reply)
         citations = extract_citations(answer)
         clarify = extract_clarify_payload(reasoning)
+        contribution_payload = {
+            **payload, "client_capabilities": req.client_capabilities,
+        }
+        contribution_request_id = req.request_id or hashlib.sha256(
+            f"{isolated_session_id}\0{req.question}".encode()
+        ).hexdigest()[:32]
+        await _enqueue_chat_message(
+            payload=contribution_payload, session_id=isolated_session_id,
+            request_id=contribution_request_id, role="user", content=req.question,
+        )
+        if answer and not answer.lstrip().startswith("⚠️"):
+            await _enqueue_chat_message(
+                payload=contribution_payload, session_id=isolated_session_id,
+                request_id=contribution_request_id, role="assistant", content=answer,
+            )
         return ChatResponse(
             question=req.question,
             answer=answer,
@@ -1434,6 +1480,7 @@ async def stream_chat(
 
     async def _gen():
         started = time.perf_counter()
+        user_contribution_enqueued = False
         try:
             # 建立 SSE 后再解析 Agent 路由；客户端不再等待数据库查询才收到首帧。
             yield "data: " + json.dumps(
@@ -1604,6 +1651,14 @@ async def stream_chat(
                     first_activity_deadline = None
                     continue
                 event = _stream_event(frame)
+                if event and not user_contribution_enqueued:
+                    await _enqueue_chat_message(
+                        payload={**payload, "client_capabilities": req.client_capabilities},
+                        session_id=isolated_session_id,
+                        request_id=effective_request_id,
+                        role="user", content=req.question,
+                    )
+                    user_contribution_enqueued = True
                 if event and event.get("type") in {
                     "delta",
                     "tool_start",
@@ -1638,6 +1693,15 @@ async def stream_chat(
                         latency_ms=round((time.perf_counter() - started) * 1000),
                         success=event.get("type") == "done",
                     )
+                    if event.get("type") == "done":
+                        answer = str(event.get("answer") or "")
+                        await _enqueue_chat_message(
+                            payload={**payload, "client_capabilities": req.client_capabilities},
+                            session_id=isolated_session_id,
+                            request_id=effective_request_id,
+                            role="assistant", content=answer,
+                            revision=int(event.get("event_sequence") or 1),
+                        )
                 yield frame
         except Exception as exc:
             yield "data: " + json.dumps(

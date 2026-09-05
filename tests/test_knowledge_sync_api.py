@@ -149,9 +149,14 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
         )
         assert cross_tenant.status_code == 404
         current_tenant["key"] = "tenant-a"
+        changed_source = _request(
+            "POST", "/api/v1/me/knowledge-notes/old-note/archive",
+            json={"merged_into_note_id": "merged-note", "expected_content_hash": "0" * 64},
+        )
+        assert changed_source.status_code == 409
         archived = _request(
             "POST", "/api/v1/me/knowledge-notes/old-note/archive",
-            json={"merged_into_note_id": "merged-note"},
+            json={"merged_into_note_id": "merged-note", "expected_content_hash": digest},
         )
         assert archived.status_code == 200
         assert archived.json()["changed"] is True
@@ -169,6 +174,11 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
         )
         assert repeated.status_code == 200
         assert repeated.json()["changed"] is False
+        wrong_target = _request(
+            "POST", "/api/v1/me/knowledge-notes/old-note/archive",
+            json={"merged_into_note_id": "other-note", "expected_content_hash": digest},
+        )
+        assert wrong_target.status_code == 409
         owner_dir = Path(directory) / sync.namespace("tenant-a") / sync.namespace("sync-user")
         assert not (owner_dir / "old-note.md").exists()
         assert (owner_dir / ".archive" / "old-note.md").is_file()

@@ -20,7 +20,10 @@ from datetime import datetime, timezone
 import yaml
 
 VALID_COLORS = {"green", "yellow", "red"}
-BLOCKED_STATUSES = {"archived", "deleted", "superseded"}
+BLOCKED_STATUSES = {
+    "archived", "deleted", "superseded", "stale", "quarantined",
+    "withdraw_pending", "withdrawing", "withdrawn",
+}
 TYPE_SLUGS = {
     "产品": "product", "方法论": "methodology", "战略信号": "strategic-signal",
     "客户": "customer", "竞品": "competitor", "竞品情报": "competitor-topic",

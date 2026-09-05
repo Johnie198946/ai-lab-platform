@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import asyncio
+import logging
 import os
 import re
 from copy import deepcopy
@@ -130,12 +131,54 @@ from backend.services.project_intent import (
     intent_conflicts,
     render_project_master,
 )
+from backend.services.knowledge_contribution import (
+    ContributionCandidate,
+)
+from backend.services.knowledge_candidate_ingest import enqueue_and_schedule
 
 router = APIRouter(prefix="/api/v1", tags=["quantum-workspace"])
+logger = logging.getLogger(__name__)
 _AUTO_EXECUTION_TASKS: set[asyncio.Task] = set()
 _AUTO_EXECUTION_SEMAPHORE = asyncio.Semaphore(
     max(1, int(os.getenv("QWS_AUTO_EXECUTION_CONCURRENCY", "3")))
 )
+
+
+def _qws_content_hash(value: Any) -> str:
+    encoded = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _qws_changed_at(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str) and value:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    raise ValueError("persisted QWS source timestamp required")
+
+
+async def _enqueue_qws_source(
+    *, tenant_key: str, user_id: str, source_id: str, source_revision: int,
+    value: Any, changed_at: Any, source_kind: str = "qws_artifact",
+    synthetic: bool = False,
+) -> dict[str, Any] | None:
+    """Best-effort adapter called only after the QWS authority commits."""
+    try:
+        source_content = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str,
+        )
+        return await enqueue_and_schedule(ContributionCandidate(
+            tenant_key=tenant_key, user_id=user_id, source_surface="qws",
+            source_kind=source_kind, source_id=source_id,
+            source_revision=max(1, int(source_revision)),
+            content_hash=_qws_content_hash(value),
+            source_changed_at=_qws_changed_at(changed_at), synthetic=synthetic,
+        ), source_content=source_content)
+    except Exception:
+        logger.exception("QWS contribution enqueue failed", extra={"source_id": source_id})
+        return None
 
 _TASKBOARD_INTERNAL_URL = os.getenv(
     "DASHI_TASKBOARD_INTERNAL_URL", "http://taskboard:47823"
@@ -1322,7 +1365,17 @@ async def confirm_project_intent(
             payload={"intent_revision": 1, "intent_hash": intent_hash, "process_revision": next_revision},
         ))
         await db.commit()
-        return {"project_id": project.id, "intent_revision": 1, "intent_hash": intent_hash, "process_revision": next_revision}
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"intent:{confirmed.id}", source_revision=confirmed.revision,
+            value=confirmed.snapshot, changed_at=confirmed.confirmed_at,
+            source_kind="intent_revision",
+        )
+        return {
+            "project_id": project.id, "intent_revision": 1,
+            "intent_hash": intent_hash, "process_revision": next_revision,
+            "contribution": contribution,
+        }
 
 
 @router.get("/projects/{project_id}/change-proposals")
@@ -1488,7 +1541,7 @@ async def decide_project_change_proposal(
             if key in {"name", "goal", "desired_outputs"}:
                 setattr(project, key, value)
         proposed_process = deepcopy(operation["process"])
-        _, governed_process = await _record_confirmed_intent(
+        intent, governed_process = await _record_confirmed_intent(
             db, project=project, process=proposed_process, user_id=user_id,
         )
         await _append_project_config_revision(db, project)
@@ -1515,12 +1568,19 @@ async def decide_project_change_proposal(
         await db.commit()
         await db.refresh(project)
         await db.refresh(proposal)
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"intent:{intent.id}", source_revision=intent.revision,
+            value=intent.snapshot, changed_at=intent.confirmed_at,
+            source_kind="intent_revision",
+        )
         return {
             "proposal": _proposal_out(proposal),
             "project": _project_out(project),
             "process_revision": next_revision,
             "intent_revision": project.active_intent_revision,
             "intent_hash": project.active_intent_hash,
+            "contribution": contribution,
         }
 
 
@@ -2480,9 +2540,18 @@ async def decide_task_delivery_manifest(
             db, project=project, process=process, tasks=tasks,
             expected_revision=body.expected_revision,
         )
+        contribution = None
+        if body.decision == "ACCEPT":
+            contribution = await _enqueue_qws_source(
+                tenant_key=tenant_key, user_id=user_id,
+                source_id=f"task-result:{decision.id}",
+                source_revision=decision.revision, value=decision.content,
+                changed_at=decision.created_at, source_kind="task_result",
+            )
         return {
             "project_id": project_id, "process_revision": revision,
             "task_status": task["status"], "manifest": _manifest_out(decision),
+            "contribution": contribution,
         }
 
 
@@ -3350,7 +3419,17 @@ async def generate_project_simulation_dataset(
             expected_revision=body.expected_revision,
             process=process,
         )
-        return {"project_id": project.id, "process_revision": next_revision, "plan": plan, "dataset": dataset}
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"hypothesis:{catalog_id}:{dataset['version']}",
+            source_revision=dataset["version"], value=dataset,
+            changed_at=dataset["generated_at"], source_kind="synthetic_hypothesis",
+            synthetic=True,
+        )
+        return {
+            "project_id": project.id, "process_revision": next_revision,
+            "plan": plan, "dataset": dataset, "contribution": contribution,
+        }
 
 
 @router.get("/projects/{project_id}/datasets")
@@ -4679,9 +4758,19 @@ async def resolve_project_task_challenge_review(
                     "task_revision": persisted["result_task_revision"], "decision": persisted,
                 }
             raise
+        contribution_kind = {
+            "MODIFY": "correction", "EXPERIMENT": "ab_decision",
+        }.get(str(decision.get("resolution") or ""), "review")
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"review-decision:{decision['id']}",
+            source_revision=int(decision["result_task_revision"]), value=decision,
+            changed_at=decision["decided_at"], source_kind=contribution_kind,
+        )
         return {
             "project_id": project_id, "process_revision": next_revision,
             "task_revision": task["task_revision"], "decision": decision,
+            "contribution": contribution,
         }
 
 
@@ -4981,7 +5070,16 @@ async def add_project_task_feedback(
             db, project=project, process=process, tasks=tasks,
             expected_revision=body.expected_revision,
         )
-        return {"project_id": project.id, "process_revision": revision, "feedback": feedback}
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"feedback:{feedback['id']}",
+            source_revision=int(task["task_revision"]), value=feedback,
+            changed_at=feedback["created_at"], source_kind="feedback",
+        )
+        return {
+            "project_id": project.id, "process_revision": revision,
+            "feedback": feedback, "contribution": contribution,
+        }
 
 
 @router.post("/projects/{project_id}/tasks/{task_id}/feedback-batches/{batch_id}/submit")
@@ -7527,6 +7625,12 @@ async def dispatch_project_blueprint(
             },
         ))
         await db.commit()
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"intent:{intent.id}", source_revision=intent.revision,
+            value=intent.snapshot, changed_at=intent.confirmed_at,
+            source_kind="intent_revision",
+        )
         return {
             "project_id": project.id,
             "process_revision": next_revision,
@@ -7537,6 +7641,7 @@ async def dispatch_project_blueprint(
             "blueprint_source": blueprint_source,
             "intent_revision": intent.revision,
             "intent_hash": intent.canonical_hash,
+            "contribution": contribution,
         }
 
 
@@ -7915,6 +8020,8 @@ async def govern_project_distillation_candidate(
             "previous_payload_hash": record.payload_hash,
         }
         replacement_metadata = None
+        replacement_id: str | None = None
+        replacement_payload: dict[str, str] | None = None
         if body.action == "CORRECT":
             if not body.replacement or not body.source_refs:
                 raise HTTPException(
@@ -7986,10 +8093,18 @@ async def govern_project_distillation_candidate(
             subject_id=candidate_id, payload=receipt,
         ))
         await db.commit()
+        contribution = None
+        if body.action == "CORRECT":
+            assert replacement_id is not None and replacement_payload is not None
+            contribution = await _enqueue_qws_source(
+                tenant_key=tenant_key, user_id=user_id,
+                source_id=f"correction:{replacement_id}", source_revision=1,
+                value=replacement_payload, changed_at=now, source_kind="correction",
+            )
         return {
             "project_id": project.id, "process_revision": revision,
             "candidate": metadata, "replacement": replacement_metadata,
-            "governance_receipt": receipt,
+            "governance_receipt": receipt, "contribution": contribution,
         }
 
 
@@ -8022,7 +8137,7 @@ async def close_project_with_final_distillation(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         candidate = final["candidate"]
         payload_value = final["payload"]
-        db.add(WorkspaceKnowledgeCandidate(
+        final_record = WorkspaceKnowledgeCandidate(
             id=candidate["id"], tenant_key=tenant_key, project_id=project.id,
             candidate_hash=candidate["candidate_hash"], source_refs=candidate["source_refs"],
             payload=payload_value, payload_hash=candidate["payload_hash"], status="ADMITTED",
@@ -8031,7 +8146,8 @@ async def close_project_with_final_distillation(
                 "action": "PROJECT_CLOSE_ADMISSION", "note": body.note,
                 "actor_id": f"user:{user_id}",
             },
-        ))
+        )
+        db.add(final_record)
         process["project_delivery_manifest"] = {**final["closure_manifest"], "note": body.note}
         process["distillation_candidates"] = [
             *(process.get("distillation_candidates") or []), candidate,
@@ -8063,10 +8179,17 @@ async def close_project_with_final_distillation(
             },
         ))
         await db.commit()
+        contribution = await _enqueue_qws_source(
+            tenant_key=tenant_key, user_id=user_id,
+            source_id=f"project-result:{candidate['id']}",
+            source_revision=final_record.revision, value=payload_value,
+            changed_at=final_record.created_at, source_kind="project_result",
+        )
         return {
             "project_id": project.id, "status": "closed", "process_revision": revision,
             "project_delivery_manifest": process["project_delivery_manifest"],
             "final_distillation": candidate, "document": document,
+            "contribution": contribution,
         }
 
 

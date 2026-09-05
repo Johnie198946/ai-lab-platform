@@ -36,6 +36,37 @@ class DurableEventSink(bridge.DurableEventQueue):
         return None
 
 
+class KnowledgeEventSink(DurableEventSink):
+    """Validate before the immutable done event; receipts never come from the LLM."""
+
+    def __init__(self, store, run, spec):
+        super().__init__(run["run_id"])
+        self.store, self.run, self.spec = store, run, spec
+
+    def accept(self, item):
+        from backend.services.knowledge_run_adapter import parse_result, receipt_for
+
+        # Do not persist unvalidated text/tool payloads into the contribution log.
+        if item.get("type") == "done":
+            try:
+                result = parse_result(
+                    self.spec.stage, item.get("answer", ""), simulated=self.spec.simulated,
+                )
+            except ValueError:
+                self.store.append_event(self.run_id, {
+                    "type": "error", "code": "knowledge_schema_invalid",
+                    "message": "Knowledge output failed strict validation",
+                })
+                return
+            self.store.append_event(self.run_id, receipt_for(self.run, self.spec, result))
+            self.store.append_event(self.run_id, {"type": "done", "answer": item["answer"]})
+        elif item.get("type") in {"error", "cancelled"}:
+            self.store.append_event(self.run_id, {
+                "type": item["type"], "code": "knowledge_execution_failed",
+                "message": "Knowledge stage did not complete",
+            })
+
+
 class DurableClarifyGateway:
     """Cross-process HITL resume channel backed by the same Run database."""
 
@@ -114,6 +145,17 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     bridge._chat_run_store = store
     _run_context.run_id = run_id
     payload = run.get("execution_payload") or json.loads(run.get("execution_payload_json") or "{}")
+    stage_spec = None
+    if "knowledge_stage" in payload or str(payload.get("run_type", "")).startswith("knowledge_"):
+        from backend.services.knowledge_run_adapter import validate_execution, KnowledgeRunAdapter
+
+        try:
+            stage_spec = validate_execution(run)
+            KnowledgeRunAdapter(store).validate_predecessor(stage_spec)
+        except (ValueError, KeyError, TypeError, PermissionError):
+            store.append_event(run_id, {"type": "error", "code": "knowledge_input_invalid"})
+            _run_context.run_id = ""
+            return
     claims = dict(payload.get("knowledge_claims") or {})
     client_claims = dict(payload.get("client_context_claims") or {})
     qws_claims = dict(payload.get("qws_context_claims") or {})
@@ -123,7 +165,7 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
         knowledge_claims=claims or None,
         client_claims=client_claims or qws_claims or None,
     )
-    sink = DurableEventSink(run_id)
+    sink = KnowledgeEventSink(store, run, stage_spec) if stage_spec else DurableEventSink(run_id)
     agent_holder: list[Any] = [None]
     done = threading.Event()
     monitor = threading.Thread(
@@ -134,9 +176,9 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     try:
         bridge._run_agent_sync(
             str(payload.get("goal") or ""), user_key,
-            bridge._hermes_session_for_request(user_key, payload.get("client_session_context")),
+            (user_key if stage_spec else bridge._hermes_session_for_request(user_key, payload.get("client_session_context"))),
             sink, agent_holder, False, payload.get("agent_config"),
-            _renew_knowledge_capability(claims), claims or None,
+            (None if stage_spec else _renew_knowledge_capability(claims)), claims or None,
             payload.get("client_session_context"), client_claims or None, sandbox,
             bool(payload.get("knowledge_action_enabled")),
             payload.get("qws_business_context"),
@@ -148,6 +190,7 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
         final_answer = str(snapshot.get("final_answer") or "")
         if (
             snapshot["status"] == "completed"
+            and stage_spec is None
             and confidence >= 0.60
             and _AUTO_INGEST_RE.search(original_goal)
             and len(final_answer.strip()) >= 120

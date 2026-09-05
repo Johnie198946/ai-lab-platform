@@ -15,7 +15,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from backend.api import knowledge
-from backend.services.knowledge_catalog import compute_catalog
+from backend.services.knowledge_catalog import (
+    SEARCH_CACHE, compute_catalog, filter_database_live_documents,
+)
 from backend.api.tenant import current_visibility
 from backend.db import SessionLocal
 from backend.models.tenant import KnowledgeAccessAudit, TenantEntitlementSnapshot, TenantMapping
@@ -28,7 +30,7 @@ from backend.services.user_note_context import search_user_notes
 
 router = APIRouter(tags=["knowledge-policy"])
 AUTHEN_WEBHOOK_SECRET = os.environ.get("AUTHEN_ENTITLEMENT_WEBHOOK_SECRET", "")
-_SEARCH_CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_SEARCH_CACHE = SEARCH_CACHE
 _SEARCH_CACHE_TTL = int(os.environ.get("KNOWLEDGE_GATEWAY_CACHE_SECONDS", "300"))
 
 
@@ -193,6 +195,9 @@ async def capability_search(
             _SEARCH_CACHE[key] = (
                 time.monotonic() + _SEARCH_CACHE_TTL, wiki_docs
             )
+        # A lexical cache cannot authorize a document. Recheck durable
+        # contribution lifecycle after both cache hits and fresh searches.
+        wiki_docs = await filter_database_live_documents(wiki_docs, knowledge._vault())
         docs.extend({**item, "source": "tenant_knowledge"} for item in wiki_docs)
     if "user_notes" in requested_sources:
         user_id = str(claims.get("user_id") or "")

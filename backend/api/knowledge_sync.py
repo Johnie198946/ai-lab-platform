@@ -8,7 +8,9 @@ client must not duplicate those responsibilities.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import logging
 import os
 import re
 import tempfile
@@ -16,11 +18,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
-from backend.services.knowledge_contribution import enqueue_note_contribution
+from backend.services.knowledge_contribution import (
+    ContributionCandidate,
+    enqueue_contribution,
+    enqueue_note_contribution,
+    withdraw_contribution,
+)
+from backend.services.knowledge_candidate_ingest import enqueue_and_schedule, schedule_event
+from backend.services.upload_text_extractor import extract_uploaded_text
 from backend.services.user_note_context import (
     archived_note_paths,
     compile_private_note_index,
@@ -35,6 +44,7 @@ from backend.services.user_note_context import (
 
 
 router = APIRouter(prefix="/api/v1/me/knowledge-notes", tags=["knowledge-sync"])
+logger = logging.getLogger(__name__)
 _NOTE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -48,6 +58,16 @@ class NoteSyncRequest(BaseModel):
 
 class NoteArchiveRequest(BaseModel):
     merged_into_note_id: str = Field(..., min_length=1, max_length=128)
+    expected_content_hash: str | None = Field(None, min_length=64, max_length=64)
+
+
+class UploadedFileContributionRequest(BaseModel):
+    tenant_key: str = Field(min_length=1, max_length=128)
+    user_id: str = Field(min_length=1, max_length=128)
+    source_revision: int = Field(ge=1)
+    content_hash: str = Field(min_length=64, max_length=64)
+    source_changed_at: datetime
+    file_opt_out: bool = False
 
 
 def _read_metadata(path: Path) -> dict[str, Any]:
@@ -83,6 +103,28 @@ def _tenant_namespace(tenant_key: str) -> str:
 
 def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
+
+
+async def _withdraw_note_event(
+    *, tenant_key: str, user_id: str, metadata: dict[str, Any], permanent: bool,
+) -> list[str]:
+    event_ids = {
+        str(value) for value in metadata.get("contribution_event_ids") or [] if value
+    }
+    if metadata.get("contribution_event_id"):
+        event_ids.add(str(metadata["contribution_event_id"]))
+    affected: set[str] = set()
+    for event_id in sorted(event_ids):
+        try:
+            affected.update(await withdraw_contribution(
+                tenant_key=tenant_key, user_id=user_id, event_id=event_id,
+                permanent=permanent,
+            ))
+        except ValueError:
+            continue
+        except Exception:
+            logger.exception("note contribution withdrawal failed", extra={"event_id": event_id})
+    return sorted(affected)
 
 
 def _atomic_write(path: Path, content: bytes) -> None:
@@ -124,6 +166,75 @@ def _archived_paths(tenant_key: str, user_id: str, note_id: str) -> tuple[Path, 
     if not _NOTE_ID.fullmatch(note_id):
         raise HTTPException(status_code=422, detail={"code": "invalid_note_id"})
     return archived_note_paths(tenant_key, user_id, note_id, _sync_root())
+
+
+@router.post("/uploaded-files/{source_id}/contribution")
+async def enqueue_uploaded_file_contribution(
+    source_id: str,
+    body: UploadedFileContributionRequest,
+    internal_token: str | None = Header(None, alias="X-Hermes-Internal-Token"),
+) -> dict[str, Any]:
+    """Minimal authenticated bridge for the non-Python Taskboard upload authority."""
+    expected = os.getenv("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+    if not expected or not internal_token or not hmac.compare_digest(internal_token, expected):
+        raise HTTPException(status_code=401, detail={"code": "invalid_internal_token"})
+    if not _NOTE_ID.fullmatch(source_id) or not _SHA256.fullmatch(body.content_hash.lower()):
+        raise HTTPException(status_code=422, detail={"code": "invalid_uploaded_file_source"})
+    contribution = await enqueue_contribution(ContributionCandidate(
+        tenant_key=body.tenant_key,
+        user_id=body.user_id,
+        source_surface="taskboard",
+        source_kind="uploaded_file",
+        source_id=source_id,
+        source_revision=body.source_revision,
+        content_hash=body.content_hash.lower(),
+        source_changed_at=body.source_changed_at,
+        file_opt_out=body.file_opt_out,
+    ))
+    return {
+        "source_id": source_id,
+        "status": "excluded" if body.file_opt_out else "processed",
+        "contribution": contribution,
+    }
+
+
+@router.post("/uploaded-files/{source_id}/content")
+async def ingest_uploaded_file_content(
+    source_id: str,
+    request: Request,
+    internal_token: str | None = Header(None, alias="X-Hermes-Internal-Token"),
+    tenant_key: str = Header(..., alias="X-Tenant-Key"),
+    user_id: str = Header(..., alias="X-User-Id"),
+    source_revision: int = Header(..., alias="X-Source-Revision"),
+    source_changed_at: datetime = Header(..., alias="X-Source-Changed-At"),
+    content_hash: str = Header(..., alias="X-Content-Hash"),
+    filename: str = Header(..., alias="X-File-Name"),
+) -> dict[str, Any]:
+    expected = os.getenv("HERMES_BRIDGE_INTERNAL_TOKEN", "")
+    if not expected or not internal_token or not hmac.compare_digest(internal_token, expected):
+        raise HTTPException(status_code=401, detail={"code": "invalid_internal_token"})
+    if not _NOTE_ID.fullmatch(source_id) or not _SHA256.fullmatch(content_hash.lower()):
+        raise HTTPException(status_code=422, detail={"code": "invalid_uploaded_file_source"})
+    data = await request.body()
+    if len(data) > 25 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail={"code": "uploaded_file_too_large"})
+    if _digest(data) != content_hash.lower():
+        raise HTTPException(status_code=422, detail={"code": "content_hash_mismatch"})
+    try:
+        source_content = extract_uploaded_text(
+            data, filename=filename, content_type=request.headers.get("content-type", ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail={
+            "code": "file_text_extraction_unavailable", "message": str(exc),
+        }) from exc
+    contribution = await enqueue_and_schedule(ContributionCandidate(
+        tenant_key=tenant_key, user_id=user_id, source_surface="taskboard",
+        source_kind="uploaded_file", source_id=source_id,
+        source_revision=source_revision, content_hash=content_hash.lower(),
+        source_changed_at=source_changed_at,
+    ), source_content=source_content)
+    return {"source_id": source_id, "status": "processed", "contribution": contribution}
 
 
 @router.get("")
@@ -229,6 +340,13 @@ async def sync_note(
             "private_index_hash": index_hash,
         }
     _atomic_write(note_path, encoded)
+    previous_metadata = _read_metadata(metadata_path)
+    source_revision = int(previous_metadata.get("contribution_revision") or 0) + 1
+    prior_event_ids = list(previous_metadata.get("contribution_event_ids") or [])
+    if previous_metadata.get("contribution_event_id") not in prior_event_ids:
+        prior_event_ids.append(previous_metadata.get("contribution_event_id"))
+    prior_event_ids = [str(value) for value in prior_event_ids if value]
+    synced_at = datetime.now(timezone.utc)
     metadata = {
         "version": 1,
         "note_id": note_id,
@@ -240,9 +358,11 @@ async def sync_note(
             body.updated_at.astimezone(timezone.utc).isoformat()
             if body.updated_at else None
         ),
-        "synced_at": datetime.now(timezone.utc).isoformat(),
+        "synced_at": synced_at.isoformat(),
         "source": "user_markdown",
         "ingest_target": "raw/dialogues",
+        "contribution_revision": source_revision,
+        "contribution_event_ids": prior_event_ids,
     }
     _atomic_write(
         metadata_path,
@@ -255,9 +375,20 @@ async def sync_note(
         tenant_key=tenant_key,
         user_id=user_id,
         note_id=note_id,
-        source_revision=1,
+        source_revision=source_revision,
         content_hash=actual_hash,
+        source_changed_at=body.updated_at or synced_at,
     )
+    if contribution:
+        contribution = await schedule_event(contribution, source_content=body.markdown)
+        metadata["contribution_event_id"] = contribution["event_id"]
+        metadata["contribution_event_ids"] = [
+            *metadata.get("contribution_event_ids", []), contribution["event_id"],
+        ]
+        _atomic_write(
+            metadata_path,
+            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
     return {
         "note_id": note_id,
         "content_hash": actual_hash,
@@ -301,6 +432,12 @@ async def archive_note(
     note_path, metadata_path = _paths(tenant_key, user_id, note_id)
     archived_note, archived_metadata = _archived_paths(tenant_key, user_id, note_id)
     if archived_note.is_file():
+        archived_state = _read_metadata(archived_metadata)
+        current_target = str(archived_state.get("merged_into_note_id") or "")
+        if current_target and current_target != body.merged_into_note_id:
+            raise HTTPException(status_code=409, detail={"code": "archive_target_conflict"})
+        if body.expected_content_hash and _digest(archived_note.read_bytes()) != body.expected_content_hash:
+            raise HTTPException(status_code=409, detail={"code": "archive_source_changed"})
         removed_active = False
         if note_path.is_file():
             note_path.unlink()
@@ -308,14 +445,21 @@ async def archive_note(
         if metadata_path.is_file():
             metadata_path.unlink()
         remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
+        withdrawn = await _withdraw_note_event(
+            tenant_key=tenant_key, user_id=user_id, metadata=archived_state,
+            permanent=False,
+        )
         return {
             "note_id": note_id,
             "archive_status": "archived",
             "merged_into_note_id": body.merged_into_note_id,
             "changed": removed_active,
+            "withdrawn_contribution_event_ids": withdrawn,
         }
     if not note_path.is_file():
         raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
+    if body.expected_content_hash and _digest(note_path.read_bytes()) != body.expected_content_hash:
+        raise HTTPException(status_code=409, detail={"code": "archive_source_changed"})
     archived_note.parent.mkdir(parents=True, exist_ok=True)
     os.replace(note_path, archived_note)
     metadata: dict[str, Any] = {}
@@ -328,6 +472,7 @@ async def archive_note(
         "archive_status": "archived",
         "archived_at": datetime.now(timezone.utc).isoformat(),
         "merged_into_note_id": body.merged_into_note_id,
+        "contribution_revision": int(metadata.get("contribution_revision") or 1) + 1,
     })
     _atomic_write(
         archived_metadata,
@@ -338,11 +483,15 @@ async def archive_note(
     except FileNotFoundError:
         pass
     remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
+    withdrawn = await _withdraw_note_event(
+        tenant_key=tenant_key, user_id=user_id, metadata=metadata, permanent=False,
+    )
     return {
         "note_id": note_id,
         "archive_status": "archived",
         "merged_into_note_id": body.merged_into_note_id,
         "changed": True,
+        "withdrawn_contribution_event_ids": withdrawn,
     }
 
 
@@ -370,6 +519,9 @@ async def restore_note(
     metadata.pop("archived_at", None)
     metadata.pop("merged_into_note_id", None)
     metadata["archive_status"] = "active"
+    restored_at = datetime.now(timezone.utc)
+    metadata["restored_at"] = restored_at.isoformat()
+    metadata["contribution_revision"] = int(metadata.get("contribution_revision") or 1) + 1
     _atomic_write(
         metadata_path,
         json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
@@ -379,7 +531,27 @@ async def restore_note(
     except FileNotFoundError:
         pass
     update_private_note_index(tenant_key, user_id, note_path, _sync_root())
-    return {"note_id": note_id, "archive_status": "active", "changed": True}
+    contribution = await enqueue_note_contribution(
+        tenant_key=tenant_key, user_id=user_id, note_id=note_id,
+        source_revision=metadata["contribution_revision"],
+        content_hash=_digest(note_path.read_bytes()), source_changed_at=restored_at,
+    )
+    if contribution:
+        contribution = await schedule_event(
+            contribution, source_content=note_path.read_text(encoding="utf-8"),
+        )
+        metadata["contribution_event_id"] = contribution["event_id"]
+        metadata["contribution_event_ids"] = [
+            *metadata.get("contribution_event_ids", []), contribution["event_id"],
+        ]
+        _atomic_write(
+            metadata_path,
+            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+    return {
+        "note_id": note_id, "archive_status": "active", "changed": True,
+        "contribution": contribution,
+    }
 
 
 @router.post("/{note_id}/trash")
@@ -398,13 +570,21 @@ async def trash_note(
     destination = directory / f"{note_id}.md"
     destination_metadata = directory / f"{note_id}.sync.json"
     if destination.is_file():
+        trashed_state = _read_metadata(destination_metadata)
         for path in (note_path, metadata_path, archived_note, archived_metadata):
             try:
                 path.unlink()
             except FileNotFoundError:
                 pass
         remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
-        return {"note_id": note_id, "trash_status": "trashed", "changed": False}
+        withdrawn = await _withdraw_note_event(
+            tenant_key=tenant_key, user_id=user_id, metadata=trashed_state,
+            permanent=True,
+        )
+        return {
+            "note_id": note_id, "trash_status": "trashed", "changed": False,
+            "withdrawn_contribution_event_ids": withdrawn,
+        }
     if not source_note.is_file():
         raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
     directory.mkdir(parents=True, exist_ok=True)
@@ -428,4 +608,10 @@ async def trash_note(
     except FileNotFoundError:
         pass
     remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
-    return {"note_id": note_id, "trash_status": "trashed", "changed": True}
+    withdrawn = await _withdraw_note_event(
+        tenant_key=tenant_key, user_id=user_id, metadata=metadata, permanent=True,
+    )
+    return {
+        "note_id": note_id, "trash_status": "trashed", "changed": True,
+        "withdrawn_contribution_event_ids": withdrawn,
+    }

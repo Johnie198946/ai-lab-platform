@@ -196,15 +196,21 @@ public final class KnowledgeNoteStore: ObservableObject {
         do {
             let response = try await APIClient.shared.fetchKnowledgeNotes()
             guard accountFingerprint == expectedFingerprint else { return }
-            for snapshot in response.items {
-                try applyCloudSnapshot(snapshot)
-            }
-            reload()
+            try restoreFromCloudSnapshot(response)
             lastError = nil
         } catch {
             guard accountFingerprint == expectedFingerprint else { return }
             lastError = "云端笔记暂未同步：\(error.localizedDescription)"
         }
+    }
+
+    /// Materialize a server-authenticated snapshot in the local vault so a
+    /// server-proposed action can reference notes absent from this device.
+    public func restoreFromCloudSnapshot(_ response: CloudKnowledgeNotesResponse) throws {
+        for snapshot in response.items {
+            try applyCloudSnapshot(snapshot)
+        }
+        reload()
     }
 
     private func applyCloudSnapshot(_ snapshot: CloudKnowledgeNoteDTO) throws {
@@ -836,7 +842,7 @@ public final class KnowledgeActionExecutor {
     private func applySteps(_ steps: [KnowledgeActionStep], actionId: String) throws -> [String] {
         var changed: [String] = []
         for (index, step) in steps.enumerated() {
-            let stableID = stableNoteID(actionId: actionId, index: index)
+            let stableID = Self.stableNoteID(actionId: actionId, index: index)
             switch step.kind {
             case "create_note", "create_daily_note":
                 let body = markdownBody(step.markdown ?? "")
@@ -859,18 +865,31 @@ public final class KnowledgeActionExecutor {
                 changed.append(id)
             case "merge_notes":
                 let body = markdownBody(step.markdown ?? "")
+                let primaryID = Self.mergePrimaryNoteID(
+                    step: step, actionId: actionId, stepIndex: index
+                )
                 let merged: KnowledgeNote?
-                if let target = step.targetNoteId, let note = store.note(id: target) {
-                    merged = store.save(id: target, title: step.title ?? note.title, body: body, tags: step.tags.isEmpty ? note.tags : step.tags, isPinned: note.isPinned)
+                if let note = store.note(id: primaryID) {
+                    merged = store.save(
+                        id: primaryID,
+                        title: step.title ?? note.title,
+                        body: body,
+                        tags: step.tags.isEmpty ? note.tags : step.tags,
+                        isPinned: note.isPinned
+                    )
                 } else {
-                    merged = store.createNote(id: stableID, title: step.title ?? inferredTitle(step.markdown), body: body, tags: step.tags)
+                    merged = store.createNote(
+                        id: primaryID,
+                        title: step.title ?? inferredTitle(step.markdown),
+                        body: body,
+                        tags: step.tags
+                    )
                 }
                 guard let merged else { throw ActionError.writeFailed }
+                // Sources stay active until the primary has passed server CAS and
+                // read-back verification. A retry can therefore resume safely.
                 changed.append(merged.id)
-                for sourceID in step.sourceNoteIds where sourceID != merged.id {
-                    guard store.archive(id: sourceID, mergedInto: merged.id) != nil else { throw ActionError.writeFailed }
-                    changed.append(sourceID)
-                }
+                changed.append(contentsOf: Self.mergeArchiveSourceIDs(step: step, primaryID: merged.id))
             case "archive_note":
                 guard let id = step.targetNoteId, store.archive(id: id, mergedInto: id) != nil else { throw ActionError.writeFailed }
                 changed.append(id)
@@ -898,7 +917,8 @@ public final class KnowledgeActionExecutor {
 
     private func synchronize(_ action: KnowledgeActionBlock, capability: String?, noteIds: [String], expectedFingerprint: String) async -> KnowledgeActionExecutionResult {
         do {
-            for step in action.steps {
+            var mergeHandledIDs = Set<String>()
+            for (index, step) in action.steps.enumerated() {
                 guard store.accountFingerprint == expectedFingerprint else { throw ActionError.accountChanged }
                 if step.kind == "move_to_trash", let id = step.targetNoteId {
                     try await APIClient.shared.trashKnowledgeNote(id: id)
@@ -909,17 +929,20 @@ public final class KnowledgeActionExecutor {
                     try await APIClient.shared.archiveKnowledgeNote(id: id, mergedIntoNoteId: id)
                 } else if step.kind == "restore_note", let id = step.targetNoteId {
                     try await APIClient.shared.restoreKnowledgeNote(id: id)
-                }
-                if step.kind == "merge_notes" {
-                    for id in step.sourceNoteIds {
-                        if let archived = store.archivedNote(id: id) {
-                            try await APIClient.shared.syncKnowledgeNote(id: id, markdown: store.markdown(for: archived), updatedAt: archived.updatedAt)
-                        }
-                        try await APIClient.shared.archiveKnowledgeNote(id: id, mergedIntoNoteId: noteIds.first ?? id)
-                    }
+                } else if step.kind == "merge_notes" {
+                    let primaryID = Self.mergePrimaryNoteID(
+                        step: step, actionId: action.id, stepIndex: index
+                    )
+                    try await synchronizeMerge(
+                        step, primaryID: primaryID, expectedFingerprint: expectedFingerprint
+                    )
+                    mergeHandledIDs.insert(primaryID)
+                    mergeHandledIDs.formUnion(
+                        Self.mergeArchiveSourceIDs(step: step, primaryID: primaryID)
+                    )
                 }
             }
-            for id in noteIds {
+            for id in noteIds where !mergeHandledIDs.contains(id) {
                 guard store.accountFingerprint == expectedFingerprint else { throw ActionError.accountChanged }
                 if let note = store.note(id: id) {
                     try await APIClient.shared.syncKnowledgeNote(id: id, markdown: store.markdown(for: note), updatedAt: note.updatedAt)
@@ -939,8 +962,91 @@ public final class KnowledgeActionExecutor {
                 noteIds: noteIds, errorCode: "sync_failed"
             )
             updateReceipt(action, state: .syncPending, ids: noteIds)
-            return .init(state: .syncPending, noteIds: noteIds, message: "已应用到本地，等待同步")
+            return .init(state: .syncPending, noteIds: noteIds, message: "已保存合并进度，可重试完成同步与归档")
         }
+    }
+
+    /// Server order is deliberate: verify the primary content first, then archive
+    /// each non-primary source. Every check is idempotent so a partial failure can resume.
+    private func synchronizeMerge(
+        _ step: KnowledgeActionStep,
+        primaryID: String,
+        expectedFingerprint: String
+    ) async throws {
+        guard let primary = store.note(id: primaryID) else { throw ActionError.targetMissing }
+        let primaryMarkdown = store.markdown(for: primary)
+        let desiredHash = store.contentHash(for: primary)
+        let expectedBaseHash = step.originalContentHash
+            ?? step.sourceContentHashes?[primaryID]
+            ?? nil
+
+        var cloud = try await APIClient.shared.fetchKnowledgeNotes(includeArchived: true)
+        if !cloud.items.contains(where: {
+            $0.noteId == primaryID && !$0.archived && $0.contentHash == desiredHash
+        }) {
+            if cloud.items.contains(where: { $0.noteId == primaryID && $0.archived }) {
+                throw ActionError.primaryArchived
+            }
+            let activePrimary = cloud.items.first(where: {
+                $0.noteId == primaryID && !$0.archived
+            })
+            if activePrimary != nil, expectedBaseHash == nil {
+                throw ActionError.targetChanged
+            }
+            try await APIClient.shared.syncKnowledgeNote(
+                id: primaryID,
+                markdown: primaryMarkdown,
+                updatedAt: primary.updatedAt,
+                // An unsynced local primary is created with no base. Existing
+                // server notes always use the proposal's original hash as CAS.
+                baseHash: activePrimary == nil ? nil : expectedBaseHash
+            )
+            cloud = try await APIClient.shared.fetchKnowledgeNotes(includeArchived: true)
+        }
+        guard cloud.items.contains(where: {
+            $0.noteId == primaryID && !$0.archived && $0.contentHash == desiredHash
+        }) else { throw ActionError.readBackFailed }
+
+        for sourceID in Self.mergeArchiveSourceIDs(step: step, primaryID: primaryID) {
+            guard store.accountFingerprint == expectedFingerprint else { throw ActionError.accountChanged }
+            cloud = try await APIClient.shared.fetchKnowledgeNotes(includeArchived: true)
+            if let archived = cloud.items.first(where: { $0.noteId == sourceID && $0.archived }) {
+                guard archived.mergedIntoNoteId == primaryID else { throw ActionError.archiveConflict }
+            } else {
+                guard let source = store.note(id: sourceID) else { throw ActionError.targetMissing }
+                let sourceHash = store.contentHash(for: source)
+                guard let expectedSourceHash = step.sourceContentHashes?[sourceID] ?? nil,
+                      expectedSourceHash == sourceHash
+                else { throw ActionError.targetChanged }
+                if let active = cloud.items.first(where: { $0.noteId == sourceID && !$0.archived }) {
+                    guard active.contentHash == expectedSourceHash else {
+                        throw ActionError.targetChanged
+                    }
+                } else {
+                    try await APIClient.shared.syncKnowledgeNote(
+                        id: sourceID,
+                        markdown: store.markdown(for: source),
+                        updatedAt: source.updatedAt
+                    )
+                }
+                try await APIClient.shared.archiveKnowledgeNote(
+                    id: sourceID,
+                    mergedIntoNoteId: primaryID,
+                    expectedContentHash: expectedSourceHash
+                )
+                cloud = try await APIClient.shared.fetchKnowledgeNotes(includeArchived: true)
+                guard cloud.items.contains(where: {
+                    $0.noteId == sourceID && $0.archived && $0.mergedIntoNoteId == primaryID
+                }) else { throw ActionError.readBackFailed }
+            }
+            guard store.archive(id: sourceID, mergedInto: primaryID) != nil,
+                  store.note(id: sourceID) == nil,
+                  store.archivedNote(id: sourceID)?.mergedIntoNoteId == primaryID
+            else { throw ActionError.readBackFailed }
+        }
+        guard store.note(id: primaryID) != nil,
+              store.archivedNote(id: primaryID) == nil
+        else { throw ActionError.primaryArchived }
     }
 
     private func finalizeLedger(
@@ -968,7 +1074,29 @@ public final class KnowledgeActionExecutor {
         )
     }
 
-    private func stableNoteID(actionId: String, index: Int) -> String {
+    static func mergePrimaryNoteID(
+        step: KnowledgeActionStep,
+        actionId: String,
+        stepIndex: Int
+    ) -> String {
+        if let target = step.targetNoteId?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !target.isEmpty {
+            return target
+        }
+        if let stableSource = Set(step.sourceNoteIds).sorted().first {
+            return stableSource
+        }
+        return stableNoteID(actionId: actionId, index: stepIndex)
+    }
+
+    static func mergeArchiveSourceIDs(
+        step: KnowledgeActionStep,
+        primaryID: String
+    ) -> [String] {
+        Array(Set(step.sourceNoteIds.filter { !$0.isEmpty && $0 != primaryID })).sorted()
+    }
+
+    private static func stableNoteID(actionId: String, index: Int) -> String {
         let digest = SHA256.hash(data: Data("\(actionId):\(index)".utf8)).map { String(format: "%02x", $0) }.joined()
         return "ka-\(digest.prefix(32))"
     }
@@ -1040,13 +1168,18 @@ public final class KnowledgeActionExecutor {
     }
 
     private enum ActionError: LocalizedError {
-        case targetMissing, writeFailed, unsupported, accountChanged
+        case targetMissing, targetChanged, writeFailed, unsupported, accountChanged
+        case readBackFailed, archiveConflict, primaryArchived
         var errorDescription: String? {
             switch self {
             case .targetMissing: return "目标笔记不存在"
+            case .targetChanged: return "来源笔记已变化，请重新生成合并方案"
             case .writeFailed: return "本地笔记写入失败"
             case .unsupported: return "暂不支持该知识操作"
             case .accountChanged: return "账号已切换，旧账号同步已取消"
+            case .readBackFailed: return "服务端读回校验失败，可重试继续"
+            case .archiveConflict: return "来源笔记已归档到其他主笔记"
+            case .primaryArchived: return "主笔记不能被归档"
             }
         }
     }

@@ -116,4 +116,105 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         store.reload()
         XCTAssertEqual(store.notes.count, 1_000)
     }
+
+    func testKnowledgeMergeChoosesStablePrimaryAndNeverArchivesIt() {
+        let step = KnowledgeActionStep(
+            kind: "merge_notes",
+            sourceNoteIds: ["note-z", "note-a", "note-z"],
+            markdown: "# merged"
+        )
+        let primary = KnowledgeActionExecutor.mergePrimaryNoteID(
+            step: step, actionId: "action-1", stepIndex: 0
+        )
+        XCTAssertEqual(primary, "note-a")
+        XCTAssertEqual(
+            KnowledgeActionExecutor.mergeArchiveSourceIDs(step: step, primaryID: primary),
+            ["note-z"]
+        )
+
+        let explicit = KnowledgeActionStep(
+            kind: "merge_notes",
+            targetNoteId: "note-z",
+            sourceNoteIds: ["note-a", "note-z"],
+            markdown: "# merged"
+        )
+        XCTAssertEqual(
+            KnowledgeActionExecutor.mergePrimaryNoteID(
+                step: explicit, actionId: "action-1", stepIndex: 0
+            ),
+            "note-z"
+        )
+        XCTAssertEqual(
+            KnowledgeActionExecutor.mergeArchiveSourceIDs(step: explicit, primaryID: "note-z"),
+            ["note-a"]
+        )
+
+        let noCandidates = KnowledgeActionStep(kind: "merge_notes", markdown: "# merged")
+        let generatedPrimary = KnowledgeActionExecutor.mergePrimaryNoteID(
+            step: noCandidates, actionId: "stable-action", stepIndex: 2
+        )
+        XCTAssertEqual(
+            generatedPrimary,
+            KnowledgeActionExecutor.mergePrimaryNoteID(
+                step: noCandidates, actionId: "stable-action", stepIndex: 2
+            )
+        )
+        XCTAssertTrue(generatedPrimary.hasPrefix("ka-"))
+    }
+
+    func testServerSyncedNotesParticipateInKnowledgeWorkspaceSnapshot() {
+        let server = ChatLocalNoteDTO(
+            id: "server-only",
+            title: "服务端笔记",
+            markdown: "# 服务端笔记\n\n正文",
+            updatedAt: "2026-09-05T01:00:00Z",
+            contentHash: String(repeating: "a", count: 64)
+        )
+        let local = ChatLocalNoteDTO(
+            id: "local-only",
+            title: "本地笔记",
+            markdown: "# 本地笔记",
+            updatedAt: "2026-09-05T02:00:00Z",
+            contentHash: String(repeating: "b", count: 64)
+        )
+        let snapshot = TenantSessionCoordinator.mergeWorkspaceNotes(
+            server: [server], local: [local]
+        )
+        XCTAssertEqual(Set(snapshot.map(\.id)), Set(["server-only", "local-only"]))
+        XCTAssertEqual(snapshot.first(where: { $0.id == "server-only" })?.contentHash, server.contentHash)
+    }
+
+    func testNewerLocalEditWinsOverServerSnapshotOfSameNote() {
+        let server = ChatLocalNoteDTO(
+            id: "same",
+            title: "服务端",
+            markdown: "old",
+            updatedAt: "2026-09-05T01:00:00Z",
+            contentHash: String(repeating: "a", count: 64)
+        )
+        let local = ChatLocalNoteDTO(
+            id: "same",
+            title: "本地",
+            markdown: "new",
+            updatedAt: "2026-09-05T02:00:00Z",
+            contentHash: String(repeating: "b", count: 64)
+        )
+        let snapshot = TenantSessionCoordinator.mergeWorkspaceNotes(
+            server: [server], local: [local]
+        )
+        XCTAssertEqual(snapshot.map(\.markdown), ["new"])
+    }
+
+    func testSaveIntentRequiresProposalButUnrelatedSaveQuestionDoesNot() {
+        XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("把这段整理成笔记并保存"))
+        XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("合并这两篇笔记"))
+        XCTAssertFalse(TenantSessionCoordinator.requiresKnowledgeActionProposal("iOS 如何保存图片到相册？"))
+        XCTAssertFalse(TenantSessionCoordinator.requiresKnowledgeActionProposal("解释一下这段内容"))
+        XCTAssertTrue(TenantSessionCoordinator.shouldShowKnowledgeProposalRetry(
+            userText: "保存为笔记", hasProposal: false
+        ))
+        XCTAssertFalse(TenantSessionCoordinator.shouldShowKnowledgeProposalRetry(
+            userText: "保存为笔记", hasProposal: true
+        ))
+    }
 }

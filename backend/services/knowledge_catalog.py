@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 from backend.services.knowledge_color_projection import (
     approved_color_documents,
@@ -35,6 +38,17 @@ LEGACY_PUBLIC_CATEGORIES: tuple[str, ...] = (
     "wiki", "raw", "研究系统", "竞品情报", "AI情报雷达", "产品设计",
     "客户画像", "任务记录", "决策记录",
 )
+BLOCKED_LIFECYCLE_STATES = frozenset({
+    "archived", "deleted", "superseded", "stale", "quarantined",
+    "withdraw_pending", "withdrawing", "withdrawn", "recompile_required",
+})
+CONTRIBUTION_PUBLICATION_POLICY = "tenant_contribution_policy_v1"
+SEARCH_CACHE: dict = {}
+
+
+def clear_knowledge_caches() -> None:
+    clear_manifest_cache()
+    SEARCH_CACHE.clear()
 
 
 def _vault() -> Path:
@@ -70,6 +84,43 @@ def clear_manifest_cache() -> None:
     clear_color_projection_cache()
 
 
+def _live_frontmatter(vault: Path, relative_path: str) -> dict[str, Any]:
+    """Read lifecycle metadata on every access, outside projection caches."""
+    try:
+        path = (vault / relative_path).resolve()
+        if vault.resolve() not in path.parents:
+            return {}
+        text = path.read_text(encoding="utf-8", errors="replace")
+        match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", text, re.DOTALL)
+        value = yaml.safe_load(match.group(1)) if match else None
+        return value if isinstance(value, dict) else {}
+    except (OSError, yaml.YAMLError):
+        return {}
+
+
+def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any] | None:
+    """Recheck withdrawal metadata even when the catalog scan was cached."""
+    relative = str(item.get("path") or "")
+    metadata = _live_frontmatter(vault, relative)
+    state = str(metadata.get("status") or item.get("status") or "active").strip().lower()
+    if state in BLOCKED_LIFECYCLE_STATES:
+        return None
+    if any(metadata.get(flag, item.get(flag)) is False for flag in (
+        "enforced_searchable", "enforced_summarizable", "enforced_agent_callable"
+    )):
+        return None
+    result = dict(item)
+    policy = str(metadata.get("publication_policy") or item.get("publication_policy") or "")
+    projection_id = str(metadata.get("contribution_projection_id")
+                        or item.get("contribution_projection_id") or "")
+    if policy == CONTRIBUTION_PUBLICATION_POLICY and not projection_id:
+        return None
+    if policy or projection_id:
+        result["publication_policy"] = policy
+        result["contribution_projection_id"] = projection_id
+    return result
+
+
 def document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:
     vault = vault or _vault()
     manifest = load_manifest(vault)
@@ -80,7 +131,57 @@ def document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:
     }
     for item in approved_color_documents(vault):
         compiled[str(item["path"])] = item
-    return compiled
+    return {
+        path: live
+        for path, item in compiled.items()
+        if (live := _apply_file_read_barrier(vault, item)) is not None
+    }
+
+
+async def filter_database_live_documents(
+    documents: list[dict[str, Any]], vault: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Recheck durable contribution state after every search cache hit."""
+    vault = vault or _vault()
+    live = []
+    guarded: list[tuple[dict[str, Any], str, str]] = []
+    for document in documents:
+        relative = str(document.get("path") or "")
+        item = _apply_file_read_barrier(vault, document)
+        if item is None:
+            continue
+        metadata = _live_frontmatter(vault, relative)
+        projection_id = str(metadata.get("contribution_projection_id")
+                            or item.get("contribution_projection_id") or "")
+        policy = str(metadata.get("publication_policy") or item.get("publication_policy") or "")
+        if projection_id or policy == CONTRIBUTION_PUBLICATION_POLICY:
+            guarded.append((item, projection_id, relative))
+        else:
+            live.append(item)
+    if not guarded:
+        return live
+    try:
+        from sqlalchemy import select
+        from backend.db import SessionLocal
+        from backend.models.knowledge_contribution import KnowledgeContributionProjection
+        ids = [projection_id for _, projection_id, _ in guarded if projection_id]
+        async with SessionLocal() as db:
+            rows = (await db.scalars(select(KnowledgeContributionProjection).where(
+                KnowledgeContributionProjection.projection_id.in_(ids)
+            ))).all() if ids else []
+        by_id = {row.projection_id: row for row in rows}
+    except Exception:
+        return live
+    for item, projection_id, relative in guarded:
+        row = by_id.get(projection_id)
+        snapshot = row.metadata_snapshot if row is not None else {}
+        if (row is not None and row.status == "active" and row.security_level == "green"
+                and row.artifact_ref == relative
+                and all(snapshot.get(flag) is True for flag in (
+                    "enforced_searchable", "enforced_summarizable", "enforced_agent_callable"
+                ))):
+            live.append(item)
+    return live
 
 
 def _legacy_catalog(vault: Path) -> list[dict[str, Any]]:

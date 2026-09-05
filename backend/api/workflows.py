@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -87,8 +88,41 @@ from backend.services.workflow_insights import (
     build_explain_context_snapshot,
     compile_evidence_bound_report,
 )
+from backend.services.knowledge_contribution import (
+    ContributionCandidate,
+)
+from backend.services.knowledge_candidate_ingest import enqueue_and_schedule
 
 router = APIRouter(prefix="/api/v1", tags=["workflows"])
+logger = logging.getLogger(__name__)
+
+
+async def _enqueue_workflow_artifact(
+    *, artifact: WorkflowArtifact, tenant_key: str, user_id: str,
+    fallback_changed_at: datetime,
+) -> dict[str, Any] | None:
+    try:
+        root = Path(os.environ.get(
+            "AI_LAB_HOME", str(Path(__file__).resolve().parents[2] / "data" / "vault")
+        )).resolve()
+        relative = artifact.published_path or artifact.relative_path
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            raise ValueError("approved workflow artifact is not readable")
+        content = read_verified_artifact(path, artifact.content_hash)
+        return await enqueue_and_schedule(ContributionCandidate(
+            tenant_key=tenant_key, user_id=user_id, source_surface="workflow",
+            source_kind="workflow_artifact", source_id=artifact.id,
+            source_revision=1, content_hash=artifact.content_hash.lower(),
+            source_changed_at=artifact.created_at or fallback_changed_at,
+        ), source_content=content)
+    except Exception:
+        logger.exception(
+            "workflow artifact contribution enqueue failed",
+            extra={"artifact_id": artifact.id},
+        )
+        return None
+
 
 def now() -> datetime:
     return datetime.now(timezone.utc)
@@ -2717,9 +2751,19 @@ async def approve_output(
             )
         )
         await db.commit()
+        actor_id = str(payload.get("user_id") or payload.get("sub") or "")
+        contributions = []
+        for artifact in artifacts:
+            if not artifact.published_path:
+                continue
+            contributions.append(await _enqueue_workflow_artifact(
+                artifact=artifact, tenant_key=execution.tenant_key,
+                user_id=actor_id, fallback_changed_at=execution.finished_at,
+            ))
         return {
             "execution": execution_out(execution),
             "published": [
                 item.published_path for item in artifacts if item.published_path
             ],
+            "contributions": [item for item in contributions if item],
         }

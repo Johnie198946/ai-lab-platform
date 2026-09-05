@@ -36,6 +36,7 @@ from backend.api.knowledge_sync import router as knowledge_sync_router
 from backend.api.knowledge_actions import router as knowledge_actions_router
 from backend.api.subscriptions import router as subscriptions_router
 from backend.api.knowledge_publication import router as knowledge_publication_router
+from backend.api.knowledge_contribution import router as knowledge_contribution_router
 from backend.api.hot_memory import router as hot_memory_router
 from backend.api.external_auth import router as external_auth_router
 from backend.api.quantum_workspace import router as quantum_workspace_router
@@ -90,6 +91,11 @@ async def lifespan(app: FastAPI):
             await resume_pending_planning()
         except Exception:
             logger.exception("Durable planning-job recovery failed; worker will retry")
+        from backend.services.knowledge_pipeline_supervisor import (
+            start_knowledge_pipeline_supervisor,
+        )
+
+        start_knowledge_pipeline_supervisor()
     # 启动平台 Agent 调度器(容器重启自动恢复)
     from backend.services.agent_scheduler import start_scheduler
 
@@ -104,6 +110,12 @@ async def lifespan(app: FastAPI):
     from backend.services.entitlement_sync import stop_entitlement_sync
 
     await stop_entitlement_sync()
+    if db_ready:
+        from backend.services.knowledge_pipeline_supervisor import (
+            stop_knowledge_pipeline_supervisor,
+        )
+
+        await stop_knowledge_pipeline_supervisor()
 
 
 app = FastAPI(
@@ -160,6 +172,7 @@ app.include_router(external_auth_router)
 app.include_router(catalog_router, dependencies=[Depends(require_auth)])
 app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
 app.include_router(knowledge_publication_router, dependencies=[Depends(require_auth)])
+app.include_router(knowledge_contribution_router, dependencies=[Depends(require_auth)])
 app.include_router(hot_memory_router, dependencies=[Depends(require_auth)])
 app.include_router(me_router, dependencies=[Depends(require_auth)])
 # Agent 协议签署

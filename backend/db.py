@@ -69,6 +69,9 @@ async def init_db() -> None:
     import backend.models.workspace  # noqa: F401  (注册 QuantumWorkspace 控制面模型)
     import backend.models.resource_catalog  # noqa: F401  (注册数据集、模型、拓扑与监控注册表)
     import backend.models.feedback  # noqa: F401  (注册用户抱怨与日报投递账本)
+    from backend.services.knowledge_contribution_schema import (
+        migrate_knowledge_contribution_v4,
+    )
 
     async with engine.begin() as conn:
         if conn.dialect.name == "postgresql":
@@ -76,6 +79,7 @@ async def init_db() -> None:
             # discovery and additive DDL so check-then-ALTER migrations cannot race.
             await conn.exec_driver_sql("SELECT pg_advisory_xact_lock(486443210947)")
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(migrate_knowledge_contribution_v4)
         await conn.run_sync(_migrate_workflow_v2_columns)
         await conn.run_sync(_migrate_workflow_lifecycle_columns)
         await conn.run_sync(_migrate_workflow_contract_columns)

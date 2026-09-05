@@ -1846,6 +1846,29 @@ def _knowledge_workspace_read_tool(args: dict[str, Any], **_kwargs) -> str:
         query = str((args or {}).get("query") or "").strip().casefold()
         if not query:
             return json.dumps({"success": False, "error": "query_required"})
+        # The signed private-note capability is authoritative. Inline notes are
+        # only an offline/cache fallback and must not cap discovery to one device.
+        gateway_result = json.loads(_user_note_search_tool({"query": query, "limit": 10}))
+        gateway_docs = gateway_result.get("docs") if gateway_result.get("success") else []
+        if gateway_docs:
+            existing = {str(item.get("id")): item for item in notes}
+            for doc in gateway_docs:
+                note_id = str(doc.get("id") or "").strip()
+                if not note_id:
+                    continue
+                existing[note_id] = {
+                    "id": note_id,
+                    "title": str(doc.get("title") or "无标题")[:200],
+                    "markdown": str(doc.get("markdown") or doc.get("snippet") or "")[:500_000],
+                    "updated_at": doc.get("updated_at"),
+                    "content_hash": doc.get("content_hash"),
+                    "tags": doc.get("tags") or [],
+                    "aliases": doc.get("aliases") or [],
+                    "archived": bool(doc.get("archived")),
+                }
+            context["inline_notes"] = list(existing.values())
+            notes = list(existing.values())
+            return json.dumps({"success": True, "notes": notes[:10]}, ensure_ascii=False)
         terms = [item for item in re.split(r"\s+", query) if item]
         notes = [
             item for item in notes
@@ -4737,7 +4760,7 @@ def _build_in_process_agent(
     composition = agent_config.get("composition") or {}
     triage = _request_triage(agent_config)
     route_class = triage.get("route_class") if triage else None
-    note_draft_request = _is_note_draft_request(goal)
+    note_draft_request = not (agent_config or {}).get("knowledge_stage_only") and _is_note_draft_request(goal)
     if route_class == GENERAL_QA:
         cfg_model = os.environ.get("HERMES_FAST_CHAT_MODEL", "gpt-5.4-nano")
     evidence_requirements = set(
@@ -4982,6 +5005,15 @@ def _build_in_process_agent(
 
     set_session_cwd(str(sandbox.root))
 
+    # Knowledge transforms use the same Hermes agent/SessionDB, but no tools.
+    # An empty list means defaults in some Hermes versions; verify a sentinel.
+    if agent_config.get("knowledge_stage_only") is True:
+        from model_tools import get_tool_definitions
+
+        toolsets_list = ["__knowledge_stage_no_tools__"]
+        if get_tool_definitions(enabled_toolsets=toolsets_list, quiet_mode=True):
+            raise RuntimeError("knowledge stage tool isolation failed closed")
+
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
     # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
     agent = AIAgent(
@@ -5146,7 +5178,7 @@ def _run_agent_sync(
         if sandbox is None:
             raise RuntimeError("tenant_sandbox_unavailable")
         _sandbox_tool_context.value = sandbox
-        note_draft_request = _is_note_draft_request(goal)
+        note_draft_request = not (agent_config or {}).get("knowledge_stage_only") and _is_note_draft_request(goal)
         note_context_claims = client_context_claims or knowledge_claims
         has_client_context = (
             client_session_context is not None and client_context_claims is not None
@@ -5254,6 +5286,9 @@ def _run_agent_sync(
         # （hermes_sid=None 首请求）。显式迁移/灾备快照必须先进入 Hermes
         # SessionDB，再建立映射；正常空能力信封不会写入任何客户端历史。
         agent_sid = getattr(agent, "session_id", None) or hermes_sid
+        if (agent_config or {}).get("knowledge_stage_only") is True:
+            if not hermes_sid or getattr(agent, "session_id", None) != hermes_sid:
+                raise RuntimeError("knowledge stage session isolation failed closed")
         migrated_history = False
         if (
             not hermes_sid
