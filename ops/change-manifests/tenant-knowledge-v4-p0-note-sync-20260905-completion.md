@@ -1,17 +1,17 @@
 # 租户知识与平台知识 V4 — P0 笔记同步正确性
 
 - task_id: tenant-knowledge-v4-p0-note-sync-20260905
-- status: TESTED
+- status: VERIFIED
 - branch: main
 - worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-qws-errors-20260903`
-- head/local_commit: `7d6ed3a` (本任务改动尚未提交)
-- remote_sha: `7d6ed3a`（开发前已 fast-forward 到 origin/main）
-- server_before: 未部署
-- server_after: 未部署
-- health_check: 未执行；本任务未部署服务器
-- functional_check: targeted `python3 -m pytest -q tests/test_knowledge_contribution.py tests/test_knowledge_sync_api.py tests/test_chat_triage.py tests/test_user_note_context.py tests/test_client_session_notes.py` → 58 passed；`compileall` → 通过；`git diff --check` → 通过
+- head/local_commit: `83ca2ed3382e3dad542a31dd541653b13e40f51e`
+- remote_sha: `83ca2ed3382e3dad542a31dd541653b13e40f51e`
+- server_before: `bc2af7208aced9171b531a64b934a8b23776fcb5`
+- server_after: `83ca2ed3382e3dad542a31dd541653b13e40f51e`
+- health_check: `/health` → `{"status":"ready","version":"0.8.0"}`；Hermes bridge → `{"status":"ok","service":"hermes-bridge","version":"v6.0"}`
+- functional_check: targeted 回归 → 61 passed；签名 JWT HTTP E2E：首次同步 `200/changed=true`，重复同步 `200/changed=false`，Outbox `count=1`，测试数据清理通过；`compileall`、`bash -n`、`git diff --check` 通过
 - full_suite_check: `python3 -m pytest -q` → 1030 passed, 2 skipped, 28 failed, 62 errors；失败主体为现有 TestClient/httpx 兼容性、既有 QWS 测试隔离/fixture 和环境依赖问题，不能作为本变更通过依据。
-- rollback_point: 当前 `origin/main` SHA `7d6ed3a`；本地改动未提交，可逐文件审查后回滚
+- rollback_point: `/opt/releases/ai-lab-platform-bc2af7208ace.pFnUhX`
 - manifest: 本文件
 
 ## 盘点
@@ -52,7 +52,7 @@
 
 ## 剩余风险
 
-- 尚未实现 V4 的统一 Contribution Outbox、授权生效时间门禁、Red Wiki 编译、Green 双 Hermes 校验、跨来源血缘及撤回状态机。
+- 本轮已实现笔记来源的统一 Contribution Outbox 和授权生效时间门禁；Red Wiki 编译、Green 双 Hermes 校验、跨来源血缘及撤回状态机仍未实现。
 - 单笔记索引更新仍会原子重写 manifest 文件本身；避免了目录扫描和无变化重写，但尚未升级为数据库/分片索引。
-- 未执行 iOS 模拟器或真实浏览器认证 E2E；本次变更范围是后端笔记同步 API。
-- 未提交、未推送、未部署；不能称为上线或 VERIFIED。
+- 已执行真实签名 JWT HTTP E2E；尚未执行 iOS 模拟器验收。
+- 生产首次验收发现无 `CAP_DAC_OVERRIDE` 的 API 容器无法写入 Mac UID 501 所有的 `755` 共享目录；已通过受控 ownership 归一化修复，未放宽为 `777`。
