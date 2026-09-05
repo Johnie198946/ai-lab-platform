@@ -36,6 +36,16 @@ def test_triage_matrix(question: str, expected: str):
     assert classify_request(question).route_class == expected
 
 
+def test_personal_note_requests_use_private_search_only():
+    mine = classify_request("查一下我的笔记")
+    assert mine.evidence_requirements == ("user_note_search",)
+    assert "web_search" not in mine.evidence_requirements
+    assert "knowledge_search" not in mine.evidence_requirements
+
+    local = classify_request("从我的本地笔记里找一下 TokenOps")
+    assert local.evidence_requirements == ("user_note_search",)
+
+
 def test_url_is_evidence_not_top_level_agent_route():
     decision = classify_request("这个页面主要说了什么？ https://example.com/post")
     assert decision.route_class == GENERAL_QA

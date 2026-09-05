@@ -61,8 +61,15 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
         )
         assert first.status_code == 200, first.text
         assert first.json()["changed"] is True
-        assert first.json()["compile_status"] == "private_index_ready"
+        assert first.json()["compile_status"] == "private_index_updated"
 
+        owner_dir = (
+            Path(directory)
+            / sync._tenant_namespace("tenant-a")
+            / sync.namespace("sync-user")
+        )
+        metadata_before = (owner_dir / "note-1.sync.json").read_bytes()
+        index_before = (owner_dir / ".private-index.json").read_bytes()
         second = _request(
             "PUT",
             "/api/v1/me/knowledge-notes/note-1",
@@ -70,6 +77,9 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
         )
         assert second.status_code == 200, second.text
         assert second.json()["changed"] is False
+        assert second.json()["compile_status"] == "private_index_unchanged"
+        assert (owner_dir / "note-1.sync.json").read_bytes() == metadata_before
+        assert (owner_dir / ".private-index.json").read_bytes() == index_before
 
         stale = "# stale overwrite"
         stale_hash = hashlib.sha256(stale.encode()).hexdigest()

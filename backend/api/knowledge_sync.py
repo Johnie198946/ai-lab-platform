@@ -20,13 +20,17 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.api.auth import require_auth
+from backend.services.knowledge_contribution import enqueue_note_contribution
 from backend.services.user_note_context import (
     archived_note_paths,
     compile_private_note_index,
     namespace,
     note_directory,
     note_paths,
+    private_note_index_path,
+    remove_private_note_index_entry,
     sync_root,
+    update_private_note_index,
 )
 
 
@@ -207,8 +211,24 @@ async def sync_note(
         )
 
     changed = current_hash != actual_hash
-    if changed:
-        _atomic_write(note_path, encoded)
+    if not changed:
+        try:
+            index = json.loads(
+                private_note_index_path(tenant_key, user_id, _sync_root())
+                .read_text(encoding="utf-8")
+            )
+            index_hash = index["index_hash"]
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            index_hash = None
+        return {
+            "note_id": note_id,
+            "content_hash": actual_hash,
+            "changed": False,
+            "sync_status": "synced",
+            "compile_status": "private_index_unchanged",
+            "private_index_hash": index_hash,
+        }
+    _atomic_write(note_path, encoded)
     metadata = {
         "version": 1,
         "note_id": note_id,
@@ -228,16 +248,24 @@ async def sync_note(
         metadata_path,
         json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
     )
-    private_index = compile_private_note_index(
-        tenant_key, user_id, _sync_root()
+    private_index = update_private_note_index(
+        tenant_key, user_id, note_path, _sync_root()
+    )
+    contribution = await enqueue_note_contribution(
+        tenant_key=tenant_key,
+        user_id=user_id,
+        note_id=note_id,
+        source_revision=1,
+        content_hash=actual_hash,
     )
     return {
         "note_id": note_id,
         "content_hash": actual_hash,
         "changed": changed,
         "sync_status": "synced",
-        "compile_status": "private_index_ready",
+        "compile_status": "private_index_updated",
         "private_index_hash": private_index["index_hash"],
+        "contribution": contribution,
     }
 
 
@@ -279,7 +307,7 @@ async def archive_note(
             removed_active = True
         if metadata_path.is_file():
             metadata_path.unlink()
-        compile_private_note_index(tenant_key, user_id, _sync_root())
+        remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
         return {
             "note_id": note_id,
             "archive_status": "archived",
@@ -309,7 +337,7 @@ async def archive_note(
         metadata_path.unlink()
     except FileNotFoundError:
         pass
-    compile_private_note_index(tenant_key, user_id, _sync_root())
+    remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
     return {
         "note_id": note_id,
         "archive_status": "archived",
@@ -350,7 +378,7 @@ async def restore_note(
         archived_metadata.unlink()
     except FileNotFoundError:
         pass
-    compile_private_note_index(tenant_key, user_id, _sync_root())
+    update_private_note_index(tenant_key, user_id, note_path, _sync_root())
     return {"note_id": note_id, "archive_status": "active", "changed": True}
 
 
@@ -375,7 +403,7 @@ async def trash_note(
                 path.unlink()
             except FileNotFoundError:
                 pass
-        compile_private_note_index(tenant_key, user_id, _sync_root())
+        remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
         return {"note_id": note_id, "trash_status": "trashed", "changed": False}
     if not source_note.is_file():
         raise HTTPException(status_code=404, detail={"code": "note_not_synced"})
@@ -399,5 +427,5 @@ async def trash_note(
         source_metadata.unlink()
     except FileNotFoundError:
         pass
-    compile_private_note_index(tenant_key, user_id, _sync_root())
+    remove_private_note_index_entry(tenant_key, user_id, note_id, _sync_root())
     return {"note_id": note_id, "trash_status": "trashed", "changed": True}

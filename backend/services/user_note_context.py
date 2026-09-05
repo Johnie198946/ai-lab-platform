@@ -57,59 +57,89 @@ def archived_note_paths(
     return directory / f"{note_id}.md", directory / f"{note_id}.sync.json"
 
 
-def compile_private_note_index(
-    tenant_key: str, user_id: str, root: Path | None = None
-) -> dict[str, Any]:
-    """Compile active user notes into a deterministic private retrieval manifest."""
-    directory = note_directory(tenant_key, user_id, root)
-    directory.mkdir(parents=True, exist_ok=True)
-    try:
-        directory.chmod(0o755)
-    except OSError:
-        pass
-    items: list[dict[str, Any]] = []
-    for path in sorted(directory.glob("*.md")):
-        if not path.is_file() or path.is_symlink():
-            continue
-        raw = path.read_bytes()
-        markdown = raw.decode("utf-8", errors="replace")
-        items.append({
-            "id": path.stem,
-            "title": _frontmatter_value(markdown, "title") or path.stem,
-            "content_hash": hashlib.sha256(raw).hexdigest(),
-            "security_level": "red",
-            "owner_tenant": namespace(tenant_key),
-            "owner_user": namespace(user_id),
-            "source": "user_note",
-        })
-    canonical = json.dumps(
-        items, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    )
-    payload = {
-        "version": 1,
+def private_note_index_path(tenant_key: str, user_id: str, root: Path | None = None) -> Path:
+    return note_directory(tenant_key, user_id, root) / ".private-index.json"
+
+
+def _private_index_item(path: Path, *, tenant_key: str, user_id: str) -> dict[str, Any]:
+    raw = path.read_bytes()
+    markdown = raw.decode("utf-8", errors="replace")
+    return {
+        "id": path.stem,
+        "title": _frontmatter_value(markdown, "title") or path.stem,
+        "content_hash": hashlib.sha256(raw).hexdigest(),
         "security_level": "red",
-        "tenant_namespace": namespace(tenant_key),
-        "user_namespace": namespace(user_id),
+        "owner_tenant": namespace(tenant_key),
+        "owner_user": namespace(user_id),
+        "source": "user_note",
+    }
+
+
+def _write_private_index(directory: Path, *, tenant_key: str, user_id: str,
+                         items: list[dict[str, Any]]) -> dict[str, Any]:
+    items.sort(key=lambda item: str(item.get("id", "")))
+    canonical = json.dumps(items, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = {
+        "version": 1, "security_level": "red",
+        "tenant_namespace": namespace(tenant_key), "user_namespace": namespace(user_id),
         "document_count": len(items),
         "index_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
         "documents": items,
     }
-    descriptor, temporary = tempfile.mkstemp(
-        dir=str(directory), prefix=".private-index.", suffix=".tmp"
-    )
+    descriptor, temporary = tempfile.mkstemp(dir=str(directory), prefix=".private-index.", suffix=".tmp")
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-            handle.flush()
-            os.fsync(handle.fileno())
+            handle.flush(); os.fsync(handle.fileno())
         os.chmod(temporary, 0o644)
         os.replace(temporary, directory / ".private-index.json")
     finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
+        try: os.unlink(temporary)
+        except FileNotFoundError: pass
     return payload
+
+
+def _read_private_index(path: Path) -> dict[str, Any] | None:
+    try: value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError): return None
+    return value if isinstance(value, dict) and isinstance(value.get("documents"), list) else None
+
+
+def compile_private_note_index(tenant_key: str, user_id: str, root: Path | None = None) -> dict[str, Any]:
+    """Rebuild the private index; used for repair and initial creation only."""
+    directory = note_directory(tenant_key, user_id, root)
+    directory.mkdir(parents=True, exist_ok=True)
+    try: directory.chmod(0o755)
+    except OSError: pass
+    items = [
+        _private_index_item(path, tenant_key=tenant_key, user_id=user_id)
+        for path in sorted(directory.glob("*.md"))
+        if path.is_file() and not path.is_symlink()
+    ]
+    return _write_private_index(directory, tenant_key=tenant_key, user_id=user_id, items=items)
+
+
+def update_private_note_index(tenant_key: str, user_id: str, note_path: Path,
+                              root: Path | None = None) -> dict[str, Any]:
+    """Update one active note without scanning or rewriting sibling entries."""
+    directory = note_directory(tenant_key, user_id, root)
+    directory.mkdir(parents=True, exist_ok=True)
+    existing = _read_private_index(private_note_index_path(tenant_key, user_id, root))
+    items = list(existing["documents"]) if existing else []
+    item = _private_index_item(note_path, tenant_key=tenant_key, user_id=user_id)
+    items = [old for old in items if old.get("id") != item["id"]] + [item]
+    return _write_private_index(directory, tenant_key=tenant_key, user_id=user_id, items=items)
+
+
+def remove_private_note_index_entry(tenant_key: str, user_id: str, note_id: str,
+                                    root: Path | None = None) -> dict[str, Any] | None:
+    """Remove one active note without scanning or rewriting sibling entries."""
+    path = private_note_index_path(tenant_key, user_id, root)
+    existing = _read_private_index(path)
+    if existing is None: return None
+    items = [item for item in existing["documents"] if item.get("id") != note_id]
+    if len(items) == len(existing["documents"]): return existing
+    return _write_private_index(path.parent, tenant_key=tenant_key, user_id=user_id, items=items)
 
 
 def persist_generated_private_note(
