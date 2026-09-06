@@ -63,7 +63,6 @@ public struct AIPlatformApp: App {
                 .environmentObject(apiClient)
                 .environmentObject(workflowActivities)
                 .environmentObject(sessionManager)
-                .preferredColorScheme(.light)
         }
     }
 }
@@ -93,6 +92,12 @@ public struct AppRootCoordinatorView: View {
     @EnvironmentObject private var apiClient: APIClient
     @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
     @Environment(\.scenePhase) private var scenePhase
+    @State private var agreement: AgreementDTO?
+    @State private var agreementError: String?
+    @State private var isAgreementLoading = false
+    @State private var showingAgreement = false
+    @State private var isAgreementAccepting = false
+    @State private var agreementAcceptanceKey = UUID().uuidString
 
     public var body: some View {
         Group {
@@ -107,6 +112,15 @@ public struct AppRootCoordinatorView: View {
         // 统一覆盖未声明局部样式的 Button / NavigationLink / Toolbar 入口。
         .buttonStyle(SoftButtonStyle())
         .animation(.easeInOut(duration: 0.3), value: appState.isLoggedIn)
+        .overlay {
+            if showingAgreement {
+                AppTheme.Colors.scrim
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {}
+                    .accessibilityHidden(true)
+            }
+        }
         .onChange(of: apiClient.needsReauth) { _, needs in
             if needs {
                 apiClient.needsReauth = false
@@ -117,6 +131,31 @@ public struct AppRootCoordinatorView: View {
                     appState.logout()
                 }
             }
+        }
+        .onChange(of: apiClient.requiredAgreementVersion) { _, version in
+            guard version != nil else { return }
+            agreement = nil
+            agreementAcceptanceKey = UUID().uuidString
+            showingAgreement = true
+            Task { await loadRequiredAgreement() }
+        }
+        .sheet(isPresented: $showingAgreement, onDismiss: {
+            if apiClient.requiredAgreementVersion != nil {
+                apiClient.resolveAgreementRequirement(accepted: false)
+            }
+        }) {
+            AgreementSheet(
+                agreement: agreement,
+                isLoading: isAgreementLoading,
+                isAccepting: isAgreementAccepting,
+                errorMessage: agreementError,
+                onRetry: { Task { await loadRequiredAgreement() } },
+                onAccept: { Task { await acceptRequiredAgreement() } }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(AppTheme.Colors.cardBackground)
+            .presentationBackgroundInteraction(.disabled)
         }
         .task(id: appState.isLoggedIn) {
             if appState.isLoggedIn {
@@ -163,6 +202,41 @@ public struct AppRootCoordinatorView: View {
             await KnowledgeNoteStore.shared.restoreFromCloud()
         } catch {
             // APIClient 会把真实 401 汇入 needsReauth；离线/超时保留 Keychain 登录态。
+        }
+    }
+
+    @MainActor
+    private func loadRequiredAgreement() async {
+        guard !isAgreementLoading else { return }
+        isAgreementLoading = true
+        agreementError = nil
+        defer { isAgreementLoading = false }
+        do {
+            let loaded = try await apiClient.fetchAgreement()
+            guard loaded.version == apiClient.requiredAgreementVersion else {
+                throw APIError.authenticationRejected("协议版本已更新，请重新加载。")
+            }
+            agreement = loaded
+        } catch {
+            agreement = nil
+            agreementError = "协议暂时无法加载，请检查网络后重试。"
+        }
+    }
+
+    @MainActor
+    private func acceptRequiredAgreement() async {
+        guard !isAgreementAccepting, let agreement,
+              agreement.version == apiClient.requiredAgreementVersion else { return }
+        isAgreementAccepting = true
+        defer { isAgreementAccepting = false }
+        do {
+            _ = try await apiClient.acceptAgreement(
+                version: agreement.version, idempotencyKey: agreementAcceptanceKey
+            )
+            apiClient.resolveAgreementRequirement(accepted: true)
+            showingAgreement = false
+        } catch {
+            agreementError = "协议确认未完成，请重试。"
         }
     }
 }

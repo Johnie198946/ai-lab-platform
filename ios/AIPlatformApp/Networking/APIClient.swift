@@ -9,6 +9,7 @@
 import Foundation
 import Combine
 import CryptoKit
+import Security
 
 // MARK: - 后端 API DTO（snake_case → camelCase 自动转换）
 
@@ -265,36 +266,25 @@ public struct KnowledgeBookBodyDTO: Codable, Hashable {
     public let sections: [KnowledgeBookSectionDTO]
 }
 
-public struct KnowledgeContributionConsentDTO: Codable, Hashable {
-    public let configured: Bool?
-    public let serviceAgreementVersion: String
-    public let serviceAgreementAcceptedAt: String?
-    public let participationEnabled: Bool
-    public let participationEffectiveAt: String?
-    public let historicalBackfill: Bool
-    public let publicationAutomatic: Bool
-}
-
 private struct KnowledgeBookSubscriptionWrite: Encodable {
     let bookId: String
     var edition: Int = 1
+
+    private enum CodingKeys: String, CodingKey {
+        case bookId = "book_id"
+        case edition
+    }
 }
 
 private struct KnowledgeBookProgressWrite: Encodable {
     let bookId: String
     let progress: Double
     let contentVersion: String
-}
-
-private struct KnowledgeContributionConsentWrite: Encodable {
-    let serviceAgreementAccepted: Bool
-    let serviceAgreementVersion: String
-    let participationEnabled: Bool
 
     private enum CodingKeys: String, CodingKey {
-        case serviceAgreementAccepted = "service_agreement_accepted"
-        case serviceAgreementVersion = "service_agreement_version"
-        case participationEnabled = "participation_enabled"
+        case bookId = "book_id"
+        case progress
+        case contentVersion = "content_version"
     }
 }
 
@@ -868,10 +858,34 @@ public struct AuthCapabilitiesDTO: Codable {
     public let oauth: OAuthCapabilitiesDTO
 }
 
-public struct AuthAgreementDTO: Codable, Hashable {
+public struct AgreementSectionDTO: Codable, Hashable, Identifiable {
+    public let id: String
+    public let title: String
+    public let clauses: [String]
+}
+
+public struct AgreementDTO: Codable, Hashable {
     public let version: String
-    public let serviceSummary: String
-    public let participationSummary: String
+    public let title: String
+    public let updatedAt: String
+    public let sections: [AgreementSectionDTO]
+}
+
+public struct AgreementAcceptanceDTO: Codable, Hashable {
+    public let agreementVersion: String?
+    public let acceptedAt: String?
+}
+
+public struct AgreementAcceptanceBody: Encodable, Hashable {
+    public let agreementVersion: String
+    public let idempotencyKey: String
+    public var source = "ios"
+
+    enum CodingKeys: String, CodingKey {
+        case agreementVersion = "agreement_version"
+        case idempotencyKey = "idempotency_key"
+        case source
+    }
 }
 
 public struct LoginSessionDTO: Codable {
@@ -1504,12 +1518,20 @@ public enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
         ]
-        SecItemDelete(base as CFDictionary)
         var attributes = base
         attributes[kSecValueData as String] = data
         // 登录凭证需要跨进程重启保留，同时不随 iCloud/设备迁移导出。
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        let status = SecItemAdd(attributes as CFDictionary, nil)
+        let addStatus = SecItemAdd(attributes as CFDictionary, nil)
+        let status: OSStatus
+        if KeychainSavePolicy.shouldUpdate(after: addStatus) {
+            status = SecItemUpdate(base as CFDictionary, [
+                kSecValueData as String: data,
+                kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
+            ] as CFDictionary)
+        } else {
+            status = addStatus
+        }
         // Authentication material must never fall back to UserDefaults.  That
         // store is neither a credential vault nor protected by Keychain access
         // controls.  Remove any token left by older builds and fail closed.
@@ -1548,16 +1570,30 @@ public enum KeychainStore {
     }
 }
 
+public enum KeychainSavePolicy {
+    public static func shouldUpdate(after addStatus: OSStatus) -> Bool {
+        addStatus == errSecDuplicateItem
+    }
+}
+
+public enum AgreementReplayPolicy {
+    public static func canReplay(statusCode: Int, replayCount: Int) -> Bool {
+        statusCode == 428 && replayCount == 0
+    }
+}
+
 // MARK: - 轻量网络层
 
 @MainActor
 public final class APIClient: ObservableObject {
     public static let shared = APIClient()
+    public static let clientContract = "ios-unified-agreement-v1"
 
     /// 离线/降级标注：true 时 UI 应展示「演示数据」Tag
     @Published public var isOfflineMode: Bool = false
     /// 401 触发：true 时根协调器应引导重新登录
     @Published public var needsReauth: Bool = false
+    @Published public var requiredAgreementVersion: String?
 
     public var baseURL: URL
     private let session: URLSession
@@ -1565,16 +1601,46 @@ public final class APIClient: ObservableObject {
     /// 交互式 Agent SSE 可能跨越多轮 Clarify，资源总时长必须独立于普通问答超时。
     private let streamSession: URLSession
     private let decoder: JSONDecoder
+    private let persistsCredentials: Bool
     /// Keep the freshly issued bearer token in memory as the request-time source
     /// of truth. Keychain remains the cross-launch persistence layer, but an
     /// immediate `/me` request must not depend on a second Security-framework
     /// lookup succeeding in the same login transaction.
     private var cachedToken: String?
+    private var agreementWaiters: [CheckedContinuation<Bool, Never>] = []
 
-    public init(baseURL: URL = URL(string: "https://120.24.248.58")!) {
+    public convenience init(baseURL: URL = URL(string: "https://120.24.248.58")!) {
+        self.init(
+            baseURL: baseURL,
+            sessionConfiguration: .default,
+            initialToken: KeychainStore.load(),
+            persistsCredentials: true
+        )
+    }
+
+    convenience init(
+        baseURL: URL,
+        sessionConfiguration: URLSessionConfiguration,
+        inMemoryToken: String
+    ) {
+        self.init(
+            baseURL: baseURL,
+            sessionConfiguration: sessionConfiguration,
+            initialToken: inMemoryToken,
+            persistsCredentials: false
+        )
+    }
+
+    private init(
+        baseURL: URL,
+        sessionConfiguration: URLSessionConfiguration,
+        initialToken: String?,
+        persistsCredentials: Bool
+    ) {
         self.baseURL = baseURL
-        self.cachedToken = KeychainStore.load()
-        let config = URLSessionConfiguration.default
+        self.cachedToken = initialToken
+        self.persistsCredentials = persistsCredentials
+        let config = sessionConfiguration
         config.timeoutIntervalForRequest = 15
         config.timeoutIntervalForResource = 30
         config.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -1608,6 +1674,10 @@ public final class APIClient: ObservableObject {
 
     @discardableResult
     public func saveToken(_ token: String) -> Bool {
+        guard persistsCredentials else {
+            cachedToken = token
+            return true
+        }
         guard KeychainStore.save(token) else {
             cachedToken = nil
             return false
@@ -1617,6 +1687,7 @@ public final class APIClient: ObservableObject {
     }
 
     public func currentToken() -> String? {
+        guard persistsCredentials else { return cachedToken }
 #if DEBUG
         if let token = ProcessInfo.processInfo.environment["AI_LAB_E2E_TOKEN"], !token.isEmpty {
             return token
@@ -1632,13 +1703,22 @@ public final class APIClient: ObservableObject {
 
     public func clearToken() {
         cachedToken = nil
-        KeychainStore.delete()
+        if persistsCredentials {
+            KeychainStore.delete()
+        }
     }
 
     /// 对路径片段做百分号编码（保留 "/" 以便多段类目，如 knowledge/行业知识/金融）
     private func encodedPath(_ component: String) -> String {
         component.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed)
             ?? component
+    }
+
+    private func applyClientContract(to request: inout URLRequest) {
+        request.setValue(Self.clientContract, forHTTPHeaderField: "X-Client-Contract")
+        if let token = currentToken(), !token.isEmpty {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
     }
 
     // MARK: - 通用请求
@@ -1730,25 +1810,53 @@ public final class APIClient: ObservableObject {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
         }
 
         // 仅 GET 幂等请求自动重试；POST/PATCH/DELETE 由 UI 触发手动重试
-        let data = try await perform(
-            request,
-            session: session,
-            canRetry: method == "GET",
-            reauthOn401: reauthOn401
-        )
+        let data: Data
+        do {
+            data = try await perform(
+                request, session: session, canRetry: method == "GET", reauthOn401: reauthOn401
+            )
+        } catch APIError.server(let status, let raw)
+            where AgreementReplayPolicy.canReplay(statusCode: status, replayCount: 0) {
+            guard let version = Self.agreementVersion(from: raw) else {
+                throw APIError.server(status, raw)
+            }
+            requiredAgreementVersion = version
+            let accepted = await withCheckedContinuation { agreementWaiters.append($0) }
+            guard accepted else { throw APIError.server(428, raw) }
+            // A protected request is replayed exactly once after explicit acceptance.
+            data = try await perform(
+                request, session: session, canRetry: false, reauthOn401: reauthOn401
+            )
+        }
         do {
             return try decoder.decode(T.self, from: data)
         } catch {
             throw APIError.decoding(Self.describeDecodingError(error))
         }
+    }
+
+    private static func agreementVersion(from raw: String) -> String? {
+        struct Envelope: Decodable {
+            struct Detail: Decodable { let currentVersion: String }
+            let detail: Detail
+        }
+        guard let data = raw.data(using: .utf8) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try? decoder.decode(Envelope.self, from: data).detail.currentVersion
+    }
+
+    public func resolveAgreementRequirement(accepted: Bool) {
+        requiredAgreementVersion = nil
+        let waiters = agreementWaiters
+        agreementWaiters.removeAll()
+        waiters.forEach { $0.resume(returning: accepted) }
     }
 
     private static func describeDecodingError(_ error: Error) -> String {
@@ -1899,25 +2007,6 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    public func fetchKnowledgeContributionConsent() async throws -> KnowledgeContributionConsentDTO {
-        try await request(KnowledgeContributionConsentDTO.self, path: "knowledge-contribution/me")
-    }
-
-    public func updateKnowledgeContributionConsent(
-        agreementVersion: String, participationEnabled: Bool
-    ) async throws -> KnowledgeContributionConsentDTO {
-        try await request(
-            KnowledgeContributionConsentDTO.self,
-            path: "knowledge-contribution/me",
-            method: "PUT",
-            body: KnowledgeContributionConsentWrite(
-                serviceAgreementAccepted: true,
-                serviceAgreementVersion: agreementVersion,
-                participationEnabled: participationEnabled
-            )
-        )
-    }
-
     public func createSubscriptionRequest(
         planId: String,
         entitlementKeys: [String],
@@ -2009,9 +2098,7 @@ public final class APIClient: ObservableObject {
         var request = URLRequest(url: finalURL)
         request.httpMethod = "GET"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         let data = try await perform(request, session: session, canRetry: true)
         return try decoder.decode(SearchResponse.self, from: data).docs
     }
@@ -2073,9 +2160,7 @@ public final class APIClient: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         _ = try await perform(request, session: session, canRetry: false)
     }
 
@@ -2087,9 +2172,7 @@ public final class APIClient: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         _ = try await perform(request, session: session, canRetry: false)
     }
 
@@ -2128,9 +2211,7 @@ public final class APIClient: ObservableObject {
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         _ = try await perform(request, session: session, canRetry: false)
     }
 
@@ -2204,9 +2285,7 @@ public final class APIClient: ObservableObject {
                     var request = URLRequest(url: finalURL)
                     request.httpMethod = "GET"
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-                    if let token = currentToken(), !token.isEmpty {
-                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    }
+                    applyClientContract(to: &request)
                     let (bytes, response) = try await streamSession.bytes(for: request)
                     guard let http = response as? HTTPURLResponse,
                           (200..<300).contains(http.statusCode) else {
@@ -2337,9 +2416,7 @@ public final class APIClient: ObservableObject {
                     request.httpMethod = "GET"
                     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
                     if after > 0 { request.setValue(String(after), forHTTPHeaderField: "Last-Event-ID") }
-                    if let token = currentToken(), !token.isEmpty {
-                        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-                    }
+                    applyClientContract(to: &request)
                     let (bytes, response) = try await streamSession.bytes(for: request)
                     guard let http = response as? HTTPURLResponse,
                           (200..<300).contains(http.statusCode) else {
@@ -2663,9 +2740,7 @@ public final class APIClient: ObservableObject {
         request.timeoutInterval = 200
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         request.httpBody = try JSONEncoder().encode(
             ChatRequestDTO(
                 question: question,
@@ -2910,9 +2985,7 @@ public final class APIClient: ObservableObject {
             request.timeoutInterval = 60  // 空闲保活（30s keepalive 帧持续刷新）
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-            if let token = currentToken(), !token.isEmpty {
-                request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            }
+            applyClientContract(to: &request)
             request.httpBody = try? JSONEncoder().encode(
                 ChatRequestDTO(
                     question: question,
@@ -3003,9 +3076,7 @@ public final class APIClient: ObservableObject {
         request.httpMethod = "POST"
         request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         struct Body: Encodable {
             let sessionId: String
             let agentId: String?
@@ -3031,9 +3102,7 @@ public final class APIClient: ObservableObject {
         request.httpMethod = "POST"
         request.timeoutInterval = 10
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         var body: [String: Any] = [
             "session_id": sessionId,
             "response": response,
@@ -3064,9 +3133,7 @@ public final class APIClient: ObservableObject {
         guard let resolved = components?.url else { throw APIError.invalidURL }
         var request = URLRequest(url: resolved)
         request.timeoutInterval = 20
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.network("无效响应")
@@ -3091,9 +3158,7 @@ public final class APIClient: ObservableObject {
         guard let resolved = components?.url else { throw APIError.invalidURL }
         var request = URLRequest(url: resolved)
         request.timeoutInterval = 20
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         let data = try await perform(request, session: session, canRetry: true, reauthOn401: false)
         return try decoder.decode(AnswerBlockPageDTO.self, from: data)
     }
@@ -3118,9 +3183,7 @@ public final class APIClient: ObservableObject {
         request.httpMethod = "GET"
         request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &request)
         let data = try await perform(request, session: session, canRetry: true, reauthOn401: false)
         do {
             return try decoder.decode(ChatStatusDTO.self, from: data)
@@ -3155,9 +3218,7 @@ public final class APIClient: ObservableObject {
         var urlRequest = URLRequest(url: url)
         urlRequest.httpMethod = "GET"
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
-        if let token = currentToken(), !token.isEmpty {
-            urlRequest.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyClientContract(to: &urlRequest)
         let data = try await perform(urlRequest, session: session, canRetry: true)
         do {
             return try decoder.decode(UsageSummaryDTO.self, from: data)
@@ -3205,8 +3266,46 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    public func fetchAuthAgreement() async throws -> AuthAgreementDTO {
-        try await request(AuthAgreementDTO.self, path: "auth/agreement", reauthOn401: false)
+    public func fetchAgreement(allowCache: Bool = true) async throws -> AgreementDTO {
+        do {
+            let agreement = try await request(
+                AgreementDTO.self,
+                path: "legal/agreement",
+                queryItems: [URLQueryItem(name: "locale", value: "zh-CN")],
+                reauthOn401: false
+            )
+            if agreement.sections.map(\.id) == ["service", "privacy", "knowledge-contribution"],
+               let data = try? JSONEncoder().encode(agreement) {
+                UserDefaults.standard.set(data, forKey: "legal.agreement.zh-CN.cache")
+                return agreement
+            }
+            throw APIError.decoding("协议章节不完整")
+        } catch {
+            guard allowCache,
+                  let data = UserDefaults.standard.data(forKey: "legal.agreement.zh-CN.cache"),
+                  let cached = try? JSONDecoder().decode(AgreementDTO.self, from: data),
+                  cached.sections.map(\.id) == ["service", "privacy", "knowledge-contribution"]
+            else { throw error }
+            return cached
+        }
+    }
+
+    public func fetchAgreementAcceptance() async throws -> AgreementAcceptanceDTO {
+        try await request(AgreementAcceptanceDTO.self, path: "me/agreement-acceptance")
+    }
+
+    public func acceptAgreement(
+        version: String, idempotencyKey: String
+    ) async throws -> AgreementAcceptanceDTO {
+        try await request(
+            AgreementAcceptanceDTO.self,
+            path: "me/agreement-acceptance",
+            method: "PUT",
+            body: AgreementAcceptanceBody(
+                agreementVersion: version, idempotencyKey: idempotencyKey
+            ),
+            reauthOn401: false
+        )
     }
 
     public func sendPhoneCode(phone: String) async throws {

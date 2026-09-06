@@ -3,6 +3,7 @@ from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from backend.api.knowledge_contribution import (
     PolicyUpdate, UserConsentWrite, get_policy, get_user_consent,
@@ -14,6 +15,39 @@ from backend.services.knowledge_contribution import SERVICE_AGREEMENT_VERSION
 def payload(tenant: str, role: str = "tenant_admin") -> dict:
     return {"tenant_key": tenant, "user_id": "owner", "sub": "owner", "role": role,
             "is_super_admin": False}
+
+
+def test_user_consent_write_preserves_snake_and_camel_case_compatibility():
+    snake = UserConsentWrite.model_validate({
+        "service_agreement_accepted": True,
+        "service_agreement_version": SERVICE_AGREEMENT_VERSION,
+        "participation_enabled": False,
+    })
+    camel = UserConsentWrite.model_validate({
+        "serviceAgreementAccepted": True,
+        "serviceAgreementVersion": SERVICE_AGREEMENT_VERSION,
+        "participationEnabled": True,
+    })
+    assert snake.participation_enabled is False
+    assert camel.participation_enabled is True
+    with pytest.raises(ValidationError):
+        UserConsentWrite.model_validate({
+            "service_agreement_accepted": True,
+            "service_agreement_version": SERVICE_AGREEMENT_VERSION,
+            "participation_enabled": False,
+            "effective_at": datetime.now(timezone.utc),
+        })
+
+
+@pytest.mark.asyncio
+async def test_user_consent_refuses_false_required_acceptance():
+    with pytest.raises(HTTPException) as rejected:
+        await update_user_consent(UserConsentWrite(
+            service_agreement_accepted=False,
+            service_agreement_version=SERVICE_AGREEMENT_VERSION,
+            participation_enabled=False,
+        ), payload("consent-" + uuid4().hex, "tenant_member"))
+    assert rejected.value.status_code == 422
 
 
 @pytest.mark.asyncio

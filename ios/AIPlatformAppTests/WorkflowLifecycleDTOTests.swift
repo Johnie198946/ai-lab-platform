@@ -5,6 +5,7 @@ import Combine
 #if canImport(UIKit)
 import UIKit
 #endif
+import Security
 @testable import AIPlatformApp
 
 private final class LockedErrorBox: @unchecked Sendable {
@@ -22,6 +23,94 @@ private final class LockedErrorBox: @unchecked Sendable {
         defer { lock.unlock() }
         return storage.isEmpty
     }
+}
+
+private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
+    struct CapturedRequest {
+        let request: URLRequest
+        let body: Data?
+    }
+
+    private static let lock = NSLock()
+    private static var capturedRequests: [CapturedRequest] = []
+
+    static func reset() {
+        lock.lock()
+        capturedRequests = []
+        lock.unlock()
+    }
+
+    static func requests() -> [CapturedRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return capturedRequests
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let requestBody = Self.bodyData(from: request)
+        Self.lock.lock()
+        Self.capturedRequests.append(CapturedRequest(request: request, body: requestBody))
+        Self.lock.unlock()
+
+        let path = request.url?.path ?? ""
+        let method = request.httpMethod ?? ""
+        let isContractOrigin = request.url?.scheme == "https"
+            && request.url?.host == "contract.invalid"
+        let responseBody: Data
+        var responseStatus = 200
+        switch (isContractOrigin, method, path) {
+        case (true, "GET", "/api/v1/legal/agreement"):
+            responseBody = Data(#"{"version":"2026-09-06","title":"服务协议","updated_at":"2026-09-06T00:00:00Z","sections":[{"id":"service","title":"用户服务协议","clauses":["服务条款"]},{"id":"privacy","title":"隐私保护条款","clauses":["隐私条款"]},{"id":"knowledge-contribution","title":"知识共建协议","clauses":["共建条款"]}]}"#.utf8)
+        case (true, "PUT", "/api/v1/me/agreement-acceptance"):
+            let body = (try? JSONSerialization.jsonObject(with: requestBody ?? Data())) as? [String: Any]
+            if body?["idempotency_key"] as? String == "simulate-failure" {
+                responseStatus = 503
+                responseBody = Data(#"{"detail":{"code":"unavailable"}}"#.utf8)
+            } else {
+                responseBody = Data(#"{"agreement_version":"2026-09-06","accepted_at":"2026-09-06T08:00:00Z"}"#.utf8)
+            }
+        case (true, "PUT", "/api/v1/me/book-subscriptions"),
+             (true, "PATCH", "/api/v1/me/book-subscriptions/progress"):
+            responseBody = Self.subscriptionResponse
+        case (true, "DELETE", "/api/v1/me/book-subscriptions"):
+            responseBody = Data(#"{"deleted":true}"#.utf8)
+        default:
+            responseBody = Data(#"{"detail":"unexpected contract request"}"#.utf8)
+        }
+        let isAllowed = !(String(data: responseBody, encoding: .utf8)?.contains("unexpected contract") ?? true)
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: isAllowed ? responseStatus : 418,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: responseBody)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func bodyData(from request: URLRequest) -> Data? {
+        if let body = request.httpBody { return body }
+        guard let stream = request.httpBodyStream else { return nil }
+        stream.open()
+        defer { stream.close() }
+        var body = Data()
+        var buffer = [UInt8](repeating: 0, count: 1_024)
+        while true {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            body.append(contentsOf: buffer.prefix(count))
+        }
+        return body
+    }
+
+    private static let subscriptionResponse = Data(#"{"book":{"id":"kn-1","title":"AI Lab 顶层设计","author":"AI Lab","author_source":"curated","summary":"架构说明","cover_theme":"product","cover_variant":2,"cover_version":1,"security_level":"green","knowledge_level":"K5","freshness":"current","source_count":3},"edition":1,"content_version":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","progress":0.42,"subscribed_at":"2026-09-06T08:00:00Z","last_read_at":"2026-09-06T08:10:00Z"}"#.utf8)
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
@@ -141,6 +230,141 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         add(attachment)
     }
     #endif
+    @MainActor
+    func testBookWritesMatchBackendWireContract() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "[REDACTED]"
+        )
+        let contentVersion = String(repeating: "a", count: 64)
+
+        let subscription = try await client.subscribeBook(id: "kn-1")
+        let progress = try await client.updateBookProgress(
+            id: "kn-1", progress: 0.42, contentVersion: contentVersion
+        )
+        try await client.unsubscribeBook(id: "kn-1")
+
+        XCTAssertEqual(subscription.contentVersion, contentVersion)
+        XCTAssertEqual(progress.book.authorSource, "curated")
+
+        let requests = APIContractURLProtocol.requests()
+        XCTAssertEqual(requests.count, 3)
+        XCTAssertEqual(
+            requests.map { "\($0.request.httpMethod ?? "") \($0.request.url?.path ?? "")" },
+            [
+                "PUT /api/v1/me/book-subscriptions",
+                "PATCH /api/v1/me/book-subscriptions/progress",
+                "DELETE /api/v1/me/book-subscriptions",
+            ]
+        )
+        for captured in requests {
+            let request = captured.request
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer [REDACTED]")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-Client-Contract"), APIClient.clientContract)
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
+        }
+
+        let bodies = try requests.map { captured in
+            try XCTUnwrap(
+                JSONSerialization.jsonObject(with: try XCTUnwrap(captured.body)) as? [String: Any]
+            )
+        }
+        XCTAssertEqual(Set(bodies[0].keys), Set(["book_id", "edition"]))
+        XCTAssertEqual(bodies[0]["book_id"] as? String, "kn-1")
+        XCTAssertEqual(bodies[0]["edition"] as? Int, 1)
+        XCTAssertEqual(Set(bodies[1].keys), Set(["book_id", "progress", "content_version"]))
+        XCTAssertEqual(bodies[1]["content_version"] as? String, contentVersion)
+        XCTAssertEqual(try XCTUnwrap(bodies[1]["progress"] as? Double), 0.42, accuracy: 0.001)
+        XCTAssertEqual(bodies[2]["book_id"] as? String, "kn-1")
+    }
+
+    func testLoginConsentPolicyInvalidatesSelectionWhenVersionChanges() {
+        XCTAssertTrue(LoginConsentPolicy.hasValidAgreementVersion("service-v1"))
+        XCTAssertFalse(LoginConsentPolicy.hasValidAgreementVersion(""))
+        XCTAssertFalse(LoginConsentPolicy.hasValidAgreementVersion(" service-v1"))
+        XCTAssertTrue(LoginConsentPolicy.isAccepted(
+            selectedVersion: "service-v1", currentVersion: "service-v1"
+        ))
+        XCTAssertFalse(LoginConsentPolicy.isAccepted(
+            selectedVersion: "service-v1", currentVersion: "service-v2"
+        ))
+        XCTAssertFalse(LoginConsentPolicy.isAccepted(selectedVersion: nil, currentVersion: "service-v1"))
+    }
+
+    @MainActor
+    func testUnifiedAgreementDTOAndSnakeCaseAcceptanceNetworkContract() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "[REDACTED]"
+        )
+        let agreement = try await client.fetchAgreement()
+        XCTAssertEqual(agreement.sections.map(\.title), [
+            "用户服务协议", "隐私保护条款", "知识共建协议",
+        ])
+        _ = try await client.acceptAgreement(version: agreement.version, idempotencyKey: "request-id")
+        let requests = APIContractURLProtocol.requests()
+        XCTAssertEqual(requests.map { $0.request.url?.path }, [
+            "/api/v1/legal/agreement", "/api/v1/me/agreement-acceptance",
+        ])
+        let body = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(requests.last?.body)) as? [String: Any]
+        )
+        XCTAssertEqual(Set(body.keys), ["agreement_version", "idempotency_key", "source"])
+        XCTAssertNil(body["knowledge_contribution_enabled"])
+        XCTAssertEqual(
+            requests.last?.request.value(forHTTPHeaderField: "X-Client-Contract"),
+            APIClient.clientContract
+        )
+    }
+
+    @MainActor
+    func testAcceptanceFailureRetainsInMemoryCredentialAndReplayIsBounded() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "[REDACTED]"
+        )
+        do {
+            _ = try await client.acceptAgreement(
+                version: "2026-09-06", idempotencyKey: "simulate-failure"
+            )
+            XCTFail("Expected acceptance failure")
+        } catch APIError.server(503, _) {}
+        XCTAssertNotNil(client.currentToken())
+        XCTAssertTrue(AgreementReplayPolicy.canReplay(statusCode: 428, replayCount: 0))
+        XCTAssertFalse(AgreementReplayPolicy.canReplay(statusCode: 428, replayCount: 1))
+        XCTAssertFalse(AgreementReplayPolicy.canReplay(statusCode: 409, replayCount: 0))
+        XCTAssertTrue(KeychainSavePolicy.shouldUpdate(after: errSecDuplicateItem))
+        XCTAssertFalse(KeychainSavePolicy.shouldUpdate(after: errSecMissingEntitlement))
+    }
+
+    func testLoginConsentErrorsAreBoundedAndDoNotLeakRawResponses() {
+        XCTAssertEqual(
+            LoginConsentPolicy.failureMessage(for: APIError.server(422, "secret request payload")),
+            "协议选择未被服务接受，请重新确认。"
+        )
+        XCTAssertEqual(
+            LoginConsentPolicy.failureMessage(for: APIError.server(503, "private upstream detail")),
+            "协议服务暂时不可用，请稍后重试。"
+        )
+        XCTAssertFalse(
+            LoginConsentPolicy.failureMessage(for: APIError.decoding("internal field path"))
+                .contains("internal")
+        )
+    }
 
     func testKnowledgeMergeRequestEncodesOnlyAtomicTransactionContract() throws {
         let request = KnowledgeNoteMergeRequestDTO(

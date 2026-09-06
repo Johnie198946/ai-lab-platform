@@ -1,10 +1,11 @@
 """HTTP regressions for native iOS consent keys and fail-closed validation."""
+import asyncio
 from itertools import product
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 from backend.api import knowledge_contribution as api
 
@@ -25,8 +26,18 @@ def consent_client(monkeypatch):
     app = FastAPI()
     app.include_router(api.router)
     app.dependency_overrides[api.require_auth] = lambda: AUTH
-    with TestClient(app) as client:
-        yield client, service
+
+    class Client:
+        def put(self, path, **kwargs):
+            async def send():
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=app), base_url="http://test"
+                ) as client:
+                    return await client.put(path, **kwargs)
+
+            return asyncio.run(send())
+
+    return Client(), service
 
 
 def body_for(style):

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
 
 from backend.api import auth as auth_api
+from backend.api.agreement import require_current_agreement
 from backend.api.auth import require_auth
 
 AUTHEN_BASE = os.environ.get("AUTHEN_BASE", "http://host.docker.internal:8001")
@@ -262,7 +263,7 @@ async def dev_login(body: DevLoginRequest, request: Request):
 @router.post("/admin/users")
 async def admin_create_user(
     body: AdminCreateUserRequest,
-    payload=Depends(require_auth),
+    payload=Depends(require_current_agreement),
 ):
     """超管建号（SMTP 未配时的替代注册路径）+ 可选初始订阅。"""
     if not payload.get("is_super_admin"):

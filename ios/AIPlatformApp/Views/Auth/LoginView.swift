@@ -50,9 +50,52 @@ enum LoginInputPolicy {
     }
 }
 
+enum LoginConsentPolicy {
+    static func hasValidAgreementVersion(_ version: String) -> Bool {
+        let trimmed = version.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !trimmed.isEmpty && trimmed == version && trimmed.count <= 96
+    }
+
+    static func isAccepted(selectedVersion: String?, currentVersion: String?) -> Bool {
+        guard let selectedVersion, let currentVersion else { return false }
+        return selectedVersion == currentVersion && hasValidAgreementVersion(currentVersion)
+    }
+
+    static func failureMessage(for error: Error) -> String {
+        guard let apiError = error as? APIError else {
+            return "协议记录未完成，请重试。"
+        }
+        switch apiError {
+        case .network:
+            return "网络连接中断，协议记录未完成，请重试。"
+        case .timeout:
+            return "协议记录响应超时，请重试。"
+        case .unauthorized, .server(401, _):
+            return "登录凭证未被接受，请重新登录。"
+        case .server(403, _), .knowledgeScopeChanged:
+            return "当前账号无权记录协议选择，请联系管理员。"
+        case .server(409, _):
+            return "协议版本已更新，请重新阅读并确认。"
+        case .server(422, _):
+            return "协议选择未被服务接受，请重新确认。"
+        case .server(let status, _) where (500...599).contains(status):
+            return "协议服务暂时不可用，请稍后重试。"
+        case .decoding:
+            return "协议服务响应无法确认，请稍后重试。"
+        case .invalidURL, .authenticationRejected, .server:
+            return "协议记录未完成，请重试。"
+        }
+    }
+}
+
+private enum PendingAuthAction {
+    case phone(phone: String, code: String, isDeveloper: Bool)
+    case oauth(provider: String)
+    case authenticated(LoginSessionDTO, isDeveloper: Bool, idempotencyKey: String)
+}
+
 public struct LoginView: View {
     @EnvironmentObject private var appState: AppState
-    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var phoneNumber: String = ""
@@ -65,9 +108,12 @@ public struct LoginView: View {
     @State private var channels = LoginChannelAvailability()
     @State private var isCapabilityLoading = true
     @State private var capabilityMessage: String?
-    @State private var isAgreementAccepted = false
-    @State private var participatesInKnowledge = false
-    @State private var agreement: AuthAgreementDTO?
+    @State private var acceptedAgreementVersion: String?
+    @State private var agreement: AgreementDTO?
+    @State private var isAgreementLoading = false
+    @State private var agreementError: String?
+    @State private var showingAgreement = false
+    @State private var pendingAuthAction: PendingAuthAction?
     @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
     @FocusState private var focusedField: LoginField?
 
@@ -133,6 +179,15 @@ public struct LoginView: View {
             .toolbar(.hidden, for: .navigationBar)
         }
         .background(AppTheme.Colors.background)
+        .overlay {
+            if showingAgreement {
+                AppTheme.Colors.scrim
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture {}
+                    .accessibilityHidden(true)
+            }
+        }
         .onReceive(timer) { _ in
             if isCountdownActive && countdownSeconds > 0 {
                 countdownSeconds -= 1
@@ -143,9 +198,24 @@ public struct LoginView: View {
         }
         .task {
             await loadAuthCapabilities()
+            await loadAgreement(forcePresentation: false)
         }
         .onOpenURL { url in
             oauthCoordinator.handleCallback(url)
+        }
+        .sheet(isPresented: $showingAgreement, onDismiss: agreementSheetDismissed) {
+            AgreementSheet(
+                agreement: agreement,
+                isLoading: isAgreementLoading,
+                isAccepting: false,
+                errorMessage: agreementError,
+                onRetry: { Task { await loadAgreement(forcePresentation: true) } },
+                onAccept: acceptCurrentAgreement
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+            .presentationBackground(AppTheme.Colors.cardBackground)
+            .presentationBackgroundInteraction(.disabled)
         }
     }
     
@@ -298,28 +368,13 @@ public struct LoginView: View {
                             .tint(AppTheme.Colors.onPrimary)
                             .padding(.trailing, AppTheme.Spacing.xs)
                     }
-                    Text("登录 / 注册")
+                    Text(isRetryingAgreementAcceptance ? "重试协议确认" : "登录 / 注册")
                         .font(.headline.weight(.semibold))
                 }
             }
             .buttonStyle(QuantumPrimaryButtonStyle())
-            .disabled(
-                !isAgreementAccepted ||
-                !LoginInputPolicy.canSubmit(
-                    phone: phoneNumber,
-                    code: smsCode,
-                    phoneChannelEnabled: channels.phone,
-                    isLoading: isLoading
-                )
-            )
-            .opacity(
-                isAgreementAccepted && LoginInputPolicy.canSubmit(
-                    phone: phoneNumber,
-                    code: smsCode,
-                    phoneChannelEnabled: channels.phone,
-                    isLoading: false
-                ) ? 1.0 : 0.6
-            )
+            .disabled(!canPerformPrimaryAuth)
+            .opacity(canPerformPrimaryAuth ? 1.0 : 0.6)
         }
     }
     
@@ -347,8 +402,8 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!channels.wechat || !isAgreementAccepted || isLoading)
-                .opacity(channels.wechat && isAgreementAccepted ? 1 : 0.45)
+                .disabled(!channels.wechat || isLoading || isRetryingAgreementAcceptance)
+                .opacity(channels.wechat && !isRetryingAgreementAcceptance ? 1 : 0.45)
                 
                 // Alipay Button
                 Button(action: { handleThirdPartyAuth(provider: "alipay") }) {
@@ -367,30 +422,74 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!channels.alipay || !isAgreementAccepted || isLoading)
-                .opacity(channels.alipay && isAgreementAccepted ? 1 : 0.45)
+                .disabled(!channels.alipay || isLoading || isRetryingAgreementAcceptance)
+                .opacity(channels.alipay && !isRetryingAgreementAcceptance ? 1 : 0.45)
             }
         }
     }
     
     private var footerTermsSection: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            Toggle("我已阅读并同意《用户服务协议》与《隐私保护政策》", isOn: $isAgreementAccepted)
-                .disabled(agreement == nil)
-            Toggle("参与知识共建（可选）", isOn: $participatesInKnowledge)
-                .disabled(!isAgreementAccepted)
-            Text(agreement?.participationSummary ?? "正在加载协议…")
-                .foregroundColor(AppTheme.Colors.textTertiary)
-            DisclosureGroup("查看协议要点") {
-                Text(agreement?.serviceSummary ?? "协议暂不可用，请稍后重试。")
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                    .padding(.top, 4)
+        HStack(spacing: 0) {
+            Button {
+                guard let version = agreement?.version else {
+                    showingAgreement = true
+                    Task { await loadAgreement(forcePresentation: true) }
+                    return
+                }
+                acceptedAgreementVersion = acceptedAgreementVersion == version ? nil : version
+            } label: {
+                Image(systemName: isCurrentAgreementAccepted ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(AppTheme.Colors.primary)
             }
-            .foregroundColor(AppTheme.Colors.primary)
+            .buttonStyle(.plain)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .disabled(isLoading)
+            .accessibilityLabel("我已阅读服务协议")
+            .accessibilityValue(isCurrentAgreementAccepted ? "已勾选" : "未勾选")
+            .accessibilityIdentifier("login.agreement.checkbox")
+
+            Text("我已阅读")
+                .font(.caption)
+                .foregroundColor(AppTheme.Colors.textPrimary)
+            Button {
+                showingAgreement = true
+                if agreement == nil { Task { await loadAgreement(forcePresentation: true) } }
+            } label: {
+                Text("服务协议")
+                    .font(.caption)
+                    .foregroundColor(AppTheme.Colors.primary)
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+            .accessibilityLabel("打开服务协议")
+            .accessibilityHint("阅读当前版本的全部协议章节")
+            .accessibilityIdentifier("login.agreement.link")
         }
-        .font(.caption)
-        .multilineTextAlignment(.leading)
-        .padding(.horizontal, AppTheme.Spacing.xl)
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var isCurrentAgreementAccepted: Bool {
+        LoginConsentPolicy.isAccepted(
+            selectedVersion: acceptedAgreementVersion, currentVersion: agreement?.version
+        )
+    }
+
+    private var isRetryingAgreementAcceptance: Bool {
+        if case .authenticated = pendingAuthAction { return true }
+        return false
+    }
+
+    private var canPerformPrimaryAuth: Bool {
+        guard !isLoading else { return false }
+        return isRetryingAgreementAcceptance || LoginInputPolicy.canSubmit(
+            phone: phoneNumber,
+            code: smsCode,
+            phoneChannelEnabled: channels.phone,
+            isLoading: false
+        )
     }
     
     // MARK: - Actions
@@ -451,65 +550,34 @@ public struct LoginView: View {
     }
     
     private func performPhoneLogin() {
+        if case .authenticated = pendingAuthAction {
+            guard let pendingAuthAction else { return }
+            beginAuth(pendingAuthAction)
+            return
+        }
         guard LoginInputPolicy.canSubmit(
             phone: phoneNumber,
             code: smsCode,
             phoneChannelEnabled: channels.phone,
             isLoading: isLoading
-        ), isAgreementAccepted else { return }
+        ) else { return }
         let normalizedPhone = LoginInputPolicy.digits(phoneNumber, limit: 11)
         let normalizedCode = LoginInputPolicy.digits(smsCode, limit: 6)
-        isLoading = true
-        errorMessage = nil
-
-        Task { @MainActor in
-            do {
-                if LoginInputPolicy.isDeveloperCredentials(
-                    phone: normalizedPhone,
-                    code: normalizedCode
-                ) {
-                    let response = try await APIClient.shared.developerLogin(
-                        phone: normalizedPhone,
-                        verificationCode: normalizedCode
-                    )
-                    try await completeLogin(response, isDeveloper: true)
-                    return
-                }
-                let response = try await APIClient.shared.loginWithPhone(
-                    phone: normalizedPhone,
-                    code: normalizedCode
-                )
-                try await completeLogin(response)
-            } catch {
-                isLoading = false
-                errorMessage = "登录失败：\(error.localizedDescription)"
-            }
-        }
+        beginAuth(.phone(
+            phone: normalizedPhone,
+            code: normalizedCode,
+            isDeveloper: LoginInputPolicy.isDeveloperCredentials(
+                phone: normalizedPhone, code: normalizedCode
+            )
+        ))
     }
 
     private func handleThirdPartyAuth(provider: String) {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
-        guard !isLoading, isAgreementAccepted else { return }
-        isLoading = true
-        errorMessage = nil
-        Task { @MainActor in
-            do {
-                let start = try await APIClient.shared.startOAuth(provider: provider)
-                let ticket = try await oauthCoordinator.authenticate(
-                    url: start.authorizationUrl,
-                    provider: provider
-                )
-                let response = try await APIClient.shared.completeOAuth(ticket: ticket)
-                try await completeLogin(response)
-            } catch OAuthSessionCoordinatorError.cancelled {
-                isLoading = false
-            } catch {
-                isLoading = false
-                errorMessage = "第三方登录失败：\(error.localizedDescription)"
-            }
-        }
+        guard !isLoading else { return }
+        beginAuth(.oauth(provider: provider))
     }
 
     @MainActor
@@ -518,10 +586,7 @@ public struct LoginView: View {
         capabilityMessage = nil
         defer { isCapabilityLoading = false }
         do {
-            async let capabilitiesRequest = APIClient.shared.fetchAuthCapabilities()
-            async let agreementRequest = APIClient.shared.fetchAuthAgreement()
-            let capabilities = try await capabilitiesRequest
-            agreement = try await agreementRequest
+            let capabilities = try await APIClient.shared.fetchAuthCapabilities()
             channels.apply(capabilities)
             if !channels.phone && !channels.alipay && !channels.wechat {
                 capabilityMessage = "认证渠道未配置；开发登录待服务端更新。"
@@ -530,31 +595,104 @@ public struct LoginView: View {
             }
         } catch {
             channels = LoginChannelAvailability()
-            agreement = nil
             capabilityMessage = "认证服务暂时不可用，请稍后重试。"
         }
     }
 
     @MainActor
-    private func completeLogin(
+    private func beginAuth(_ action: PendingAuthAction) {
+        guard isCurrentAgreementAccepted else {
+            pendingAuthAction = action
+            showingAgreement = true
+            if agreement == nil { Task { await loadAgreement(forcePresentation: true) } }
+            return
+        }
+        pendingAuthAction = action
+        isLoading = true
+        errorMessage = nil
+        Task { await executePendingAuth() }
+    }
+
+    @MainActor
+    private func executePendingAuth() async {
+        guard let action = pendingAuthAction else { return }
+        do {
+            switch action {
+            case let .phone(phone, code, isDeveloper):
+                let response: LoginSessionDTO
+                if isDeveloper {
+                    response = try await APIClient.shared.developerLogin(
+                        phone: phone, verificationCode: code
+                    )
+                } else {
+                    response = try await APIClient.shared.loginWithPhone(phone: phone, code: code)
+                }
+                pendingAuthAction = .authenticated(
+                    response, isDeveloper: isDeveloper, idempotencyKey: UUID().uuidString
+                )
+                try await completeAuthenticatedLogin(
+                    response, isDeveloper: isDeveloper,
+                    idempotencyKey: authenticatedIdempotencyKey
+                )
+            case let .oauth(provider):
+                let start = try await APIClient.shared.startOAuth(provider: provider)
+                let ticket = try await oauthCoordinator.authenticate(
+                    url: start.authorizationUrl, provider: provider
+                )
+                let response = try await APIClient.shared.completeOAuth(ticket: ticket)
+                let key = UUID().uuidString
+                pendingAuthAction = .authenticated(
+                    response, isDeveloper: false, idempotencyKey: key
+                )
+                try await completeAuthenticatedLogin(
+                    response, isDeveloper: false, idempotencyKey: key
+                )
+            case let .authenticated(response, isDeveloper, idempotencyKey):
+                try await completeAuthenticatedLogin(
+                    response, isDeveloper: isDeveloper, idempotencyKey: idempotencyKey
+                )
+            }
+        } catch OAuthSessionCoordinatorError.cancelled {
+            pendingAuthAction = nil
+            isLoading = false
+        } catch {
+            isLoading = false
+            errorMessage = LoginConsentPolicy.failureMessage(for: error)
+        }
+    }
+
+    private var authenticatedIdempotencyKey: String {
+        guard case let .authenticated(_, _, key) = pendingAuthAction else { return UUID().uuidString }
+        return key
+    }
+
+    @MainActor
+    private func completeAuthenticatedLogin(
         _ response: LoginSessionDTO,
-        isDeveloper: Bool = false
+        isDeveloper: Bool,
+        idempotencyKey: String
     ) async throws {
+        guard let version = acceptedAgreementVersion,
+              version == agreement?.version else {
+            throw APIError.authenticationRejected("请先阅读并同意当前有效的服务协议。")
+        }
         guard APIClient.shared.saveToken(response.token) else {
             throw APIError.authenticationRejected("无法安全保存登录凭证，请重试")
         }
         do {
-            let current = try await APIClient.shared.fetchKnowledgeContributionConsent()
-            _ = try await APIClient.shared.updateKnowledgeContributionConsent(
-                agreementVersion: agreement?.version ?? "",
-                participationEnabled: participatesInKnowledge || (
-                    current.serviceAgreementVersion == agreement?.version
-                        && current.participationEnabled
-                )
+            _ = try await APIClient.shared.acceptAgreement(
+                version: version, idempotencyKey: idempotencyKey
             )
         } catch {
-            APIClient.shared.clearToken()
-            throw APIError.authenticationRejected("协议记录失败：\(error.localizedDescription)")
+            if let apiError = error as? APIError,
+               case .server(409, _) = apiError {
+                acceptedAgreementVersion = nil
+                agreement = nil
+                await loadAgreement(forcePresentation: true, allowCache: false)
+            }
+            // The JWT remains in Keychain: retrying agreement acceptance must not
+            // repeat SMS verification or the external OAuth ceremony.
+            throw error
         }
         let profile = try await APIClient.shared.fetchMe()
         appState.currentTenantKey = profile.tenantKey
@@ -586,6 +724,39 @@ public struct LoginView: View {
                 isVipLane: false
             )
         }
+        pendingAuthAction = nil
+    }
+
+    @MainActor
+    private func loadAgreement(forcePresentation: Bool, allowCache: Bool = true) async {
+        guard !isAgreementLoading else { return }
+        isAgreementLoading = true
+        agreementError = nil
+        if forcePresentation { showingAgreement = true }
+        defer { isAgreementLoading = false }
+        do {
+            let latest = try await APIClient.shared.fetchAgreement(allowCache: allowCache)
+            if agreement?.version != latest.version { acceptedAgreementVersion = nil }
+            agreement = latest
+        } catch {
+            agreement = nil
+            agreementError = "协议暂时无法加载，请检查网络后重试。"
+        }
+    }
+
+    private func acceptCurrentAgreement() {
+        guard let version = agreement?.version else { return }
+        acceptedAgreementVersion = version
+        showingAgreement = false
+        guard pendingAuthAction != nil else { return }
+        isLoading = true
+        Task { await executePendingAuth() }
+    }
+
+    private func agreementSheetDismissed() {
+        guard !isCurrentAgreementAccepted else { return }
+        if !isRetryingAgreementAcceptance { pendingAuthAction = nil }
+        isLoading = false
     }
 }
 

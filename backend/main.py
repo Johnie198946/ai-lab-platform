@@ -18,7 +18,8 @@ from backend.api.chat import router as chat_router
 from backend.api.register import router as register_router
 from backend.api.catalog import router as catalog_router
 from backend.api.me import router as me_router
-from backend.api.auth import require_auth, check_dev_visibility_guard
+from backend.api.auth import check_dev_visibility_guard
+from backend.api.agreement import router as agreement_router, require_current_agreement
 from backend.api.orchestration import router as orchestration_router
 
 from backend.api.protocols import router as protocols_router
@@ -28,7 +29,7 @@ from backend.api.topology import router as topology_router
 from backend.api.skills import router as skills_router
 from backend.api.tenant_agents import router as tenant_agents_router
 from backend.api.hermes import router as hermes_router
-from backend.api.showroom import router as showroom_router
+from backend.api.showroom import router as showroom_router, websocket_router as showroom_websocket_router
 from backend.api.customer_demands import router as customer_demands_router
 from backend.api.workflows import router as workflows_router
 from backend.api.knowledge_policy import router as knowledge_policy_router
@@ -153,50 +154,52 @@ register_error_handlers(app)
 
 # ---------- 路由 ----------
 # 除 /health、/api/v1/register 外均需 Authen Bearer JWT 认证
-app.include_router(screens_router, dependencies=[Depends(require_auth)])
-app.include_router(tasks_router, dependencies=[Depends(require_auth)])
+app.include_router(screens_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(tasks_router, dependencies=[Depends(require_current_agreement)])
 # 知识引擎: 矩阵/检索/wiki/实体（订阅过滤）
-app.include_router(knowledge_router, dependencies=[Depends(require_auth)])
+app.include_router(knowledge_router, dependencies=[Depends(require_current_agreement)])
 # 用户笔记只同步到 raw/dialogues；编译、治理和正式存储继续由平台既有链路负责。
-app.include_router(knowledge_sync_router, dependencies=[Depends(require_auth)])
-app.include_router(knowledge_actions_router, dependencies=[Depends(require_auth)])
+app.include_router(knowledge_sync_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(knowledge_actions_router, dependencies=[Depends(require_current_agreement)])
 # 问答: 基于知识库的回答（订阅过滤 + 会话记录）
-app.include_router(chat_router, dependencies=[Depends(require_auth)])
+app.include_router(chat_router, dependencies=[Depends(require_current_agreement)])
 # 前端原型编排: 角色生成与编辑回写
-app.include_router(orchestration_router, dependencies=[Depends(require_auth)])
+app.include_router(orchestration_router, dependencies=[Depends(require_current_agreement)])
 # 注册（/register 公开；/admin/users 端点自带超管校验）
 app.include_router(register_router)
 # 手机号与第三方登录（端点内部执行验证码、state 与一次性票据校验）
 app.include_router(external_auth_router)
+app.include_router(agreement_router)
 # 目录 / 订阅管理 / 当前用户
-app.include_router(catalog_router, dependencies=[Depends(require_auth)])
-app.include_router(subscriptions_router, dependencies=[Depends(require_auth)])
-app.include_router(knowledge_publication_router, dependencies=[Depends(require_auth)])
-app.include_router(knowledge_contribution_router, dependencies=[Depends(require_auth)])
-app.include_router(hot_memory_router, dependencies=[Depends(require_auth)])
-app.include_router(me_router, dependencies=[Depends(require_auth)])
+app.include_router(catalog_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(subscriptions_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(knowledge_publication_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(knowledge_contribution_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(hot_memory_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(me_router, dependencies=[Depends(require_current_agreement)])
 # Agent 协议签署
-app.include_router(protocols_router, dependencies=[Depends(require_auth)])
+app.include_router(protocols_router, dependencies=[Depends(require_current_agreement)])
 
 
 # 挂载 Agent 调度与通知中心
-app.include_router(agents_router, dependencies=[Depends(require_auth)])
-app.include_router(notifications_router, dependencies=[Depends(require_auth)])
+app.include_router(agents_router, dependencies=[Depends(require_current_agreement)])
+app.include_router(notifications_router, dependencies=[Depends(require_current_agreement)])
 # 拓扑注册表（对话页 Agent 选择栏 + 拓扑页 DAG 同源消费）
-app.include_router(topology_router, dependencies=[Depends(require_auth)])
+app.include_router(topology_router, dependencies=[Depends(require_current_agreement)])
 # 租户真实技能库（挂载目录扫描·非演示数据）
-app.include_router(skills_router, dependencies=[Depends(require_auth)])
+app.include_router(skills_router, dependencies=[Depends(require_current_agreement)])
 # 租户 Agent 切片（基于基线 profile 的 Delta 角色扮演 · 多租户隔离）
-app.include_router(tenant_agents_router, dependencies=[Depends(require_auth)])
+app.include_router(tenant_agents_router, dependencies=[Depends(require_current_agreement)])
 # Hermes serve 集成（Tab 1 官方 Web 容器认证通道 · B-2-2）
-app.include_router(hermes_router, dependencies=[Depends(require_auth)])
+app.include_router(hermes_router, dependencies=[Depends(require_current_agreement)])
 # 展厅运行态：HTTP 端点在路由内鉴权，WebSocket 使用 query token 单独验签。
 app.include_router(showroom_router)
-app.include_router(customer_demands_router, dependencies=[Depends(require_auth)])
+app.include_router(showroom_websocket_router)
+app.include_router(customer_demands_router, dependencies=[Depends(require_current_agreement)])
 # 可执行工作流：计划审批、持久执行、素材复核
-app.include_router(workflows_router, dependencies=[Depends(require_auth)])
+app.include_router(workflows_router, dependencies=[Depends(require_current_agreement)])
 # QuantumWorkspace 项目控制面。执行事实继续由 workflows/chat 路由持有。
-app.include_router(quantum_workspace_router, dependencies=[Depends(require_auth)])
+app.include_router(quantum_workspace_router, dependencies=[Depends(require_current_agreement)])
 # Authen HMAC webhook + signed-capability Knowledge Gateway use their own auth.
 app.include_router(knowledge_policy_router)
 

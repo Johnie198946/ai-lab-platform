@@ -66,6 +66,7 @@ async def init_db() -> None:
     import backend.models.knowledge_action  # noqa: F401  (注册知识动作幂等记录)
     import backend.models.knowledge_contribution  # noqa: F401  (注册知识贡献授权与 Outbox)
     import backend.models.external_auth  # noqa: F401  (注册外部登录短期票据)
+    import backend.models.agreement  # noqa: F401  (注册统一服务协议接受记录)
     import backend.models.workspace  # noqa: F401  (注册 QuantumWorkspace 控制面模型)
     import backend.models.resource_catalog  # noqa: F401  (注册数据集、模型、拓扑与监控注册表)
     import backend.models.feedback  # noqa: F401  (注册用户抱怨与日报投递账本)

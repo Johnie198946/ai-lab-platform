@@ -17,9 +17,6 @@ public struct SettingsView: View {
     @State private var cloudAgents: [TenantAgentDTO] = []
     @State private var cloudSkills: [TenantSkillDTO] = []
     @State private var subscriptionSummary: SubscriptionCenterResponse? = nil
-    @State private var contributionConsent: KnowledgeContributionConsentDTO?
-    @State private var contributionConsentBusy = false
-    @State private var contributionConsentError: String?
     @State private var skillPendingDeletion: TenantSkillDTO?
     @State private var isDeletingSkill = false
     @State private var skillDeletionFeedback: SkillDeletionFeedback?
@@ -47,9 +44,6 @@ public struct SettingsView: View {
 
                         // 2. 知识订阅与套餐
                         subscriptionEntryCard
-                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
-
-                        knowledgeContributionCard
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 3. 我创建的智能体 + 我制作的技能（纯云端真实数据）
@@ -81,11 +75,6 @@ public struct SettingsView: View {
                     cloudSkills = skills
                 }
                 subscriptionSummary = try? await api.fetchSubscriptionCenter()
-                let account = KnowledgeNoteStore.shared.accountFingerprint
-                let consent = try? await api.fetchKnowledgeContributionConsent()
-                if account == KnowledgeNoteStore.shared.accountFingerprint {
-                    contributionConsent = consent
-                }
             }
             .confirmationDialog(
                 "删除技能「\(skillPendingDeletion?.name ?? "")」？",
@@ -156,60 +145,6 @@ public struct SettingsView: View {
         }
         .buttonStyle(SoftButtonStyle())
         .accessibilityLabel("知识订阅与套餐，\(subscriptionSummary?.subscription?.planName ?? "未选择套餐")")
-    }
-
-    private var knowledgeContributionCard: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            Toggle(isOn: Binding(
-                get: { contributionConsent?.participationEnabled == true },
-                set: { enabled in Task { await updateContributionConsent(enabled) } }
-            )) {
-                Label("参与知识共建", systemImage: "person.badge.shield.checkmark")
-                    .font(.system(size: 16, weight: .bold))
-            }
-            .disabled(contributionConsentBusy || contributionConsent == nil)
-            Text("这是当前个人账号的独立选择，仅影响同意后新建或修改的内容；不代表租户其他成员，历史笔记不会回填，也不会自动公开。")
-                .font(AppTheme.Typography.micro)
-                .foregroundColor(AppTheme.Colors.textSecondary)
-            if let contributionConsentError {
-                Button("\(contributionConsentError) · 重试") {
-                    Task { await loadContributionConsent() }
-                }
-                .font(AppTheme.Typography.micro.weight(.semibold))
-            }
-        }
-        .padding(AppTheme.Spacing.lg)
-        .background(AppTheme.Colors.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-    }
-
-    @MainActor
-    private func loadContributionConsent() async {
-        let account = KnowledgeNoteStore.shared.accountFingerprint
-        let consent = try? await api.fetchKnowledgeContributionConsent()
-        guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
-        contributionConsent = consent
-        contributionConsentError = consent == nil ? "设置读取失败" : nil
-    }
-
-    @MainActor
-    private func updateContributionConsent(_ enabled: Bool) async {
-        guard let current = contributionConsent, !contributionConsentBusy else { return }
-        let account = KnowledgeNoteStore.shared.accountFingerprint
-        contributionConsentBusy = true
-        defer { contributionConsentBusy = false }
-        do {
-            let updated = try await api.updateKnowledgeContributionConsent(
-                agreementVersion: current.serviceAgreementVersion,
-                participationEnabled: enabled
-            )
-            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
-            contributionConsent = updated
-            contributionConsentError = nil
-        } catch {
-            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
-            contributionConsentError = "设置未保存"
-        }
     }
 
     private var settingsOverviewHeader: some View {

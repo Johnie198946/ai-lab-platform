@@ -90,6 +90,12 @@ def _read_metadata(path: Path) -> dict[str, Any]:
 
 
 def _note_snapshot(note_path: Path, metadata_path: Path, *, archived: bool) -> dict[str, Any]:
+    # Production containers currently run as root, so opening a mode-000 file can
+    # succeed even though every non-root runtime and shared-volume consumer would
+    # be denied. Treat the absence of all read bits as an explicit storage fault
+    # before reading; this keeps the API contract independent of container UID.
+    if note_path.stat().st_mode & 0o444 == 0:
+        raise PermissionError("note storage entry has no readable permission bits")
     content = note_path.read_text(encoding="utf-8")
     metadata = _read_metadata(metadata_path)
     return {

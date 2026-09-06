@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
 from backend.api.auth import AUTHEN_JWT_ALGORITHM, AUTHEN_JWT_SECRET, require_auth
+from backend.api.agreement import require_current_agreement
 from backend.api.screens import _load_all as load_screen_configs
 from backend.db import SessionLocal
 from backend.models.showroom import ShowroomRuntime, ShowroomSession
@@ -85,7 +86,12 @@ from backend.services.visitor_insight import (
     persist_visitor_wiki,
 )
 
-router = APIRouter(prefix="/api/showroom", tags=["showroom"])
+router = APIRouter(
+    prefix="/api/showroom",
+    tags=["showroom"],
+    dependencies=[Depends(require_current_agreement)],
+)
+websocket_router = APIRouter(prefix="/api/showroom", tags=["showroom"])
 CONTENT_FILE = (
     Path(__file__).resolve().parent.parent.parent
     / "config"
@@ -3157,7 +3163,7 @@ async def submit_showroom_review(
     return hub.snapshot()
 
 
-@router.websocket("/ws")
+@websocket_router.websocket("/ws")
 async def showroom_websocket(
     websocket: WebSocket,
     token: str = "",
