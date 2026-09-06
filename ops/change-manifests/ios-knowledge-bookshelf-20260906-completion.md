@@ -2,7 +2,7 @@
 
 - task_id: `ios-knowledge-bookshelf-20260906`
 - objective: 将 iOS“知识订阅”改为按分类浏览的知识书架，把既有 Wiki/catalog 治理投影为读者书目，并实现用户级书籍订阅、阅读进度与笔记入口。
-- status: `TESTED`
+- status: `PUSHED`
 - branch: `codex/ios-knowledge-bookshelf-20260906`
 - worktree: `/private/tmp/ai-lab-ios-knowledge-bookshelf-20260906`
 
@@ -19,7 +19,7 @@
 - `backend/services/knowledge_catalog.py`：从既有 catalog/policy 投影书架与书目，提取读者概要并生成稳定封面主题/变体；不暴露 Yellow Wiki 元数据。
 - `backend/models/tenant.py`：增加用户级 `knowledge_book_subscriptions` 关系表，保存版本、阅读进度和最近阅读时间，不复制正文。
 - `backend/services/knowledge_color_projection.py`：将经过治理的出版元数据投影到 catalog，并沿 Raw 来源链提取可追溯作者。
-- `backend/api/subscriptions.py`：新增独立书架接口，以及订阅、取消订阅、我的书架、阅读进度端点；服务端重新验证当前书籍可见性。
+- `backend/api/subscriptions.py`：新增独立书架接口，以及订阅、取消订阅、我的书架、阅读进度端点；服务端重新验证当前书籍可见性，并兼容 Build 16 已发布的 `bookId` 请求字段。
 - `ios/AIPlatformApp/Networking/APIClient.swift`：增加书架 DTO 与独立书架请求。
 - `ios/AIPlatformApp/AIPlatformApp.swift`：增加仅 Debug 编译可用的本地视觉验收入口；书架预览宿主提供真实可用的返回路径，避免根视图 `dismiss` 空操作。
 - `ios/AIPlatformApp/Views/MainTabView.swift`：复用既有自定义主导航；向下拖动收起为显示当前栏目的 44pt 胶囊，点击胶囊恢复完整导航；展开后 5 秒无导航交互自动收回，逐个 Tab 隐藏系统 TabBar，并兼容 VoiceOver 与 Reduce Motion。
@@ -29,6 +29,8 @@
 - `tests/test_subscription_center_api.py`：subscription-center 书架代理契约测试。
 - `tests/test_book_subscriptions.py`：幂等订阅、跨用户隔离、进度、取消订阅与不可见书籍拒绝测试。
 - `ios/AIPlatformAppTests/WorkflowLifecycleDTOTests.swift`：书架 DTO 解码测试。
+- `ios/AIPlatformApp/Info.plist`：Build 16 归档时使用 `1.0.3 (16)`，并补齐 iPad 多任务要求的倒置竖屏方向；当前分支随后由既有并行交付推进到 Build 17 变量化版本配置。
+- `ios/project.yml`：同步 iPad 方向源配置；当前分支发布版本为 `1.0.3 (17)`，不回退覆盖并行交付。
 - `docs/knowledge-bookshelf-backend-recommendation-20260906.md`：Obsidian 与书架后端治理建议。
 
 ## 测试与校验
@@ -44,17 +46,27 @@
 - 返回与阅读验收：知识书架增加固定 44pt 左上返回入口；分类层仍先返回分类，书籍全屏阅读页用右上关闭回到原书架位置。iOS 增量构建再次 `BUILD SUCCEEDED`；订阅态阅读截图：`/private/tmp/subscribed-book-reader-20260906.png`。
 - 本轮交互修复：后端相关测试 `9 passed`，应用路由枚举确认 GET/PUT/DELETE `/api/v1/me/book-subscriptions` 与 PATCH progress 均已注册；iOS 构建 `BUILD SUCCEEDED`。已订阅 CTA 截图：`/private/tmp/book-start-reading-cta-20260906.png`；泛黄纸张导读页：`/private/tmp/book-parchment-reading-20260906.png`；导航自动收回：`/private/tmp/tabbar-auto-after-20260906.png`。
 - 导航收起与恢复验收：根因修复后 iOS 增量构建 `BUILD SUCCEEDED`；收起态仅保留底部胶囊，展开态保留原四栏目导航。截图：`/private/tmp/collapsed-tab-bar-preview-final.png`、`/private/tmp/expanded-tab-bar-preview-final.png`；订阅态沉浸式书籍页：`/private/tmp/subscribed-book-reader-preview-final.png`。
+- TestFlight 发布归档：`/private/tmp/AIPlatformApp-1.0.3-build16-final.xcarchive`，`ARCHIVE SUCCEEDED`；版本、Build、Bundle ID、Team ID 核验为 `1.0.3`、`16`、`com.ailab.AIPlatformApp`、`AALA948YY5`。
+- 首次上传被 Apple 校验拒绝，Validation ID `00245d93-5c19-4b8f-ba84-4e4e208b10e0` 指向 iPad 多任务方向缺失；补齐 `UIInterfaceOrientationPortraitUpsideDown` 后重新归档上传成功。
+- App Store Connect 只读核验：构建上传状态为“完成”，构建资源 ID `b107bcbb-3af5-4eca-b3c1-7de90790b3f3`，创建时间 `2026-09-06 08:51 Asia/Shanghai`。
+- 出口合规：代码检索确认仅使用 CryptoKit SHA-256 摘要、系统 HTTPS 与 Keychain；经用户明确确认后，为 Build 16 提交“不属于上述任意一种算法/不使用非豁免加密”的声明。
+- TestFlight 分发核验：Build 16 已加入内部“核心测试”（1 名测试员）和“外部测试员”（4 名测试员）；外部组权威状态为“正在测试，90 天后过期”。
+- TestFlight 测试说明已保存为：“重点体验全新知识书架、订阅后快捷阅读、沉浸式羊皮纸阅读器，以及导航栏唤醒与自动收起；请反馈返回、订阅和阅读流程中的异常。”
+- Build 16 二进制复核：归档内同时存在 `knowledge-bookshelves`、`me/book-subscriptions` 和 progress 路径；Info.plist 确认为 `1.0.3 (16)`，并允许 HTTP 后按生产网关 308 跳转至 HTTPS。
+- 生产接口探测：`/health` 返回 200；未认证 GET `/api/v1/knowledge-bookshelves` 与 `/api/v1/me/book-subscriptions` 均返回 401 而非 404，确认新路由已部署。
+- 登录态端到端探测：Build 17 使用与 Build 16 相同的订阅请求模型，真实 PUT 已到达生产接口但返回 422；日志确认根因为客户端 `bookId` 与服务端 `book_id` 不兼容。
+- 兼容修复验证：`python3 -m pytest tests/test_book_subscriptions.py tests/test_subscription_center_api.py tests/test_knowledge_bookshelf.py` 结果 `15 passed`；新增用例覆盖 Build 16 的 camelCase 订阅与阅读进度载荷。
 
 ## 交付与外部状态
 
-- current_status: `TESTED`
-- commit SHA: 未授权/未执行；当前 HEAD 仍为基线 `8fe312223ccb7909ba6b9f00f05df5eea1e63679`，变更保留在工作区。
-- GitHub remote/ref/SHA: 未授权 push，未执行 `git ls-remote`，不标记为 PUSHED。
-- server_before: 不适用；未授权部署。
-- server_after: 不适用；未执行部署。
-- health_check: 不适用；无服务器变更。
-- functional_check: 独立书架接口、用户级订阅路由注册、相关后端测试、DTO 测试和 iOS 构建通过；知识首页、开始阅读 CTA、泛黄纸张导读页及导航自动收回均已在 iPhone 17 Pro 模拟器拉起。
-- rollback_point: 无部署；删除本任务 worktree 中的未提交变更即可回退，未触碰主工作区。
+- current_status: `PUSHED`
+- commit SHA: Build 16 后端兼容修复 `4033772309d8ef3c485c6de5da92cc7668ba4220`；开工基线仍为 `8fe312223ccb7909ba6b9f00f05df5eea1e63679`。
+- GitHub remote/ref/SHA: `origin/codex/ios-knowledge-bookshelf-20260906` 包含兼容修复；manifest 提交后的精确远端 tip 由完成通报中的 `git ls-remote` 结果记录。
+- server_before: TestFlight `1.0.3 (15)` 正在测试（用户截图及 App Store Connect 页面核验）。
+- server_after: TestFlight `1.0.3 (16)` 已上传且 Apple 上传处理状态为“完成”；已分配“核心测试”和“外部测试员”。
+- health_check: Xcode 显示 `App upload complete`；App Store Connect 构建上传列表显示 Build 16“完成”，外部组显示“正在测试，90 天后过期”。
+- functional_check: 生产书架路由已部署；Build 16/17 的 camelCase 写入兼容修复通过 15 个相关测试并已推送。TestFlight 二进制通过 Apple 上传校验，内部 1 名与外部 4 名测试员已获得 Build 16 访问权。兼容修复尚未部署服务器，因此线上写入仍为 422。
+- rollback_point: TestFlight `1.0.3 (15)` 保持正在测试；如 Build 16 不采用，可不分配测试组或在 App Store Connect 中将其设为过期。Git 工作区未提交，未触碰主工作区。
 
 ## 风险、未完成项与回滚说明
 
@@ -63,6 +75,7 @@
 - 封面当前为 `cover_version: 1` 的本地程序化图形；AI 插画仅建议用于人工审核后的少量旗舰书。
 - Yellow 内容当前为 0；真实订阅转化需要先生产经批准、带精确 entitlement 的 Yellow 主题书。
 - 当前正文投影只有概要，已实现“概述摘录”；完整章节阅读和任意段落选择摘录需要后续增加受治理正文 API。
-- 当前模拟器连接的远端服务仍返回书籍订阅 404，说明服务端尚未部署本任务新增路由；本地路由及测试已通过，但未获部署授权，不能标记为已解决线上 404。
+- 生产服务已从此前的 404 更新为路由可达，但 Build 16 写入仍因 camelCase 字段返回 422；修复已提交和推送，尚未获得服务器部署授权。
+- 工作期间同一专用分支被既有并行交付推进到 `119c654`，源码发布号现为 Build 17；本次已经上传的 Build 16 归档保持不可变，未回退或覆盖并行提交。
 - 静态 catalog 与运行时颜色投影的准入规则仍需统一，详见建议文档。
-- 未提交、未 push、未部署；回滚不会影响远端或服务器。
+- 后端兼容修复已提交并推送，但未部署服务器；回滚点为部署前当前生产版本，部署时需另行记录服务器版本与镜像。
