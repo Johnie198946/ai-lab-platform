@@ -41,6 +41,17 @@ restart_hermes_runtime() {
   systemctl restart hermes-chat-worker.service
 }
 
+repair_runtime_store_permissions() {
+  local data_root="$1" path
+  chown 0:0 "$data_root"
+  chmod 0755 "$data_root"
+  for path in "$data_root"/hermes_chat_runs.sqlite3*; do
+    [ -e "$path" ] || continue
+    chown 0:0 "$path"
+    chmod 0600 "$path"
+  done
+}
+
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -156,6 +167,7 @@ if [ ! -d "$DATA_TARGET" ]; then
   echo "ERROR: 持久数据目录不存在: $DATA_TARGET" >&2
   exit 1
 fi
+repair_runtime_store_permissions "$DATA_TARGET"
 rm -rf "$STAGING_DIR/data" "$STAGING_DIR/backups" "$STAGING_DIR/rollbacks"
 ln -s "$SHARED_ROOT/.env" "$STAGING_DIR/.env"
 ln -s "$DATA_TARGET" "$STAGING_DIR/data"
@@ -215,13 +227,14 @@ mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
 configure_cloud_agent_os_mode
 restart_hermes_runtime
+repair_runtime_store_permissions "$DATA_TARGET"
 chown 0:0 "$VAULT_ROOT"
 chmod 0755 "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid 0 --owner-gid 0 \
   "$VAULT_ROOT/raw/dialogues/tenants"
 docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-  'import pathlib,tempfile; vault=pathlib.Path("/app/data/vault"); lock=vault/".incremental-compile.lock"; lock.touch(exist_ok=True); root=vault/"raw/dialogues/tenants"; probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
+  'import pathlib,tempfile; data=pathlib.Path("/app/data"); data_probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=data)); data_probe.rmdir(); vault=data/"vault"; lock=vault/".incremental-compile.lock"; lock.touch(exist_ok=True); root=vault/"raw/dialogues/tenants"; probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
 
 echo "==> [6/6] 最终健康检查"
 api_status=""

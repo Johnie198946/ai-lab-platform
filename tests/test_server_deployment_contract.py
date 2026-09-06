@@ -37,3 +37,10 @@ def test_server_deploy_rechecks_private_note_write_access_after_runtime_restart(
     write_probe = script.index(".api-write-probe-", second_repair)
     final_health = script.index('echo "==> [6/6] 最终健康检查"', write_probe)
     assert restart < second_repair < write_probe < final_health
+
+
+def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_access() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert 'repair_runtime_store_permissions "$DATA_TARGET"' in script
+    assert 'chmod 0600 "$path"' in script
+    assert 'data_probe=pathlib.Path(tempfile.mkdtemp' in script
