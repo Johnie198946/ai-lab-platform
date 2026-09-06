@@ -398,6 +398,33 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         XCTAssertNil(store.notes.first(where: { $0.fileURL.lastPathComponent == "server-stable-id.md" && $0.id != snapshot.noteId }))
     }
 
+    func testCloudRestoreRemovesArchivedDuplicateOfActiveNoteID() throws {
+        let store = KnowledgeNoteStore.shared
+        store.activate(tenantKey: "cloud-dedupe-tenant-\(UUID())", userId: "cloud-dedupe-user")
+        let note = try XCTUnwrap(store.createNote(id: "dedupe-id", title: "九州旅行纲要", body: "完整正文"))
+        defer { store.moveToTrash(id: note.id) }
+        try FileManager.default.createDirectory(at: store.archiveDirectory, withIntermediateDirectories: true)
+        let duplicate = store.archiveDirectory.appendingPathComponent("stale-copy.md")
+        try store.markdown(for: note).write(to: duplicate, atomically: true, encoding: .utf8)
+        store.reload()
+        XCTAssertNotNil(store.archivedNote(id: note.id))
+
+        let markdown = store.markdown(for: try XCTUnwrap(store.note(id: note.id)))
+        let hash = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
+        try store.restoreFromCloudSnapshot(CloudKnowledgeNotesResponse(
+            items: [.init(
+                noteId: note.id, markdown: markdown, contentHash: hash,
+                updatedAt: "2099-09-06T00:00:00Z", archived: false, mergedIntoNoteId: nil
+            )],
+            count: 1,
+            compileStatus: "private_index_ready"
+        ))
+
+        XCTAssertNotNil(store.note(id: note.id))
+        XCTAssertNil(store.archivedNote(id: note.id))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: duplicate.path))
+    }
+
     func testNewerLocalEditWinsOverServerSnapshotOfSameNote() {
         let server = ChatLocalNoteDTO(
             id: "same",

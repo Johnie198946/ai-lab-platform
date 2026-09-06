@@ -161,7 +161,7 @@ public final class KnowledgeNoteStore: ObservableObject {
             if let enumerator = fileManager.enumerator(
                 at: vaultDirectory,
                 includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
-                options: [.skipsHiddenFiles]
+                options: []
             ) {
                 for case let url as URL in enumerator where url.pathExtension.lowercased() == "md" {
                     guard !url.path.contains("/.trash/") else { continue }
@@ -214,13 +214,26 @@ public final class KnowledgeNoteStore: ObservableObject {
     }
 
     private func applyCloudSnapshot(_ snapshot: CloudKnowledgeNoteDTO) throws {
-        if let existing = anyNote(id: snapshot.noteId) {
-            let localHash = SHA256.hash(data: Data(markdown(for: existing).utf8))
+        let sameState = (snapshot.archived ? archivedNotes : notes).filter { $0.id == snapshot.noteId }
+        let oppositeState = (snapshot.archived ? notes : archivedNotes).filter { $0.id == snapshot.noteId }
+        if let preferred = sameState.first {
+            // One logical note ID may never exist in both active and archived views.
+            // Remove stale duplicates even when the preferred copy already matches cloud.
+            for duplicate in Array(sameState.dropFirst()) + oppositeState {
+                try? fileManager.removeItem(at: duplicate.fileURL)
+            }
+            let localHash = SHA256.hash(data: Data(markdown(for: preferred).utf8))
                 .map { String(format: "%02x", $0) }.joined()
             if localHash == snapshot.contentHash { return }
             let remoteUpdatedAt = snapshot.updatedAt.flatMap(Self.parseServerDate)
+            if remoteUpdatedAt == nil || remoteUpdatedAt! <= preferred.updatedAt { return }
+            try? fileManager.removeItem(at: preferred.fileURL)
+        } else if let existing = oppositeState.first {
+            let remoteUpdatedAt = snapshot.updatedAt.flatMap(Self.parseServerDate)
             if remoteUpdatedAt == nil || remoteUpdatedAt! <= existing.updatedAt { return }
-            try? fileManager.removeItem(at: existing.fileURL)
+            for duplicate in oppositeState {
+                try? fileManager.removeItem(at: duplicate.fileURL)
+            }
         }
 
         let directory = snapshot.archived ? archiveDirectory : vaultDirectory
