@@ -2900,9 +2900,10 @@ public final class TenantSessionCoordinator: ObservableObject {
             return
         }
         let shouldMerge = action == "merge"
-        let noteTitle = shouldMerge ? (draft.mergedTitle ?? draft.title) : draft.title
-        let noteMarkdown = shouldMerge ? (draft.mergedMarkdown ?? draft.markdown) : draft.markdown
-        let noteTags = shouldMerge ? (draft.mergedTags ?? draft.tags) : draft.tags
+        let resolvedDraft = Self.resolveLegacyNoteDraft(draft, shouldMerge: shouldMerge)
+        let noteTitle = resolvedDraft.title
+        let noteMarkdown = resolvedDraft.markdown
+        let noteTags = resolvedDraft.tags
         guard !shouldMerge || (draft.mergeCandidates?.isEmpty == false && draft.mergedMarkdown?.isEmpty == false) else {
             showToast("合并稿不可用，请保存为新笔记")
             return
@@ -2944,8 +2945,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         commitSession()
         let archivedNotes: [KnowledgeNote]
         if shouldMerge {
-            archivedNotes = (draft.mergeCandidates ?? []).compactMap { candidate in
-                KnowledgeNoteStore.shared.archive(id: candidate.id, mergedInto: note.id)
+            archivedNotes = Self.mergeArchiveCandidateIDs(
+                draft.mergeCandidates ?? [], primaryNoteID: note.id
+            ).compactMap { candidateID in
+                KnowledgeNoteStore.shared.archive(id: candidateID, mergedInto: note.id)
             }
             showToast("已合并，并将 \(archivedNotes.count) 篇旧笔记归档")
         } else {
@@ -2987,6 +2990,31 @@ public final class TenantSessionCoordinator: ObservableObject {
             } catch {
                 self?.showToast("笔记已保存到本地，稍后可重试同步")
             }
+        }
+    }
+
+    static func resolveLegacyNoteDraft(
+        _ draft: NoteDraftBlock,
+        shouldMerge: Bool
+    ) -> (title: String, markdown: String, tags: [String]) {
+        // An update's regular payload is the complete authoritative revision.
+        // The compatibility merge payload is model-authored and may only summarize it.
+        let title = shouldMerge && !draft.isUpdate ? (draft.mergedTitle ?? draft.title) : draft.title
+        let markdown = shouldMerge && !draft.isUpdate ? (draft.mergedMarkdown ?? draft.markdown) : draft.markdown
+        let tags = shouldMerge ? (draft.mergedTags ?? draft.tags) : draft.tags
+        return (title, markdown, tags)
+    }
+
+    static func mergeArchiveCandidateIDs(
+        _ candidates: [NoteMergeCandidate],
+        primaryNoteID: String
+    ) -> [String] {
+        var seen = Set<String>()
+        return candidates.compactMap { candidate in
+            guard candidate.id != primaryNoteID, seen.insert(candidate.id).inserted else {
+                return nil
+            }
+            return candidate.id
         }
     }
 

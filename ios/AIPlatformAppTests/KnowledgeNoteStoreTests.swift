@@ -163,6 +163,32 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         )))
     }
 
+    func testLegacyDraftMergeNeverArchivesUpdatedPrimaryOrDuplicates() {
+        let candidates = [
+            NoteMergeCandidate(id: "source-a", title: "来源 A", snippet: ""),
+            NoteMergeCandidate(id: "target", title: "目标", snippet: ""),
+            NoteMergeCandidate(id: "source-a", title: "来源 A 重复", snippet: ""),
+            NoteMergeCandidate(id: "source-b", title: "来源 B", snippet: "")
+        ]
+
+        XCTAssertEqual(
+            TenantSessionCoordinator.mergeArchiveCandidateIDs(candidates, primaryNoteID: "target"),
+            ["source-a", "source-b"]
+        )
+
+        let draft = NoteDraftBlock(
+            id: "draft", title: "九州旅行纲要", markdown: "# 九州旅行纲要\n\n完整正文",
+            tags: ["九州"], sourceSessionId: nil, sourceMessageIds: [],
+            mergeCandidates: candidates, mergedTitle: "九州旅行纲要",
+            mergedMarkdown: "（以上为合并后的完整笔记）", mergedTags: ["九州", "交通"],
+            operation: "update", targetNoteId: "target", targetNoteTitle: "九州旅行纲要",
+            targetContentHash: String(repeating: "a", count: 64)
+        )
+        let resolved = TenantSessionCoordinator.resolveLegacyNoteDraft(draft, shouldMerge: true)
+        XCTAssertEqual(resolved.markdown, draft.markdown)
+        XCTAssertEqual(resolved.tags, ["九州", "交通"])
+    }
+
     func testExplicitTargetOnlyMergeUpdatesInPlaceAndPreservesMetadata() async throws {
         let (store, executor) = isolatedStoreAndExecutor()
         defer { removeVault(store) }

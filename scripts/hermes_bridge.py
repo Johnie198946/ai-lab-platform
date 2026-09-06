@@ -1754,17 +1754,34 @@ def _note_draft_tool(args: dict[str, Any], **_kwargs) -> str:
         target_note_id = ""
         target_note = None
     requested_candidates = (args or {}).get("merge_candidate_ids") or []
-    merge_candidates = [
-        searched[str(note_id)]
-        for note_id in requested_candidates
-        if str(note_id) in searched
-    ][:8]
+    merge_candidates = []
+    seen_candidate_ids: set[str] = set()
+    for requested_id in requested_candidates:
+        note_id = str(requested_id)
+        candidate = searched.get(note_id)
+        if (
+            not isinstance(candidate, dict)
+            or note_id == target_note_id
+            or bool(candidate.get("archived"))
+            or note_id in seen_candidate_ids
+        ):
+            continue
+        seen_candidate_ids.add(note_id)
+        merge_candidates.append(candidate)
+        if len(merge_candidates) == 8:
+            break
     merged_title = str((args or {}).get("merged_title") or "").strip()[:200]
     merged_markdown = str((args or {}).get("merged_markdown") or "").strip()[:200_000]
     merged_tags = [
         str(item).strip()[:50] for item in (args or {}).get("merged_tags") or []
     ]
     merged_tags = [item for item in merged_tags if item][:12]
+    if operation == "update" and merge_candidates:
+        # ``markdown`` is the complete, user-targeted revision for an update.
+        # Never replace it with a second model payload that may only summarize it.
+        merged_title = title
+        merged_markdown = markdown
+        merged_tags = list(dict.fromkeys(tags + merged_tags))[:12]
     if merge_candidates and (not merged_title or not merged_markdown):
         return json.dumps(
             {"success": False, "error": "merged_draft_required_for_candidates"},

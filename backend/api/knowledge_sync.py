@@ -592,7 +592,7 @@ async def archive_note(
     body: NoteArchiveRequest,
     payload: dict[str, Any] = Depends(require_auth),
 ) -> dict[str, Any]:
-    if not _NOTE_ID.fullmatch(body.merged_into_note_id):
+    if not _NOTE_ID.fullmatch(body.merged_into_note_id) or note_id == body.merged_into_note_id:
         raise HTTPException(status_code=422, detail={"code": "invalid_merged_note_id"})
     tenant_key = str(payload.get("tenant_key") or "")
     user_id = str(payload.get("user_id") or payload.get("sub") or "")

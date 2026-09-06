@@ -594,6 +594,46 @@ def test_note_update_requires_current_user_search_target_and_emits_binding():
         bridge._client_context_tool_context.value = None
 
 
+def test_note_update_merge_excludes_primary_archived_and_uses_complete_revision():
+    import scripts.hermes_bridge as bridge
+
+    events = []
+    bridge._client_context_tool_context.value = {
+        "transcript": {"session_id": "s", "messages": []},
+        "request_id": "request-update-merge",
+        "client_session_id": "s",
+        "account_scope": "tenant:user",
+        "hermes_session_id": "hermes-update-merge-session",
+        "user_note_search_completed": True,
+        "emit": events.append,
+        "user_note_search_results": {
+            "target": {"id": "target", "title": "九州旅行纲要", "content_hash": "hash"},
+            "active-source": {"id": "active-source", "title": "交通攻略", "archived": False},
+            "archived-source": {"id": "archived-source", "title": "旧稿", "archived": True},
+        },
+    }
+    try:
+        complete_revision = "# 九州旅行纲要\n\n## 交通\n\n完整正文"
+        result = json.loads(bridge._note_draft_tool({
+            "operation": "update",
+            "target_note_id": "target",
+            "title": "九州旅行纲要",
+            "markdown": complete_revision,
+            "tags": ["九州"],
+            "merge_candidate_ids": ["active-source", "target", "archived-source", "active-source"],
+            "merged_title": "九州旅行纲要",
+            "merged_markdown": "（以上为合并后的完整笔记）",
+            "merged_tags": ["交通"],
+        }))
+
+        assert result["merge_candidate_count"] == 1
+        assert [item["id"] for item in events[0]["merge_candidates"]] == ["active-source"]
+        assert events[0]["merged_markdown"] == complete_revision
+        assert events[0]["merged_tags"] == ["九州", "交通"]
+    finally:
+        bridge._client_context_tool_context.value = None
+
+
 def test_daily_note_draft_adds_daily_tag_and_preserves_markdown_features():
     import scripts.hermes_bridge as bridge
 

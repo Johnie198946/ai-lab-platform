@@ -143,6 +143,12 @@ def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():
             json={"markdown": markdown, "content_hash": digest},
         )
         assert synced.status_code == 200
+        self_archive = _request(
+            "POST", "/api/v1/me/knowledge-notes/old-note/archive",
+            json={"merged_into_note_id": "old-note", "expected_content_hash": digest},
+        )
+        assert self_archive.status_code == 422
+        assert self_archive.json()["detail"]["code"] == "invalid_merged_note_id"
         current_tenant["key"] = "tenant-b"
         cross_tenant = _request(
             "POST", "/api/v1/me/knowledge-notes/old-note/archive",
