@@ -19,7 +19,9 @@ from __future__ import annotations
 import json
 import hashlib
 import re
-from functools import lru_cache
+from functools import lru_cache, wraps
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -30,15 +32,68 @@ from backend.api.tenant import current_visibility
 from backend.services.knowledge_catalog import (
     document_index, load_manifest, filter_database_live_documents,
     AUTHORIZED_DOCUMENT_PATHS, resolve_authorized_version,
+    _apply_file_read_barrier, run_knowledge_read,
 )
 
-async def _live_read_scope():
-    documents = await filter_database_live_documents(list(document_index(_vault()).values()), _vault())
-    token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(item["path"] for item in documents))
+# Candidate metadata is request-local, not an authorization cache. Every target
+# still passes the live file barrier, and HTTP boundaries recheck durable state.
+_CANDIDATE_INDEX: ContextVar = ContextVar("knowledge_candidate_index", default=None)
+
+
+def _candidate_documents(vault):
+    scope = _CANDIDATE_INDEX.get()
+    if scope is not None and scope[0] == vault.resolve():
+        return scope[1]
+    return document_index(vault)
+
+
+@contextmanager
+def _candidate_scope(vault, documents=None):
+    scope = _CANDIDATE_INDEX.get()
+    if documents is None and scope is not None and scope[0] == vault.resolve():
+        yield
+        return
+    token = _CANDIDATE_INDEX.set((vault.resolve(),
+        document_index(vault) if documents is None else documents))
     try:
         yield
     finally:
-        AUTHORIZED_DOCUMENT_PATHS.reset(token)
+        _CANDIDATE_INDEX.reset(token)
+
+
+def _with_candidates(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        vault = next((arg for arg in args if isinstance(arg, Path)), kwargs.get("vault", _vault()))
+        with _candidate_scope(vault):
+            return function(*args, **kwargs)
+    return wrapped
+
+
+async def _live_read_scope():
+    vault = _vault()
+    candidates = await run_knowledge_read(document_index, vault)
+    documents = await filter_database_live_documents(list(candidates.values()), vault)
+    token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(item["path"] for item in documents))
+    with _candidate_scope(vault, {item["path"]: item for item in documents}):
+        try:
+            yield
+        finally:
+            AUTHORIZED_DOCUMENT_PATHS.reset(token)
+
+
+def _read_endpoint(function):
+    @wraps(function)
+    async def endpoint(*args, **kwargs):
+        result = await run_knowledge_read(function, *args, **kwargs)
+        # Revoke the whole response on a mid-read change, including entity names
+        # and link labels, rather than leaking a partially filtered projection.
+        candidates = _candidate_documents(_vault())
+        live = await filter_database_live_documents(list(candidates.values()), _vault())
+        if {item["path"] for item in live} != set(candidates):
+            raise HTTPException(status_code=409, detail="knowledge changed during read; retry")
+        return result
+    return endpoint
 
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"], dependencies=[Depends(_live_read_scope)])
@@ -73,7 +128,11 @@ def _rel_visible(rel: str, vis: set[str] | frozenset[str] | None) -> bool:
     a developer/super-admin request. ``vis is None`` only bypasses tenant pack
     selection; it never bypasses governance admission.
     """
-    document = document_index(_vault()).get(rel)
+    scope = _CANDIDATE_INDEX.get()
+    vault = scope[0] if scope is not None else _vault()
+    document = _candidate_documents(vault).get(rel)
+    if document is not None:
+        document = _apply_file_read_barrier(vault, document)
     if document is None:
         return False
     live_paths = AUTHORIZED_DOCUMENT_PATHS.get()
@@ -126,6 +185,7 @@ def _safe_vault_file(vault: Path, relative: str) -> Path | None:
         return None
 
 
+@_with_candidates
 def _visible_wikilinks(text: str, vault: Path) -> List[str]:
     """Return only links whose target is inside the current authorization scope."""
     vis = _visibility()
@@ -137,25 +197,32 @@ def _visible_wikilinks(text: str, vault: Path) -> List[str]:
     return visible
 
 
+@_with_candidates
 def _filtered_entity_index(m: Dict[str, Any]) -> Dict[str, List[str]]:
     vis = _visibility()
-    return {
-        str(entity): [str(path) for path in paths if _rel_visible(str(path), vis)]
-        for entity, paths in (m.get("entity_index") or {}).items()
-        if any(_rel_visible(str(path), vis) for path in paths)
-    }
+    result = {}
+    for entity, paths in (m.get("entity_index") or {}).items():
+        visible = [str(path) for path in paths if _rel_visible(str(path), vis)]
+        if visible:
+            result[str(entity)] = visible
+    return result
 
 
 def _iter_md_files(vault: Path):
+    documents = _candidate_documents(vault)
     vis = _visibility()
-    for rel in sorted(document_index(vault)):
-        if not _rel_visible(rel, vis):
-            continue
-        p = vault / rel
-        if p.is_file():
+    for rel in sorted(documents):
+        # Never leave a ContextVar token installed across a generator yield:
+        # direct callers may stop iterating early or interleave other requests.
+        with _candidate_scope(vault, documents):
+            if not _rel_visible(rel, vis):
+                continue
+            p = _safe_vault_file(vault, rel)
+        if p is not None:
             yield p, rel
 
 
+@_with_candidates
 def _model_text(text: str, relative: str, vault: Path) -> str:
     """Disclosure metadata contains private lineage; it is not model evidence."""
     body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL)
@@ -237,6 +304,7 @@ def _matrix_doc_entries(m: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+@_with_candidates
 def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     """检索 v4 —— wiki 优先（对齐 Karpathy：wiki 是唯一真理源）。
 
@@ -384,9 +452,10 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
             "snippet": text[max(0, idx - 40) : idx + _SNIPPET_CHARS].replace("\n", " "),
         }
 
-    documents = document_index(vault)
+    documents = _candidate_documents(vault)
     ranked = sorted(
-        (item for item in scored.values() if _safe_vault_file(vault, item["path"])),
+        (item for item in scored.values() if _safe_vault_file(vault, item["path"])
+         and _rel_visible(item["path"], vis)),
         key=lambda d: (-d["score"], d["path"]),
     )
     for item in ranked:
@@ -398,14 +467,6 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
             raw = (vault / item["path"]).read_bytes()
         except OSError:
             raw = b""
-        if not item.get("snippet"):
-            try:
-                item["snippet"] = _snippet(
-                    (vault / item["path"]).read_text(encoding="utf-8", errors="ignore"),
-                    qtokens,
-                )
-            except OSError:
-                item["snippet"] = ""
         item.update({
             "knowledge_id": meta.get("knowledge_id") or hashlib.sha256(
                 item["path"].encode()
@@ -425,7 +486,7 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
     return ranked[:limit]
 
 
-@router.get("/matrix")
+@_with_candidates
 def get_matrix() -> Dict[str, Any]:
     m = _matrix()
     if not m:
@@ -455,7 +516,7 @@ def get_matrix() -> Dict[str, Any]:
     return filtered
 
 
-@router.get("/contract")
+@_with_candidates
 def get_contract() -> Dict[str, Any]:
     """暴露当前机读知识接口契约，明确已实现边界。"""
     m = _matrix()
@@ -488,7 +549,7 @@ def get_contract() -> Dict[str, Any]:
     }
 
 
-@router.get("/stats")
+@_with_candidates
 def get_stats() -> Dict[str, Any]:
     vault = _vault()
     if not vault.exists():
@@ -505,7 +566,7 @@ def get_stats() -> Dict[str, Any]:
             "total_entities_indexed": len(_filtered_entity_index(m)),
         },
     }
-    documents = document_index(vault)
+    documents = _candidate_documents(vault)
     for _, rel in md_files:
         cat = str(documents.get(rel, {}).get("pack_id") or "unknown")
         stats["categories"][cat] = stats["categories"].get(cat, 0) + 1
@@ -513,7 +574,7 @@ def get_stats() -> Dict[str, Any]:
     return stats
 
 
-@router.get("/search")
+@_with_candidates
 def search(
     q: str = Query(..., min_length=1, max_length=200),
     limit: int = Query(SEARCH_LIMIT, ge=1, le=50),
@@ -535,7 +596,7 @@ def search(
     return {"query": q, "total": len(docs), "docs": docs, "entity_hits": entities}
 
 
-@router.get("/entities")
+@_with_candidates
 def entities(
     q: Optional[str] = Query(None, max_length=100),
 ) -> Dict[str, Any]:
@@ -549,7 +610,7 @@ def entities(
     return {"total": len(idx), "entities": idx}
 
 
-@router.get("/wiki")
+@_with_candidates
 def list_wiki() -> Dict[str, Any]:
     vault = _vault()
     vis = _visibility()
@@ -575,7 +636,7 @@ def list_wiki() -> Dict[str, Any]:
     return {"total": len(entries), "entries": entries}
 
 
-@router.get("/wiki/{slug:path}")
+@_with_candidates
 def get_wiki(slug: str) -> Dict[str, Any]:
     vault = _vault()
     wiki_dir = vault / "wiki"
@@ -593,7 +654,8 @@ def get_wiki(slug: str) -> Dict[str, Any]:
     if not _rel_visible(rel, _visibility()):
         live_paths = AUTHORIZED_DOCUMENT_PATHS.get() or frozenset()
         resolved = resolve_authorized_version(rel, {
-            key: value for key, value in document_index(vault).items() if key in live_paths
+            key: value for key, value in _candidate_documents(vault).items()
+            if key in live_paths and _rel_visible(key, _visibility())
         }, _visibility())
         if resolved is None:
             raise HTTPException(status_code=404, detail="wiki entry unavailable")
@@ -614,3 +676,11 @@ def get_wiki(slug: str) -> Dict[str, Any]:
         "wikilinks": _visible_wikilinks(text, vault),
         "content": _model_text(text, rel, vault),
     }
+
+
+for _route, _handler in (
+    ("/matrix", get_matrix), ("/contract", get_contract), ("/stats", get_stats),
+    ("/search", search), ("/entities", entities), ("/wiki", list_wiki),
+    ("/wiki/{slug:path}", get_wiki),
+):
+    router.add_api_route(_route, _read_endpoint(_handler), methods=["GET"])

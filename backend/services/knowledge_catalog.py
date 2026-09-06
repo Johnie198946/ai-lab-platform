@@ -10,6 +10,12 @@ from __future__ import annotations
 import hashlib
 import json
 from contextvars import ContextVar
+from functools import partial
+from threading import BoundedSemaphore
+
+import asyncio
+from anyio.to_thread import run_sync
+from fastapi import HTTPException
 import os
 import re
 from functools import lru_cache
@@ -48,6 +54,30 @@ CONTRIBUTION_PUBLICATION_POLICY = "tenant_contribution_policy_v1"
 SEARCH_CACHE: dict = {}
 # Installed by authenticated HTTP/Gateway read boundaries, never by the model.
 AUTHORIZED_DOCUMENT_PATHS: ContextVar[frozenset[str] | None] = ContextVar("authorized_knowledge_paths", default=None)
+
+
+# A non-waiting admission gate bounds running AND queued expensive reads. The
+# separately retained task is shielded from HTTP/native asyncio cancellation;
+# only its completion callback releases admission, never the cancelled caller.
+# AnyIO copies contextvars into the worker (changes there do not flow back).
+_READ_WORKERS = BoundedSemaphore(4)
+_READ_TASKS: set[asyncio.Task] = set()
+
+
+async def run_knowledge_read(function, *args, **kwargs):
+    if not _READ_WORKERS.acquire(blocking=False):
+        raise HTTPException(status_code=503, detail="knowledge read capacity exhausted",
+                            headers={"Retry-After": "1"})
+    task = asyncio.create_task(run_sync(partial(function, *args, **kwargs)))
+    _READ_TASKS.add(task)
+    def finished(completed):
+        _READ_TASKS.discard(completed)
+        _READ_WORKERS.release()
+        # Consume an exception if the HTTP caller was cancelled meanwhile.
+        if not completed.cancelled():
+            completed.exception()
+    task.add_done_callback(finished)
+    return await asyncio.shield(task)
 
 
 def clear_knowledge_caches() -> None:
@@ -98,18 +128,40 @@ def clear_manifest_cache() -> None:
     clear_color_projection_cache()
 
 
+# Preserve the public dict-returning helper contract, but distinguish failed
+# reads from a successfully read legacy document without frontmatter.
+_UNREADABLE_FRONTMATTER: dict[str, Any] = {}
+
+
 def _live_frontmatter(vault: Path, relative_path: str) -> dict[str, Any]:
     """Read lifecycle metadata on every access, outside projection caches."""
     try:
         path = (vault / relative_path).resolve()
         if vault.resolve() not in path.parents:
-            return {}
-        text = path.read_text(encoding="utf-8", errors="replace")
-        match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", text, re.DOTALL)
-        value = yaml.safe_load(match.group(1)) if match else None
-        return value if isinstance(value, dict) else {}
-    except (OSError, yaml.YAMLError):
-        return {}
+            return _UNREADABLE_FRONTMATTER
+        # Read only a bounded metadata header, never the document body. Missing
+        # or oversized closing delimiters and decode/YAML failures deny access.
+        budget = 65_536
+        with path.open("rb") as handle:
+            first = handle.readline(budget + 1)
+            if len(first) > budget:
+                return _UNREADABLE_FRONTMATTER
+            if not re.fullmatch(rb"---[ \t]*\r?\n", first):
+                return _UNREADABLE_FRONTMATTER if first.startswith(b"---") else {}
+            budget -= len(first)
+            header = []
+            while budget > 0:
+                line = handle.readline(budget + 1)
+                if not line or len(line) > budget:
+                    return _UNREADABLE_FRONTMATTER
+                budget -= len(line)
+                if re.fullmatch(rb"---[ \t]*(?:\r?\n)?", line):
+                    value = yaml.safe_load(b"".join(header).decode("utf-8"))
+                    return value if isinstance(value, dict) else _UNREADABLE_FRONTMATTER
+                header.append(line)
+        return _UNREADABLE_FRONTMATTER
+    except (OSError, UnicodeDecodeError, yaml.YAMLError):
+        return _UNREADABLE_FRONTMATTER
 
 
 def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -122,6 +174,8 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
     except OSError:
         return None
     metadata = _live_frontmatter(vault, relative)
+    if metadata is _UNREADABLE_FRONTMATTER:
+        return None
     state = str(metadata.get("status") or item.get("status") or "active").strip().lower()
     if state in BLOCKED_LIFECYCLE_STATES:
         return None
@@ -207,11 +261,16 @@ def document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:
     }
 
 
-async def filter_database_live_documents(
-    documents: list[dict[str, Any]], vault: Path | None = None,
-) -> list[dict[str, Any]]:
-    """Recheck durable contribution state after every search cache hit."""
-    vault = vault or _vault()
+def _published_body_hash(vault, relative):
+    path = (vault / relative).resolve()
+    if vault.resolve() not in path.parents:
+        raise OSError("knowledge path escape")
+    text = path.read_text(encoding="utf-8")
+    body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL).strip()
+    return hashlib.sha256(body.encode()).hexdigest()
+
+
+def _file_live_documents(documents, vault):
     live = []
     guarded: list[tuple[dict[str, Any], str, str]] = []
     for document in documents:
@@ -220,6 +279,8 @@ async def filter_database_live_documents(
         if item is None:
             continue
         metadata = _live_frontmatter(vault, relative)
+        if metadata is _UNREADABLE_FRONTMATTER:
+            continue
         projection_id = str(metadata.get("contribution_projection_id")
                             or item.get("contribution_projection_id") or "")
         policy = str(metadata.get("publication_policy") or item.get("publication_policy") or "")
@@ -227,6 +288,19 @@ async def filter_database_live_documents(
             guarded.append((item, projection_id, relative))
         else:
             live.append(item)
+    return live, guarded
+
+
+async def filter_database_live_documents(
+    documents: list[dict[str, Any]], vault: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Recheck durable contribution state; disk work never runs on the loop."""
+    # An empty candidate set cannot disclose anything and performs no disk work.
+    # Do not consume scarce scan admission for concurrent metadata-only requests.
+    if not documents:
+        return []
+    vault = vault or _vault()
+    live, guarded = await run_knowledge_read(_file_live_documents, documents, vault)
     try:
         from sqlalchemy import select
         from backend.db import SessionLocal
@@ -242,9 +316,13 @@ async def filter_database_live_documents(
                 KnowledgeContributionProjection.artifact_ref.in_([d["path"] for d in live])
             ))).all() if live else []
             bound_paths = {r.artifact_ref for r in bound}
+            active_by_path = {}
+            for row in bound:
+                if row.status == "active":
+                    active_by_path.setdefault(row.artifact_ref, []).append(row)
             for item in live:
                 if item["path"] in bound_paths:
-                    matches = [r for r in bound if r.artifact_ref == item["path"] and r.status == "active"]
+                    matches = active_by_path.get(item["path"], [])
                     guarded.append((item, matches[0].projection_id if len(matches) == 1 else "", item["path"]))
             live = [item for item in live if item["path"] not in bound_paths]
             ids = [projection_id for _, projection_id, _ in guarded if projection_id]
@@ -308,13 +386,11 @@ async def filter_database_live_documents(
                     continue
             expected_hash = governance.get("published_body_hash")
             if expected_hash:
-                import hashlib
                 try:
-                    text = (vault / relative).read_text(encoding="utf-8")
-                    body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL).strip()
+                    body_hash = await run_knowledge_read(_published_body_hash, vault, relative)
                 except OSError:
                     continue
-                if hashlib.sha256(body.encode()).hexdigest() != expected_hash:
+                if body_hash != expected_hash:
                     continue
             elif item.get("disclosure_granularity") == "summary":
                 continue

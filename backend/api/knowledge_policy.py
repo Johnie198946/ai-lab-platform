@@ -17,6 +17,7 @@ from sqlalchemy import select
 from backend.api import knowledge
 from backend.services.knowledge_catalog import (
     SEARCH_CACHE, compute_catalog, filter_database_live_documents, AUTHORIZED_DOCUMENT_PATHS, resolve_authorized_version,
+    run_knowledge_read,
 )
 from backend.api.tenant import current_visibility
 from backend.db import SessionLocal
@@ -32,6 +33,23 @@ router = APIRouter(tags=["knowledge-policy"])
 AUTHEN_WEBHOOK_SECRET = os.environ.get("AUTHEN_ENTITLEMENT_WEBHOOK_SECRET", "")
 _SEARCH_CACHE = SEARCH_CACHE
 _SEARCH_CACHE_TTL = int(os.environ.get("KNOWLEDGE_GATEWAY_CACHE_SECONDS", "300"))
+
+
+def _read_model_content(relative, documents, scopes):
+    vault = knowledge._vault()
+    token = current_visibility.set(scopes)
+    paths_token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(documents))
+    try:
+        with knowledge._candidate_scope(vault, documents):
+            if not knowledge._rel_visible(relative, scopes):
+                raise OSError("knowledge document revoked")
+            path = knowledge._safe_vault_file(vault, relative)
+            if path is None:
+                raise OSError("knowledge document unavailable")
+            return knowledge._model_text(path.read_text(encoding="utf-8", errors="replace"), relative, vault)
+    finally:
+        AUTHORIZED_DOCUMENT_PATHS.reset(paths_token)
+        current_visibility.reset(token)
 
 
 def _cache_key(
@@ -140,6 +158,7 @@ async def capability_search(
     except KnowledgeScopeDenied as exc:
         raise HTTPException(status_code=403, detail={"code": exc.code}) from exc
     tenant_key = str(claims["tenant_key"])
+    catalog = await run_knowledge_read(compute_catalog)
     async with SessionLocal() as db:
         mapping = (
             await db.execute(
@@ -150,7 +169,7 @@ async def capability_search(
             db,
             tenant_key=tenant_key,
             org_id=mapping.org_id if mapping else "",
-            catalog=compute_catalog(),
+            catalog=catalog,
         )
     if claims.get("policy_version") != policy.policy_version:
         raise HTTPException(
@@ -182,8 +201,8 @@ async def capability_search(
             tenant_key, policy.policy_version, requested, body.query,
             {"tenant_knowledge"},
         )
-        live = await filter_database_live_documents(
-            list(knowledge.document_index(knowledge._vault()).values()), knowledge._vault())
+        candidates = await run_knowledge_read(knowledge.document_index, knowledge._vault())
+        live = await filter_database_live_documents(list(candidates.values()), knowledge._vault())
         live_index = {item["path"]: item for item in live}
         visible_index = {path: item for path, item in live_index.items()
                          if resolve_authorized_version(path, {path: item}, frozenset(requested))}
@@ -195,7 +214,9 @@ async def capability_search(
         try:
             # Cached snippets cannot outlive body/version/label changes. Recompute
             # from currently approved versions instead of trusting lexical cache.
-            wiki_docs = knowledge._search_docs(knowledge._vault(), body.query, body.limit)
+            with knowledge._candidate_scope(knowledge._vault(), visible_index):
+                wiki_docs = await run_knowledge_read(
+                    knowledge._search_docs, knowledge._vault(), body.query, body.limit)
         finally:
             AUTHORIZED_DOCUMENT_PATHS.reset(read_token)
             current_visibility.reset(token)
@@ -216,19 +237,11 @@ async def capability_search(
                     item["content_status"] = "revoked"
                     continue
                 try:
-                    text = (knowledge._vault() / relative).read_text(
-                        encoding="utf-8", errors="replace"
-                    )
+                    text = await run_knowledge_read(
+                        _read_model_content, relative, visible_index, frozenset(requested))
                 except OSError:
                     item["content_status"] = "unavailable"
                     continue
-                visibility_token = current_visibility.set(frozenset(requested))
-                paths_token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(visible_index))
-                try:
-                    text = knowledge._model_text(text, relative, knowledge._vault())
-                finally:
-                    AUTHORIZED_DOCUMENT_PATHS.reset(paths_token)
-                    current_visibility.reset(visibility_token)
                 item["disclosure_granularity"] = visible_index[relative].get("disclosure_granularity", "detail")
                 markdown = text[: min(20_000, remaining_chars)]
                 remaining_chars -= len(markdown)
@@ -242,7 +255,7 @@ async def capability_search(
         user_id = str(claims.get("user_id") or "")
         if not user_id:
             raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
-        notes = search_user_notes(
+        notes = await run_knowledge_read(search_user_notes,
             tenant_key=tenant_key,
             user_id=user_id,
             query=body.query,
@@ -264,8 +277,22 @@ async def capability_search(
             })
             if remaining_note_chars <= 0:
                 break
+    if "tenant_knowledge" in requested_sources:
+        # Cover content and linked labels too, after all disk/model processing.
+        final_live = await filter_database_live_documents(list(visible_index.values()), knowledge._vault())
+        if {item["path"] for item in final_live} != set(visible_index):
+            raise HTTPException(status_code=409, detail="knowledge changed during read; retry")
+        checked = await filter_database_live_documents(
+            [item for item in docs if item.get("source") == "tenant_knowledge"], knowledge._vault())
+        checked_paths = {item["path"] for item in checked}
+        docs = [item for item in docs if item.get("source") != "tenant_knowledge"
+                or item["path"] in checked_paths]
     docs = docs[: body.limit]
     async with SessionLocal() as db:
+        final_policy, _ = await resolve_policy(
+            db, tenant_key=tenant_key, org_id=mapping.org_id if mapping else "", catalog=catalog)
+        if final_policy.policy_version != policy.policy_version:
+            raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
         db.add(KnowledgeAccessAudit(
             tenant_key=tenant_key, entry_point=str(claims.get("entry_point") or "gateway"),
             category=",".join(sorted(requested))[:128], resource_id="search",
