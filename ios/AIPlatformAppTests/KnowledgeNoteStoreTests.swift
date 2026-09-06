@@ -1,5 +1,30 @@
 import CryptoKit
+import Security
 import XCTest
+
+final class SignedKeychainAcceptanceTests: XCTestCase {
+    func testSecureCredentialRoundTripInSignedHost() throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.ailab.acceptance.\(UUID())",
+            kSecAttrAccount as String: "noncredential-probe"
+        ]
+        defer { SecItemDelete(query as CFDictionary) }
+        let expected = Data("keychain-acceptance-not-a-token".utf8)
+        var add = query
+        add[kSecValueData as String] = expected
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        XCTAssertEqual(SecItemAdd(add as CFDictionary, nil), errSecSuccess,
+                       "Real login acceptance requires a signed test host with Keychain entitlements")
+        var read = query
+        read[kSecReturnData as String] = true
+        var value: AnyObject?
+        XCTAssertEqual(SecItemCopyMatching(read as CFDictionary, &value), errSecSuccess)
+        XCTAssertEqual(value as? Data, expected)
+        XCTAssertEqual(SecItemDelete(query as CFDictionary), errSecSuccess)
+        XCTAssertEqual(SecItemCopyMatching(read as CFDictionary, &value), errSecItemNotFound)
+    }
+}
 @testable import AIPlatformApp
 
 @MainActor
