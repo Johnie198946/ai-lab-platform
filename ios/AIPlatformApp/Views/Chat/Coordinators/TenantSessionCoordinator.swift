@@ -229,7 +229,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard let outputIndex = messages.lastIndex(where: {
             $0.clarifyBlock == nil
                 && !$0.degraded
-                && ($0.role == .interrupted || $0.pending || $0.isStreaming)
+                && ($0.role == .interrupted || $0.pending || $0.isStreaming
+                    || $0.needsDurableResultRecovery)
         }) else { return }
         let outputId = messages[outputIndex].id
         // ChatView can invoke reconciliation from onAppear, activeTab and
@@ -284,10 +285,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                 guard self.tenantEpoch == taskEpoch,
                       self.sessionManager.activeAccountFingerprint == accountFingerprint,
                       self.sessionManager.activeSessionID() == sid else { return }
-                if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
+                if status.status == "completed" {
                     self.confirmedRunningMessageIDs.remove(outputId)
                     self.applyRecoveredAnswer(
-                        answer,
+                        status.loadedAnswer,
                         answerProjection: status.answerProjection,
                         reasoningSteps: status.reasoning,
                         outputMessageId: outputId
@@ -318,6 +319,10 @@ public final class TenantSessionCoordinator: ObservableObject {
                         requestId: req.id, sessionId: sid,
                         agentId: agentId, outputMessageId: outputId
                     )
+                    return
+                }
+                if Self.terminalStatusMessage(status.status) != nil {
+                    self.applyTerminalStatus(status.status, outputMessageId: outputId)
                 }
             } catch {
                 // 网络不确定时保持可恢复标记，绝不创建第二个 Run。
@@ -359,20 +364,16 @@ public final class TenantSessionCoordinator: ObservableObject {
                     self.messages[index].runId = runId
                     self.messages[index].lastEventSequence = cursor
                     let status = replay.run.status
-                    if let page = replay.run.answerProjection {
+                    if let page = replay.run.answerProjection, !page.blocks.isEmpty {
                         self.applyAnswerPage(page, messageIndex: index, replace: true)
                     }
                     if status == "completed" {
                         self.confirmedRunningMessageIDs.remove(outputMessageId)
-                        self.messages[index].role = .assistant
-                        if replay.run.answerProjection == nil,
+                        if replay.run.answerProjection?.blocks.isEmpty != false,
                            let final = replay.run.finalAnswer, !final.isEmpty {
                             self.messages[index].content = final
                         }
-                        self.messages[index].pending = false
-                        self.messages[index].isStreaming = false
-                        self.messages[index].degraded = false
-                        self.messages[index].settleReasoningForCompletion()
+                        self.messages[index].settleCompletedAssistantResponse()
                         self.finalizeReasoningDuration(for: outputMessageId)
                         self.commitSession()
                         self.finishGeneration()
@@ -457,8 +458,8 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.messages[currentIdx].blocks[blockIdx] = .clarify(restored)
                         self.commitSession()
                     }
-                } else if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
-                    self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
+                } else if status.status == "completed" {
+                    self.appendCompletedAnswer(status.loadedAnswer, sessionId: sid)
                     self.setClarifyState(messageIndex: currentIdx, state: .expired)
                     self.commitSession()
                 } else if status.status == "running" {
@@ -734,17 +735,17 @@ public final class TenantSessionCoordinator: ObservableObject {
                     guard !Task.isCancelled,
                           self.sessionManager.activeAccountFingerprint == accountFingerprint
                     else { return }
-                    if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
+                    if status.status == "completed" {
                         self.sessionManager.applyCompletedStatus(
                             sessionId: req.sessionId,
                             requestId: outputMessageId,
-                            answer: answer,
+                            answer: status.loadedAnswer ?? "",
                             answerProjection: status.answerProjection,
                             reasoningSteps: status.reasoning?.map { $0.toReasoningStep() }
                         )
                         if self.sessionManager.activeSessionID() == req.sessionId {
                             self.applyRecoveredAnswer(
-                                answer,
+                                status.loadedAnswer,
                                 answerProjection: status.answerProjection,
                                 reasoningSteps: status.reasoning,
                                 outputMessageId: outputMessageId
@@ -755,11 +756,11 @@ public final class TenantSessionCoordinator: ObservableObject {
                         }
                         return
                     }
-                    if ["timeout", "not_found"].contains(status.status) {
+                    if let terminalText = Self.terminalStatusMessage(status.status) {
                         self.sessionManager.applyDegraded(
                             sessionId: req.sessionId,
                             requestId: outputMessageId,
-                            text: "任务未能完成，可返回会话后重试"
+                            text: terminalText
                         )
                         if self.sessionManager.activeSessionID() == req.sessionId {
                             self.restoreActiveSession(force: true)
@@ -1538,7 +1539,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                         messages[idx].pending = false
                         messages[idx].isStreaming = false
                         messages[idx].settleReasoningForCompletion()
-                        receivedTerminalEvent = !messages[idx].content.isEmpty
+                        receivedTerminalEvent = messages[idx].hasRenderableAssistantResult
                     }
 
                 case .error(let code, let message):
@@ -1604,10 +1605,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         do {
             let status = try await fetchChatStatusRequest(req.sessionId, true, req.agentId)
-            if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
+            if status.status == "completed" {
                 if sessionManager.activeSessionID() == req.sessionId {
                     applyRecoveredAnswer(
-                        answer,
+                        status.loadedAnswer,
                         answerProjection: status.answerProjection,
                         reasoningSteps: status.reasoning,
                         outputMessageId: outputMessageId
@@ -1622,7 +1623,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     sessionManager.applyCompletedStatus(
                         sessionId: req.sessionId,
                         requestId: outputMessageId,
-                        answer: answer,
+                        answer: status.loadedAnswer ?? "",
                         answerProjection: status.answerProjection,
                         reasoningSteps: status.reasoning?.map { $0.toReasoningStep() }
                     )
@@ -1649,6 +1650,18 @@ public final class TenantSessionCoordinator: ObservableObject {
                 )
                 commitSession()
                 return true
+            }
+            if let terminalText = Self.terminalStatusMessage(status.status) {
+                if sessionManager.activeSessionID() == req.sessionId {
+                    applyTerminalStatus(status.status, outputMessageId: outputMessageId)
+                } else {
+                    sessionManager.applyDegraded(
+                        sessionId: req.sessionId,
+                        requestId: outputMessageId,
+                        text: terminalText
+                    )
+                }
+                return false
             }
         } catch {
             // 状态查询也断网：持久化 interrupted，回前台后 reconcileActiveRun 再对账。
@@ -1677,25 +1690,27 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     private func applyRecoveredAnswer(
-        _ answer: String,
+        _ answer: String?,
         answerProjection: AnswerBlockPageDTO? = nil,
         reasoningSteps: [ChatReasoningStepDTO]? = nil,
         outputMessageId: String
     ) {
         guard let idx = messages.firstIndex(where: { $0.id == outputMessageId }) else { return }
-        messages[idx].role = .assistant
         replaceReasoningSteps(reasoningSteps, messageIndex: idx)
-        if let answerProjection {
+        if let answerProjection, !answerProjection.blocks.isEmpty {
             applyAnswerPage(answerProjection, messageIndex: idx, replace: true)
-        } else {
+        } else if let answer, !answer.isEmpty {
             messages[idx].content = answer
         }
-        messages[idx].pending = false
-        messages[idx].isStreaming = false
-        messages[idx].degraded = false
-        messages[idx].settleReasoningForCompletion()
+        messages[idx].settleCompletedAssistantResponse()
         finalizeReasoningDuration(for: outputMessageId)
         commitSession()
+    }
+
+    private func appendCompletedAnswer(_ answer: String?, sessionId: String) {
+        var message = ChatMessage(sessionId: sessionId, role: .assistant, content: answer ?? "")
+        message.settleCompletedAssistantResponse()
+        messages.append(message)
     }
 
     private func applyAnswerPage(
@@ -1984,9 +1999,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         do {
             let status = try await fetchChatStatusRequest(sessionId, true, agentId)
             print("[Clarify] reconcile clarify=\(local.clarifyId ?? "legacy") phase=\(status.phase ?? status.status)")
-            if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
+            if status.status == "completed" {
                 markClarifySubmitted(messageIndex: idx, selection: selection)
-                messages.append(ChatMessage(sessionId: sessionId, role: .assistant, content: answer))
+                appendCompletedAnswer(status.loadedAnswer, sessionId: sessionId)
                 commitSession()
                 finishGeneration()
                 return
@@ -2073,21 +2088,13 @@ public final class TenantSessionCoordinator: ObservableObject {
                           self.sessionManager.activeAccountFingerprint == accountFingerprint,
                           self.sessionManager.activeSessionID() == sessionId
                     else { return }
-                    if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
-                        if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
-                            self.replaceReasoningSteps(status.reasoning, messageIndex: idx)
-                            if let page = status.answerProjection {
-                                self.applyAnswerPage(page, messageIndex: idx, replace: true)
-                            } else {
-                                self.messages[idx].content = answer
-                            }
-                            self.messages[idx].role = .assistant
-                            self.messages[idx].pending = false
-                            self.messages[idx].isStreaming = false
-                            self.messages[idx].settleReasoningForCompletion()
-                            self.finalizeReasoningDuration(for: outputMessageId)
-                        }
-                        self.commitSession()
+                    if status.status == "completed" {
+                        self.applyRecoveredAnswer(
+                            status.loadedAnswer,
+                            answerProjection: status.answerProjection,
+                            reasoningSteps: status.reasoning,
+                            outputMessageId: outputMessageId
+                        )
                         if self.inflight?.id == requestId { self.finishGeneration() }
                         return
                     }
@@ -2193,8 +2200,8 @@ public final class TenantSessionCoordinator: ObservableObject {
             guard let self else { return }
             do {
                 let status = try await self.fetchChatStatusRequest(sid, true, agentId)
-                if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
-                    self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
+                if status.status == "completed" {
+                    self.appendCompletedAnswer(status.loadedAnswer, sessionId: sid)
                     self.commitSession()
                     self.finishGeneration()
                     return
@@ -2419,7 +2426,11 @@ public final class TenantSessionCoordinator: ObservableObject {
                 if Task.isCancelled { return }
                 guard let idx = self.messages.firstIndex(where: { $0.id == messageId }) else { return }
                 withAnimation(.easeInOut(duration: 0.25)) {
-                    self.messages[idx].blocks = [.reasoning(Array(steps[0..<k]))]
+                    self.messages[idx].blocks.removeAll {
+                        if case .reasoning = $0 { return true }
+                        return false
+                    }
+                    self.messages[idx].blocks.insert(.reasoning(Array(steps[0..<k])), at: 0)
                 }
             }
         }
@@ -2506,6 +2517,29 @@ public final class TenantSessionCoordinator: ObservableObject {
         ["timeout", "not_found"].contains(status)
     }
 
+    nonisolated static func terminalStatusMessage(_ status: String) -> String? {
+        switch status {
+        case "failed": return "任务执行失败"
+        case "cancelled": return "任务已取消"
+        case "timeout": return "任务状态确认超时"
+        case "not_found": return "未找到可恢复的任务"
+        default: return nil
+        }
+    }
+
+    private func applyTerminalStatus(_ status: String, outputMessageId: String) {
+        guard let text = Self.terminalStatusMessage(status),
+              let index = messages.firstIndex(where: { $0.id == outputMessageId })
+        else { return }
+        messages[index].role = status == "cancelled" ? .assistant : .interrupted
+        messages[index].content = text
+        messages[index].pending = false
+        messages[index].isStreaming = false
+        messages[index].degraded = status != "cancelled"
+        messages[index].settleReasoningForCompletion()
+        commitSession()
+    }
+
     public func isProcessingExistingRun(_ message: ChatMessage) -> Bool {
         Self.isProcessingExistingRun(
             message,
@@ -2537,6 +2571,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         )
         if activeInFlightMessageID == message.id && !isReconnecting { return false }
         return isReconnecting || message.role == .interrupted || message.pending || message.isStreaming
+            || message.needsDurableResultRecovery
     }
 
     nonisolated static func isProcessingExistingRun(
@@ -2636,9 +2671,9 @@ public final class TenantSessionCoordinator: ObservableObject {
             do {
                 let status = try await self.fetchChatStatusRequest(sid, true, agentId)
                 guard !Task.isCancelled else { return }
-                if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
+                if status.status == "completed" {
                     self.applyRecoveredAnswer(
-                        answer,
+                        status.loadedAnswer,
                         answerProjection: status.answerProjection,
                         reasoningSteps: status.reasoning,
                         outputMessageId: messageId
@@ -2711,24 +2746,20 @@ public final class TenantSessionCoordinator: ObservableObject {
         req.phase = .thinking
         inflight = req
         waitingSeconds = 0
-        currentChatTask = Task {
-            await probeAndResume(req)
+        let outputId = outputMessageId(for: req)
+        if let index = messages.firstIndex(where: { $0.id == outputId }),
+           let runId = Self.durableRunId(for: messages[index]) {
+            reconcilingMessageIDs.insert(outputId)
+            startDurableRunMonitor(
+                runId: runId, sessionId: req.sessionId, outputMessageId: outputId,
+                after: messages[index].lastEventSequence
+            )
+        } else {
+            startRecoveredRunMonitor(
+                requestId: req.id, sessionId: req.sessionId,
+                agentId: req.agentId, outputMessageId: outputId
+            )
         }
-    }
-
-    private func probeAndResume(_ req: InFlightRequest) async {
-        let sid = req.sessionId
-        if !sid.isEmpty, !demoMode {
-            do {
-                let status = try await fetchChatStatusRequest(sid, true, req.agentId)
-                if status.status == "completed",
-                   let answer = status.loadedAnswer, !answer.isEmpty {
-                    await applyCompletedStatus(req: req, status: status)
-                    return
-                }
-            } catch {}
-        }
-        retryCurrentInFlight()
     }
 
     private func applyCompletedStatus(req: InFlightRequest, status: ChatStatusDTO) async {
@@ -2736,7 +2767,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard req.sessionId == sessionManager.activeSessionID() else {
             sessionManager.applyCompletedStatus(
                 sessionId: req.sessionId, requestId: req.id,
-                answer: status.loadedAnswer ?? "服务暂时不可用，请稍后重试",
+                answer: status.loadedAnswer ?? "",
                 answerProjection: status.answerProjection,
                 reasoningSteps: status.reasoning?.map { $0.toReasoningStep() }
             )
@@ -2745,7 +2776,11 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         let steps = (status.reasoning ?? []).map { $0.toReasoningStep() }
         if let idx = messages.firstIndex(where: { $0.id == req.id }) {
-            messages[idx].blocks = steps.isEmpty ? [] : [.reasoning([])]
+            messages[idx].blocks.removeAll {
+                if case .reasoning = $0 { return true }
+                return false
+            }
+            if !steps.isEmpty { messages[idx].blocks.insert(.reasoning([]), at: 0) }
         }
         inflight = nil
         stopStatusPolling()
@@ -2754,10 +2789,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         await typewriter(messageId: req.id, answer: status.loadedAnswer ?? "")
         if let idx = messages.firstIndex(where: { $0.id == req.id }) {
-            if let page = status.answerProjection {
+            if let page = status.answerProjection, !page.blocks.isEmpty {
                 applyAnswerPage(page, messageIndex: idx, replace: true)
             }
-            messages[idx].pending = false
+            messages[idx].settleCompletedAssistantResponse()
         }
         finalizeReasoningDuration(for: req.id)
         commitSession()

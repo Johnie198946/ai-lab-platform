@@ -13,6 +13,7 @@ public struct ReasoningCard: View {
     public let steps: [ReasoningStep]
     public var durationSeconds: Int? = nil
     public var isStreaming: Bool = false
+    public var onCancel: (() -> Void)? = nil
 
     @State private var isExpanded: Bool = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -21,11 +22,13 @@ public struct ReasoningCard: View {
         steps: [ReasoningStep],
         durationSeconds: Int? = nil,
         isStreaming: Bool = false,
-        initiallyExpanded: Bool = false
+        initiallyExpanded: Bool = false,
+        onCancel: (() -> Void)? = nil
     ) {
         self.steps = steps
         self.durationSeconds = durationSeconds
         self.isStreaming = isStreaming
+        self.onCancel = onCancel
         _isExpanded = State(initialValue: initiallyExpanded)
     }
 
@@ -34,58 +37,17 @@ public struct ReasoningCard: View {
             EmptyView()
         } else {
             VStack(alignment: .leading, spacing: 0) {
-                // ChatGPT 风格单行极简胶囊
-                Button(action: {
-                    if reduceMotion {
-                        isExpanded.toggle()
-                    } else {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                            isExpanded.toggle()
-                        }
-                    }
-                }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: isStreaming ? "brain.head.profile" : "sparkles")
-                            .font(.caption.weight(.medium))
-                            .foregroundColor(AppTheme.Icons.intelligence)
-                            .symbolEffect(.pulse, isActive: isStreaming && !reduceMotion)
-
-                        // 胶囊内的单行流式文本切换
-                        Text(capsuleText)
-                            .font(.caption.weight(.medium))
-                            .foregroundColor(AppTheme.Colors.textSecondary)
-                            .lineLimit(1)
-                            .id(capsuleText)
-                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
-
-                        Spacer(minLength: 0)
-
-                        if isStreaming {
-                            ProgressView()
-                                .scaleEffect(0.5)
-                                .frame(width: 10, height: 10)
-                                .padding(.trailing, 2)
-                        }
-
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(AppTheme.Icons.tertiary)
-                            .rotationEffect(.degrees(isExpanded ? 90 : 0))
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .frame(minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(SoftButtonStyle())
+                ReasoningStatusStrip(
+                    title: capsuleText,
+                    isStreaming: isStreaming,
+                    isExpanded: isExpanded,
+                    onToggle: toggleExpanded,
+                    onCancel: isStreaming ? onCancel : nil
+                )
 
                 // 仅当用户主动点击时才展开的精简编号步骤抽屉
                 if isExpanded {
                     VStack(alignment: .leading, spacing: 0) {
-                        Divider()
-                            .overlay(AppTheme.Colors.border.opacity(0.4))
-                            .padding(.bottom, 6)
-
                         ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
                             ReasoningStepRow(
                                 index: index + 1,
@@ -94,18 +56,11 @@ public struct ReasoningCard: View {
                             )
                         }
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.bottom, 6)
+                    .padding(.horizontal, AppTheme.Spacing.md)
+                    .padding(.top, AppTheme.Spacing.sm)
                     .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                 }
             }
-            .background(AppTheme.Colors.cardBackground.opacity(0.55))
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(AppTheme.Colors.border.opacity(0.5), lineWidth: 0.5)
-            )
-            .pressBorderGlow(cornerRadius: 10)
             .onChange(of: isStreaming) { wasStreaming, streaming in
                 guard wasStreaming && !streaming else { return }
                 if reduceMotion {
@@ -114,6 +69,14 @@ public struct ReasoningCard: View {
                     withAnimation(.easeOut(duration: 0.2)) { isExpanded = false }
                 }
             }
+        }
+    }
+
+    private func toggleExpanded() {
+        if reduceMotion {
+            isExpanded.toggle()
+        } else {
+            withAnimation(AppTheme.Motion.spring) { isExpanded.toggle() }
         }
     }
 
@@ -134,6 +97,122 @@ public struct ReasoningCard: View {
             return "已深度思考 \(sec) 秒"
         }
         return "已深度思考"
+    }
+}
+
+/// 等待期与真实推理期共用的 Quantum Pearl 状态条。
+struct ReasoningStatusStrip: View {
+    let title: String
+    var detail: String? = nil
+    var isStreaming: Bool = true
+    var isExpanded: Bool = false
+    var onToggle: (() -> Void)? = nil
+    var onCancel: (() -> Void)? = nil
+
+    @State private var isBreathing = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(
+        title: String,
+        detail: String? = nil,
+        isStreaming: Bool = true,
+        isExpanded: Bool = false,
+        onToggle: (() -> Void)? = nil,
+        onCancel: (() -> Void)? = nil
+    ) {
+        self.title = title
+        self.detail = detail
+        self.isStreaming = isStreaming
+        self.isExpanded = isExpanded
+        self.onToggle = onToggle
+        self.onCancel = onCancel
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            if let onToggle {
+                Button(action: onToggle) { statusLabel(showsDisclosure: true) }
+                    .buttonStyle(SoftButtonStyle())
+            } else {
+                statusLabel(showsDisclosure: false)
+            }
+
+            if let onCancel {
+                Button(action: onCancel) {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(AppTheme.Icons.tertiary)
+                        .minimumTouchTarget()
+                }
+                .buttonStyle(SoftButtonStyle())
+                .accessibilityLabel("取消当前任务")
+            }
+        }
+        .background(AppTheme.Colors.cardBackground.opacity(0.70))
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.xs, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: AppTheme.Radius.xs, style: .continuous)
+                .stroke(AppTheme.Colors.border.opacity(0.50), lineWidth: 0.5)
+        }
+        .pressBorderGlow(cornerRadius: AppTheme.Radius.xs)
+        .onAppear { isBreathing = true }
+    }
+
+    private func statusLabel(showsDisclosure: Bool) -> some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            intelligenceDots
+
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.xxs) {
+                Text(title)
+                    .font(AppTheme.Typography.label)
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .lineLimit(1)
+                    .id(title)
+                    .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
+
+                if let detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(AppTheme.Typography.micro)
+                        .foregroundColor(AppTheme.Colors.textTertiary)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(AppTheme.Icons.tertiary)
+                    .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                    .accessibilityHidden(true)
+            }
+        }
+        .padding(.leading, AppTheme.Spacing.md)
+        .padding(.trailing, showsDisclosure ? AppTheme.Spacing.md : 0)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var intelligenceDots: some View {
+        HStack(spacing: 3) {
+            ForEach(Array([AppTheme.Colors.quantumCyan, AppTheme.Colors.quantumBlue, AppTheme.Colors.quantumViolet].enumerated()), id: \.offset) { index, color in
+                Circle()
+                    .fill(color)
+                    .frame(width: 5, height: 5)
+                    .opacity(isStreaming && isBreathing ? 1 : 0.42)
+                    .scaleEffect(isStreaming && isBreathing ? 1 : 0.72)
+                    .animation(
+                        reduceMotion || !isStreaming
+                            ? nil
+                            : .easeInOut(duration: 0.9).delay(Double(index) * 0.14).repeatForever(autoreverses: true),
+                        value: isBreathing
+                    )
+            }
+        }
+        .frame(width: 22)
+        .accessibilityHidden(true)
     }
 }
 

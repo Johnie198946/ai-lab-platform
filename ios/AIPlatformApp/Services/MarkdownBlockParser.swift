@@ -155,7 +155,9 @@ public final class MarkdownBlockParser {
     }
     private static func parseNumbered(_ s: String) -> String? {
         guard let dot = s.firstIndex(where: { $0 == "." || $0 == "、" }), Int(s[..<dot]) != nil else { return nil }
-        return "\(s[..<dot]). \(s[s.index(after: dot)...].trimmingCharacters(in: .whitespaces))"
+        let contentStart = s.index(after: dot)
+        guard s[dot] != "." || (contentStart < s.endIndex && s[contentStart].isWhitespace) else { return nil }
+        return "\(s[..<dot]). \(s[contentStart...].trimmingCharacters(in: .whitespaces))"
     }
     private static func tryTable(lines: [String], start: Int) -> (TableBlock, Int)? {
         guard start + 1 < lines.count else { return nil }

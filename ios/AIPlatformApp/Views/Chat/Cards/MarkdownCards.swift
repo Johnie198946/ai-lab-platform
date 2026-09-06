@@ -58,10 +58,11 @@ public struct MarkdownBlockCard: View {
             }
         case .numberedList(let items):
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    let marker = item.prefix(while: { !$0.isWhitespace })
                     HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-                        Text("\(idx + 1).").font(.system(size: 13, weight: .semibold)).foregroundColor(AppTheme.Colors.quantumBlue).frame(minWidth: 22, alignment: .leading)
-                        MarkdownText(item, font: .system(size: 14.5)).fixedSize(horizontal: false, vertical: true)
+                        Text(marker).font(.system(size: 13, weight: .semibold)).foregroundColor(AppTheme.Colors.quantumBlue).frame(minWidth: 22, alignment: .leading)
+                        MarkdownText(String(item.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces), font: .system(size: 14.5)).fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }

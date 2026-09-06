@@ -133,13 +133,21 @@ public struct ChatMessageStreamView: View {
         } else if message.usesPendingPlaceholder {
             if let req = coordinator.inflight, req.id == message.id {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                    // 实时思考链：流式期间的 thought/tool 步骤逐步揭示，绝不藏在占位卡后面
-                    if !message.blocks.isEmpty {
-                        ForEach(message.blocks) { block in
+                    // Reasoning lives inside the single execution card; other
+                    // interactive blocks remain visible as soon as they arrive.
+                    ForEach(message.blocks) { block in
+                        if !block.isReasoning {
                             liveBlockCard(block)
                         }
                     }
-                    ChatInFlightPlaceholderView(req: req, coordinator: coordinator)
+                    if !Self.containsLiveReasoning(message.blocks) {
+                        ChatInFlightPlaceholderView(
+                            req: req,
+                            coordinator: coordinator,
+                            steps: message.reasoningSteps,
+                            assistantName: message.executingAgentName
+                        )
+                    }
                 }
             } else {
                 OrphanPendingCardView(onRetry: { coordinator.retryMessage(message.id) })
@@ -185,10 +193,12 @@ public struct ChatMessageStreamView: View {
                 context: coordinator.makeRenderContext(for: message),
                 onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted }
             )
-            BackgroundProcessingCardView(
-                isReconnecting: coordinator.isProcessingExistingRun(message),
-                confirmedRunning: coordinator.confirmedRunningMessageIDs.contains(message.id)
-            )
+            if message.showsSeparateRecoveryHint {
+                BackgroundProcessingCardView(
+                    isReconnecting: coordinator.isProcessingExistingRun(message),
+                    confirmedRunning: coordinator.confirmedRunningMessageIDs.contains(message.id)
+                )
+            }
         }
     }
 
@@ -205,12 +215,25 @@ public struct ChatMessageStreamView: View {
         }
     }
 
+    static func containsLiveReasoning(_ blocks: [MessageBlock]) -> Bool {
+        blocks.contains { block in
+            if case .reasoning(let steps) = block {
+                return !steps.isEmpty
+            }
+            return false
+        }
+    }
+
     /// 流式期间实时揭示的块（仅 reasoning / clarify 有实时价值，其余等待完成态统一渲染）
     @ViewBuilder
     private func liveBlockCard(_ block: MessageBlock) -> some View {
         switch block {
         case .reasoning(let steps):
-            ReasoningCard(steps: steps, isStreaming: true)
+            ReasoningCard(
+                steps: steps,
+                isStreaming: true,
+                onCancel: { coordinator.cancelInFlight() }
+            )
         case .clarify(let clarifyBlock):
             ClarifyCard(
                 block: clarifyBlock,
@@ -238,6 +261,22 @@ extension ChatMessage {
     var usesPendingPlaceholder: Bool {
         pending && role == .assistant
             && content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var reasoningSteps: [ReasoningStep] {
+        for block in blocks {
+            if case .reasoning(let steps) = block { return steps }
+        }
+        return []
+    }
+
+    var showsSeparateRecoveryHint: Bool { reasoningSteps.isEmpty }
+}
+
+private extension MessageBlock {
+    var isReasoning: Bool {
+        if case .reasoning = self { return true }
+        return false
     }
 }
 

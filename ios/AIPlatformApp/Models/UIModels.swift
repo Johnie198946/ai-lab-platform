@@ -508,6 +508,40 @@ public enum MessageBlock: Identifiable, Sendable, Hashable {
 }
 
 public extension ChatMessage {
+    var hasRenderableAssistantResult: Bool {
+        if !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return true }
+        return blocks.contains {
+            if case .reasoning = $0 { return false }
+            return true
+        }
+    }
+
+    var needsDurableResultRecovery: Bool {
+        guard !degraded, !pending, !isStreaming, !hasRenderableAssistantResult,
+              let runId, !runId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        return true
+    }
+
+    var shouldShowEmptyResponseError: Bool {
+        role == .assistant && !degraded && !pending && !isStreaming
+            && clarifyBlock == nil && !hasRenderableAssistantResult
+            && !needsDurableResultRecovery
+    }
+
+    mutating func settleCompletedAssistantResponse() {
+        role = .assistant
+        pending = false
+        isStreaming = false
+        settleReasoningForCompletion()
+        guard !hasRenderableAssistantResult else {
+            degraded = false
+            return
+        }
+        content = "任务已完成，但未返回正文或可显示结果"
+        degraded = true
+    }
+
     /// 取消息中的澄清卡片块（无则 nil）。ChatView 据此将消息渲染为 ClarifyCard 而非普通气泡。
     var clarifyBlock: ClarifyBlock? {
         for block in blocks {
@@ -1865,14 +1899,14 @@ public final class SessionManager: ObservableObject {
         let message = existing.map { existing in
             var updated = existing
             updated.role = .assistant
-            if let page = answerProjection {
+            if let page = answerProjection, !page.blocks.isEmpty {
                 updated.content = page.blocks.map(\.content).joined()
                 updated.answerBlocks = page.blocks
                 updated.answerRevision = page.revision
                 updated.answerNextCursor = page.nextCursor
                 updated.answerHasMore = page.hasMore
                 updated.answerAvailableBlockCount = page.availableBlockCount
-            } else {
+            } else if !answer.isEmpty {
                 updated.content = answer
             }
             if let reasoningSteps, !reasoningSteps.isEmpty {
@@ -1882,13 +1916,14 @@ public final class SessionManager: ObservableObject {
                 }
                 updated.blocks.insert(.reasoning(reasoningSteps), at: 0)
             }
-            updated.pending = false; updated.isStreaming = false; updated.degraded = false
-            updated.settleReasoningForCompletion(); return updated
+            return updated
         } ?? ChatMessage(
             id: requestId,
             sessionId: sessionId,
             role: .assistant,
-            content: answerProjection?.blocks.map(\.content).joined() ?? answer,
+            content: answerProjection.flatMap {
+                $0.blocks.isEmpty ? nil : $0.blocks.map(\.content).joined()
+            } ?? answer,
             blocks: reasoningSteps.map { $0.isEmpty ? [] : [.reasoning($0)] } ?? [],
             pending: false,
             answerRevision: answerProjection?.revision,
@@ -1897,7 +1932,9 @@ public final class SessionManager: ObservableObject {
             answerAvailableBlockCount: answerProjection?.availableBlockCount ?? 0,
             answerBlocks: answerProjection?.blocks ?? []
         )
-        updateStoredMessage(message, sessionId: sessionId)
+        var completed = message
+        completed.settleCompletedAssistantResponse()
+        updateStoredMessage(completed, sessionId: sessionId)
     }
 
     /// 切走后任务失败：把 degraded 卡写归属会话（不中断、不静默）。

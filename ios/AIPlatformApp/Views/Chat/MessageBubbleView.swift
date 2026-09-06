@@ -189,12 +189,13 @@ public struct MessageBubbleView: View {
 
     private var assistantBubbleContent: some View {
         let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        let assistantName = message.executingAgentName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             if let name = message.executingAgentName,
                message.executingAgentId != "main_agent" {
                 HStack(spacing: 5) {
                     Image(systemName: "person.crop.circle.badge.checkmark")
-                    Text(message.delegatedBy == nil ? "(name)" : "由 (name) 完成")
+                    Text(message.delegatedBy == nil ? name : "由 \(name) 完成")
                 }
                 .font(AppTheme.Typography.micro.weight(.semibold))
                 .foregroundColor(AppTheme.Colors.quantumBlue)
@@ -209,9 +210,27 @@ public struct MessageBubbleView: View {
                 demoSampleBadge
             }
 
-            // 1. 思维链胶囊（置顶展示，对标 ChatGPT）
+            // 1. 运行中用单一状态卡承载真实过程；完成后恢复紧凑思维胶囊。
             if let reasoningBlock = message.blocks.first(where: { if case .reasoning = $0 { return true }; return false }) {
-                blockCard(reasoningBlock)
+                if message.isStreaming || message.pending {
+                    if assistantName.isEmpty || message.executingAgentId == "main_agent" {
+                        Text(assistantName.isEmpty ? ChatRunningPresentation.fallbackAssistantName : assistantName)
+                            .font(AppTheme.Typography.micro.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.interactiveViolet)
+                    }
+                    ChatRunningStatusCard(
+                        presentation: ChatRunningPresentation(
+                            assistantName: message.executingAgentName,
+                            phase: nil,
+                            phaseDetail: nil,
+                            progress: nil,
+                            steps: message.reasoningSteps
+                        ),
+                        steps: message.reasoningSteps
+                    )
+                } else {
+                    blockCard(reasoningBlock)
+                }
             }
 
             // 2. Markdown 正文卡片（正文非空 或 流式中）
@@ -294,16 +313,16 @@ public struct MessageBubbleView: View {
             }
 
             // 4. 空气泡兜底（正文为空且非流式非待办且无澄清卡）：显式给出异常提示 + 重新生成（绝不只露底部操作条）
-            if trimmed.isEmpty && !message.isStreaming && !message.pending && message.clarifyBlock == nil {
+            if message.shouldShowEmptyResponseError {
                 HStack(spacing: AppTheme.Spacing.sm) {
                     Image(systemName: "exclamationmark.circle.fill")
                         .font(.system(size: 14))
                     .foregroundColor(AppTheme.Icons.warning)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("未能生成有效回答")
+                        Text("回答为空")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(AppTheme.Colors.textPrimary)
-                        Text("大模型未返回完整响应，请点击重新生成")
+                        Text("任务已结束，但没有返回正文或可显示结果")
                             .font(.system(size: 11))
                             .foregroundColor(AppTheme.Colors.textSecondary)
                     }
@@ -494,6 +513,13 @@ public struct MessageBubbleView: View {
     }
 }
 
+enum LongAnswerPresentationState: Equatable {
+    case waiting
+    case partial
+    case completed
+    case empty
+}
+
 struct LongAnswerSheet: View {
     let messageId: String
     let content: String
@@ -512,6 +538,25 @@ struct LongAnswerSheet: View {
 
     private var stableBlocks: [AnswerBlockDTO] {
         Self.coalescedBlocks(content: content, serverBlocks: serverBlocks)
+    }
+
+    private var presentationState: LongAnswerPresentationState {
+        Self.presentationState(content: content, serverBlocks: serverBlocks, isRunning: isRunning)
+    }
+
+    private var hasVisibleContent: Bool {
+        presentationState == .partial || presentationState == .completed
+    }
+
+    static func presentationState(
+        content: String,
+        serverBlocks: [AnswerBlockDTO],
+        isRunning: Bool
+    ) -> LongAnswerPresentationState {
+        let hasContent = !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || serverBlocks.contains { !$0.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if isRunning { return hasContent ? .partial : .waiting }
+        return hasContent ? .completed : .empty
     }
 
     static func coalescedBlocks(
@@ -544,11 +589,15 @@ struct LongAnswerSheet: View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                    ForEach(stableBlocks, id: \.blockIndex) { block in
-                        StableAnswerBlockView(messageId: messageId, block: block)
-                            .id(block.blockIndex)
+                    if presentationState == .waiting {
+                        QuantumReaderWaitingView()
+                    } else {
+                        ForEach(stableBlocks, id: \.blockIndex) { block in
+                            StableAnswerBlockView(messageId: messageId, block: block)
+                                .id(block.blockIndex)
+                        }
+                        readerStatus
                     }
-                    readerStatus
                 }
                 .scrollTargetLayout()
                 .textSelection(.enabled)
@@ -570,12 +619,12 @@ struct LongAnswerSheet: View {
                     } label: {
                         Label(isCopied ? "已复制" : "复制全文", systemImage: isCopied ? "checkmark" : "doc.on.doc")
                     }
-                    .disabled(hasMore || isRunning || isLoadingFullAnswer)
+                    .disabled(!hasVisibleContent || hasMore || isRunning || isLoadingFullAnswer)
                     .accessibilityHint(hasMore ? "请先加载完整原文" : "复制完整回答到剪贴板")
                     Button { prepareFullAnswer(share: true) } label: {
                         Label("导出全文", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(hasMore || isRunning || isLoadingFullAnswer)
+                    .disabled(!hasVisibleContent || hasMore || isRunning || isLoadingFullAnswer)
                 }
             }
         }
@@ -591,9 +640,11 @@ struct LongAnswerSheet: View {
     @ViewBuilder
     private var readerStatus: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-            Text(progressText)
-                .font(AppTheme.Typography.supporting)
-                .foregroundStyle(AppTheme.Colors.textSecondary)
+            if availableBlockCount > 0 || !serverBlocks.isEmpty {
+                Text(progressText)
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
             if let loadError {
                 Label(loadError, systemImage: "exclamationmark.triangle")
                     .font(AppTheme.Typography.supporting)
@@ -605,14 +656,21 @@ struct LongAnswerSheet: View {
                     Text("正在读取已存储原文…")
                     Spacer()
                     Button("取消") { cancelFullLoad() }
+                        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                 }
-            } else if isRunning && wantsFullAnswer {
+            } else if presentationState == .partial && wantsFullAnswer {
                 HStack {
                     Label("等待回答完成后继续加载", systemImage: "clock")
                     Spacer()
                     Button("取消") { wantsFullAnswer = false }
+                        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
                 }
-            } else if hasMore || isRunning {
+            } else if presentationState == .partial {
+                Label("正在同步后续内容", systemImage: "arrow.triangle.2.circlepath")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .accessibilityLabel("原文正在同步后续内容")
+            } else if presentationState == .completed && hasMore {
                 Button("加载完整原文") {
                     wantsFullAnswer = true
                     startFullLoad()
@@ -622,6 +680,10 @@ struct LongAnswerSheet: View {
             } else if wantsFullAnswer {
                 Label("完整原文已加载", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(AppTheme.Icons.success)
+            } else if presentationState == .empty {
+                Text("暂时没有可显示的原文")
+                    .font(AppTheme.Typography.body)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -668,6 +730,68 @@ struct LongAnswerSheet: View {
             isCopied = true
         }
         #endif
+    }
+}
+
+struct QuantumReaderWaitingView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var rotation = 0.0
+
+    static func shouldAnimate(reduceMotion: Bool) -> Bool { !reduceMotion }
+
+    var body: some View {
+        VStack(spacing: AppTheme.Spacing.md) {
+            ZStack {
+                Circle()
+                    .fill(
+                        RadialGradient(
+                            colors: [
+                                AppTheme.Colors.quantumViolet.opacity(0.14),
+                                AppTheme.Colors.quantumCyan.opacity(0.05),
+                                .clear
+                            ],
+                            center: .center,
+                            startRadius: 2,
+                            endRadius: 38
+                        )
+                    )
+
+                Circle()
+                    .trim(from: 0.08, to: 0.68)
+                    .stroke(
+                        AngularGradient(
+                            colors: [AppTheme.Colors.quantumCyan, AppTheme.Colors.quantumViolet],
+                            center: .center
+                        ),
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round)
+                    )
+                    .padding(5)
+                    .rotationEffect(.degrees(rotation))
+
+                QuantumAvatarView(size: 30)
+            }
+            .frame(width: 72, height: 72)
+            .accessibilityHidden(true)
+
+            Text("原文生成中")
+                .font(AppTheme.Typography.cardTitle)
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+            Text("内容到达后会自动显示，你可以先返回聊天")
+                .font(AppTheme.Typography.supporting)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 320)
+        .padding(AppTheme.Spacing.xl)
+        .onAppear {
+            guard Self.shouldAnimate(reduceMotion: reduceMotion) else { return }
+            withAnimation(.linear(duration: 2.8).repeatForever(autoreverses: false)) {
+                rotation = 360
+            }
+        }
+        .onDisappear { rotation = 0 }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("原文生成中，内容到达后会自动显示")
     }
 }
 

@@ -11,10 +11,19 @@ import SwiftUI
 public struct ChatInFlightPlaceholderView: View {
     public let req: InFlightRequest
     public let coordinator: TenantSessionCoordinator
+    public let steps: [ReasoningStep]
+    public let assistantName: String?
 
-    public init(req: InFlightRequest, coordinator: TenantSessionCoordinator) {
+    public init(
+        req: InFlightRequest,
+        coordinator: TenantSessionCoordinator,
+        steps: [ReasoningStep] = [],
+        assistantName: String? = nil
+    ) {
         self.req = req
         self.coordinator = coordinator
+        self.steps = steps
+        self.assistantName = assistantName
     }
 
     public var body: some View {
@@ -25,6 +34,8 @@ public struct ChatInFlightPlaceholderView: View {
                 progress: coordinator.liveProgress,
                 phase: coordinator.thinkingPhase,
                 phaseDetail: coordinator.thinkingDetail,
+                steps: steps,
+                assistantName: assistantName,
                 onCancel: { coordinator.cancelInFlight() }
             )
         case .timeout:

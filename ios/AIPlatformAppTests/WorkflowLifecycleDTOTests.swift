@@ -2,6 +2,9 @@ import XCTest
 import SwiftUI
 import SQLite3
 import Combine
+#if canImport(UIKit)
+import UIKit
+#endif
 @testable import AIPlatformApp
 
 private final class LockedErrorBox: @unchecked Sendable {
@@ -22,6 +25,123 @@ private final class LockedErrorBox: @unchecked Sendable {
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
+    func testNativeChatPresentationUsesTruthfulSingleRunningState() {
+        let steps = [
+            ReasoningStep(
+                id: "tool-1", type: .toolCall, title: "查阅公开资料",
+                detail: "正在比对公开时间线", status: "running"
+            )
+        ]
+        let presentation = ChatRunningPresentation(
+            assistantName: nil,
+            phase: "reasoning",
+            phaseDetail: nil,
+            progress: nil,
+            steps: steps
+        )
+        let message = ChatMessage(
+            role: .assistant, content: "部分正文", isStreaming: true,
+            blocks: [.reasoning(steps)], pending: true
+        )
+        let emptyPending = ChatMessage(
+            role: .assistant, content: "", blocks: [.reasoning(steps)], pending: true
+        )
+
+        XCTAssertEqual(presentation.assistantName, "Quantumn 助手")
+        XCTAssertEqual(presentation.title, "正在查阅资料")
+        XCTAssertEqual(presentation.detail, "正在比对公开时间线")
+        XCTAssertFalse(presentation.assistantName.contains("(name)"))
+        XCTAssertEqual(message.reasoningSteps, steps)
+        XCTAssertFalse(message.showsSeparateRecoveryHint)
+        XCTAssertTrue(emptyPending.usesPendingPlaceholder)
+        XCTAssertEqual(emptyPending.reasoningSteps, steps)
+    }
+
+    func testNativeReaderShowsWaitingPartialAndCompletedContentStates() {
+        let partial = AnswerBlockDTO(blockIndex: 0, kind: "markdown", content: "已到达正文")
+
+        XCTAssertEqual(
+            LongAnswerSheet.presentationState(content: "", serverBlocks: [], isRunning: true),
+            .waiting
+        )
+        XCTAssertEqual(
+            LongAnswerSheet.presentationState(content: "", serverBlocks: [partial], isRunning: true),
+            .partial
+        )
+        XCTAssertEqual(
+            LongAnswerSheet.presentationState(content: "完整正文", serverBlocks: [], isRunning: false),
+            .completed
+        )
+        XCTAssertEqual(
+            LongAnswerSheet.presentationState(content: "", serverBlocks: [], isRunning: false),
+            .empty
+        )
+        XCTAssertFalse(QuantumReaderWaitingView.shouldAnimate(reduceMotion: true))
+        XCTAssertTrue(QuantumReaderWaitingView.shouldAnimate(reduceMotion: false))
+    }
+
+    @MainActor
+    func testNativeQuantumnSyntheticScreenshotFixtures() throws {
+        #if canImport(UIKit)
+        attachScreenshot(
+            ThinkingPlaceholderView(
+                seconds: 12,
+                phase: "reasoning",
+                phaseDetail: "正在比对公开时间线",
+                steps: [
+                    ReasoningStep(
+                        type: .toolCall, title: "查阅公开资料",
+                        detail: "正在比对公开时间线", status: "running"
+                    )
+                ],
+                onCancel: {}
+            ),
+            name: "quantumn-running-card",
+            height: 300
+        )
+        attachScreenshot(QuantumReaderWaitingView(), name: "quantumn-reader-waiting", height: 520)
+        attachScreenshot(
+            LongAnswerSheet(
+                messageId: "fixture-complete",
+                content: "# 已完成原文\n\n这是用于原生组件截图检查的合成正文。",
+                serverBlocks: [], availableBlockCount: 1,
+                hasMore: false, isRunning: false, fetchFull: nil
+            ),
+            name: "quantumn-reader-complete",
+            height: 760
+        )
+        #else
+        throw XCTSkip("UIKit screenshot attachments require the iOS test host")
+        #endif
+    }
+
+    #if canImport(UIKit)
+    @MainActor
+    private func attachScreenshot<Content: View>(
+        _ content: Content,
+        name: String,
+        height: CGFloat
+    ) {
+        let size = CGSize(width: 375, height: height)
+        let controller = UIHostingController(
+            rootView: content
+                .frame(width: size.width, height: size.height)
+                .background(AppTheme.Colors.background)
+        )
+        controller.view.bounds = CGRect(origin: .zero, size: size)
+        controller.view.backgroundColor = .clear
+        controller.view.setNeedsLayout()
+        controller.view.layoutIfNeeded()
+        let image = UIGraphicsImageRenderer(size: size).image { _ in
+            controller.view.drawHierarchy(in: controller.view.bounds, afterScreenUpdates: true)
+        }
+        let attachment = XCTAttachment(image: image)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+    #endif
+
     func testKnowledgeMergeRequestEncodesOnlyAtomicTransactionContract() throws {
         let request = KnowledgeNoteMergeRequestDTO(
             operationId: "operation-1", targetNoteId: "target-1",
@@ -279,6 +399,61 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(blocks[0], blocks[1])
         XCTAssertEqual(blocks[2], .divider)
         XCTAssertEqual(blocks[3], .divider)
+    }
+
+    func testMarkdownParserPreservesNumberedLabelsAndRejectsVersionNumbers() {
+        let interrupted = MarkdownBlockParser.shared.parse("""
+        # 第一段
+        1. 条目一
+        2. 条目二
+        - 穿插说明
+        # 第二段
+        3. 条目三
+        4. 条目四
+        - 另一条说明
+        5. 条目五
+        6. 条目六
+        7. 条目七
+        """)
+        let groups = interrupted.compactMap { block -> [String]? in
+            guard case .numberedList(let items) = block else { return nil }
+            return items
+        }
+        XCTAssertEqual(groups, [
+            ["1. 条目一", "2. 条目二"],
+            ["3. 条目三", "4. 条目四"],
+            ["5. 条目五", "6. 条目六", "7. 条目七"]
+        ])
+        XCTAssertEqual(
+            MarkdownBlockParser.shared.parse("3. 非 1 起始\n4. 后续"),
+            [.numberedList(["3. 非 1 起始", "4. 后续"])]
+        )
+        XCTAssertEqual(
+            MarkdownBlockParser.shared.parse("1. 连续一\n2. 连续二\n3. 连续三"),
+            [.numberedList(["1. 连续一", "2. 连续二", "3. 连续三"])]
+        )
+        XCTAssertEqual(
+            MarkdownBlockParser.shared.parse("版本 1.2 保持正文\n1.2 也不是列表\n3. 正文保留 2.4 和 2026"),
+            [
+                .paragraph("版本 1.2 保持正文\n1.2 也不是列表"),
+                .numberedList(["3. 正文保留 2.4 和 2026"])
+            ]
+        )
+    }
+
+    func testLiveReasoningOnlyReplacesPlaceholderAfterFirstRealStep() {
+        XCTAssertFalse(ChatMessageStreamView.containsLiveReasoning([.reasoning([])]))
+        XCTAssertTrue(
+            ChatMessageStreamView.containsLiveReasoning([
+                .reasoning([
+                    ReasoningStep(
+                        type: .toolCall,
+                        title: "检索交通方案",
+                        status: "running"
+                    )
+                ])
+            ])
+        )
     }
 
     @MainActor
@@ -3151,6 +3326,7 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
                 content: "原会话部分", runId: "run-session-a"
             )
         ], for: firstSession)
+        await manager.flushPendingPersistence()
         var continuation: CheckedContinuation<DurableChatReplayDTO, Error>?
         let started = expectation(description: "session A GET started")
         let coordinator = TenantSessionCoordinator(
