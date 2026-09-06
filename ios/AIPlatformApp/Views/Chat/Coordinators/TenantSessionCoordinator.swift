@@ -624,6 +624,7 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func applyHistoryPage(_ page: StoredMessagePage, isLatest: Bool, startsAtBottom: Bool) {
         messages = page.messages
+        Self.repairClarifyContinuationRunLinks(in: &messages)
         hasOlderMessages = page.hasOlder
         hasNewerMessages = page.hasNewer
         isLatestPage = isLatest && !page.hasNewer
@@ -1770,6 +1771,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard let index = messages.firstIndex(where: { $0.id == messageId }) else {
             throw APIError.server(404, "answer message not found")
         }
+        Self.repairClarifyContinuationRunLinks(in: &messages)
         let message = messages[index]
         guard message.answerHasMore else { return message.content }
         guard let runId = message.runId, var cursor = message.answerNextCursor else {
@@ -1927,6 +1929,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         selection: String
     ) {
         guard let idx = messages.firstIndex(where: { $0.id == messageId }) else { return }
+        let continuedRunId = messages[idx].runId
+        let continuedEventSequence = messages[idx].lastEventSequence
         markClarifySubmitted(messageIndex: idx, selection: selection)
         let continuationMessageId = UUID().uuidString
         let continuationStep = ReasoningStep(
@@ -1941,7 +1945,9 @@ public final class TenantSessionCoordinator: ObservableObject {
             role: .assistant,
             content: "",
             isStreaming: true,
-            blocks: [.reasoning([continuationStep])]
+            blocks: [.reasoning([continuationStep])],
+            runId: continuedRunId,
+            lastEventSequence: continuedEventSequence
         ))
         if inflight?.id == requestId {
             streamOutputMessageIds[requestId] = continuationMessageId
@@ -2278,6 +2284,39 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func outputMessageId(for req: InFlightRequest) -> String {
         streamOutputMessageIds[req.id] ?? req.id
+    }
+
+    /// A bridge clarify pauses one durable run, then the UI creates a second
+    /// message for its continuation. Older clients did not copy the run ID to
+    /// that message, leaving a valid answer cursor with no way to request page 2.
+    /// Repair only the adjacent submitted-clarify continuation so an unrelated
+    /// later answer can never inherit the wrong run.
+    @discardableResult
+    nonisolated static func repairClarifyContinuationRunLinks(
+        in messages: inout [ChatMessage]
+    ) -> Int {
+        guard messages.count > 1 else { return 0 }
+        var repairCount = 0
+        for index in 1..<messages.count {
+            guard messages[index].runId == nil,
+                  messages[index].role == .assistant,
+                  messages[index].answerHasMore,
+                  messages[index].answerNextCursor != nil,
+                  messages[index - 1].role == .assistant,
+                  let clarify = messages[index - 1].clarifyBlock,
+                  clarify.isSubmitted,
+                  clarify.source == "bridge",
+                  messages[index - 1].sessionId == messages[index].sessionId,
+                  let runId = messages[index - 1].runId,
+                  !runId.isEmpty else { continue }
+            messages[index].runId = runId
+            messages[index].lastEventSequence = max(
+                messages[index].lastEventSequence,
+                messages[index - 1].lastEventSequence
+            )
+            repairCount += 1
+        }
+        return repairCount
     }
 
     private func isRequirementConfirmationQuestion(_ question: String) -> Bool {

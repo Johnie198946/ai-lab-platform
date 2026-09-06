@@ -3179,3 +3179,117 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(manager.storedMessage(id: outputId, sessionId: firstSession)?.content, "原会话部分")
     }
 }
+
+@MainActor
+final class ClarifyAnswerPaginationRegressionTests: XCTestCase {
+    private func submittedClarify(sessionId: String) -> ClarifyBlock {
+        ClarifyBlock(
+            requestId: "request-1", sessionId: sessionId,
+            submissionState: .accepted, question: "选择路线", choices: ["省钱"],
+            source: "bridge", isSubmitted: true, submittedSelection: "省钱"
+        )
+    }
+
+    func testLegacyClarifyContinuationRecoversMissingRunId() {
+        let sessionId = "session-1"
+        var messages = [
+            ChatMessage(
+                id: "clarify", sessionId: sessionId, role: .assistant,
+                content: "", blocks: [.clarify(submittedClarify(sessionId: sessionId))],
+                runId: "durable-run", lastEventSequence: 4
+            ),
+            ChatMessage(
+                id: "answer", sessionId: sessionId, role: .assistant,
+                content: "首批正文", answerRevision: 2,
+                answerNextCursor: "signed-cursor", answerHasMore: true,
+                answerAvailableBlockCount: 40,
+                answerBlocks: [AnswerBlockDTO(
+                    blockIndex: 0, kind: "markdown", content: "首批正文"
+                )]
+            )
+        ]
+
+        let repaired = TenantSessionCoordinator.repairClarifyContinuationRunLinks(
+            in: &messages
+        )
+
+        XCTAssertEqual(repaired, 1)
+        XCTAssertEqual(messages[1].runId, "durable-run")
+        XCTAssertEqual(messages[1].lastEventSequence, 4)
+    }
+
+    func testRunRepairNeverLinksUnrelatedAnswer() {
+        let sessionId = "session-1"
+        var messages = [
+            ChatMessage(
+                sessionId: sessionId, role: .assistant, content: "",
+                blocks: [.clarify(submittedClarify(sessionId: sessionId))],
+                runId: "durable-run"
+            ),
+            ChatMessage(sessionId: sessionId, role: .user, content: "新问题"),
+            ChatMessage(
+                sessionId: sessionId, role: .assistant, content: "独立回答",
+                answerNextCursor: "cursor", answerHasMore: true
+            )
+        ]
+
+        XCTAssertEqual(
+            TenantSessionCoordinator.repairClarifyContinuationRunLinks(in: &messages),
+            0
+        )
+        XCTAssertNil(messages[2].runId)
+    }
+
+    func testLegacyClarifyContinuationCanFetchRemainingAnswer() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        manager.setMessages([
+            ChatMessage(
+                id: "clarify", sessionId: sessionId, role: .assistant,
+                content: "", blocks: [.clarify(submittedClarify(sessionId: sessionId))],
+                runId: "durable-run"
+            ),
+            ChatMessage(
+                id: "answer", sessionId: sessionId, role: .assistant,
+                content: "第1页", answerRevision: 2,
+                answerNextCursor: "page-2", answerHasMore: true,
+                answerAvailableBlockCount: 2,
+                answerBlocks: [AnswerBlockDTO(
+                    blockIndex: 0, kind: "markdown", content: "第1页"
+                )]
+            )
+        ], for: sessionId)
+        let fetched = expectation(description: "remaining page fetched with inherited run")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchAnswerBlocks: { runID, cursor, maxBlocks in
+                XCTAssertEqual(runID, "durable-run")
+                XCTAssertEqual(cursor, "page-2")
+                XCTAssertEqual(maxBlocks, 20)
+                fetched.fulfill()
+                return AnswerBlockPageDTO(
+                    messageId: "server-answer", revision: 2, status: "completed",
+                    blocks: [AnswerBlockDTO(
+                        blockIndex: 1, kind: "markdown", content: "第2页"
+                    )], bytes: 7, loadedBlockCount: 2,
+                    availableBlockCount: 2, hasMore: false, nextCursor: nil
+                )
+            }
+        )
+
+        let fullAnswer = try await coordinator.fetchFullAnswer(messageId: "answer")
+        await fulfillment(of: [fetched], timeout: 1)
+
+        XCTAssertEqual(fullAnswer, "第1页第2页")
+        XCTAssertEqual(coordinator.messages[1].runId, "durable-run")
+        XCTAssertFalse(coordinator.messages[1].answerHasMore)
+        XCTAssertNil(coordinator.messages[1].answerNextCursor)
+    }
+}
