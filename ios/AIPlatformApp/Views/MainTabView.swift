@@ -17,6 +17,10 @@ public struct MainTabView: View {
     @EnvironmentObject private var workflowActivities: WorkflowActivityCoordinator
     @EnvironmentObject private var sessionManager: SessionManager
     @StateObject private var keyboardObserver = KeyboardObserver()
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.accessibilityVoiceOverEnabled) private var voiceOverEnabled
+    @State private var tabBarCollapsed = ProcessInfo.processInfo.arguments.contains("-collapsedTabBarPreview")
+    @State private var tabBarAutoCollapseTask: Task<Void, Never>?
 
     public init() {}
 
@@ -25,6 +29,7 @@ public struct MainTabView: View {
 
             // Tab 1: Chat Stream & Multiturn Dialogues
             ChatView()
+                .toolbar(.hidden, for: .tabBar)
                 .tabItem {
                     Label("对话", systemImage: "bubble.left.and.bubble.right.fill")
                 }
@@ -32,6 +37,7 @@ public struct MainTabView: View {
 
             // Tab 2: 可执行工作流（拓扑从任务页按需打开）
             WorkflowDashboardView()
+                .toolbar(.hidden, for: .tabBar)
                 .tabItem {
                     Label("任务", systemImage: "square.grid.2x2.fill")
                 }
@@ -39,6 +45,7 @@ public struct MainTabView: View {
 
             // Tab 3: local-first Markdown notes workspace
             KnowledgeView()
+                .toolbar(.hidden, for: .tabBar)
                 .tabItem {
                     Label("知识", systemImage: "books.vertical.fill")
                 }
@@ -46,6 +53,7 @@ public struct MainTabView: View {
 
             // Tab 4: Tenant Profile & Prompt Studio Settings
             SettingsView()
+                .toolbar(.hidden, for: .tabBar)
                 .tabItem {
                     Label("设置", systemImage: "gearshape.fill")
                 }
@@ -80,7 +88,25 @@ public struct MainTabView: View {
                         )
                         .padding(.horizontal, AppTheme.Spacing.lg)
                     }
-                    QuantumFloatingTabBar(selection: $appState.activeTab)
+                    if tabBarCollapsed && !voiceOverEnabled {
+                        CollapsedQuantumTabBar(selection: appState.activeTab) {
+                            setTabBarCollapsed(false)
+                        }
+                        .transition(tabBarTransition(collapsed: true))
+                    } else {
+                        QuantumFloatingTabBar(selection: $appState.activeTab) {
+                            scheduleTabBarAutoCollapse()
+                        }
+                        .simultaneousGesture(
+                            DragGesture(minimumDistance: 16)
+                                .onEnded { value in
+                                    if value.translation.height > 24 {
+                                        setTabBarCollapsed(true)
+                                    }
+                                }
+                        )
+                        .transition(tabBarTransition(collapsed: false))
+                    }
                 }
             }
         }
@@ -91,6 +117,88 @@ public struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.isDevMode)
+        .onChange(of: voiceOverEnabled) { _, enabled in
+            if enabled {
+                tabBarAutoCollapseTask?.cancel()
+                tabBarCollapsed = false
+            } else {
+                scheduleTabBarAutoCollapse()
+            }
+        }
+        .onAppear { scheduleTabBarAutoCollapse() }
+        .onDisappear { tabBarAutoCollapseTask?.cancel() }
+    }
+
+    private func setTabBarCollapsed(_ collapsed: Bool, feedback: Bool = true) {
+        tabBarAutoCollapseTask?.cancel()
+        #if os(iOS)
+        if feedback { UIImpactFeedbackGenerator(style: .soft).impactOccurred() }
+        #endif
+        withAnimation(reduceMotion ? nil : .spring(response: collapsed ? 0.24 : 0.38, dampingFraction: 0.84)) {
+            tabBarCollapsed = collapsed
+        }
+        if !collapsed { scheduleTabBarAutoCollapse() }
+    }
+
+    private func scheduleTabBarAutoCollapse() {
+        tabBarAutoCollapseTask?.cancel()
+        guard !tabBarCollapsed, !voiceOverEnabled else { return }
+        tabBarAutoCollapseTask = Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            guard !Task.isCancelled else { return }
+            setTabBarCollapsed(true, feedback: false)
+        }
+    }
+
+    private func tabBarTransition(collapsed: Bool) -> AnyTransition {
+        guard !reduceMotion else { return .opacity }
+        return .asymmetric(
+            insertion: .move(edge: .bottom)
+                .combined(with: .scale(scale: collapsed ? 0.82 : 0.9, anchor: .bottom))
+                .combined(with: .opacity),
+            removal: .scale(scale: collapsed ? 0.9 : 0.74, anchor: .bottom)
+                .combined(with: .opacity)
+        )
+    }
+}
+
+private struct CollapsedQuantumTabBar: View {
+    let selection: Int
+    let onExpand: () -> Void
+
+    private let symbols = [
+        "bubble.left.and.bubble.right.fill",
+        "square.grid.2x2.fill",
+        "books.vertical.fill",
+        "gearshape.fill"
+    ]
+    private var selectedSymbol: String {
+        symbols.indices.contains(selection) ? symbols[selection] : "circle.grid.2x2.fill"
+    }
+
+    var body: some View {
+        Button(action: onExpand) {
+            HStack(spacing: 10) {
+                Image(systemName: selectedSymbol)
+                    .font(.system(size: 15, weight: .semibold))
+                Capsule()
+                    .fill(AppTheme.Colors.textTertiary.opacity(0.55))
+                    .frame(width: 24, height: 3)
+                Image(systemName: "chevron.up")
+                    .font(.system(size: 11, weight: .bold))
+            }
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+            .frame(width: 104, height: 44)
+            .background(.ultraThinMaterial)
+            .background(AppTheme.Colors.surfaceElevated.opacity(0.88))
+            .clipShape(Capsule())
+            .overlay { Capsule().stroke(AppTheme.Colors.border.opacity(0.86), lineWidth: 0.75) }
+            .shadow(color: Color(hex: "6B5A8A").opacity(0.13), radius: 18, y: 7)
+        }
+        .buttonStyle(SoftButtonStyle())
+        .accessibilityLabel("展开主导航")
+        .accessibilityHint("显示对话、任务、知识和设置")
+        .padding(.bottom, AppTheme.Spacing.xs)
     }
 }
 
@@ -259,6 +367,7 @@ private struct WorkflowActivityMiniBar: View {
 
 private struct QuantumFloatingTabBar: View {
     @Binding var selection: Int
+    let onInteraction: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let items: [(title: String, symbol: String, selectedSymbol: String)] = [
@@ -272,6 +381,7 @@ private struct QuantumFloatingTabBar: View {
         HStack(spacing: AppTheme.Spacing.xs) {
             ForEach(Array(items.enumerated()), id: \.offset) { index, item in
                 Button {
+                    onInteraction()
                     guard selection != index else { return }
                     #if os(iOS)
                     UISelectionFeedbackGenerator().selectionChanged()

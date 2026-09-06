@@ -25,6 +25,7 @@ private enum NoteEditorMode: String, CaseIterable, Identifiable {
 
 public struct KnowledgeView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var store = KnowledgeNoteStore.shared
 
     @State private var path: [String] = []
@@ -35,6 +36,10 @@ public struct KnowledgeView: View {
     @State private var showingTrashConfirmation = false
     @State private var showingArchive = false
     @State private var showingSessionOrganizer = false
+    @State private var bookSubscriptions: [KnowledgeBookSubscriptionDTO] = []
+    @State private var inspectedBook: KnowledgeBookDTO?
+    @State private var busyBookID: String?
+    @State private var contentRevealed = false
 
     public init() {}
 
@@ -51,14 +56,8 @@ public struct KnowledgeView: View {
 
         return NavigationStack(path: $path) {
             List {
-                workspaceHeader
-                quickActions
-
-                if !store.allTags.isEmpty {
-                    tagFilter
-                }
-
-                scopePicker
+                libraryHeader
+                subscribedBookshelf
 
                 if store.isLoading && store.notes.isEmpty {
                     loadingRow
@@ -75,15 +74,18 @@ public struct KnowledgeView: View {
                     )
                 }
 
-                // Keep the archive affordance visible even before the first
-                // merge, so users can discover where archived notes will live.
-                archiveEntry
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .background(AppTheme.Colors.cardBackground)
-            .navigationTitle("笔记")
-            .navigationBarTitleDisplayMode(.large)
+            .background(
+                LinearGradient(
+                    colors: [Color.white, AppTheme.Colors.surfaceTint.opacity(0.28)],
+                    startPoint: .top,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .navigationTitle("知识")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(
                 text: $searchText,
                 placement: .navigationBarDrawer(displayMode: .always),
@@ -92,25 +94,53 @@ public struct KnowledgeView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button {
-                            createNote()
-                        } label: {
+                        Button { createNote() } label: {
                             Label("新建笔记", systemImage: "square.and.pencil")
                         }
-                        Button {
-                            openDailyNote()
-                        } label: {
+                        Button { openDailyNote() } label: {
                             Label("打开日记", systemImage: "calendar")
                         }
+                        Menu {
+                            Picker("笔记范围", selection: $scope) {
+                                ForEach(NoteScope.allCases) { item in
+                                    Text(item.rawValue).tag(item)
+                                }
+                            }
+                        } label: {
+                            Label("筛选：\(scope.rawValue)", systemImage: "line.3.horizontal.decrease")
+                        }
+                        if !store.allTags.isEmpty {
+                            Menu {
+                                Button("全部标签") { selectedTags.removeAll() }
+                                ForEach(store.allTags, id: \.self) { tag in
+                                    Button("#\(tag)") { selectedTags = [tag] }
+                                }
+                            } label: {
+                                Label(selectedTags.first.map { "标签：#\($0)" } ?? "标签", systemImage: "tag")
+                            }
+                        }
+                        Divider()
+                        Button {
+                            appState.navigateToChatWithPrompt(
+                                "请基于我的本地笔记，帮我整理最近记录的重点和待办。",
+                                contextScope: localOnlyContext()
+                            )
+                        } label: {
+                            Label("用 AI 整理", systemImage: "sparkles")
+                        }
+                        Button { showingArchive = true } label: {
+                            Label("归档（\(store.archivedNotes.count)）", systemImage: "archivebox")
+                        }
                     } label: {
-                        Image(systemName: "plus")
+                        Image(systemName: "line.3.horizontal")
                             .frame(width: AppTheme.Metrics.minimumTouchTarget, height: AppTheme.Metrics.minimumTouchTarget)
                     }
-                    .accessibilityLabel("创建笔记")
+                    .accessibilityLabel("知识菜单")
                 }
             }
             .refreshable {
                 await refreshNotes()
+                await loadBookSubscriptions()
             }
             .navigationDestination(for: String.self) { noteID in
                 KnowledgeNoteEditor(noteID: noteID)
@@ -144,7 +174,23 @@ public struct KnowledgeView: View {
                 Text(store.lastError ?? "请稍后重试")
             }
             .task {
+                if !contentRevealed {
+                    withAnimation(reduceMotion ? nil : .spring(response: 0.46, dampingFraction: 0.88)) {
+                        contentRevealed = true
+                    }
+                }
                 await refreshNotes()
+                await loadBookSubscriptions()
+            }
+            .fullScreenCover(item: $inspectedBook) { book in
+                KnowledgeBookReaderView(
+                    book: book,
+                    isSubscribed: bookSubscriptions.contains { $0.book.id == book.id },
+                    isBusy: busyBookID == book.id,
+                    onToggleSubscription: { Task { await removeBook(book) } },
+                    onSaveExcerpt: { saveBookSummaryToNote(book) },
+                    onDismiss: { inspectedBook = nil }
+                )
             }
             .sheet(isPresented: $showingArchive) {
                 KnowledgeArchiveView()
@@ -179,48 +225,106 @@ public struct KnowledgeView: View {
         }
     }
 
-    private var archiveEntry: some View {
-        Button {
-            showingArchive = true
-        } label: {
-            HStack(spacing: AppTheme.Spacing.sm) {
-                Image(systemName: "archivebox")
-                Text("归档")
-                Text("\(store.archivedNotes.count)")
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
-            }
-            .font(.footnote)
-            .foregroundStyle(AppTheme.Colors.textTertiary)
-            .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(SoftButtonStyle())
-        .accessibilityLabel("归档笔记，\(store.archivedNotes.count) 篇")
-        .listRowInsets(pageInsets(vertical: AppTheme.Spacing.xs))
-        .listRowSeparator(.hidden)
-        .listRowBackground(AppTheme.Colors.cardBackground)
-    }
-
-    private var workspaceHeader: some View {
+    private var subscribedBookshelf: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.lg) {
-            HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
-                Image(systemName: "note.text")
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundStyle(AppTheme.Icons.interactive)
-                    .frame(width: 48, height: 48)
-                    .background(AppTheme.Colors.selectionTint)
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-                    .accessibilityHidden(true)
-
-                VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
-                    Text("我的笔记空间")
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("我的藏书")
                         .font(.title2.weight(.bold))
                         .foregroundStyle(AppTheme.Colors.textPrimary)
-                    Text("\(store.notes.count) 篇笔记 · \(store.allTags.count) 个标签 · 本地 Markdown")
-                        .font(.subheadline)
+                    Text(bookSubscriptions.isEmpty ? "从知识书架选一本，开始阅读" : "继续上一次的阅读")
+                        .font(.caption)
                         .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+                Spacer()
+                if bookSubscriptions.isEmpty {
+                    Text("0 本")
+                        .font(.caption)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                } else {
+                    NavigationLink {
+                        SubscriptionCenterView()
+                    } label: {
+                        Image(systemName: "arrow.up.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                            .frame(width: 44, height: 44)
+                            .background(Color.white.opacity(0.76), in: Circle())
+                    }
+                    .accessibilityLabel("发现更多书籍")
+                }
+            }
+
+            if bookSubscriptions.isEmpty {
+                NavigationLink {
+                    SubscriptionCenterView()
+                } label: {
+                    HStack(alignment: .bottom, spacing: AppTheme.Spacing.lg) {
+                        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                            Text("空书架也该被看见")
+                                .font(.headline)
+                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                            Text("订阅后，书会留在这里。")
+                                .font(.subheadline)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                        }
+                        Spacer()
+                        Image(systemName: "books.vertical")
+                            .font(.system(size: 42, weight: .light))
+                            .foregroundStyle(AppTheme.Colors.primary.opacity(0.42))
+                            .rotationEffect(.degrees(7))
+                    }
+                    .padding(AppTheme.Spacing.xl)
+                    .frame(maxWidth: .infinity, minHeight: 142, alignment: .leading)
+                    .background(AppTheme.Colors.selectionTint.opacity(0.58))
+                    .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                }
+                .buttonStyle(SoftButtonStyle())
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 22) {
+                        ForEach(Array(bookSubscriptions.enumerated()), id: \.element.book.id) { index, item in
+                            Button { inspectedBook = item.book } label: {
+                                VStack(alignment: .leading, spacing: 9) {
+                                    ZStack(alignment: .leading) {
+                                        RoundedRectangle(cornerRadius: 3)
+                                            .fill(index.isMultiple(of: 2) ? AppTheme.Colors.selectionTint : AppTheme.Colors.surfaceTint)
+                                        Rectangle()
+                                            .fill(AppTheme.Colors.primary.opacity(0.14))
+                                            .frame(width: 7)
+                                        Circle()
+                                            .stroke(AppTheme.Colors.primary.opacity(0.10), lineWidth: 10)
+                                            .frame(width: 70, height: 70)
+                                            .offset(x: 52, y: -30)
+                                        VStack(alignment: .leading) {
+                                            Text(item.book.title)
+                                                .font(.caption.weight(.bold))
+                                                .foregroundStyle(AppTheme.Colors.textPrimary)
+                                                .lineLimit(4)
+                                            Spacer()
+                                            Text(item.book.author)
+                                                .font(.system(size: 8, weight: .medium))
+                                                .foregroundStyle(AppTheme.Colors.textSecondary)
+                                                .lineLimit(2)
+                                        }
+                                        .padding(12)
+                                    }
+                                    .frame(width: 104, height: 142)
+                                    .rotationEffect(.degrees(index.isMultiple(of: 2) ? -2 : 2.5))
+                                    .shadow(color: AppTheme.Colors.primary.opacity(0.08), radius: 10, y: 7)
+                                    Text(item.book.title)
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                                        .lineLimit(2)
+                                        .frame(width: 112, alignment: .leading)
+                                }
+                            }
+                            .buttonStyle(SoftButtonStyle())
+                            .accessibilityLabel("打开《\(item.book.title)》")
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 8)
                 }
             }
 
@@ -250,32 +354,71 @@ public struct KnowledgeView: View {
             .buttonStyle(SoftButtonStyle())
             .accessibilityHint("选择要整理的会话")
         }
-        .padding(.vertical, AppTheme.Spacing.lg)
+        .padding(.vertical, AppTheme.Spacing.xl)
+        .opacity(contentRevealed ? 1 : 0)
+        .offset(y: contentRevealed ? 0 : 18)
         .listRowInsets(pageInsets(vertical: AppTheme.Spacing.sm))
         .listRowSeparator(.hidden)
-        .listRowBackground(AppTheme.Colors.cardBackground)
-        .accessibilityElement(children: .contain)
+        .listRowBackground(Color.clear)
     }
 
-    private var quickActions: some View {
-        HStack(spacing: AppTheme.Spacing.md) {
-            quickAction(
-                title: "新建笔记",
-                subtitle: "空白 Markdown",
-                systemImage: "square.and.pencil",
-                action: createNote
-            )
-            quickAction(
-                title: "每日笔记",
-                subtitle: "记录今天",
-                systemImage: "calendar",
-                action: openDailyNote
-            )
+    private func loadBookSubscriptions() async {
+        if let items = try? await APIClient.shared.fetchBookSubscriptions() {
+            bookSubscriptions = items
         }
-        .padding(.vertical, AppTheme.Spacing.sm)
+    }
+
+    private func removeBook(_ book: KnowledgeBookDTO) async {
+        guard busyBookID == nil else { return }
+        busyBookID = book.id
+        defer { busyBookID = nil }
+        do {
+            try await APIClient.shared.unsubscribeBook(id: book.id)
+            bookSubscriptions.removeAll { $0.book.id == book.id }
+            inspectedBook = nil
+        } catch {
+            // The book remains visible, so the user can retry without losing context.
+        }
+    }
+
+    private func saveBookSummaryToNote(_ book: KnowledgeBookDTO) {
+        let body = """
+        > [!abstract] 书籍摘录
+        > 《\(book.title)》 · \(book.author)
+        > Quantum 编研版 · \(book.knowledgeLevel) · \(book.sourceCount) 个来源
+
+        \(book.summary)
+
+        ---
+        来源书籍 ID：`\(book.id)`
+        """
+        guard let note = store.createNote(
+            title: "\(book.title)｜概述摘录", body: body,
+            tags: ["书籍摘录", "quantum-books"]
+        ) else { return }
+        syncInBackground(note)
+        inspectedBook = nil
+        path.append(note.id)
+    }
+
+    private var libraryHeader: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Text("写下，读完，留下来。")
+                .font(.system(size: 34, weight: .bold, design: .rounded))
+                .foregroundStyle(AppTheme.Colors.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Text("\(store.notes.count) 篇笔记  ·  \(bookSubscriptions.count) 本藏书")
+                .font(.subheadline)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+        }
+        .padding(.top, AppTheme.Spacing.xxxl)
+        .padding(.bottom, AppTheme.Spacing.lg)
+        .opacity(contentRevealed ? 1 : 0)
+        .offset(x: contentRevealed ? 0 : -18)
         .listRowInsets(pageInsets(vertical: 0))
         .listRowSeparator(.hidden)
-        .listRowBackground(AppTheme.Colors.cardBackground)
+        .listRowBackground(Color.clear)
+        .accessibilityElement(children: .combine)
     }
 
     private func quickAction(
@@ -363,15 +506,24 @@ public struct KnowledgeView: View {
 
     private func noteSection(title: String, systemImage: String, notes: [KnowledgeNote]) -> some View {
         Section {
-            ForEach(notes) { note in
+            ForEach(Array(notes.enumerated()), id: \.element.id) { index, note in
                 NavigationLink(value: note.id) {
                     KnowledgeNoteRow(
                         note: note,
                         preview: store.index.previewsByNoteID[note.id] ?? "",
                         backlinkCount: store.index.backlinkCountsByNoteID[note.id] ?? 0
                     )
+                    .padding(AppTheme.Spacing.md)
+                    .background(index.isMultiple(of: 2) ? AppTheme.Colors.surfaceTint.opacity(0.62) : AppTheme.Colors.selectionTint.opacity(0.48))
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
                 .buttonStyle(SoftButtonStyle())
+                .opacity(contentRevealed ? 1 : 0)
+                .offset(
+                    x: contentRevealed ? (index.isMultiple(of: 2) ? -4 : 8) : 0,
+                    y: contentRevealed ? 0 : 18
+                )
+                .animation(reduceMotion ? nil : .spring(response: 0.44, dampingFraction: 0.88).delay(Double(min(index, 5)) * 0.04), value: contentRevealed)
                 .swipeActions(edge: .leading, allowsFullSwipe: true) {
                     Button {
                         store.togglePin(id: note.id)
@@ -394,7 +546,8 @@ public struct KnowledgeView: View {
                     bottom: AppTheme.Spacing.xs,
                     trailing: AppTheme.Spacing.md
                 ))
-                .listRowBackground(AppTheme.Colors.cardBackground)
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
         } header: {
             Label(title, systemImage: systemImage)
@@ -421,10 +574,6 @@ public struct KnowledgeView: View {
             Label("没有匹配的笔记", systemImage: "note.text")
         } description: {
             Text(searchText.isEmpty ? "创建第一篇笔记，或切换其他筛选范围。" : "请尝试其他关键词或标签。")
-        } actions: {
-            Button("新建笔记") { createNote() }
-                .buttonStyle(.borderedProminent)
-                .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
         }
         .frame(minHeight: 260)
         .listRowSeparator(.hidden)

@@ -7,16 +7,23 @@ are derived from the verified JWT, while Authen remains the entitlement source.
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
+from sqlalchemy import delete, select
 
 from backend.api.auth import PERSONAL_PUBLIC_ORG_ID, require_auth
 from backend.api import knowledge
+from backend.db import SessionLocal
+from backend.models.tenant import KnowledgeBookSubscription
 from backend.services.knowledge_catalog import (
     base_knowledge_status,
+    bookshelf_catalog,
+    document_index,
+    filter_database_live_documents,
     tenant_private_knowledge_status,
 )
 
@@ -43,6 +50,16 @@ class SubscriptionRequestCreate(BaseModel):
 class SubscriptionReview(BaseModel):
     review_note: str = Field(default="", max_length=1000)
     approved_pack_ids: list[str] | None = Field(default=None, max_length=20)
+
+
+class BookSubscriptionWrite(BaseModel):
+    book_id: str = Field(..., min_length=1, max_length=384)
+    edition: int = Field(default=1, ge=1)
+
+
+class BookProgressWrite(BaseModel):
+    book_id: str = Field(..., min_length=1, max_length=384)
+    progress: float = Field(..., ge=0, le=1)
 
 
 def _error(
@@ -220,11 +237,147 @@ async def subscription_center(payload=Depends(require_auth)):
         **center,
         "plans": plan_items,
         "base_knowledge": base_status,
+        "bookshelves": await _visible_bookshelves(payload),
         "tenant_private_knowledge": private_status,
         "knowledge_pack_subscription_enabled": KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED,
         "is_super_admin": bool(payload.get("is_super_admin")),
         "pending_count": sum(item.get("status") == "pending" for item in requests),
     }
+
+
+@router.get("/knowledge-bookshelves")
+async def knowledge_bookshelves(payload=Depends(require_auth)):
+    """Reader catalog independent of organization subscription state."""
+    return {"bookshelves": await _visible_bookshelves(payload)}
+
+
+def _reader_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(payload.get("tenant_key") or ""),
+        str(payload.get("user_id") or payload.get("sub") or payload.get("username") or "dev"),
+    )
+
+
+async def _visible_bookshelves(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    vault = knowledge._vault()
+    documents = await filter_database_live_documents(list(document_index(vault).values()), vault)
+    return bookshelf_catalog(
+        payload["tenant_key"], vault, payload.get("visible_categories"), documents
+    )
+
+
+async def _available_books(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    shelves = await _visible_bookshelves(payload)
+    return {book["id"]: book for shelf in shelves for book in shelf["books"]}
+
+
+def _book_subscription(row: KnowledgeBookSubscription, book: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "book": book,
+        "edition": row.edition,
+        "progress": row.progress,
+        "subscribed_at": row.subscribed_at,
+        "last_read_at": row.last_read_at,
+    }
+
+
+@router.get("/me/book-subscriptions")
+async def my_book_subscriptions(payload=Depends(require_auth)):
+    tenant_key, user_id = _reader_identity(payload)
+    available = await _available_books(payload)
+    async with SessionLocal() as db:
+        rows = (
+            await db.execute(
+                select(KnowledgeBookSubscription)
+                .where(
+                    KnowledgeBookSubscription.tenant_key == tenant_key,
+                    KnowledgeBookSubscription.owner_user_id == user_id,
+                )
+                .order_by(KnowledgeBookSubscription.last_read_at.desc())
+            )
+        ).scalars().all()
+    return {
+        "subscriptions": [
+            _book_subscription(row, available[row.book_id])
+            for row in rows
+            if row.book_id in available
+        ]
+    }
+
+
+@router.put("/me/book-subscriptions")
+async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_auth)):
+    tenant_key, user_id = _reader_identity(payload)
+    book = (await _available_books(payload)).get(body.book_id)
+    if book is None:
+        raise _error(
+            404, code="book_not_found", message="这本书已下架或当前无权阅读",
+            action="refresh_catalog", retryable=True,
+        )
+    async with SessionLocal() as db:
+        row = await db.scalar(
+            select(KnowledgeBookSubscription).where(
+                KnowledgeBookSubscription.tenant_key == tenant_key,
+                KnowledgeBookSubscription.owner_user_id == user_id,
+                KnowledgeBookSubscription.book_id == body.book_id,
+            )
+        )
+        if row is None:
+            row = KnowledgeBookSubscription(
+                tenant_key=tenant_key, owner_user_id=user_id,
+                book_id=body.book_id, edition=body.edition,
+            )
+            db.add(row)
+        else:
+            row.edition = body.edition
+            row.last_read_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(row)
+    return _book_subscription(row, book)
+
+
+@router.patch("/me/book-subscriptions/progress")
+async def update_book_progress(body: BookProgressWrite, payload=Depends(require_auth)):
+    tenant_key, user_id = _reader_identity(payload)
+    book = (await _available_books(payload)).get(body.book_id)
+    if book is None:
+        raise _error(
+            404, code="book_not_found", message="这本书已下架或当前无权阅读",
+            action="refresh_catalog", retryable=True,
+        )
+    async with SessionLocal() as db:
+        row = await db.scalar(
+            select(KnowledgeBookSubscription).where(
+                KnowledgeBookSubscription.tenant_key == tenant_key,
+                KnowledgeBookSubscription.owner_user_id == user_id,
+                KnowledgeBookSubscription.book_id == body.book_id,
+            )
+        )
+        if row is None:
+            raise _error(
+                404, code="book_not_subscribed", message="请先订阅这本书",
+                action="subscribe", retryable=False,
+            )
+        row.progress = body.progress
+        row.last_read_at = datetime.now(timezone.utc)
+        await db.commit()
+        await db.refresh(row)
+    return _book_subscription(row, book)
+
+
+@router.delete("/me/book-subscriptions")
+async def unsubscribe_book(body: BookSubscriptionWrite, payload=Depends(require_auth)):
+    tenant_key, user_id = _reader_identity(payload)
+    async with SessionLocal() as db:
+        result = await db.execute(
+            delete(KnowledgeBookSubscription).where(
+                KnowledgeBookSubscription.tenant_key == tenant_key,
+                KnowledgeBookSubscription.owner_user_id == user_id,
+                KnowledgeBookSubscription.book_id == body.book_id,
+            )
+        )
+        await db.commit()
+    return {"book_id": body.book_id, "deleted": bool(result.rowcount)}
 
 
 @router.post("/subscription-requests")

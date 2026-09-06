@@ -208,6 +208,55 @@ public struct TenantPrivateKnowledgeDTO: Codable, Hashable {
     public let categories: [String]
 }
 
+public struct KnowledgeBookDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let title: String
+    public let author: String
+    public let authorSource: String?
+    public let summary: String
+    public let coverTheme: String?
+    public let coverVariant: Int?
+    public let coverVersion: Int?
+    public let securityLevel: String
+    public let knowledgeLevel: String
+    public let freshness: String
+    public let sourceCount: Int
+}
+
+public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let title: String
+    public let securityLevel: String
+    public let bookCount: Int
+    public let books: [KnowledgeBookDTO]
+}
+
+public struct KnowledgeBookshelvesResponse: Codable {
+    public let bookshelves: [KnowledgeBookshelfDTO]
+}
+
+public struct KnowledgeBookSubscriptionDTO: Codable, Hashable {
+    public let book: KnowledgeBookDTO
+    public let edition: Int
+    public let progress: Double
+    public let subscribedAt: String
+    public let lastReadAt: String
+}
+
+public struct KnowledgeBookSubscriptionsResponse: Codable {
+    public let subscriptions: [KnowledgeBookSubscriptionDTO]
+}
+
+private struct KnowledgeBookSubscriptionWrite: Encodable {
+    let bookId: String
+    var edition: Int = 1
+}
+
+private struct KnowledgeBookProgressWrite: Encodable {
+    let bookId: String
+    let progress: Double
+}
+
 public struct SubscriptionPlanFeaturesDTO: Codable, Hashable {
     public var knowledgeEntitlements: [String] = []
     public var applicationIds: [String] = []
@@ -322,6 +371,7 @@ public struct SubscriptionCenterResponse: Codable {
     public var activePackGrants: [KnowledgePackGrantDTO]? = nil
     public var packAllowance: Int? = nil
     public var baseKnowledge: BaseKnowledgeDTO? = nil
+    public var bookshelves: [KnowledgeBookshelfDTO]? = nil
     public var tenantPrivateKnowledge: TenantPrivateKnowledgeDTO? = nil
     public var knowledgePackSubscriptionEnabled: Bool? = nil
 }
@@ -1752,6 +1802,46 @@ public final class APIClient: ObservableObject {
 
     public func fetchSubscriptionCenter() async throws -> SubscriptionCenterResponse {
         try await request(SubscriptionCenterResponse.self, path: "subscription-center")
+    }
+
+    public func fetchKnowledgeBookshelves() async throws -> [KnowledgeBookshelfDTO] {
+        let response = try await request(KnowledgeBookshelvesResponse.self, path: "knowledge-bookshelves")
+        return response.bookshelves
+    }
+
+    public func fetchBookSubscriptions() async throws -> [KnowledgeBookSubscriptionDTO] {
+        let response = try await request(
+            KnowledgeBookSubscriptionsResponse.self, path: "me/book-subscriptions"
+        )
+        return response.subscriptions
+    }
+
+    public func subscribeBook(id: String) async throws -> KnowledgeBookSubscriptionDTO {
+        try await request(
+            KnowledgeBookSubscriptionDTO.self,
+            path: "me/book-subscriptions",
+            method: "PUT",
+            body: KnowledgeBookSubscriptionWrite(bookId: id)
+        )
+    }
+
+    public func unsubscribeBook(id: String) async throws {
+        struct Response: Decodable { let deleted: Bool }
+        _ = try await request(
+            Response.self,
+            path: "me/book-subscriptions",
+            method: "DELETE",
+            body: KnowledgeBookSubscriptionWrite(bookId: id)
+        )
+    }
+
+    public func updateBookProgress(id: String, progress: Double) async throws -> KnowledgeBookSubscriptionDTO {
+        try await request(
+            KnowledgeBookSubscriptionDTO.self,
+            path: "me/book-subscriptions/progress",
+            method: "PATCH",
+            body: KnowledgeBookProgressWrite(bookId: id, progress: progress)
+        )
     }
 
     public func createSubscriptionRequest(

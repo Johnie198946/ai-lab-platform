@@ -15,12 +15,20 @@ public struct AIPlatformApp: App {
     @StateObject private var workflowActivities = WorkflowActivityCoordinator.shared
     // Start metadata recovery and legacy JSON migration independently of authentication/chat navigation.
     @StateObject private var sessionManager = SessionManager.shared
+    #if DEBUG
+    private let showBookshelfPreview: Bool
+    private let showKnowledgeHomePreview: Bool
+    private let showTabBarPreview: Bool
+    #endif
 
     public init() {
         let arguments = ProcessInfo.processInfo.arguments
         let hasPersistedSession = !(KeychainStore.load() ?? "").isEmpty
 #if DEBUG
         let hasE2EToken = !(ProcessInfo.processInfo.environment["AI_LAB_E2E_TOKEN"] ?? "").isEmpty
+        showBookshelfPreview = arguments.contains("-bookshelfPreview")
+        showKnowledgeHomePreview = arguments.contains("-knowledgeHomePreview")
+        showTabBarPreview = arguments.contains("-tabBarPreview")
 #else
         let hasE2EToken = false
 #endif
@@ -36,7 +44,21 @@ public struct AIPlatformApp: App {
 
     public var body: some Scene {
         WindowGroup {
-            AppRootCoordinatorView()
+            Group {
+                #if DEBUG
+                if showBookshelfPreview {
+                    BookshelfPreviewHost()
+                } else if showKnowledgeHomePreview {
+                    KnowledgeView()
+                } else if showTabBarPreview {
+                    MainTabView()
+                } else {
+                    AppRootCoordinatorView()
+                }
+                #else
+                AppRootCoordinatorView()
+                #endif
+            }
                 .environmentObject(appState)
                 .environmentObject(apiClient)
                 .environmentObject(workflowActivities)
@@ -45,6 +67,25 @@ public struct AIPlatformApp: App {
         }
     }
 }
+
+#if DEBUG
+private struct BookshelfPreviewHost: View {
+    @State private var showingBookshelf = true
+
+    var body: some View {
+        if showingBookshelf {
+            NavigationStack {
+                SubscriptionCenterView(
+                    previewCenter: .bookshelfPreview,
+                    onBack: { showingBookshelf = false }
+                )
+            }
+        } else {
+            KnowledgeView()
+        }
+    }
+}
+#endif
 
 // MARK: - App Root Coordinator
 public struct AppRootCoordinatorView: View {

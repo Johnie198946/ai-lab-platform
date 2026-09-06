@@ -9,6 +9,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     DateTime,
+    Float,
     Integer,
     String,
     Text,
@@ -53,6 +54,24 @@ class KnowledgeSubscription(Base):
     category: Mapped[str] = mapped_column(String(64), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class KnowledgeBookSubscription(Base):
+    """用户对可读知识书籍的收藏关系；正文仍以受治理 Wiki 为准。"""
+
+    __tablename__ = "knowledge_book_subscriptions"
+
+    tenant_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    book_id: Mapped[str] = mapped_column(String(384), primary_key=True)
+    edition: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    progress: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    subscribed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_read_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
 
 

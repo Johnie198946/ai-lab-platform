@@ -35,6 +35,7 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self._old_request = subscriptions._authen_request
         self._old_base_status = subscriptions.base_knowledge_status
         self._old_private_status = subscriptions.tenant_private_knowledge_status
+        self._old_bookshelf_catalog = subscriptions.bookshelf_catalog
         self.calls: list[tuple[str, str, dict]] = []
         self.super_admin = False
         self.org_id = "11111111-1111-1111-1111-111111111111"
@@ -85,6 +86,13 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
             "category_count": 0,
             "categories": [],
         }
+        subscriptions.bookshelf_catalog = lambda _tenant, _vault, _visible=None, _documents=None: [{
+            "id": "knowledge/product/public",
+            "title": "产品与方案",
+            "security_level": "green",
+            "book_count": 1,
+            "books": [{"id": "book-1", "title": "产品手册"}],
+        }]
         self.transport = httpx.ASGITransport(app=app)
 
     def tearDown(self):
@@ -92,6 +100,7 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self.subscriptions._authen_request = self._old_request
         self.subscriptions.base_knowledge_status = self._old_base_status
         self.subscriptions.tenant_private_knowledge_status = self._old_private_status
+        self.subscriptions.bookshelf_catalog = self._old_bookshelf_catalog
 
     async def _request(self, method, path, **kwargs):
         async with httpx.AsyncClient(
@@ -117,6 +126,22 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self.assertEqual(response.status_code, 200, response.text)
         center_call = next(call for call in self.calls if call[1].endswith("subscription-center"))
         self.assertIn(self.subscriptions.PERSONAL_PUBLIC_ORG_ID, center_call[1])
+
+    def test_bookshelf_does_not_depend_on_a_valid_organization_id(self):
+        async def personal_resolver(_user_id):
+            return {
+                "tenant_key": "tenant-a",
+                "org_id": "personal-local",
+                "is_super_admin": False,
+                "categories": set(),
+            }
+
+        self.auth.tenant_resolver = personal_resolver
+        response = self.request("GET", "/api/v1/knowledge-bookshelves")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["bookshelves"][0]["title"], "产品与方案")
+        self.assertEqual(self.calls, [])
 
     def test_requester_and_organization_cannot_be_spoofed(self):
         response = self.request(
@@ -146,6 +171,7 @@ class TestSubscriptionCenterProxy(unittest.TestCase):
         self.assertEqual(body["knowledge_packs"], [])
         self.assertEqual(body["pack_allowance"], 0)
         self.assertEqual(body["base_knowledge"]["status"], "building")
+        self.assertEqual(body["bookshelves"][0]["books"][0]["title"], "产品手册")
         basic = next(item for item in body["plans"] if item["id"] == "plan-basic")
         self.assertFalse(basic["is_available"])
         self.assertEqual(basic["availability"], "content_building")

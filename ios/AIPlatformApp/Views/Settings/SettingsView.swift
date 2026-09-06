@@ -467,11 +467,15 @@ public struct SettingsView: View {
 public struct SubscriptionCenterView: View {
     @EnvironmentObject private var api: APIClient
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let highlightedEntitlementKey: String?
+    private let previewCenter: SubscriptionCenterResponse?
+    private let onBack: (() -> Void)?
 
     @State private var center: SubscriptionCenterResponse?
     @State private var knowledgeAccess: KnowledgeAccessResponse?
+    @State private var bookshelves: [KnowledgeBookshelfDTO] = []
     @State private var adminRequests: [SubscriptionRequestDTO] = []
     @State private var isLoading = true
     @State private var busyID: String?
@@ -480,49 +484,60 @@ public struct SubscriptionCenterView: View {
     @State private var requestIDsByPlan: [String: String] = [:]
     @State private var selectedPlanID: String?
     @State private var selectedPackIDs: Set<String> = []
+    @State private var selectedShelfID: String?
+    @State private var bookshelfQuery = ""
+    @State private var inspectedBook: KnowledgeBookDTO?
+    @State private var subscribedBookIDs: Set<String> = []
+    @State private var subscriptionBusyBookID: String?
     @State private var inspectedPack: KnowledgePackDTO?
+    @State private var booksRevealed = false
     @State private var publicationCandidates: [KnowledgePublicationCandidateDTO] = []
     @State private var inspectedCandidate: KnowledgePublicationCandidateDTO?
     @State private var publicationSecurity = "green"
     @State private var publicationEntitlement = ""
     @State private var publicationOwner = ""
+    @State private var showingPlanManagement = false
+    @Namespace private var bookshelfTransition
 
-    public init(highlightedEntitlementKey: String? = nil) {
+    public init(
+        highlightedEntitlementKey: String? = nil,
+        previewCenter: SubscriptionCenterResponse? = nil,
+        onBack: (() -> Void)? = nil
+    ) {
         self.highlightedEntitlementKey = highlightedEntitlementKey
+        self.previewCenter = previewCenter
+        self.onBack = onBack
+        _center = State(initialValue: previewCenter)
+        _bookshelves = State(initialValue: previewCenter?.bookshelves ?? [])
+        _isLoading = State(initialValue: previewCenter == nil)
+        _selectedShelfID = State(initialValue: ProcessInfo.processInfo.arguments.contains("-bookshelfDetailPreview") ? previewCenter?.bookshelves?.first?.id : nil)
+        _inspectedBook = State(initialValue: ProcessInfo.processInfo.arguments.contains("-bookshelfBookPreview") ? previewCenter?.bookshelves?.first?.books.first : nil)
+        _subscribedBookIDs = State(initialValue: ProcessInfo.processInfo.arguments.contains("-bookshelfSubscribedPreview") ? Set(previewCenter?.bookshelves?.first?.books.prefix(1).map(\.id) ?? []) : [])
     }
 
     public var body: some View {
         ZStack {
             QuantumMistBackground()
 
-            ScrollView {
-                LazyVStack(spacing: AppTheme.Spacing.lg) {
-                    if isLoading, center == nil {
-                        ProgressView("正在同步组织套餐与知识权益…")
-                            .frame(maxWidth: .infinity, minHeight: 180)
-                            .foregroundStyle(AppTheme.Colors.textSecondary)
-                    } else if let center {
-                        currentPlanCard(center)
-                        if center.isSuperAdmin {
-                            requestSection(center.requests)
-                            plansSection(center)
-                            if !publicationCandidates.isEmpty {
-                                publicationApprovalSection
-                            }
-                            knowledgePacksSection(center)
-                            adminSection
-                        }
-                    }
-
-                    if let errorMessage {
-                        inlineError(errorMessage)
-                    }
-                }
-                .padding(.horizontal, AppTheme.Metrics.contentGutter)
-                .padding(.top, AppTheme.Spacing.md)
-                .padding(.bottom, AppTheme.Spacing.xxxl)
+            if showingPlanManagement {
+                subscriptionManagement
+            } else if isLoading, bookshelves.isEmpty {
+                ProgressView("正在整理书架…")
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            } else if let selectedShelfID,
+                      let shelf = bookshelves.first(where: { $0.id == selectedShelfID }) {
+                bookshelfDetail(shelf)
+                    .transition(.opacity)
+            } else if !bookshelves.isEmpty {
+                bookshelfCollections(bookshelves)
+                    .transition(.opacity)
+            } else if let errorMessage {
+                inlineError(errorMessage)
+                    .padding(AppTheme.Metrics.contentGutter)
+            } else {
+                ContentUnavailableView("暂无知识书架", systemImage: "books.vertical", description: Text("可在右上角查看组织权益与订阅状态。"))
+                    .padding(AppTheme.Metrics.contentGutter)
             }
-            .refreshable { await load() }
 
             if let successMessage {
                 VStack {
@@ -541,12 +556,54 @@ public struct SubscriptionCenterView: View {
                 .allowsHitTesting(false)
             }
         }
-        .navigationTitle("知识订阅")
+        .navigationTitle(showingPlanManagement ? "知识订阅" : "知识书架")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
-        .task { await load() }
+        .navigationBarBackButtonHidden(true)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                if selectedShelfID != nil {
+                    Button {
+                        withAnimation(reduceMotion ? nil : .spring(response: 0.48, dampingFraction: 0.86)) {
+                            selectedShelfID = nil
+                            bookshelfQuery = ""
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("返回分类")
+                } else {
+                    Button {
+                        if let onBack { onBack() } else { dismiss() }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("返回知识")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if selectedShelfID == nil {
+                    Button(showingPlanManagement ? "书架" : "权益") {
+                        withAnimation(reduceMotion ? nil : AppTheme.Motion.quick) {
+                            showingPlanManagement.toggle()
+                        }
+                    }
+                    .accessibilityLabel(showingPlanManagement ? "返回知识书架" : "查看组织权益与订阅")
+                }
+            }
+        }
+        .task {
+            guard previewCenter == nil else { return }
+            await load()
+            await loadBookshelves()
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if let center, center.isSuperAdmin { stickyApplicationBar(center) }
+            if showingPlanManagement, let center, center.isSuperAdmin { stickyApplicationBar(center) }
+        }
+        .fullScreenCover(item: $inspectedBook) { book in
+            knowledgeBookDetail(book)
         }
         .sheet(item: $inspectedPack) { pack in
             knowledgePackDetail(pack)
@@ -558,6 +615,335 @@ public struct SubscriptionCenterView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .task {
+            guard !booksRevealed else { return }
+            withAnimation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.82).delay(0.08)) {
+                booksRevealed = true
+            }
+        }
+    }
+
+    private var subscriptionManagement: some View {
+        ScrollView {
+            LazyVStack(spacing: AppTheme.Spacing.lg) {
+                if isLoading, center == nil {
+                    ProgressView("正在同步组织套餐与知识权益…")
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                } else if let center {
+                    currentPlanCard(center)
+                    if center.isSuperAdmin {
+                        requestSection(center.requests)
+                        plansSection(center)
+                        if !publicationCandidates.isEmpty {
+                            publicationApprovalSection
+                        }
+                        knowledgePacksSection(center)
+                        adminSection
+                    }
+                }
+
+                if let errorMessage {
+                    inlineError(errorMessage)
+                }
+            }
+            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+            .padding(.top, AppTheme.Spacing.md)
+            .padding(.bottom, AppTheme.Spacing.xxxl)
+        }
+        .refreshable { await load() }
+    }
+
+    private func bookshelfCollections(_ allShelves: [KnowledgeBookshelfDTO]) -> some View {
+        let shelves = allShelves.filter { shelf in
+            bookshelfQuery.isEmpty || shelf.title.localizedStandardContains(bookshelfQuery)
+                || shelf.books.contains { $0.title.localizedStandardContains(bookshelfQuery) || $0.author.localizedStandardContains(bookshelfQuery) }
+        }
+        return ScrollView {
+            LazyVStack(spacing: AppTheme.Spacing.lg) {
+                bookshelfSearch(placeholder: "搜索分类或作者")
+                HStack {
+                    Text("全部收藏")
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                    Spacer()
+                    Text("\(shelves.count) 个分类")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+                if shelves.isEmpty {
+                    ContentUnavailableView("没有匹配的书", systemImage: "books.vertical", description: Text("试试其他书名、作者或分类。"))
+                        .frame(minHeight: 300)
+                } else {
+                    ForEach(Array(shelves.enumerated()), id: \.element.id) { index, shelf in
+                        bookshelfCollectionCard(shelf)
+                            .opacity(booksRevealed ? 1 : 0)
+                            .offset(y: booksRevealed ? 0 : 22)
+                            .animation(reduceMotion ? nil : .spring(response: 0.46, dampingFraction: 0.86).delay(Double(index) * 0.06), value: booksRevealed)
+                    }
+                }
+                if let errorMessage { inlineError(errorMessage) }
+            }
+            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+            .padding(.top, AppTheme.Spacing.sm)
+            .padding(.bottom, AppTheme.Spacing.xxxl)
+        }
+        .refreshable { await loadBookshelves() }
+    }
+
+    private func bookshelfSearch(placeholder: String) -> some View {
+        HStack(spacing: AppTheme.Spacing.sm) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+            TextField(placeholder, text: $bookshelfQuery)
+                .textInputAutocapitalization(.never)
+                .submitLabel(.search)
+            if !bookshelfQuery.isEmpty {
+                Button { bookshelfQuery = "" } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("清除搜索")
+            }
+            Image(systemName: "slider.horizontal.3")
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+                .frame(width: 28)
+                .accessibilityHidden(true)
+        }
+        .font(AppTheme.Typography.supporting)
+        .padding(.leading, AppTheme.Spacing.md)
+        .padding(.trailing, AppTheme.Spacing.sm)
+        .frame(minHeight: 48)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(Capsule())
+        .shadow(color: Color.black.opacity(0.08), radius: 12, y: 5)
+    }
+
+    private func bookshelfCollectionCard(_ shelf: KnowledgeBookshelfDTO) -> some View {
+        Button {
+            withAnimation(reduceMotion ? nil : .spring(response: 0.52, dampingFraction: 0.84)) {
+                selectedShelfID = shelf.id
+                bookshelfQuery = ""
+            }
+        } label: {
+            VStack(spacing: 0) {
+                HStack {
+                    Label("刚刚更新", systemImage: "clock")
+                    Spacer()
+                    Label("\(shelf.bookCount)", systemImage: "books.vertical")
+                }
+                .font(.caption2)
+                .foregroundStyle(AppTheme.Colors.textTertiary)
+                .padding(.horizontal, AppTheme.Spacing.lg)
+                .padding(.top, AppTheme.Spacing.md)
+
+                Text(shelf.title)
+                    .font(AppTheme.Typography.cardTitle)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .padding(.top, 3)
+                Text(shelfSubtitle(shelf))
+                    .font(.caption)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+
+                Spacer(minLength: 8)
+                ZStack(alignment: .bottom) {
+                    HStack(alignment: .bottom, spacing: -12) {
+                        ForEach(Array(shelf.books.prefix(3).enumerated()), id: \.element.id) { index, book in
+                            bookCover(title: book.title, author: book.author, seed: book.id, theme: book.coverTheme, variant: book.coverVariant, width: 82)
+                                .rotationEffect(.degrees(Double(index - 1) * 5))
+                                .zIndex(Double(index == 1 ? 2 : index))
+                                .matchedGeometryEffect(id: "\(shelf.id)-\(book.id)", in: bookshelfTransition)
+                        }
+                    }
+                    .padding(.bottom, 8)
+                    shelfPlank
+                }
+                .frame(height: 132)
+                .clipped()
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 218)
+            .background(AppTheme.Colors.secondaryBackground.opacity(0.86))
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .buttonStyle(SoftButtonStyle())
+        .accessibilityLabel("\(shelf.title)，\(shelf.bookCount) 本书")
+        .accessibilityHint("点按打开分类书架")
+    }
+
+    private func bookshelfDetail(_ shelf: KnowledgeBookshelfDTO) -> some View {
+        let books = shelf.books.filter {
+            bookshelfQuery.isEmpty || $0.title.localizedStandardContains(bookshelfQuery) || $0.author.localizedStandardContains(bookshelfQuery)
+        }
+        return ScrollView {
+            VStack(spacing: AppTheme.Spacing.lg) {
+                Text(shelf.title)
+                    .font(AppTheme.Typography.sectionTitle)
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                Text(shelfSubtitle(shelf))
+                    .font(AppTheme.Typography.micro)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                bookshelfSearch(placeholder: "搜索这个书架")
+                HStack {
+                    Text("书架上的精选")
+                        .font(AppTheme.Typography.micro.weight(.semibold))
+                    Spacer()
+                    Text("\(books.count) 本")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                }
+
+                if books.isEmpty {
+                    ContentUnavailableView("没有匹配的书", systemImage: "book.closed", description: Text("试试其他书名或作者。"))
+                        .frame(minHeight: 300)
+                } else {
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .center, spacing: AppTheme.Spacing.xl) {
+                        ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
+                            Button { inspectedBook = book } label: {
+                                bookCover(title: book.title, author: book.author, seed: book.id, theme: book.coverTheme, variant: book.coverVariant, width: 140)
+                                    .matchedGeometryEffect(id: "\(shelf.id)-\(book.id)", in: bookshelfTransition)
+                                    .opacity(booksRevealed ? 1 : 0)
+                                    .offset(y: booksRevealed ? (index.isMultiple(of: 2) ? 0 : 36) : 54)
+                                    .rotationEffect(.degrees(index.isMultiple(of: 2) ? -1.5 : 1.8))
+                                    .animation(reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.86).delay(Double(index) * 0.035), value: booksRevealed)
+                            }
+                            .buttonStyle(SoftButtonStyle())
+                            .accessibilityLabel("\(book.title)，作者 \(book.author)")
+                            .accessibilityHint("点按查看概要")
+                        }
+                    }
+                    .padding(.bottom, 36)
+                }
+            }
+            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+            .padding(.top, AppTheme.Spacing.md)
+            .padding(.bottom, AppTheme.Spacing.xxxl)
+        }
+    }
+
+    private func shelfSubtitle(_ shelf: KnowledgeBookshelfDTO) -> String {
+        switch shelf.title {
+        case "产品与方案": return "从问题到产品，理解一套完整解法"
+        case "方法论": return "把复杂工作变成可重复的方法"
+        case "战略信号": return "从变化中辨认真正值得行动的信号"
+        case "竞品档案", "竞品情报": return "看清头部公司的产品、技术与选择"
+        case "客户洞察": return "从业务现场理解真实需求"
+        default: return "为你精选的 Quantum 知识收藏"
+        }
+    }
+
+    private func bookCover(
+        title: String,
+        author: String,
+        seed: String,
+        theme: String? = nil,
+        variant: Int? = nil,
+        width: CGFloat = 112
+    ) -> some View {
+        let resolvedVariant = variant ?? stableCoverVariant(seed)
+        let colors = coverColors(theme: theme, variant: resolvedVariant)
+        return ZStack {
+            LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+                .opacity(0.34)
+            Color.white.opacity(0.34)
+            coverArtwork(resolvedVariant)
+                .foregroundStyle(AppTheme.Colors.primary.opacity(0.10))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 0) {
+                Rectangle()
+                    .fill(AppTheme.Colors.primary.opacity(0.16))
+                    .frame(height: 4)
+                Text(title)
+                    .font((width < 100 ? Font.caption : Font.headline).weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineLimit(4)
+                    .minimumScaleFactor(0.76)
+                    .padding(.horizontal, AppTheme.Spacing.sm)
+                    .padding(.top, AppTheme.Spacing.md)
+                Spacer(minLength: AppTheme.Spacing.sm)
+                Text(author)
+                    .font((width < 100 ? Font.system(size: 8) : Font.caption2).weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .lineLimit(2)
+                    .padding(AppTheme.Spacing.sm)
+            }
+        }
+        .frame(width: width, height: width * 1.41, alignment: .leading)
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(alignment: .leading) { Rectangle().fill(AppTheme.Colors.primary.opacity(0.12)).frame(width: 7) }
+        .overlay { RoundedRectangle(cornerRadius: 5).stroke(AppTheme.Colors.primary.opacity(0.08), lineWidth: 0.75) }
+        .shadow(color: AppTheme.Colors.primary.opacity(0.10), radius: 12, x: 3, y: 8)
+    }
+
+    private var shelfPlank: some View {
+        RoundedRectangle(cornerRadius: 3, style: .continuous)
+            .fill(AppTheme.Colors.border.opacity(0.72))
+            .frame(height: 5)
+            .shadow(color: AppTheme.Colors.primary.opacity(0.06), radius: 5, y: 3)
+    }
+
+    @ViewBuilder
+    private func coverArtwork(_ variant: Int) -> some View {
+        switch variant % 6 {
+        case 0:
+            Circle().stroke(lineWidth: 16).frame(width: 104, height: 104).offset(x: 35, y: -28)
+        case 1:
+            RoundedRectangle(cornerRadius: 12).stroke(lineWidth: 12)
+                .frame(width: 92, height: 92).rotationEffect(.degrees(28)).offset(x: 34, y: -30)
+        case 2:
+            VStack(spacing: 10) {
+                ForEach(0..<5, id: \.self) { _ in Capsule().frame(width: 92, height: 5) }
+            }
+            .rotationEffect(.degrees(-24))
+            .offset(x: 36, y: -26)
+        case 3:
+            ZStack {
+                Circle().stroke(lineWidth: 8).frame(width: 76, height: 76)
+                Circle().stroke(lineWidth: 5).frame(width: 42, height: 42)
+            }
+            .offset(x: 38, y: -32)
+        case 4:
+            RoundedRectangle(cornerRadius: 4).stroke(lineWidth: 9)
+                .frame(width: 68, height: 110).rotationEffect(.degrees(42)).offset(x: 45, y: -34)
+        default:
+            HStack(spacing: 9) {
+                ForEach(0..<5, id: \.self) { _ in Capsule().frame(width: 5, height: 112) }
+            }
+            .rotationEffect(.degrees(18))
+            .offset(x: 40, y: -25)
+        }
+    }
+
+    private func stableCoverVariant(_ seed: String) -> Int {
+        let hash = seed.utf8.reduce(UInt64(14_695_981_039_346_656_037)) {
+            ($0 ^ UInt64($1)) &* 1_099_511_628_211
+        }
+        return Int(hash % 6)
+    }
+
+    private func coverColors(theme: String?, variant: Int) -> [Color] {
+        let pair: [Color]
+        switch theme {
+        case "product": pair = [AppTheme.Colors.interactiveBlue, AppTheme.Colors.quantumCyan]
+        case "methodology": pair = [AppTheme.Colors.interactiveViolet, AppTheme.Colors.quantumViolet]
+        case "strategic-signal": pair = [AppTheme.Colors.emberOrange, AppTheme.Colors.interactiveViolet]
+        case "customer": pair = [AppTheme.Colors.statusCompleted, AppTheme.Colors.quantumBlue]
+        case "competitor", "competitor-topic": pair = [AppTheme.Colors.emberInk, AppTheme.Colors.emberOrange]
+        default: pair = [AppTheme.Colors.primary, AppTheme.Icons.intelligence]
+        }
+        return variant.isMultiple(of: 2) ? pair : Array(pair.reversed())
+    }
+
+    private func knowledgeBookDetail(_ book: KnowledgeBookDTO) -> some View {
+        KnowledgeBookReaderView(
+            book: book,
+            isSubscribed: subscribedBookIDs.contains(book.id),
+            isBusy: subscriptionBusyBookID == book.id,
+            onToggleSubscription: { Task { await toggleBookSubscription(book) } },
+            onSaveExcerpt: { saveBookSummaryToNote(book) },
+            onDismiss: { inspectedBook = nil }
+        )
     }
 
     private func currentPlanCard(_ center: SubscriptionCenterResponse) -> some View {
@@ -963,8 +1349,8 @@ public struct SubscriptionCenterView: View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
             sectionHeader(
                 step: "02",
-                title: "选择知识包",
-                subtitle: "按需添加黄色受限知识；绿色与红色知识不在此计费"
+                title: "会员书架",
+                subtitle: "这些书是黄色受限知识；先读概要，再决定是否订阅"
             )
 
             if packs.isEmpty {
@@ -991,17 +1377,24 @@ public struct SubscriptionCenterView: View {
                 }
 
                 ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                    LazyHStack(alignment: .bottom, spacing: AppTheme.Spacing.lg) {
                         ForEach(launchPacks) { pack in
-                            knowledgePackCard(pack, center: center)
-                                .frame(width: 286)
+                            premiumBook(pack, center: center)
                         }
                     }
                     .scrollTargetLayout()
+                    .padding(.horizontal, AppTheme.Spacing.xs)
+                    .padding(.top, AppTheme.Spacing.md)
                 }
                 .scrollIndicators(.hidden)
                 .scrollTargetBehavior(.viewAligned)
                 .contentMargins(.horizontal, 1, for: .scrollContent)
+                .overlay(alignment: .bottom) {
+                    shelfPlank
+                        .offset(y: 9)
+                        .allowsHitTesting(false)
+                }
+                .padding(.bottom, AppTheme.Spacing.md)
 
                 if !candidatePacks.isEmpty {
                     DisclosureGroup {
@@ -1030,79 +1423,21 @@ public struct SubscriptionCenterView: View {
         }
     }
 
-    private func knowledgePackCard(_ pack: KnowledgePackDTO, center: SubscriptionCenterResponse) -> some View {
-        let selected = selectedPackIDs.contains(pack.id)
+    private func premiumBook(_ pack: KnowledgePackDTO, center: SubscriptionCenterResponse) -> some View {
         let active = (center.activePackGrants ?? []).contains { $0.knowledgePackId == pack.id && $0.status == "active" }
         let pending = center.requests.contains { ($0.requestedPackIds ?? []).contains(pack.id) && $0.status == "pending" }
-        let governanceReady = pack.status == "published" && pack.isSelectable
-
-        return Button {
-            inspectedPack = pack
-        } label: {
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                HStack(alignment: .top) {
-                    Image(systemName: active ? "checkmark.seal.fill" : "books.vertical.fill")
-                        .font(.system(size: 18, weight: .semibold))
-                        .foregroundStyle(active ? AppTheme.Colors.statusCompleted : AppTheme.Colors.primary)
-                        .frame(width: 40, height: 40)
-                        .background(AppTheme.Colors.primary.opacity(0.10))
-                        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(pack.name)
-                            .font(AppTheme.Typography.cardTitle)
-                            .foregroundStyle(AppTheme.Colors.textPrimary)
-                        Text(pack.riskLabel)
-                            .font(AppTheme.Typography.micro)
-                            .foregroundStyle(AppTheme.Colors.textTertiary)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    Text(active ? "已开通" : (pending ? "审批中" : (governanceReady ? (selected ? "已加入" : "可申请") : "建设中")))
-                        .font(AppTheme.Typography.micro.weight(.semibold))
-                        .foregroundStyle(active ? AppTheme.Colors.statusCompleted : (pending ? AppTheme.Colors.statusWarning : (governanceReady ? AppTheme.Colors.primary : AppTheme.Colors.textTertiary)))
-                }
-
-                Text(pack.description)
-                    .font(AppTheme.Typography.supporting)
-                    .foregroundStyle(AppTheme.Colors.textSecondary)
-                    .lineLimit(3)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack {
-                        Text("已批准条目")
-                        Spacer()
-                        Text("\(pack.approvedDocumentCount) 篇")
-                    }
-                    .font(AppTheme.Typography.micro)
-                    .foregroundStyle(AppTheme.Colors.textTertiary)
-                    ProgressView(value: Double(pack.approvedDocumentCount), total: Double(max(pack.minimumDocumentCount, 1)))
-                        .tint(governanceReady ? AppTheme.Colors.statusCompleted : AppTheme.Colors.primary)
-                }
-
-                HStack {
-                    Label("新鲜度 \(pack.freshnessPercent)%", systemImage: "clock.arrow.circlepath")
-                    Spacer()
-                    Label(selected ? "已加入申请" : "查看详情", systemImage: selected ? "checkmark.circle.fill" : "chevron.right")
-                        .foregroundStyle(selected ? AppTheme.Colors.statusCompleted : AppTheme.Colors.primary)
-                }
-                .font(AppTheme.Typography.micro.weight(.semibold))
-                .foregroundStyle(AppTheme.Colors.textSecondary)
+        let state = active ? "已订阅" : (pending ? "审批中" : (pack.isSelectable ? "可订阅" : "整理中"))
+        return Button { inspectedPack = pack } label: {
+            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                bookCover(title: pack.name, author: "AI Lab 知识编译组", seed: pack.id)
+                Text(state)
+                    .font(AppTheme.Typography.micro.weight(.semibold))
+                    .foregroundStyle(active ? AppTheme.Colors.statusCompleted : AppTheme.Colors.primary)
             }
-            .padding(AppTheme.Spacing.lg)
-            .frame(maxWidth: .infinity, minHeight: 238, alignment: .topLeading)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                    .stroke(selected ? AppTheme.Colors.primary : AppTheme.Colors.border, lineWidth: selected ? 2 : 0.75)
-            }
-            .shadow(color: Color.black.opacity(0.07), radius: 10, y: 5)
         }
         .buttonStyle(SoftButtonStyle())
-        .frame(minHeight: AppTheme.Metrics.minimumTouchTarget)
-        .accessibilityLabel("\(pack.name)，\(active ? "已开通" : (governanceReady ? "可申请" : "建设中"))")
-        .accessibilityHint("点按查看知识包范围和治理详情")
+        .accessibilityLabel("\(pack.name)，\(state)")
+        .accessibilityHint("点按查看概要和订阅状态")
     }
 
     private func candidatePackRow(_ pack: KnowledgePackDTO) -> some View {
@@ -1158,6 +1493,9 @@ public struct SubscriptionCenterView: View {
                             Text(pack.name)
                                 .font(AppTheme.Typography.sectionTitle)
                                 .foregroundStyle(AppTheme.Colors.textPrimary)
+                            Text("AI Lab 知识编译组")
+                                .font(AppTheme.Typography.supporting)
+                                .foregroundStyle(AppTheme.Colors.textSecondary)
                             Text(pack.riskLabel)
                                 .font(AppTheme.Typography.micro.weight(.semibold))
                                 .foregroundStyle(AppTheme.Colors.textSecondary)
@@ -1361,7 +1699,7 @@ public struct SubscriptionCenterView: View {
             Text(message)
                 .font(AppTheme.Typography.supporting)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
-            Button { Task { await load() } } label: {
+            Button { Task { await loadBookshelves() } } label: {
                 Label("重试", systemImage: "arrow.clockwise")
                     .frame(maxWidth: .infinity, minHeight: AppTheme.Metrics.minimumTouchTarget)
             }
@@ -1412,6 +1750,64 @@ public struct SubscriptionCenterView: View {
             errorMessage = actionableMessage(for: error)
         }
         isLoading = false
+    }
+
+    private func loadBookshelves() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            bookshelves = try await api.fetchKnowledgeBookshelves()
+            if let subscriptions = try? await api.fetchBookSubscriptions() {
+                subscribedBookIDs = Set(subscriptions.map(\.book.id))
+            }
+        } catch {
+            errorMessage = actionableMessage(for: error)
+        }
+        isLoading = false
+    }
+
+    private func toggleBookSubscription(_ book: KnowledgeBookDTO) async {
+        guard subscriptionBusyBookID == nil else { return }
+        subscriptionBusyBookID = book.id
+        defer { subscriptionBusyBookID = nil }
+        do {
+            if subscribedBookIDs.contains(book.id) {
+                try await api.unsubscribeBook(id: book.id)
+                subscribedBookIDs.remove(book.id)
+            } else {
+                _ = try await api.subscribeBook(id: book.id)
+                subscribedBookIDs.insert(book.id)
+            }
+        } catch {
+            if case APIError.server(404, _) = error {
+                errorMessage = "当前服务器尚未启用书籍订阅接口，请更新服务端后重试。"
+            } else {
+                errorMessage = actionableMessage(for: error)
+            }
+        }
+    }
+
+    private func saveBookSummaryToNote(_ book: KnowledgeBookDTO) {
+        let body = """
+        > [!abstract] 书籍摘录
+        > 《\(book.title)》 · \(book.author)
+        > Quantum 编研版 · \(book.knowledgeLevel) · \(book.sourceCount) 个来源
+
+        \(book.summary)
+
+        ---
+        来源书籍 ID：`\(book.id)`
+        """
+        guard let note = KnowledgeNoteStore.shared.createNote(
+            title: "\(book.title)｜概述摘录",
+            body: body,
+            tags: ["书籍摘录", "quantum-books"]
+        ) else { return }
+        let markdown = KnowledgeNoteStore.shared.markdown(for: note)
+        Task {
+            try? await api.syncKnowledgeNote(id: note.id, markdown: markdown, updatedAt: note.updatedAt)
+        }
+        showSuccess("已摘录到笔记")
     }
 
     private func approvePublication(_ candidate: KnowledgePublicationCandidateDTO) {
@@ -1520,6 +1916,352 @@ public struct SubscriptionCenterView: View {
         value.formatted(.number.notation(.compactName)) + " Token"
     }
 }
+
+struct KnowledgeBookReaderView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let book: KnowledgeBookDTO
+    let isSubscribed: Bool
+    let isBusy: Bool
+    let onToggleSubscription: () -> Void
+    var onSaveExcerpt: (() -> Void)? = nil
+    let onDismiss: () -> Void
+
+    @State private var appeared = false
+    @State private var showingReading = ProcessInfo.processInfo.arguments.contains("-bookReadingPreview")
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("QUANTUM EDITIONS  /  01")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.4)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                        .padding(.top, 42)
+                        .padding(.leading, 8)
+
+                    HStack {
+                        Spacer()
+                        editorialCover
+                            .rotationEffect(.degrees(appeared ? -3.5 : -9))
+                            .offset(x: appeared ? 16 : 52, y: appeared ? 0 : 24)
+                            .opacity(appeared ? 1 : 0)
+                        Spacer().frame(width: 48)
+                    }
+                    .frame(height: 300)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(book.title)
+                            .font(.system(.largeTitle, design: .rounded, weight: .bold))
+                            .foregroundStyle(AppTheme.Colors.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(book.author)
+                            .font(.title3.weight(.medium))
+                            .foregroundStyle(AppTheme.Colors.textSecondary)
+                        Text(book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研")
+                            .font(.caption.weight(.bold))
+                            .tracking(0.7)
+                            .foregroundStyle(AppTheme.Colors.primary)
+                    }
+                    .frame(maxWidth: 330, alignment: .leading)
+                    .offset(x: appeared ? 0 : -22)
+                    .opacity(appeared ? 1 : 0)
+                    .padding(.top, 18)
+
+                    Rectangle()
+                        .fill(AppTheme.Colors.textPrimary)
+                        .frame(width: 72, height: 2)
+                        .padding(.vertical, 38)
+                        .offset(x: 36)
+
+                    Text("ABOUT  /  本书概述")
+                        .font(.caption.weight(.bold))
+                        .tracking(1.1)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
+                    Text(book.summary.isEmpty ? "这本知识正在补充读者概要。" : book.summary)
+                        .font(.title3.weight(.regular))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                        .lineSpacing(9)
+                        .padding(.top, 14)
+                        .frame(maxWidth: 344, alignment: .leading)
+
+                    HStack(spacing: 10) {
+                        readerPill(book.knowledgeLevel, icon: "checkmark.seal")
+                        readerPill("\(book.sourceCount) 个来源", icon: "link")
+                    }
+                    .padding(.top, 34)
+                    .offset(x: 22)
+
+                    readerPill(book.freshness == "current" ? "持续更新" : book.freshness, icon: "clock")
+                        .padding(.top, 10)
+                        .offset(x: 104)
+
+                    Label(
+                        "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。",
+                        systemImage: "quote.opening"
+                    )
+                    .font(.footnote)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .lineSpacing(5)
+                    .padding(.top, 48)
+                    .frame(maxWidth: 330, alignment: .leading)
+
+                    Spacer(minLength: 80)
+                }
+                .padding(.horizontal, 28)
+            }
+            .background(
+                ZStack {
+                    AppTheme.Colors.cardBackground
+                    Circle()
+                        .fill(AppTheme.Colors.selectionTint.opacity(0.72))
+                        .frame(width: 330, height: 330)
+                        .blur(radius: 18)
+                        .offset(x: -180, y: -330)
+                }
+                .ignoresSafeArea()
+            )
+            .safeAreaInset(edge: .bottom) {
+                VStack(spacing: 4) {
+                    Button(action: isSubscribed ? { showingReading = true } : onToggleSubscription) {
+                        HStack(spacing: 10) {
+                            if isBusy { ProgressView().tint(.white) }
+                            Image(systemName: isSubscribed ? "book.pages.fill" : "plus")
+                            Text(isSubscribed ? "开始阅读" : "加入我的笔记书架")
+                        }
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(Color.white)
+                        .frame(maxWidth: .infinity, minHeight: 52)
+                        .background(AppTheme.Colors.textPrimary)
+                        .clipShape(Capsule())
+                    }
+                    .disabled(isBusy && !isSubscribed)
+                    .buttonStyle(SoftButtonStyle())
+                    .accessibilityLabel(isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架")
+                    HStack(spacing: 18) {
+                        if isSubscribed {
+                            Button("移出书架", action: onToggleSubscription)
+                                .disabled(isBusy)
+                        }
+                        if let onSaveExcerpt {
+                            Button("将概述摘录到笔记", action: onSaveExcerpt)
+                        }
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .frame(minHeight: 44)
+                }
+                .padding(.horizontal, 28)
+                .padding(.top, 10)
+                .background(.ultraThinMaterial)
+            }
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .background(AppTheme.Colors.secondaryBackground, in: Circle())
+                    }
+                    .accessibilityLabel("关闭书籍")
+                }
+            }
+            .onAppear {
+                withAnimation(reduceMotion ? nil : .spring(response: 0.46, dampingFraction: 0.82)) {
+                    appeared = true
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showingReading) {
+            KnowledgeBookReadingView(book: book) { showingReading = false }
+        }
+    }
+
+    private var editorialCover: some View {
+        ZStack(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                .fill(LinearGradient(
+                    colors: [AppTheme.Colors.selectionTint, AppTheme.Colors.surfaceTint],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
+            Circle()
+                .stroke(AppTheme.Colors.primary.opacity(0.12), lineWidth: 18)
+                .frame(width: 126, height: 126)
+                .offset(x: 76, y: -34)
+            Rectangle()
+                .fill(AppTheme.Colors.primary.opacity(0.16))
+                .frame(width: 9)
+            VStack(alignment: .leading) {
+                Text(book.title)
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(AppTheme.Colors.textPrimary)
+                    .lineLimit(4)
+                Spacer()
+                Text(book.author)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+                    .lineLimit(2)
+            }
+            .padding(18)
+        }
+        .frame(width: 176, height: 248)
+        .shadow(color: AppTheme.Colors.primary.opacity(0.10), radius: 22, x: 8, y: 16)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("《\(book.title)》，作者 \(book.author)")
+    }
+
+    private func readerPill(_ text: String, icon: String) -> some View {
+        Label(text, systemImage: icon)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(AppTheme.Colors.textSecondary)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 40)
+            .background(AppTheme.Colors.secondaryBackground, in: Capsule())
+    }
+}
+
+private struct KnowledgeBookReadingView: View {
+    let book: KnowledgeBookDTO
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("QUANTUM LIBRARY  ·  卷一")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.5)
+                        .foregroundStyle(Color.brown.opacity(0.62))
+                    Text(book.title)
+                        .font(.system(.largeTitle, design: .serif, weight: .bold))
+                        .foregroundStyle(Color(red: 0.20, green: 0.15, blue: 0.10))
+                        .padding(.top, 48)
+                    Text(book.author)
+                        .font(.system(.title3, design: .serif))
+                        .foregroundStyle(Color.brown.opacity(0.78))
+                        .padding(.top, 12)
+
+                    HStack(spacing: 12) {
+                        Rectangle().frame(width: 54, height: 1)
+                        Image(systemName: "leaf.fill")
+                        Rectangle().frame(width: 54, height: 1)
+                    }
+                    .foregroundStyle(Color.brown.opacity(0.42))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 52)
+
+                    Text("导读")
+                        .font(.system(.title2, design: .serif, weight: .semibold))
+                    Text(book.summary.isEmpty ? "本书正文正在编研中。" : book.summary)
+                        .font(.system(.title3, design: .serif))
+                        .lineSpacing(11)
+                        .padding(.top, 22)
+                    Text("本页为已批准 Wiki 编研版导读。完整章节将在正文治理完成后按目录加入。")
+                        .font(.system(.footnote, design: .serif))
+                        .foregroundStyle(Color.brown.opacity(0.68))
+                        .lineSpacing(5)
+                        .padding(.top, 48)
+                    Spacer(minLength: 120)
+                }
+                .frame(maxWidth: 560, alignment: .leading)
+                .padding(.horizontal, 34)
+                .padding(.top, 42)
+            }
+            .foregroundStyle(Color(red: 0.23, green: 0.17, blue: 0.11))
+            .background(
+                ZStack {
+                    Color(red: 0.96, green: 0.91, blue: 0.79)
+                    RadialGradient(
+                        colors: [Color.white.opacity(0.28), Color.brown.opacity(0.07)],
+                        center: .topLeading,
+                        startRadius: 20,
+                        endRadius: 720
+                    )
+                }
+                .ignoresSafeArea()
+            )
+            .toolbarBackground(.hidden, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: onDismiss) {
+                        Image(systemName: "chevron.left")
+                            .frame(width: 44, height: 44)
+                            .background(Color.white.opacity(0.34), in: Circle())
+                    }
+                    .accessibilityLabel("返回书籍概述")
+                }
+            }
+        }
+    }
+}
+
+#if DEBUG
+extension SubscriptionCenterResponse {
+    static var bookshelfPreview: Self {
+        func book(
+            _ id: String,
+            _ title: String,
+            author: String,
+            _ summary: String,
+            theme: String,
+            variant: Int,
+            sources: Int
+        ) -> KnowledgeBookDTO {
+            KnowledgeBookDTO(
+                id: id,
+                title: title,
+                author: author,
+                authorSource: author == "Quantum 研究团队" ? "fallback" : "raw",
+                summary: summary,
+                coverTheme: theme,
+                coverVariant: variant,
+                coverVersion: 1,
+                securityLevel: "green",
+                knowledgeLevel: "K5",
+                freshness: "current",
+                sourceCount: sources
+            )
+        }
+
+        let product = [
+            book("product-map", "AI 产品全景图", author: "Quantum 研究团队", "从用户问题、能力边界到商业闭环，理解 AI 产品的完整结构。", theme: "product", variant: 0, sources: 18),
+            book("subscription", "AI 原生研发手册", author: "Louis Claxton · Anthropic", "把意图、规格、验证和部署重组为 Agent 可执行的研发闭环。", theme: "product", variant: 1, sources: 12),
+            book("agent-os", "LLM Knowledge Bases", author: "Andrej Karpathy", "从 Raw 原始材料到 Wiki 增量编译，理解面向 LLM 的知识库工作方式。", theme: "product", variant: 2, sources: 23),
+        ]
+        let strategy = [
+            book("signals", "战略信号手册", author: "Quantum 研究团队", "识别市场变化、技术拐点与竞争动作中的高价值信号。", theme: "strategic-signal", variant: 3, sources: 31),
+            book("competitor", "Claude 工程实践", author: "Anthropic", "从官方案例中提炼 Claude Code 的工程化方法与适用边界。", theme: "competitor", variant: 4, sources: 27),
+            book("decision", "高质量决策框架", author: "Quantum 研究团队", "用假设、反例与证据强度降低复杂决策中的判断偏差。", theme: "methodology", variant: 5, sources: 16),
+        ]
+        let methodology = [
+            book("effective-agents", "Building Effective AI Agents", author: "Anthropic", "从可组合工作流到自主 Agent，选择足够简单且可验证的构建方式。", theme: "methodology", variant: 0, sources: 14),
+            book("qwen-agent", "千问 Agent 工程演进", author: "储旭（槿柏）", "梳理 Agent 平台从单体工具调用到工程化交付的演进路径。", theme: "methodology", variant: 2, sources: 9),
+            book("harness", "Harness Engineering", author: "Louis Claxton · Anthropic", "用确定性约束、验证与反馈环路提升 Agent 交付质量。", theme: "methodology", variant: 4, sources: 17),
+        ]
+        var center = SubscriptionCenterResponse(
+            organizationId: "preview",
+            applicationId: "ai-lab-platform",
+            subscription: nil,
+            requests: [],
+            plans: [],
+            isSuperAdmin: false,
+            pendingCount: 0
+        )
+        center.bookshelves = [
+            KnowledgeBookshelfDTO(id: "knowledge/product/public", title: "产品与方案", securityLevel: "green", bookCount: product.count, books: product),
+            KnowledgeBookshelfDTO(id: "knowledge/strategy/public", title: "战略与竞品", securityLevel: "green", bookCount: strategy.count, books: strategy),
+            KnowledgeBookshelfDTO(id: "knowledge/methodology/public", title: "方法论", securityLevel: "green", bookCount: methodology.count, books: methodology),
+        ]
+        center.knowledgePacks = []
+        center.activePackGrants = []
+        center.packAllowance = 0
+        return center
+    }
+}
+#endif
 
 private extension View {
     func subscriptionSurface() -> some View {

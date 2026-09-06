@@ -7,8 +7,8 @@ never reflected as subscription products.
 
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 from contextvars import ContextVar
 import os
 import re
@@ -53,6 +53,16 @@ AUTHORIZED_DOCUMENT_PATHS: ContextVar[frozenset[str] | None] = ContextVar("autho
 def clear_knowledge_caches() -> None:
     clear_manifest_cache()
     SEARCH_CACHE.clear()
+
+
+SHELF_TITLES = {
+    "product": "产品与方案",
+    "methodology": "方法论",
+    "strategic-signal": "战略信号",
+    "customer": "客户洞察",
+    "competitor": "竞品档案",
+    "competitor-topic": "竞品情报",
+}
 
 
 def _vault() -> Path:
@@ -549,3 +559,98 @@ def tenant_private_knowledge_status(
         "category_count": len(categories),
         "categories": categories,
     }
+
+
+@lru_cache(maxsize=512)
+def _wiki_summary(path_text: str, mtime_ns: int) -> str:
+    """Extract one reader-facing paragraph from an admitted Wiki page."""
+    del mtime_ns
+    try:
+        text = Path(path_text).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    text = re.sub(r"\A---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL)
+    for paragraph in re.split(r"\n\s*\n", text):
+        value = " ".join(line.strip() for line in paragraph.splitlines()).strip()
+        if not value or value.startswith(("#", "```", "|", "> [!")):
+            continue
+        value = re.sub(
+            r"!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]",
+            lambda match: match.group(2) or match.group(1),
+            value,
+        )
+        value = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", value)
+        value = re.sub(r"[*_`=]", "", value).strip("- >")
+        if value:
+            return value[:220]
+    return ""
+
+
+def bookshelf_catalog(
+    tenant_key: str,
+    vault: Path | None = None,
+    visible_categories: set[str] | frozenset[str] | None = frozenset(),
+    documents: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Reader projection of Green, entitled Yellow, and tenant-owned Red Wiki pages."""
+    vault = vault or _vault()
+    manifest = load_manifest(vault)
+    packs = {
+        str(item.get("category")): item
+        for item in manifest.get("packs", [])
+        if isinstance(item, dict) and item.get("category")
+    }
+    shelves: dict[str, dict[str, Any]] = {}
+    # ponytail: one response is fine at 259 books; paginate after 300 books or 250 KB.
+    for item in documents if documents is not None else document_index(vault).values():
+        if not isinstance(item, dict):
+            continue
+        security = str(item.get("security_level") or "")
+        if security not in {"green", "red"}:
+            if security != "yellow":
+                continue
+        pack_id = str(item.get("pack_id") or "")
+        relative = str(item.get("path") or "")
+        if not pack_id or not relative:
+            continue
+        if security == "yellow" and visible_categories is not None and pack_id not in visible_categories:
+            continue
+        if security == "red" and item.get("owner_tenant") != tenant_key:
+            continue
+        pack = packs.get(pack_id, {})
+        type_slug = pack_id.split("/")[1] if "/" in pack_id else pack_id
+        cover_theme = str(item.get("cover_theme") or type_slug).strip().lower()
+        if not re.fullmatch(r"[a-z0-9-]{1,32}", cover_theme):
+            cover_theme = "general"
+        pack_title = str(pack.get("title") or "")
+        shelf = shelves.setdefault(pack_id, {
+            "id": pack_id,
+            "title": SHELF_TITLES.get(type_slug, pack_title or type_slug),
+            "security_level": security,
+            "books": [],
+        })
+        source = vault / relative
+        try:
+            summary = _wiki_summary(str(source), source.stat().st_mtime_ns)
+        except OSError:
+            summary = ""
+        book_id = str(item.get("knowledge_id") or relative)
+        editorial_summary = str(item.get("book_summary") or "").strip()
+        shelf["books"].append({
+            "id": book_id,
+            "title": str(item.get("book_title") or item.get("title") or source.stem),
+            "author": str(item.get("book_author") or item.get("author") or "Quantum 研究团队"),
+            "author_source": str(item.get("author_source") or ("editorial" if item.get("book_author") else "fallback")),
+            "summary": editorial_summary[:220] or summary,
+            "cover_theme": cover_theme,
+            "cover_variant": int.from_bytes(hashlib.sha256(book_id.encode()).digest()[:2], "big") % 6,
+            "cover_version": 1,
+            "security_level": security,
+            "knowledge_level": str(item.get("knowledge_level") or ""),
+            "freshness": str(item.get("freshness") or "unknown"),
+            "source_count": int(item.get("source_count") or 0),
+        })
+    for shelf in shelves.values():
+        shelf["books"].sort(key=lambda book: book["title"])
+        shelf["book_count"] = len(shelf["books"])
+    return sorted(shelves.values(), key=lambda shelf: shelf["title"])

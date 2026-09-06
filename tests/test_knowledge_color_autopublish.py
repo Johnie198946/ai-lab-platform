@@ -66,6 +66,69 @@ def test_projection_scan_is_reused_inside_document_filter_loops(tmp_path, monkey
     assert calls == 1
 
 
+def test_projection_uses_raw_original_author_then_quantum_fallback(tmp_path):
+    raw = tmp_path / "wiki/sources/original.md"
+    _note(raw, security="green", classification="approved")
+    raw.write_text(
+        raw.read_text(encoding="utf-8").replace(
+            "status: active\n", "status: active\nsource_author: Louis Claxton；Anthropic\n"
+        ),
+        encoding="utf-8",
+    )
+    sourced = tmp_path / "wiki/方法论/有原文.md"
+    official = tmp_path / "wiki/方法论/官方来源.md"
+    fallback = tmp_path / "wiki/方法论/自研.md"
+    _note(sourced, security="green", classification="approved")
+    _note(official, security="green", classification="approved")
+    _note(fallback, security="green", classification="approved")
+    sourced.write_text(
+        sourced.read_text(encoding="utf-8").replace(
+            "status: active\n", "status: active\nsource_files:\n  - wiki/sources/original.md\n"
+        ),
+        encoding="utf-8",
+    )
+    official.write_text(
+        official.read_text(encoding="utf-8").replace(
+            "status: active\n",
+            "status: active\nsource_urls:\n  - https://gist.github.com/karpathy/example\n",
+        ),
+        encoding="utf-8",
+    )
+
+    documents = {item["path"]: item for item in approved_color_documents(tmp_path)}
+
+    assert documents["wiki/方法论/有原文.md"]["book_author"] == "Louis Claxton / Anthropic"
+    assert documents["wiki/方法论/有原文.md"]["author_source"] == "raw"
+    assert documents["wiki/方法论/官方来源.md"]["book_author"] == "Andrej Karpathy"
+    assert documents["wiki/方法论/官方来源.md"]["author_source"] == "official_source"
+    assert documents["wiki/方法论/自研.md"]["book_author"] == "Quantum 研究团队"
+
+
+def test_green_author_attribution_cannot_read_another_tenant_red_source(tmp_path):
+    private = tmp_path / "wiki/tenant/tenant-b/private.md"
+    _note(private, security="red", classification="approved", owner="tenant-b")
+    private.write_text(
+        private.read_text(encoding="utf-8").replace(
+            "status: active\n", "status: active\nsource_author: SECRET-TENANT-B-CONTACT\n"
+        ),
+        encoding="utf-8",
+    )
+    public = tmp_path / "wiki/public/method.md"
+    _note(public, security="green", classification="approved")
+    public.write_text(
+        public.read_text(encoding="utf-8").replace(
+            "status: active\n",
+            "status: active\nsource_files:\n  - wiki/tenant/tenant-b/private.md\n",
+        ),
+        encoding="utf-8",
+    )
+
+    documents = {item["path"]: item for item in approved_color_documents(tmp_path)}
+
+    assert documents["wiki/public/method.md"]["book_author"] == "Quantum 研究团队"
+    assert "SECRET-TENANT-B-CONTACT" not in str(documents["wiki/public/method.md"])
+
+
 def test_yellow_approval_requires_exact_entitlement_and_no_k5_minimum(tmp_path):
     path = tmp_path / "wiki/方法论/专业方法.md"
     _note(path, security="yellow")

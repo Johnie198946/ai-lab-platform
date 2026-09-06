@@ -83,6 +83,30 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         return decoder
     }
 
+    func testKnowledgeBookshelfDecodesReaderMetadata() throws {
+        let data = Data(#"{"id":"knowledge/product/public","title":"产品知识","security_level":"green","book_count":1,"books":[{"id":"kn-1","title":"AI Lab 顶层设计","author":"Anthropic","author_source":"raw","summary":"从产品目标到系统边界。","cover_theme":"product","cover_variant":3,"cover_version":1,"security_level":"green","knowledge_level":"K5","freshness":"current","source_count":2}]}"#.utf8)
+
+        let shelf = try decoder().decode(KnowledgeBookshelfDTO.self, from: data)
+
+        XCTAssertEqual(shelf.bookCount, 1)
+        XCTAssertEqual(shelf.books.first?.title, "AI Lab 顶层设计")
+        XCTAssertEqual(shelf.books.first?.sourceCount, 2)
+        XCTAssertEqual(shelf.books.first?.coverTheme, "product")
+        XCTAssertEqual(shelf.books.first?.coverVariant, 3)
+        XCTAssertEqual(shelf.books.first?.author, "Anthropic")
+        XCTAssertEqual(shelf.books.first?.authorSource, "raw")
+    }
+
+    func testKnowledgeBookSubscriptionDecodesBookAndProgress() throws {
+        let data = Data(#"{"book":{"id":"kn-1","title":"AI Lab 顶层设计","author":"Anthropic","author_source":"raw","summary":"从产品目标到系统边界。","cover_theme":"product","cover_variant":3,"cover_version":1,"security_level":"green","knowledge_level":"K5","freshness":"current","source_count":2},"edition":1,"progress":0.42,"subscribed_at":"2026-09-06T07:00:00Z","last_read_at":"2026-09-06T07:10:00Z"}"#.utf8)
+
+        let item = try decoder().decode(KnowledgeBookSubscriptionDTO.self, from: data)
+
+        XCTAssertEqual(item.book.author, "Anthropic")
+        XCTAssertEqual(item.edition, 1)
+        XCTAssertEqual(item.progress, 0.42, accuracy: 0.001)
+    }
+
     func testChatRequestEncodesExplicitLocalOnlyNoteScope() throws {
         let request = ChatRequestDTO(
             question: "整理本地待办",

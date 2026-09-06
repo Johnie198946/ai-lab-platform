@@ -16,6 +16,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
+from urllib.parse import urlparse
 
 import yaml
 
@@ -27,6 +28,13 @@ BLOCKED_STATUSES = {
 TYPE_SLUGS = {
     "产品": "product", "方法论": "methodology", "战略信号": "strategic-signal",
     "客户": "customer", "竞品": "competitor", "竞品情报": "competitor-topic",
+}
+AUTHOR_KEYS = ("source_author", "author", "authors", "creator", "byline", "publisher")
+OFFICIAL_AUTHORS = {
+    "anthropic.com": "Anthropic",
+    "claude.com": "Anthropic",
+    "karpathy.ai": "Andrej Karpathy",
+    "openai.com": "OpenAI",
 }
 
 
@@ -49,6 +57,113 @@ def _values(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     return [str(value)] if value else []
+
+
+def _clean_author(value: Any) -> str:
+    authors = _values(value)
+    author = " / ".join(authors).replace("；", " / ").strip()
+    if not author or re.search(r"(?i)\b(?:subagent|ingester|auditor agent)\b", author):
+        return ""
+    return re.sub(r"\s+", " ", author)[:120]
+
+
+def _official_author(values: list[str]) -> str:
+    candidates: list[str] = []
+    for value in values:
+        try:
+            parsed = urlparse(value)
+        except ValueError:
+            continue
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        if not host:
+            continue
+        mapped = ""
+        if host == "github.com" or host == "gist.github.com":
+            if parsed.path.lower().startswith("/karpathy/"):
+                mapped = "Andrej Karpathy"
+        for domain, known_author in OFFICIAL_AUTHORS.items():
+            if host == domain or host.endswith(f".{domain}"):
+                mapped = known_author
+                break
+        if not mapped:
+            return ""
+        candidates.append(mapped)
+    return candidates[0] if candidates and len(set(candidates)) == 1 else ""
+
+
+def _body_byline(path: Path) -> str:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()[:80]
+    except OSError:
+        return ""
+    for line in lines:
+        match = re.match(r"^\s*(?:作者|Author|Written by|By)\s*[：:]\s*(.+?)\s*$", line, re.IGNORECASE)
+        if match:
+            return _clean_author(re.split(r"\s*[·|]\s*|\s+\d{4}年", match.group(1), maxsplit=1)[0])
+    return ""
+
+
+def _source_scope_allows_attribution(source: dict[str, Any], destination: dict[str, Any]) -> bool:
+    if str(source.get("classification_status") or "").strip().lower() != "approved":
+        return False
+    if str(source.get("status") or "active").strip().lower() in BLOCKED_STATUSES:
+        return False
+    source_security = str(source.get("security_level") or "").strip().lower()
+    destination_security = str(destination.get("security_level") or "").strip().lower()
+    if source_security == "green":
+        return True
+    if source_security != destination_security:
+        return False
+    if source_security == "yellow":
+        return bool(
+            _exact_entitlement(str(source.get("entitlement_key") or "").strip())
+            and str(source.get("entitlement_key") or "").strip()
+            == str(destination.get("entitlement_key") or "").strip()
+        )
+    if source_security == "red":
+        source_owner = str(source.get("owner_tenant") or source.get("tenant") or "").strip()
+        destination_owner = str(destination.get("owner_tenant") or destination.get("tenant") or "").strip()
+        return bool(source_owner and source_owner != "public" and source_owner == destination_owner)
+    return False
+
+
+def _book_author(vault: Path, metadata: dict[str, Any]) -> tuple[str, str]:
+    explicit = _clean_author(metadata.get("book_author"))
+    if explicit:
+        return explicit, "editorial"
+
+    source_values = (
+        _values(metadata.get("source_files"))
+        + _values(metadata.get("source_urls"))
+        + _values(metadata.get("sources"))
+    )
+    source_urls = list(source_values)
+    root = vault.resolve()
+    wiki_root = (vault / "wiki").resolve()
+    for reference in source_values:
+        candidate = (vault / reference).resolve()
+        if (
+            candidate.suffix.lower() != ".md"
+            or root not in candidate.parents
+            or wiki_root not in candidate.parents
+            or not candidate.is_file()
+        ):
+            continue
+        source_metadata = _frontmatter(candidate)
+        if not _source_scope_allows_attribution(source_metadata, metadata):
+            continue
+        for key in AUTHOR_KEYS:
+            author = _clean_author(source_metadata.get(key))
+            if author:
+                return author, "raw"
+        author = _body_byline(candidate)
+        if author:
+            return author, "raw"
+        for key in ("source_url", "source_original", "course_url", "url"):
+            source_urls.extend(_values(source_metadata.get(key)))
+
+    official = _official_author(source_urls)
+    return (official, "official_source") if official else ("Quantum 研究团队", "fallback")
 
 
 def _exact_entitlement(value: str) -> bool:
@@ -90,9 +205,15 @@ def _scan_approved_color_documents(vault: Path) -> list[dict[str, Any]]:
             else f"knowledge/{type_slug}/private/{owner}"
         )
         sources = set(_values(metadata.get("source_files")) + _values(metadata.get("source_urls")) + _values(metadata.get("sources")))
+        book_author, author_source = _book_author(vault, metadata)
         documents.append({
             "knowledge_id": str(metadata.get("knowledge_id") or "kn-" + hashlib.sha256(relative.encode()).hexdigest()[:20]),
             "path": relative, "title": str(metadata.get("title") or path.stem),
+            "book_title": str(metadata.get("book_title") or ""),
+            "book_author": book_author,
+            "author_source": author_source,
+            "book_summary": str(metadata.get("book_summary") or ""),
+            "cover_theme": str(metadata.get("cover_theme") or ""),
             "pack_id": category,
             "knowledge_level": str(metadata.get("knowledge_level") or "unrated"),
             "classification_status": "approved", "security_level": security,
