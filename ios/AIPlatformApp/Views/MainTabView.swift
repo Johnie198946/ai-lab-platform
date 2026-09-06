@@ -88,12 +88,7 @@ public struct MainTabView: View {
                         )
                         .padding(.horizontal, AppTheme.Spacing.lg)
                     }
-                    if tabBarCollapsed && !voiceOverEnabled {
-                        CollapsedQuantumTabBar(selection: appState.activeTab) {
-                            setTabBarCollapsed(false)
-                        }
-                        .transition(tabBarTransition(collapsed: true))
-                    } else {
+                    if !tabBarCollapsed || voiceOverEnabled {
                         QuantumFloatingTabBar(selection: $appState.activeTab) {
                             scheduleTabBarAutoCollapse()
                         }
@@ -105,7 +100,7 @@ public struct MainTabView: View {
                                     }
                                 }
                         )
-                        .transition(tabBarTransition(collapsed: false))
+                        .transition(tabBarTransition)
                     }
                 }
             }
@@ -117,6 +112,7 @@ public struct MainTabView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: appState.isDevMode)
+        .simultaneousGesture(swipeToRevealNavigation)
         .onChange(of: voiceOverEnabled) { _, enabled in
             if enabled {
                 tabBarAutoCollapseTask?.cancel()
@@ -150,55 +146,29 @@ public struct MainTabView: View {
         }
     }
 
-    private func tabBarTransition(collapsed: Bool) -> AnyTransition {
+    private var swipeToRevealNavigation: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                let horizontal = value.translation.width
+                guard tabBarCollapsed,
+                      !keyboardObserver.isKeyboardVisible,
+                      !voiceOverEnabled,
+                      value.startLocation.x >= 32,
+                      horizontal >= 64,
+                      horizontal > abs(value.translation.height) * 1.4 else { return }
+                setTabBarCollapsed(false)
+            }
+    }
+
+    private var tabBarTransition: AnyTransition {
         guard !reduceMotion else { return .opacity }
         return .asymmetric(
             insertion: .move(edge: .bottom)
-                .combined(with: .scale(scale: collapsed ? 0.82 : 0.9, anchor: .bottom))
+                .combined(with: .scale(scale: 0.9, anchor: .bottom))
                 .combined(with: .opacity),
-            removal: .scale(scale: collapsed ? 0.9 : 0.74, anchor: .bottom)
+            removal: .scale(scale: 0.74, anchor: .bottom)
                 .combined(with: .opacity)
         )
-    }
-}
-
-private struct CollapsedQuantumTabBar: View {
-    let selection: Int
-    let onExpand: () -> Void
-
-    private let symbols = [
-        "bubble.left.and.bubble.right.fill",
-        "square.grid.2x2.fill",
-        "books.vertical.fill",
-        "gearshape.fill"
-    ]
-    private var selectedSymbol: String {
-        symbols.indices.contains(selection) ? symbols[selection] : "circle.grid.2x2.fill"
-    }
-
-    var body: some View {
-        Button(action: onExpand) {
-            HStack(spacing: 10) {
-                Image(systemName: selectedSymbol)
-                    .font(.system(size: 15, weight: .semibold))
-                Capsule()
-                    .fill(AppTheme.Colors.textTertiary.opacity(0.55))
-                    .frame(width: 24, height: 3)
-                Image(systemName: "chevron.up")
-                    .font(.system(size: 11, weight: .bold))
-            }
-            .foregroundStyle(AppTheme.Colors.textSecondary)
-            .frame(width: 104, height: 44)
-            .background(.ultraThinMaterial)
-            .background(AppTheme.Colors.surfaceElevated.opacity(0.88))
-            .clipShape(Capsule())
-            .overlay { Capsule().stroke(AppTheme.Colors.border.opacity(0.86), lineWidth: 0.75) }
-            .shadow(color: Color(hex: "6B5A8A").opacity(0.13), radius: 18, y: 7)
-        }
-        .buttonStyle(SoftButtonStyle())
-        .accessibilityLabel("展开主导航")
-        .accessibilityHint("显示对话、任务、知识和设置")
-        .padding(.bottom, AppTheme.Spacing.xs)
     }
 }
 

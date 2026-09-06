@@ -496,7 +496,6 @@ public struct SubscriptionCenterView: View {
     @State private var publicationSecurity = "green"
     @State private var publicationEntitlement = ""
     @State private var publicationOwner = ""
-    @State private var showingPlanManagement = false
     @Namespace private var bookshelfTransition
 
     public init(
@@ -519,9 +518,7 @@ public struct SubscriptionCenterView: View {
         ZStack {
             QuantumMistBackground()
 
-            if showingPlanManagement {
-                subscriptionManagement
-            } else if isLoading, bookshelves.isEmpty {
+            if isLoading, bookshelves.isEmpty {
                 ProgressView("正在整理书架…")
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             } else if let selectedShelfID,
@@ -535,7 +532,7 @@ public struct SubscriptionCenterView: View {
                 inlineError(errorMessage)
                     .padding(AppTheme.Metrics.contentGutter)
             } else {
-                ContentUnavailableView("暂无知识书架", systemImage: "books.vertical", description: Text("可在右上角查看组织权益与订阅状态。"))
+                ContentUnavailableView("暂无知识书架", systemImage: "books.vertical", description: Text("暂时没有可阅读的知识书籍。"))
                     .padding(AppTheme.Metrics.contentGutter)
             }
 
@@ -556,7 +553,7 @@ public struct SubscriptionCenterView: View {
                 .allowsHitTesting(false)
             }
         }
-        .navigationTitle(showingPlanManagement ? "知识订阅" : "知识书架")
+        .navigationTitle("知识书架")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
@@ -583,24 +580,10 @@ public struct SubscriptionCenterView: View {
                     .accessibilityLabel("返回知识")
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                if selectedShelfID == nil {
-                    Button(showingPlanManagement ? "书架" : "权益") {
-                        withAnimation(reduceMotion ? nil : AppTheme.Motion.quick) {
-                            showingPlanManagement.toggle()
-                        }
-                    }
-                    .accessibilityLabel(showingPlanManagement ? "返回知识书架" : "查看组织权益与订阅")
-                }
-            }
         }
         .task {
             guard previewCenter == nil else { return }
-            await load()
             await loadBookshelves()
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if showingPlanManagement, let center, center.isSuperAdmin { stickyApplicationBar(center) }
         }
         .fullScreenCover(item: $inspectedBook) { book in
             knowledgeBookDetail(book)
