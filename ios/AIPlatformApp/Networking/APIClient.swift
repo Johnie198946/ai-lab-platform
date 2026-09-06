@@ -290,6 +290,12 @@ private struct KnowledgeContributionConsentWrite: Encodable {
     let serviceAgreementAccepted: Bool
     let serviceAgreementVersion: String
     let participationEnabled: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case serviceAgreementAccepted = "service_agreement_accepted"
+        case serviceAgreementVersion = "service_agreement_version"
+        case participationEnabled = "participation_enabled"
+    }
 }
 
 public struct SubscriptionPlanFeaturesDTO: Codable, Hashable {

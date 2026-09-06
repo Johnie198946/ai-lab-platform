@@ -554,7 +554,7 @@ public struct LoginView: View {
             )
         } catch {
             APIClient.shared.clearToken()
-            throw APIError.authenticationRejected("协议记录失败，请检查网络后重试")
+            throw APIError.authenticationRejected("协议记录失败：\(error.localizedDescription)")
         }
         let profile = try await APIClient.shared.fetchMe()
         appState.currentTenantKey = profile.tenantKey

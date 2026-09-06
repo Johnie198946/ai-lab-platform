@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from backend.api.auth import require_auth
@@ -43,9 +43,19 @@ class WithdrawalRequest(BaseModel):
 
 class UserConsentWrite(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    service_agreement_accepted: bool
-    service_agreement_version: str = Field(min_length=1, max_length=96)
-    participation_enabled: bool = False
+    # Accept native iOS keys without changing canonical names or serialization.
+    # With extra="forbid", sending both spellings is rejected, not prioritized.
+    service_agreement_accepted: bool = Field(validation_alias=AliasChoices(
+        "service_agreement_accepted", "serviceAgreementAccepted",
+    ))
+    service_agreement_version: str = Field(
+        min_length=1, max_length=96,
+        validation_alias=AliasChoices("service_agreement_version", "serviceAgreementVersion"),
+    )
+    participation_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("participation_enabled", "participationEnabled"),
+    )
 
 
 def _admin(payload: dict[str, Any]) -> None:
