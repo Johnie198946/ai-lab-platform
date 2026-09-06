@@ -167,6 +167,11 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
         "disclosure_granularity", "summary_of", "publication_audience", "source_dependencies",
         "version", "conditions", "effective_at", "source_kind",
     ) if key in metadata}}
+    # Editorial fields are live source facts, never durable cache authority.
+    for key in ("book_title", "book_author", "book_summary", "author", "author_source", "title"):
+        result.pop(key, None)
+        if key in metadata:
+            result[key] = metadata[key]
     if metadata.get("disclosure_granularity") == "summary":
         if (metadata.get("derivation_permitted") is not True
                 or not metadata.get("summary_of")

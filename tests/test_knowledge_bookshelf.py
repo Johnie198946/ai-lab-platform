@@ -8,7 +8,9 @@ from backend.services.knowledge_catalog import bookshelf_catalog, clear_manifest
 def test_bookshelf_only_exposes_public_and_owned_admitted_books(tmp_path):
     (tmp_path / "wiki").mkdir()
     (tmp_path / "wiki" / "public.md").write_text(
-        "---\ntitle: Public\n---\n# Public\n\nA useful public summary with [[Evidence|a source]].\n",
+        "---\ntitle: Public\nbook_title: Public Handbook\nbook_author: Editorial Team\n"
+        "book_summary: A deliberately edited reader summary.\n---\n# Public\n\n"
+        "A useful public summary with [[Evidence|a source]].\n",
         encoding="utf-8",
     )
     (tmp_path / "wiki" / "private.md").write_text("Private summary.", encoding="utf-8")
@@ -47,6 +49,16 @@ def test_bookshelf_only_exposes_public_and_owned_admitted_books(tmp_path):
     assert private["author_source"] == "fallback"
     assert private["summary"] == "Private summary."
     assert private["cover_theme"] == "general"
+
+    # Removing source metadata must revoke it without rebuilding the catalog.
+    (tmp_path / "wiki" / "public.md").write_text("# Public\n\nSafe replacement.\n")
+    refreshed = next(
+        book for shelf in bookshelf_catalog("tenant-a", tmp_path)
+        for book in shelf["books"] if book["knowledge_id"] == "green"
+    )
+    assert refreshed["summary"] == "Safe replacement."
+    assert refreshed["title"] != "Public Handbook"
+    assert refreshed["author"] != "Editorial Team"
 
     entitled = bookshelf_catalog(
         "tenant-a", tmp_path, frozenset({"knowledge/paid"})

@@ -454,7 +454,7 @@ public struct SettingsView: View {
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
             }
 
-            Text("Quantum Platform v1.0 (Build 2026.08.16)")
+            Text("Quantumn \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—") (Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—"))")
                 .font(.system(size: 11))
                 .foregroundColor(AppTheme.Colors.textTertiary)
                 .padding(.top, 4)
@@ -2124,8 +2124,22 @@ struct KnowledgeBookReaderView: View {
 }
 
 private struct KnowledgeBookReadingView: View {
+    @EnvironmentObject private var api: APIClient
+    @State private var progressError: String?
     let book: KnowledgeBookDTO
     let onDismiss: () -> Void
+
+    private func recordReading() async {
+        do {
+            let subscriptions = try await api.fetchBookSubscriptions()
+            guard let subscription = subscriptions.first(where: { $0.book.id == book.id }) else { return }
+            // Opening a guide records recency, not fictional full-book progress.
+            _ = try await api.updateBookProgress(id: book.id, progress: subscription.progress)
+            progressError = nil
+        } catch {
+            progressError = "阅读记录未同步，请重试。"
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -2164,6 +2178,10 @@ private struct KnowledgeBookReadingView: View {
                         .foregroundStyle(Color.brown.opacity(0.68))
                         .lineSpacing(5)
                         .padding(.top, 48)
+                    if let progressError {
+                        Button(progressError) { Task { await recordReading() } }
+                            .padding(.top, 20)
+                    }
                     Spacer(minLength: 120)
                 }
                 .frame(maxWidth: 560, alignment: .leading)
@@ -2194,6 +2212,7 @@ private struct KnowledgeBookReadingView: View {
                     .accessibilityLabel("返回书籍概述")
                 }
             }
+            .task(id: book.id) { await recordReading() }
         }
     }
 }
