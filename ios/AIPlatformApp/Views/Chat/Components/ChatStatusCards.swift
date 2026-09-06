@@ -555,91 +555,30 @@ public struct DegradedCardView: View {
 }
 
 public struct BackgroundProcessingCardView: View {
-    public init() {}
+    public let isReconnecting: Bool
+    public let confirmedRunning: Bool
+
+    public init(isReconnecting: Bool = true, confirmedRunning: Bool = false) {
+        self.isReconnecting = isReconnecting
+        self.confirmedRunning = confirmedRunning
+    }
 
     public var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-            QuantumAvatarView(size: 32).padding(.top, 2)
-            HStack(spacing: AppTheme.Spacing.sm) {
-                ProgressView()
-                    .controlSize(.small)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Hermes 正在后台处理")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                    Text("正在恢复同一任务的进度，不会重复创建运行。结果返回后会自动更新。")
-                        .font(.system(size: 12))
-                        .foregroundColor(AppTheme.Colors.textSecondary)
-                }
-            }
-            .padding(AppTheme.Spacing.md)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                    .stroke(AppTheme.Colors.quantumBlue.opacity(0.25), lineWidth: 0.5)
-            )
-            Spacer(minLength: 44)
+        HStack(spacing: AppTheme.Spacing.xs) {
+            if isReconnecting { ProgressView().controlSize(.mini) }
+            Text(statusText)
+                .font(AppTheme.Typography.micro)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
         }
         .padding(.horizontal, AppTheme.Spacing.md)
-        .padding(.vertical, AppTheme.Spacing.xs)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Hermes 正在后台处理，结果返回后会自动更新")
-    }
-}
-
-public struct InterruptedCardView: View {
-    public let onRetry: () -> Void
-
-    public init(onRetry: @escaping () -> Void) {
-        self.onRetry = onRetry
+        .accessibilityLabel(statusText)
     }
 
-    public var body: some View {
-        HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
-            QuantumAvatarView(size: 32).padding(.top, 2)
-            VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
-                HStack(spacing: 6) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.system(size: 12))
-                    .foregroundColor(AppTheme.Icons.warning)
-                    Text("响应已中断")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(AppTheme.Colors.textPrimary)
-                }
-                Text(SessionManager.interruptedText)
-                    .font(.system(size: 12))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                retryChip
-            }
-            .padding(AppTheme.Spacing.md)
-            .background(AppTheme.Colors.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous)
-                    .stroke(AppTheme.Colors.securityYellow.opacity(0.25), lineWidth: 0.5)
-            )
-            .pressBorderGlow(cornerRadius: AppTheme.Radius.lg)
-            Spacer(minLength: 44)
-        }
-        .padding(.horizontal, AppTheme.Spacing.md)
-        .padding(.vertical, AppTheme.Spacing.xs)
-    }
-
-    private var retryChip: some View {
-        Button(action: onRetry) {
-            HStack(spacing: 4) {
-                Image(systemName: "arrow.clockwise")
-                Text("重试")
-            }
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundColor(AppTheme.Icons.interactive)
-            .padding(.horizontal, AppTheme.Spacing.md)
-            .padding(.vertical, 6)
-            .background(AppTheme.Colors.primary.opacity(0.08))
-            .clipShape(Capsule())
-        }
-        .buttonStyle(SoftButtonStyle())
+    private var statusText: String {
+        if confirmedRunning { return "原任务仍在执行，结果会自动续接" }
+        if isReconnecting { return "正在重新连接原任务…" }
+        return "原任务进度已保留，网络恢复后会自动续接"
     }
 }
 

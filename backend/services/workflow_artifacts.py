@@ -134,9 +134,15 @@ def artifact_extension(artifact: WorkflowArtifact) -> str:
 
 def artifact_mime_type(artifact: WorkflowArtifact) -> str:
     extension = artifact_extension(artifact)
-    if extension == "md":
-        return "text/markdown"
-    return mimetypes.guess_type(f"artifact.{extension}")[0] or "application/octet-stream"
+    # Slim Linux images need not carry /etc/mime.types. Keep the formats we
+    # generate/read deterministic rather than depending on the host MIME DB.
+    known = {
+        "md": "text/markdown",
+        "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    return known.get(extension) or mimetypes.guess_type(f"artifact.{extension}")[0] or "application/octet-stream"
 
 
 def _image_dimensions(data: bytes, image_mime: str) -> tuple[int, int]:

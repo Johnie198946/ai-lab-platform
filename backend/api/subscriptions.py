@@ -12,8 +12,8 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
-from sqlalchemy import delete, select
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import IntegrityError
 
 from backend.api.auth import PERSONAL_PUBLIC_ORG_ID, require_auth
@@ -25,6 +25,7 @@ from backend.services.knowledge_catalog import (
     bookshelf_catalog,
     document_index,
     filter_database_live_documents,
+    reader_book_body,
     tenant_private_knowledge_status,
 )
 
@@ -61,6 +62,14 @@ class BookSubscriptionWrite(BaseModel):
 class BookProgressWrite(BaseModel):
     book_id: str = Field(..., min_length=1, max_length=384)
     progress: float = Field(..., ge=0, le=1)
+    content_version: str | None = Field(default=None, min_length=64, max_length=64, pattern="^[a-f0-9]{64}$")
+
+    @field_validator("content_version", mode="before")
+    @classmethod
+    def explicit_version_must_not_be_null(cls, value):
+        if value is None:
+            raise ValueError("omit content_version for a legacy checkpoint; null is not a version")
+        return value
 
 
 def _error(
@@ -238,7 +247,7 @@ async def subscription_center(payload=Depends(require_auth)):
         **center,
         "plans": plan_items,
         "base_knowledge": base_status,
-        "bookshelves": await _visible_bookshelves(payload),
+        "bookshelves": _public_bookshelves(await _visible_bookshelves(payload)),
         "tenant_private_knowledge": private_status,
         "knowledge_pack_subscription_enabled": KNOWLEDGE_PACK_SUBSCRIPTION_ENABLED,
         "is_super_admin": bool(payload.get("is_super_admin")),
@@ -249,7 +258,7 @@ async def subscription_center(payload=Depends(require_auth)):
 @router.get("/knowledge-bookshelves")
 async def knowledge_bookshelves(payload=Depends(require_auth)):
     """Reader catalog independent of organization subscription state."""
-    return {"bookshelves": await _visible_bookshelves(payload)}
+    return {"bookshelves": _public_bookshelves(await _visible_bookshelves(payload))}
 
 
 def _reader_identity(payload: dict[str, Any]) -> tuple[str, str]:
@@ -272,14 +281,63 @@ async def _available_books(payload: dict[str, Any]) -> dict[str, dict[str, Any]]
     return {book["id"]: book for shelf in shelves for book in shelf["books"]}
 
 
+_PUBLIC_BOOK_FIELDS = (
+    "id", "title", "author", "author_source", "summary", "cover_theme",
+    "cover_variant", "cover_version", "security_level", "knowledge_level",
+    "freshness", "source_count",
+)
+
+
+def _public_book(book: dict[str, Any]) -> dict[str, Any]:
+    return {key: book[key] for key in _PUBLIC_BOOK_FIELDS if key in book}
+
+
+def _public_bookshelves(shelves: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{**shelf, "books": [_public_book(book) for book in shelf["books"]]} for shelf in shelves]
+
+
+async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    book = (await _available_books(payload)).get(book_id)
+    if book is None:
+        raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
+                     action="refresh_catalog", retryable=True)
+    source_path = str(book["source_path"])
+    if not source_path.startswith("wiki/") or not source_path.endswith(".md"):
+        body = None
+    else:
+        wiki = await knowledge.read_wiki_live(source_path[5:-3])
+        body = reader_book_body(book, wiki)
+    if body is None:
+        raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
+                     action="refresh_catalog", retryable=True)
+    return book, body
+
+
 def _book_subscription(row: KnowledgeBookSubscription, book: dict[str, Any]) -> dict[str, Any]:
     return {
-        "book": book,
+        "book": _public_book(book),
         "edition": row.edition,
+        "content_version": row.content_version,
         "progress": row.progress,
+        "legacy_progress": row.legacy_progress,
+        "legacy_last_read_at": row.legacy_last_read_at,
         "subscribed_at": row.subscribed_at,
         "last_read_at": row.last_read_at,
     }
+
+
+@router.get("/knowledge-books/{book_id}")
+async def knowledge_book_body(book_id: str, payload=Depends(require_auth)):
+    _, body = await _available_book_body(payload, book_id)
+    tenant_key, user_id = _reader_identity(payload)
+    async with SessionLocal() as db:
+        row = await db.scalar(select(KnowledgeBookSubscription).where(
+            KnowledgeBookSubscription.tenant_key == tenant_key,
+            KnowledgeBookSubscription.owner_user_id == user_id,
+            KnowledgeBookSubscription.book_id == book_id,
+        ))
+    edition = 1 if row is None else row.edition + int(row.content_version != body["content_version"])
+    return {**body, "edition": edition}
 
 
 @router.get("/me/book-subscriptions")
@@ -309,12 +367,8 @@ async def my_book_subscriptions(payload=Depends(require_auth)):
 @router.put("/me/book-subscriptions")
 async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_auth)):
     tenant_key, user_id = _reader_identity(payload)
-    book = (await _available_books(payload)).get(body.book_id)
-    if book is None:
-        raise _error(
-            404, code="book_not_found", message="这本书已下架或当前无权阅读",
-            action="refresh_catalog", retryable=True,
-        )
+    book, reader_body = await _available_book_body(payload, body.book_id)
+    current_version = reader_body["content_version"]
     async with SessionLocal() as db:
         row = await db.scalar(
             select(KnowledgeBookSubscription).where(
@@ -326,11 +380,14 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
         if row is None:
             row = KnowledgeBookSubscription(
                 tenant_key=tenant_key, owner_user_id=user_id,
-                book_id=body.book_id, edition=body.edition,
+                book_id=body.book_id, edition=1, content_version=current_version,
             )
             db.add(row)
         else:
-            row.edition = body.edition
+            if row.content_version != current_version:
+                row.edition += 1
+                row.progress = 0
+                row.content_version = current_version
             row.last_read_at = datetime.now(timezone.utc)
         try:
             await db.commit()
@@ -345,7 +402,10 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
             )
             if row is None:
                 raise
-            row.edition = body.edition
+            if row.content_version != current_version:
+                row.edition += 1
+                row.progress = 0
+                row.content_version = current_version
             row.last_read_at = datetime.now(timezone.utc)
             await db.commit()
         await db.refresh(row)
@@ -355,12 +415,10 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
 @router.patch("/me/book-subscriptions/progress")
 async def update_book_progress(body: BookProgressWrite, payload=Depends(require_auth)):
     tenant_key, user_id = _reader_identity(payload)
-    book = (await _available_books(payload)).get(body.book_id)
-    if book is None:
-        raise _error(
-            404, code="book_not_found", message="这本书已下架或当前无权阅读",
-            action="refresh_catalog", retryable=True,
-        )
+    book, reader_body = await _available_book_body(payload, body.book_id)
+    if body.content_version is not None and body.content_version != reader_body["content_version"]:
+        raise _error(409, code="book_edition_changed", message="正文已更新，请刷新后继续阅读",
+                     action="refresh_book", retryable=True)
     async with SessionLocal() as db:
         row = await db.scalar(
             select(KnowledgeBookSubscription).where(
@@ -374,6 +432,33 @@ async def update_book_progress(body: BookProgressWrite, payload=Depends(require_
                 404, code="book_not_subscribed", message="请先订阅这本书",
                 action="subscribe", retryable=False,
             )
+        if body.content_version is None:
+            # A versionless client may hold ANY cached edition. Persist its
+            # position without relabelling it or touching the modern checkpoint.
+            await db.execute(update(KnowledgeBookSubscription).where(
+                KnowledgeBookSubscription.tenant_key == tenant_key,
+                KnowledgeBookSubscription.owner_user_id == user_id,
+                KnowledgeBookSubscription.book_id == body.book_id,
+            ).values(
+                legacy_progress=body.progress,
+                legacy_last_read_at=datetime.now(timezone.utc),
+                last_read_at=KnowledgeBookSubscription.last_read_at,
+            ))
+            await db.commit()
+            await db.refresh(row)
+            return {
+                **_book_subscription(row, book),
+                "canonical_progress": row.progress,
+                "canonical_content_version": row.content_version,
+                "progress": row.legacy_progress,
+                "last_read_at": row.legacy_last_read_at,
+                "content_version": "",
+                "progress_scope": "legacy_unversioned",
+            }
+        if row.content_version != reader_body["content_version"]:
+            row.edition += 1
+            row.progress = 0
+            row.content_version = reader_body["content_version"]
         row.progress = body.progress
         row.last_read_at = datetime.now(timezone.utc)
         await db.commit()

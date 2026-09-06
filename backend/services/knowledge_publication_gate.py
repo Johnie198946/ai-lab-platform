@@ -15,6 +15,7 @@ from backend.models.knowledge_contribution import (
     KnowledgeContributionPolicy as Policy,
     KnowledgeContributionProjection as Projection,
     KnowledgeContributionRun as Run,
+    KnowledgeContributionUserConsent as UserConsent,
 )
 from backend.services.knowledge_catalog import (
     CONTRIBUTION_PUBLICATION_POLICY,
@@ -23,7 +24,7 @@ from backend.services.knowledge_catalog import (
     clear_knowledge_caches,
 )
 from backend.services.knowledge_color_projection import approve_color, restore_note
-from backend.services.knowledge_contribution import _epoch
+from backend.services.knowledge_contribution import _authorization_epoch, _user_authorized, _now
 
 
 def _receipt_value(receipt: dict, name: str) -> str:
@@ -99,8 +100,10 @@ async def validate_green_contribution(*, relative_path: str, projection_id: str)
         run = await db.scalar(select(Run).where(
             Run.projection_id == projection.projection_id, Run.status == "accepted"))
         policy = await db.get(Policy, projection.tenant_key)
+        consent = await db.get(UserConsent, (projection.tenant_key, projection.user_id))
         if (not run or run.status != "accepted" or run.authorization_epoch != epochs[0]
-                or not policy or not policy.enabled or _epoch(policy) != epochs[0]):
+                or not policy or not policy.enabled or not _user_authorized(consent, _now())
+                or _authorization_epoch(policy, consent) != epochs[0]):
             raise ValueError("durable run or current authorization gate failed")
         bindings = list((await db.scalars(select(Binding).where(
             Binding.projection_id == projection.projection_id,
@@ -111,9 +114,11 @@ async def validate_green_contribution(*, relative_path: str, projection_id: str)
         events = [await db.get(Event, binding.event_id) for binding in bindings]
         blocked = {"withdrawn", "excluded", "archived", "stale", "quarantined", "withdrawing"}
         source_policies = [await db.get(Policy, event.tenant_key) if event else None for event in events]
+        source_consents = [await db.get(UserConsent, (event.tenant_key, event.user_id)) if event else None for event in events]
         if (any(event is None or event.status in blocked or not source_policy
-                or not source_policy.enabled or event.authorization_epoch != _epoch(source_policy)
-                for event, source_policy in zip(events, source_policies))
+                or not source_policy.enabled or not _user_authorized(source_consent, _now())
+                or event.authorization_epoch != _authorization_epoch(source_policy, source_consent)
+                for event, source_policy, source_consent in zip(events, source_policies, source_consents))
                 or any(event.business_state.get("synthetic_hypothesis")
                        or event.business_state.get("simulated") for event in events if event)):
             raise ValueError("non-synthetic active real-world evidence required")

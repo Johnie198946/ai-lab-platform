@@ -12,10 +12,13 @@ from backend.api.auth import require_auth
 from backend.db import SessionLocal
 from backend.models.knowledge_contribution import (
     KnowledgeContributionOutbox, KnowledgeContributionPolicy,
+    KnowledgeContributionUserConsent,
 )
 from backend.services.knowledge_contribution import (
+    SERVICE_AGREEMENT_VERSION,
     get_contribution_projection,
     set_contribution_policy,
+    set_user_contribution_consent,
     withdraw_contribution,
 )
 
@@ -36,6 +39,13 @@ class WithdrawalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     event_id: str = Field(min_length=1, max_length=96)
     permanent: bool = True
+
+
+class UserConsentWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    service_agreement_accepted: bool
+    service_agreement_version: str = Field(min_length=1, max_length=96)
+    participation_enabled: bool = False
 
 
 def _admin(payload: dict[str, Any]) -> None:
@@ -69,7 +79,8 @@ async def get_policy(payload: dict[str, Any] = Depends(require_auth)) -> dict[st
 @router.put("/policy")
 async def update_policy(body: PolicyUpdate, payload: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
     _admin(payload)
-    effective_at = body.effective_at or datetime.now(timezone.utc)
+    # Client clocks are never consent authority, including disable/re-enable.
+    effective_at = datetime.now(timezone.utc)
     if body.historical_backfill:
         raise HTTPException(status_code=422, detail={
             "code": "historical_backfill_forbidden",
@@ -86,6 +97,51 @@ async def update_policy(body: PolicyUpdate, payload: dict[str, Any] = Depends(re
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.get("/me")
+async def get_user_consent(payload: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    tenant_key = str(payload.get("tenant_key") or "")
+    user_id = str(payload.get("user_id") or payload.get("sub") or "")
+    async with SessionLocal() as db:
+        consent = await db.get(KnowledgeContributionUserConsent, (tenant_key, user_id))
+    if consent is None:
+        return {
+            "tenant_key": tenant_key, "user_id": user_id, "configured": False,
+            "service_agreement_version": SERVICE_AGREEMENT_VERSION,
+            "participation_enabled": False, "historical_backfill": False,
+            "publication_automatic": False,
+        }
+    return {
+        "tenant_key": tenant_key, "user_id": user_id, "configured": True,
+        "service_agreement_version": consent.service_agreement_version,
+        "service_agreement_accepted_at": consent.service_agreement_accepted_at,
+        "participation_enabled": consent.participation_enabled,
+        "participation_effective_at": consent.participation_effective_at,
+        "historical_backfill": False, "publication_automatic": False,
+    }
+
+
+@router.put("/me")
+async def update_user_consent(body: UserConsentWrite,
+                              payload: dict[str, Any] = Depends(require_auth)) -> dict[str, Any]:
+    if body.service_agreement_accepted is not True:
+        raise HTTPException(status_code=422, detail={
+            "code": "service_agreement_required",
+            "message": "必须明确同意当前服务协议后才能继续",
+        })
+    try:
+        return await set_user_contribution_consent(
+            tenant_key=str(payload.get("tenant_key") or ""),
+            user_id=str(payload.get("user_id") or payload.get("sub") or ""),
+            service_agreement_version=body.service_agreement_version,
+            participation_enabled=body.participation_enabled,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail={
+            "code": "service_agreement_changed",
+            "message": "服务协议已更新，请重新阅读并确认",
+        }) from exc
 
 
 @router.get("/projections/{projection_id}/source")

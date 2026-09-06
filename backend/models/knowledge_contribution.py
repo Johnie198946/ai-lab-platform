@@ -23,6 +23,20 @@ class KnowledgeContributionPolicy(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
+class KnowledgeContributionUserConsent(Base):
+    """Account-scoped service agreement and forward-only participation choice."""
+
+    __tablename__ = "knowledge_contribution_user_consents"
+
+    tenant_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    service_agreement_version: Mapped[str] = mapped_column(String(96), nullable=False)
+    service_agreement_accepted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    participation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    participation_effective_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class KnowledgeContributionOutbox(Base):
     __tablename__ = "knowledge_contribution_outbox"
     __table_args__ = (

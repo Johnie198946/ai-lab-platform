@@ -30,6 +30,12 @@ BOOK = {
     "freshness": "current",
     "source_count": 18,
 }
+VERSION = "a" * 64
+BODY = {
+    "book_id": BOOK["id"], "title": BOOK["title"], "author": BOOK["author"],
+    "content_version": VERSION, "edition": 1, "citation": "knowledge:wiki/product.md",
+    "sections": [{"id": "section-1", "title": "正文", "level": 1, "markdown": "内容"}],
+}
 
 
 def run(coro):
@@ -58,6 +64,15 @@ def book_db(monkeypatch, tmp_path):
             "books": [BOOK],
         }],
     )
+    async def available_body(_payload, _book_id):
+        book = (await subscriptions._available_books(_payload)).get(_book_id)
+        if book is None:
+            raise subscriptions._error(
+                404, code="book_not_found", message="unavailable",
+                action="refresh_catalog", retryable=True,
+            )
+        return book, BODY
+    monkeypatch.setattr(subscriptions, "_available_book_body", available_body)
     yield
     run(engine.dispose())
 
@@ -69,7 +84,9 @@ def test_book_subscription_lifecycle_is_user_scoped(book_db):
     mine = run(subscriptions.my_book_subscriptions(AUTH))
     other = run(subscriptions.my_book_subscriptions({**AUTH, "user_id": "reader-2"}))
     progressed = run(subscriptions.update_book_progress(
-        subscriptions.BookProgressWrite(book_id=BOOK["id"], progress=0.42), AUTH
+        subscriptions.BookProgressWrite(
+            book_id=BOOK["id"], progress=0.42, content_version=VERSION
+        ), AUTH
     ))
     removed = run(subscriptions.unsubscribe_book(body, AUTH))
 
@@ -99,6 +116,23 @@ def test_concurrent_duplicate_puts_are_idempotent(book_db):
     assert len(results) == 20
     assert all(item["book"]["id"] == BOOK["id"] for item in results)
     assert run(count_rows()) == 1
+
+
+def test_edition_change_resets_old_progress(book_db, monkeypatch):
+    body = subscriptions.BookSubscriptionWrite(book_id=BOOK["id"])
+    run(subscriptions.subscribe_book(body, AUTH))
+    run(subscriptions.update_book_progress(subscriptions.BookProgressWrite(
+        book_id=BOOK["id"], progress=0.8, content_version=VERSION
+    ), AUTH))
+    changed = {**BODY, "content_version": "b" * 64}
+
+    async def changed_body(_payload, _book_id):
+        return BOOK, changed
+    monkeypatch.setattr(subscriptions, "_available_book_body", changed_body)
+
+    refreshed = run(subscriptions.subscribe_book(body, AUTH))
+    assert refreshed["edition"] == 2
+    assert refreshed["progress"] == 0
 
 
 def test_unavailable_book_cannot_be_subscribed(book_db, monkeypatch):

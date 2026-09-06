@@ -307,8 +307,11 @@ async def filter_database_live_documents(
         from backend.models.knowledge_contribution import (
             KnowledgeContributionProjection, KnowledgeContributionBinding,
             KnowledgeContributionOutbox, KnowledgeContributionPolicy,
+            KnowledgeContributionUserConsent,
         )
-        from backend.services.knowledge_contribution import _epoch, INACTIVE
+        from backend.services.knowledge_contribution import (
+            _authorization_epoch, _user_authorized, _now, INACTIVE,
+        )
         async with SessionLocal() as db:
             # File label removal cannot turn a governed projection into an
             # unguarded ordinary document. Durable path bindings are authoritative.
@@ -343,8 +346,11 @@ async def filter_database_live_documents(
                 for binding in bindings:
                     event = await db.get(KnowledgeContributionOutbox, binding.event_id)
                     policy = await db.get(KnowledgeContributionPolicy, event.tenant_key) if event else None
+                    consent = await db.get(KnowledgeContributionUserConsent,
+                                           (event.tenant_key, event.user_id)) if event else None
                     if (not event or event.status in INACTIVE or not policy or not policy.enabled
-                            or event.authorization_epoch != _epoch(policy)):
+                            or not _user_authorized(consent, _now())
+                            or event.authorization_epoch != _authorization_epoch(policy, consent)):
                         valid = False
                         break
                     if dependencies is not None and {
@@ -440,8 +446,11 @@ async def authorized_compile_candidates(
     from backend.models.knowledge_contribution import (
         KnowledgeContributionBinding, KnowledgeContributionOutbox,
         KnowledgeContributionPolicy, KnowledgeContributionProjection,
+        KnowledgeContributionUserConsent,
     )
-    from backend.services.knowledge_contribution import _authorized, _epoch, _now, INACTIVE
+    from backend.services.knowledge_contribution import (
+        _authorization_epoch, _authorized, _user_authorized, _now, INACTIVE,
+    )
     from backend.services.knowledge_contribution_artifacts import tenant_namespace
 
     terms = sorted({token.casefold() for token in re.findall(r"[A-Za-z0-9_.-]{2,}|[\u4e00-\u9fff]{2,}", query)})
@@ -501,8 +510,11 @@ async def authorized_compile_candidates(
             for binding in bindings:
                 event = await db.get(KnowledgeContributionOutbox, binding.event_id)
                 source_policy = await db.get(KnowledgeContributionPolicy, event.tenant_key) if event else None
+                consent = await db.get(KnowledgeContributionUserConsent,
+                                       (event.tenant_key, event.user_id)) if event else None
                 if (not event or event.status in INACTIVE or not _authorized(source_policy, _now())
-                        or event.authorization_epoch != _epoch(source_policy)):
+                        or not _user_authorized(consent, _now())
+                        or event.authorization_epoch != _authorization_epoch(source_policy, consent)):
                     provenance = []
                     break
                 provenance.append({
@@ -687,6 +699,60 @@ def _wiki_summary(path_text: str, mtime_ns: int) -> str:
         if value:
             return value[:220]
     return ""
+
+
+def reader_book_body(book: dict[str, Any], wiki: dict[str, Any]) -> dict[str, Any] | None:
+    """Map the existing live Wiki read contract into reader sections."""
+    body = str(wiki.get("content") or "").strip()
+    if not body:
+        return None
+    version = str(wiki.get("version") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", version):
+        return None
+    # Reader output keeps the authored labels but never exposes Raw/Wiki paths,
+    # image sources, or external destinations as clickable authorization bypasses.
+    body = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", body)
+    body = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", body)
+    body = re.sub(
+        r"!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]",
+        lambda match: match.group(2) or match.group(1),
+        body,
+    )
+    body = re.sub(r"<?https?://[^\s)>]+>?", "（链接已隐藏）", body)
+    sections: list[dict[str, Any]] = []
+    title, level, lines = "开篇", 1, []
+    saw_heading = fenced = False
+    for line in body.splitlines():
+        fence = re.match(r"^\s*(```|~~~)", line)
+        heading = None if fenced else re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+        if heading:
+            if saw_heading or any(value.strip() for value in lines):
+                sections.append({"title": title, "level": level, "markdown": "\n".join(lines).strip()})
+            title, level, lines = heading.group(2).strip(), len(heading.group(1)), []
+            saw_heading = True
+        else:
+            lines.append(line)
+        if fence:
+            fenced = not fenced
+    if saw_heading or any(value.strip() for value in lines):
+        sections.append({
+            "title": title if saw_heading else "正文",
+            "level": level,
+            "markdown": "\n".join(lines).strip(),
+        })
+    for index, section in enumerate(sections, start=1):
+        section["id"] = f"section-{index}"
+    if not sections:
+        return None
+    return {
+        "book_id": book["id"],
+        "title": book["title"],
+        "author": book["author"],
+        "content_version": version,
+        "edition": 1,
+        "citation": str(wiki.get("citation") or ""),
+        "sections": sections,
+    }
 
 
 def bookshelf_catalog(

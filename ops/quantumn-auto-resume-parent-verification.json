@@ -1,0 +1,33 @@
+{
+  "backend": {
+    "sha": "881222d58b898dae0d0ad4e69b1f315e8c1d962f",
+    "github_sha_verified": true,
+    "server_sha_verified": true,
+    "source_hashes_match": ["backend/api/knowledge.py", "backend/api/knowledge_policy.py", "backend/services/knowledge_catalog.py"],
+    "api_ready": true,
+    "bridge_healthy": true,
+    "rollback_exists": "/opt/releases/ai-lab-platform-fbd58f9b9d89.m6iIqy",
+    "full_python_passed": 1339,
+    "full_python_skipped": 2,
+    "junit": "/tmp/quantumn-auto-resume-integrated-full.xml",
+    "real_joint_read_after_deploy": "pending"
+  },
+  "ios": {
+    "source_status": "uncommitted task changes over backend sha",
+    "signed_tests_passed": 114,
+    "signed_tests_failed": 0,
+    "signed_tests_skipped": 0,
+    "xcresult": "/tmp/quantumn-auto-resume-parent-signed-final.xcresult",
+    "test_simulator": "8F2B0FE3-D038-4391-9E2F-914C3A2EFDFC",
+    "signed_build": "/tmp/quantumn-auto-resume-signed-delivery/Build/Products/Debug-iphonesimulator/AIPlatformApp.app",
+    "installed_on_real_account_simulator": "0BA31412-9B75-4B69-9380-BED812A71C21",
+    "login_retained_screenshot": "/tmp/quantumn-auto-resume-installed.png",
+    "prefilled_query_screenshot": "/tmp/quantumn-switch-test-draft.png",
+    "query_sent": false,
+    "real_screen_switch_acceptance": "blocked: CGSessionCopyCurrentDictionary reports CGSSessionScreenIsLocked=1; desktop frontmost loginwindow",
+    "testflight_uploaded": false
+  },
+  "overall": "not complete; user must unlock Mac for real UI acceptance",
+  "private_notes_deleted": false,
+  "credentials_exported": false
+}

@@ -36,6 +36,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// merely shows that it is reconciling or monitoring the existing Run.
     @Published public private(set) var reconcilingMessageIDs: Set<String> = []
     @Published public private(set) var backgroundProcessingSessionIDs: Set<String> = []
+    @Published public private(set) var confirmedRunningMessageIDs: Set<String> = []
 
     public let sessionManager: SessionManager
     public weak var appState: AppState?
@@ -72,10 +73,43 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// Avoid synchronous SQLite rehydration every time SwiftUI merely presents the same Tab again.
     private var loadedSessionId: String? = nil
     private var loadedAccountFingerprint: String? = nil
+    private let hasAuthenticatedSession: @MainActor () -> Bool
+    private let fetchDurableChatRunRequest: @MainActor (String, Int) async throws -> DurableChatReplayDTO
+    private let fetchChatStatusRequest: @MainActor (String, Bool, String?) async throws -> ChatStatusDTO
+    private let fetchAnswerBlocksRequest: @MainActor (String, String?, Int) async throws -> AnswerBlockPageDTO
+    private let cancelRunRequest: @MainActor (String, String?) async throws -> Void
+    private let recoverySleep: @MainActor (UInt64) async -> Void
 
-    public init(sessionManager: SessionManager? = nil, appState: AppState? = nil) {
+    public init(
+        sessionManager: SessionManager? = nil,
+        appState: AppState? = nil,
+        hasAuthenticatedSession: @escaping @MainActor () -> Bool = {
+            APIClient.shared.currentToken() != nil
+        },
+        fetchDurableChatRun: @escaping @MainActor (String, Int) async throws -> DurableChatReplayDTO = {
+            try await APIClient.shared.fetchDurableChatRun(runId: $0, after: $1)
+        },
+        fetchChatStatus: @escaping @MainActor (String, Bool, String?) async throws -> ChatStatusDTO = {
+            try await APIClient.shared.fetchChatStatus(sessionId: $0, consume: $1, agentId: $2)
+        },
+        fetchAnswerBlocks: @escaping @MainActor (String, String?, Int) async throws -> AnswerBlockPageDTO = {
+            try await APIClient.shared.fetchAnswerBlocks(runId: $0, cursor: $1, maxBlocks: $2)
+        },
+        cancelRun: @escaping @MainActor (String, String?) async throws -> Void = {
+            try await APIClient.shared.cancelStream(sessionId: $0, agentId: $1)
+        },
+        recoverySleep: @escaping @MainActor (UInt64) async -> Void = {
+            try? await Task.sleep(nanoseconds: $0)
+        }
+    ) {
         self.sessionManager = sessionManager ?? SessionManager.shared
         self.appState = appState
+        self.hasAuthenticatedSession = hasAuthenticatedSession
+        self.fetchDurableChatRunRequest = fetchDurableChatRun
+        self.fetchChatStatusRequest = fetchChatStatus
+        self.fetchAnswerBlocksRequest = fetchAnswerBlocks
+        self.cancelRunRequest = cancelRun
+        self.recoverySleep = recoverySleep
         restoreActiveSession()
         loadedAccountFingerprint = self.sessionManager.activeAccountFingerprint
         refreshQuickCommands()
@@ -100,6 +134,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         backgroundRunRequests.removeAll()
         reconcilingMessageIDs.removeAll()
         backgroundProcessingSessionIDs.removeAll()
+        confirmedRunningMessageIDs.removeAll()
         isGenerating = false
         inflight = nil
         pendingQueue.removeAll()
@@ -152,7 +187,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func restoreActiveSession(force: Bool = false) {
         let sid = sessionManager.activeSessionID()
         guard force || loadedSessionId != sid else { return }
-        applyHistoryPage(sessionManager.latestPage(for: sid), isLatest: true, startsAtBottom: true)
+        applyHistoryPage(sessionManager.latestVisiblePage(for: sid), isLatest: true, startsAtBottom: true)
         loadedSessionId = sid
         self.quotedContext = nil
         appState?.selectedAgentId = sessionManager.agentId(for: sid)
@@ -189,10 +224,12 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// 回前台、重建 ChatView 或切回会话时，仅对账既有 server-side Run。
     /// 不重发原问题；running 进入 status monitor，只有明确 not_found/timeout 才允许用户重跑。
     public func reconcileActiveRun() {
-        guard !isGenerating, APIClient.shared.currentToken() != nil else { return }
+        guard !isGenerating, hasAuthenticatedSession() else { return }
         let sid = sessionManager.activeSessionID()
         guard let outputIndex = messages.lastIndex(where: {
-            $0.clarifyBlock == nil && ($0.role == .interrupted || $0.pending || $0.isStreaming)
+            $0.clarifyBlock == nil
+                && !$0.degraded
+                && ($0.role == .interrupted || $0.pending || $0.isStreaming)
         }) else { return }
         let outputId = messages[outputIndex].id
         // ChatView can invoke reconciliation from onAppear, activeTab and
@@ -203,13 +240,12 @@ public final class TenantSessionCoordinator: ObservableObject {
             messageId: outputId,
             reconcilingMessageIDs: reconcilingMessageIDs
         ) else { return }
-        if let req = backgroundRunRequests[sid], backgroundRunMonitors[sid] != nil {
-            inflight = req
-            isGenerating = true
-            reconcilingMessageIDs.insert(outputId)
-            return
-        }
-        if let runId = messages[outputIndex].runId, !runId.isEmpty {
+        if let runId = Self.durableRunId(for: messages[outputIndex]) {
+            backgroundRunMonitors[sid]?.cancel()
+            backgroundRunMonitors.removeValue(forKey: sid)
+            backgroundRunRequests.removeValue(forKey: sid)
+            backgroundProcessingSessionIDs.remove(sid)
+            confirmedRunningMessageIDs.remove(outputId)
             reconcilingMessageIDs.insert(outputId)
             startDurableRunMonitor(
                 runId: runId,
@@ -219,28 +255,43 @@ public final class TenantSessionCoordinator: ObservableObject {
             )
             return
         }
+        if let req = backgroundRunRequests[sid], backgroundRunMonitors[sid] != nil {
+            inflight = req
+            isGenerating = true
+            reconcilingMessageIDs.insert(outputId)
+            return
+        }
         guard let userMessage = messages[..<outputIndex].last(where: { $0.role == .user })
             ?? sessionManager.previousUserMessage(before: outputId, sessionId: sid) else { return }
         let agentId = sessionManager.agentId(for: sid)
         let taskEpoch = tenantEpoch
+        let accountFingerprint = sessionManager.activeAccountFingerprint
         reconcilingMessageIDs.insert(outputId)
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
             var handedOffToRecoveredMonitor = false
             defer {
-                if !handedOffToRecoveredMonitor {
+                if !handedOffToRecoveredMonitor, self.tenantEpoch == taskEpoch {
                     self.reconcilingMessageIDs.remove(outputId)
                 }
             }
+            guard self.tenantEpoch == taskEpoch,
+                  self.sessionManager.activeAccountFingerprint == accountFingerprint,
+                  self.sessionManager.activeSessionID() == sid else { return }
             do {
-                let status = try await APIClient.shared.fetchChatStatus(
-                    sessionId: sid, consume: true, agentId: agentId
-                )
+                let status = try await self.fetchChatStatusRequest(sid, true, agentId)
                 guard self.tenantEpoch == taskEpoch,
+                      self.sessionManager.activeAccountFingerprint == accountFingerprint,
                       self.sessionManager.activeSessionID() == sid else { return }
                 if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
-                    self.applyRecoveredAnswer(answer, outputMessageId: outputId)
+                    self.confirmedRunningMessageIDs.remove(outputId)
+                    self.applyRecoveredAnswer(
+                        answer,
+                        answerProjection: status.answerProjection,
+                        reasoningSteps: status.reasoning,
+                        outputMessageId: outputId
+                    )
                     self.backgroundRunMonitors[sid]?.cancel()
                     self.backgroundRunMonitors.removeValue(forKey: sid)
                     self.backgroundRunRequests.removeValue(forKey: sid)
@@ -248,6 +299,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                     return
                 }
                 if status.status == "running" {
+                    self.confirmedRunningMessageIDs.insert(outputId)
                     let req = InFlightRequest(
                         id: outputId, sessionId: sid, text: userMessage.content,
                         quote: userMessage.quotedContext, agentId: agentId
@@ -280,20 +332,29 @@ public final class TenantSessionCoordinator: ObservableObject {
         after eventSequence: Int
     ) {
         let taskEpoch = tenantEpoch
+        let accountFingerprint = sessionManager.activeAccountFingerprint
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.reconcilingMessageIDs.remove(outputMessageId) }
+            defer {
+                if self.tenantEpoch == taskEpoch {
+                    self.reconcilingMessageIDs.remove(outputMessageId)
+                }
+            }
             var cursor = eventSequence
-            while !Task.isCancelled, self.tenantEpoch == taskEpoch {
+            var consecutiveFailures = 0
+            while !Task.isCancelled,
+                  self.tenantEpoch == taskEpoch,
+                  self.sessionManager.activeAccountFingerprint == accountFingerprint,
+                  self.sessionManager.activeSessionID() == sessionId {
                 do {
-                    let replay = try await APIClient.shared.fetchDurableChatRun(
-                        runId: runId,
-                        after: cursor
-                    )
-                    guard self.sessionManager.activeSessionID() == sessionId,
+                    let replay = try await self.fetchDurableChatRunRequest(runId, cursor)
+                    guard self.tenantEpoch == taskEpoch,
+                          self.sessionManager.activeAccountFingerprint == accountFingerprint,
+                          self.sessionManager.activeSessionID() == sessionId,
                           let index = self.messages.firstIndex(where: { $0.id == outputMessageId })
                     else { return }
+                    consecutiveFailures = 0
                     cursor = max(cursor, replay.run.eventSequence)
                     self.messages[index].runId = runId
                     self.messages[index].lastEventSequence = cursor
@@ -302,8 +363,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.applyAnswerPage(page, messageIndex: index, replace: true)
                     }
                     if status == "completed" {
+                        self.confirmedRunningMessageIDs.remove(outputMessageId)
                         self.messages[index].role = .assistant
-                        if let final = replay.run.finalAnswer { self.messages[index].content = final }
+                        if replay.run.answerProjection == nil,
+                           let final = replay.run.finalAnswer, !final.isEmpty {
+                            self.messages[index].content = final
+                        }
                         self.messages[index].pending = false
                         self.messages[index].isStreaming = false
                         self.messages[index].degraded = false
@@ -314,20 +379,26 @@ public final class TenantSessionCoordinator: ObservableObject {
                         return
                     }
                     if status == "failed" || status == "cancelled" {
-                        self.messages[index].role = .interrupted
+                        self.confirmedRunningMessageIDs.remove(outputMessageId)
+                        self.messages[index].role = status == "failed" ? .interrupted : .assistant
                         self.messages[index].pending = false
                         self.messages[index].isStreaming = false
                         self.messages[index].degraded = status == "failed"
-                        if self.messages[index].content.isEmpty {
-                            self.messages[index].content = status == "cancelled"
-                                ? "任务已取消"
-                                : "任务执行失败（\(replay.run.errorCode)）"
+                        let terminalText = status == "cancelled"
+                            ? "任务已取消"
+                            : "任务执行失败（\(replay.run.errorCode)）"
+                        if !self.messages[index].content.contains(terminalText) {
+                            self.messages[index].content += self.messages[index].content.isEmpty
+                                ? terminalText
+                                : "\n\n\(terminalText)"
                         }
+                        self.messages[index].settleReasoningForCompletion()
                         self.commitSession()
                         self.finishGeneration()
                         return
                     }
                     self.messages[index].role = .assistant
+                    self.confirmedRunningMessageIDs.insert(outputMessageId)
                     if let partial = replay.run.partialAnswer, !partial.isEmpty {
                         self.messages[index].content = partial
                     }
@@ -336,9 +407,12 @@ public final class TenantSessionCoordinator: ObservableObject {
                     self.isGenerating = true
                     self.commitSession()
                 } catch {
-                    // Offline/unknown keeps the persisted cursor for the next foreground reconciliation.
+                    consecutiveFailures += 1
                 }
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                let delay = consecutiveFailures == 0
+                    ? 2_000_000_000
+                    : Self.durableRecoveryDelayNanoseconds(failure: consecutiveFailures)
+                await self.recoverySleep(delay)
             }
         }
     }
@@ -369,9 +443,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                 return
             }
             do {
-                let status = try await APIClient.shared.fetchChatStatus(
-                    sessionId: sid, consume: true, agentId: agentId
-                )
+                let status = try await self.fetchChatStatusRequest(sid, true, agentId)
                 guard let currentIdx = self.messages.firstIndex(where: { $0.id == messageId }) else { return }
                 if let pending = status.clarify, pending.clarifyId == block.clarifyId {
                     if let blockIdx = self.messages[currentIdx].blocks.firstIndex(where: {
@@ -429,6 +501,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         if !preservesPreAcceptanceSubmission {
             tenantEpoch += 1
             cancelAllTasksAndAnimations()
+            reconcilingMessageIDs.removeAll()
+            confirmedRunningMessageIDs.removeAll()
             isGenerating = false
             inflight = nil
         }
@@ -483,6 +557,8 @@ public final class TenantSessionCoordinator: ObservableObject {
         if !preservesPreAcceptanceSubmission {
             tenantEpoch += 1
             cancelAllTasksAndAnimations()
+            reconcilingMessageIDs.removeAll()
+            confirmedRunningMessageIDs.removeAll()
             isGenerating = false
             inflight = nil
         }
@@ -570,7 +646,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func prepareForBackground() {
         guard let req = inflight else {
             commitSession()
+            tenantEpoch += 1
             stopStatusPolling()
+            reconcilingMessageIDs.removeAll()
             isGenerating = false
             return
         }
@@ -587,7 +665,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         startBackgroundRunMonitor(req: req, outputMessageId: outputId)
         currentChatTask?.cancel()
         currentChatTask = nil
+        tenantEpoch += 1
         stopStatusPolling()
+        reconcilingMessageIDs.removeAll()
+        confirmedRunningMessageIDs.removeAll()
         isGenerating = false
         inflight = nil
     }
@@ -633,6 +714,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     private func startBackgroundRunMonitor(req: InFlightRequest, outputMessageId: String) {
         backgroundProcessingSessionIDs.insert(req.sessionId)
         guard backgroundRunMonitors[req.sessionId] == nil else { return }
+        let accountFingerprint = sessionManager.activeAccountFingerprint
         backgroundRunRequests[req.sessionId] = req
         backgroundRunMonitors[req.sessionId] = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -640,22 +722,32 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.backgroundRunMonitors.removeValue(forKey: req.sessionId)
                 self.backgroundRunRequests.removeValue(forKey: req.sessionId)
                 self.backgroundProcessingSessionIDs.remove(req.sessionId)
-                self.reconcilingMessageIDs.remove(outputMessageId)
             }
             var attempts = 0
-            while attempts < 360, !Task.isCancelled {
+            while attempts < 360, !Task.isCancelled,
+                  self.sessionManager.activeAccountFingerprint == accountFingerprint {
                 do {
-                    let status = try await APIClient.shared.fetchChatStatus(
-                        sessionId: req.sessionId, consume: true, agentId: req.agentId
+                    let status = try await self.fetchChatStatusRequest(
+                        req.sessionId, true, req.agentId
                     )
+                    guard !Task.isCancelled,
+                          self.sessionManager.activeAccountFingerprint == accountFingerprint
+                    else { return }
                     if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                         self.sessionManager.applyCompletedStatus(
                             sessionId: req.sessionId,
                             requestId: outputMessageId,
-                            answer: answer
+                            answer: answer,
+                            answerProjection: status.answerProjection,
+                            reasoningSteps: status.reasoning?.map { $0.toReasoningStep() }
                         )
                         if self.sessionManager.activeSessionID() == req.sessionId {
-                            self.applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                            self.applyRecoveredAnswer(
+                                answer,
+                                answerProjection: status.answerProjection,
+                                reasoningSteps: status.reasoning,
+                                outputMessageId: outputMessageId
+                            )
                             if self.inflight?.sessionId == req.sessionId {
                                 self.finishGeneration()
                             }
@@ -750,6 +842,10 @@ public final class TenantSessionCoordinator: ObservableObject {
     public func sendMessage(text explicitText: String? = nil, regenerate: Bool = false) {
         let text = (explicitText ?? inputText).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
+        guard reconcilingMessageIDs.isEmpty else {
+            showToast("正在续接原任务，请稍候")
+            return
+        }
 
         if !isLatestPage { returnToLatestMessages() }
 
@@ -1488,13 +1584,33 @@ public final class TenantSessionCoordinator: ObservableObject {
     /// SSE 结束后的唯一恢复路径：completed 回填；running 追踪；不确定状态保留恢复入口。
     @discardableResult
     private func recoverAfterStreamEnd(_ req: InFlightRequest, outputMessageId: String) async -> Bool {
-        do {
-            let status = try await APIClient.shared.fetchChatStatus(
-                sessionId: req.sessionId, consume: true, agentId: req.agentId
+        if sessionManager.activeSessionID() == req.sessionId,
+           let index = messages.firstIndex(where: { $0.id == outputMessageId }),
+           let runId = Self.durableRunId(for: messages[index]) {
+            messages[index].role = .assistant
+            messages[index].pending = true
+            messages[index].isStreaming = true
+            messages[index].degraded = false
+            reconcilingMessageIDs.insert(outputMessageId)
+            startDurableRunMonitor(
+                runId: runId,
+                sessionId: req.sessionId,
+                outputMessageId: outputMessageId,
+                after: messages[index].lastEventSequence
             )
+            commitSession()
+            return true
+        }
+        do {
+            let status = try await fetchChatStatusRequest(req.sessionId, true, req.agentId)
             if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                 if sessionManager.activeSessionID() == req.sessionId {
-                    applyRecoveredAnswer(answer, outputMessageId: outputMessageId)
+                    applyRecoveredAnswer(
+                        answer,
+                        answerProjection: status.answerProjection,
+                        reasoningSteps: status.reasoning,
+                        outputMessageId: outputMessageId
+                    )
                     if let index = messages.firstIndex(where: { $0.id == outputMessageId }) {
                         markMissingKnowledgeProposalIfNeeded(
                             userText: req.text, messageIndex: index
@@ -1505,7 +1621,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                     sessionManager.applyCompletedStatus(
                         sessionId: req.sessionId,
                         requestId: outputMessageId,
-                        answer: answer
+                        answer: answer,
+                        answerProjection: status.answerProjection,
+                        reasoningSteps: status.reasoning?.map { $0.toReasoningStep() }
                     )
                 }
                 return false
@@ -1519,9 +1637,6 @@ public final class TenantSessionCoordinator: ObservableObject {
                     return true
                 }
                 if let idx = messages.firstIndex(where: { $0.id == outputMessageId }) {
-                    if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        messages[idx].content = "连接暂时中断，正在后台继续。返回本页后会恢复同一任务。"
-                    }
                     messages[idx].pending = true
                     messages[idx].isStreaming = true
                     messages[idx].degraded = false
@@ -1542,9 +1657,6 @@ public final class TenantSessionCoordinator: ObservableObject {
                 id: outputMessageId,
                 sessionId: req.sessionId
             ) {
-                if stored.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    stored.content = "连接暂时中断，已保留当前任务。请稍后返回本页恢复。"
-                }
                 stored.role = .interrupted
                 stored.pending = false
                 stored.isStreaming = false
@@ -1554,9 +1666,6 @@ public final class TenantSessionCoordinator: ObservableObject {
             return false
         }
         if let idx = messages.firstIndex(where: { $0.id == outputMessageId }) {
-            if messages[idx].content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                messages[idx].content = "连接暂时中断，已保留当前任务。请稍后返回本页恢复。"
-            }
             messages[idx].role = .interrupted
             messages[idx].pending = false
             messages[idx].isStreaming = false
@@ -1566,10 +1675,20 @@ public final class TenantSessionCoordinator: ObservableObject {
         return false
     }
 
-    private func applyRecoveredAnswer(_ answer: String, outputMessageId: String) {
+    private func applyRecoveredAnswer(
+        _ answer: String,
+        answerProjection: AnswerBlockPageDTO? = nil,
+        reasoningSteps: [ChatReasoningStepDTO]? = nil,
+        outputMessageId: String
+    ) {
         guard let idx = messages.firstIndex(where: { $0.id == outputMessageId }) else { return }
         messages[idx].role = .assistant
-        messages[idx].content = answer
+        replaceReasoningSteps(reasoningSteps, messageIndex: idx)
+        if let answerProjection {
+            applyAnswerPage(answerProjection, messageIndex: idx, replace: true)
+        } else {
+            messages[idx].content = answer
+        }
         messages[idx].pending = false
         messages[idx].isStreaming = false
         messages[idx].degraded = false
@@ -1601,13 +1720,17 @@ public final class TenantSessionCoordinator: ObservableObject {
               let cursor = messages[index].answerNextCursor,
               messages[index].answerHasMore else { return }
         let expectedRevision = messages[index].answerRevision
+        let expectedEpoch = tenantEpoch
+        let expectedAccount = sessionManager.activeAccountFingerprint
+        let expectedSession = sessionManager.activeSessionID()
         Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let page = try await APIClient.shared.fetchAnswerBlocks(
-                    runId: runId, cursor: cursor
-                )
-                guard let current = self.messages.firstIndex(where: { $0.id == messageId }),
+                let page = try await self.fetchAnswerBlocksRequest(runId, cursor, 10)
+                guard self.tenantEpoch == expectedEpoch,
+                      self.sessionManager.activeAccountFingerprint == expectedAccount,
+                      self.sessionManager.activeSessionID() == expectedSession,
+                      let current = self.messages.firstIndex(where: { $0.id == messageId }),
                       expectedRevision == nil || expectedRevision == page.revision else {
                     self.showToast("回答版本已变化，请重新打开")
                     return
@@ -1615,16 +1738,29 @@ public final class TenantSessionCoordinator: ObservableObject {
                 self.applyAnswerPage(page, messageIndex: current, replace: false)
                 self.commitSession()
             } catch APIError.server(409, _) {
+                guard self.tenantEpoch == expectedEpoch,
+                      self.sessionManager.activeAccountFingerprint == expectedAccount,
+                      self.sessionManager.activeSessionID() == expectedSession else { return }
                 do {
-                    let first = try await APIClient.shared.fetchAnswerBlocks(runId: runId, cursor: nil)
-                    guard let current = self.messages.firstIndex(where: { $0.id == messageId }) else { return }
+                    let first = try await self.fetchAnswerBlocksRequest(runId, nil, 10)
+                    guard self.tenantEpoch == expectedEpoch,
+                          self.sessionManager.activeAccountFingerprint == expectedAccount,
+                          self.sessionManager.activeSessionID() == expectedSession,
+                          let current = self.messages.firstIndex(where: { $0.id == messageId })
+                    else { return }
                     self.applyAnswerPage(first, messageIndex: current, replace: true)
                     self.commitSession()
                     self.showToast("回答版本已更新，已重新载入")
                 } catch {
+                    guard self.tenantEpoch == expectedEpoch,
+                          self.sessionManager.activeAccountFingerprint == expectedAccount,
+                          self.sessionManager.activeSessionID() == expectedSession else { return }
                     self.showToast("回答版本已变化，请重新打开")
                 }
             } catch {
+                guard self.tenantEpoch == expectedEpoch,
+                      self.sessionManager.activeAccountFingerprint == expectedAccount,
+                      self.sessionManager.activeSessionID() == expectedSession else { return }
                 self.showToast("后续内容加载失败，请重试")
             }
         }
@@ -1637,17 +1773,31 @@ public final class TenantSessionCoordinator: ObservableObject {
               message.answerHasMore else { return message.content }
         var content = message.content
         let revision = message.answerRevision
-        while true {
-            let page = try await APIClient.shared.fetchAnswerBlocks(
-                runId: runId, cursor: cursor, maxBlocks: 20
-            )
+        var seenCursors = Set<String>()
+        let maximumRequests = Self.maximumAnswerPageRequests(
+            availableBlockCount: message.answerAvailableBlockCount,
+            loadedBlockCount: message.answerBlocks.count,
+            maxBlocks: 20
+        )
+        for _ in 0..<maximumRequests {
+            guard seenCursors.insert(cursor).inserted else {
+                throw APIError.server(409, "answer cursor repeated")
+            }
+            let page = try await fetchAnswerBlocksRequest(runId, cursor, 20)
             guard revision == nil || revision == page.revision else {
                 throw APIError.server(409, "answer revision changed")
             }
             content += page.blocks.map(\.content).joined()
-            guard page.hasMore, let next = page.nextCursor, next != cursor else { return content }
+            guard page.hasMore else { return content }
+            guard !page.blocks.isEmpty else {
+                throw APIError.server(409, "answer pagination made no progress")
+            }
+            guard let next = page.nextCursor, next != cursor else {
+                throw APIError.server(409, "answer cursor did not advance")
+            }
             cursor = next
         }
+        throw APIError.server(409, "answer pagination exceeded advertised block count")
     }
 
     // MARK: - Clarify 选项卡会话推进（原 SSE 解锁续跑）
@@ -1796,9 +1946,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         setClarifyState(messageIndex: idx, state: .reconciling, selection: selection)
         commitSession()
         do {
-            let status = try await APIClient.shared.fetchChatStatus(
-                sessionId: sessionId, consume: true, agentId: agentId
-            )
+            let status = try await fetchChatStatusRequest(sessionId, true, agentId)
             print("[Clarify] reconcile clarify=\(local.clarifyId ?? "legacy") phase=\(status.phase ?? status.status)")
             if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                 markClarifySubmitted(messageIndex: idx, selection: selection)
@@ -1864,23 +2012,40 @@ public final class TenantSessionCoordinator: ObservableObject {
         agentId: String?,
         outputMessageId: String
     ) {
+        let taskEpoch = tenantEpoch
+        let accountFingerprint = sessionManager.activeAccountFingerprint
         reconcilingMessageIDs.insert(outputMessageId)
         statusPollTask?.cancel()
         statusPollTask = Task { @MainActor [weak self] in
             guard let self else { return }
-            defer { self.reconcilingMessageIDs.remove(outputMessageId) }
+            defer {
+                if self.tenantEpoch == taskEpoch {
+                    self.reconcilingMessageIDs.remove(outputMessageId)
+                }
+            }
             var attempts = 0
             // Bridge watchdog 的服务端上限为 720s；monitor 覆盖完整窗口，避免长调研在 3 分钟处假中断。
-            while attempts < 360 && !Task.isCancelled {
+            while attempts < 360, !Task.isCancelled,
+                  self.tenantEpoch == taskEpoch,
+                  self.sessionManager.activeAccountFingerprint == accountFingerprint,
+                  self.sessionManager.activeSessionID() == sessionId {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
                 guard !Task.isCancelled else { return }
                 do {
-                    let status = try await APIClient.shared.fetchChatStatus(
-                        sessionId: sessionId, consume: true, agentId: agentId
-                    )
+                    let status = try await self.fetchChatStatusRequest(sessionId, true, agentId)
+                    guard self.tenantEpoch == taskEpoch,
+                          self.sessionManager.activeAccountFingerprint == accountFingerprint,
+                          self.sessionManager.activeSessionID() == sessionId
+                    else { return }
                     if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                         if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
-                            self.messages[idx].content = answer
+                            self.replaceReasoningSteps(status.reasoning, messageIndex: idx)
+                            if let page = status.answerProjection {
+                                self.applyAnswerPage(page, messageIndex: idx, replace: true)
+                            } else {
+                                self.messages[idx].content = answer
+                            }
+                            self.messages[idx].role = .assistant
                             self.messages[idx].pending = false
                             self.messages[idx].isStreaming = false
                             self.messages[idx].settleReasoningForCompletion()
@@ -1889,6 +2054,15 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.commitSession()
                         if self.inflight?.id == requestId { self.finishGeneration() }
                         return
+                    }
+                    if status.status == "running",
+                       let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
+                        self.replaceReasoningSteps(status.reasoning, messageIndex: idx)
+                        self.liveProgress = status.latestStep
+                        self.messages[idx].role = .assistant
+                        self.messages[idx].pending = true
+                        self.messages[idx].isStreaming = true
+                        self.commitSession()
                     }
                     if let pending = status.clarify {
                         let block = ClarifyBlock(
@@ -1916,11 +2090,20 @@ public final class TenantSessionCoordinator: ObservableObject {
                         self.commitSession()
                         return
                     }
-                    if ["timeout", "not_found"].contains(status.status) {
+                    if ["timeout", "not_found", "failed", "cancelled"].contains(status.status) {
                         if let idx = self.messages.firstIndex(where: { $0.id == outputMessageId }) {
-                            self.messages[idx].role = .interrupted
-                            self.messages[idx].content = "任务已中断，可确认后恢复"
+                            let cancelled = status.status == "cancelled"
+                            self.messages[idx].role = cancelled ? .assistant : .interrupted
+                            self.messages[idx].pending = false
                             self.messages[idx].isStreaming = false
+                            self.messages[idx].degraded = !cancelled
+                            let terminalText = cancelled ? "任务已取消" : "任务未能完成（\(status.status)）"
+                            if !self.messages[idx].content.contains(terminalText) {
+                                self.messages[idx].content += self.messages[idx].content.isEmpty
+                                    ? terminalText
+                                    : "\n\n\(terminalText)"
+                            }
+                            self.messages[idx].settleReasoningForCompletion()
                         }
                         self.commitSession()
                         if self.inflight?.id == requestId { self.finishGeneration() }
@@ -1931,6 +2114,21 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
                 attempts += 1
             }
+            guard !Task.isCancelled,
+                  self.tenantEpoch == taskEpoch,
+                  self.sessionManager.activeAccountFingerprint == accountFingerprint,
+                  self.sessionManager.activeSessionID() == sessionId,
+                  let index = self.messages.firstIndex(where: { $0.id == outputMessageId })
+            else { return }
+            self.messages[index].role = .interrupted
+            self.messages[index].pending = false
+            self.messages[index].isStreaming = false
+            self.messages[index].degraded = true
+            if self.messages[index].content.isEmpty {
+                self.messages[index].content = "任务状态确认超时"
+            }
+            self.commitSession()
+            if self.inflight?.id == requestId { self.finishGeneration() }
         }
     }
 
@@ -1958,9 +2156,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         clarifySubmissionTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let status = try await APIClient.shared.fetchChatStatus(
-                    sessionId: sid, consume: true, agentId: agentId
-                )
+                let status = try await self.fetchChatStatusRequest(sid, true, agentId)
                 if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
                     self.messages.append(ChatMessage(sessionId: sid, role: .assistant, content: answer))
                     self.commitSession()
@@ -2130,6 +2326,21 @@ public final class TenantSessionCoordinator: ObservableObject {
         messages[idx].blocks = blocks
     }
 
+    private func replaceReasoningSteps(
+        _ serverSteps: [ChatReasoningStepDTO]?, messageIndex: Int
+    ) {
+        guard let serverSteps, !serverSteps.isEmpty,
+              messages.indices.contains(messageIndex) else { return }
+        messages[messageIndex].blocks.removeAll {
+            if case .reasoning = $0 { return true }
+            return false
+        }
+        messages[messageIndex].blocks.insert(
+            .reasoning(serverSteps.map { $0.toReasoningStep() }),
+            at: 0
+        )
+    }
+
     private func revealReasoning(messageId: String, steps: [ReasoningStep]) async {
         animationTasks[messageId]?.cancel()
         let task = Task { @MainActor in
@@ -2189,7 +2400,7 @@ public final class TenantSessionCoordinator: ObservableObject {
                       self.inflight?.id == req.id,
                       self.inflight?.phase == .thinking else { return }
                 do {
-                    let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, agentId: req.agentId)
+                    let status = try await self.fetchChatStatusRequest(sid, false, req.agentId)
                     if status.status == "running" {
                         self.liveProgress = status.latestStep
                     }
@@ -2214,9 +2425,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         stopStatusPolling()
         markCancelled(req: req)
         Task {
-            try? await APIClient.shared.cancelStream(
-                sessionId: req.sessionId, agentId: req.agentId
-            )
+            try? await cancelRunRequest(req.sessionId, req.agentId)
         }
     }
 
@@ -2234,6 +2443,31 @@ public final class TenantSessionCoordinator: ObservableObject {
             reconcilingMessageIDs: reconcilingMessageIDs,
             backgroundProcessingSessionIDs: backgroundProcessingSessionIDs
         )
+    }
+
+    public func shouldPresentAutomaticRecovery(_ message: ChatMessage) -> Bool {
+        Self.shouldPresentAutomaticRecovery(
+            message,
+            activeInFlightMessageID: inflight?.id,
+            reconcilingMessageIDs: reconcilingMessageIDs,
+            backgroundProcessingSessionIDs: backgroundProcessingSessionIDs
+        )
+    }
+
+    nonisolated static func shouldPresentAutomaticRecovery(
+        _ message: ChatMessage,
+        activeInFlightMessageID: String?,
+        reconcilingMessageIDs: Set<String>,
+        backgroundProcessingSessionIDs: Set<String>
+    ) -> Bool {
+        guard !message.degraded else { return false }
+        let isReconnecting = isProcessingExistingRun(
+            message,
+            reconcilingMessageIDs: reconcilingMessageIDs,
+            backgroundProcessingSessionIDs: backgroundProcessingSessionIDs
+        )
+        if activeInFlightMessageID == message.id && !isReconnecting { return false }
+        return isReconnecting || message.role == .interrupted || message.pending || message.isStreaming
     }
 
     nonisolated static func isProcessingExistingRun(
@@ -2261,6 +2495,27 @@ public final class TenantSessionCoordinator: ObservableObject {
         !isCancelled && epochMatches && (activeSessionMatches || detachRequested)
     }
 
+    nonisolated static func durableRunId(for message: ChatMessage) -> String? {
+        guard let runId = message.runId,
+              !runId.isEmpty,
+              runId == runId.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        return runId
+    }
+
+    nonisolated static func durableRecoveryDelayNanoseconds(failure: Int) -> UInt64 {
+        UInt64(1 << min(max(failure, 1), 4)) * 1_000_000_000
+    }
+
+    nonisolated static func maximumAnswerPageRequests(
+        availableBlockCount: Int,
+        loadedBlockCount: Int,
+        maxBlocks _: Int
+    ) -> Int {
+        let available = max(0, availableBlockCount)
+        let loaded = min(max(0, loadedBlockCount), available)
+        return max(1, available - loaded)
+    }
+
     /// 重新生成先对账 server-side Run：completed 回填，running 恢复同一 request 的 monitor；
     /// 只有 Bridge 明确返回 timeout/not_found 时才携带 regenerate=true 创建新 Run。
     public func retryMessage(_ messageId: String) {
@@ -2275,8 +2530,26 @@ public final class TenantSessionCoordinator: ObservableObject {
             ?? sessionManager.previousUserMessage(before: messageId, sessionId: sid) else { return }
         let agentId = sessionManager.agentId(for: sid)
 
-        guard APIClient.shared.currentToken() != nil else {
+        guard hasAuthenticatedSession() else {
             showToast("需要登录后继续会话，请先登录")
+            return
+        }
+
+        if let runId = Self.durableRunId(for: messages[idx]) {
+            messages[idx].role = .assistant
+            messages[idx].pending = true
+            messages[idx].isStreaming = true
+            messages[idx].degraded = false
+            isGenerating = true
+            reconcilingMessageIDs.insert(messageId)
+            startDurableRunMonitor(
+                runId: runId,
+                sessionId: sid,
+                outputMessageId: messageId,
+                after: messages[idx].lastEventSequence
+            )
+            commitSession()
+            showToast("正在恢复原任务")
             return
         }
 
@@ -2292,12 +2565,15 @@ public final class TenantSessionCoordinator: ObservableObject {
                 }
             }
             do {
-                let status = try await APIClient.shared.fetchChatStatus(
-                    sessionId: sid, consume: true, agentId: agentId
-                )
+                let status = try await self.fetchChatStatusRequest(sid, true, agentId)
                 guard !Task.isCancelled else { return }
                 if status.status == "completed", let answer = status.loadedAnswer, !answer.isEmpty {
-                    self.applyRecoveredAnswer(answer, outputMessageId: messageId)
+                    self.applyRecoveredAnswer(
+                        answer,
+                        answerProjection: status.answerProjection,
+                        reasoningSteps: status.reasoning,
+                        outputMessageId: messageId
+                    )
                     self.isGenerating = false
                     return
                 }
@@ -2375,7 +2651,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         let sid = req.sessionId
         if !sid.isEmpty, !demoMode {
             do {
-                let status = try await APIClient.shared.fetchChatStatus(sessionId: sid, consume: true, agentId: req.agentId)
+                let status = try await fetchChatStatusRequest(sid, true, req.agentId)
                 if status.status == "completed",
                    let answer = status.loadedAnswer, !answer.isEmpty {
                     await applyCompletedStatus(req: req, status: status)
@@ -2391,7 +2667,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard req.sessionId == sessionManager.activeSessionID() else {
             sessionManager.applyCompletedStatus(
                 sessionId: req.sessionId, requestId: req.id,
-                answer: status.loadedAnswer ?? "服务暂时不可用，请稍后重试"
+                answer: status.loadedAnswer ?? "服务暂时不可用，请稍后重试",
+                answerProjection: status.answerProjection,
+                reasoningSteps: status.reasoning?.map { $0.toReasoningStep() }
             )
             finishGeneration()
             return
@@ -2407,6 +2685,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         }
         await typewriter(messageId: req.id, answer: status.loadedAnswer ?? "")
         if let idx = messages.firstIndex(where: { $0.id == req.id }) {
+            if let page = status.answerProjection {
+                applyAnswerPage(page, messageIndex: idx, replace: true)
+            }
             messages[idx].pending = false
         }
         finalizeReasoningDuration(for: req.id)
@@ -2451,6 +2732,7 @@ public final class TenantSessionCoordinator: ObservableObject {
 
     private func finishGeneration() {
         let finishedSessionId = inflight?.sessionId
+        let finishedMessageId = inflight?.id
         isGenerating = false
         inflight = nil
         currentChatTask = nil
@@ -2459,6 +2741,9 @@ public final class TenantSessionCoordinator: ObservableObject {
         detachAfterCheckpoint = false
         if let finishedSessionId {
             backgroundProcessingSessionIDs.remove(finishedSessionId)
+        }
+        if let finishedMessageId {
+            confirmedRunningMessageIDs.remove(finishedMessageId)
         }
         waitingSeconds = 0
         generationStartDate = nil

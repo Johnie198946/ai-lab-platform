@@ -1,0 +1,19 @@
+{
+  "scope": "Authorized temporary replacement for physical-device validation, not TestFlight release",
+  "device_id": "CFE79F35-1270-527D-8BD7-9AB60449B6DF",
+  "developer_mode": "enabled",
+  "ddi_services_available": true,
+  "previous_installed_version": "1.0.3 (19)",
+  "validation_bundle_version": "1.0.3 (17)",
+  "version_note": "Debug validation bundle retains current main project version label; contains integrated Build19 navigation and auto-resume changes. Not the previously published Build17 artifact.",
+  "build_exit_code": 0,
+  "build_log": "/tmp/quantumn-integrated-device-validation.log",
+  "app_path": "/tmp/quantumn-integrated-device-validation/Build/Products/Debug-iphoneos/AIPlatformApp.app",
+  "install_success": true,
+  "launch_success": true,
+  "installed_target_readback": "/tmp/quantumn-phone-apps-after-install.json",
+  "uninstall_or_data_clear_performed": false,
+  "login_retention": "not yet visually verified",
+  "physical_long_output_and_resume_acceptance": "pending",
+  "testflight_uploaded": false
+}

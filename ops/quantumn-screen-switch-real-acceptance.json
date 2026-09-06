@@ -1,0 +1,61 @@
+{
+  "scope": "Real authenticated simulator: switch to Safari and return while a read-only answer runs",
+  "simulator_uuid": "0BA31412-9B75-4B69-9380-BED812A71C21",
+  "run_id": "d0b03fb696d54d85bd2248522ade1547",
+  "request_id": "A29E7376-6DBE-475F-96F0-130468AFFB65",
+  "matched_runs_before_return": 1,
+  "matched_runs_after_return": 1,
+  "same_run_id": true,
+  "status_at_return_readback": "running",
+  "blocks_at_return": 94,
+  "final_status": "completed",
+  "final_blocks": 103,
+  "final_event_sequence": 326,
+  "observed": [
+    "Safari foreground confirmed by screenshot",
+    "Return to Quantumn displayed new answer and existing execution-step capsule without manual retry",
+    "No interruption error card visible in return and final screenshots",
+    "Final answer rendered with expand-full-text and copy controls"
+  ],
+  "not_verified": [
+    "Expanded execution-step contents",
+    "File export beyond clipboard copying",
+    "Real-device long-output performance thresholds",
+    "Return when run has already completed in background",
+    "Independent tool-result verification of all sources claimed in answer",
+    "Real-device and full release acceptance"
+  ],
+  "blocker": null,
+  "follow_up": {
+    "screen_unlocked_verified": true,
+    "full_text_expansion": "passed",
+    "pagination_to_final_source_and_final_sentence": "passed",
+    "clipboard_chars": 5169,
+    "clipboard_exact_match_backend": true,
+    "clipboard_and_backend_sha256": "78f5185e124ce61212c4d0b17b7a5710760b985da631b661c4a3ffdf204ae07a",
+    "reading_anchor_switch_return": "pixel-identical content crop",
+    "last_page_switch_return": "pixel-identical content crop",
+    "compared_pixel_crop": [0, 400, 1206, 2550],
+    "evidence": [
+      "/tmp/quantumn-expanded-page.png",
+      "/tmp/quantumn-full-answer-clipboard.txt",
+      "/tmp/quantumn-reader-anchor-before.png",
+      "/tmp/quantumn-reader-anchor-after.png",
+      "/tmp/quantumn-reader-next-batch.png",
+      "/tmp/quantumn-reader-third-batch.png",
+      "/tmp/quantumn-reader-third-batch-return.png",
+      "/tmp/quantumn-reader-return-run.json"
+    ]
+  },
+  "ios_changes": "Still uncommitted in worktree; installed signed acceptance build was used",
+  "testflight_uploaded": false,
+  "evidence": [
+    "/tmp/quantumn-safari-away-confirmed.png",
+    "/tmp/quantumn-screen-switch-returned.png",
+    "/tmp/quantumn-screen-switch-final-visible.png",
+    "/tmp/quantumn-screen-switch-away-run.json",
+    "/tmp/quantumn-screen-switch-return-run.json",
+    "/tmp/quantumn-screen-switch-final-run.json",
+    "/tmp/quantumn-screen-switch-client.log"
+  ]
+}

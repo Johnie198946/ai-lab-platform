@@ -26,6 +26,7 @@ from backend.models.knowledge_contribution import (
     KnowledgeContributionBinding as Binding,
     KnowledgeContributionRun as Run,
     KnowledgeContributionProjectionOperation as Operation,
+    KnowledgeContributionUserConsent as UserConsent,
 )
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ PERMANENTLY_EXCLUDED_KINDS = frozenset({
 })
 DERIVED_KINDS = frozenset({"simulation", "synthetic_hypothesis", "platform_wiki"})
 INACTIVE = frozenset({"withdrawn", "excluded", "archived", "stale"})
+SERVICE_AGREEMENT_VERSION = "service-2026-09-06"
 
 
 def _utc(value: datetime) -> datetime:
@@ -138,9 +140,29 @@ async def _policy(db, tenant: str) -> Policy | None:
     return await db.scalar(select(Policy).where(Policy.tenant_key == tenant).with_for_update())
 
 
+async def _user_consent(db, tenant: str, user: str) -> UserConsent | None:
+    return await db.scalar(select(UserConsent).where(
+        UserConsent.tenant_key == tenant, UserConsent.user_id == user,
+    ).with_for_update())
+
+
 def _authorized(policy: Policy | None, now: datetime) -> bool:
     return bool(policy and policy.enabled and policy.agreement_version
                 and policy.effective_at and _utc(policy.effective_at) <= now)
+
+
+def _user_authorized(consent: UserConsent | None, now: datetime) -> bool:
+    return bool(consent and consent.service_agreement_version == SERVICE_AGREEMENT_VERSION
+                and consent.participation_enabled and consent.participation_effective_at
+                and _utc(consent.participation_effective_at) <= now)
+
+
+def _authorization_epoch(policy: Policy, consent: UserConsent) -> str:
+    return _hash(_epoch(policy), consent.service_agreement_version,
+                 _utc(consent.service_agreement_accepted_at).isoformat(),
+                 _utc(consent.participation_effective_at).isoformat()
+                 if consent.participation_effective_at else None,
+                 consent.participation_enabled)
 
 
 def _summary(event: Event) -> dict[str, Any]:
@@ -158,6 +180,7 @@ async def enqueue_contribution(candidate: ContributionCandidate) -> dict[str, An
     c = candidate
     async with SessionLocal() as db:
         policy = await _policy(db, c.tenant_key)
+        consent = await _user_consent(db, c.tenant_key, c.user_id)
         if c.file_opt_out or c.permanently_excluded or c.source_kind in PERMANENTLY_EXCLUDED_KINDS:
             await _exclude(db, c, "file_opt_out" if c.file_opt_out else "permanent_exclusion")
             await db.commit()
@@ -165,12 +188,14 @@ async def enqueue_contribution(candidate: ContributionCandidate) -> dict[str, An
         if await db.get(Exclusion, c.source_key):
             return None
         now = _now()
-        if not _authorized(policy, now) or _utc(c.source_changed_at) > now:
+        if (not _authorized(policy, now) or not _user_authorized(consent, now)
+                or _utc(c.source_changed_at) > now):
             return None
-        assert policy is not None and policy.effective_at is not None
-        if _utc(c.source_changed_at) < _utc(policy.effective_at) and not policy.historical_backfill:
+        assert policy is not None and policy.effective_at is not None and consent is not None
+        effective_at = max(_utc(policy.effective_at), _utc(consent.participation_effective_at))
+        if _utc(c.source_changed_at) < effective_at:
             return None
-        epoch = _epoch(policy)
+        epoch = _authorization_epoch(policy, consent)
         event_id = "contrib-" + _hash(c.source_key, c.source_revision, c.content_hash,
                                       policy.policy_version, epoch)[:48]
         existing = await db.get(Event, event_id)
@@ -217,6 +242,8 @@ async def enqueue_contribution(candidate: ContributionCandidate) -> dict[str, An
             root_source_fingerprint=_hash(sorted(roots)),
             authorization={"agreement_version": policy.agreement_version,
                            "effective_at": _utc(policy.effective_at).isoformat(),
+                           "personal_agreement_version": consent.service_agreement_version,
+                           "personal_effective_at": _utc(consent.participation_effective_at).isoformat(),
                            "authorization_epoch": epoch, "authorized": True,
                            "file_opt_out": False, "historical_backfill": bool(policy.historical_backfill)},
             business_state={"status": "accepted", "source_key": c.source_key,
@@ -243,6 +270,59 @@ async def enqueue_contribution(candidate: ContributionCandidate) -> dict[str, An
                 raise
             return _summary(existing)
         return _summary(event)
+
+
+async def set_user_contribution_consent(*, tenant_key: str, user_id: str,
+                                        service_agreement_version: str,
+                                        participation_enabled: bool) -> dict[str, Any]:
+    """Record an individual choice using server version/time; never backfill."""
+    now = _now()
+    if service_agreement_version != SERVICE_AGREEMENT_VERSION:
+        raise ValueError("stale service agreement version")
+    async with SessionLocal() as db:
+        await _policy(db, tenant_key)
+        consent = await _user_consent(db, tenant_key, user_id)
+        previous_enabled = bool(consent and consent.participation_enabled)
+        previous_version = consent.service_agreement_version if consent else ""
+        if consent is None:
+            consent = UserConsent(
+                tenant_key=tenant_key,
+                user_id=user_id,
+                service_agreement_version=SERVICE_AGREEMENT_VERSION,
+                service_agreement_accepted_at=now,
+                participation_enabled=participation_enabled,
+                participation_effective_at=now if participation_enabled else None,
+                updated_at=now,
+            )
+            db.add(consent)
+        else:
+            if consent.service_agreement_version != SERVICE_AGREEMENT_VERSION:
+                consent.service_agreement_version = SERVICE_AGREEMENT_VERSION
+                consent.service_agreement_accepted_at = now
+                consent.participation_effective_at = now if participation_enabled else None
+            if participation_enabled != previous_enabled:
+                consent.participation_enabled = participation_enabled
+                consent.participation_effective_at = now if participation_enabled else None
+            if (consent.service_agreement_version, consent.participation_enabled) != (
+                previous_version, previous_enabled
+            ):
+                consent.updated_at = now
+        if (not participation_enabled and previous_enabled) or previous_version not in {"", SERVICE_AGREEMENT_VERSION}:
+            events = list((await db.scalars(select(Event).where(
+                Event.tenant_key == tenant_key, Event.user_id == user_id,
+            ))).all())
+            await _withdraw(db, tenant_key, {event.event_id for event in events})
+        await db.commit()
+        return {
+            "tenant_key": tenant_key,
+            "user_id": user_id,
+            "service_agreement_version": consent.service_agreement_version,
+            "service_agreement_accepted_at": consent.service_agreement_accepted_at,
+            "participation_enabled": consent.participation_enabled,
+            "participation_effective_at": consent.participation_effective_at,
+            "historical_backfill": False,
+            "publication_automatic": False,
+        }
 
 
 async def enqueue_note_contribution(
@@ -387,9 +467,11 @@ async def register_contribution_run(*, tenant_key: str, user_id: str, run_id: st
         raise ValueError("invalid or expired Hermes run")
     async with SessionLocal() as db:
         policy = await _policy(db, tenant_key)
-        if not _authorized(policy, _now()):
+        consent = await _user_consent(db, tenant_key, user_id)
+        if not _authorized(policy, _now()) or not _user_authorized(consent, _now()):
             raise ValueError("authorization unavailable")
-        epoch = _epoch(policy)
+        assert policy is not None and consent is not None
+        epoch = _authorization_epoch(policy, consent)
         ids = sorted(set(event_ids))
         for event_id in ids:
             event = await db.get(Event, event_id)
@@ -523,8 +605,10 @@ async def _authorized_public_reuse(db, projection: Projection, reference: dict[s
     actual = []
     for event in events:
         policy = await db.get(Policy, event.tenant_key) if event else None
+        consent = await db.get(UserConsent, (event.tenant_key, event.user_id)) if event else None
         if (not event or event.status in INACTIVE or not _authorized(policy, _now())
-                or event.authorization_epoch != _epoch(policy)
+                or not _user_authorized(consent, _now())
+                or event.authorization_epoch != _authorization_epoch(policy, consent)
                 or await db.get(Exclusion, event.business_state.get("source_key", ""))):
             raise ValueError("source revoked")
         actual.append({"event_id": event.event_id, "source_revision": event.source_revision,
@@ -564,11 +648,13 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
         raise ValueError("existing Green governance approval required")
     async with SessionLocal() as db:
         policy = await _policy(db, tenant_key)
+        consent = await _user_consent(db, tenant_key, user_id)
         run = await db.get(Run, run_id)
-        if (not _authorized(policy, _now()) or not run
+        if (not _authorized(policy, _now()) or not _user_authorized(consent, _now()) or not run
             or (run.tenant_key, run.user_id) != (tenant_key, user_id)
             or run.status not in {"registered", "accepted"} or _utc(run.expires_at) <= _now()
-            or authorization_epoch != run.authorization_epoch or _epoch(policy) != authorization_epoch):
+            or authorization_epoch != run.authorization_epoch
+            or _authorization_epoch(policy, consent) != authorization_epoch):
             raise ValueError("stale, expired or unauthorized Hermes result")
         events = []
         for event_id in run.event_ids:
@@ -656,9 +742,13 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
             active_events = [await db.get(Event, binding.event_id) for binding in active_bindings]
             for active_event in active_events:
                 active_policy = await db.get(Policy, active_event.tenant_key) if active_event else None
+                active_consent = await db.get(UserConsent, (
+                    active_event.tenant_key, active_event.user_id
+                )) if active_event else None
                 if (not active_event or active_event.status in INACTIVE
                         or not _authorized(active_policy, _now())
-                        or active_event.authorization_epoch != _epoch(active_policy)):
+                        or not _user_authorized(active_consent, _now())
+                        or active_event.authorization_epoch != _authorization_epoch(active_policy, active_consent)):
                     raise ValueError("source revoked")
             evidence = {}
             for active_event in active_events:
@@ -706,12 +796,14 @@ async def set_red_source_archived(*, tenant_key: str, user_id: str, event_id: st
     """
     async with SessionLocal() as db:
         policy = await _policy(db, tenant_key)
+        consent = await _user_consent(db, tenant_key, user_id)
         event = await db.get(Event, event_id)
         if not event or (event.tenant_key, event.user_id) != (tenant_key, user_id):
             raise ValueError("source not found")
         if event.status in {"withdrawn", "excluded", "stale"} or await db.get(Exclusion, event.business_state["source_key"]):
             raise ValueError("source is not restorable")
-        if not archived and (not _authorized(policy, _now()) or event.authorization_epoch != _epoch(policy)):
+        if not archived and (not _authorized(policy, _now()) or not _user_authorized(consent, _now())
+                             or event.authorization_epoch != _authorization_epoch(policy, consent)):
             raise ValueError("authorization changed")
         event.status = "archived" if archived else "pending"
         event.business_state = {**event.business_state, "status": event.status}
@@ -746,10 +838,12 @@ async def authorize_contribution_event(*, tenant_key: str, user_id: str,
     """
     async with SessionLocal() as db:
         policy = await _policy(db, tenant_key)
+        consent = await _user_consent(db, tenant_key, user_id)
         event = await db.get(Event, event_id)
-        if (not _authorized(policy, _now()) or not event
+        if (not _authorized(policy, _now()) or not _user_authorized(consent, _now()) or not event
             or (event.tenant_key, event.user_id) != (tenant_key, user_id)
-            or event.status in INACTIVE or event.authorization_epoch != _epoch(policy)
+            or event.status in INACTIVE
+            or event.authorization_epoch != _authorization_epoch(policy, consent)
             or await db.get(Exclusion, event.business_state.get("source_key", ""))):
             return None
         return {**_summary(event), "tenant_key": tenant_key, "user_id": user_id,

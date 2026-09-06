@@ -14,8 +14,8 @@ from backend.services.knowledge_catalog import (
     authorized_compile_candidates,
 )
 from backend.services.knowledge_contribution import (
-    ContributionCandidate, enqueue_contribution, set_contribution_policy,
-    withdraw_contribution,
+    ContributionCandidate, enqueue_contribution as _enqueue_contribution,
+    set_contribution_policy, set_user_contribution_consent, withdraw_contribution,
 )
 from backend.services.knowledge_pipeline import submit_compile, advance_completed
 from backend.services.knowledge_policy import resolve_policy, mint_capability
@@ -27,6 +27,16 @@ from backend.models.knowledge_contribution import (
 )
 from scripts.chat_run_store import DurableChatRunStore
 from test_knowledge_pipeline import complete, COMPILE, SANITIZE, PRIVACY
+
+
+async def enqueue_contribution(candidate):
+    await set_user_contribution_consent(
+        tenant_key=candidate.tenant_key, user_id=candidate.user_id,
+        service_agreement_version="service-2026-09-06", participation_enabled=True,
+    )
+    return await _enqueue_contribution(ContributionCandidate(
+        **{**candidate.__dict__, "source_changed_at": datetime.now(timezone.utc)}
+    ))
 
 
 def test_compiler_concurrent_cas_has_one_winner(tmp_path):

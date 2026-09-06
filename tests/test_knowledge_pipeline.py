@@ -6,7 +6,8 @@ from uuid import uuid4
 import pytest
 
 from backend.services.knowledge_contribution import (
-    ContributionCandidate, enqueue_contribution, set_contribution_policy,
+    ContributionCandidate, enqueue_contribution as _enqueue_contribution,
+    set_contribution_policy, set_user_contribution_consent,
 )
 from backend.services.knowledge_pipeline import advance_completed, submit_compile
 from backend.services.knowledge_run_adapter import receipt_for, validate_execution
@@ -25,6 +26,16 @@ PRIVACY = {
     "decision": "approve", "reidentification": [], "commercial_secret": [],
     "copyright": [], "prompt_injection": [], "poisoning": [], "novelty": [],
 }
+
+
+async def enqueue_contribution(candidate):
+    await set_user_contribution_consent(
+        tenant_key=candidate.tenant_key, user_id=candidate.user_id,
+        service_agreement_version="service-2026-09-06", participation_enabled=True,
+    )
+    return await _enqueue_contribution(ContributionCandidate(
+        **{**candidate.__dict__, "source_changed_at": datetime.now(timezone.utc)}
+    ))
 
 
 def complete(store, run_id, result):

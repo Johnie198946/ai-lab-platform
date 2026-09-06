@@ -1,0 +1,19 @@
+{
+  "status": "TESTED_PARTIAL",
+  "base_sha": "881222d58b898dae0d0ad4e69b1f315e8c1d962f",
+  "build19_source": "/tmp/ai-lab-ios-knowledge-bookshelf-20260906",
+  "build19_source_head": "c81c5502a874888ed085ef928c15d2fa3705a3e1",
+  "build19_source_dirty_navigation_preserved": true,
+  "integrated_files": ["ios/AIPlatformApp/Views/MainTabView.swift", "ios/AIPlatformApp/Views/Settings/SettingsView.swift"],
+  "integrated_files_exact_match_build19_source": true,
+  "auto_resume_changes_preserved": true,
+  "signed_tests": {"passed": 114, "failed": 0, "skipped": 0, "result_bundle": "/tmp/quantumn-build19-integrated-tests.xcresult"},
+  "real_account_simulator_installed": true,
+  "real_account_login_and_existing_answer_retained": true,
+  "left_edge_navigation_visual_check": "passed",
+  "screenshots": ["/tmp/quantumn-build19-integrated-installed.png", "/tmp/quantumn-integrated-left-edge.png"],
+  "blockers": ["Physical iPhone devicectl state unavailable", "App Store Connect browser lookup timed out; next build number not reserved"],
+  "remaining": ["Integrated-build full screen-switch and knowledge GUI regression", "Physical-device long-output acceptance", "Review and commit/push exact source", "App Store Connect build-number readback", "Archive, upload and Apple processing verification"],
+  "build_number_changed": false,
+  "uploaded": false
+}

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 public struct SettingsView: View {
     @EnvironmentObject private var appState: AppState
@@ -16,6 +17,9 @@ public struct SettingsView: View {
     @State private var cloudAgents: [TenantAgentDTO] = []
     @State private var cloudSkills: [TenantSkillDTO] = []
     @State private var subscriptionSummary: SubscriptionCenterResponse? = nil
+    @State private var contributionConsent: KnowledgeContributionConsentDTO?
+    @State private var contributionConsentBusy = false
+    @State private var contributionConsentError: String?
     @State private var skillPendingDeletion: TenantSkillDTO?
     @State private var isDeletingSkill = false
     @State private var skillDeletionFeedback: SkillDeletionFeedback?
@@ -43,6 +47,9 @@ public struct SettingsView: View {
 
                         // 2. 知识订阅与套餐
                         subscriptionEntryCard
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+
+                        knowledgeContributionCard
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
                         // 3. 我创建的智能体 + 我制作的技能（纯云端真实数据）
@@ -74,6 +81,11 @@ public struct SettingsView: View {
                     cloudSkills = skills
                 }
                 subscriptionSummary = try? await api.fetchSubscriptionCenter()
+                let account = KnowledgeNoteStore.shared.accountFingerprint
+                let consent = try? await api.fetchKnowledgeContributionConsent()
+                if account == KnowledgeNoteStore.shared.accountFingerprint {
+                    contributionConsent = consent
+                }
             }
             .confirmationDialog(
                 "删除技能「\(skillPendingDeletion?.name ?? "")」？",
@@ -144,6 +156,60 @@ public struct SettingsView: View {
         }
         .buttonStyle(SoftButtonStyle())
         .accessibilityLabel("知识订阅与套餐，\(subscriptionSummary?.subscription?.planName ?? "未选择套餐")")
+    }
+
+    private var knowledgeContributionCard: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Toggle(isOn: Binding(
+                get: { contributionConsent?.participationEnabled == true },
+                set: { enabled in Task { await updateContributionConsent(enabled) } }
+            )) {
+                Label("参与知识共建", systemImage: "person.badge.shield.checkmark")
+                    .font(.system(size: 16, weight: .bold))
+            }
+            .disabled(contributionConsentBusy || contributionConsent == nil)
+            Text("这是当前个人账号的独立选择，仅影响同意后新建或修改的内容；不代表租户其他成员，历史笔记不会回填，也不会自动公开。")
+                .font(AppTheme.Typography.micro)
+                .foregroundColor(AppTheme.Colors.textSecondary)
+            if let contributionConsentError {
+                Button("\(contributionConsentError) · 重试") {
+                    Task { await loadContributionConsent() }
+                }
+                .font(AppTheme.Typography.micro.weight(.semibold))
+            }
+        }
+        .padding(AppTheme.Spacing.lg)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.lg, style: .continuous))
+    }
+
+    @MainActor
+    private func loadContributionConsent() async {
+        let account = KnowledgeNoteStore.shared.accountFingerprint
+        let consent = try? await api.fetchKnowledgeContributionConsent()
+        guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+        contributionConsent = consent
+        contributionConsentError = consent == nil ? "设置读取失败" : nil
+    }
+
+    @MainActor
+    private func updateContributionConsent(_ enabled: Bool) async {
+        guard let current = contributionConsent, !contributionConsentBusy else { return }
+        let account = KnowledgeNoteStore.shared.accountFingerprint
+        contributionConsentBusy = true
+        defer { contributionConsentBusy = false }
+        do {
+            let updated = try await api.updateKnowledgeContributionConsent(
+                agreementVersion: current.serviceAgreementVersion,
+                participationEnabled: enabled
+            )
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            contributionConsent = updated
+            contributionConsentError = nil
+        } catch {
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            contributionConsentError = "设置未保存"
+        }
     }
 
     private var settingsOverviewHeader: some View {
@@ -496,7 +562,6 @@ public struct SubscriptionCenterView: View {
     @State private var publicationSecurity = "green"
     @State private var publicationEntitlement = ""
     @State private var publicationOwner = ""
-    @State private var showingPlanManagement = false
     @Namespace private var bookshelfTransition
 
     public init(
@@ -519,9 +584,7 @@ public struct SubscriptionCenterView: View {
         ZStack {
             QuantumMistBackground()
 
-            if showingPlanManagement {
-                subscriptionManagement
-            } else if isLoading, bookshelves.isEmpty {
+            if isLoading, bookshelves.isEmpty {
                 ProgressView("正在整理书架…")
                     .foregroundStyle(AppTheme.Colors.textSecondary)
             } else if let selectedShelfID,
@@ -535,7 +598,7 @@ public struct SubscriptionCenterView: View {
                 inlineError(errorMessage)
                     .padding(AppTheme.Metrics.contentGutter)
             } else {
-                ContentUnavailableView("暂无知识书架", systemImage: "books.vertical", description: Text("可在右上角查看组织权益与订阅状态。"))
+                ContentUnavailableView("暂无知识书架", systemImage: "books.vertical", description: Text("暂时没有可阅读的知识书籍。"))
                     .padding(AppTheme.Metrics.contentGutter)
             }
 
@@ -556,7 +619,7 @@ public struct SubscriptionCenterView: View {
                 .allowsHitTesting(false)
             }
         }
-        .navigationTitle(showingPlanManagement ? "知识订阅" : "知识书架")
+        .navigationTitle("知识书架")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.visible, for: .navigationBar)
         .navigationBarBackButtonHidden(true)
@@ -583,24 +646,10 @@ public struct SubscriptionCenterView: View {
                     .accessibilityLabel("返回知识")
                 }
             }
-            ToolbarItem(placement: .topBarTrailing) {
-                if selectedShelfID == nil {
-                    Button(showingPlanManagement ? "书架" : "权益") {
-                        withAnimation(reduceMotion ? nil : AppTheme.Motion.quick) {
-                            showingPlanManagement.toggle()
-                        }
-                    }
-                    .accessibilityLabel(showingPlanManagement ? "返回知识书架" : "查看组织权益与订阅")
-                }
-            }
         }
         .task {
             guard previewCenter == nil else { return }
-            await load()
             await loadBookshelves()
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            if showingPlanManagement, let center, center.isSuperAdmin { stickyApplicationBar(center) }
         }
         .fullScreenCover(item: $inspectedBook) { book in
             knowledgeBookDetail(book)
@@ -2125,20 +2174,95 @@ struct KnowledgeBookReaderView: View {
 
 private struct KnowledgeBookReadingView: View {
     @EnvironmentObject private var api: APIClient
+    @State private var bookBody: KnowledgeBookBodyDTO?
+    @State private var isLoading = true
+    @State private var loadError: String?
     @State private var progressError: String?
+    @State private var progress = 0.0
+    @State private var lastSentProgress = 0.0
+    @State private var pendingProgressIndex: Int?
+    @State private var selectedExcerpt = ""
+    @State private var selectedSection: KnowledgeBookSectionDTO?
+    @State private var saveMessage: String?
     let book: KnowledgeBookDTO
     let onDismiss: () -> Void
 
-    private func recordReading() async {
+    @MainActor
+    private func loadBody() async {
+        let account = KnowledgeNoteStore.shared.accountFingerprint
+        isLoading = true
+        loadError = nil
         do {
+            let loaded = try await api.fetchKnowledgeBookBody(id: book.id)
             let subscriptions = try await api.fetchBookSubscriptions()
-            guard let subscription = subscriptions.first(where: { $0.book.id == book.id }) else { return }
-            // Opening a guide records recency, not fictional full-book progress.
-            _ = try await api.updateBookProgress(id: book.id, progress: subscription.progress)
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            bookBody = loaded
+            if let subscription = subscriptions.first(where: { $0.book.id == book.id }),
+               subscription.contentVersion == loaded.contentVersion {
+                progress = subscription.progress
+                lastSentProgress = subscription.progress
+            } else {
+                progress = 0
+                lastSentProgress = 0
+            }
+        } catch {
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            loadError = "正文暂时无法读取，请重试。"
+        }
+        isLoading = false
+    }
+
+    @MainActor
+    private func recordReading(sectionIndex: Int) async {
+        guard let bookBody else { return }
+        let account = KnowledgeNoteStore.shared.accountFingerprint
+        let next = Double(sectionIndex + 1) / Double(bookBody.sections.count)
+        guard next > lastSentProgress else { return }
+        progress = next
+        do {
+            _ = try await api.updateBookProgress(
+                id: book.id, progress: next, contentVersion: bookBody.contentVersion
+            )
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            lastSentProgress = next
+            pendingProgressIndex = nil
             progressError = nil
         } catch {
-            progressError = "阅读记录未同步，请重试。"
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            pendingProgressIndex = sectionIndex
+            progressError = "阅读进度未同步，点按重试。"
         }
+    }
+
+    @MainActor
+    private func saveExcerpt() {
+        guard let bookBody, let section = selectedSection else { return }
+        let excerpt = String(selectedExcerpt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(4_000))
+        guard !excerpt.isEmpty else { return }
+        let noteBody = """
+        > [!quote] 书籍摘录
+        > 《\(bookBody.title)》 · \(bookBody.author)
+        > 章节：\(section.title) · 版本：\(bookBody.contentVersion) · 第 \(bookBody.edition) 版
+
+        \(excerpt)
+
+        ---
+        来源书籍 ID：`\(bookBody.bookId)`
+        来源章节 ID：`\(section.id)`
+        引用：`\(bookBody.citation)`
+        """
+        guard let note = KnowledgeNoteStore.shared.createNote(
+            title: "\(bookBody.title)｜\(section.title)摘录",
+            body: noteBody,
+            tags: ["书籍摘录", "quantum-books"]
+        ) else { return }
+        let account = KnowledgeNoteStore.shared.accountFingerprint
+        let markdown = KnowledgeNoteStore.shared.markdown(for: note)
+        Task {
+            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            try? await api.syncKnowledgeNote(id: note.id, markdown: markdown, updatedAt: note.updatedAt)
+        }
+        saveMessage = "已保存到当前账号的笔记"
     }
 
     var body: some View {
@@ -2167,19 +2291,49 @@ private struct KnowledgeBookReadingView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 52)
 
-                    Text("导读")
-                        .font(.system(.title2, design: .serif, weight: .semibold))
-                    Text(book.summary.isEmpty ? "本书正文正在编研中。" : book.summary)
-                        .font(.system(.title3, design: .serif))
-                        .lineSpacing(11)
+                    if isLoading {
+                        ProgressView("正在读取已批准正文…")
+                            .frame(maxWidth: .infinity, minHeight: 180)
+                    } else if let loadError {
+                        ContentUnavailableView(
+                            "正文不可用", systemImage: "book.closed",
+                            description: Text(loadError)
+                        )
+                        Button("重新加载") { Task { await loadBody() } }
+                            .frame(minHeight: 44)
+                    } else if let bookBody {
+                        Text("第 \(bookBody.edition) 版 · 已读 \(Int(progress * 100))%")
+                            .font(.system(.footnote, design: .serif, weight: .semibold))
+                            .foregroundStyle(Color.brown.opacity(0.72))
+                        LazyVStack(alignment: .leading, spacing: 36) {
+                            ForEach(Array(bookBody.sections.enumerated()), id: \.element.id) { index, section in
+                                VStack(alignment: .leading, spacing: 14) {
+                                    Text(section.title)
+                                        .font(.system(section.level == 1 ? .title2 : .title3, design: .serif, weight: .semibold))
+                                    SelectableBookText(markdown: section.markdown) { excerpt in
+                                        selectedExcerpt = excerpt
+                                        selectedSection = section
+                                    }
+                                }
+                                .onAppear { Task { await recordReading(sectionIndex: index) } }
+                            }
+                        }
                         .padding(.top, 22)
-                    Text("本页为已批准 Wiki 编研版导读。完整章节将在正文治理完成后按目录加入。")
-                        .font(.system(.footnote, design: .serif))
-                        .foregroundStyle(Color.brown.opacity(0.68))
-                        .lineSpacing(5)
-                        .padding(.top, 48)
+                        if !selectedExcerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Button("将所选文字摘录到笔记", action: saveExcerpt)
+                                .buttonStyle(.borderedProminent)
+                                .padding(.top, 28)
+                        }
+                        if let saveMessage {
+                            Text(saveMessage).font(.footnote).foregroundStyle(Color.green)
+                        }
+                    }
                     if let progressError {
-                        Button(progressError) { Task { await recordReading() } }
+                        Button(progressError) {
+                            if let index = pendingProgressIndex {
+                                Task { await recordReading(sectionIndex: index) }
+                            }
+                        }
                             .padding(.top, 20)
                     }
                     Spacer(minLength: 120)
@@ -2212,7 +2366,51 @@ private struct KnowledgeBookReadingView: View {
                     .accessibilityLabel("返回书籍概述")
                 }
             }
-            .task(id: book.id) { await recordReading() }
+            .task(id: book.id) { await loadBody() }
+        }
+    }
+}
+
+private struct SelectableBookText: UIViewRepresentable {
+    let markdown: String
+    let onSelection: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onSelection: onSelection) }
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isScrollEnabled = false
+        view.backgroundColor = .clear
+        view.textContainerInset = .zero
+        view.textContainer.lineFragmentPadding = 0
+        view.adjustsFontForContentSizeCategory = true
+        view.delegate = context.coordinator
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        guard context.coordinator.source != markdown else { return }
+        context.coordinator.source = markdown
+        let attributed = (try? AttributedString(markdown: markdown)) ?? AttributedString(markdown)
+        view.attributedText = NSAttributedString(attributed)
+        view.font = UIFont.preferredFont(forTextStyle: .body)
+        view.textColor = UIColor(Color(red: 0.23, green: 0.17, blue: 0.11))
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = proposal.width else { return nil }
+        return uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        var source = ""
+        let onSelection: (String) -> Void
+        init(onSelection: @escaping (String) -> Void) { self.onSelection = onSelection }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard textView.selectedRange.length > 0 else { return }
+            onSelection((textView.text as NSString).substring(with: textView.selectedRange))
         }
     }
 }

@@ -13,6 +13,9 @@ public struct ChatMessageStreamView: View {
     @ObservedObject public var coordinator: TenantSessionCoordinator
     public let onBackgroundTap: () -> Void
     public let onStartTopic: ((ChatMessage) -> Void)?
+    @State private var visibleMessageID: String?
+    @State private var readingPositions: [String: String] = [:]
+    @State private var readingSessionID: String?
 
     public init(
         coordinator: TenantSessionCoordinator,
@@ -65,6 +68,7 @@ public struct ChatMessageStreamView: View {
 
                 Color.clear.frame(height: 1)
             }
+            .scrollTargetLayout()
             .frame(maxWidth: AppTheme.Metrics.readableContentWidth)
             .frame(maxWidth: .infinity)
             .padding(.vertical, AppTheme.Spacing.md)
@@ -77,12 +81,30 @@ public struct ChatMessageStreamView: View {
                     }
             }
         }
-        .id(coordinator.historyPageIdentity)
+        .scrollPosition(id: $visibleMessageID, anchor: .center)
         // 仅设置首次进入会话的位置。不能使用无 role 的 defaultScrollAnchor：
         // 超长消息后继续发送时，它会参与内容尺寸变化的锚点平移，并在 iOS 26
         // 触发消息栈的 AttributeGraph 布局循环。
         .initialScrollAnchor(startsAtBottom: coordinator.historyPageStartsAtBottom)
         .scrollDismissesKeyboard(.immediately)
+        .onAppear {
+            readingSessionID = coordinator.sessionManager.activeSessionID()
+        }
+        .onChange(of: coordinator.sessionManager.activeSessionId) { _, newSessionID in
+            if let oldSessionID = readingSessionID, let visibleMessageID {
+                readingPositions[oldSessionID] = visibleMessageID
+            }
+            let nextSessionID = newSessionID ?? coordinator.sessionManager.activeSessionID()
+            readingSessionID = nextSessionID
+            visibleMessageID = readingPositions[nextSessionID] ?? coordinator.messages.last?.id
+        }
+        .onChange(of: coordinator.historyPageIdentity) { _, _ in
+            guard let sessionID = readingSessionID,
+                  readingPositions[sessionID] == nil else { return }
+            visibleMessageID = coordinator.historyPageStartsAtBottom
+                ? coordinator.messages.last?.id
+                : coordinator.messages.first?.id
+        }
     }
 
     private func historyButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -101,15 +123,13 @@ public struct ChatMessageStreamView: View {
 
     @ViewBuilder
     private func messageRow(_ message: ChatMessage) -> some View {
-        if coordinator.isProcessingExistingRun(message) {
-            BackgroundProcessingCardView()
-        } else if message.role == .interrupted {
-            InterruptedCardView(onRetry: { coordinator.retryMessage(message.id) })
-        } else if message.degraded {
+        if message.degraded {
             DegradedCardView(
                 message: message.content,
                 onRetry: { coordinator.retryMessage(message.id) }
             )
+        } else if coordinator.shouldPresentAutomaticRecovery(message) {
+            automaticRecoveryRow(message)
         } else if message.usesPendingPlaceholder {
             if let req = coordinator.inflight, req.id == message.id {
                 VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
@@ -150,6 +170,24 @@ public struct ChatMessageStreamView: View {
                     if let onStartTopic { onStartTopic(message) }
                     else { coordinator.startTargetedTopic(from: message) }
                 }
+            )
+        }
+    }
+
+    private func automaticRecoveryRow(_ message: ChatMessage) -> some View {
+        var visible = message
+        visible.role = .assistant
+        visible.pending = true
+        visible.isStreaming = true
+        return VStack(alignment: .leading, spacing: AppTheme.Spacing.xs) {
+            MessageBubbleView(
+                message: visible,
+                context: coordinator.makeRenderContext(for: message),
+                onQuoteFollowUp: { quoted in coordinator.quotedContext = quoted }
+            )
+            BackgroundProcessingCardView(
+                isReconnecting: coordinator.isProcessingExistingRun(message),
+                confirmedRunning: coordinator.confirmedRunningMessageIDs.contains(message.id)
             )
         }
     }

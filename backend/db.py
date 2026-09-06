@@ -84,11 +84,39 @@ async def init_db() -> None:
         await conn.run_sync(_migrate_workflow_lifecycle_columns)
         await conn.run_sync(_migrate_workflow_contract_columns)
         await conn.run_sync(_migrate_knowledge_policy_v2_columns)
+        await conn.run_sync(_migrate_book_subscription_version)
         await conn.run_sync(_migrate_showroom_epoch_bigint)
         await conn.run_sync(_migrate_feedback_digest_columns)
         await conn.run_sync(_migrate_workspace_delivery_contract)
         await conn.run_sync(_migrate_workspace_intent_columns)
     await _backfill_workspace_intent_drafts()
+
+
+def _migrate_book_subscription_version(connection) -> None:
+    schema = inspect(connection)
+    if "knowledge_book_subscriptions" not in set(schema.get_table_names()):
+        return
+    existing = {item["name"] for item in schema.get_columns("knowledge_book_subscriptions")}
+    if "content_version" not in existing:
+        connection.exec_driver_sql(
+            "ALTER TABLE knowledge_book_subscriptions "
+            "ADD COLUMN content_version VARCHAR(64) NOT NULL DEFAULT ''"
+        )
+    definitions = {
+        "legacy_progress": "DOUBLE PRECISION" if connection.dialect.name == "postgresql" else "REAL",
+        "legacy_last_read_at": "TIMESTAMP WITH TIME ZONE" if connection.dialect.name == "postgresql" else "DATETIME",
+    }
+    for name, definition in definitions.items():
+        if name not in existing:
+            connection.exec_driver_sql(
+                f"ALTER TABLE knowledge_book_subscriptions ADD COLUMN {name} {definition}"
+            )
+    # Preserve positions predating version tracking, without guessing their hash.
+    connection.exec_driver_sql(
+        "UPDATE knowledge_book_subscriptions "
+        "SET legacy_progress = progress, legacy_last_read_at = last_read_at "
+        "WHERE content_version = '' AND legacy_progress IS NULL"
+    )
 
 
 async def _backfill_workspace_intent_drafts() -> None:

@@ -11,14 +11,25 @@ from backend.services.knowledge_catalog import filter_database_live_documents
 from backend.services.knowledge_contribution import (
     ContributionCandidate,
     accept_contribution_result,
-    enqueue_contribution,
+    enqueue_contribution as _enqueue_contribution,
     register_contribution_run,
     set_contribution_policy,
+    set_user_contribution_consent,
 )
 
 
 def now():
     return datetime.now(timezone.utc)
+
+
+async def enqueue_contribution(candidate):
+    await set_user_contribution_consent(
+        tenant_key=candidate.tenant_key, user_id=candidate.user_id,
+        service_agreement_version="service-2026-09-06", participation_enabled=True,
+    )
+    return await _enqueue_contribution(ContributionCandidate(
+        **{**candidate.__dict__, "source_changed_at": now()}
+    ))
 
 
 def receipts(epoch, tenant, candidate_hash="c" * 64):

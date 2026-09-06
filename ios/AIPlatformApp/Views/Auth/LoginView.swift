@@ -65,6 +65,9 @@ public struct LoginView: View {
     @State private var channels = LoginChannelAvailability()
     @State private var isCapabilityLoading = true
     @State private var capabilityMessage: String?
+    @State private var isAgreementAccepted = false
+    @State private var participatesInKnowledge = false
+    @State private var agreement: AuthAgreementDTO?
     @StateObject private var oauthCoordinator = OAuthSessionCoordinator()
     @FocusState private var focusedField: LoginField?
 
@@ -301,6 +304,7 @@ public struct LoginView: View {
             }
             .buttonStyle(QuantumPrimaryButtonStyle())
             .disabled(
+                !isAgreementAccepted ||
                 !LoginInputPolicy.canSubmit(
                     phone: phoneNumber,
                     code: smsCode,
@@ -309,7 +313,7 @@ public struct LoginView: View {
                 )
             )
             .opacity(
-                LoginInputPolicy.canSubmit(
+                isAgreementAccepted && LoginInputPolicy.canSubmit(
                     phone: phoneNumber,
                     code: smsCode,
                     phoneChannelEnabled: channels.phone,
@@ -343,8 +347,8 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!channels.wechat || isLoading)
-                .opacity(channels.wechat ? 1 : 0.45)
+                .disabled(!channels.wechat || !isAgreementAccepted || isLoading)
+                .opacity(channels.wechat && isAgreementAccepted ? 1 : 0.45)
                 
                 // Alipay Button
                 Button(action: { handleThirdPartyAuth(provider: "alipay") }) {
@@ -363,25 +367,29 @@ public struct LoginView: View {
                     }
                 }
                 .buttonStyle(SoftButtonStyle())
-                .disabled(!channels.alipay || isLoading)
-                .opacity(channels.alipay ? 1 : 0.45)
+                .disabled(!channels.alipay || !isAgreementAccepted || isLoading)
+                .opacity(channels.alipay && isAgreementAccepted ? 1 : 0.45)
             }
         }
     }
     
     private var footerTermsSection: some View {
-        VStack(spacing: AppTheme.Spacing.xs) {
-            Text("登录即代表您已同意")
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Toggle("我已阅读并同意《用户服务协议》与《隐私保护政策》", isOn: $isAgreementAccepted)
+                .disabled(agreement == nil)
+            Toggle("参与知识共建（可选）", isOn: $participatesInKnowledge)
+                .disabled(!isAgreementAccepted)
+            Text(agreement?.participationSummary ?? "正在加载协议…")
                 .foregroundColor(AppTheme.Colors.textTertiary)
-            + Text("《用户服务协议》")
-                .foregroundColor(AppTheme.Colors.primary)
-            + Text(" 与 ")
-                .foregroundColor(AppTheme.Colors.textTertiary)
-            + Text("《隐私保护政策》")
-                .foregroundColor(AppTheme.Colors.primary)
+            DisclosureGroup("查看协议要点") {
+                Text(agreement?.serviceSummary ?? "协议暂不可用，请稍后重试。")
+                    .foregroundColor(AppTheme.Colors.textSecondary)
+                    .padding(.top, 4)
+            }
+            .foregroundColor(AppTheme.Colors.primary)
         }
         .font(.caption)
-        .multilineTextAlignment(.center)
+        .multilineTextAlignment(.leading)
         .padding(.horizontal, AppTheme.Spacing.xl)
     }
     
@@ -448,7 +456,7 @@ public struct LoginView: View {
             code: smsCode,
             phoneChannelEnabled: channels.phone,
             isLoading: isLoading
-        ) else { return }
+        ), isAgreementAccepted else { return }
         let normalizedPhone = LoginInputPolicy.digits(phoneNumber, limit: 11)
         let normalizedCode = LoginInputPolicy.digits(smsCode, limit: 6)
         isLoading = true
@@ -483,7 +491,7 @@ public struct LoginView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         #endif
-        guard !isLoading else { return }
+        guard !isLoading, isAgreementAccepted else { return }
         isLoading = true
         errorMessage = nil
         Task { @MainActor in
@@ -510,7 +518,10 @@ public struct LoginView: View {
         capabilityMessage = nil
         defer { isCapabilityLoading = false }
         do {
-            let capabilities = try await APIClient.shared.fetchAuthCapabilities()
+            async let capabilitiesRequest = APIClient.shared.fetchAuthCapabilities()
+            async let agreementRequest = APIClient.shared.fetchAuthAgreement()
+            let capabilities = try await capabilitiesRequest
+            agreement = try await agreementRequest
             channels.apply(capabilities)
             if !channels.phone && !channels.alipay && !channels.wechat {
                 capabilityMessage = "认证渠道未配置；开发登录待服务端更新。"
@@ -519,6 +530,7 @@ public struct LoginView: View {
             }
         } catch {
             channels = LoginChannelAvailability()
+            agreement = nil
             capabilityMessage = "认证服务暂时不可用，请稍后重试。"
         }
     }
@@ -530,6 +542,19 @@ public struct LoginView: View {
     ) async throws {
         guard APIClient.shared.saveToken(response.token) else {
             throw APIError.authenticationRejected("无法安全保存登录凭证，请重试")
+        }
+        do {
+            let current = try await APIClient.shared.fetchKnowledgeContributionConsent()
+            _ = try await APIClient.shared.updateKnowledgeContributionConsent(
+                agreementVersion: agreement?.version ?? "",
+                participationEnabled: participatesInKnowledge || (
+                    current.serviceAgreementVersion == agreement?.version
+                        && current.participationEnabled
+                )
+            )
+        } catch {
+            APIClient.shared.clearToken()
+            throw APIError.authenticationRejected("协议记录失败，请检查网络后重试")
         }
         let profile = try await APIClient.shared.fetchMe()
         appState.currentTenantKey = profile.tenantKey

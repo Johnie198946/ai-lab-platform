@@ -22,6 +22,7 @@ from sqlalchemy import delete, select
 from backend.api.register import _issue_jwt, _provision_tenant
 from backend.db import SessionLocal
 from backend.models.external_auth import ExternalAuthFlow
+from backend.services.knowledge_contribution import SERVICE_AGREEMENT_VERSION
 
 
 router = APIRouter(prefix="/api/v1/auth", tags=["external-auth"])
@@ -146,6 +147,18 @@ async def capabilities():
         provider_data = data.setdefault("oauth", {}).setdefault(provider, {})
         provider_data["enabled"] = bool(provider_data.get("enabled") and https_ready)
     return data
+
+
+@router.get("/agreement")
+async def agreement():
+    return {
+        "version": SERVICE_AGREEMENT_VERSION,
+        "service_summary": "服务协议用于提供账号与工作空间服务；隐私政策说明必要数据处理。",
+        "participation_summary": (
+            "知识共建是独立、可撤回的个人选择，仅适用于同意后新建或修改的内容；"
+            "历史笔记不会回填，也不会自动公开。"
+        ),
+    }
 
 
 @router.post("/phone/send-code")

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from backend.services.knowledge_catalog import bookshelf_catalog, clear_manifest_cache
+from backend.services.knowledge_catalog import bookshelf_catalog, clear_manifest_cache, reader_book_body
 
 
 def test_bookshelf_only_exposes_public_and_owned_admitted_books(tmp_path):
@@ -96,3 +96,21 @@ def test_duplicate_declared_knowledge_ids_keep_distinct_book_identity(tmp_path):
     assert [book["knowledge_id"] for book in books] == ["duplicate-id", "duplicate-id"]
     assert len({book["id"] for book in books}) == 2
     assert {book["source_path"] for book in books} == {"wiki/a.md", "wiki/b.md"}
+
+
+def test_reader_sections_preserve_empty_headings_and_ignore_fenced_hashes():
+    result = reader_book_body(
+        {"id": "book-1", "title": "Book", "author": "Author"},
+        {
+            "version": "a" * 64,
+            "citation": "knowledge:wiki/book.md",
+            "content": "# Parent\n## Child\nFacts [source](https://example.com/x).\n```\n# code\n```",
+        },
+    )
+
+    assert result is not None
+    assert [section["title"] for section in result["sections"]] == ["Parent", "Child"]
+    assert result["sections"][0]["markdown"] == ""
+    assert "# code" in result["sections"][1]["markdown"]
+    assert "https://" not in result["sections"][1]["markdown"]
+    assert "Facts source." in result["sections"][1]["markdown"]

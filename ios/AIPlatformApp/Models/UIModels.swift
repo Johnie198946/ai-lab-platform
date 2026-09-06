@@ -283,14 +283,14 @@ public struct ClarifyBlock: Identifiable, Sendable, Hashable {
 }
 
 /// 推理步骤类型（与后端 reasoning_extractor 的 type 字符串对齐）
-public enum ReasoningStepType: String, Sendable, Hashable {
+public enum ReasoningStepType: String, Codable, Sendable, Hashable {
     case thought = "thought"
     case toolCall = "tool_call"
     case skillLoad = "skill_load"
     case agentSpawn = "agent_spawn"
 }
 
-public struct ReasoningStep: Identifiable, Sendable, Hashable {
+public struct ReasoningStep: Identifiable, Codable, Sendable, Hashable {
     public let id: String
     public var type: ReasoningStepType
     public var title: String
@@ -639,6 +639,7 @@ public struct PersistedMessage: Codable, Sendable {
     public let answerHasMore: Bool?
     public let answerAvailableBlockCount: Int?
     public let answerBlocks: [AnswerBlockDTO]?
+    public let reasoning: [ReasoningStep]?
     public let clarify: PersistedClarify?
     public let noteDraft: NoteDraftBlock?
     public let knowledgeAction: KnowledgeActionBlock?
@@ -662,6 +663,10 @@ public struct PersistedMessage: Codable, Sendable {
         self.answerHasMore = m.answerHasMore
         self.answerAvailableBlockCount = m.answerAvailableBlockCount
         self.answerBlocks = m.answerBlocks
+        self.reasoning = m.blocks.compactMap {
+            if case .reasoning(let steps) = $0 { return steps }
+            return nil
+        }.first
         self.clarify = m.clarifyBlock.map(PersistedClarify.init)
         self.noteDraft = m.blocks.compactMap {
             if case .noteDraft(let draft) = $0 { return draft }
@@ -697,6 +702,9 @@ public struct PersistedMessage: Codable, Sendable {
         )
         if let clarify {
             message.blocks = [.clarify(clarify.toClarifyBlock(defaultSessionId: sessionId))]
+        }
+        if let reasoning, !reasoning.isEmpty {
+            message.blocks.insert(.reasoning(reasoning), at: 0)
         }
         if let noteDraft {
             message.blocks.append(.noteDraft(noteDraft))
@@ -1222,6 +1230,19 @@ public final class SessionManager: ObservableObject {
         let page = (try? store.latest(sessionId: id)) ?? StoredMessagePage(messages: [], hasOlder: false, hasNewer: false)
         cacheVisibleMessages(page.messages, for: id)
         return page
+    }
+
+    public func latestVisiblePage(for id: String) -> StoredMessagePage {
+        if let cached = sessions[id], cached.contains(where: {
+            persistedFingerprints[id]?[$0.id] != fingerprint($0)
+        }) {
+            return StoredMessagePage(
+                messages: cached,
+                hasOlder: messageCount(for: id) > cached.count,
+                hasNewer: false
+            )
+        }
+        return latestPage(for: id)
     }
 
     public func pageBefore(_ messageId: String, sessionId: String) -> StoredMessagePage {
@@ -1797,20 +1818,17 @@ public final class SessionManager: ObservableObject {
 
     /// 会话屏障：在途请求被切换拦截时，在原会话把 pending 占位替换为 .interrupted（不静默丢弃）。
     public func markInterrupted(sessionId: String) {
-        var msgs = latestPage(for: sessionId).messages
+        var msgs = messages(for: sessionId)
         if let idx = msgs.lastIndex(where: { $0.role == .assistant && $0.pending }) {
             msgs[idx].role = .interrupted
-            msgs[idx].content = Self.interruptedText
             msgs[idx].pending = false
             msgs[idx].isStreaming = false
             msgs[idx].degraded = false
         } else {
-            msgs.append(ChatMessage(sessionId: sessionId, role: .interrupted, content: Self.interruptedText))
+            msgs.append(ChatMessage(sessionId: sessionId, role: .interrupted, content: ""))
         }
         setMessages(msgs, for: sessionId)
     }
-
-    public static let interruptedText = "⚠️ 响应已中断（会话切换）"
 
     // MARK: - Hermes 式后台完成：切换会话不中断在途任务，结果落盘到归属会话
 
@@ -1835,12 +1853,50 @@ public final class SessionManager: ObservableObject {
     }
 
     /// 断点续接已完成（status=completed）时，把结果写归属会话（切走后由 applyCompletedStatus 调用）。
-    public func applyCompletedStatus(sessionId: String, requestId: String, answer: String) {
-        let message = sessions[sessionId]?.first(where: { $0.id == requestId }).map { existing in
-            var updated = existing; updated.content = answer; updated.pending = false
-            updated.isStreaming = false; updated.degraded = false
+    public func applyCompletedStatus(
+        sessionId: String,
+        requestId: String,
+        answer: String,
+        answerProjection: AnswerBlockPageDTO? = nil,
+        reasoningSteps: [ReasoningStep]? = nil
+    ) {
+        let existing = sessions[sessionId]?.first(where: { $0.id == requestId })
+            ?? storedMessage(id: requestId, sessionId: sessionId)
+        let message = existing.map { existing in
+            var updated = existing
+            updated.role = .assistant
+            if let page = answerProjection {
+                updated.content = page.blocks.map(\.content).joined()
+                updated.answerBlocks = page.blocks
+                updated.answerRevision = page.revision
+                updated.answerNextCursor = page.nextCursor
+                updated.answerHasMore = page.hasMore
+                updated.answerAvailableBlockCount = page.availableBlockCount
+            } else {
+                updated.content = answer
+            }
+            if let reasoningSteps, !reasoningSteps.isEmpty {
+                updated.blocks.removeAll {
+                    if case .reasoning = $0 { return true }
+                    return false
+                }
+                updated.blocks.insert(.reasoning(reasoningSteps), at: 0)
+            }
+            updated.pending = false; updated.isStreaming = false; updated.degraded = false
             updated.settleReasoningForCompletion(); return updated
-        } ?? ChatMessage(id: requestId, sessionId: sessionId, role: .assistant, content: answer, pending: false)
+        } ?? ChatMessage(
+            id: requestId,
+            sessionId: sessionId,
+            role: .assistant,
+            content: answerProjection?.blocks.map(\.content).joined() ?? answer,
+            blocks: reasoningSteps.map { $0.isEmpty ? [] : [.reasoning($0)] } ?? [],
+            pending: false,
+            answerRevision: answerProjection?.revision,
+            answerNextCursor: answerProjection?.nextCursor,
+            answerHasMore: answerProjection?.hasMore ?? false,
+            answerAvailableBlockCount: answerProjection?.availableBlockCount ?? 0,
+            answerBlocks: answerProjection?.blocks ?? []
+        )
         updateStoredMessage(message, sessionId: sessionId)
     }
 
@@ -1902,6 +1958,9 @@ public final class SessionManager: ObservableObject {
         hasher.combine(message.reasoningDuration); hasher.combine(message.executingAgentId)
         hasher.combine(message.executingAgentName); hasher.combine(message.delegatedBy)
         hasher.combine(message.runId); hasher.combine(message.lastEventSequence)
+        hasher.combine(message.answerRevision); hasher.combine(message.answerNextCursor)
+        hasher.combine(message.answerHasMore); hasher.combine(message.answerAvailableBlockCount)
+        hasher.combine(message.answerBlocks)
         hasher.combine(message.blocks); hasher.combine(message.quotedContext)
         return hasher.finalize()
     }

@@ -4,7 +4,11 @@ from uuid import uuid4
 import pytest
 from fastapi import HTTPException
 
-from backend.api.knowledge_contribution import PolicyUpdate, get_policy, update_policy
+from backend.api.knowledge_contribution import (
+    PolicyUpdate, UserConsentWrite, get_policy, get_user_consent,
+    update_policy, update_user_consent,
+)
+from backend.services.knowledge_contribution import SERVICE_AGREEMENT_VERSION
 
 
 def payload(tenant: str, role: str = "tenant_admin") -> dict:
@@ -41,3 +45,37 @@ async def test_member_and_backfill_are_rejected():
             effective_at=datetime.now(timezone.utc), historical_backfill=True,
         ), payload(tenant))
     assert historical.value.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_policy_ignores_client_backdated_effective_at():
+    tenant = "policy-" + uuid4().hex
+    client_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    await update_policy(PolicyUpdate(
+        enabled=True, agreement_version="contribution-v1", effective_at=client_time,
+    ), payload(tenant))
+    current = await get_policy(payload(tenant))
+    assert current["effective_at"].replace(tzinfo=timezone.utc) > client_time
+
+
+@pytest.mark.asyncio
+async def test_user_consent_is_individual_server_timed_and_rejects_stale_terms():
+    tenant = "consent-" + uuid4().hex
+    alice = payload(tenant, "tenant_member")
+    bob = {**alice, "user_id": "bob", "sub": "bob"}
+    before = datetime.now(timezone.utc)
+    accepted = await update_user_consent(UserConsentWrite(
+        service_agreement_accepted=True,
+        service_agreement_version=SERVICE_AGREEMENT_VERSION,
+        participation_enabled=True,
+    ), alice)
+    assert accepted["service_agreement_accepted_at"] >= before
+    assert accepted["historical_backfill"] is False
+    assert (await get_user_consent(bob))["configured"] is False
+    with pytest.raises(HTTPException) as stale:
+        await update_user_consent(UserConsentWrite(
+            service_agreement_accepted=True,
+            service_agreement_version="old-version",
+            participation_enabled=True,
+        ), alice)
+    assert stale.value.status_code == 409

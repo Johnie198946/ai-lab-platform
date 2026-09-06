@@ -1,6 +1,6 @@
 # AI Lab Platform — API 镜像
-# 轻量镜像: python:3.12-slim + 运行依赖
-FROM python:3.12-slim
+# Keep the deployed Python minor; immutable multi-platform base + hashed locks.
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -9,9 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# 先装依赖（利用层缓存；大陆服务器使用清华 pip 镜像加速）
-COPY requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple/ -r requirements.txt pyyaml
+# Source requirements describe intent; deployments install only reviewed locks.
+# Bootstrap is pinned too: jieba ships an sdist, so no floating PEP517 downloads.
+COPY requirements.lock requirements-build.lock /app/
+RUN python -m pip install --require-hashes -r requirements-build.lock \
+    && python -m pip install --require-hashes --no-build-isolation -r requirements.lock \
+    && python -m pip check
 
 # 再拷代码
 COPY backend /app/backend

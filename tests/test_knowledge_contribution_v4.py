@@ -12,6 +12,7 @@ from backend.services.knowledge_contribution import (
     ContributionCandidate, SOURCE_KINDS, enqueue_contribution, set_contribution_policy,
     register_contribution_run, accept_contribution_result, withdraw_contribution,
     get_contribution_projection, set_red_source_archived,
+    SERVICE_AGREEMENT_VERSION, set_user_contribution_consent,
 )
 from backend.services.knowledge_contribution_schema import (
     migrate_knowledge_contribution_v4, migrate_legacy_event_projections,
@@ -27,6 +28,11 @@ async def setup_candidate():
     effective = now() - timedelta(minutes=1)
     await set_contribution_policy(tenant_key=tenant, enabled=True, agreement_version="v4",
                                   effective_at=effective)
+    await set_user_contribution_consent(
+        tenant_key=tenant, user_id="alice",
+        service_agreement_version=SERVICE_AGREEMENT_VERSION,
+        participation_enabled=True,
+    )
     return ContributionCandidate(tenant, "alice", "qws", "note", "n1", 1, "a" * 64, now()), effective
 
 
@@ -61,7 +67,7 @@ async def test_time_gate_authorization_change_and_historical_backfill():
     assert second["event_id"] != first["event_id"]
     await set_contribution_policy(tenant_key=c.tenant_key, enabled=True, agreement_version="v5",
                                   effective_at=new_effective, historical_backfill=True)
-    assert await enqueue_contribution(c)
+    assert await enqueue_contribution(c) is None
     with pytest.raises(ValueError, match="backwards"):
         await set_contribution_policy(tenant_key=c.tenant_key, enabled=True, agreement_version="v4", effective_at=effective)
 
@@ -76,7 +82,12 @@ async def test_full_source_contract_and_scoped_idempotency():
         assert result == await enqueue_contribution(candidate)
         events.append(result["event_id"])
     assert len(set(events)) == len(SOURCE_KINDS)
-    other_user = await enqueue_contribution(replace(c, user_id="bob"))
+    await set_user_contribution_consent(
+        tenant_key=c.tenant_key, user_id="bob",
+        service_agreement_version=SERVICE_AGREEMENT_VERSION,
+        participation_enabled=True,
+    )
+    other_user = await enqueue_contribution(replace(c, user_id="bob", source_changed_at=now()))
     other_tenant, _ = await setup_candidate()
     other = await enqueue_contribution(other_tenant)
     assert other_user["event_id"] not in events and other["event_id"] not in events
@@ -119,8 +130,13 @@ async def test_lineage_deduplicates_revisions_and_blocks_cycles_cross_scope():
         assert event.business_state["independent_source_count"] == 1
     with pytest.raises(ValueError, match="cycle"):
         await enqueue_contribution(replace(c, source_revision=3, parent_event_ids=(d["event_id"],)))
+    await set_user_contribution_consent(
+        tenant_key=c.tenant_key, user_id="bob",
+        service_agreement_version=SERVICE_AGREEMENT_VERSION,
+        participation_enabled=True,
+    )
     with pytest.raises(ValueError, match="parent"):
-        await enqueue_contribution(replace(derived, user_id="bob"))
+        await enqueue_contribution(replace(derived, user_id="bob", source_changed_at=now()))
     await withdraw_contribution(tenant_key=c.tenant_key, user_id=c.user_id, event_id=e1["event_id"])
     async with SessionLocal() as db:
         assert (await db.get(Event, d["event_id"])).status in {"excluded", "withdrawn"}

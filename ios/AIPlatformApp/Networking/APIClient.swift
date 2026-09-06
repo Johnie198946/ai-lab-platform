@@ -238,6 +238,7 @@ public struct KnowledgeBookshelvesResponse: Codable {
 public struct KnowledgeBookSubscriptionDTO: Codable, Hashable {
     public let book: KnowledgeBookDTO
     public let edition: Int
+    public let contentVersion: String?
     public let progress: Double
     public let subscribedAt: String
     public let lastReadAt: String
@@ -245,6 +246,33 @@ public struct KnowledgeBookSubscriptionDTO: Codable, Hashable {
 
 public struct KnowledgeBookSubscriptionsResponse: Codable {
     public let subscriptions: [KnowledgeBookSubscriptionDTO]
+}
+
+public struct KnowledgeBookSectionDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let title: String
+    public let level: Int
+    public let markdown: String
+}
+
+public struct KnowledgeBookBodyDTO: Codable, Hashable {
+    public let bookId: String
+    public let title: String
+    public let author: String
+    public let contentVersion: String
+    public let edition: Int
+    public let citation: String
+    public let sections: [KnowledgeBookSectionDTO]
+}
+
+public struct KnowledgeContributionConsentDTO: Codable, Hashable {
+    public let configured: Bool?
+    public let serviceAgreementVersion: String
+    public let serviceAgreementAcceptedAt: String?
+    public let participationEnabled: Bool
+    public let participationEffectiveAt: String?
+    public let historicalBackfill: Bool
+    public let publicationAutomatic: Bool
 }
 
 private struct KnowledgeBookSubscriptionWrite: Encodable {
@@ -255,6 +283,13 @@ private struct KnowledgeBookSubscriptionWrite: Encodable {
 private struct KnowledgeBookProgressWrite: Encodable {
     let bookId: String
     let progress: Double
+    let contentVersion: String
+}
+
+private struct KnowledgeContributionConsentWrite: Encodable {
+    let serviceAgreementAccepted: Bool
+    let serviceAgreementVersion: String
+    let participationEnabled: Bool
 }
 
 public struct SubscriptionPlanFeaturesDTO: Codable, Hashable {
@@ -825,6 +860,12 @@ public struct OAuthCapabilitiesDTO: Codable {
 public struct AuthCapabilitiesDTO: Codable {
     public let phone: AuthCapabilityDTO
     public let oauth: OAuthCapabilitiesDTO
+}
+
+public struct AuthAgreementDTO: Codable, Hashable {
+    public let version: String
+    public let serviceSummary: String
+    public let participationSummary: String
 }
 
 public struct LoginSessionDTO: Codable {
@@ -1816,6 +1857,10 @@ public final class APIClient: ObservableObject {
         return response.subscriptions
     }
 
+    public func fetchKnowledgeBookBody(id: String) async throws -> KnowledgeBookBodyDTO {
+        try await request(KnowledgeBookBodyDTO.self, path: "knowledge-books/\(encodedPath(id))")
+    }
+
     public func subscribeBook(id: String) async throws -> KnowledgeBookSubscriptionDTO {
         try await request(
             KnowledgeBookSubscriptionDTO.self,
@@ -1835,12 +1880,35 @@ public final class APIClient: ObservableObject {
         )
     }
 
-    public func updateBookProgress(id: String, progress: Double) async throws -> KnowledgeBookSubscriptionDTO {
+    public func updateBookProgress(
+        id: String, progress: Double, contentVersion: String
+    ) async throws -> KnowledgeBookSubscriptionDTO {
         try await request(
             KnowledgeBookSubscriptionDTO.self,
             path: "me/book-subscriptions/progress",
             method: "PATCH",
-            body: KnowledgeBookProgressWrite(bookId: id, progress: progress)
+            body: KnowledgeBookProgressWrite(
+                bookId: id, progress: progress, contentVersion: contentVersion
+            )
+        )
+    }
+
+    public func fetchKnowledgeContributionConsent() async throws -> KnowledgeContributionConsentDTO {
+        try await request(KnowledgeContributionConsentDTO.self, path: "knowledge-contribution/me")
+    }
+
+    public func updateKnowledgeContributionConsent(
+        agreementVersion: String, participationEnabled: Bool
+    ) async throws -> KnowledgeContributionConsentDTO {
+        try await request(
+            KnowledgeContributionConsentDTO.self,
+            path: "knowledge-contribution/me",
+            method: "PUT",
+            body: KnowledgeContributionConsentWrite(
+                serviceAgreementAccepted: true,
+                serviceAgreementVersion: agreementVersion,
+                participationEnabled: participationEnabled
+            )
         )
     }
 
@@ -3129,6 +3197,10 @@ public final class APIClient: ObservableObject {
             path: "auth/capabilities",
             reauthOn401: false
         )
+    }
+
+    public func fetchAuthAgreement() async throws -> AuthAgreementDTO {
+        try await request(AuthAgreementDTO.self, path: "auth/agreement", reauthOn401: false)
     }
 
     public func sendPhoneCode(phone: String) async throws {

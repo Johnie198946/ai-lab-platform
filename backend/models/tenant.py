@@ -66,7 +66,11 @@ class KnowledgeBookSubscription(Base):
     owner_user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     book_id: Mapped[str] = mapped_column(String(384), primary_key=True)
     edition: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    content_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     progress: Mapped[float] = mapped_column(Float, nullable=False, default=0)
+    # Unknown-version checkpoints must never overwrite a versioned position.
+    legacy_progress: Mapped[float | None] = mapped_column(Float, nullable=True)
+    legacy_last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     subscribed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

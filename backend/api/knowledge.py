@@ -678,6 +678,16 @@ def get_wiki(slug: str) -> Dict[str, Any]:
     }
 
 
+async def read_wiki_live(slug: str) -> Dict[str, Any]:
+    """Reuse the HTTP Wiki read scope and its post-read revocation check."""
+    scope = _live_read_scope()
+    await scope.__anext__()
+    try:
+        return await _read_endpoint(get_wiki)(slug)
+    finally:
+        await scope.aclose()
+
+
 for _route, _handler in (
     ("/matrix", get_matrix), ("/contract", get_contract), ("/stats", get_stats),
     ("/search", search), ("/entities", entities), ("/wiki", list_wiki),

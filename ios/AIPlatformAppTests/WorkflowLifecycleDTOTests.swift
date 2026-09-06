@@ -1,6 +1,7 @@
 import XCTest
 import SwiftUI
 import SQLite3
+import Combine
 @testable import AIPlatformApp
 
 private final class LockedErrorBox: @unchecked Sendable {
@@ -2184,5 +2185,736 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(replay.run.runId, "run-123")
         XCTAssertEqual(replay.run.eventSequence, 7)
         XCTAssertEqual(replay.droppedEventCount, 0)
+    }
+
+    @MainActor
+    func testCompletedRecoveryPreservesOriginalMessageAndAnswerPageMetadata() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        )
+        let manager = SessionManager(store: store)
+        let sessionId = manager.createSession()
+        manager.setMessages([
+            ChatMessage(
+                id: "original-output", sessionId: sessionId, role: .interrupted,
+                content: "已收到的部分", runId: "run-original", lastEventSequence: 90
+            )
+        ], for: sessionId)
+        let blocks = [
+            AnswerBlockDTO(blockIndex: 0, kind: "markdown", content: "第一块"),
+            AnswerBlockDTO(blockIndex: 1, kind: "markdown", content: "第二块")
+        ]
+        let page = AnswerBlockPageDTO(
+            messageId: "server-message", revision: 7, status: "completed",
+            blocks: blocks, bytes: 18, loadedBlockCount: 2,
+            availableBlockCount: 12, hasMore: true, nextCursor: "signed-next"
+        )
+
+        manager.applyCompletedStatus(
+            sessionId: sessionId,
+            requestId: "original-output",
+            answer: "不应覆盖分页投影",
+            answerProjection: page
+        )
+
+        let recovered = try XCTUnwrap(manager.messages(for: sessionId).first)
+        XCTAssertEqual(recovered.id, "original-output")
+        XCTAssertEqual(recovered.runId, "run-original")
+        XCTAssertEqual(recovered.lastEventSequence, 90)
+        XCTAssertEqual(recovered.role, .assistant)
+        XCTAssertEqual(recovered.content, "第一块第二块")
+        XCTAssertEqual(recovered.answerBlocks, blocks)
+        XCTAssertEqual(recovered.answerRevision, 7)
+        XCTAssertEqual(recovered.answerNextCursor, "signed-next")
+        XCTAssertTrue(recovered.answerHasMore)
+        XCTAssertEqual(recovered.answerAvailableBlockCount, 12)
+    }
+
+    func testKnownRunAlwaysUsesDurableRecoveryIdentity() {
+        let message = ChatMessage(
+            sessionId: "same-session", role: .interrupted, content: "部分回答",
+            runId: "existing-run", lastEventSequence: 90
+        )
+        XCTAssertEqual(TenantSessionCoordinator.durableRunId(for: message), "existing-run")
+        XCTAssertNil(TenantSessionCoordinator.durableRunId(for: ChatMessage(
+            role: .interrupted, content: "", runId: "  "
+        )))
+        XCTAssertNil(TenantSessionCoordinator.durableRunId(for: ChatMessage(
+            role: .interrupted, content: "", runId: "  existing-run  "
+        )))
+    }
+
+    @MainActor
+    func testInterruptionKeepsExistingPartialContentAndRunCursor() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        manager.setMessages([
+            ChatMessage(
+                id: "partial", sessionId: sessionId, role: .assistant,
+                content: "# 已收到\n\n真实正文", isStreaming: true,
+                blocks: [.reasoning([ReasoningStep(
+                    type: .toolCall, title: "检索", detail: "已收到结果", status: "done"
+                )])],
+                pending: true, runId: "run-partial", lastEventSequence: 42,
+                answerRevision: 3, answerNextCursor: "partial-cursor",
+                answerHasMore: true, answerAvailableBlockCount: 9,
+                answerBlocks: [AnswerBlockDTO(
+                    blockIndex: 0, kind: "markdown", content: "# 已收到\n\n真实正文"
+                )]
+            )
+        ], for: sessionId)
+
+        manager.markInterrupted(sessionId: sessionId)
+
+        let interrupted = try XCTUnwrap(manager.messages(for: sessionId).first)
+        XCTAssertEqual(interrupted.role, .interrupted)
+        XCTAssertEqual(interrupted.content, "# 已收到\n\n真实正文")
+        XCTAssertEqual(interrupted.runId, "run-partial")
+        XCTAssertEqual(interrupted.lastEventSequence, 42)
+        XCTAssertEqual(interrupted.answerRevision, 3)
+        XCTAssertEqual(interrupted.answerNextCursor, "partial-cursor")
+        XCTAssertEqual(interrupted.answerBlocks.count, 1)
+        XCTAssertEqual(interrupted.blocks.count, 1)
+        XCTAssertFalse(interrupted.pending)
+        XCTAssertTrue(TenantSessionCoordinator.shouldPresentAutomaticRecovery(
+            interrupted,
+            activeInFlightMessageID: nil,
+            reconcilingMessageIDs: [],
+            backgroundProcessingSessionIDs: []
+        ))
+    }
+
+    func testRecoveryBackoffAndAnswerPaginationAreBounded() {
+        XCTAssertEqual(TenantSessionCoordinator.durableRecoveryDelayNanoseconds(failure: 1), 2_000_000_000)
+        XCTAssertEqual(TenantSessionCoordinator.durableRecoveryDelayNanoseconds(failure: 4), 16_000_000_000)
+        XCTAssertEqual(TenantSessionCoordinator.durableRecoveryDelayNanoseconds(failure: 99), 16_000_000_000)
+        XCTAssertEqual(TenantSessionCoordinator.maximumAnswerPageRequests(
+            availableBlockCount: 52, loadedBlockCount: 10, maxBlocks: 20
+        ), 42)
+        XCTAssertEqual(TenantSessionCoordinator.maximumAnswerPageRequests(
+            availableBlockCount: 10, loadedBlockCount: 10, maxBlocks: 20
+        ), 1)
+    }
+
+    @MainActor
+    func testByteLimitedAnswerPagesCanExceedBlockLimitCeiling() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "byte-limited-output"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "导出长表格"),
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .assistant, content: "0",
+                runId: "run-byte-limited", answerRevision: 7, answerNextCursor: "c1",
+                answerHasMore: true, answerAvailableBlockCount: 6,
+                answerBlocks: [AnswerBlockDTO(blockIndex: 0, kind: "code", content: "0")]
+            )
+        ], for: sessionId)
+        var requests = 0
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            fetchAnswerBlocks: { runId, cursor, maxBlocks in
+                XCTAssertEqual(runId, "run-byte-limited")
+                XCTAssertEqual(maxBlocks, 20)
+                let index = requests + 1
+                XCTAssertEqual(cursor, "c\(index)")
+                requests += 1
+                return AnswerBlockPageDTO(
+                    messageId: outputId, revision: 7, status: "completed",
+                    blocks: [AnswerBlockDTO(blockIndex: index, kind: "code", content: "\(index)")],
+                    bytes: 1, loadedBlockCount: index + 1, availableBlockCount: 6,
+                    hasMore: index < 5, nextCursor: index < 5 ? "c\(index + 1)" : nil
+                )
+            }
+        )
+
+        let fullAnswer = try await coordinator.fetchFullAnswer(messageId: outputId)
+        XCTAssertEqual(fullAnswer, "012345")
+        XCTAssertEqual(requests, 5)
+    }
+
+    @MainActor
+    func testFullAnswerRejectsNoProgressAndNonAdvancingCursor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "invalid-pagination-output"
+        manager.setMessages([
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .assistant, content: "partial",
+                runId: "run-invalid-page", answerRevision: 1, answerNextCursor: "same",
+                answerHasMore: true, answerAvailableBlockCount: 3,
+                answerBlocks: [AnswerBlockDTO(blockIndex: 0, kind: "markdown", content: "partial")]
+            )
+        ], for: sessionId)
+
+        for blocks in [[], [AnswerBlockDTO(blockIndex: 1, kind: "markdown", content: "more")]] {
+            let coordinator = TenantSessionCoordinator(
+                sessionManager: manager,
+                fetchAnswerBlocks: { _, _, _ in
+                    AnswerBlockPageDTO(
+                        messageId: outputId, revision: 1, status: "completed",
+                        blocks: blocks, bytes: blocks.isEmpty ? 0 : 4,
+                        loadedBlockCount: blocks.isEmpty ? 1 : 2, availableBlockCount: 3,
+                        hasMore: true, nextCursor: "same"
+                    )
+                }
+            )
+            do {
+                _ = try await coordinator.fetchFullAnswer(messageId: outputId)
+                XCTFail("pagination must fail instead of returning truncated content")
+            } catch APIError.server(409, _) {
+            } catch {
+                XCTFail("unexpected error: \(error)")
+            }
+        }
+    }
+
+    @MainActor
+    func testAutomaticDurableRecoverySurvivesOutageAndCompletesSameRunWithoutRegeneration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "same-output"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "继续原任务"),
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .interrupted,
+                content: "部分", runId: "run-original", lastEventSequence: 10
+            )
+        ], for: sessionId)
+        var gets = 0
+        let completed = expectation(description: "same durable run completed")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { runId, after in
+                XCTAssertEqual(runId, "run-original")
+                XCTAssertEqual(after, 10)
+                gets += 1
+                if gets == 1 { throw APIError.network("offline") }
+                completed.fulfill()
+                return DurableChatReplayDTO(
+                    run: DurableChatRunDTO(
+                        runId: runId, status: "completed", eventSequence: 11,
+                        partialAnswer: nil, finalAnswer: "完整回答", queuePosition: 0,
+                        attempt: 1, errorCode: "", answerProjection: nil
+                    ),
+                    droppedEventCount: 0
+                )
+            },
+            recoverySleep: { _ in }
+        )
+
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [completed], timeout: 1)
+        for _ in 0..<20 where coordinator.messages[1].pending { await Task.yield() }
+
+        XCTAssertEqual(gets, 2)
+        XCTAssertEqual(coordinator.messages.map(\.id), ["user", outputId])
+        XCTAssertEqual(coordinator.messages[1].runId, "run-original")
+        XCTAssertEqual(coordinator.messages[1].content, "完整回答")
+        XCTAssertEqual(coordinator.messages[1].role, .assistant)
+        XCTAssertFalse(coordinator.messages[1].pending)
+        XCTAssertNil(coordinator.inflight)
+    }
+
+    @MainActor
+    func testLateDurableCallbackCannotCrossAccountBoundary() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        manager.activateAccount(tenantKey: "tenant-a-\(UUID())", userId: "user-a")
+        let sessionId = manager.createSession()
+        let outputId = "account-a-output"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "原账号问题"),
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .interrupted,
+                content: "账号 A 部分内容", runId: "run-account-a"
+            )
+        ], for: sessionId)
+        var continuation: CheckedContinuation<DurableChatReplayDTO, Error>?
+        let requestStarted = expectation(description: "durable GET started")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { _, _ in
+                requestStarted.fulfill()
+                return try await withCheckedThrowingContinuation { continuation = $0 }
+            }
+        )
+
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [requestStarted], timeout: 1)
+        manager.activateAccount(tenantKey: "tenant-b-\(UUID())", userId: "user-b")
+        continuation?.resume(returning: DurableChatReplayDTO(
+            run: DurableChatRunDTO(
+                runId: "run-account-a", status: "completed", eventSequence: 1,
+                partialAnswer: nil, finalAnswer: "不应写入", queuePosition: 0,
+                attempt: 1, errorCode: "", answerProjection: nil
+            ),
+            droppedEventCount: 0
+        ))
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertEqual(coordinator.messages[1].content, "账号 A 部分内容")
+        XCTAssertNotEqual(coordinator.messages[1].content, "不应写入")
+    }
+
+    @MainActor
+    func testPersistedInterruptedRunRestoresVisibleToolTimelineAndAutoCompletes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let databaseURL = root.appendingPathComponent("history.sqlite")
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "persisted-recovery"
+        let steps = [ReasoningStep(
+            id: "tool-step", type: .toolCall, title: "检索资料",
+            detail: "已读取 8 个来源", status: "running"
+        )]
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "继续调研"),
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .interrupted,
+                content: "已收到正文", blocks: [.reasoning(steps)],
+                runId: "durable-persisted", lastEventSequence: 12,
+                answerRevision: 4, answerNextCursor: "cursor-4",
+                answerHasMore: true, answerAvailableBlockCount: 3,
+                answerBlocks: [AnswerBlockDTO(
+                    blockIndex: 0, kind: "markdown", content: "已收到正文"
+                )]
+            )
+        ], for: sessionId)
+        await manager.flushPendingPersistence()
+
+        let restoredManager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: databaseURL,
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        restoredManager.switchTo(sessionId)
+        let completed = expectation(description: "persisted run completed")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: restoredManager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { runId, after in
+                XCTAssertEqual(runId, "durable-persisted")
+                XCTAssertEqual(after, 12)
+                completed.fulfill()
+                return DurableChatReplayDTO(
+                    run: DurableChatRunDTO(
+                        runId: runId, status: "completed", eventSequence: 13,
+                        partialAnswer: nil, finalAnswer: "完整正文", queuePosition: 0,
+                        attempt: 1, errorCode: "", answerProjection: nil
+                    ),
+                    droppedEventCount: 0
+                )
+            }
+        )
+
+        let restored = try XCTUnwrap(coordinator.messages.last)
+        XCTAssertEqual(restored.id, outputId)
+        XCTAssertEqual(restored.content, "已收到正文")
+        XCTAssertEqual(restored.answerRevision, 4)
+        XCTAssertEqual(restored.answerNextCursor, "cursor-4")
+        XCTAssertEqual(restored.blocks, [.reasoning(steps)])
+        XCTAssertTrue(TenantSessionCoordinator.shouldPresentAutomaticRecovery(
+            restored,
+            activeInFlightMessageID: nil,
+            reconcilingMessageIDs: [],
+            backgroundProcessingSessionIDs: []
+        ))
+
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [completed], timeout: 1)
+        for _ in 0..<20 where coordinator.messages.last?.pending == true { await Task.yield() }
+
+        XCTAssertEqual(coordinator.messages.last?.id, outputId)
+        XCTAssertEqual(coordinator.messages.last?.content, "完整正文")
+        guard case .reasoning(let completedSteps) = try XCTUnwrap(coordinator.messages.last?.blocks.first) else {
+            XCTFail("completed recovery must preserve the visible tool timeline")
+            return
+        }
+        XCTAssertEqual(completedSteps.map(\.id), steps.map(\.id))
+        XCTAssertEqual(completedSteps.map(\.title), steps.map(\.title))
+        XCTAssertEqual(completedSteps.map(\.detail), steps.map(\.detail))
+        XCTAssertEqual(completedSteps.map(\.status), ["done"])
+        XCTAssertEqual(coordinator.messages.last?.lastEventSequence, 13)
+    }
+
+    @MainActor
+    func testSessionAwayReturnReplaysRunningRunThenCompletesWithoutDuplicateOwner() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let runSession = manager.createSession()
+        let otherSession = manager.createSession()
+        manager.switchTo(runSession)
+        let outputId = "session-return-output"
+        let step = ReasoningStep(
+            id: "existing-tool", type: .toolCall, title: "搜索", detail: "进行中", status: "running"
+        )
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: runSession, role: .user, content: "长任务"),
+            ChatMessage(
+                id: outputId, sessionId: runSession, role: .assistant,
+                content: "部分正文", isStreaming: true, blocks: [.reasoning([step])],
+                pending: true, runId: "run-session-return", lastEventSequence: 20
+            )
+        ], for: runSession)
+        var gets = 0
+        let completed = expectation(description: "same run completed after session return")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { runId, after in
+                gets += 1
+                XCTAssertEqual(runId, "run-session-return")
+                XCTAssertEqual(after, gets == 1 ? 20 : 21)
+                let done = gets == 2
+                if done { completed.fulfill() }
+                return DurableChatReplayDTO(
+                    run: DurableChatRunDTO(
+                        runId: runId, status: done ? "completed" : "running",
+                        eventSequence: done ? 22 : 21,
+                        partialAnswer: done ? nil : "更多正文",
+                        finalAnswer: done ? "最终正文" : nil,
+                        queuePosition: 0, attempt: 1, errorCode: "", answerProjection: nil
+                    ),
+                    droppedEventCount: 0
+                )
+            },
+            recoverySleep: { _ in }
+        )
+
+        coordinator.switchSession(to: otherSession)
+        coordinator.switchSession(to: runSession)
+        coordinator.reconcileActiveRun()
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [completed], timeout: 1)
+        for _ in 0..<20 where coordinator.messages.last?.pending == true { await Task.yield() }
+
+        XCTAssertEqual(gets, 2)
+        XCTAssertEqual(coordinator.messages.last?.id, outputId)
+        XCTAssertEqual(coordinator.messages.last?.content, "最终正文")
+        guard case .reasoning(let completedSteps) = try XCTUnwrap(coordinator.messages.last?.blocks.first) else {
+            XCTFail("completed recovery must preserve the visible tool timeline")
+            return
+        }
+        XCTAssertEqual(completedSteps.map(\.id), [step.id])
+        XCTAssertEqual(completedSteps.map(\.title), [step.title])
+        XCTAssertEqual(completedSteps.map(\.detail), [step.detail])
+        XCTAssertEqual(completedSteps.map(\.status), ["done"])
+        XCTAssertEqual(coordinator.messages.last?.lastEventSequence, 22)
+    }
+
+    @MainActor
+    func testCompletedWhileAwayUpdatesOriginalStoredMessage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let runSession = manager.createSession()
+        let otherSession = manager.createSession()
+        manager.switchTo(runSession)
+        let outputId = "completed-while-away"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: runSession, role: .user, content: "后台任务"),
+            ChatMessage(
+                id: outputId, sessionId: runSession, role: .assistant,
+                content: "已有正文", isStreaming: true,
+                blocks: [.reasoning([ReasoningStep(
+                    id: "old-step", type: .toolCall, title: "旧进度", status: "running"
+                )])],
+                pending: true, runId: "run-away", lastEventSequence: 5
+            )
+        ], for: runSession)
+        let stored = expectation(description: "completed result stored while another session is active")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchChatStatus: { sessionId, consume, _ in
+                XCTAssertEqual(sessionId, runSession)
+                XCTAssertTrue(consume)
+                stored.fulfill()
+                return ChatStatusDTO(
+                    status: "completed", phase: nil, answer: "离开期间完成的正文",
+                    reasoning: [ChatReasoningStepDTO(
+                        type: "tool_call", title: "检索完成", detail: "8 个来源", status: "done"
+                    )],
+                    latestStep: nil, clarify: nil, consumed: true, answerProjection: nil
+                )
+            }
+        )
+        coordinator.inflight = InFlightRequest(
+            id: outputId, sessionId: runSession, text: "后台任务"
+        )
+        coordinator.isGenerating = true
+
+        coordinator.switchSession(to: otherSession)
+        await fulfillment(of: [stored], timeout: 1)
+        for _ in 0..<20 {
+            if manager.storedMessage(id: outputId, sessionId: runSession)?.pending == false { break }
+            await Task.yield()
+        }
+
+        XCTAssertEqual(manager.activeSessionID(), otherSession)
+        let completed = try XCTUnwrap(manager.storedMessage(id: outputId, sessionId: runSession))
+        XCTAssertEqual(completed.id, outputId)
+        XCTAssertEqual(completed.runId, "run-away")
+        XCTAssertEqual(completed.content, "离开期间完成的正文")
+        XCTAssertFalse(completed.pending)
+        guard case .reasoning(let steps) = try XCTUnwrap(completed.blocks.first) else {
+            XCTFail("completed status must preserve the visible tool timeline")
+            return
+        }
+        XCTAssertEqual(steps.map(\.title), ["检索完成"])
+    }
+
+    @MainActor
+    func testRepeatedForegroundReconcileStartsOneDurableGET() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "foreground-once"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "任务"),
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .interrupted,
+                content: "部分", runId: "run-once", lastEventSequence: 3
+            )
+        ], for: sessionId)
+        var gets = 0
+        var legacyStatusGETs = 0
+        var continuation: CheckedContinuation<DurableChatReplayDTO, Error>?
+        let started = expectation(description: "one durable GET")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { _, _ in
+                gets += 1
+                started.fulfill()
+                return try await withCheckedThrowingContinuation { continuation = $0 }
+            },
+            fetchChatStatus: { _, _, _ in
+                legacyStatusGETs += 1
+                throw APIError.network("offline")
+            }
+        )
+
+        coordinator.inflight = InFlightRequest(
+            id: outputId, sessionId: sessionId, text: "任务"
+        )
+        coordinator.isGenerating = true
+        coordinator.prepareForBackground()
+        XCTAssertFalse(coordinator.isGenerating)
+        XCTAssertNil(coordinator.inflight)
+        coordinator.reconcileActiveRun()
+        let messageCount = coordinator.messages.count
+        coordinator.sendMessage(text: "不应创建第二个任务")
+        XCTAssertEqual(coordinator.messages.count, messageCount)
+        XCTAssertEqual(coordinator.toastMessage, "正在续接原任务，请稍候")
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [started], timeout: 1)
+        XCTAssertEqual(gets, 1)
+        XCTAssertLessThanOrEqual(legacyStatusGETs, 1)
+        XCTAssertFalse(coordinator.confirmedRunningMessageIDs.contains(outputId))
+        let completed = expectation(description: "durable replay published completed content")
+        let completedObservation = coordinator.$messages
+            .first(where: { messages in
+                messages.last?.id == outputId
+                    && messages.last?.content == "完成"
+                    && messages.last?.pending == false
+            })
+            .sink { _ in completed.fulfill() }
+        continuation?.resume(returning: DurableChatReplayDTO(
+            run: DurableChatRunDTO(
+                runId: "run-once", status: "completed", eventSequence: 4,
+                partialAnswer: nil, finalAnswer: "完成", queuePosition: 0,
+                attempt: 1, errorCode: "", answerProjection: nil
+            ),
+            droppedEventCount: 0
+        ))
+        await fulfillment(of: [completed], timeout: 1)
+        withExtendedLifetime(completedObservation) {}
+        XCTAssertEqual(coordinator.messages.last?.content, "完成")
+        XCTAssertFalse(coordinator.confirmedRunningMessageIDs.contains(outputId))
+    }
+
+    @MainActor
+    func testExplicitStopAndRealFailureAreNotAutomaticallyResumed() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let stoppedId = "explicit-stop"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: sessionId, role: .user, content: "停止前的问题"),
+            ChatMessage(
+                id: stoppedId, sessionId: sessionId, role: .assistant,
+                content: "已收部分", isStreaming: true, pending: true,
+                runId: "run-stopped"
+            )
+        ], for: sessionId)
+        var replayGETs = 0
+        var cancels = 0
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { _, _ in
+                replayGETs += 1
+                return DurableChatReplayDTO(
+                    run: DurableChatRunDTO(
+                        runId: "run-stopped", status: "running", eventSequence: 1,
+                        partialAnswer: nil, finalAnswer: nil, queuePosition: 0,
+                        attempt: 1, errorCode: "", answerProjection: nil
+                    ),
+                    droppedEventCount: 0
+                )
+            },
+            cancelRun: { _, _ in cancels += 1 }
+        )
+        coordinator.inflight = InFlightRequest(
+            id: stoppedId, sessionId: sessionId, text: "停止前的问题"
+        )
+        coordinator.isGenerating = true
+        coordinator.cancelInFlight()
+        for _ in 0..<20 where cancels == 0 { await Task.yield() }
+        coordinator.reconcileActiveRun()
+        XCTAssertEqual(cancels, 1)
+        XCTAssertEqual(replayGETs, 0)
+        XCTAssertFalse(coordinator.messages.last?.pending ?? true)
+
+        let failedId = "real-failure"
+        coordinator.messages.append(ChatMessage(
+            id: failedId, sessionId: sessionId, role: .interrupted,
+            content: "失败前部分", runId: "run-failed"
+        ))
+        coordinator.commitSession()
+        var failureGETs = 0
+        let failed = expectation(description: "real failure returned")
+        let failureCoordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { _, _ in
+                failureGETs += 1
+                failed.fulfill()
+                return DurableChatReplayDTO(
+                    run: DurableChatRunDTO(
+                        runId: "run-failed", status: "failed", eventSequence: 2,
+                        partialAnswer: nil, finalAnswer: nil, queuePosition: 0,
+                        attempt: 1, errorCode: "server_error", answerProjection: nil
+                    ),
+                    droppedEventCount: 0
+                )
+            }
+        )
+        failureCoordinator.reconcileActiveRun()
+        await fulfillment(of: [failed], timeout: 1)
+        for _ in 0..<20 where failureCoordinator.messages.last?.pending == true { await Task.yield() }
+        failureCoordinator.reconcileActiveRun()
+        XCTAssertEqual(failureGETs, 1)
+        XCTAssertTrue(failureCoordinator.messages.last?.degraded == true)
+        XCTAssertTrue(failureCoordinator.messages.last?.content.contains("任务执行失败") == true)
+    }
+
+    @MainActor
+    func testLateDurableCallbackCannotCrossSessionBoundary() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let firstSession = manager.createSession()
+        let secondSession = manager.createSession()
+        manager.switchTo(firstSession)
+        let outputId = "session-a-output"
+        manager.setMessages([
+            ChatMessage(id: "user", sessionId: firstSession, role: .user, content: "原问题"),
+            ChatMessage(
+                id: outputId, sessionId: firstSession, role: .interrupted,
+                content: "原会话部分", runId: "run-session-a"
+            )
+        ], for: firstSession)
+        var continuation: CheckedContinuation<DurableChatReplayDTO, Error>?
+        let started = expectation(description: "session A GET started")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { _, _ in
+                started.fulfill()
+                return try await withCheckedThrowingContinuation { continuation = $0 }
+            }
+        )
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [started], timeout: 1)
+        coordinator.switchSession(to: secondSession)
+        continuation?.resume(returning: DurableChatReplayDTO(
+            run: DurableChatRunDTO(
+                runId: "run-session-a", status: "completed", eventSequence: 1,
+                partialAnswer: nil, finalAnswer: "不应跨会话写入", queuePosition: 0,
+                attempt: 1, errorCode: "", answerProjection: nil
+            ),
+            droppedEventCount: 0
+        ))
+        for _ in 0..<20 { await Task.yield() }
+
+        XCTAssertEqual(manager.activeSessionID(), secondSession)
+        XCTAssertFalse(coordinator.messages.contains { $0.content == "不应跨会话写入" })
+        XCTAssertEqual(manager.storedMessage(id: outputId, sessionId: firstSession)?.content, "原会话部分")
     }
 }
