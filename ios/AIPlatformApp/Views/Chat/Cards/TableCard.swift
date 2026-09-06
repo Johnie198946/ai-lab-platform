@@ -7,6 +7,22 @@
 
 import SwiftUI
 
+enum TableLayout {
+    static func columnCount(headers: [String], rows: [[String]]) -> Int {
+        max(headers.count, rows.map(\.count).max() ?? 0)
+    }
+
+    static func columnWidths(headers: [String], rows: [[String]]) -> [CGFloat] {
+        (0..<columnCount(headers: headers, rows: rows)).map { column in
+            let values = ([headers] + rows).compactMap { column < $0.count ? $0[column] : nil }
+            let units = values.map { value in
+                value.unicodeScalars.reduce(0) { $0 + ($1.isASCII ? 1 : 2) }
+            }.max() ?? 0
+            return min(240, max(96, CGFloat(units * 7 + 24)))
+        }
+    }
+}
+
 public struct TableCard: View {
     public let block: TableBlock
     @Environment(\.colorScheme) private var colorScheme
@@ -117,15 +133,15 @@ public struct TableCard: View {
     }
 
     private var requirementColumnHeader: some View {
-        HStack(spacing: 0) {
+        HStack(spacing: AppTheme.Spacing.sm) {
             Text(block.headers.first ?? "确认维度")
-                .frame(width: 96, alignment: .leading)
+                .frame(width: 104, alignment: .leading)
             Text(block.headers.dropFirst().first ?? "已确认需求")
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .font(.caption.weight(.semibold))
         .foregroundColor(AppTheme.Colors.textSecondary)
-        .padding(.horizontal, AppTheme.Spacing.md)
+        .padding(.horizontal, AppTheme.Spacing.xl)
         .padding(.vertical, AppTheme.Spacing.sm)
         .background(AppTheme.Colors.secondaryBackground.opacity(0.72))
     }
@@ -181,7 +197,8 @@ public struct TableCard: View {
     }
 
     private var genericTableCard: some View {
-        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+        let widths = TableLayout.columnWidths(headers: block.headers, rows: block.rows)
+        return VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
             // 标题行
             HStack(spacing: AppTheme.Spacing.xs) {
                 Image(systemName: "tablecells")
@@ -195,16 +212,17 @@ public struct TableCard: View {
 
             // 横向滚动表格
             ScrollView(.horizontal, showsIndicators: false) {
-                VStack(spacing: 0) {
+                LazyVStack(spacing: 0) {
                     // 表头（Semibold）
-                    headerRow
+                    tableRow(block.headers, widths: widths, isHeader: true)
                     Divider().background(AppTheme.Colors.border)
                     // 数据行
                     ForEach(Array(block.rows.enumerated()), id: \.offset) { _, row in
-                        dataRow(row)
+                        tableRow(row, widths: widths, isHeader: false)
                         Divider().background(AppTheme.Colors.border)
                     }
                 }
+                .frame(width: widths.reduce(0, +), alignment: .leading)
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
             }
         }
@@ -219,33 +237,25 @@ public struct TableCard: View {
         .pressBorderGlow(cornerRadius: AppTheme.Radius.md)
     }
 
-    private var headerRow: some View {
+    private func tableRow(_ cells: [String], widths: [CGFloat], isHeader: Bool) -> some View {
         HStack(spacing: 0) {
-            ForEach(Array(block.headers.enumerated()), id: \.offset) { index, header in
-                Text(header)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(AppTheme.Colors.brandPrimary)
-                    .frame(minWidth: 90, alignment: .leading)
-                    .padding(.horizontal, AppTheme.Spacing.sm)
-                    .padding(.vertical, AppTheme.Spacing.sm)
-                    .background(AppTheme.Colors.brandPrimary.opacity(0.06))
-                if index < block.headers.count - 1 {
-                    Divider().background(AppTheme.Colors.border)
+            ForEach(widths.indices, id: \.self) { index in
+                Group {
+                    if index < cells.count {
+                        Text(cells[index])
+                            .font(.system(size: 12, weight: isHeader ? .semibold : .regular))
+                            .foregroundColor(isHeader ? AppTheme.Colors.brandPrimary : AppTheme.Colors.textSecondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Color.clear
+                    }
                 }
-            }
-        }
-    }
-
-    private func dataRow(_ row: [String]) -> some View {
-        HStack(spacing: 0) {
-            ForEach(Array(row.enumerated()), id: \.offset) { index, cell in
-                Text(cell)
-                    .font(.system(size: 12))
-                    .foregroundColor(AppTheme.Colors.textSecondary)
-                    .frame(minWidth: 90, alignment: .leading)
-                    .padding(.horizontal, AppTheme.Spacing.sm)
-                    .padding(.vertical, AppTheme.Spacing.sm)
-                if index < row.count - 1 {
+                .padding(.horizontal, AppTheme.Spacing.sm)
+                .padding(.vertical, AppTheme.Spacing.sm)
+                .frame(width: widths[index], alignment: .leading)
+                .background(isHeader ? AppTheme.Colors.brandPrimary.opacity(0.06) : Color.clear)
+                if index < widths.count - 1 {
                     Divider().background(AppTheme.Colors.border)
                 }
             }

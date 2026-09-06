@@ -1767,12 +1767,18 @@ public final class TenantSessionCoordinator: ObservableObject {
     }
 
     public func fetchFullAnswer(messageId: String) async throws -> String {
-        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return "" }
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else {
+            throw APIError.server(404, "answer message not found")
+        }
         let message = messages[index]
-        guard let runId = message.runId, var cursor = message.answerNextCursor,
-              message.answerHasMore else { return message.content }
-        var content = message.content
-        let revision = message.answerRevision
+        guard message.answerHasMore else { return message.content }
+        guard let runId = message.runId, var cursor = message.answerNextCursor else {
+            throw APIError.server(409, "answer pagination cursor missing")
+        }
+        var revision = message.answerRevision
+        let expectedEpoch = tenantEpoch
+        let expectedAccount = sessionManager.activeAccountFingerprint
+        let expectedSession = sessionManager.activeSessionID()
         var seenCursors = Set<String>()
         let maximumRequests = Self.maximumAnswerPageRequests(
             availableBlockCount: message.answerAvailableBlockCount,
@@ -1780,6 +1786,7 @@ public final class TenantSessionCoordinator: ObservableObject {
             maxBlocks: 20
         )
         for _ in 0..<maximumRequests {
+            try Task.checkCancellation()
             guard seenCursors.insert(cursor).inserted else {
                 throw APIError.server(409, "answer cursor repeated")
             }
@@ -1787,15 +1794,38 @@ public final class TenantSessionCoordinator: ObservableObject {
             guard revision == nil || revision == page.revision else {
                 throw APIError.server(409, "answer revision changed")
             }
-            content += page.blocks.map(\.content).joined()
-            guard page.hasMore else { return content }
-            guard !page.blocks.isEmpty else {
+            revision = page.revision
+            guard page.status == "completed" else {
+                throw APIError.server(409, "answer is not completed")
+            }
+            guard tenantEpoch == expectedEpoch,
+                  sessionManager.activeAccountFingerprint == expectedAccount,
+                  sessionManager.activeSessionID() == expectedSession,
+                  let current = messages.firstIndex(where: { $0.id == messageId }) else {
+                throw CancellationError()
+            }
+            let existingIndexes = Set(messages[current].answerBlocks.map(\.blockIndex))
+            let pageIndexes = page.blocks.map(\.blockIndex)
+            guard !page.blocks.isEmpty,
+                  Set(pageIndexes).count == pageIndexes.count,
+                  page.blocks.allSatisfy({ !existingIndexes.contains($0.blockIndex) }) else {
                 throw APIError.server(409, "answer pagination made no progress")
             }
-            guard let next = page.nextCursor, next != cursor else {
-                throw APIError.server(409, "answer cursor did not advance")
+            let next: String?
+            if page.hasMore {
+                guard let candidate = page.nextCursor,
+                      candidate != cursor,
+                      !seenCursors.contains(candidate) else {
+                    throw APIError.server(409, "answer cursor did not advance")
+                }
+                next = candidate
+            } else {
+                next = nil
             }
-            cursor = next
+            applyAnswerPage(page, messageIndex: current, replace: false)
+            commitSession()
+            guard page.hasMore else { return messages[current].content }
+            cursor = next!
         }
         throw APIError.server(409, "answer pagination exceeded advertised block count")
     }

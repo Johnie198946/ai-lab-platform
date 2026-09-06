@@ -386,6 +386,11 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         return nil
     }
 
+    private func findScrollViews(in view: UIView) -> [UIScrollView] {
+        (view as? UIScrollView).map { [$0] }
+            ?? view.subviews.flatMap { findScrollViews(in: $0) }
+    }
+
     func testCreateDraftResponseDecodesClarificationSession() throws {
         let data = Data(
             """
@@ -2347,6 +2352,126 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         let fullAnswer = try await coordinator.fetchFullAnswer(messageId: outputId)
         XCTAssertEqual(fullAnswer, "012345")
         XCTAssertEqual(requests, 5)
+        XCTAssertEqual(coordinator.messages.last?.content, "012345")
+        XCTAssertEqual(coordinator.messages.last?.answerBlocks.map(\.blockIndex), [0, 1, 2, 3, 4, 5])
+        XCTAssertFalse(coordinator.messages.last?.answerHasMore ?? true)
+    }
+
+    @MainActor
+    func testFullAnswerErrorRetainsPagesAndNextActionResumesFromSavedCursor() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "resumable-full-answer"
+        manager.setMessages([
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .assistant, content: "0",
+                runId: "run-resumable", answerRevision: 9, answerNextCursor: "c1",
+                answerHasMore: true, answerAvailableBlockCount: 3,
+                answerBlocks: [.init(blockIndex: 0, kind: "markdown", content: "0")]
+            )
+        ], for: sessionId)
+        var request = 0
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            fetchAnswerBlocks: { _, cursor, _ in
+                defer { request += 1 }
+                if request == 0 {
+                    XCTAssertEqual(cursor, "c1")
+                    return AnswerBlockPageDTO(
+                        messageId: outputId, revision: 9, status: "completed",
+                        blocks: [.init(blockIndex: 1, kind: "markdown", content: "1")],
+                        bytes: 1, loadedBlockCount: 2, availableBlockCount: 3,
+                        hasMore: true, nextCursor: "c2"
+                    )
+                }
+                if request == 1 {
+                    XCTAssertEqual(cursor, "c2")
+                    throw APIError.network("offline")
+                }
+                XCTAssertEqual(cursor, "c2")
+                return AnswerBlockPageDTO(
+                    messageId: outputId, revision: 9, status: "completed",
+                    blocks: [.init(blockIndex: 2, kind: "markdown", content: "2")],
+                    bytes: 1, loadedBlockCount: 3, availableBlockCount: 3,
+                    hasMore: false, nextCursor: nil
+                )
+            }
+        )
+
+        do {
+            _ = try await coordinator.fetchFullAnswer(messageId: outputId)
+            XCTFail("the interrupted request must not be reported as complete")
+        } catch APIError.network(_) {
+        }
+        XCTAssertEqual(coordinator.messages[0].content, "01")
+        XCTAssertEqual(coordinator.messages[0].answerNextCursor, "c2")
+        XCTAssertEqual(coordinator.messages[0].answerBlocks.map(\.blockIndex), [0, 1])
+        await manager.flushPendingPersistence()
+        XCTAssertEqual(manager.storedMessage(id: outputId, sessionId: sessionId)?.content, "01")
+
+        let resumedAnswer = try await coordinator.fetchFullAnswer(messageId: outputId)
+        XCTAssertEqual(resumedAnswer, "012")
+        XCTAssertEqual(coordinator.messages[0].answerBlocks.map(\.blockIndex), [0, 1, 2])
+        XCTAssertFalse(coordinator.messages[0].answerHasMore)
+    }
+
+    @MainActor
+    func testFullAnswerCancellationRetainsLastCommittedPage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "cancelled-full-answer"
+        manager.setMessages([
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .assistant, content: "0",
+                runId: "run-cancel", answerRevision: 2, answerNextCursor: "c1",
+                answerHasMore: true, answerAvailableBlockCount: 3,
+                answerBlocks: [.init(blockIndex: 0, kind: "markdown", content: "0")]
+            )
+        ], for: sessionId)
+        let secondRequestStarted = expectation(description: "second page request started")
+        var request = 0
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            fetchAnswerBlocks: { _, _, _ in
+                defer { request += 1 }
+                if request == 0 {
+                    return AnswerBlockPageDTO(
+                        messageId: outputId, revision: 2, status: "completed",
+                        blocks: [.init(blockIndex: 1, kind: "markdown", content: "1")],
+                        bytes: 1, loadedBlockCount: 2, availableBlockCount: 3,
+                        hasMore: true, nextCursor: "c2"
+                    )
+                }
+                secondRequestStarted.fulfill()
+                try await Task.sleep(nanoseconds: 10_000_000_000)
+                throw APIError.network("unreachable")
+            }
+        )
+        let task = Task { try await coordinator.fetchFullAnswer(messageId: outputId) }
+        await fulfillment(of: [secondRequestStarted], timeout: 1)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("cancelled load must not report completion")
+        } catch is CancellationError {
+        }
+
+        XCTAssertEqual(coordinator.messages[0].content, "01")
+        XCTAssertEqual(coordinator.messages[0].answerNextCursor, "c2")
+        XCTAssertTrue(coordinator.messages[0].answerHasMore)
+
     }
 
     @MainActor
@@ -2389,6 +2514,140 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
                 XCTFail("unexpected error: \(error)")
             }
         }
+
+        manager.setMessages([
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .assistant, content: "partial",
+                runId: "run-invalid-page", answerRevision: 1, answerNextCursor: nil,
+                answerHasMore: true, answerAvailableBlockCount: 3,
+                answerBlocks: [AnswerBlockDTO(blockIndex: 0, kind: "markdown", content: "partial")]
+            )
+        ], for: sessionId)
+        let missingCursor = TenantSessionCoordinator(sessionManager: manager)
+        do {
+            _ = try await missingCursor.fetchFullAnswer(messageId: outputId)
+            XCTFail("missing cursor must not report partial content as complete")
+        } catch APIError.server(409, _) {
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+    }
+
+    func testRaggedMarkdownTablePreservesCellsAndUsesSharedBoundedWidths() throws {
+        let markdown = """
+        | 名称 | URL | Note |
+        | --- | --- | --- |
+        | 中文项目 | https://example.com/a/very/long/path/that/must/wrap | mixed English 中文 |
+        | only-one |
+        | trailing-empty |  |
+        | escaped | https://example.com/a\\|b | preserved |
+        """
+        let blocks = MarkdownBlockParser.shared.parse(markdown)
+        guard case .table(let table) = try XCTUnwrap(blocks.first) else {
+            return XCTFail("expected a table")
+        }
+
+        XCTAssertEqual(table.headers, ["名称", "URL", "Note"])
+        XCTAssertEqual(table.rows[1], ["only-one"])
+        XCTAssertEqual(table.rows[2], ["trailing-empty", ""])
+        XCTAssertEqual(table.rows[3], ["escaped", "https://example.com/a\\|b", "preserved"])
+        let widths = TableLayout.columnWidths(headers: table.headers, rows: table.rows)
+        XCTAssertEqual(widths.count, 3)
+        XCTAssertTrue(widths.allSatisfy { (96...240).contains($0) })
+        XCTAssertEqual(widths, TableLayout.columnWidths(headers: table.headers, rows: table.rows))
+
+        let segments = LongAnswerSheet.coalescedBlocks(content: "", serverBlocks: [
+            .init(blockIndex: 4, kind: "table_segment", content: "| A | B |\n| --- | --- |\n"),
+            .init(blockIndex: 5, kind: "table_segment", content: "| 1 | two |\n"),
+            .init(blockIndex: 6, kind: "markdown", content: "after")
+        ])
+        XCTAssertEqual(segments.map(\.blockIndex), [4, 6])
+        XCTAssertEqual(segments[0].content, "| A | B |\n| --- | --- |\n| 1 | two |\n")
+    }
+
+    @MainActor
+    func testTableRenderingHasOneWholeTableHorizontalScrollForEmptyAndLargeInputs() async {
+        let inputs = [
+            TableBlock(title: "空表", headers: [], rows: []),
+            TableBlock(
+                title: "大表",
+                headers: ["中文", "English", "URL"],
+                rows: (0..<300).map {
+                    ["第\($0)行", "value \($0)", "https://example.com/very/long/path/\($0)"]
+                }
+            )
+        ]
+        for table in inputs {
+            let host = UIHostingController(rootView: TableCard(block: table).frame(width: 320))
+            let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 700))
+            window.rootViewController = host
+            window.isHidden = false
+            defer { window.isHidden = true }
+            for _ in 0..<3 { await Task.yield(); host.view.layoutIfNeeded() }
+            XCTAssertEqual(findScrollViews(in: host.view).count, 1)
+            let image = UIGraphicsImageRenderer(size: window.bounds.size).image { context in
+                window.layer.render(in: context.cgContext)
+            }
+            let attachment = XCTAttachment(image: image)
+            attachment.name = "Synthetic-table-layout-\(table.title)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+        }
+
+        let structured = StableAnswerBlockView(
+            messageId: "structured-table",
+            block: .init(
+                blockIndex: 0, kind: "table_markdown",
+                content: "| A | B |\n| --- | --- |\n| 1 | https://example.com/long/path |"
+            )
+        )
+        let host = UIHostingController(rootView: structured.frame(width: 320))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 320, height: 700))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true }
+        for _ in 0..<3 { await Task.yield(); host.view.layoutIfNeeded() }
+        XCTAssertEqual(findScrollViews(in: host.view).count, 1)
+    }
+
+    @MainActor
+    func testLongAnswerSheetAppendKeepsScrollViewIdentityAndReadingOffset() async {
+        let initial = (0..<80).map {
+            AnswerBlockDTO(blockIndex: $0, kind: "markdown", content: "第\($0)段 stable content\n\n")
+        }
+        let makeSheet: ([AnswerBlockDTO]) -> LongAnswerSheet = { blocks in
+            LongAnswerSheet(
+                messageId: "stable-reader", content: blocks.map(\.content).joined(),
+                serverBlocks: blocks, availableBlockCount: 81,
+                hasMore: blocks.count < 81, isRunning: false, fetchFull: nil
+            )
+        }
+        let host = UIHostingController(rootView: makeSheet(initial))
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 393, height: 720))
+        window.rootViewController = host
+        window.isHidden = false
+        defer { window.isHidden = true }
+        host.view.layoutIfNeeded()
+        for _ in 0..<3 { await Task.yield(); host.view.layoutIfNeeded() }
+
+        let before = try? XCTUnwrap(findScrollViews(in: host.view).first(where: {
+            $0.contentSize.height > $0.bounds.height
+        }))
+        XCTAssertNotNil(before)
+        before?.setContentOffset(CGPoint(x: 0, y: 180), animated: false)
+        for _ in 0..<2 { await Task.yield(); host.view.layoutIfNeeded() }
+        let offset = before?.contentOffset.y ?? 0
+
+        host.rootView = makeSheet(initial + [
+            .init(blockIndex: 80, kind: "markdown", content: "新增末段\n\n")
+        ])
+        for _ in 0..<3 { await Task.yield(); host.view.layoutIfNeeded() }
+        let after = findScrollViews(in: host.view).first(where: {
+            $0.contentSize.height > $0.bounds.height
+        })
+        XCTAssertTrue(before === after)
+        XCTAssertEqual(after?.contentOffset.y ?? -1, offset, accuracy: 2)
+
     }
 
     @MainActor
@@ -2672,6 +2931,8 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
                 pending: true, runId: "run-away", lastEventSequence: 5
             )
         ], for: runSession)
+        await manager.flushPendingPersistence()
+
         let stored = expectation(description: "completed result stored while another session is active")
         let coordinator = TenantSessionCoordinator(
             sessionManager: manager,

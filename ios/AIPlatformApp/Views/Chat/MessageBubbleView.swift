@@ -149,8 +149,9 @@ public struct MessageBubbleView: View {
             LongAnswerSheet(
                 messageId: message.id, content: message.content,
                 serverBlocks: message.answerBlocks,
+                availableBlockCount: message.answerAvailableBlockCount,
                 hasMore: message.answerHasMore,
-                loadMore: { context?.onLoadAnswerBlocks?(message.id) },
+                isRunning: message.pending || message.isStreaming,
                 fetchFull: context?.onFetchFullAnswer
             )
         }
@@ -260,7 +261,7 @@ public struct MessageBubbleView: View {
                             isShowingFullAnswer = true
                         } label: {
                             HStack(spacing: AppTheme.Spacing.xs) {
-                                Text("展开全文")
+                                Text(message.answerHasMore ? "查看并加载原文" : "展开全文")
                                 Image(systemName: "arrow.up.left.and.arrow.down.right")
                             }
                             .font(AppTheme.Typography.supporting.weight(.semibold))
@@ -443,15 +444,21 @@ public struct MessageBubbleView: View {
 
     @ViewBuilder
     private var contextMenuActions: some View {
-        Button(action: copyToClipboard) {
-            Label(isCopied ? "已复制" : "复制全文", systemImage: isCopied ? "checkmark" : "doc.on.doc")
+        Button {
+            if message.answerHasMore { isShowingFullAnswer = true }
+            else { copyToClipboard() }
+        } label: {
+            Label(
+                message.answerHasMore ? "打开全文后复制" : (isCopied ? "已复制" : "复制全文"),
+                systemImage: isCopied ? "checkmark" : "doc.on.doc"
+            )
         }
 
         if let quoteAction = onQuoteFollowUp, !message.content.isEmpty {
             Button(action: {
                 quoteAction(QuotedContext(text: message.content))
             }) {
-                Label("引用全文追问", systemImage: "quote.bubble")
+                Label(message.answerHasMore ? "引用已加载内容追问" : "引用全文追问", systemImage: "quote.bubble")
             }
             Button {
                 quoteFragmentDraft = ""
@@ -475,70 +482,83 @@ public struct MessageBubbleView: View {
     }
 
     private func copyToClipboard() {
+        #if os(iOS)
+        UIPasteboard.general.string = message.content
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        #endif
+        isCopied = true
         Task { @MainActor in
-            let full = (try? await context?.onFetchFullAnswer?(message.id)) ?? message.content
-            #if os(iOS)
-            UIPasteboard.general.string = full
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            #endif
-            isCopied = true
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             isCopied = false
         }
     }
 }
 
-private struct LongAnswerSheet: View {
+struct LongAnswerSheet: View {
     let messageId: String
     let content: String
     let serverBlocks: [AnswerBlockDTO]
+    let availableBlockCount: Int
     let hasMore: Bool
-    let loadMore: () -> Void
+    let isRunning: Bool
     let fetchFull: ((String) async throws -> String)?
     @Environment(\.dismiss) private var dismiss
     @State private var isCopied = false
-    @State private var isPreparingFullAnswer = false
-    @State private var renderPage = 0
-    private let renderPageSize = 40
+    @State private var isLoadingFullAnswer = false
+    @State private var wantsFullAnswer = false
+    @State private var loadError: String?
+    @State private var readingBlockIndex: Int?
+    @State private var loadTask: Task<Void, Never>?
 
     private var stableBlocks: [AnswerBlockDTO] {
-        serverBlocks.isEmpty
-            ? [.init(blockIndex: 0, kind: "markdown", content: content)]
-            : serverBlocks
+        Self.coalescedBlocks(content: content, serverBlocks: serverBlocks)
     }
 
-    private var renderedBlocks: ArraySlice<AnswerBlockDTO> {
-        let start = min(renderPage * renderPageSize, max(0, stableBlocks.count - 1))
-        return stableBlocks[start..<min(start + renderPageSize, stableBlocks.count)]
+    static func coalescedBlocks(
+        content: String, serverBlocks: [AnswerBlockDTO]
+    ) -> [AnswerBlockDTO] {
+        let source = serverBlocks.isEmpty
+            ? [.init(blockIndex: 0, kind: "markdown", content: content)]
+            : serverBlocks
+        return source.reduce(into: [AnswerBlockDTO]()) { result, block in
+            if let previous = result.last,
+               previous.kind.hasPrefix("table"), block.kind.hasPrefix("table") {
+                result[result.count - 1] = .init(
+                    blockIndex: previous.blockIndex,
+                    kind: "table",
+                    content: previous.content + block.content
+                )
+            } else {
+                result.append(block)
+            }
+        }
+    }
+
+    private var progressText: String {
+        max(availableBlockCount, serverBlocks.count) > 0
+            ? "已加载 \(serverBlocks.count) / \(max(availableBlockCount, serverBlocks.count)) 个内容块"
+            : "已加载 \(serverBlocks.count) 个内容块"
     }
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-                    if renderPage > 0 {
-                        Button("上一批") { renderPage -= 1 }
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    ForEach(Array(renderedBlocks), id: \.blockIndex) { block in
+                    ForEach(stableBlocks, id: \.blockIndex) { block in
                         StableAnswerBlockView(messageId: messageId, block: block)
+                            .id(block.blockIndex)
                     }
-                    if (renderPage + 1) * renderPageSize < stableBlocks.count {
-                        Button("下一批") { renderPage += 1 }
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                    } else if hasMore {
-                        Button("从服务器加载下一批") { loadMore() }
-                            .frame(maxWidth: .infinity, minHeight: 44)
-                            .accessibilityHint("从服务器读取下一批已存储回答，不会重新生成")
-                    }
+                    readerStatus
                 }
+                .scrollTargetLayout()
                 .textSelection(.enabled)
                 .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(AppTheme.Spacing.md)
             }
+            .scrollPosition(id: $readingBlockIndex, anchor: .top)
             .background(AppTheme.Colors.background)
-            .navigationTitle("回答全文")
+            .navigationTitle("回答原文")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -550,43 +570,119 @@ private struct LongAnswerSheet: View {
                     } label: {
                         Label(isCopied ? "已复制" : "复制全文", systemImage: isCopied ? "checkmark" : "doc.on.doc")
                     }
-                    .disabled(isPreparingFullAnswer)
-                    .accessibilityHint("复制完整回答到剪贴板")
+                    .disabled(hasMore || isRunning || isLoadingFullAnswer)
+                    .accessibilityHint(hasMore ? "请先加载完整原文" : "复制完整回答到剪贴板")
                     Button { prepareFullAnswer(share: true) } label: {
                         Label("导出全文", systemImage: "square.and.arrow.up")
                     }
-                    .disabled(isPreparingFullAnswer)
+                    .disabled(hasMore || isRunning || isLoadingFullAnswer)
                 }
             }
         }
+        .onChange(of: isRunning) { _, running in
+            if wantsFullAnswer, !running { startFullLoad() }
+        }
+        .onChange(of: hasMore) { _, more in
+            if wantsFullAnswer, more, !isRunning { startFullLoad() }
+        }
+        .onDisappear { loadTask?.cancel() }
+    }
+
+    @ViewBuilder
+    private var readerStatus: some View {
+        VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+            Text(progressText)
+                .font(AppTheme.Typography.supporting)
+                .foregroundStyle(AppTheme.Colors.textSecondary)
+            if let loadError {
+                Label(loadError, systemImage: "exclamationmark.triangle")
+                    .font(AppTheme.Typography.supporting)
+                    .foregroundStyle(AppTheme.Icons.warning)
+            }
+            if isLoadingFullAnswer {
+                HStack {
+                    ProgressView()
+                    Text("正在读取已存储原文…")
+                    Spacer()
+                    Button("取消") { cancelFullLoad() }
+                }
+            } else if isRunning && wantsFullAnswer {
+                HStack {
+                    Label("等待回答完成后继续加载", systemImage: "clock")
+                    Spacer()
+                    Button("取消") { wantsFullAnswer = false }
+                }
+            } else if hasMore || isRunning {
+                Button("加载完整原文") {
+                    wantsFullAnswer = true
+                    startFullLoad()
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .accessibilityHint("依次读取全部已存储页面，不会重新生成回答")
+            } else if wantsFullAnswer {
+                Label("完整原文已加载", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(AppTheme.Icons.success)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func startFullLoad() {
+        guard !isRunning, hasMore, loadTask == nil else { return }
+        guard let fetchFull else {
+            loadError = "当前回答无法继续加载"
+            return
+        }
+        loadError = nil
+        isLoadingFullAnswer = true
+        loadTask = Task { @MainActor in
+            defer {
+                isLoadingFullAnswer = false
+                loadTask = nil
+            }
+            do {
+                _ = try await fetchFull(messageId)
+            } catch is CancellationError {
+                return
+            } catch {
+                loadError = "加载中断，已保留当前内容，可继续重试"
+            }
+        }
+    }
+
+    private func cancelFullLoad() {
+        wantsFullAnswer = false
+        loadTask?.cancel()
     }
 
     private func prepareFullAnswer(share: Bool) {
-        isPreparingFullAnswer = true
-        Task { @MainActor in
-            let full = (try? await fetchFull?(messageId)) ?? content
-            isPreparingFullAnswer = false
-            #if os(iOS)
-            if share {
-                guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-                      let presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
-                presenter.present(UIActivityViewController(activityItems: [full], applicationActivities: nil), animated: true)
-            } else {
-                UIPasteboard.general.string = full
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                isCopied = true
-            }
-            #endif
+        guard !hasMore, !isRunning else { return }
+        #if os(iOS)
+        if share {
+            guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+                  let presenter = scene.windows.first(where: \.isKeyWindow)?.rootViewController else { return }
+            presenter.present(UIActivityViewController(activityItems: [content], applicationActivities: nil), animated: true)
+        } else {
+            UIPasteboard.general.string = content
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            isCopied = true
         }
+        #endif
     }
 }
 
-private struct StableAnswerBlockView: View {
+struct StableAnswerBlockView: View {
     let messageId: String
     let block: AnswerBlockDTO
 
     var body: some View {
-        if block.kind.hasPrefix("code") || block.kind.hasPrefix("table") {
+        if block.kind.hasPrefix("table") {
+            ForEach(MarkdownBlockParser.shared.parse(
+                block.content, messageId: "\(messageId)_table_\(block.blockIndex)"
+            )) { parsed in
+                MarkdownBlockCard(block: parsed)
+            }
+        } else if block.kind.hasPrefix("code") {
             StructuredAnswerBlockView(kind: block.kind, content: block.content)
         } else {
             ForEach(MarkdownBlockParser.shared.parse(
@@ -601,29 +697,12 @@ private struct StableAnswerBlockView: View {
 private struct StructuredAnswerBlockView: View {
     let kind: String
     let content: String
-    @State private var page = 0
-    private let linePageSize = 120
-
-    private var lines: [Substring] { content.split(separator: "\n", omittingEmptySubsequences: false) }
-    private var pageText: String {
-        let start = min(page * linePageSize, max(0, lines.count - 1))
-        return lines[start..<min(start + linePageSize, lines.count)].joined(separator: "\n")
-    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ScrollView(.horizontal) {
-                Text(pageText).font(.system(.footnote, design: .monospaced)).textSelection(.enabled)
-            }
-            if lines.count > linePageSize {
-                HStack {
-                    Button("上一页") { page = max(0, page - 1) }.disabled(page == 0)
-                    Spacer()
-                    Text("\(page + 1) / \((lines.count + linePageSize - 1) / linePageSize)").font(.caption)
-                    Spacer()
-                    Button("下一页") { page += 1 }.disabled((page + 1) * linePageSize >= lines.count)
-                }
-            }
+        ScrollView(.horizontal) {
+            Text(content)
+                .font(.system(.footnote, design: .monospaced))
+                .textSelection(.enabled)
         }
         .padding(AppTheme.Spacing.sm)
         .background(AppTheme.Colors.surfaceTint)

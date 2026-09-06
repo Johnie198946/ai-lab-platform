@@ -161,15 +161,13 @@ public final class MarkdownBlockParser {
         guard start + 1 < lines.count else { return nil }
         let hLine = lines[start].trimmingCharacters(in: .whitespaces), sLine = lines[start + 1].trimmingCharacters(in: .whitespaces)
         guard hLine.hasPrefix("|") && sLine.hasPrefix("|") && sLine.contains("-") else { return nil }
-        let headers = hLine.trimmingCharacters(in: CharacterSet(charactersIn: "|")).components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
+        let headers = tableCells(hLine)
         guard headers.count >= 2 else { return nil }
         var rows: [[String]] = [], curr = start + 2
         while curr < lines.count {
             let rLine = lines[curr].trimmingCharacters(in: .whitespaces)
             guard rLine.hasPrefix("|") else { break }
-            let cells = rLine.trimmingCharacters(in: CharacterSet(charactersIn: "|")).components(separatedBy: "|").map { $0.trimmingCharacters(in: .whitespaces) }
-            guard cells.count == headers.count else { break }
-            rows.append(cells); curr += 1
+            rows.append(tableCells(rLine)); curr += 1
         }
         let title: String
         if headers.first?.contains("确认维度") == true
@@ -178,7 +176,23 @@ public final class MarkdownBlockParser {
         } else {
             title = "数据统计表格"
         }
-        return rows.isEmpty ? nil : (TableBlock(title: title, headers: headers, rows: rows), curr)
+        return (TableBlock(title: title, headers: headers, rows: rows), curr)
+    }
+    private static func tableCells(_ line: String) -> [String] {
+        var body = line
+        if body.first == "|" { body.removeFirst() }
+        if body.last == "|" { body.removeLast() }
+        var cells = [""]
+        var escaped = false
+        for character in body {
+            if character == "|", !escaped {
+                cells.append("")
+            } else {
+                cells[cells.count - 1].append(character)
+            }
+            escaped = character == "\\" ? !escaped : false
+        }
+        return cells.map { $0.trimmingCharacters(in: .whitespaces) }
     }
     private static func tryChart(_ lang: String?, _ code: String) -> MarkdownBlock? {
         guard let l = lang?.lowercased(), l.contains("chart"), let d = code.data(using: .utf8),
