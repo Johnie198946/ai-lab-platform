@@ -51,9 +51,9 @@ sample_excerpt: 可公开试读片段
 entitlement_key: yellow 内容的精确权益键
 ```
 
-`book_title/book_author/book_summary` 是编辑事实，不能靠正文中出现的人名猜测。当前作者链路为：Wiki `book_author` → Raw `source_author/author/authors/creator/byline/publisher` → Raw 前 80 行明确作者行 → 单一官方域名映射 → `Quantum 研究团队`。后端同时返回 `author_source`，便于区分原文署名、编辑署名与自研兜底。
+`book_title/book_author/book_summary` 是编辑事实，不能靠正文中出现的人名猜测。发布链路只使用已批准且作用域不比目标更私密的 Wiki 署名，或单一官方域名映射；Raw 原文不会在读请求中直接解析，以避免跨租户、撤回后或旧版本元数据泄漏。需要保留原作者时，应在编译/审查阶段把核实后的署名写入已批准 Wiki `book_author`。后端同时返回 `author_source`，便于区分编辑署名、批准来源与自研兜底。
 
-对当前 259 篇已批准 Wiki 的实测是：7 篇能从现有 Raw 来源字段安全归因，252 篇暂无可追溯署名。这不是解析失败，而是 Vault 历史元数据缺口；应先补首批 6–12 本主题书，不应用 LLM 大规模猜作者。
+历史 Raw 中已有的署名不会自动进入书架；这是发布边界，不是解析失败。应先为首批 6–12 本主题书核实并补写批准的 `book_author`，不应用 LLM 大规模猜作者。
 
 ## Markdown 没有图片时如何自动生成封面
 
@@ -62,15 +62,15 @@ entitlement_key: yellow 内容的精确权益键
 ### 生成输入与规则
 
 ```text
-knowledge_id ─SHA-256→ cover_variant（0…5，决定几何纹样）
+canonical_path ─SHA-256→ book_id / cover_variant（0…5，决定几何纹样）
 pack/type ─────────→ cover_theme（决定同一书架的色彩家族）
 book_title ────────→ 封面主标题
-book_author / Raw 来源链 → 可追溯作者；缺失时为“Quantum 研究团队”
+book_author / 已批准 Wiki 来源 → 可追溯作者；缺失时为“Quantum 研究团队”
 cover_version ─────→ 当前算法版本 1
 ```
 
 - 同一分类使用同一色彩家族，让用户一眼识别系列；单本书再由稳定哈希选择圆环、旋转方框或线性纹样。
-- `knowledge_id` 不变，封面就不变；正式出版的 Wiki 必须显式保存稳定 `knowledge_id`，否则当前按路径生成的兜底 ID 会在文件改名后变化。
+- 书籍 ID 和封面变体由规范化 Wiki 路径稳定派生；同一路径内容更新不会换封面，文件迁移则视为新书目。`knowledge_id` 仍作为治理元数据返回，但不再承担用户订阅主键，避免重复值把订阅静默指向另一文档。
 - 标题与作者始终是封面的一部分，因此即使颜色相近也能区分，且 VoiceOver 直接读取书名和作者。
 - 几何纹样只是装饰，已从辅助功能树隐藏；文字覆盖深色渐层以维持对比度。
 - 编辑可以在 Wiki 中用 `cover_theme` 覆盖自动分类，但值被限制为安全的短 slug；不能传任意 CSS、URL 或文件路径。

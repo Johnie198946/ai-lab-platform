@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from backend.services.knowledge_catalog import compute_catalog, document_index
+from backend.services.knowledge_catalog import bookshelf_catalog, compute_catalog, document_index
 from backend.services.knowledge_color_projection import (
     approve_color,
     approved_color_documents,
@@ -127,6 +127,61 @@ def test_green_author_attribution_cannot_read_another_tenant_red_source(tmp_path
 
     assert documents["wiki/public/method.md"]["book_author"] == "Quantum 研究团队"
     assert "SECRET-TENANT-B-CONTACT" not in str(documents["wiki/public/method.md"])
+
+
+def test_cached_atomic_projection_rejects_removed_red_owner_and_yellow_entitlement(tmp_path):
+    red = tmp_path / "wiki/private.md"
+    yellow = tmp_path / "wiki/paid.md"
+    _note(red, security="red", classification="approved", owner="tenant-a")
+    _note(
+        yellow,
+        security="yellow",
+        classification="approved",
+        entitlement="pro.access",
+    )
+
+    assert "wiki/private.md" in document_index(tmp_path)
+    assert "wiki/paid.md" in document_index(tmp_path)
+    assert bookshelf_catalog("tenant-a", tmp_path)
+
+    red.write_text(
+        red.read_text(encoding="utf-8").replace("owner_tenant: tenant-a\n", ""),
+        encoding="utf-8",
+    )
+    yellow.write_text(
+        yellow.read_text(encoding="utf-8").replace("entitlement_key: pro.access\n", ""),
+        encoding="utf-8",
+    )
+
+    assert "wiki/private.md" not in document_index(tmp_path)
+    assert "wiki/paid.md" not in document_index(tmp_path)
+    assert bookshelf_catalog(
+        "tenant-a",
+        tmp_path,
+        frozenset({"knowledge/methodology/entitlement/pro.access"}),
+    ) == []
+
+
+def test_raw_author_reference_is_not_read_on_the_bookshelf_path(tmp_path):
+    raw = tmp_path / "raw/original.md"
+    raw.parent.mkdir()
+    raw.write_text("---\nsource_author: PRIVATE RAW AUTHOR\n---\n", encoding="utf-8")
+    public = tmp_path / "wiki/public.md"
+    _note(public, security="green", classification="approved")
+    public.write_text(
+        public.read_text(encoding="utf-8").replace(
+            "status: active\n", "status: active\nsource_files:\n  - raw/original.md\n"
+        ),
+        encoding="utf-8",
+    )
+
+    document = next(
+        item for item in approved_color_documents(tmp_path)
+        if item["path"] == "wiki/public.md"
+    )
+
+    assert document["book_author"] == "Quantum 研究团队"
+    assert "PRIVATE RAW AUTHOR" not in str(document)
 
 
 def test_yellow_approval_requires_exact_entitlement_and_no_k5_minimum(tmp_path):

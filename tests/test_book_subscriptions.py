@@ -4,10 +4,12 @@ import asyncio
 
 import pytest
 from fastapi import HTTPException
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from backend.api import subscriptions
 from backend.db import Base
+from backend.models.tenant import KnowledgeBookSubscription
 
 
 AUTH = {
@@ -35,8 +37,8 @@ def run(coro):
 
 
 @pytest.fixture
-def book_db(monkeypatch):
-    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+def book_db(monkeypatch, tmp_path):
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'books.db'}")
     maker = async_sessionmaker(engine, expire_on_commit=False)
 
     async def setup():
@@ -78,6 +80,25 @@ def test_book_subscription_lifecycle_is_user_scoped(book_db):
     assert progressed["progress"] == pytest.approx(0.42)
     assert removed == {"book_id": BOOK["id"], "deleted": True}
     assert run(subscriptions.my_book_subscriptions(AUTH))["subscriptions"] == []
+
+
+def test_concurrent_duplicate_puts_are_idempotent(book_db):
+    body = subscriptions.BookSubscriptionWrite(book_id=BOOK["id"])
+
+    async def race():
+        return await asyncio.gather(
+            *(subscriptions.subscribe_book(body, AUTH) for _ in range(20))
+        )
+
+    results = run(race())
+
+    async def count_rows():
+        async with subscriptions.SessionLocal() as db:
+            return await db.scalar(select(func.count()).select_from(KnowledgeBookSubscription))
+
+    assert len(results) == 20
+    assert all(item["book"]["id"] == BOOK["id"] for item in results)
+    assert run(count_rows()) == 1
 
 
 def test_unavailable_book_cannot_be_subscribed(book_db, monkeypatch):

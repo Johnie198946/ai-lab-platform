@@ -132,16 +132,38 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
     # Cached projections cannot preserve a removed or tightened approval label.
     # A v2 compiled manifest is itself the legacy approval projection; atomic
     # color records instead require their live source labels on every read.
-    labels = metadata if item.get("approval_source") == "atomic_color_approval" else {**item, **metadata}
+    atomic = item.get("approval_source") == "atomic_color_approval"
+    labels = metadata if atomic else {**item, **metadata}
     if (labels.get("classification_status") != "approved"
             or labels.get("security_level") not in {"red", "yellow", "green"}):
         return None
     if item.get("security_level") and labels.get("security_level") != item.get("security_level"):
         return None
-    for key in ("owner_tenant", "entitlement_key"):
-        if key in item and key in metadata and metadata.get(key) and metadata[key] != item.get(key):
+    if atomic:
+        security = str(labels["security_level"])
+        owner = str(metadata.get("owner_tenant") or "").strip()
+        entitlement = str(metadata.get("entitlement_key") or "").strip()
+        if security == "green":
+            if owner != "public" or entitlement:
+                return None
+        elif security == "yellow":
+            valid_entitlement = (
+                bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,127}", entitlement))
+                and ".." not in entitlement
+            )
+            if owner != "public" or not valid_entitlement:
+                return None
+            if entitlement != str(item.get("entitlement_key") or "").strip():
+                return None
+        elif not owner or owner == "public" or owner != str(item.get("owner_tenant") or "").strip():
             return None
-    result = {**item, "security_level": labels["security_level"], **{key: metadata[key] for key in (
+        result_scope = {"owner_tenant": owner, "entitlement_key": entitlement}
+    else:
+        for key in ("owner_tenant", "entitlement_key"):
+            if key in item and key in metadata and metadata.get(key) and metadata[key] != item.get(key):
+                return None
+        result_scope = {}
+    result = {**item, **result_scope, "security_level": labels["security_level"], **{key: metadata[key] for key in (
         "disclosure_granularity", "summary_of", "publication_audience", "source_dependencies",
         "version", "conditions", "effective_at", "source_kind",
     ) if key in metadata}}
@@ -634,10 +656,13 @@ def bookshelf_catalog(
             summary = _wiki_summary(str(source), source.stat().st_mtime_ns)
         except OSError:
             summary = ""
-        book_id = str(item.get("knowledge_id") or relative)
+        knowledge_id = str(item.get("knowledge_id") or "")
+        book_id = "book-" + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:32]
         editorial_summary = str(item.get("book_summary") or "").strip()
         shelf["books"].append({
             "id": book_id,
+            "knowledge_id": knowledge_id,
+            "source_path": relative,
             "title": str(item.get("book_title") or item.get("title") or source.stem),
             "author": str(item.get("book_author") or item.get("author") or "Quantum 研究团队"),
             "author_source": str(item.get("author_source") or ("editorial" if item.get("book_author") else "fallback")),

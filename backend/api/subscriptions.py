@@ -14,6 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 
 from backend.api.auth import PERSONAL_PUBLIC_ORG_ID, require_auth
 from backend.api import knowledge
@@ -331,7 +332,22 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
         else:
             row.edition = body.edition
             row.last_read_at = datetime.now(timezone.utc)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            row = await db.scalar(
+                select(KnowledgeBookSubscription).where(
+                    KnowledgeBookSubscription.tenant_key == tenant_key,
+                    KnowledgeBookSubscription.owner_user_id == user_id,
+                    KnowledgeBookSubscription.book_id == body.book_id,
+                )
+            )
+            if row is None:
+                raise
+            row.edition = body.edition
+            row.last_read_at = datetime.now(timezone.utc)
+            await db.commit()
         await db.refresh(row)
     return _book_subscription(row, book)
 
