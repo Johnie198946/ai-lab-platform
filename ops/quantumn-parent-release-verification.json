@@ -1,1 +1,82 @@
-{"task_id":"quantumn-knowledge-delivery-20260906","release_status":"TESTED_NOT_YET_PUSHED","baseline_sha":"ef06450ad80acc511ff27e7cf5540ee8cba6c0a3","authorization":"User explicitly requested push, Mac/server deployment and eventual package upload after real acceptance.","parent_verified_tests":{"python":{"total":1295,"passed":1293,"failed":0,"errors":0,"skipped":2,"receipt":"/tmp/quantumn-parent-full-final.xml","skip_scope":"Two legacy browser V1 tests replaced by V2"},"postgres":{"total":17,"failed":0,"errors":0,"skipped":0,"receipt":"/tmp/quantumn-parent-postgres-clean.xml","scope":"Real isolated PostgreSQL16 with pytest-only NullPool; not production/NFS verification"},"swift":{"total":96,"failed":0,"skipped":0,"receipt":"/tmp/quantumn-parent-final-swift.xcresult"}},"server_before":{"sha":"ef06450ad80acc511ff27e7cf5540ee8cba6c0a3","release":"/opt/releases/ai-lab-platform-ef06450ad80a.dtfcqS","health":"ok","bridge":"ok"},"remaining_gates":["Real authenticated Hermes joint-answer and semantic acceptance","Mac runtime patch/hash and live verification","Server exact-SHA release, rollback and functional readback","Physical device remains unavailable; performance and TestFlight upload blocked"],"costs":{"A":"No provider monetary receipt; do not infer cost from tokens","B":"Not yet measured in real workload"}}
+{
+  "task_id": "quantumn-knowledge-delivery-20260906",
+  "release_status": "DEPLOYED_REAL_ACCOUNT_ACCEPTANCE_PENDING",
+  "baseline_sha": "ef06450ad80acc511ff27e7cf5540ee8cba6c0a3",
+  "authorization": "User explicitly requested push, Mac/server deployment and eventual package upload after real acceptance.",
+  "parent_verified_tests": {
+    "python": {
+      "total": 1295,
+      "passed": 1293,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 2,
+      "receipt": "/tmp/quantumn-parent-full-final.xml",
+      "skip_scope": "Two legacy browser V1 tests replaced by V2"
+    },
+    "postgres": {
+      "total": 17,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "receipt": "/tmp/quantumn-parent-postgres-clean.xml",
+      "scope": "Real isolated PostgreSQL16 with pytest-only NullPool; not production/NFS verification"
+    },
+    "swift": {
+      "total": 96,
+      "failed": 0,
+      "skipped": 0,
+      "receipt": "/tmp/quantumn-parent-final-swift.xcresult"
+    }
+  },
+  "server_before": {
+    "sha": "ef06450ad80acc511ff27e7cf5540ee8cba6c0a3",
+    "release": "/opt/releases/ai-lab-platform-ef06450ad80a.dtfcqS",
+    "health": "ok",
+    "bridge": "ok"
+  },
+  "remaining_gates": [
+    "User completes real login in simulator",
+    "Real combined personal/platform answer, authorized summary, merge, pageable long answer and performance acceptance",
+    "Mac real Hermes final answer receipt and desktop runtime reload verification",
+    "App Store Connect build occupancy, signing/archive/upload and processing readback; nothing uploaded"
+  ],
+  "costs": {
+    "A": "No provider monetary receipt; do not infer cost from tokens",
+    "B": "Not yet measured in real workload"
+  },
+  "implementation_sha": "7c3c7412bcb0e65e29277e3dd742fb648ff4fff1",
+  "github_readback_sha": "7c3c7412bcb0e65e29277e3dd742fb648ff4fff1",
+  "server_after": {
+    "sha": "7c3c7412bcb0e65e29277e3dd742fb648ff4fff1",
+    "release": "/opt/releases/ai-lab-platform-7c3c7412bcb0.gTM7q6",
+    "api_ready": true,
+    "bridge_health": "ok",
+    "hermes_chat_worker": "active",
+    "projection_operation_table_exists": true,
+    "merge_route_registered": true,
+    "block_route": "/api/chat/runs/{run_id}/blocks",
+    "source_hash_comparison": "knowledge_pipeline.py,knowledge_contribution.py,chat_run_store.py match local implementation"
+  },
+  "rollback": {
+    "code_release": "/opt/releases/ai-lab-platform-ef06450ad80a.dtfcqS",
+    "env_backup": "/opt/ai-lab-shared/.env.quantumn-knowledge-before",
+    "env_backup_sha256": "240b3ee35296e0586e3e2b85e9b743a91482efe661d81a04d0f2c9b7155cff23",
+    "migration": "Additive projection operations table exists; rollback does not delete business data or accepted artifacts"
+  },
+  "mac": {
+    "plugin_patch_applied": true,
+    "live_sha256": "cbe00eea9fdf6ab3c75bf4263a20ec467e67d63dadcead34131bd246c94bd282",
+    "backup": "/Users/dengzhaoyu/.hermes/backups/quantumn-knowledge-20260906/capability_router.py",
+    "method": "Conflict-free three-way merge preserves existing cron-owner/local plugin drift; extractor unchanged",
+    "runtime_acceptance": "NOT_PASSED: CLI probes produced no final answer receipt; first entered delegation",
+    "desktop_in_process_reload": "NOT_VERIFIED"
+  },
+  "simulator": {
+    "udid": "0BA31412-9B75-4B69-9380-BED812A71C21",
+    "app_installed": true,
+    "screen": "Phone/SMS login",
+    "screenshot": "/tmp/quantumn-real-login-simulator-ready.png",
+    "real_login": "AWAITING_USER",
+    "device_choice": "User requested simulator; no physical-device performance claim"
+  }
+}
