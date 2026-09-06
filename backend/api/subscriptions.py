@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 
@@ -54,12 +54,22 @@ class SubscriptionReview(BaseModel):
 
 
 class BookSubscriptionWrite(BaseModel):
-    book_id: str = Field(..., min_length=1, max_length=384)
+    book_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=384,
+        validation_alias=AliasChoices("book_id", "bookId"),
+    )
     edition: int = Field(default=1, ge=1)
 
 
 class BookProgressWrite(BaseModel):
-    book_id: str = Field(..., min_length=1, max_length=384)
+    book_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=384,
+        validation_alias=AliasChoices("book_id", "bookId"),
+    )
     progress: float = Field(..., ge=0, le=1)
 
 

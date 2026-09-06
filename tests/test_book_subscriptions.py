@@ -36,6 +36,19 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_book_writes_accept_build_16_camel_case_payloads():
+    subscription = subscriptions.BookSubscriptionWrite.model_validate(
+        {"bookId": BOOK["id"], "edition": 2}
+    )
+    progress = subscriptions.BookProgressWrite.model_validate(
+        {"bookId": BOOK["id"], "progress": 0.42}
+    )
+
+    assert subscription.book_id == BOOK["id"]
+    assert subscription.edition == 2
+    assert progress.book_id == BOOK["id"]
+
+
 @pytest.fixture
 def book_db(monkeypatch, tmp_path):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'books.db'}")
