@@ -57,6 +57,21 @@ async def _set_event_status(event_id: str, status: str, error: str = "") -> None
         await db.commit()
 
 
+async def _settle_run(run_id: str, status: str) -> None:
+    if status not in {"accepted", "rejected", "quarantined"}:
+        raise ValueError("invalid terminal contribution run status")
+    async with SessionLocal() as db:
+        run = await db.get(BusinessRun, run_id)
+        if run is None:
+            raise ValueError("contribution run not found")
+        if run.status == status:
+            return
+        if run.status not in {"registered", "running"}:
+            raise ValueError("contribution run is already terminal")
+        run.status = status
+        await db.commit()
+
+
 async def submit_compile(store, *, event_id: str, content: str) -> dict[str, Any]:
     event = await _event(event_id)
     grant = await authorize_contribution_event(
@@ -189,6 +204,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
                 await _set_event_status(spec.event_id, "recompile_pending", "wiki_cas_conflict")
                 raise ValueError("wiki_cas_conflict")
             await _set_event_status(spec.event_id, "no_increment")
+            await _settle_run(run_id, "accepted")
             return {"status": "no_increment", "run_id": run_id,
                     "artifact_ref": candidate.relative_path}
         projection_id = canonical_projection_id("private", tenant_namespace(spec.tenant_id), kind, identity)
@@ -254,6 +270,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         if result["decision"] != "publish":
             status = "quarantined" if result["decision"] == "quarantine" else "rejected"
             await _set_event_status(spec.event_id, status)
+            await _settle_run(run_id, status)
             return {"status": status, "run_id": run_id}
         next_run = adapter.advance(run_id, tenant_id=spec.tenant_id,
                                    user_id=spec.user_id, authorized=True)
@@ -262,12 +279,14 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
             event_ids=[item["event_id"] for item in await _run_dependencies(run_id)],
             expires_at=_now() + timedelta(hours=1),
         )
+        await _settle_run(run_id, "accepted")
         await _set_event_status(spec.event_id, "privacy_reviewing")
         return {"status": "privacy_reviewing", "run_id": next_run["run_id"]}
 
     if result["decision"] != "approve" or spec.simulated:
         status = "quarantined" if result["decision"] == "quarantine" or spec.simulated else "rejected"
         await _set_event_status(spec.event_id, status)
+        await _settle_run(run_id, status)
         return {"status": status, "run_id": run_id}
 
     sanitize_run_id = spec.predecessor_run_id

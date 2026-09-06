@@ -68,6 +68,19 @@ async def test_pipeline_compiles_red_then_independent_green_candidate(tmp_path, 
     complete(store, privacy["run_id"], PRIVACY)
     green = await advance_completed(store, run_id=privacy["run_id"], vault=tmp_path)
     assert green["status"] == "published"
+    from backend.db import SessionLocal
+    from backend.models.knowledge_contribution import KnowledgeContributionRun
+
+    async with SessionLocal() as db:
+        statuses = {
+            run_id: (await db.get(KnowledgeContributionRun, run_id)).status
+            for run_id in (compile_run["run_id"], red["run_id"], privacy["run_id"])
+        }
+    assert statuses == {
+        compile_run["run_id"]: "accepted",
+        red["run_id"]: "accepted",
+        privacy["run_id"]: "accepted",
+    }
     green_replay = await advance_completed(
         store, run_id=privacy["run_id"], vault=tmp_path,
     )
@@ -120,6 +133,12 @@ async def test_pipeline_never_advances_simulation_to_green(tmp_path):
     stopped = await advance_completed(store, run_id=red["run_id"], vault=tmp_path)
     assert stopped["status"] == "quarantined"
     assert not list((tmp_path / "wiki/contributions").glob("*.md"))
+    from backend.db import SessionLocal
+    from backend.models.knowledge_contribution import KnowledgeContributionRun
+
+    async with SessionLocal() as db:
+        business_run = await db.get(KnowledgeContributionRun, red["run_id"])
+    assert business_run.status == "quarantined"
 
 
 @pytest.mark.asyncio
