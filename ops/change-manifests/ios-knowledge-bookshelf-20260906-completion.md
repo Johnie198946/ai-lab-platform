@@ -59,16 +59,18 @@
 - 书架加载链路复核：旧流程进入页面后先等待约 12 秒的 `subscription-center`，再等待约 1.7 秒书架响应；当前流程直接请求书架，首屏不再被权益数据阻塞。
 - 本轮 iOS 构建：Debug simulator `BUILD SUCCEEDED`。视觉验收确认右上权益按钮已移除；导航收起态不显示任何胶囊，从左向右滑动后完整四栏导航恢复。截图为 `/private/tmp/bookshelf-no-entitlement-button-20260906.png`、`/private/tmp/navigation-collapsed-no-capsule-20260906.png` 与 `/private/tmp/navigation-revealed-by-right-swipe-20260906.png`。
 - Build 18 发布前校验：相关 Python 测试 `15 passed`；iOS Debug simulator `BUILD SUCCEEDED`；版本源与 Xcode 工程均为 `1.0.3 (18)`。
+- Build 18 发布归档：`/private/tmp/AIPlatformApp-1.0.3-build18.xcarchive`，`ARCHIVE SUCCEEDED`；归档回读版本、Build、Bundle ID、Team ID 为 `1.0.3`、`18`、`com.ailab.AIPlatformApp`、`AALA948YY5`，二进制包含书架、订阅和进度接口路径。
+- Build 18 上传：`EXPORT SUCCEEDED`、`Upload succeeded`；Apple Delivery UUID `e4944ace-decd-46aa-bd13-e3cbed6d5b38`，上传回执状态 `PROCESSING`、无处理错误或警告。
 
 ## 交付与外部状态
 
 - current_status: `DEPLOYED`
-- commit SHA: Build 16 后端兼容修复 `4033772309d8ef3c485c6de5da92cc7668ba4220`；开工基线仍为 `8fe312223ccb7909ba6b9f00f05df5eea1e63679`。
-- GitHub remote/ref/SHA: `origin/codex/ios-knowledge-bookshelf-20260906` 包含兼容修复；manifest 提交后的精确远端 tip 由完成通报中的 `git ls-remote` 结果记录。
+- commit SHA: Build 18 归档源码 `225839b64ee33cade5dd87ab385966162862d051`；后端兼容修复 `4033772309d8ef3c485c6de5da92cc7668ba4220`。
+- GitHub remote/ref/SHA: `origin/codex/ios-knowledge-bookshelf-20260906@225839b64ee33cade5dd87ab385966162862d051` 已由 `git ls-remote` 核对；直接推送 `main` 未获明确授权，未执行。
 - server_before: `/opt/releases/ai-lab-platform-108f1af9ebd6.mBShnM`，`.deployed-sha=108f1af9ebd6cc6d660db570b1bc35680ea2f01f`；TestFlight `1.0.3 (17)` 已完成处理。
 - server_after: `/opt/releases/ai-lab-platform-fbd58f9b9d89.m6iIqy`，`.deployed-sha=fbd58f9b9d89a18edbda89ba9fa71b8e9a065f95`。
 - health_check: 部署脚本最终检查 API `ready/0.8.0`、Hermes Bridge `ok/v6.0`；部署后 `/health` 返回 `ok/0.8.0`。
-- functional_check: 生产书架与订阅路径未认证均返回 401 而非 404；生产 API 容器运行态验证 `BookSubscriptionWrite.model_validate({"bookId":"contract-probe"}).book_id == "contract-probe"`。Build 18 尚待归档上传。
+- functional_check: 生产书架与订阅路径未认证均返回 401 而非 404；生产 API 容器运行态验证 `BookSubscriptionWrite.model_validate({"bookId":"contract-probe"}).book_id == "contract-probe"`。Build 18 已成功上传，Apple 尚在处理，未分配测试组。
 - rollback_point: `/opt/releases/ai-lab-platform-108f1af9ebd6.mBShnM`；TestFlight `1.0.3 (17)` 保留。
 
 ## 风险、未完成项与回滚说明
@@ -82,4 +84,4 @@
 - 工作期间同一专用分支被既有并行交付推进到 `119c654`，源码发布号现为 Build 17；本次已经上传的 Build 16 归档保持不可变，未回退或覆盖并行提交。
 - 静态 catalog 与运行时颜色投影的准入规则仍需统一，详见建议文档。
 - 后端兼容修复已部署并完成运行态字段兼容验证；尚缺真实登录账号下的生产订阅完整生命周期回读。
-- 最新 UI 调整已本地测试，Build 18 尚待归档、上传和 App Store Connect 回读。
+- 最新 UI 调整已本地测试并成功上传 Build 18；仍待 Apple 完成处理、App Store Connect 回读及测试组分配。
