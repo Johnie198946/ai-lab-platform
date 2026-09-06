@@ -202,33 +202,42 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
             result_digest=digest(result), intent={"tenant_id": spec.tenant_id,
                 "user_id": spec.user_id, "authorization_epoch": spec.authorization_epoch},
         )
-        try:
-            artifact_ref = write_red_projection(
-                vault, projection_id=projection_id, tenant_key=spec.tenant_id,
-                title=result["title"], knowledge_type=result["type"],
-                knowledge_level=result["knowledge_level"], confidence=result["confidence"],
-                content=result["content"], source_ref_hash=event.business_state["source_key"],
-                source_content_hash=event.content_hash, source_revision=event.source_revision,
-                incremental=red_increment, dependencies=dependencies,
-                canonical_id=identity, canonical_kind=kind, operation_id=operation_id,
+        if operation["status"] == "quarantined":
+            raise ValueError("projection operation is quarantined")
+        if operation["status"] == "completed":
+            next_run = adapter.advance(run_id, tenant_id=spec.tenant_id,
+                                       user_id=spec.user_id, authorized=True)
+            return {"status": event.status, "run_id": next_run["run_id"],
+                    "red_projection_id": projection_id}
+        if operation["status"] in {"prepared", "file_published"}:
+            try:
+                artifact_ref = write_red_projection(
+                    vault, projection_id=projection_id, tenant_key=spec.tenant_id,
+                    title=result["title"], knowledge_type=result["type"],
+                    knowledge_level=result["knowledge_level"], confidence=result["confidence"],
+                    content=result["content"], source_ref_hash=event.business_state["source_key"],
+                    source_content_hash=event.content_hash, source_revision=event.source_revision,
+                    incremental=red_increment, dependencies=dependencies,
+                    canonical_id=identity, canonical_kind=kind, operation_id=operation_id,
+                )
+            except ValueError as exc:
+                if str(exc) == "wiki_cas_conflict":
+                    await mark_projection_operation(operation_id, "quarantined")
+                    await _set_event_status(spec.event_id, "recompile_pending", str(exc))
+                raise
+            await mark_projection_operation(operation_id, "file_published")
+        if operation["status"] in {"prepared", "file_published"}:
+            await accept_contribution_result(
+                tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=run_id,
+                authorization_epoch=spec.authorization_epoch, projection_id=projection_id,
+                artifact_ref=artifact_ref, security_level="red",
+                governance={"classification_status": "approved", "security_level": "red",
+                            "approved_by": "hermes:knowledge_tenant_compile",
+                            "canonical_identity": identity,
+                            "base_projection_version": await _projection_version(projection_id),
+                            "result_digest": digest(result)},
             )
-        except ValueError as exc:
-            if str(exc) == "wiki_cas_conflict":
-                await mark_projection_operation(operation_id, "quarantined")
-                await _set_event_status(spec.event_id, "recompile_pending", str(exc))
-            raise
-        await mark_projection_operation(operation_id, "file_published")
-        await accept_contribution_result(
-            tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=run_id,
-            authorization_epoch=spec.authorization_epoch, projection_id=projection_id,
-            artifact_ref=artifact_ref, security_level="red",
-            governance={"classification_status": "approved", "security_level": "red",
-                        "approved_by": "hermes:knowledge_tenant_compile",
-                        "canonical_identity": identity,
-                        "base_projection_version": await _projection_version(projection_id),
-                        "result_digest": digest(result)},
-        )
-        await mark_projection_operation(operation_id, "sql_accepted")
+            await mark_projection_operation(operation_id, "sql_accepted")
         next_run = adapter.advance(run_id, tenant_id=spec.tenant_id,
                                    user_id=spec.user_id, authorized=True)
         await register_contribution_run(
@@ -301,6 +310,12 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
             "user_id": spec.user_id, "authorization_epoch": spec.authorization_epoch,
             "base_projection_version": base_projection_version},
     )
+    if operation["status"] == "quarantined":
+        raise ValueError("projection operation is quarantined")
+    if operation["status"] == "completed":
+        await _set_event_status(spec.event_id, "published")
+        return {"status": "published", "run_id": run_id,
+                "projection_id": projection_id, "artifact_ref": artifact_ref}
     if operation["status"] in {"prepared", "file_published"}:
         try:
             artifact_ref = stage_green_projection(
@@ -339,12 +354,14 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         "authorized_public_input": public_reference,
         "result_digest": result_digest,
     }
-    projection = await accept_contribution_result(
-        tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=run_id,
-        authorization_epoch=spec.authorization_epoch, projection_id=projection_id,
-        artifact_ref=artifact_ref, security_level="green", governance=governance,
-    )
-    await mark_projection_operation(operation_id, "sql_accepted")
+    projection = None
+    if operation["status"] in {"prepared", "file_published"}:
+        projection = await accept_contribution_result(
+            tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=run_id,
+            authorization_epoch=spec.authorization_epoch, projection_id=projection_id,
+            artifact_ref=artifact_ref, security_level="green", governance=governance,
+        )
+        await mark_projection_operation(operation_id, "sql_accepted")
     from backend.services.knowledge_publication_gate import machine_approve_green
     publication = await machine_approve_green(
         relative_path=artifact_ref, projection_id=projection_id,

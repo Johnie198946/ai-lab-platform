@@ -56,6 +56,11 @@ async def test_pipeline_compiles_red_then_independent_green_candidate(tmp_path, 
     red = await advance_completed(store, run_id=compile_run["run_id"], vault=tmp_path)
     assert red["status"] == "sanitizing"
     assert list((tmp_path / "wiki/tenant").rglob("*.md"))
+    red_replay = await advance_completed(
+        store, run_id=compile_run["run_id"], vault=tmp_path,
+    )
+    assert red_replay["status"] == "sanitizing"
+    assert red_replay["run_id"] == red["run_id"]
 
     complete(store, red["run_id"], SANITIZE)
     privacy = await advance_completed(store, run_id=red["run_id"], vault=tmp_path)
@@ -63,6 +68,10 @@ async def test_pipeline_compiles_red_then_independent_green_candidate(tmp_path, 
     complete(store, privacy["run_id"], PRIVACY)
     green = await advance_completed(store, run_id=privacy["run_id"], vault=tmp_path)
     assert green["status"] == "published"
+    green_replay = await advance_completed(
+        store, run_id=privacy["run_id"], vault=tmp_path,
+    )
+    assert green_replay["status"] == "published"
     text = (tmp_path / green["artifact_ref"]).read_text(encoding="utf-8")
     assert "classification_status: approved" in text
     assert tenant not in text and "note-1" not in text

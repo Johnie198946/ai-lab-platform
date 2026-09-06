@@ -199,6 +199,8 @@ printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
 
 echo "==> [4b/6] 建立 Hermes Vault 可见性链接并修复笔记共享权限"
 VAULT_ROOT="$DATA_TARGET/vault"
+chown 0:0 "$VAULT_ROOT"
+chmod 0755 "$VAULT_ROOT"
 bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid 0 --owner-gid 0 \
@@ -213,11 +215,13 @@ mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
 configure_cloud_agent_os_mode
 restart_hermes_runtime
+chown 0:0 "$VAULT_ROOT"
+chmod 0755 "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid 0 --owner-gid 0 \
   "$VAULT_ROOT/raw/dialogues/tenants"
 docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-  'import pathlib,tempfile; root=pathlib.Path("/app/data/vault/raw/dialogues/tenants"); probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
+  'import pathlib,tempfile; vault=pathlib.Path("/app/data/vault"); lock=vault/".incremental-compile.lock"; lock.touch(exist_ok=True); root=vault/"raw/dialogues/tenants"; probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
 
 echo "==> [6/6] 最终健康检查"
 api_status=""
