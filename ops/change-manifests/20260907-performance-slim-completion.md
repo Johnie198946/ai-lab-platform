@@ -44,12 +44,13 @@
 
 ## Delivery
 
-- status: `TESTED`
-- commit_sha: not created; user did not request a commit.
-- GitHub remote/ref/SHA: push not authorized or executed; `git ls-remote` not applicable.
-- server_before: not applicable; deployment not authorized or executed.
-- server_after: not applicable; deployment not authorized or executed.
-- health_check: not applicable; no deployment.
-- functional_check: local contract and regression checks passed, including cache reuse, stale native-history rejection, and tenant-sandbox signature isolation; no production TTFT benchmark was run.
-- rollback_point: base HEAD `8f2b61850bb521bb3176e92302c64c2de9ff9706`; changes remain uncommitted in the isolated worktree.
-- remaining_risks: First turn still pays `AIAgent` construction and provider TTFT; cache effectiveness and memory require production measurement. The legacy note protocol remains for older clients.
+- status: `VERIFIED`
+- runtime_commit_sha: `d7443b960d0573613a25cf7f26076b26ecc3a482` (`perf(chat): reuse warm Hermes sessions`), rebased cleanly onto the then-current `origin/main` SHA `50db3152ef9e97ca4b2d4bbeb4fde0b21406745c`.
+- GitHub remote/ref/SHA: `origin/main` and `origin/codex/performance-slim-20260907` were pushed and independently verified with `git ls-remote` at `d7443b960d0573613a25cf7f26076b26ecc3a482` before deployment. A manifest-only follow-up commit may advance these refs without changing deployed runtime code; the immutable deployment tag records the deployed SHA.
+- server_before: SHA `50db3152ef9e97ca4b2d4bbeb4fde0b21406745c`, release `/opt/releases/ai-lab-platform-50db3152ef9e.Mo2qvU`; API and Hermes Bridge healthy, `hermes-bridge.service` and `hermes-chat-worker.service` active.
+- server_after: SHA `d7443b960d0573613a25cf7f26076b26ecc3a482`, release `/opt/releases/ai-lab-platform-d7443b960d05.aafCuO`.
+- health_check: independent post-deploy checks passed: API `/ready` returned `{"status":"ready","version":"0.8.0"}`; Hermes Bridge `/health` returned `status=ok`, `version=v6.0`, `streaming=true`; Bridge and chat worker services were active; no warning-or-higher journal entries appeared in the post-deploy window.
+- functional_check: local contract and regression checks passed, including cache reuse, stale native-history rejection, and tenant-sandbox signature isolation. Production source assertions confirmed the cache switch, cache-hit telemetry, and 100ms worker polling are present in the active release. No real-user production TTFT benchmark was run.
+- rollback_point: `/opt/releases/ai-lab-platform-50db3152ef9e.Mo2qvU` (SHA `50db3152ef9e97ca4b2d4bbeb4fde0b21406745c`).
+- TestFlight: not uploaded. The deployed warm-agent cache and worker polling changes are server-side. TestFlight is only needed to deliver the first-batch iOS changes (empty-context omission and immediate first delta) for the full end-to-end latency gain.
+- remaining_risks: First turn still pays `AIAgent` construction and provider TTFT; cache hit rate, memory, and end-to-end TTFT require production traffic measurement. Existing installed iOS clients do not receive the client-side latency improvements until a future TestFlight/App Store build.
