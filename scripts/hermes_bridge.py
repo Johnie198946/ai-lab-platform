@@ -26,6 +26,7 @@ v4.1 (2026-08-10·Supervision 批复返工):
 """
 import ast
 import asyncio
+from collections import OrderedDict
 import contextvars
 import hashlib
 import json
@@ -4046,6 +4047,139 @@ _CACHED_TOOLS = None
 _CACHED_RUNTIME = None
 _CACHED_FALLBACK = None
 
+# Mirror Hermes Gateway's bounded per-session AIAgent reuse. A global shared
+# agent would leak mutable session/tool state across tenants; exact signatures
+# and SessionDB message counts keep this cache session-safe.
+_AGENT_CACHE_MAX_SIZE = max(0, int(os.environ.get("HERMES_CHAT_AGENT_CACHE_SIZE", "32")))
+_AGENT_CACHE: OrderedDict[str, dict[str, Any]] = OrderedDict()
+_AGENT_CACHE_LOCK = threading.Lock()
+
+
+def _close_agent_resources(agent: Any, session_db: Any) -> None:
+    try:
+        if agent is not None:
+            agent.close()
+    except Exception:
+        pass
+    try:
+        if session_db is not None:
+            session_db.close()
+    except Exception:
+        pass
+
+
+def _agent_cache_signature(
+    *, model: str, runtime: dict[str, Any], toolsets: list[str], prompt: str,
+    fallback: Any, request_overrides: dict[str, Any] | None, service_tier: str,
+    sandbox: "TenantHermesSandbox",
+) -> str:
+    payload = {
+        "model": model,
+        "provider": runtime.get("provider"),
+        "base_url": runtime.get("base_url"),
+        "api_mode": runtime.get("api_mode"),
+        "toolsets": toolsets,
+        "prompt": prompt,
+        "fallback": fallback,
+        "request_overrides": request_overrides,
+        "service_tier": service_tier,
+        "sandbox_root": str(sandbox.root),
+        "state_db": str(sandbox.state_db),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode()
+    ).hexdigest()
+
+
+def _take_cached_agent(
+    cache_key: str, signature: str, hermes_sid: str | None,
+) -> tuple[Any, Any] | None:
+    stale: tuple[Any, Any] | None = None
+    with _AGENT_CACHE_LOCK:
+        entry = _AGENT_CACHE.get(cache_key)
+        if entry is None or entry["in_use"]:
+            return None
+        agent = entry["agent"]
+        session_db = entry["session_db"]
+        cached_sid = str(getattr(agent, "session_id", "") or "")
+        if entry["signature"] != signature or cached_sid != str(hermes_sid or ""):
+            _AGENT_CACHE.pop(cache_key, None)
+            stale = (agent, session_db)
+        else:
+            try:
+                current_count = session_db.message_count(cached_sid)
+            except Exception:
+                current_count = None
+            if current_count != entry["message_count"]:
+                _AGENT_CACHE.pop(cache_key, None)
+                stale = (agent, session_db)
+            else:
+                entry["in_use"] = True
+                _AGENT_CACHE.move_to_end(cache_key)
+                try:
+                    from agent.session_activity import ActivityProvenance
+
+                    agent._last_activity_ts = time.time()
+                    agent._last_activity_desc = "starting new turn (cached)"
+                    agent._last_activity_provenance = ActivityProvenance.UNKNOWN
+                except Exception:
+                    pass
+                agent._api_call_count = 0
+                if hasattr(agent, "_last_flushed_db_idx"):
+                    agent._last_flushed_db_idx = 0
+                return agent, session_db
+    if stale is not None:
+        _close_agent_resources(*stale)
+    return None
+
+
+def _finish_cached_agent(
+    cache_key: str, signature: str, agent: Any, session_db: Any, *, keep: bool,
+) -> None:
+    if not keep or _AGENT_CACHE_MAX_SIZE == 0:
+        with _AGENT_CACHE_LOCK:
+            entry = _AGENT_CACHE.get(cache_key)
+            if entry is not None and entry["agent"] is agent:
+                _AGENT_CACHE.pop(cache_key, None)
+        _close_agent_resources(agent, session_db)
+        return
+
+    try:
+        message_count = session_db.message_count(str(getattr(agent, "session_id", "") or ""))
+    except Exception:
+        _close_agent_resources(agent, session_db)
+        return
+
+    evicted: list[tuple[Any, Any]] = []
+    retained = False
+    with _AGENT_CACHE_LOCK:
+        current = _AGENT_CACHE.get(cache_key)
+        if current is None or current["agent"] is agent or not current["in_use"]:
+            if current is not None and current["agent"] is not agent:
+                evicted.append((current["agent"], current["session_db"]))
+            _AGENT_CACHE[cache_key] = {
+                "agent": agent,
+                "session_db": session_db,
+                "signature": signature,
+                "message_count": message_count,
+                "in_use": False,
+            }
+            _AGENT_CACHE.move_to_end(cache_key)
+            retained = True
+            while len(_AGENT_CACHE) > _AGENT_CACHE_MAX_SIZE:
+                victim_key = next(
+                    (key for key, value in _AGENT_CACHE.items() if not value["in_use"]),
+                    None,
+                )
+                if victim_key is None:
+                    break
+                victim = _AGENT_CACHE.pop(victim_key)
+                evicted.append((victim["agent"], victim["session_db"]))
+    if not retained:
+        evicted.append((agent, session_db))
+    for victim in evicted:
+        _close_agent_resources(*victim)
+
 
 def _get_cached_config() -> dict:
     """常驻 Config 单例：首次加载后内存复用（0ms 读盘）。"""
@@ -4886,6 +5020,12 @@ def _routing_user_goal(goal: str) -> str:
     return (goal or "").strip()
 
 
+def _legacy_client_context_enabled(
+    client_context_enabled: bool, knowledge_action_enabled: bool
+) -> bool:
+    return client_context_enabled and not knowledge_action_enabled
+
+
 def _build_in_process_agent(
     goal: str,
     user_id: str,
@@ -4917,6 +5057,9 @@ def _build_in_process_agent(
 
     runtime = _get_cached_runtime(cfg)  # 常驻单例：0ms 解析
     agent_config = dict(agent_config or {})
+    legacy_client_context_enabled = _legacy_client_context_enabled(
+        client_context_enabled, knowledge_action_enabled
+    )
     composition = agent_config.get("composition") or {}
     triage = _request_triage(agent_config)
     route_class = triage.get("route_class") if triage else None
@@ -5020,7 +5163,7 @@ def _build_in_process_agent(
         _ensure_tenant_skill_tool_registered()
         if "tenant_skills" not in toolsets_list:
             toolsets_list.append("tenant_skills")
-    if client_context_enabled:
+    if legacy_client_context_enabled:
         _ensure_client_context_tools_registered()
         if "client_context" not in toolsets_list:
             toolsets_list.append("client_context")
@@ -5040,7 +5183,7 @@ def _build_in_process_agent(
             requested_toolsets.add("delegation")
         if knowledge_tool_enabled:
             requested_toolsets.add("knowledge_gateway")
-        if client_context_enabled:
+        if legacy_client_context_enabled:
             requested_toolsets.add("client_context")
         if knowledge_action_enabled:
             requested_toolsets.add("knowledge_workspace")
@@ -5174,6 +5317,54 @@ def _build_in_process_agent(
         if get_tool_definitions(enabled_toolsets=toolsets_list, quiet_mode=True):
             raise RuntimeError("knowledge stage tool isolation failed closed")
 
+    service_tier = "priority" if fast_general else ""
+    request_overrides = _cache_request_overrides(
+        cfg_model,
+        str(runtime.get("provider") or ""),
+        {"service_tier": "priority"} if fast_general else None,
+    )
+    cache_signature = _agent_cache_signature(
+        model=cfg_model,
+        runtime=runtime,
+        toolsets=toolsets_list,
+        prompt=json.dumps(
+            {
+                "agent_config": agent_config,
+                "skill_candidates": skill_candidates,
+                "legacy_client_context": legacy_client_context_enabled,
+                "knowledge_action": knowledge_action_enabled,
+                "fast_general": fast_general,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        ),
+        fallback=_fb,
+        request_overrides=request_overrides,
+        service_tier=service_tier,
+        sandbox=sandbox,
+    )
+    cached = _take_cached_agent(user_id, cache_signature, hermes_sid)
+    if cached is not None:
+        agent, session_db = cached
+        agent.clarify_callback = _clarify_cb
+        agent.stream_delta_callback = _delta_cb
+        agent.reasoning_callback = _reasoning_cb
+        agent.tool_start_callback = _tool_start_cb
+        agent.tool_complete_callback = _tool_complete_cb
+        agent.reasoning_config = {"effort": "minimal"}
+        print(f"[bridge] agent_cache_hit user={user_id}")
+        return agent, session_db, {
+            "triage": triage,
+            "enabled_toolsets": tuple(toolsets_list),
+            "skill_candidates": tuple(
+                {"name": item["name"], "score": item["score"]}
+                for item in skill_candidates
+            ),
+            "agent_cache_key": user_id,
+            "agent_cache_signature": cache_signature,
+        }
+
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
     # 一律不传，避免跨版本签名不兼容；runtime 解析已含该信息，非必需
     agent = AIAgent(
@@ -5194,12 +5385,8 @@ def _build_in_process_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
-        request_overrides=_cache_request_overrides(
-            cfg_model,
-            str(runtime.get("provider") or ""),
-            {"service_tier": "priority"} if fast_general else None,
-        ),
-        service_tier="priority" if fast_general else "",
+        request_overrides=request_overrides,
+        service_tier=service_tier,
         ephemeral_system_prompt=(
             "你是 Hermes 快速问答模式。直接、准确、简洁回答当前问题；不调用工具、不委派、不追问。"
             if fast_general else (
@@ -5248,7 +5435,7 @@ def _build_in_process_agent(
                 " #标签；任务用 - [ ]；双向链接用 [[笔记名]]；嵌入用 ![[笔记名]]；提示块用"
                 " > [!tip]；代码用围栏代码块。用户要求增加、删除或调整这些结构时必须在完整修订稿"
                 "中执行，同时保留未要求变更的正文、链接、标签、提示块和代码。"
-                if client_context_enabled else ""
+                if legacy_client_context_enabled else ""
             )
             + (
                 "\n当前客户端声明 knowledge_action_v1。个人知识读取必须使用"
@@ -5295,6 +5482,8 @@ def _build_in_process_agent(
             {"name": item["name"], "score": item["score"]}
             for item in skill_candidates
         ),
+        "agent_cache_key": user_id,
+        "agent_cache_signature": cache_signature,
     }
 
 
@@ -5314,9 +5503,11 @@ def _run_agent_sync(
     knowledge_action_enabled: bool = False,
     qws_business_context: dict[str, Any] | None = None,
 ) -> None:
-    """agent 同步执行（worker 线程内）：执行 → done/error → finally 强制 close。"""
+    """Run one Hermes turn, retaining only a bounded session-safe warm agent."""
     agent: Any = None
     session_db: Any = None
+    route_context: dict[str, Any] = {}
+    cache_keep = False
     original_goal = goal
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
@@ -5534,6 +5725,7 @@ def _run_agent_sync(
                 persistent_goal,
                 conversation_history=conversation_history,
             )
+        cache_keep = True
         result_dict = result if isinstance(result, dict) else {}
         final = (
             result_dict.get("final_response") or ""
@@ -5593,17 +5785,14 @@ def _run_agent_sync(
         _client_context_tool_context.value = None
         _sandbox_tool_context.value = None
         _skill_route_context.value = None
-        # 显式回收：agent.close + session_db.close（防内存泄漏）
-        try:
-            if agent is not None:
-                agent.close()
-        except Exception:
-            pass
-        try:
-            if session_db is not None:
-                session_db.close()
-        except Exception:
-            pass
+        cache_key = route_context.get("agent_cache_key")
+        cache_signature = route_context.get("agent_cache_signature")
+        if agent is not None and session_db is not None and cache_key and cache_signature:
+            _finish_cached_agent(
+                str(cache_key), str(cache_signature), agent, session_db, keep=cache_keep
+            )
+        else:
+            _close_agent_resources(agent, session_db)
 
 
 def _busy_sse(user_id: str):

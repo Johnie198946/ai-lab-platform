@@ -872,9 +872,9 @@ public final class TenantSessionCoordinator: ObservableObject {
             return
         }
 
-        // Hermes SessionDB is the sole conversation runtime. Normal sends carry
-        // only a signed capability envelope; a transcript is attached solely
-        // when an explicit migration/recovery workflow supplied one.
+        // Hermes SessionDB is the sole conversation runtime. Attach auxiliary
+        // client context only for recovery, explicit local notes, or a knowledge
+        // mutation; an empty envelope would disable Hermes' fast general lane.
         let recoveryContext = nextClientSessionContext
         nextClientSessionContext = nil
         var localNoteSnapshot: [ChatLocalNoteDTO] = []
@@ -899,13 +899,17 @@ public final class TenantSessionCoordinator: ObservableObject {
                 localNoteCharacters += markdown.count
             }
         }
-        let enrichedClientSessionContext = ClientSessionContextDTO(
+        let enrichedClientSessionContext = Self.shouldAttachClientSessionContext(
+            userText: text,
+            hasRecoveryContext: recoveryContext != nil,
+            hasLocalNotes: !localNoteSnapshot.isEmpty
+        ) ? ClientSessionContextDTO(
             sessionId: sid,
             messages: recoveryContext?.messages ?? [],
             truncated: recoveryContext?.truncated ?? false,
             sourceSessions: recoveryContext?.sourceSessions ?? [],
             localNotes: localNoteSnapshot
-        )
+        ) : nil
         let userMessage = ChatMessage(
             sessionId: sid, role: .user, content: text, quotedContext: quote
         )
@@ -969,10 +973,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         lastStreamCheckpoint = .distantPast
         lastCheckpointCharacterCount = 0
         let sid = sessionManager.activeSessionID()
-        let runtimeClientContext = clientSessionContext ?? ClientSessionContextDTO(
-            sessionId: sid,
-            messages: [],
-            truncated: false
+        let runtimeClientContext = clientSessionContext ?? (
+            Self.requiresKnowledgeActionProposal(text)
+                ? ClientSessionContextDTO(sessionId: sid, messages: [], truncated: false)
+                : nil
         )
         let req = InFlightRequest(
             id: UUID().uuidString, sessionId: sid, text: text, quote: quote,
@@ -1053,6 +1057,12 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard !flushScheduled else { return }
         flushScheduled = true
         let publishedCount = messages.first(where: { $0.id == messageId })?.content.utf8.count ?? 0
+        if ChatStreamingPerformancePolicy.shouldPublishImmediately(
+            publishedUTF8Count: publishedCount
+        ) {
+            drainDeltaBuffer(messageId: messageId)
+            return
+        }
         let delay = ChatStreamingPerformancePolicy.flushDelayNanoseconds(
             currentUTF8Count: publishedCount + deltaBuffer.utf8.count
         )
@@ -1101,6 +1111,14 @@ public final class TenantSessionCoordinator: ObservableObject {
         let hasMutation = ["保存", "写入", "创建", "新建", "修改", "更新", "重命名", "标签", "置顶", "合并", "归档", "恢复", "删除", "save", "create", "update", "merge", "archive", "restore", "delete"]
             .contains(where: value.contains)
         return hasKnowledgeObject && hasMutation
+    }
+
+    static func shouldAttachClientSessionContext(
+        userText: String,
+        hasRecoveryContext: Bool,
+        hasLocalNotes: Bool
+    ) -> Bool {
+        hasRecoveryContext || hasLocalNotes || requiresKnowledgeActionProposal(userText)
     }
 
     static func shouldShowKnowledgeProposalRetry(

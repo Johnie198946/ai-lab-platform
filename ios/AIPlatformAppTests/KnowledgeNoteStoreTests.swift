@@ -453,6 +453,15 @@ final class KnowledgeNoteStoreTests: XCTestCase {
         XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("把刚才的内容都记下来"))
         XCTAssertFalse(TenantSessionCoordinator.requiresKnowledgeActionProposal("iOS 如何保存图片到相册？"))
         XCTAssertFalse(TenantSessionCoordinator.requiresKnowledgeActionProposal("解释一下这段内容"))
+        XCTAssertFalse(TenantSessionCoordinator.shouldAttachClientSessionContext(
+            userText: "解释一下这段内容", hasRecoveryContext: false, hasLocalNotes: false
+        ))
+        XCTAssertTrue(TenantSessionCoordinator.shouldAttachClientSessionContext(
+            userText: "保存为笔记", hasRecoveryContext: false, hasLocalNotes: false
+        ))
+        XCTAssertTrue(TenantSessionCoordinator.shouldAttachClientSessionContext(
+            userText: "继续", hasRecoveryContext: true, hasLocalNotes: false
+        ))
         XCTAssertTrue(TenantSessionCoordinator.shouldShowKnowledgeProposalRetry(
             userText: "保存为笔记", hasProposal: false
         ))

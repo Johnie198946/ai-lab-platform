@@ -80,6 +80,10 @@ enum LongMessagePresentation {
 }
 
 enum ChatStreamingPerformancePolicy {
+    static func shouldPublishImmediately(publishedUTF8Count: Int) -> Bool {
+        publishedUTF8Count == 0
+    }
+
     static func flushDelayNanoseconds(currentUTF8Count: Int) -> UInt64 {
         switch currentUTF8Count {
         case ..<4_000: return 160_000_000

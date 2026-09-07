@@ -2567,6 +2567,8 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
     }
 
     func testLongStreamingPolicyBoundsRefreshAndTypewriterUpdates() {
+        XCTAssertTrue(ChatStreamingPerformancePolicy.shouldPublishImmediately(publishedUTF8Count: 0))
+        XCTAssertFalse(ChatStreamingPerformancePolicy.shouldPublishImmediately(publishedUTF8Count: 1))
         XCTAssertEqual(ChatStreamingPerformancePolicy.flushDelayNanoseconds(currentUTF8Count: 3_999), 160_000_000)
         XCTAssertEqual(ChatStreamingPerformancePolicy.flushDelayNanoseconds(currentUTF8Count: 4_000), 250_000_000)
         XCTAssertEqual(ChatStreamingPerformancePolicy.flushDelayNanoseconds(currentUTF8Count: 12_000), 400_000_000)

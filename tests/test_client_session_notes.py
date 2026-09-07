@@ -1,6 +1,7 @@
 import inspect
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -124,12 +125,81 @@ def test_client_context_cannot_replace_native_hermes_runtime():
     assert "if agent_sid and client_session_context is None" not in run_source
 
 
+def test_v1_knowledge_actions_do_not_enable_legacy_note_protocol():
+    import scripts.hermes_bridge as bridge
+
+    assert bridge._legacy_client_context_enabled(True, False) is True
+    assert bridge._legacy_client_context_enabled(True, True) is False
+    assert bridge._legacy_client_context_enabled(False, True) is False
+
+
+def test_session_agent_cache_reuses_only_unchanged_native_history():
+    import scripts.hermes_bridge as bridge
+
+    class FakeDB:
+        def __init__(self):
+            self.count = 4
+            self.closed = False
+
+        def message_count(self, _session_id):
+            return self.count
+
+        def close(self):
+            self.closed = True
+
+    agent = SimpleNamespace(
+        session_id="hermes-session", _api_call_count=7, _last_flushed_db_idx=9,
+        close=lambda: None,
+    )
+    db = FakeDB()
+    bridge._AGENT_CACHE.clear()
+    try:
+        bridge._finish_cached_agent("user", "signature", agent, db, keep=True)
+        assert bridge._take_cached_agent(
+            "user", "signature", "hermes-session"
+        ) == (agent, db)
+        assert agent._api_call_count == 0
+        assert agent._last_flushed_db_idx == 0
+        bridge._finish_cached_agent("user", "signature", agent, db, keep=True)
+
+        db.count += 1
+        assert bridge._take_cached_agent("user", "signature", "hermes-session") is None
+        assert db.closed is True
+    finally:
+        bridge._AGENT_CACHE.clear()
+
+
+def test_session_agent_cache_signature_includes_tenant_sandbox():
+    import scripts.hermes_bridge as bridge
+
+    common = {
+        "model": "model",
+        "runtime": {"provider": "provider", "base_url": "https://example.test"},
+        "toolsets": ["knowledge_gateway"],
+        "prompt": "prompt",
+        "fallback": None,
+        "request_overrides": {},
+        "service_tier": "",
+    }
+    first = bridge._agent_cache_signature(
+        **common,
+        sandbox=SimpleNamespace(root="/tenant/a", state_db="/tenant/a/state.db"),
+    )
+    second = bridge._agent_cache_signature(
+        **common,
+        sandbox=SimpleNamespace(root="/tenant/b", state_db="/tenant/b/state.db"),
+    )
+    assert first != second
+
+
 def test_ios_normal_send_does_not_export_sqlite_transcript():
     coordinator = Path(
         "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift"
     ).read_text(encoding="utf-8")
     assert "nextClientSessionContext ?? sessionManager.clientSessionContext" not in coordinator
+    assert "clientSessionContext ?? ClientSessionContextDTO" not in coordinator
     assert "messages: recoveryContext?.messages ?? []" in coordinator
+    assert "clientSessionContext: clientSessionContext" in coordinator
     assert "sessionId: sid" in coordinator
 
 
