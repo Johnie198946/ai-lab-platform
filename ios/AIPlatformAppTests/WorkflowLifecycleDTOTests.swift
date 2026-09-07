@@ -504,6 +504,10 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         )
         XCTAssertEqual(object["session_id"] as? String, "session-1")
         XCTAssertEqual(object["agent_id"] as? String, "main_agent")
+        XCTAssertEqual(
+            object["client_capabilities"] as? [String],
+            ["knowledge_action_v1", "answer_blocks_v1"]
+        )
     }
 
     func testPendingPlaceholderNeverHidesVisiblePartialAnswer() {

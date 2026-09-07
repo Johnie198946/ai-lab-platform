@@ -188,6 +188,9 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
                 user_key,
                 dict(payload.get("agent_config") or {}),
                 sandbox,
+                knowledge_action_enabled=bool(
+                    payload.get("knowledge_action_enabled")
+                ),
             )
             store.append_event(run_id, {
                 "type": "done", "answer": "", "session_id": hermes_sid,

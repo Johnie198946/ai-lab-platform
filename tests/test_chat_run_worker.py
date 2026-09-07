@@ -66,6 +66,7 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
         execution_payload={
             "run_type": "chat_prewarm",
             "agent_config": {"triage": {"route_class": "GENERAL_QA"}},
+            "knowledge_action_enabled": True,
         },
     )
     claimed = store.claim_next("worker-test")
@@ -75,8 +76,8 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
     monkeypatch.setattr(
         worker.bridge,
         "_prewarm_session_agent",
-        lambda user_key, config, actual_sandbox: observed.append(
-            (user_key, config, actual_sandbox)
+        lambda user_key, config, actual_sandbox, **kwargs: observed.append(
+            (user_key, config, actual_sandbox, kwargs)
         ) or "hermes-session",
     )
     monkeypatch.setattr(
@@ -93,6 +94,7 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
         "session-key",
         {"triage": {"route_class": "GENERAL_QA"}},
         sandbox,
+        {"knowledge_action_enabled": True},
     )]
 
 

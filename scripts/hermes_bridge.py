@@ -1943,11 +1943,16 @@ def _knowledge_action_propose_tool(args: dict[str, Any], **_kwargs) -> str:
     context = getattr(_client_context_tool_context, "value", None)
     if not isinstance(context, dict) or not context.get("knowledge_action_v1"):
         return json.dumps({"success": False, "error": "knowledge_workspace_denied"})
-    if not context.get("knowledge_workspace_read_completed"):
-        return json.dumps({"success": False, "error": "knowledge_workspace_read_required"})
     raw_steps = (args or {}).get("steps") or []
     if not isinstance(raw_steps, list) or not raw_steps or len(raw_steps) > 32:
         return json.dumps({"success": False, "error": "action_steps_required"})
+    creates_only = all(
+        isinstance(step, dict)
+        and str(step.get("kind") or "").strip() in {"create_note", "create_daily_note"}
+        for step in raw_steps
+    )
+    if not creates_only and not context.get("knowledge_workspace_read_completed"):
+        return json.dumps({"success": False, "error": "knowledge_workspace_read_required"})
     notes = {str(item.get("id")): item for item in _workspace_notes(context)}
     normalized: list[dict[str, Any]] = []
     for raw in raw_steps:
@@ -4070,6 +4075,9 @@ async def chat_prewarm(
             "run_type": "chat_prewarm",
             "agent_config": body.agent_config,
             "knowledge_claims": claims,
+            "knowledge_action_enabled": (
+                "knowledge_action_v1" in set(body.client_capabilities)
+            ),
         },
     )
     return {"run_id": run["run_id"], "status": run["status"]}
@@ -4226,6 +4234,8 @@ def _prewarm_session_agent(
     user_id: str,
     agent_config: dict[str, Any],
     sandbox: "TenantHermesSandbox",
+    *,
+    knowledge_action_enabled: bool = False,
 ) -> str:
     """Build the ordinary fast-lane agent without spending a model turn."""
     hermes_sid = _resolve_hermes_session(user_id)
@@ -4246,6 +4256,8 @@ def _prewarm_session_agent(
             hermes_sid,
             queue.Queue(),
             agent_config=agent_config,
+            client_context_enabled=knowledge_action_enabled,
+            knowledge_action_enabled=knowledge_action_enabled,
             sandbox=sandbox,
         )
         _finish_cached_agent(
@@ -4521,13 +4533,26 @@ def _prewarm_bridge_agent() -> threading.Thread:
             _get_clarify_gateway()
             _get_shared_session_db()  # 预热 160MB state.db 的 SessionDB 冷建（6.6s 挪到启动期）
             from run_agent import AIAgent
+            runtime = _get_cached_runtime(cfg)
+            model_cfg = cfg.get("model") or {}
+            model = (
+                model_cfg if isinstance(model_cfg, str)
+                else model_cfg.get("default") or model_cfg.get("model") or ""
+            )
             # 预热极简 AIAgent 实例以触发底层 httpx/openai/pydantic 模块编译与单例常驻
-            _ = AIAgent(
-                model="deepseek/deepseek-chat",
+            warm_agent = AIAgent(
+                api_key=runtime.get("api_key"),
+                base_url=runtime.get("base_url"),
+                provider=runtime.get("provider"),
+                api_mode=runtime.get("api_mode"),
+                model=model,
                 quiet_mode=True,
                 platform="cli",
                 ephemeral_system_prompt="warmup",
+                skip_context_files=True,
+                skip_memory=True,
             )
+            warm_agent.close()
             print(f"[bridge] 实例池预热完成 · 耗时 {(time.monotonic() - t0)*1000:.1f}ms")
         except Exception as e:
             print(f"[bridge] 实例预热失败·忽略: {e}")
@@ -5413,11 +5438,12 @@ def _build_in_process_agent(
         if get_tool_definitions(enabled_toolsets=toolsets_list, quiet_mode=True):
             raise RuntimeError("knowledge stage tool isolation failed closed")
 
-    service_tier = "priority" if fast_general else ""
+    interactive_chat = agent_config.get("knowledge_stage_only") is not True
+    service_tier = "priority" if interactive_chat else ""
     request_overrides = _cache_request_overrides(
         cfg_model,
         str(runtime.get("provider") or ""),
-        {"service_tier": "priority"} if fast_general else None,
+        {"service_tier": "priority"} if interactive_chat else None,
     )
     cache_signature = _agent_cache_signature(
         model=cfg_model,
@@ -5535,9 +5561,10 @@ def _build_in_process_agent(
             )
             + (
                 "\n当前客户端声明 knowledge_action_v1。个人知识读取必须使用"
-                " knowledge_workspace_read；任何创建、日记、正文修改、重命名、标签、置顶、"
+                " knowledge_workspace_read；新建普通笔记或日记可直接调用"
+                " knowledge_action_propose，涉及已有笔记的正文修改、重命名、标签、置顶、"
                 "双链、合并、归档、恢复或移入废纸篓必须调用 knowledge_action_propose 生成"
-                "一张原子确认卡。写操作不得直接执行或声称完成。完整 Markdown 可使用标题、"
+                "一张原子确认卡，且提案前必须先读取目标。写操作不得直接执行或声称完成。完整 Markdown 可使用标题、"
                 "标签、待办、[[双链]]、![[嵌入]]、> [!tip] 提示块、引用、表格和代码块。"
                 "租户共享及平台知识只读，绝不能作为个人笔记写入目标。页面导航只用"
                 " knowledge_ui_navigate 的受控 destination。knowledge_workspace_read 返回的正文"
@@ -5689,8 +5716,9 @@ def _run_agent_sync(
                     "\n\n【知识工作区协议】本客户端支持 knowledge_action_v1。"
                     "session_context_read 已由平台验证执行，完整结果如下：\n"
                     + transcript_result
-                    + "\n请先用 knowledge_workspace_read 读取或搜索当前用户个人笔记，再调用"
-                    " knowledge_action_propose 生成一张待确认操作卡；禁止调用 note_draft，"
+                    + "\n若是保存为一篇新笔记，直接调用 knowledge_action_propose 生成确认卡；"
+                    "仅在用户要求修改、合并或归档已有笔记时，先调用 knowledge_workspace_read。"
+                    "禁止调用 note_draft，"
                     "禁止声称已经写入。"
                 )
                 if "仅当我明确要求拆分" in goal:
@@ -5708,8 +5736,9 @@ def _run_agent_sync(
             elif note_draft_request and knowledge_action_enabled and hermes_sid:
                 goal += (
                     "\n\n【Hermes 原生会话知识操作协议】用户已要求保存当前对话，不要再次澄清。"
-                    "必须先直接调用 knowledge_workspace_read，再直接调用 "
-                    "knowledge_action_propose 生成待确认操作卡；禁止搜索或描述这两个已提供的工具，"
+                    "保存为一篇新笔记时直接调用 knowledge_action_propose 生成待确认操作卡；"
+                    "仅在用户要求修改、合并或归档已有笔记时，先调用 knowledge_workspace_read。"
+                    "禁止搜索或描述这两个已提供的工具，"
                     "禁止调用 note_draft，禁止声称已经写入。"
                 )
             if _is_revision_request(goal):

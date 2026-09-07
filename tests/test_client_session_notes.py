@@ -217,21 +217,25 @@ def test_session_prewarm_creates_empty_native_session_and_retains_agent(monkeypa
         bridge, "_update_session_mapping",
         lambda user, sid, state_db: mappings.append((user, sid, state_db)),
     )
-    monkeypatch.setattr(
-        bridge, "_build_in_process_agent",
-        lambda *args, **kwargs: (
+    build_kwargs = {}
+
+    def build(*_args, **kwargs):
+        build_kwargs.update(kwargs)
+        return (
             agent,
             cached_db,
             {"agent_cache_key": "user", "agent_cache_signature": "signature"},
-        ),
-    )
+        )
+    monkeypatch.setattr(bridge, "_build_in_process_agent", build)
     monkeypatch.setattr(
         bridge, "_finish_cached_agent",
         lambda *args, **kwargs: retained.append((args, kwargs)),
     )
     sandbox = SimpleNamespace(root="/tenant", state_db="/tenant/state.db")
 
-    session_id = bridge._prewarm_session_agent("user", {"triage": {}}, sandbox)
+    session_id = bridge._prewarm_session_agent(
+        "user", {"triage": {}}, sandbox, knowledge_action_enabled=True
+    )
 
     assert session_id.startswith("prewarm_")
     assert bootstrap.created == [(session_id, "cli")]
@@ -239,6 +243,43 @@ def test_session_prewarm_creates_empty_native_session_and_retains_agent(monkeypa
     assert mappings == [("user", session_id, "/tenant/state.db")]
     assert retained[0][0] == ("user", "signature", agent, cached_db)
     assert retained[0][1] == {"keep": True}
+    assert build_kwargs["client_context_enabled"] is True
+    assert build_kwargs["knowledge_action_enabled"] is True
+
+
+def test_bridge_startup_prewarms_configured_runtime_and_closes_agent(monkeypatch):
+    import sys
+    import types
+    import scripts.hermes_bridge as bridge
+
+    observed = {}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            observed.update(kwargs)
+
+        def close(self):
+            observed["closed"] = True
+
+    module = types.ModuleType("run_agent")
+    module.AIAgent = FakeAgent
+    monkeypatch.setitem(sys.modules, "run_agent", module)
+    monkeypatch.setattr(bridge, "_get_cached_config", lambda: {"model": {"default": "configured-model"}})
+    monkeypatch.setattr(bridge, "_get_cached_runtime", lambda _cfg: {
+        "api_key": "token", "base_url": "https://provider.test",
+        "provider": "provider", "api_mode": "responses",
+    })
+    monkeypatch.setattr(bridge, "_get_cached_tools", lambda _cfg: [])
+    monkeypatch.setattr(bridge, "_get_cached_fallback", lambda _cfg: None)
+    monkeypatch.setattr(bridge, "_get_clarify_gateway", lambda: object())
+    monkeypatch.setattr(bridge, "_get_shared_session_db", lambda: object())
+
+    worker = bridge._prewarm_bridge_agent()
+    worker.join(timeout=2)
+
+    assert observed["model"] == "configured-model"
+    assert observed["provider"] == "provider"
+    assert observed["closed"] is True
 
 
 @pytest.mark.asyncio
@@ -259,6 +300,7 @@ async def test_bridge_prewarm_is_internal_durable_and_tenant_scoped(monkeypatch,
             knowledge_capability="signed-capability",
             knowledge_policy_version="policy-v1",
             agent_config={"triage": {"route_class": "GENERAL_QA"}},
+            client_capabilities=["knowledge_action_v1"],
         ),
         "internal-token",
     )
@@ -268,6 +310,7 @@ async def test_bridge_prewarm_is_internal_durable_and_tenant_scoped(monkeypatch,
     payload = json.loads(run["execution_payload_json"])
     assert payload["run_type"] == "chat_prewarm"
     assert payload["knowledge_claims"] == claims
+    assert payload["knowledge_action_enabled"] is True
 
 
 def test_ios_normal_send_does_not_export_sqlite_transcript():
@@ -690,6 +733,41 @@ def test_knowledge_workspace_is_personal_read_only_until_proposal():
         }))
         assert merged["success"] is True
         assert events[1]["steps"][0]["source_content_hashes"] == {"n2": "b" * 64}
+    finally:
+        bridge._client_context_tool_context.value = None
+
+
+def test_new_note_proposal_skips_read_but_existing_note_mutation_does_not():
+    import scripts.hermes_bridge as bridge
+
+    events = []
+    bridge._client_context_tool_context.value = {
+        "knowledge_action_v1": True,
+        "request_id": "request-fast-save",
+        "inline_notes": [],
+        "emit": events.append,
+    }
+    try:
+        created = json.loads(bridge._knowledge_action_propose_tool({
+            "summary": "保存当前对话",
+            "steps": [{
+                "kind": "create_note",
+                "title": "复利",
+                "markdown": "# 复利\n\n复利是利息继续产生利息。",
+            }],
+        }))
+        assert created["success"] is True
+        assert events[0]["type"] == "knowledge_action_draft"
+
+        denied = json.loads(bridge._knowledge_action_propose_tool({
+            "summary": "更新已有笔记",
+            "steps": [{
+                "kind": "update_note",
+                "target_note_id": "existing",
+                "markdown": "# 更新",
+            }],
+        }))
+        assert denied["error"] == "knowledge_workspace_read_required"
     finally:
         bridge._client_context_tool_context.value = None
 

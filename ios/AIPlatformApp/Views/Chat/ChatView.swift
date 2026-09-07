@@ -158,9 +158,9 @@ public struct ChatView: View {
                 coordinator.appState = appState
                 coordinator.synchronizeLocalAccount()
                 coordinator.restoreActiveSession()
-                coordinator.prewarmActiveSessionIfNeeded()
                 coordinator.refreshQuickCommands()
                 coordinator.handlePendingAgent()
+                coordinator.prewarmActiveSessionIfNeeded()
                 coordinator.handlePendingPrompt()
                 handlePendingTopic()
                 coordinator.reconcileRestoredClarify()

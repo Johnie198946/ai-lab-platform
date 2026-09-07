@@ -696,15 +696,22 @@ public struct ChatRequestDTO: Encodable {
 public struct ChatPrewarmRequestDTO: Encodable {
     public let sessionId: String
     public let agentId: String?
+    public let clientCapabilities: [String]
 
-    public init(sessionId: String, agentId: String?) {
+    public init(
+        sessionId: String,
+        agentId: String?,
+        clientCapabilities: [String] = ["knowledge_action_v1", "answer_blocks_v1"]
+    ) {
         self.sessionId = sessionId
         self.agentId = agentId
+        self.clientCapabilities = clientCapabilities
     }
 
     enum CodingKeys: String, CodingKey {
         case sessionId = "session_id"
         case agentId = "agent_id"
+        case clientCapabilities = "client_capabilities"
     }
 }
 

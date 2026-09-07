@@ -1238,6 +1238,7 @@ class StreamRequest(BaseModel):
 class ChatPrewarmRequest(BaseModel):
     session_id: str = Field(..., min_length=8, max_length=160)
     agent_id: str | None = Field(None, max_length=80)
+    client_capabilities: List[str] = Field(default_factory=list, max_length=20)
 
 
 class ClarifySubmitRequest(BaseModel):
@@ -1503,6 +1504,7 @@ async def prewarm_chat(
                 "knowledge_capability": capability,
                 "knowledge_policy_version": policy.policy_version,
                 "agent_config": agent_config,
+                "client_capabilities": req.client_capabilities,
             },
         )
     if response.status_code != 202:

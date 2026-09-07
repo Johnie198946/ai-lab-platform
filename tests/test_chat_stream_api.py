@@ -125,13 +125,18 @@ async def test_prewarm_queues_same_general_agent_lane_without_model_call(monkeyp
     monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: Client())
 
     result = await chat_mod.prewarm_chat(
-        chat_mod.ChatPrewarmRequest(session_id="client-session", agent_id="main_agent"),
+        chat_mod.ChatPrewarmRequest(
+            session_id="client-session",
+            agent_id="main_agent",
+            client_capabilities=["knowledge_action_v1"],
+        ),
         {"tenant_key": "tenant-a", "user_id": "user-a"},
     )
 
     assert result == {"run_id": "prewarm-run", "status": "queued"}
     assert observed["json"]["session_id"] == "isolated-session"
     assert observed["json"]["agent_config"]["triage"]["route_class"] == "GENERAL_QA"
+    assert observed["json"]["client_capabilities"] == ["knowledge_action_v1"]
     assert observed["headers"]["X-Hermes-Internal-Token"] == "internal-token"
 
 

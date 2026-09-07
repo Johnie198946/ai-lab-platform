@@ -543,6 +543,7 @@ public final class TenantSessionCoordinator: ObservableObject {
 
         sessionManager.switchTo(sessionId)
         restoreActiveSession(force: true)
+        prewarmActiveSessionIfNeeded()
         refreshQuickCommands()
     }
 
