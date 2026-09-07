@@ -68,6 +68,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     private var lastCheckpointCharacterCount = 0
     private var nextContextScope: ChatContextScopeDTO? = nil
     private var nextClientSessionContext: ClientSessionContextDTO? = nil
+    private var prewarmedSessionIDs: Set<String> = []
     @Published public var pendingOrganizationDisposition: [String] = []
     private var accountCancellable: AnyCancellable?
     /// Avoid synchronous SQLite rehydration every time SwiftUI merely presents the same Tab again.
@@ -138,6 +139,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         isGenerating = false
         inflight = nil
         pendingQueue.removeAll()
+        prewarmedSessionIDs.removeAll()
         messages.removeAll()
         loadedSessionId = nil
         if appState?.isLoggedIn == true {
@@ -192,6 +194,20 @@ public final class TenantSessionCoordinator: ObservableObject {
         self.quotedContext = nil
         appState?.selectedAgentId = sessionManager.agentId(for: sid)
         appState?.selectedAgentName = sessionManager.agentName(for: sid)
+    }
+
+    public func prewarmActiveSessionIfNeeded() {
+        let sid = sessionManager.activeSessionID()
+        guard hasAuthenticatedSession(), messages.isEmpty,
+              prewarmedSessionIDs.insert(sid).inserted else { return }
+        let agentId = sessionManager.agentId(for: sid)
+        Task { @MainActor [weak self] in
+            do {
+                try await APIClient.shared.prewarmChat(sessionId: sid, agentId: agentId)
+            } catch {
+                self?.prewarmedSessionIDs.remove(sid)
+            }
+        }
     }
 
     public func updateClarifyDraft(messageId: String, selectionIDs: [String], customText: String) {
@@ -577,6 +593,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         )
         sessionManager.switchTo(newId)
         restoreActiveSession(force: true)
+        prewarmActiveSessionIfNeeded()
         refreshQuickCommands()
     }
 
@@ -586,6 +603,7 @@ public final class TenantSessionCoordinator: ObservableObject {
         backgroundRunRequests.removeValue(forKey: sessionId)
         backgroundProcessingSessionIDs.remove(sessionId)
         sessionPendingQueues.removeValue(forKey: sessionId)
+        prewarmedSessionIDs.remove(sessionId)
         if sessionId == sessionManager.activeSessionID() {
             newSession()
         }

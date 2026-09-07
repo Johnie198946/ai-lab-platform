@@ -495,6 +495,17 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertNil(object["user_id"])
     }
 
+    func testChatPrewarmRequestUsesServerSessionContract() throws {
+        let request = ChatPrewarmRequestDTO(
+            sessionId: "session-1", agentId: "main_agent"
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        XCTAssertEqual(object["session_id"] as? String, "session-1")
+        XCTAssertEqual(object["agent_id"] as? String, "main_agent")
+    }
+
     func testPendingPlaceholderNeverHidesVisiblePartialAnswer() {
         let empty = ChatMessage(role: .assistant, content: "", isStreaming: true, pending: true)
         let partial = ChatMessage(role: .assistant, content: "已经生成的内容", isStreaming: true, pending: true)

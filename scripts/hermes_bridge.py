@@ -197,6 +197,7 @@ HERMES_CHAT_RUN_DB = Path(
 )
 DURABLE_CHAT_WORKER_ENABLED = os.environ.get("HERMES_DURABLE_CHAT_WORKER", "false") == "true"
 _chat_run_store: DurableChatRunStore | None = None
+_BRIDGE_PREWARM_EPOCH = uuid.uuid4().hex[:12]
 
 # 持久工作流运行投影。Hermes 负责计划节点推进、工具与模型调用；平台 Worker
 # 只通过内部 API 投递并同步这些事件，避免 FastAPI 与 Hermes 各维护一套编排器。
@@ -4034,6 +4035,45 @@ async def chat_stream(body: GoalRequest):
         _clear_in_flight(user_id)
 
 
+@app.post("/v1/chat/prewarm", status_code=202)
+async def chat_prewarm(
+    body: GoalRequest,
+    x_hermes_internal_token: str | None = Header(None),
+):
+    """Queue one session-scoped Agent build in the durable Hermes worker."""
+    _require_internal_strict(x_hermes_internal_token)
+    if not DURABLE_CHAT_WORKER_ENABLED or _chat_run_store is None:
+        raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+    user_id = body.session_id or ""
+    if not user_id:
+        raise HTTPException(status_code=422, detail="session_id_required")
+    claims = _validated_knowledge_claims(
+        body.knowledge_capability,
+        subject_id=user_id,
+        policy_version=body.knowledge_policy_version,
+    )
+    if not claims:
+        raise HTTPException(status_code=403, detail="knowledge_scope_denied")
+    tenant_id = str(claims.get("tenant_key") or "public")
+    owner_user_id = str(claims.get("user_id") or user_id)
+    owner_hash = _chat_run_store.tenant_user_hash(tenant_id, owner_user_id)
+    request_id = f"prewarm-{_BRIDGE_PREWARM_EPOCH}-{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+    run, _ = _chat_run_store.create_or_get(
+        tenant_user_hash=owner_hash,
+        tenant_id=tenant_id,
+        user_id=owner_user_id,
+        user_key=user_id,
+        session_id=user_id,
+        request_id=request_id,
+        execution_payload={
+            "run_type": "chat_prewarm",
+            "agent_config": body.agent_config,
+            "knowledge_claims": claims,
+        },
+    )
+    return {"run_id": run["run_id"], "status": run["status"]}
+
+
 # ---------------------------------------------------------------------------
 # v7 进程内 agent runner（真实流式·SSE 事件流）
 # ---------------------------------------------------------------------------
@@ -4179,6 +4219,47 @@ def _finish_cached_agent(
         evicted.append((agent, session_db))
     for victim in evicted:
         _close_agent_resources(*victim)
+
+
+def _prewarm_session_agent(
+    user_id: str,
+    agent_config: dict[str, Any],
+    sandbox: "TenantHermesSandbox",
+) -> str:
+    """Build the ordinary fast-lane agent without spending a model turn."""
+    hermes_sid = _resolve_hermes_session(user_id)
+    if not hermes_sid:
+        session_db = _create_sandbox_session_db(sandbox)
+        try:
+            hermes_sid = f"prewarm_{uuid.uuid4().hex}"
+            session_db.create_session(hermes_sid, source="cli")
+        finally:
+            session_db.close()
+        _update_session_mapping(user_id, hermes_sid, sandbox.state_db)
+
+    agent = session_db = None
+    try:
+        agent, session_db, route = _build_in_process_agent(
+            "解释一个常见概念",
+            user_id,
+            hermes_sid,
+            queue.Queue(),
+            agent_config=agent_config,
+            sandbox=sandbox,
+        )
+        _finish_cached_agent(
+            str(route["agent_cache_key"]),
+            str(route["agent_cache_signature"]),
+            agent,
+            session_db,
+            keep=True,
+        )
+        agent = session_db = None
+        return hermes_sid
+    finally:
+        _sandbox_tool_context.value = None
+        _skill_route_context.value = None
+        _close_agent_resources(agent, session_db)
 
 
 def _get_cached_config() -> dict:

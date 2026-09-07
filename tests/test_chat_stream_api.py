@@ -87,6 +87,54 @@ def test_stream_request_model():
     assert req.skill_id == "solution-consultant-persona"
 
 
+@pytest.mark.asyncio
+async def test_prewarm_queues_same_general_agent_lane_without_model_call(monkeypatch):
+    import backend.api.chat as chat_mod
+
+    observed = {}
+
+    class Response:
+        status_code = 202
+
+        @staticmethod
+        def json():
+            return {"run_id": "prewarm-run", "status": "queued"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, **kwargs):
+            observed.update(url=url, **kwargs)
+            return Response()
+
+    async def resolve_route(**_kwargs):
+        return effective_agent("main_agent", "Main"), AgentInvocationMatch(status="none")
+
+    monkeypatch.setattr(chat_mod, "HERMES_BRIDGE_INTERNAL_TOKEN", "internal-token")
+    monkeypatch.setattr(
+        chat_mod, "_resolve_chat_policy",
+        lambda _payload: asyncio.sleep(0, result=SimpleNamespace(policy_version="policy-v1")),
+    )
+    monkeypatch.setattr(chat_mod, "_tenant_namespaced_session", lambda *_args: "isolated-session")
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", resolve_route)
+    monkeypatch.setattr(chat_mod, "mint_capability", lambda *_args, **_kwargs: "capability")
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: Client())
+
+    result = await chat_mod.prewarm_chat(
+        chat_mod.ChatPrewarmRequest(session_id="client-session", agent_id="main_agent"),
+        {"tenant_key": "tenant-a", "user_id": "user-a"},
+    )
+
+    assert result == {"run_id": "prewarm-run", "status": "queued"}
+    assert observed["json"]["session_id"] == "isolated-session"
+    assert observed["json"]["agent_config"]["triage"]["route_class"] == "GENERAL_QA"
+    assert observed["headers"]["X-Hermes-Internal-Token"] == "internal-token"
+
+
 def test_trusted_task_surface_keeps_skills_eligible_without_affecting_casual_chat():
     task_turn = _classify_stream_request(
         StreamRequest(question="你可以调用相关技能在这里问我，然后进行回填"),

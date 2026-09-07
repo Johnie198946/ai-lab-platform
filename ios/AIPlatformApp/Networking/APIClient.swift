@@ -693,6 +693,21 @@ public struct ChatRequestDTO: Encodable {
     }
 }
 
+public struct ChatPrewarmRequestDTO: Encodable {
+    public let sessionId: String
+    public let agentId: String?
+
+    public init(sessionId: String, agentId: String?) {
+        self.sessionId = sessionId
+        self.agentId = agentId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case agentId = "agent_id"
+    }
+}
+
 /// POST /api/chat 响应（snake_case → camelCase 自动转换）
 public struct ChatResponseDTO: Codable {
     public let question: String
@@ -2962,6 +2977,20 @@ public final class APIClient: ObservableObject {
                 return nil
             }
         }
+    }
+
+    public func prewarmChat(sessionId: String, agentId: String?) async throws {
+        let url = baseURL.appendingPathComponent("api/chat/prewarm")
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        applyClientContract(to: &request)
+        request.httpBody = try JSONEncoder().encode(
+            ChatPrewarmRequestDTO(sessionId: sessionId, agentId: agentId)
+        )
+        _ = try await perform(
+            request, session: session, canRetry: false, reauthOn401: false
+        )
     }
 
     /// POST /api/chat/stream：URLSession.bytes 逐行消费 SSE 事件流（真实流式）

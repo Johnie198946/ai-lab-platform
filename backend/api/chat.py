@@ -129,6 +129,10 @@ HERMES_BRIDGE_RUN_URL = os.environ.get(
     "HERMES_BRIDGE_RUN_URL",
     "http://host.docker.internal:9118/v1/chat/runs",
 )
+HERMES_BRIDGE_PREWARM_URL = os.environ.get(
+    "HERMES_BRIDGE_PREWARM_URL",
+    "http://host.docker.internal:9118/v1/chat/prewarm",
+)
 HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
 HERMES_TIMEOUT = 300
 # 流式端点专用：单次请求 240s 空闲保活上限（keepalive 帧每 30s 刷新），总时长由 bridge 300s 兜底
@@ -1231,6 +1235,11 @@ class StreamRequest(BaseModel):
     client_capabilities: List[str] = Field(default_factory=list, max_length=20)
 
 
+class ChatPrewarmRequest(BaseModel):
+    session_id: str = Field(..., min_length=8, max_length=160)
+    agent_id: str | None = Field(None, max_length=80)
+
+
 class ClarifySubmitRequest(BaseModel):
     session_id: str = Field(..., min_length=1)
     response: str = Field(..., min_length=1)
@@ -1441,6 +1450,64 @@ async def _authorize_knowledge_action_event(
         vault_revision=vault_revision,
     )
     return authorized
+
+
+@router.post("/prewarm", status_code=202)
+async def prewarm_chat(
+    req: ChatPrewarmRequest,
+    payload: Dict[str, Any] = Depends(require_auth),
+):
+    """Queue the common first-turn Hermes agent while the user is typing."""
+    if not HERMES_BRIDGE_INTERNAL_TOKEN:
+        raise HTTPException(status_code=503, detail="bridge internal token is not configured")
+    policy = await _resolve_chat_policy(payload)
+    session_id = _tenant_namespaced_session(
+        derive_isolated_session_id(req.agent_id, req.session_id),
+        str(payload.get("tenant_key") or "public"),
+        policy.policy_version,
+        str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+    )
+    agent, _ = await _resolve_agent_route(
+        question="",
+        requested_agent_id=req.agent_id,
+        payload=payload,
+        allow_explicit_invocation=False,
+    )
+    explicit_agent = bool(req.agent_id and req.agent_id != DEFAULT_AGENT_ID)
+    decision = TriageDecision(
+        PROFESSIONAL_TASK if explicit_agent else GENERAL_QA,
+        0.99 if explicit_agent else 0.78,
+        "explicit_capability" if explicit_agent else "general_question",
+        (),
+    )
+    agent_config = _triaged_agent_config(
+        agent,
+        decision,
+        agency_enabled=agent.id == DEFAULT_AGENT_ID and not explicit_agent,
+        skill_enabled=_skill_routing_enabled(agent, None),
+    )
+    capability = mint_capability(
+        policy,
+        subject_id=session_id,
+        entry_point="chat_prewarm",
+        user_id=str(payload.get("user_id") or payload.get("sub") or "anonymous"),
+        sources=("tenant_knowledge", "user_notes"),
+    )
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(
+            HERMES_BRIDGE_PREWARM_URL,
+            headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
+            json={
+                "goal": "解释一个常见概念",
+                "session_id": session_id,
+                "knowledge_capability": capability,
+                "knowledge_policy_version": policy.policy_version,
+                "agent_config": agent_config,
+            },
+        )
+    if response.status_code != 202:
+        raise HTTPException(status_code=502, detail="Hermes prewarm unavailable")
+    return response.json()
 
 
 async def stream_chat(

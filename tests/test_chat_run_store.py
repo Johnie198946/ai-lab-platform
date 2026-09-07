@@ -89,6 +89,34 @@ def test_same_session_serializes_and_restart_marks_stalled(tmp_path):
     assert store.get(parallel["run_id"], tenant_user_hash=owner)["status"] == "stalled"
 
 
+def test_interactive_chat_keeps_one_owner_slot_ahead_of_background_runs(tmp_path):
+    store = DurableChatRunStore(tmp_path / "runs.sqlite3")
+    owner = store.tenant_user_hash("tenant-a", "user-a")
+    background = []
+    for index in range(3):
+        run, _ = store.create_or_get(
+            tenant_user_hash=owner,
+            session_id=f"knowledge-{index}",
+            request_id=f"request-background-{index}",
+            execution_payload={"run_type": "knowledge_sanitize"},
+        )
+        background.append(run)
+
+    assert store.claim_next("worker", max_parallel_per_owner=3)["run_id"] == background[0]["run_id"]
+    assert store.claim_next("worker", max_parallel_per_owner=3)["run_id"] == background[1]["run_id"]
+    assert store.claim_next("worker", max_parallel_per_owner=3) is None
+
+    chat, _ = store.create_or_get(
+        tenant_user_hash=owner,
+        session_id="chat-session",
+        request_id="request-chat",
+        execution_payload={"run_type": "chat"},
+    )
+
+    assert store.claim_next("worker", max_parallel_per_owner=3)["run_id"] == chat["run_id"]
+    assert store.claim_next("worker", max_parallel_per_owner=3) is None
+
+
 def test_cross_process_clarify_resume_is_owner_scoped(tmp_path):
     store = DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")

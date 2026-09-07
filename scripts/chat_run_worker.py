@@ -149,8 +149,9 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     bridge._chat_run_store = store
     _run_context.run_id = run_id
     payload = run.get("execution_payload") or json.loads(run.get("execution_payload_json") or "{}")
+    run_type = str(payload.get("run_type") or "chat")
     stage_spec = None
-    if "knowledge_stage" in payload or str(payload.get("run_type", "")).startswith("knowledge_"):
+    if "knowledge_stage" in payload or run_type.startswith("knowledge_"):
         from backend.services.knowledge_run_adapter import validate_execution, KnowledgeRunAdapter
 
         try:
@@ -182,6 +183,16 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     )
     monitor.start()
     try:
+        if run_type == "chat_prewarm":
+            hermes_sid = bridge._prewarm_session_agent(
+                user_key,
+                dict(payload.get("agent_config") or {}),
+                sandbox,
+            )
+            store.append_event(run_id, {
+                "type": "done", "answer": "", "session_id": hermes_sid,
+            })
+            return
         bridge._run_agent_sync(
             str(payload.get("goal") or ""), user_key,
             (user_key if stage_spec else bridge._hermes_session_for_request(user_key, payload.get("client_session_context"))),

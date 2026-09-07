@@ -192,6 +192,84 @@ def test_session_agent_cache_signature_includes_tenant_sandbox():
     assert first != second
 
 
+def test_session_prewarm_creates_empty_native_session_and_retains_agent(monkeypatch):
+    import scripts.hermes_bridge as bridge
+
+    class BootstrapDB:
+        def __init__(self):
+            self.created = []
+            self.closed = False
+
+        def create_session(self, session_id, source):
+            self.created.append((session_id, source))
+
+        def close(self):
+            self.closed = True
+
+    bootstrap = BootstrapDB()
+    cached_db = SimpleNamespace(close=lambda: None)
+    agent = SimpleNamespace(close=lambda: None)
+    mappings = []
+    retained = []
+    monkeypatch.setattr(bridge, "_resolve_hermes_session", lambda _user: None)
+    monkeypatch.setattr(bridge, "_create_sandbox_session_db", lambda _sandbox: bootstrap)
+    monkeypatch.setattr(
+        bridge, "_update_session_mapping",
+        lambda user, sid, state_db: mappings.append((user, sid, state_db)),
+    )
+    monkeypatch.setattr(
+        bridge, "_build_in_process_agent",
+        lambda *args, **kwargs: (
+            agent,
+            cached_db,
+            {"agent_cache_key": "user", "agent_cache_signature": "signature"},
+        ),
+    )
+    monkeypatch.setattr(
+        bridge, "_finish_cached_agent",
+        lambda *args, **kwargs: retained.append((args, kwargs)),
+    )
+    sandbox = SimpleNamespace(root="/tenant", state_db="/tenant/state.db")
+
+    session_id = bridge._prewarm_session_agent("user", {"triage": {}}, sandbox)
+
+    assert session_id.startswith("prewarm_")
+    assert bootstrap.created == [(session_id, "cli")]
+    assert bootstrap.closed is True
+    assert mappings == [("user", session_id, "/tenant/state.db")]
+    assert retained[0][0] == ("user", "signature", agent, cached_db)
+    assert retained[0][1] == {"keep": True}
+
+
+@pytest.mark.asyncio
+async def test_bridge_prewarm_is_internal_durable_and_tenant_scoped(monkeypatch, tmp_path):
+    import scripts.hermes_bridge as bridge
+
+    store = bridge.DurableChatRunStore(tmp_path / "runs.sqlite3")
+    claims = {"tenant_key": "tenant-a", "user_id": "user-a"}
+    monkeypatch.setattr(bridge, "DURABLE_CHAT_WORKER_ENABLED", True)
+    monkeypatch.setattr(bridge, "_chat_run_store", store)
+    monkeypatch.setattr(bridge, "_require_internal_strict", lambda token: None)
+    monkeypatch.setattr(bridge, "_validated_knowledge_claims", lambda *args, **kwargs: claims)
+
+    result = await bridge.chat_prewarm(
+        bridge.GoalRequest(
+            goal="解释一个常见概念",
+            session_id="tenant-session",
+            knowledge_capability="signed-capability",
+            knowledge_policy_version="policy-v1",
+            agent_config={"triage": {"route_class": "GENERAL_QA"}},
+        ),
+        "internal-token",
+    )
+
+    owner = store.tenant_user_hash("tenant-a", "user-a")
+    run = store.get(result["run_id"], tenant_user_hash=owner)
+    payload = json.loads(run["execution_payload_json"])
+    assert payload["run_type"] == "chat_prewarm"
+    assert payload["knowledge_claims"] == claims
+
+
 def test_ios_normal_send_does_not_export_sqlite_transcript():
     coordinator = Path(
         "ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift"

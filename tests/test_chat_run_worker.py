@@ -53,6 +53,49 @@ def test_worker_executes_claimed_run_and_persists_terminal(monkeypatch, tmp_path
     assert snapshot["event_sequence"] == 2
 
 
+def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_path):
+    store = worker.DurableChatRunStore(tmp_path / "runs.sqlite3")
+    owner = store.tenant_user_hash("tenant-a", "user-a")
+    run, _ = store.create_or_get(
+        tenant_user_hash=owner,
+        tenant_id="tenant-a",
+        user_id="user-a",
+        user_key="session-key",
+        session_id="session-key",
+        request_id="request-prewarm",
+        execution_payload={
+            "run_type": "chat_prewarm",
+            "agent_config": {"triage": {"route_class": "GENERAL_QA"}},
+        },
+    )
+    claimed = store.claim_next("worker-test")
+    sandbox = SimpleNamespace(state_db=tmp_path / "state.db")
+    monkeypatch.setattr(worker.bridge, "_tenant_sandbox_from_claims", lambda **_: sandbox)
+    observed = []
+    monkeypatch.setattr(
+        worker.bridge,
+        "_prewarm_session_agent",
+        lambda user_key, config, actual_sandbox: observed.append(
+            (user_key, config, actual_sandbox)
+        ) or "hermes-session",
+    )
+    monkeypatch.setattr(
+        worker.bridge,
+        "_run_agent_sync",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("model turn started")),
+    )
+
+    worker.execute(store, claimed)
+
+    snapshot = store.get(run["run_id"], tenant_user_hash=owner)
+    assert snapshot["status"] == "completed"
+    assert observed == [(
+        "session-key",
+        {"triage": {"route_class": "GENERAL_QA"}},
+        sandbox,
+    )]
+
+
 def test_worker_auto_ingests_high_confidence_research(monkeypatch, tmp_path):
     store = worker.DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")

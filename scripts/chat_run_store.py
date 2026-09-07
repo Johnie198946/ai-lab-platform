@@ -473,6 +473,11 @@ class DurableChatRunStore:
                 """SELECT * FROM chat_runs WHERE status IN ('queued','stalled')
                    AND attempt < 2 ORDER BY CASE status WHEN 'stalled' THEN 0 ELSE 1 END, created_at"""
             ).fetchall()
+            rows = sorted(rows, key=lambda row: (
+                self._is_background_run(row),
+                row["status"] != "stalled",
+                row["created_at"],
+            ))
             selected = None
             for row in rows:
                 same_session = conn.execute(
@@ -480,11 +485,20 @@ class DurableChatRunStore:
                        AND status='running'""",
                     (row["tenant_user_hash"], row["session_id"]),
                 ).fetchone()[0]
-                owner_running = conn.execute(
-                    "SELECT COUNT(*) FROM chat_runs WHERE tenant_user_hash=? AND status='running'",
+                owner_runs = conn.execute(
+                    "SELECT execution_payload_json FROM chat_runs WHERE tenant_user_hash=? AND status='running'",
                     (row["tenant_user_hash"],),
-                ).fetchone()[0]
-                if not same_session and owner_running < max_parallel_per_owner:
+                ).fetchall()
+                background_limit = max(1, max_parallel_per_owner - 1)
+                background_running = sum(self._is_background_run(item) for item in owner_runs)
+                if (
+                    not same_session
+                    and len(owner_runs) < max_parallel_per_owner
+                    and (
+                        not self._is_background_run(row)
+                        or background_running < background_limit
+                    )
+                ):
                     selected = row
                     break
             if selected is None:
@@ -504,6 +518,14 @@ class DurableChatRunStore:
             result = dict(row)
             result["execution_payload"] = json.loads(result.get("execution_payload_json") or "{}")
             return result
+
+    @staticmethod
+    def _is_background_run(row: sqlite3.Row) -> bool:
+        try:
+            run_type = str(json.loads(row["execution_payload_json"] or "{}").get("run_type") or "")
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return run_type == "chat_prewarm" or run_type.startswith("knowledge_")
 
     def heartbeat(self, run_id: str, worker_id: str, *, lease_seconds: int = 120) -> bool:
         now = time.time()
