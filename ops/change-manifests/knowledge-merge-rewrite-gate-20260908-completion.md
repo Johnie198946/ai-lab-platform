@@ -27,24 +27,25 @@
 
 ## 测试与校验
 
-- `PYTHONPATH=. pytest -q tests/test_client_session_notes.py tests/test_merge_proposal_contract.py tests/test_knowledge_pipeline.py tests/test_knowledge_disclosure_incremental.py tests/test_knowledge_v4_green_barrier.py tests/test_knowledge_run_adapter.py tests/test_architecture.py tests/test_agency_integration.py`: `151 passed`。
+- 重放到最新 `origin/main` 后执行 `PYTHONPATH=. pytest -q tests/test_client_session_notes.py tests/test_merge_proposal_contract.py tests/test_knowledge_pipeline.py tests/test_knowledge_disclosure_incremental.py tests/test_knowledge_v4_green_barrier.py tests/test_knowledge_run_adapter.py tests/test_architecture.py tests/test_agency_integration.py`: `153 passed`。
 - `python3 -m py_compile scripts/hermes_bridge.py backend/services/knowledge_pipeline.py tests/test_client_session_notes.py tests/test_knowledge_pipeline.py`: 通过。
 - `git diff --check`: 通过。
 - 全仓 `PYTHONPATH=. pytest -q`: `1376 passed, 2 skipped, 28 failed, 73 errors`。代表性失败已在未修改的来源 worktree 复现：Starlette `TestClient` 与当前 httpx 不兼容、Swift 模块缓存被沙箱禁止写入；其余主要为既有全仓共享状态/环境问题，不属于本次变更。
 
 ## 交付状态
 
-- status: `TESTED`
-- commit_sha: 未授权/未执行；当前 HEAD 仍为 `7f552843da44adcb411f7137cb24b152770277bb`。
-- github_remote_ref_sha: 未授权 push，未执行 `git ls-remote`。
-- server_before: 不适用，未授权部署。
-- server_after: 不适用，未授权部署。
-- health_check: 不适用，未部署。
-- functional_check: 本地相关回归 `151 passed`；未执行线上功能检查。
-- rollback_point: 未部署；回滚范围为本 worktree 的未提交差异。
+- status: `VERIFIED`
+- implementation_commit_sha: `f518cc16ec7c37cf8387338c16c2416bbb89bdf0`；父提交与部署前 `origin/main` 均为 `7c7a4ecfd0077da47c0cc36699c23fedd1b4b46e`，无强推。
+- github_remote_ref_sha: `git ls-remote origin refs/heads/main` 已核验为 `f518cc16ec7c37cf8387338c16c2416bbb89bdf0`。
+- final_receipt_commit_sha: 本文件的后继凭据提交会再次精确部署；因提交不能记录自身 SHA，最终 SHA 记录在当前任务完成通报中。
+- server_before: `/opt/releases/ai-lab-platform-7c7a4ecfd007.MfZ5fz`，`.deployed-sha=7c7a4ecfd0077da47c0cc36699c23fedd1b4b46e`；API ready、Bridge ok、四个 Hermes 服务 active。
+- server_after: 实现 release `/opt/releases/ai-lab-platform-f518cc16ec7c.P7Iutd`，`.deployed-sha=f518cc16ec7c37cf8387338c16c2416bbb89bdf0`；最终凭据后继 release/SHA 见完成通报。
+- health_check: 标准不可变发布脚本的 schema migration、runtime contract audit、API `/ready`、Bridge `/health` 全通过；独立回读公网 HTTPS `/health` HTTP 200，四个 Hermes 服务 active。
+- functional_check: 本地相关回归 `153 passed`；生产 API 容器断言 `GREEN_CONFIDENCE_THRESHOLD == 0.60`，生产 Hermes 断言“关于雾岛交通，帮我保存”可识别且合并主题/目标规则已加载。
+- rollback_point: `/opt/releases/ai-lab-platform-7c7a4ecfd007.MfZ5fz`。
 
 ## 风险与未完成项
 
 - 主题、内容块角色和目标歧义仍由同一 Hermes 回合按服务端提示判断；没有新增确定性语义分类器或额外模型调用。
 - 全仓测试基线存在与本任务无关的环境/隔离失败；相关知识链测试已全通过。
-- 未提交、未推送、未部署。
+- 本任务不发布 iOS 构建；服务端部署已完成。
