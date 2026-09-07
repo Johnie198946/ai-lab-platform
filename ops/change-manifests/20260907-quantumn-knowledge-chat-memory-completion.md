@@ -6,7 +6,7 @@
 - base_sha: `3ea280aa9ccbf91d4b37ff0641d1dfeb88517577`
 - origin_main_sha_at_verification: `3ea280aa9ccbf91d4b37ff0641d1dfeb88517577`
 - design_source: `docs/quantumn-knowledge-chat-bookshelf-diagnosis-20260906.md`
-- status: `TESTED_PENDING_RELEASE / AUTHENTICATED_CHAT_UI_ACCEPTANCE_BLOCKED`
+- status: `VERIFIED / TESTFLIGHT_UPLOADED_PROCESSING_UNVERIFIED`
 - release_authorization: 用户于 2026-09-07 明确授权提交、推送、生产部署及 TestFlight 上传。
 - testflight_target: `1.0.3 (24)`；build 23 已从本机 Archive 元数据回读为 `Uploaded to Apple`，不得复用。
 
@@ -160,3 +160,18 @@ verified auth principal
 
 - A 轨（本轮开发/本地验证）：运行环境未提供可核验模型费用，不能虚构金额；未新增第三方依赖或托管服务费用。
 - B 轨（后续 tenant worker + memory provider POC）：需单列模型抽取、embedding、向量/图存储、数据库、重试和人工确认成本；在真实样本命中率、串租户负测、撤回正确性和每用户月成本达标前不进入生产。
+
+## 8. 最终发布回执
+
+- implementation_commit / GitHub main / first production deployment：`6406b25783a40f6c68c240570e3b0fd3591e7c8b`，三方 SHA 已回读一致。
+- production server_before：`/opt/releases/ai-lab-platform-3ea280aa9ccb.zNtdbz`（`3ea280aa9ccbf91d4b37ff0641d1dfeb88517577`）。
+- production release：`/opt/releases/ai-lab-platform-6406b25783a4.IT6F9H`；不可变发布脚本完成 additive migration、runtime contract audit、原子切换和 Hermes 服务重启。
+- health_check：API `/ready` 返回 `ready / 0.8.0`；Hermes Bridge `/health` 返回 `ok / v6.0`；公开 HTTPS `/health` 返回 HTTP 200；API 容器为 healthy。
+- authenticated Chat acceptance：用户在 `Quantumn-Unified-Release` 模拟器完成真实生产账号登录并发送消息，收到服务端回答；截图 `/tmp/quantumn-build24-authenticated-chat.png`，同期 API 请求返回 200。回答内容未携带本轮发布上下文，不把内容相关性误记为链路失败。
+- TestFlight archive：`/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-07/Quantumn-1.0.3-24.xcarchive`；`1.0.3 (24)`；arm64；bundle ID `com.ailab.AIPlatformApp`；Team `AALA948YY5`。
+- Archive App 二进制 SHA-256：`d3a8412386b3858b34cbd4b967ea9366a86929fb23ad5a1c821b79014bfb8ef0`。
+- command-line export：失败，真实错误为 `No Accounts` / `No signing certificate "iOS Distribution" found`；未把该路径误报为成功。
+- Xcode Organizer：成功，Archive `Distributions` 回读 `Uploaded to Apple`，uploaded build `24`，distribution identifier `e12031a1-abc3-4baf-acb2-d88916ba5381`，upload event `2026-09-07T01:16:15Z`，errors/warnings 均为空。
+- TestFlight processing、二进制验证、内部/外部测试组可用性尚未从 App Store Connect 回读，因此本回执只声明上传成功。
+- final receipt commit：以 `git log -1 --format=%H -- ops/change-manifests/20260907-quantumn-knowledge-chat-memory-completion.md` 解析；该自引用 commit 的 GitHub/服务器 SHA 与最终 release 路径记录在对用户的完成回执中。
+- rollback：生产回滚点为 `/opt/releases/ai-lab-platform-3ea280aa9ccb.zNtdbz`；TestFlight 可继续使用已上传的 build 23，build 24 如处理失败不得重复使用同一构建号。
