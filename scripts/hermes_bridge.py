@@ -4301,7 +4301,7 @@ def _prewarm_session_agent(
             hermes_sid,
             queue.Queue(),
             agent_config=agent_config,
-            client_context_enabled=knowledge_action_enabled,
+            client_context_enabled=False,
             knowledge_action_enabled=knowledge_action_enabled,
             sandbox=sandbox,
         )

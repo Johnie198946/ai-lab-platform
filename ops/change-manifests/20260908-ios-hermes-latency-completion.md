@@ -61,3 +61,10 @@
 - Root cause of the persistent yellow full-answer load error: the durable SSE subscription could emit an early running `answer_page`, then `done` could replace the answer projection and revision, but the stream did not emit the final projection. iOS therefore retained a stale pagination cursor and every retry repeated the same 409 failure.
 - Repair: the existing durable SSE path now emits exactly one terminal `answer_page` when its earlier page was non-terminal. No model rerun, new recovery service, or client release is required.
 - Follow-up regression: `tests/test_chat_status.py` and `tests/test_chat_stream_api.py` passed, `84 passed`; Ruff and `git diff --check` passed.
+
+## Prewarm cache-signature follow-up
+
+- Production aggregation showed five `chat_prewarm` Runs completing in 2.51s on average, while completed chat Runs reached their first server event in 19.48s on average. The first event is emitted immediately after `_build_in_process_agent`, proving the remaining cold delay was Agent construction rather than iOS rendering or SSE delivery.
+- Root cause: session prewarm passed `client_context_enabled=knowledge_action_enabled`. Supporting `knowledge_action_v1` is a capability, not proof that a request carries client context. This built the full knowledge-action lane, while an ordinary first question built `fast_general`; their cache signatures could never match.
+- Repair: retain `knowledge_action_enabled` but prewarm the common first-turn lane with `client_context_enabled=False`, matching real general questions without spending a model turn.
+- Regression: focused chat/prewarm suites passed, `123 passed`; Ruff and `git diff --check` passed. Build 28 requires no client update for this server-side correction.

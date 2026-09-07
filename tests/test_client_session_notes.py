@@ -256,7 +256,7 @@ def test_session_prewarm_creates_empty_native_session_and_retains_agent(monkeypa
     assert mappings == [("user", session_id, "/tenant/state.db")]
     assert retained[0][0] == ("user", "signature", agent, cached_db)
     assert retained[0][1] == {"keep": True}
-    assert build_kwargs["client_context_enabled"] is True
+    assert build_kwargs["client_context_enabled"] is False
     assert build_kwargs["knowledge_action_enabled"] is True
 
 
