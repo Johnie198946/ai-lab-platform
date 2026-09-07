@@ -3881,8 +3881,7 @@ async def chat_stream(body: GoalRequest):
                     "qws_business_context": body.qws_business_context,
                     "qws_context_claims": qws_context_claims,
                     "knowledge_action_enabled": (
-                        client_context_claims is not None
-                        and "knowledge_action_v1" in set(body.client_capabilities)
+                        "knowledge_action_v1" in set(body.client_capabilities)
                     ),
                     "answer_blocks_v1": "answer_blocks_v1" in set(body.client_capabilities),
                 },
@@ -3989,8 +3988,7 @@ async def chat_stream(body: GoalRequest):
                     qws_business_context=body.qws_business_context,
                     sandbox=sandbox,
                     knowledge_action_enabled=(
-                        client_context_claims is not None
-                        and "knowledge_action_v1" in set(body.client_capabilities)
+                        "knowledge_action_v1" in set(body.client_capabilities)
                     ),
                 ),
                 media_type="text/event-stream",

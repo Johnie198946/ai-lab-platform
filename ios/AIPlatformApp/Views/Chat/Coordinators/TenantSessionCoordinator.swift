@@ -1137,6 +1137,10 @@ public final class TenantSessionCoordinator: ObservableObject {
         let isReferentialSave = ["帮我", "给我", "替我", "把", "将"].contains(where: value.contains)
             && ["保存", "记下", "收录", "入库"].contains(where: value.contains)
         if refersToPriorContent && isReferentialSave { return true }
+        let isTopicSave = ["关于", "围绕"].contains(where: value.contains)
+            && ["帮我保存", "给我保存", "替我保存", "帮我记下", "帮我收录", "帮我入库"]
+                .contains(where: value.contains)
+        if isTopicSave { return true }
         let hasKnowledgeObject = value.contains("笔记") || value.contains("知识库")
             || value.contains("note") || value.contains("knowledge base")
         let hasMutation = ["保存", "写入", "创建", "新建", "修改", "更新", "重命名", "标签", "置顶", "合并", "归档", "恢复", "删除", "save", "create", "update", "merge", "archive", "restore", "delete"]
@@ -1854,13 +1858,39 @@ public final class TenantSessionCoordinator: ObservableObject {
             availableBlockCount: message.answerAvailableBlockCount,
             loadedBlockCount: message.answerBlocks.count,
             maxBlocks: 20
-        )
+        ) + 1
+        var refreshedStaleCursor = false
         for _ in 0..<maximumRequests {
             try Task.checkCancellation()
             guard seenCursors.insert(cursor).inserted else {
                 throw APIError.server(409, "answer cursor repeated")
             }
-            let page = try await fetchAnswerBlocksRequest(runId, cursor, 20)
+            let page: AnswerBlockPageDTO
+            do {
+                page = try await fetchAnswerBlocksRequest(runId, cursor, 20)
+            } catch APIError.server(409, _) where !refreshedStaleCursor {
+                let fresh = try await fetchAnswerBlocksRequest(runId, nil, 20)
+                guard fresh.status == "completed" else {
+                    throw APIError.server(409, "answer is not completed")
+                }
+                guard tenantEpoch == expectedEpoch,
+                      sessionManager.activeAccountFingerprint == expectedAccount,
+                      sessionManager.activeSessionID() == expectedSession,
+                      let current = messages.firstIndex(where: { $0.id == messageId }) else {
+                    throw CancellationError()
+                }
+                applyAnswerPage(fresh, messageIndex: current, replace: true)
+                commitSession()
+                guard fresh.hasMore else { return messages[current].content }
+                guard let next = fresh.nextCursor else {
+                    throw APIError.server(409, "answer pagination cursor missing")
+                }
+                refreshedStaleCursor = true
+                revision = fresh.revision
+                cursor = next
+                seenCursors.removeAll()
+                continue
+            }
             guard revision == nil || revision == page.revision else {
                 throw APIError.server(409, "answer revision changed")
             }

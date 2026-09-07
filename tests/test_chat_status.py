@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import queue
 import sqlite3
@@ -1005,9 +1006,12 @@ class TestInFlightUsers(unittest.TestCase):
                     regenerate=False,
                     request_id="request-durable-inflight",
                     knowledge_query=None,
+                    client_capabilities=["knowledge_action_v1"],
                 )))
+                run = store.get_unchecked(response.headers["x-run-id"])
 
         self.assertEqual(response.headers["x-session-id"], "u_durable")
+        self.assertTrue(json.loads(run["execution_payload_json"])["knowledge_action_enabled"])
         self.assertNotIn("u_durable", bridge._in_flight_users)
         self.assertFalse(bridge._is_in_flight("u_durable"))
 

@@ -2920,6 +2920,55 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
     }
 
     @MainActor
+    func testFullAnswerRefreshesStaleStreamingCursorAfterCompletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionId = manager.createSession()
+        let outputId = "stale-cursor-output"
+        manager.setMessages([
+            ChatMessage(
+                id: outputId, sessionId: sessionId, role: .assistant, content: "旧页",
+                runId: "run-stale", answerRevision: 1, answerNextCursor: "stale",
+                answerHasMore: true, answerAvailableBlockCount: 2,
+                answerBlocks: [.init(blockIndex: 0, kind: "markdown", content: "旧页")]
+            )
+        ], for: sessionId)
+        var cursors: [String?] = []
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            fetchAnswerBlocks: { _, cursor, _ in
+                cursors.append(cursor)
+                if cursor == "stale" { throw APIError.server(409, "stale_block_cursor") }
+                if cursor == nil {
+                    return AnswerBlockPageDTO(
+                        messageId: outputId, revision: 2, status: "completed",
+                        blocks: [.init(blockIndex: 0, kind: "markdown", content: "新页")],
+                        bytes: 6, loadedBlockCount: 1, availableBlockCount: 2,
+                        hasMore: true, nextCursor: "fresh"
+                    )
+                }
+                return AnswerBlockPageDTO(
+                    messageId: outputId, revision: 2, status: "completed",
+                    blocks: [.init(blockIndex: 1, kind: "markdown", content: "全文")],
+                    bytes: 6, loadedBlockCount: 2, availableBlockCount: 2,
+                    hasMore: false, nextCursor: nil
+                )
+            }
+        )
+
+        let answer = try await coordinator.fetchFullAnswer(messageId: outputId)
+        XCTAssertEqual(cursors, ["stale", nil, "fresh"])
+        XCTAssertEqual(answer, "新页全文")
+        XCTAssertEqual(coordinator.messages[0].answerRevision, 2)
+        XCTAssertFalse(coordinator.messages[0].answerHasMore)
+    }
+
+    @MainActor
     func testFullAnswerCancellationRetainsLastCommittedPage() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

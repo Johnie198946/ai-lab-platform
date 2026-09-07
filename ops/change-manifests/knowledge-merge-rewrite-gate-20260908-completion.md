@@ -49,3 +49,13 @@
 - 主题、内容块角色和目标歧义仍由同一 Hermes 回合按服务端提示判断；没有新增确定性语义分类器或额外模型调用。
 - 全仓测试基线存在与本任务无关的环境/隔离失败；相关知识链测试已全通过。
 - 本任务不发布 iOS 构建；服务端部署已完成。
+
+## 2026-09-08 真机回归修复
+
+- 用户复测症状：保存请求仍显示旧 `note_draft` 草稿而非原子操作卡；“加载完整原文”显示黄色中断；首个可见结果超过 24 秒。
+- 生产证据：02:02:20 收到请求，02:02:23 Agent 构建完成，02:02:44 首次 `note_draft` 因缺必填参数失败，02:02:57 重试成功；02:03:08 起旧 revision 分页游标连续返回 409。
+- 根因与修复：`knowledge_action_v1` 被错误绑定到可选 `client_context`；iOS 未识别“关于…帮我保存”；全文读取未复用已有的 409 首页重载策略；生产尚未包含 `df854ccd35c638a59048bdc279d110ef4517ad1b` 的预热缓存键修复。
+- changed_files: `scripts/hermes_bridge.py`、`ios/AIPlatformApp/Views/Chat/Coordinators/TenantSessionCoordinator.swift`、两项 iOS 测试、`tests/test_chat_status.py`、iOS build 配置与本 manifest。
+- validation: Python 相关回归 `113 passed`；iOS `KnowledgeNoteStoreTests` + `WorkflowLifecycleDTOTests` 共 `134 passed`；`git diff --check` 通过。
+- delivery_status: `TESTED`；commit、push、服务器部署与 TestFlight `1.0.3 (29)` 待执行。
+- rollback_point: 服务器 `/opt/releases/ai-lab-platform-4530850e49e7.pGHYPX`；iOS TestFlight `1.0.3 (28)`。
