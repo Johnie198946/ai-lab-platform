@@ -665,19 +665,79 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         )
     }
 
-    func testLiveReasoningOnlyReplacesPlaceholderAfterFirstRealStep() {
-        XCTAssertFalse(ChatMessageStreamView.containsLiveReasoning([.reasoning([])]))
-        XCTAssertTrue(
-            ChatMessageStreamView.containsLiveReasoning([
-                .reasoning([
-                    ReasoningStep(
-                        type: .toolCall,
-                        title: "检索交通方案",
-                        status: "running"
-                    )
-                ])
-            ])
-        )
+    @MainActor
+    func testStartGenerationShowsTruthfulPendingStatusBeforeBackendEvents() {
+        let coordinator = TenantSessionCoordinator(hasAuthenticatedSession: { false })
+        coordinator.startGeneration(text: "分析需求", quote: nil)
+
+        let assistant = coordinator.messages.last
+        XCTAssertEqual(assistant?.role, .assistant)
+        XCTAssertTrue(assistant?.pending == true)
+        XCTAssertTrue(assistant?.isStreaming == true)
+        XCTAssertTrue(assistant?.content.isEmpty == true)
+        XCTAssertTrue(assistant?.reasoningSteps.isEmpty == true)
+        XCTAssertEqual(assistant?.id, coordinator.inflight?.id)
+        coordinator.cancelAllTasksAndAnimations()
+    }
+
+    func testHistoryAutoLoadOnlyTriggersAtVisibleTopBoundary() {
+        XCTAssertEqual(ChatMessageStreamView.historyPositionAnchor, .top)
+        XCTAssertTrue(ChatMessageStreamView.shouldArmOlderHistoryPull(
+            translationHeight: 13, isGenerating: false
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldArmOlderHistoryPull(
+            translationHeight: 12, isGenerating: false
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldArmOlderHistoryPull(
+            translationHeight: -40, isGenerating: false
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldArmOlderHistoryPull(
+            translationHeight: 40, isGenerating: true
+        ))
+        XCTAssertTrue(ChatMessageStreamView.isAtOlderHistoryBoundary(
+            contentOffsetY: -44, topInset: 44
+        ))
+        XCTAssertFalse(ChatMessageStreamView.isAtOlderHistoryBoundary(
+            contentOffsetY: -20, topInset: 44
+        ))
+        XCTAssertTrue(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "first", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: false, isArmed: true,
+            isAtHistoryBoundary: true
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "middle", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: false, isArmed: true,
+            isAtHistoryBoundary: true
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "first", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: true, isArmed: true,
+            isAtHistoryBoundary: true
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "first", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: false, isArmed: false,
+            isAtHistoryBoundary: true
+        ))
+        XCTAssertFalse(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "first", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: false, isArmed: true,
+            isAtHistoryBoundary: false
+        ))
+
+        // The same boundary becomes eligible as soon as generation settles,
+        // even though the tracked top message ID itself did not change.
+        XCTAssertFalse(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "first", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: true, isArmed: true,
+            isAtHistoryBoundary: true
+        ))
+        XCTAssertTrue(ChatMessageStreamView.shouldAutoLoadOlderPage(
+            visibleMessageID: "first", firstMessageID: "first",
+            hasOlderMessages: true, isGenerating: false, isArmed: true,
+            isAtHistoryBoundary: true
+        ))
     }
 
     @MainActor
@@ -1208,6 +1268,7 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
             )
         }
 
+        XCTAssertEqual(ChatHistoryStore.pageMessageLimit, 16)
         XCTAssertEqual(try store.upsert(messages, sessionId: sessionId), 1_000)
         let latest = try store.latest(sessionId: sessionId)
         XCTAssertLessThanOrEqual(latest.messages.count, ChatHistoryStore.pageMessageLimit)
@@ -1382,7 +1443,10 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertTrue(coordinator.hasNewerMessages)
         XCTAssertLessThanOrEqual(coordinator.messages.count, ChatHistoryStore.pageMessageLimit)
         coordinator.loadNewerMessagePage()
-        XCTAssertEqual(coordinator.messages.first?.id, "page-36")
+        XCTAssertEqual(
+            coordinator.messages.first?.id,
+            "page-\(60 - ChatHistoryStore.pageMessageLimit)"
+        )
         coordinator.returnToLatestMessages()
         XCTAssertEqual(coordinator.messages.last?.id, "page-59")
         XCTAssertTrue(coordinator.isLatestPage)

@@ -10,10 +10,14 @@
 import SwiftUI
 
 public struct ChatMessageStreamView: View {
+    static let historyPositionAnchor = UnitPoint.top
+
     @ObservedObject public var coordinator: TenantSessionCoordinator
     public let onBackgroundTap: () -> Void
     public let onStartTopic: ((ChatMessage) -> Void)?
     @State private var visibleMessageID: String?
+    @State private var autoLoadOlderArmed = false
+    @State private var isAtHistoryBoundary = false
     @State private var readingPositions: [String: String] = [:]
     @State private var readingSessionID: String?
 
@@ -81,7 +85,34 @@ public struct ChatMessageStreamView: View {
                     }
             }
         }
-        .scrollPosition(id: $visibleMessageID, anchor: .center)
+        .scrollPosition(id: $visibleMessageID, anchor: Self.historyPositionAnchor)
+        .observeChatScrollBoundary { isAtHistoryBoundary = $0 }
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 12)
+                .onChanged { value in
+                    guard isAtHistoryBoundary,
+                          Self.shouldArmOlderHistoryPull(
+                            translationHeight: value.translation.height,
+                            isGenerating: coordinator.isGenerating
+                          ) else { return }
+                    autoLoadOlderArmed = true
+                }
+                .onEnded { _ in
+                    guard Self.shouldAutoLoadOlderPage(
+                        visibleMessageID: visibleMessageID,
+                        firstMessageID: coordinator.messages.first?.id,
+                        hasOlderMessages: coordinator.hasOlderMessages,
+                        isGenerating: coordinator.isGenerating,
+                        isArmed: autoLoadOlderArmed,
+                        isAtHistoryBoundary: isAtHistoryBoundary
+                    ) else {
+                        autoLoadOlderArmed = false
+                        return
+                    }
+                    autoLoadOlderArmed = false
+                    coordinator.loadOlderMessagePage()
+                }
+        )
         // 仅设置首次进入会话的位置。不能使用无 role 的 defaultScrollAnchor：
         // 超长消息后继续发送时，它会参与内容尺寸变化的锚点平移，并在 iOS 26
         // 触发消息栈的 AttributeGraph 布局循环。
@@ -95,16 +126,22 @@ public struct ChatMessageStreamView: View {
                 readingPositions[oldSessionID] = visibleMessageID
             }
             let nextSessionID = newSessionID ?? coordinator.sessionManager.activeSessionID()
+            autoLoadOlderArmed = false
             readingSessionID = nextSessionID
             visibleMessageID = readingPositions[nextSessionID] ?? coordinator.messages.last?.id
         }
         .onChange(of: coordinator.historyPageIdentity) { _, _ in
             guard let sessionID = readingSessionID,
                   readingPositions[sessionID] == nil else { return }
+            autoLoadOlderArmed = false
             visibleMessageID = coordinator.historyPageStartsAtBottom
                 ? coordinator.messages.last?.id
                 : coordinator.messages.first?.id
         }
+        .onChange(of: coordinator.isGenerating) { _, isGenerating in
+            if isGenerating { autoLoadOlderArmed = false }
+        }
+
     }
 
     private func historyButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
@@ -140,14 +177,12 @@ public struct ChatMessageStreamView: View {
                             liveBlockCard(block)
                         }
                     }
-                    if !Self.containsLiveReasoning(message.blocks) {
-                        ChatInFlightPlaceholderView(
-                            req: req,
-                            coordinator: coordinator,
-                            steps: message.reasoningSteps,
-                            assistantName: message.executingAgentName
-                        )
-                    }
+                    ChatInFlightPlaceholderView(
+                        req: req,
+                        coordinator: coordinator,
+                        steps: message.reasoningSteps,
+                        assistantName: message.executingAgentName
+                    )
                 }
             } else {
                 OrphanPendingCardView(onRetry: { coordinator.retryMessage(message.id) })
@@ -215,14 +250,29 @@ public struct ChatMessageStreamView: View {
         }
     }
 
-    static func containsLiveReasoning(_ blocks: [MessageBlock]) -> Bool {
-        blocks.contains { block in
-            if case .reasoning(let steps) = block {
-                return !steps.isEmpty
-            }
-            return false
-        }
+    static func shouldAutoLoadOlderPage(
+        visibleMessageID: String?,
+        firstMessageID: String?,
+        hasOlderMessages: Bool,
+        isGenerating: Bool,
+        isArmed: Bool,
+        isAtHistoryBoundary: Bool
+    ) -> Bool {
+        isArmed && isAtHistoryBoundary && hasOlderMessages && !isGenerating
+            && visibleMessageID != nil && visibleMessageID == firstMessageID
     }
+
+    static func shouldArmOlderHistoryPull(
+        translationHeight: CGFloat,
+        isGenerating: Bool
+    ) -> Bool {
+        !isGenerating && translationHeight > 12
+    }
+
+    static func isAtOlderHistoryBoundary(contentOffsetY: CGFloat, topInset: CGFloat) -> Bool {
+        contentOffsetY <= -topInset + 2
+    }
+
 
     /// 流式期间实时揭示的块（仅 reasoning / clarify 有实时价值，其余等待完成态统一渲染）
     @ViewBuilder
@@ -281,6 +331,22 @@ private extension MessageBlock {
 }
 
 private extension View {
+    @ViewBuilder
+    func observeChatScrollBoundary(_ action: @escaping (Bool) -> Void) -> some View {
+        if #available(iOS 18.0, *) {
+            onScrollGeometryChange(for: Bool.self) { geometry in
+                ChatMessageStreamView.isAtOlderHistoryBoundary(
+                    contentOffsetY: geometry.contentOffset.y,
+                    topInset: geometry.contentInsets.top
+                )
+            } action: { _, isAtTop in
+                action(isAtTop)
+            }
+        } else {
+            self
+        }
+    }
+
     @ViewBuilder
     func initialScrollAnchor(startsAtBottom: Bool) -> some View {
         if #available(iOS 18.0, *), startsAtBottom {

@@ -28,7 +28,8 @@ public struct StoredSessionSummary: Sendable {
 /// Indexed local history. A recursive connection lock serializes complete SQLite
 /// transactions across MainActor reads and detached persistence writes.
 public final class ChatHistoryStore: @unchecked Sendable {
-    public static let pageMessageLimit = 24
+    /// Keep the live SwiftUI tree to about eight ordinary user/assistant turns.
+    public static let pageMessageLimit = 16
     public static let pageCharacterLimit = 80_000
 
     private var db: OpaquePointer?

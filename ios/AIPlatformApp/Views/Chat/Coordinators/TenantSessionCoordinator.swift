@@ -982,12 +982,6 @@ public final class TenantSessionCoordinator: ObservableObject {
         inflight = req
         streamOutputMessageIds[req.id] = req.id
 
-        let initialStep = ReasoningStep(
-            type: .thought,
-            title: "正在根据需求规划与执行…",
-            detail: text,
-            status: "running"
-        )
         messages.append(
             ChatMessage(
                 id: req.id,
@@ -995,7 +989,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                 role: .assistant,
                 content: "",
                 isStreaming: true,
-                blocks: [.reasoning([initialStep])],
+                // No client-authored reasoning. The unified status card is visible
+                // immediately; only durable Hermes events may add reasoning steps.
+                blocks: [],
                 pending: true
             )
         )
