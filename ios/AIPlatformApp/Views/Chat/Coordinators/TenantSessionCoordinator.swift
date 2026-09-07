@@ -379,6 +379,17 @@ public final class TenantSessionCoordinator: ObservableObject {
                     cursor = max(cursor, replay.run.eventSequence)
                     self.messages[index].runId = runId
                     self.messages[index].lastEventSequence = cursor
+                    for event in replay.events {
+                        if case .knowledgeActionDraft(let action) = event,
+                           !self.messages[index].blocks.contains(where: {
+                               if case .knowledgeAction(let existing) = $0 {
+                                   return existing.id == action.id
+                               }
+                               return false
+                           }) {
+                            self.messages[index].blocks.append(.knowledgeAction(action))
+                        }
+                    }
                     let status = replay.run.status
                     if let page = replay.run.answerProjection, !page.blocks.isEmpty {
                         self.applyAnswerPage(page, messageIndex: index, replace: true)
@@ -1117,6 +1128,7 @@ public final class TenantSessionCoordinator: ObservableObject {
     static func requiresKnowledgeActionProposal(_ text: String) -> Bool {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !value.isEmpty else { return false }
+        if value == "保存" || value == "save" { return true }
         let explicit = ["记下来", "记到笔记", "保存为笔记", "存成笔记", "整理成笔记", "写入知识库"]
         if explicit.contains(where: value.contains) { return true }
         let refersToPriorContent = ["以上", "上述", "这些", "前面", "刚才", "全部", "所有"]

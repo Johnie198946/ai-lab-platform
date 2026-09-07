@@ -2669,6 +2669,24 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
     }
 
     @MainActor
+    func testDurableRunReplayDecodesKnowledgeActionEvent() throws {
+        let data = Data(#"""
+        {
+          "run":{"run_id":"run-save","status":"running","event_sequence":4,"queue_position":0,"attempt":1,"error_code":""},
+          "events":[{"type":"knowledge_action_draft","action_id":"action-save","summary":"保存复利笔记","steps":[{"kind":"create_note","title":"复利","markdown":"# 复利"}],"action_digest":"digest","knowledge_action_capability":"capability","expires_at":999}],
+          "dropped_event_count":0
+        }
+        """#.utf8)
+
+        let replay = try APIClient.decodeDurableChatReplay(data)
+        guard case .knowledgeActionDraft(let action) = try XCTUnwrap(replay.events.first) else {
+            return XCTFail("expected knowledge action draft")
+        }
+        XCTAssertEqual(action.id, "action-save")
+        XCTAssertEqual(action.transientCapability, "capability")
+    }
+
+    @MainActor
     func testCompletedRecoveryPreservesOriginalMessageAndAnswerPageMetadata() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

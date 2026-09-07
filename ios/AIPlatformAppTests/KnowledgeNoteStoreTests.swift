@@ -447,6 +447,7 @@ final class KnowledgeNoteStoreTests: XCTestCase {
     }
 
     func testSaveIntentRequiresProposalButUnrelatedSaveQuestionDoesNot() {
+        XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("保存"))
         XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("把这段整理成笔记并保存"))
         XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("合并这两篇笔记"))
         XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("以上所有关于采尔马特的都帮我保存"))

@@ -1233,7 +1233,8 @@ _SKILL_CREATE_REQUEST_RE = re.compile(
 
 
 def _is_note_draft_request(goal: str) -> bool:
-    return bool(_NOTE_DRAFT_REQUEST_RE.search(str(goal or "")))
+    value = str(goal or "").strip().lower()
+    return value in {"保存", "save"} or bool(_NOTE_DRAFT_REQUEST_RE.search(value))
 
 
 def _requires_browser_fallback(goal: str) -> bool:
@@ -5107,6 +5108,20 @@ def _legacy_client_context_enabled(
     return client_context_enabled and not knowledge_action_enabled
 
 
+def _expose_eager_request_tools(agent: Any, toolsets: list[str]) -> None:
+    """Expose the small authorized write surface without discovery round trips."""
+    from model_tools import get_tool_definitions
+
+    agent.tools = get_tool_definitions(
+        enabled_toolsets=toolsets,
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    agent.valid_tool_names = {
+        item["function"]["name"] for item in agent.tools
+    }
+
+
 def _build_in_process_agent(
     goal: str,
     user_id: str,
@@ -5545,6 +5560,8 @@ def _build_in_process_agent(
         # - Hermes 原生 resolve_reasoning_config 处理 DeepSeek 映射；不支持的 Provider 自动忽略
         reasoning_config={"effort": "minimal"},
     )
+    if knowledge_action_enabled:
+        _expose_eager_request_tools(agent, toolsets_list)
 
     # 支柱二兜底：若模型能力检测不支持 reasoning_effort 字段注入，保留 prompt 级限词约束
     try:
@@ -5687,6 +5704,13 @@ def _run_agent_sync(
                     "它是本轮唯一会话事实源；禁止调用 session_context_read。先调用 "
                     "user_note_search 检查当前用户同类笔记，再调用 note_draft 生成待确认草稿；"
                     "禁止声称已经写入。"
+                )
+            elif note_draft_request and knowledge_action_enabled and hermes_sid:
+                goal += (
+                    "\n\n【Hermes 原生会话知识操作协议】用户已要求保存当前对话，不要再次澄清。"
+                    "必须先直接调用 knowledge_workspace_read，再直接调用 "
+                    "knowledge_action_propose 生成待确认操作卡；禁止搜索或描述这两个已提供的工具，"
+                    "禁止调用 note_draft，禁止声称已经写入。"
                 )
             if _is_revision_request(goal):
                 goal += (

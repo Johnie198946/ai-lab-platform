@@ -86,6 +86,63 @@ final class ChatResponseRecoveryRegressionTests: XCTestCase {
         XCTAssertFalse(coordinator.messages[1].degraded)
     }
 
+    func testDurableReplayRestoresKnowledgeActionCard() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionID = manager.createSession()
+        manager.setMessages([
+            ChatMessage(sessionId: sessionID, role: .user, content: "保存"),
+            ChatMessage(
+                id: "output", sessionId: sessionID, role: .assistant,
+                content: "", runId: "run-save"
+            )
+        ], for: sessionID)
+        let action = KnowledgeActionBlock(
+            id: "action-save", summary: "保存复利笔记",
+            steps: [.init(kind: "create_note", title: "复利", markdown: "# 复利")],
+            actionDigest: "digest", transientCapability: "capability", expiresAt: 999
+        )
+        let fetched = expectation(description: "durable action fetched")
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchDurableChatRun: { _, _ in
+                fetched.fulfill()
+                return DurableChatReplayDTO(
+                    run: DurableChatRunDTO(
+                        runId: "run-save", status: "completed", eventSequence: 9,
+                        partialAnswer: nil, finalAnswer: "等待确认",
+                        queuePosition: 0, attempt: 1, errorCode: "",
+                        answerProjection: nil
+                    ),
+                    droppedEventCount: 0,
+                    events: [.knowledgeActionDraft(action)]
+                )
+            }
+        )
+
+        coordinator.reconcileActiveRun()
+        await fulfillment(of: [fetched], timeout: 1)
+        for _ in 0..<20 where !coordinator.messages[1].blocks.contains(where: {
+            if case .knowledgeAction = $0 { return true }
+            return false
+        }) {
+            await Task.yield()
+        }
+
+        let recovered = coordinator.messages[1].blocks.compactMap { block -> KnowledgeActionBlock? in
+            if case .knowledgeAction(let action) = block { return action }
+            return nil
+        }.first
+        XCTAssertEqual(recovered?.id, "action-save")
+        XCTAssertEqual(recovered?.transientCapability, "capability")
+    }
+
     func testCompletedDurableRunFallsBackToFinalAnswerWhenProjectionIsEmpty() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

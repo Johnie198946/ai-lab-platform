@@ -284,6 +284,7 @@ def test_ios_normal_send_does_not_export_sqlite_transcript():
 def test_note_draft_request_detection_and_title_fallback():
     import scripts.hermes_bridge as bridge
 
+    assert bridge._is_note_draft_request("保存")
     assert bridge._is_note_draft_request("总结为笔记")
     assert bridge._is_note_draft_request("把我们聊的内容保存入库成为笔记")
     assert bridge._is_note_draft_request("帮我完善《TokenBox》这篇笔记")
@@ -294,6 +295,31 @@ def test_note_draft_request_detection_and_title_fallback():
     assert bridge._fallback_note_title("# 超聚变会话总结\n\n正文") == "超聚变会话总结"
     assert bridge._is_revision_request("这版不满意，请重写")
     assert bridge._is_revision_request("语气再正式一点")
+
+
+def test_knowledge_action_tools_skip_progressive_discovery(monkeypatch):
+    import sys
+    import types
+    import scripts.hermes_bridge as bridge
+
+    captured = {}
+    model_tools = types.ModuleType("model_tools")
+
+    def get_tool_definitions(**kwargs):
+        captured.update(kwargs)
+        return [{"function": {"name": "knowledge_workspace_read"}},
+                {"function": {"name": "knowledge_action_propose"}}]
+
+    model_tools.get_tool_definitions = get_tool_definitions
+    monkeypatch.setitem(sys.modules, "model_tools", model_tools)
+    agent = types.SimpleNamespace(tools=[], valid_tool_names=set())
+
+    bridge._expose_eager_request_tools(agent, ["clarify", "knowledge_workspace"])
+
+    assert captured["skip_tool_search_assembly"] is True
+    assert agent.valid_tool_names == {
+        "knowledge_workspace_read", "knowledge_action_propose",
+    }
     assert bridge._SKILL_CREATE_REQUEST_RE.search("帮我创建一个行程技能")
     assert not bridge._is_revision_request("今天天气怎么样")
 

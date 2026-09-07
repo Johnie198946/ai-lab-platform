@@ -841,9 +841,31 @@ public struct DurableChatRunDTO: Codable, Sendable {
     public let answerProjection: AnswerBlockPageDTO?
 }
 
-public struct DurableChatReplayDTO: Codable, Sendable {
+public struct DurableChatReplayDTO: Decodable, Sendable {
     public let run: DurableChatRunDTO
     public let droppedEventCount: Int
+    public let events: [APIClient.StreamEvent]
+
+    public init(
+        run: DurableChatRunDTO,
+        droppedEventCount: Int,
+        events: [APIClient.StreamEvent] = []
+    ) {
+        self.run = run
+        self.droppedEventCount = droppedEventCount
+        self.events = events
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case run, droppedEventCount
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        run = try container.decode(DurableChatRunDTO.self, forKey: .run)
+        droppedEventCount = try container.decode(Int.self, forKey: .droppedEventCount)
+        events = []
+    }
 }
 
 public struct ClarifySubmitResult: Codable, Sendable {
@@ -2802,7 +2824,7 @@ public final class APIClient: ObservableObject {
     // MARK: - v7 真实流式（SSE 事件流）
 
     /// 流式事件类型（对齐后端 bridge 事件协议）
-    public enum StreamEvent {
+    public enum StreamEvent: Sendable {
         case runCursor(runId: String, eventSequence: Int)
         case delta(String)
         case thought(String)
@@ -3173,7 +3195,20 @@ public final class APIClient: ObservableObject {
                 ? APIError.unauthorized
                 : APIError.server(http.statusCode, "Run 回放失败")
         }
-        return try decoder.decode(DurableChatReplayDTO.self, from: data)
+        return try Self.decodeDurableChatReplay(data)
+    }
+
+    static func decodeDurableChatReplay(_ data: Data) throws -> DurableChatReplayDTO {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let replay = try decoder.decode(DurableChatReplayDTO.self, from: data)
+        let root = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        let events = (root?["events"] as? [[String: Any]] ?? []).compactMap(StreamEvent.parse)
+        return DurableChatReplayDTO(
+            run: replay.run,
+            droppedEventCount: replay.droppedEventCount,
+            events: events
+        )
     }
 
     public func fetchAnswerBlocks(
