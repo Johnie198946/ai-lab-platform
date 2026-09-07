@@ -586,6 +586,39 @@ class TestDurableBridgeStatus(unittest.TestCase):
             0,
         )
 
+    def test_live_blocks_stream_finishes_with_terminal_answer_projection(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-terminal-projection",
+            execution_payload={"answer_blocks_v1": True},
+        )
+        self.store.claim_next("worker-test")
+        self.store.append_event(run["run_id"], {
+            "type": "delta", "content": "partial\n\n",
+        })
+
+        async def collect():
+            stream = self.bridge._durable_subscribe_sse(
+                run["run_id"], self.owner, blocks_v1=True,
+            )
+            initial_page = await stream.__anext__()
+            self.store.append_event(run["run_id"], {
+                "type": "done", "answer": "final answer",
+            })
+            remaining = [item async for item in stream]
+            return initial_page, remaining
+
+        with patch.object(self.bridge, "_chat_run_store", self.store):
+            initial_page, remaining = asyncio.run(collect())
+
+        self.assertIn('"type": "answer_page"', initial_page)
+        self.assertIn('"status": "running"', initial_page)
+        terminal_pages = [frame for frame in remaining if '"type": "answer_page"' in frame]
+        self.assertEqual(len(terminal_pages), 1)
+        self.assertIn('"status": "completed"', terminal_pages[0])
+        self.assertIn("final answer", terminal_pages[0])
+
     def test_disconnected_before_done_frame_resume_keeps_run_unconsumed(self):
         run, _ = self.store.create_or_get(
             tenant_user_hash=self.owner,

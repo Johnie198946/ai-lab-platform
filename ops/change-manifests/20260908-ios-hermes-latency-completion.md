@@ -52,3 +52,12 @@
 - rollback_point: `/opt/releases/ai-lab-platform-5443a33fca5f.h8p6Pv`
 - TestFlight: Quantumn `1.0.3 (28)` archived at `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-08/Quantumn-1.0.3-28.xcarchive`; executable SHA-256 `8ae42a0fc8be5d6c57d06c0a02aab4afca69262b08e4621b4470574c912841b1`; App Store Connect returned `Upload succeeded` and `Uploaded package is processing` on 2026-09-08. Processing/tester availability has not yet been read back.
 - remaining_risks: build 28 still needs a fresh authenticated phone run to measure actual first-token latency and confirm the new save card flow. Existing telemetry cannot split the remaining model-request interval into provider network, scheduling, and model-planning components. Pure new-note saves now skip automatic duplicate-note lookup; explicit update/merge operations retain the workspace-read gate. Build 27 source/archive was not present in GitHub main or local Archives, so build 28 intentionally avoids reusing that build number.
+
+## Build 28 phone follow-up
+
+- User measurement: cold and killed-app immediate sends both showed status at about 22s and answer at about 24s; a warm conversation averaged about 5s. This disproves iOS cold start as the dominant remaining delay. Session prewarm has no measurable user-facing benefit in this sample, while worker startup prewarm still protects the first Run after a worker restart.
+- New-note confirmation improved from about 60s to about 20s. The removed workspace-read/second-model round is effective; the remaining interval is the single Hermes model decision and is still slower than desired.
+- Insight improved from about 120s first text to about 18s, with about 12s in tools. Production aggregation for the following hour showed 24 completed Runs averaging 20.6s and no failed Run/error event, so the displayed interruption was not a Hermes execution failure.
+- Root cause of the persistent yellow full-answer load error: the durable SSE subscription could emit an early running `answer_page`, then `done` could replace the answer projection and revision, but the stream did not emit the final projection. iOS therefore retained a stale pagination cursor and every retry repeated the same 409 failure.
+- Repair: the existing durable SSE path now emits exactly one terminal `answer_page` when its earlier page was non-terminal. No model rerun, new recovery service, or client release is required.
+- Follow-up regression: `tests/test_chat_status.py` and `tests/test_chat_stream_api.py` passed, `84 passed`; Ruff and `git diff --check` passed.

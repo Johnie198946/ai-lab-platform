@@ -3663,6 +3663,7 @@ async def _durable_subscribe_sse(
     cursor = max(0, int(after))
     yielded_any = False
     page_sent = False
+    terminal_page_sent = False
     while True:
         if _chat_run_store is None:
             yield f"data: {json.dumps({'type': 'error', 'code': 'run_store_unavailable', 'message': '持久任务存储不可用'}, ensure_ascii=False)}\n\n"
@@ -3689,9 +3690,14 @@ async def _durable_subscribe_sse(
             page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
             if page["blocks"]:
                 page_sent = True
+                terminal_page_sent = page["status"] in {"completed", "failed", "cancelled"}
                 yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
         status = str(snapshot.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
+            if blocks_v1 and not terminal_page_sent:
+                page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
+                if page["blocks"]:
+                    yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
             return
         if not yielded_any:
             yielded_any = True
