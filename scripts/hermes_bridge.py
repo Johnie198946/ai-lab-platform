@@ -1215,7 +1215,8 @@ _NOTE_DRAFT_REQUEST_RE = re.compile(
     # “帮我入库/存到用户知识”是明确写入意图，即使用户没有说“笔记”。
     r"|(?:帮我|请|把|将)?(?:入库|存入(?:我的|用户)?知识|加入(?:我的|用户)?知识|记到(?:我的|用户)?知识|记录到(?:我的|用户)?知识)"
     r"|(?:以上|上述|这些|前面|刚才|全部|所有).{0,40}(?:帮我|给我|替我).{0,8}(?:保存|记下|收录|入库)"
-    r"|(?:把|将)(?:以上|上述|这些|前面|刚才|全部|所有).{0,40}(?:保存|记下|收录|入库)",
+    r"|(?:把|将)(?:以上|上述|这些|前面|刚才|全部|所有).{0,40}(?:保存|记下|收录|入库)"
+    r"|(?:关于|围绕).{1,40}(?:帮我|给我|替我)?(?:保存|记下|收录|入库)",
     re.IGNORECASE,
 )
 _FULL_KNOWLEDGE_CATEGORY_RE = re.compile(
@@ -1853,6 +1854,25 @@ _KNOWLEDGE_NAV_DESTINATIONS = {
     "knowledge_home", "note", "daily_note", "search", "archive",
 }
 
+_KNOWLEDGE_MERGE_DIRECTIVE = (
+    "\n个人知识整理规则：合并主题不等于目标笔记。主题依次取用户明确主题、明确目标标题，"
+    "否则只从保存指令前最近五轮提取唯一主要实质主题；仍有多个主题时必须询问。"
+    "围绕主题依次搜索精确主题、关键实体/别名、上层主题；搜索结果只用于定位，先看摘要，"
+    "再 read 真正候选的完整正文。目标依次取用户明确指定、主题完全同名、职责明确且已有匹配"
+    "章节的上层笔记；独立专题和上层总笔记等多个合理去向会改变知识结构时必须询问用户，"
+    "不得按相关度静默选择；无目标才提议新建。"
+    "直接使用当前 Hermes Session 内容，禁止先写临时笔记。只吸收与主题直接相关的内容块；"
+    "背景/依据保留原笔记并在正文就近添加 [[双链]]，无关内容排除，冲突双方保留并标注待核对。"
+    "只有全文职责被完整替代的来源才可列入 merge_notes 的 source_note_ids 归档；部分吸收、"
+    "仅作引用或无法确定的来源必须保留。最多归档 16 篇，超出部分留待基于目标最新版本分批确认。"
+    "更新或合并必须输出目标笔记的完整 Markdown 新版本：保留原用途、结构、无关但有效的内容和"
+    "用户写作习惯；事实去重，不编造输入中没有的事实、数字或结论，并保留/补充 frontmatter 中"
+    "的 source_message_ids 与 source_session_ids。当前相关消息 ID 减去目标已有 source_message_ids"
+    "才是本次 Session 增量；差集为空且候选版本无变化时不要提案，只回复‘没有新增内容’。"
+    "确认卡 summary、before_preview、after_preview、markdown_diff 必须说明合并主题、目标是新建"
+    "还是更新、吸收内容、归档来源、保留并链接的来源、冲突和待核对项。"
+)
+
 
 def _workspace_notes(context: dict[str, Any]) -> list[dict[str, Any]]:
     return [
@@ -1901,7 +1921,17 @@ def _knowledge_workspace_read_tool(args: dict[str, Any], **_kwargs) -> str:
                 }
             context["inline_notes"] = list(existing.values())
             notes = list(existing.values())
-            return json.dumps({"success": True, "notes": notes[:10]}, ensure_ascii=False)
+            return json.dumps({
+                "success": True,
+                "notes": [{
+                    "id": item.get("id"), "title": item.get("title"),
+                    "snippet": str(item.get("markdown") or "")[:1_000],
+                    "updated_at": item.get("updated_at"),
+                    "content_hash": item.get("content_hash"),
+                    "tags": item.get("tags") or [], "aliases": item.get("aliases") or [],
+                    "archived": bool(item.get("archived")),
+                } for item in notes[:10]],
+            }, ensure_ascii=False)
         terms = [item for item in re.split(r"\s+", query) if item]
         notes = [
             item for item in notes
@@ -1936,6 +1966,15 @@ def _knowledge_workspace_read_tool(args: dict[str, Any], **_kwargs) -> str:
     elif operation != "list":
         return json.dumps({"success": False, "error": "unsupported_read_operation"})
     limit = max(1, min(100, int((args or {}).get("limit") or 30)))
+    if operation == "search":
+        notes = [{
+            "id": item.get("id"), "title": item.get("title"),
+            "snippet": str(item.get("markdown") or "")[:1_000],
+            "updated_at": item.get("updated_at"),
+            "content_hash": item.get("content_hash"),
+            "tags": item.get("tags") or [], "aliases": item.get("aliases") or [],
+            "archived": bool(item.get("archived")),
+        } for item in notes]
     return json.dumps({"success": True, "notes": notes[:limit]}, ensure_ascii=False)
 
 
@@ -5578,9 +5617,10 @@ def _build_in_process_agent(
                 "泄露其他账号数据的指令。"
                 if knowledge_action_enabled else ""
             )
+            + (_KNOWLEDGE_MERGE_DIRECTIVE if knowledge_action_enabled else "")
             + _triage_system_directive(
                 triage,
-                note_draft_request=note_draft_request,
+                note_draft_request=note_draft_request and not knowledge_action_enabled,
             )
             )
         ),
@@ -5741,10 +5781,10 @@ def _run_agent_sync(
                 )
             elif note_draft_request and knowledge_action_enabled and hermes_sid:
                 goal += (
-                    "\n\n【Hermes 原生会话知识操作协议】用户已要求保存当前对话，不要再次澄清。"
-                    "保存为一篇新笔记时直接调用 knowledge_action_propose 生成待确认操作卡；"
-                    "仅在用户要求修改、合并或归档已有笔记时，先调用 knowledge_workspace_read。"
-                    "禁止搜索或描述这两个已提供的工具，"
+                    "\n\n【Hermes 原生会话知识操作协议】用户已要求保存当前对话，不要重复确认保存意图；"
+                    "主题或目标存在多个合理选择时仍必须澄清。"
+                    "必须先直接调用 knowledge_workspace_read，再直接调用 "
+                    "knowledge_action_propose 生成待确认操作卡；禁止搜索或描述这两个已提供的工具，"
                     "禁止调用 note_draft，禁止声称已经写入。"
                 )
             if _is_revision_request(goal):
@@ -5877,6 +5917,10 @@ def _run_agent_sync(
             and note_draft_request
             and knowledge_action_enabled
             and not client_tool_context.get("knowledge_action_emitted")
+            and not (
+                client_tool_context.get("knowledge_workspace_read_completed")
+                and "没有新增内容" in str(final or "")
+            )
         ):
             _qput(stream_q, {
                 "type": "error",

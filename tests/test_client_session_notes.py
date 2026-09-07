@@ -133,6 +133,19 @@ def test_v1_knowledge_actions_do_not_enable_legacy_note_protocol():
     assert bridge._legacy_client_context_enabled(False, True) is False
 
 
+def test_knowledge_merge_directive_covers_decision_rewrite_and_increment_rules():
+    import scripts.hermes_bridge as bridge
+
+    assert bridge._is_note_draft_request("关于雾岛交通，帮我保存") is True
+    directive = bridge._KNOWLEDGE_MERGE_DIRECTIVE
+    for rule in (
+        "合并主题不等于目标笔记", "最近五轮", "必须询问用户", "先看摘要",
+        "完整 Markdown 新版本", "[[双链]]", "source_message_ids", "最多归档 16 篇",
+        "没有新增内容", "markdown_diff",
+    ):
+        assert rule in directive
+
+
 def test_session_agent_cache_reuses_only_unchanged_native_history():
     import scripts.hermes_bridge as bridge
 
@@ -814,6 +827,11 @@ def test_v1_workspace_search_supplements_device_cache_from_private_gateway():
             }))
         assert result["success"] is True
         assert result["notes"][0]["id"] == "server-note"
+        assert "markdown" not in result["notes"][0]
+        full = json.loads(bridge._knowledge_workspace_read_tool({
+            "operation": "read", "note_id": "server-note",
+        }))
+        assert full["note"]["markdown"] == "# TokenOps\n\n服务端私有内容"
         proposed = json.loads(bridge._knowledge_action_propose_tool({
             "summary": "更新服务端笔记", "steps": [{
                 "kind": "update_note", "target_note_id": "server-note",
@@ -824,6 +842,56 @@ def test_v1_workspace_search_supplements_device_cache_from_private_gateway():
     finally:
         bridge._knowledge_tool_context.value = None
         bridge._client_context_tool_context.value = None
+
+
+def test_save_request_allows_verified_no_increment_without_action(monkeypatch, tmp_path):
+    import queue
+    import sys
+    import types
+    from typing import Any, cast
+    import scripts.hermes_bridge as bridge
+
+    class FakeAgent:
+        session_id = "hermes-no-increment"
+
+        def run_conversation(self, *_args, **_kwargs):
+            result = json.loads(bridge._knowledge_workspace_read_tool({"operation": "list"}))
+            assert result["success"] is True
+            return {"final_response": "没有新增内容"}
+
+        def close(self):
+            return None
+
+    class FakeSessionDB:
+        def get_messages(self, _session_id):
+            return [{"id": 1, "role": "user", "content": "关于雾岛交通，帮我保存"}]
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        bridge, "_build_in_process_agent",
+        lambda *_args, **_kwargs: (FakeAgent(), FakeSessionDB(), {"triage": None}),
+    )
+    monkeypatch.setattr(bridge, "_update_session_mapping", lambda *_args, **_kwargs: None)
+    gateway_context = types.ModuleType("gateway.session_context")
+    setattr(gateway_context, "declare_stateless_channel", lambda: None)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", gateway_context)
+
+    events = queue.Queue()
+    bridge._run_agent_sync(
+        "关于雾岛交通，帮我保存", "stable-ios-session", "hermes-no-increment",
+        events, [None], client_context_claims={
+            "tenant_key": "tenant-a", "user_id": "user-a", "request_id": "request-save",
+        }, sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
+        knowledge_action_enabled=True,
+    )
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    assert emitted[-1]["type"] == "done"
+    assert emitted[-1]["answer"] == "没有新增内容"
+    assert not any(item.get("type") == "knowledge_action_draft" for item in emitted)
 
 
 def test_note_draft_only_accepts_merge_candidates_from_current_search():

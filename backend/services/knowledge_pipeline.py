@@ -33,6 +33,8 @@ from backend.services.knowledge_contribution_artifacts import (
 from backend.services.knowledge_run_adapter import KnowledgeRunAdapter, STAGES, digest
 from backend.services.knowledge_catalog import authorized_compile_candidates
 
+GREEN_CONFIDENCE_THRESHOLD = 0.60
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -306,6 +308,15 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     compile_spec, compiled = adapter.verified_result(
         compile_run_id, tenant_id=spec.tenant_id, user_id=spec.user_id,
     )
+    publication_confidence = min(compiled["confidence"], sanitized["confidence"])
+    if publication_confidence < GREEN_CONFIDENCE_THRESHOLD:
+        await _set_event_status(spec.event_id, "rejected", "green confidence below threshold")
+        await _settle_run(run_id, "rejected")
+        return {
+            "status": "rejected", "run_id": run_id,
+            "reason": "governance_thresholds_not_met",
+            "publication_confidence": publication_confidence,
+        }
     kind = _canonical_kind(compiled)
     identity = ((compiled.get("incremental") or {}).get("target")
                 or canonical_identity(kind, compiled["title"]))
@@ -348,7 +359,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
             artifact_ref = stage_green_projection(
                 vault, projection_id=projection_id, title=compiled["title"],
                 knowledge_type=compiled["type"], knowledge_level=compiled["knowledge_level"],
-                confidence=min(compiled["confidence"], sanitized["confidence"]),
+                confidence=publication_confidence,
                 content=sanitized["content"],
                 source_count=len({item["root_source_fingerprint"] for item in green_dependencies}),
                 operation_id=operation_id,
@@ -366,6 +377,8 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         "approved_by": "hermes:tenant_contribution_policy_v1",
         "publication_policy": "tenant_contribution_policy_v1",
         "governance_thresholds_met": True,
+        "publication_confidence": publication_confidence,
+        "confidence_threshold": GREEN_CONFIDENCE_THRESHOLD,
         "privacy_decision": "approve",
         "candidate_hash": spec.candidate_hash,
         "authorization_epoch": spec.authorization_epoch,
