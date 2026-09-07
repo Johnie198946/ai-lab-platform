@@ -42,13 +42,13 @@
 
 ## Delivery
 
-- status: `TESTED`
-- commit SHA: pending
-- remote SHA / `git ls-remote`: not executed yet
+- status: `VERIFIED`
+- implementation commit SHA: `463f5f9308d9fc3a0d89d485cd9b5150a49bc305`
+- remote SHA / `git ls-remote`: `origin refs/heads/main` resolved to `463f5f9308d9fc3a0d89d485cd9b5150a49bc305` after push
 - server_before: SHA `5443a33fca5f75c8cf3561161f536add9cb8861d`; release `/opt/releases/ai-lab-platform-5443a33fca5f.h8p6Pv`
-- server_after: pending
-- health_check: before deployment, API `{"status":"ok","version":"0.8.0"}`; Hermes Bridge `status=ok`, version `v6.0`; worker and bridge services active
-- functional_check: local regressions passed; post-deployment authenticated latency check pending
-- rollback_point: current release `/opt/releases/ai-lab-platform-5443a33fca5f.h8p6Pv`; deployment-specific rollback pending
-- TestFlight: build 28 reserved in source; archive/upload pending
-- remaining_risks: a fresh authenticated model run is still required to measure the effect on provider-internal latency. Build 27 source/archive was not present in GitHub main or local Archives, so build 28 intentionally avoids reusing that build number.
+- server_after: SHA `463f5f9308d9fc3a0d89d485cd9b5150a49bc305`; release `/opt/releases/ai-lab-platform-463f5f9308d9.QiJr5v`
+- health_check: API `{"status":"ok","version":"0.8.0"}`; Hermes Bridge `status=ok`, version `v6.0`; `hermes-bridge.service` and `hermes-chat-worker.service` active
+- functional_check: deployment script passed API and Bridge checks; deployed source markers for client capabilities, create-only note gate, and priority interactive route were verified. Worker startup logged configured runtime prewarm completion in `10705.9ms` before accepting Runs. Local Python/iOS regressions passed as recorded above.
+- rollback_point: `/opt/releases/ai-lab-platform-5443a33fca5f.h8p6Pv`
+- TestFlight: Quantumn `1.0.3 (28)` archived at `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-08/Quantumn-1.0.3-28.xcarchive`; executable SHA-256 `8ae42a0fc8be5d6c57d06c0a02aab4afca69262b08e4621b4470574c912841b1`; App Store Connect returned `Upload succeeded` and `Uploaded package is processing` on 2026-09-08. Processing/tester availability has not yet been read back.
+- remaining_risks: build 28 still needs a fresh authenticated phone run to measure actual first-token latency and confirm the new save card flow. Existing telemetry cannot split the remaining model-request interval into provider network, scheduling, and model-planning components. Pure new-note saves now skip automatic duplicate-note lookup; explicit update/merge operations retain the workspace-read gate. Build 27 source/archive was not present in GitHub main or local Archives, so build 28 intentionally avoids reusing that build number.
