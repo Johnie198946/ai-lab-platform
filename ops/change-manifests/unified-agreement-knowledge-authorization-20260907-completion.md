@@ -4,26 +4,27 @@ date: 2026-09-07
 tags:
   - ai-lab
   - authorization
-status: TESTED
+status: VERIFIED
 ---
 
 # Completion manifest
 
-> [!warning] 本地验证，不是上线回执
-> 未 commit / push / deploy，未运行生产 apply。真实模型推理及线上存量重放未验收；不可据此声称生产贡献链已恢复。
+> [!warning] 授权修复已生产验收，不等于知识全闭环恢复
+> 已提交、推送、部署并执行 authorization-only 迁移，精确回读与幂等通过。签约后有 3 个存量候选但 outbox 为 0，本次不重放；未验收真实模型推理或 iOS 登录。
 
 ## 交付状态
 
 - task_id: unified-agreement-knowledge-authorization-20260907
-- status: TESTED
+- status: VERIFIED
 - branch: main
 - worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-qws-errors-20260903`
-- head/local_commit: `8f2b61850bb521bb3176e92302c64c2de9ff9706`（无新提交）
-- remote_sha: 本轮未重新核验；委托上下文称基线与生产相同。
-- server_before: 委托上下文提供同上 SHA；本子任务无服务器写入。
-- server_after / health_check: 未部署，不适用。
-- functional_check: 本地 SQLite、临时 PostgreSQL、隔离容器完整 tests，见下。
-- rollback_point: Git 基线同上；线上数据库/文件回滚点须发布前另建。
+- head/local_commit / remote_sha（源码提交）: `d0335e5b99d18d7368c641871c52a9645de095b3`，git ls-remote 已读回一致。
+- server_before: `8f2b61850bb521bb3176e92302c64c2de9ff9706`；`/opt/releases/ai-lab-platform-8f2b61850bb5.AnFVqc`。
+- server_after（源码发布）: `d0335e5b99d18d7368c641871c52a9645de095b3`；`/opt/releases/ai-lab-platform-d0335e5b99d1.FcO0Tu`。
+- health_check: API `/ready` ready 0.8.0；Hermes Bridge `/health` ok v6.0。
+- functional_check: 生产 DB 45 位映射用户准入核验 3 allowed / 42 denied 428；真实 HTTP 无 marker 签约用户 3×200、无签约用户 428、匿名 401；详见生产回执。
+- rollback_point: 旧 release、完整 PostgreSQL dump 与配置备份均存在，见下。
+- 本 Markdown 回执将另作 doc-only 提交并部署；它自己的 SHA 不能写入自身。最终三方 SHA/release 以服务器备份目录 `final-release.json` 与会话收据为准，正文上述 SHA 始终指源码发布，不冒充文档提交 SHA。
 - 保留原有两个 iOS completion 未跟踪文件及 `stash@{0}`，未触碰其他目录 Codex 进程。
 
 ## 盘点与授权证据边界
@@ -116,14 +117,56 @@ python3 -m scripts.migrate_agreement_authorization \
   --apply --audit /PRIVATE/new-unique-agreement-audit.jsonl
 ```
 
-已存在审计文件拒绝覆盖。apply 仅在临时测试库执行验证；本任务没有生产 apply。DB commit 后进程故障可留下 prepared/committed 未 verified，须先只读复核，不以缺少末行断定未提交；重复 apply 本身幂等。
+已存在审计文件拒绝覆盖。生产 apply 已在明确授权后执行，审计回读见下。DB commit 后进程故障可留下 prepared/committed 未 verified，须先只读复核，不以缺少末行断定未提交；重复 apply 本身幂等。
+
+## 生产迁移与功能回执
+
+> [!success] VERIFIED 的限定范围
+> 统一协议准入、真实 acceptance 驱动的两层授权投影、迁移只改授权、幂等与 worker fail-closed 配置已验证。**不是全部知识生产闭环的 E2E 验收。**
+
+### 真实数据与精确回读
+
+| 对象 | apply 前 | apply 后 |
+| --- | ---: | ---: |
+| user_agreement_acceptances | 3 | 3 |
+| tenant_mappings | 45 | 45 |
+| knowledge_contribution_policies | 0 | 1 |
+| knowledge_contribution_user_consents | 1 | 3 |
+| knowledge_contribution_outbox | 0 | 0 |
+| knowledge_contribution_runs | 0 | 0 |
+| knowledge_contribution_projections | 0 | 0 |
+
+- 当前 acceptance 3 条全部 ready；42 个映射用户没有当前 acceptance。缺 mapping / 冲突 / 撤回阻塞均 0。
+- dry-run 是逐 acceptance 计划：3 条记录各显示 policy create，但属于同一租户；实际事务只创建 **1 个共享 policy**。个人 consent 新建 2、已有 1 条仅 forward-only 绑定真实签约证据；无新 acceptance、无扩权或历史回填。
+- raw Markdown 实际 **37**：active 29、archive 3、trash 5；排除 inactive 8、无当前签约 14、签约前 12；签约后候选 **3** 仅报告，未 enqueue。旧上下文 36/28 已过时，不能当生产当前值。
+- 81 个 raw 树文件（含 sidecar/private index）的内容 SHA-256 与 mtime_ns 在授权迁移前后完全相同。部署脚本自带权限修复不改内容；本次未重存历史笔记、未伪造新时间。
+- apply 审计 `/opt/ai-lab-data/runtime/agreement-authorization-20260907-211140.jsonl`，0600；prepared → committed → verified 三阶段读回，精确验证 3 个 acceptance。随后 dry-run 三条记录 policy/consent 全 unchanged，幂等通过。
+
+### 生产功能和 runtime
+
+- 直接调用已部署准入依赖并读取生产 DB：45 个映射用户中签约 3 个 allowed、未签约 42 个 428；3 个签约用户的 policy/consent 版本、签约时间、participation 生效时间及 contribution gate 精确校验通过。
+- 实际 HTTP `GET /api/screens`、不带 `X-Client-Contract`：未签约用户 428，3 个签约用户各 200，匿名 401。认证使用操作员通过已配置共享密钥生成的 60 秒诊断 JWT，不增加角色/管理员权限，不保存 token/响应内容；**这不是 Authen 登录/iOS 客户端 E2E**，也未创建签约。
+- 原 Hermes worker 缺 DB 配置已真实修复：新增 `/opt/ai-lab-shared/agreement-worker.env`（0600）及 `/etc/systemd/system/hermes-chat-worker.service.d/50-agreement-authorization.conf`。值来自当前 API 的同库 URL，仅 hostname 改为本机已发布 127.0.0.1；没有新 runtime。
+- 重启后的真实 worker 进程环境读取 DB 成功、outbox 0；不存在事件 denied、去掉 DB 后 denied，均 fail closed。worker active；与 API supervisor 共享 `/opt/ai-lab-data/hermes_chat_runs.sqlite3`，inode **824124** 完全一致；API 同环境 reconcile_once advanced 0，相关 supervisor 错误日志计数 0。此 probe 不等于实际模型执行验收。
+- 配置回滚只移除以上两个本轮新文件，再 daemon-reload / restart worker；详见 `worker-config-change.json`，不修改已有 env/drop-in。
+
+### 私有证据位置
+
+服务器根目录（含用户标识的明细不公开）：`/opt/ai-lab-shared/backups/agreement-authorization-20260907-211140/`。
+
+- `before.json`、`database.dump`、`config.tar.gz`：发布前回滚点。
+- `dry-run-before.json`、`apply.json`、`dry-run-after.json`、`migration-summary.json`：授权迁移结果。
+- `db-before.json`、`db-after.json`、`source-before.json`：精确 DB 与源文件证据。
+- `functional.json`、`runtime-verification.json`：授权 HTTP 与运行环境证据。
+- `deploy-code.log`：源码 release 部署日志。
+- `final-release.json`、`deploy-receipt.log`：回执 doc-only 提交部署后的最终三方版本回读；本文件完成后由执行器写入，不循环修改自身 SHA。
 
 ## 剩余发布门禁与已知边界
 
-- 父代理完成独立授权/路由审查、生产 acceptance 只读盘点、dry-run 逐条审阅；目前不宣称全部历史来源都有授权。
+- 生产真实 acceptance/dry-run 已审阅并完成授权迁移；不宣称全部历史来源都有授权。
 - 撤回后重复同版本签约不自动恢复（409），符合不复活约束；若产品需要主动重新加入，需另行明确且可审计的授权语义，不通过第二配置开关偷偷恢复。
 - 仅补齐已有 pending iOS note crash recovery；其他 source surface、无 outbox 的存量候选仍未补齐。历史不在授权范围，绝不能以新时间/新版本伪造事件。
 - WebSocket 持续连接在消息/25 秒心跳边界重查，不是逐个广播检查；撤回到下次检查存在有界窗口。
-- 尚未运行真实生产 Hermes 模型推理、未证明线上 worker/supervisor 环境就绪；发布前确认 DATABASE_URL、共享 run store、vault、worker/supervisor、模型凭据与 Red/Green 安全输出。
+- worker DATABASE_URL 缺失已修复并从实际运行进程环境验证 DB 连通；共享 store inode 与 supervisor 同环境 probe 通过。无合法 outbox，未触发真实生产 Hermes 模型推理或 Red/Green 生成，不能将环境就绪等同模型链验收。
 - 3 个既有 skipped 测试不构成已验证功能；警告主要是弃用项。
-- 完成外部授权后才可 commit/push、核对 GitHub SHA、备份/部署/健康与功能验证；当前保持 TESTED。
+- 本次外部授权与源码 commit/push/deploy、生产迁移及授权功能验收均已执行；最终 doc-only 部署回读见独立 final-release.json。
