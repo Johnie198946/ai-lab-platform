@@ -458,7 +458,8 @@ class DurableChatRunStore:
                 "revision": int(run["answer_revision"]), "next": following,
             }) if has_more else None
             return {
-                "message_id": run["message_id"], "revision": int(run["answer_revision"]),
+                "run_id": run_id, "message_id": run["message_id"],
+                "revision": int(run["answer_revision"]),
                 "status": run["status"], "blocks": selected, "bytes": used,
                 "loaded_block_count": following, "available_block_count": total,
                 "has_more": has_more, "next_cursor": next_cursor,

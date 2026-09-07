@@ -811,6 +811,7 @@ public struct AnswerBlockPageDTO: Codable, Sendable, Hashable {
     public let availableBlockCount: Int
     public let hasMore: Bool
     public let nextCursor: String?
+    public var runId: String? = nil
 }
 
 public struct DurableChatRunDTO: Codable, Sendable {

@@ -183,6 +183,7 @@ def test_answer_blocks_persist_during_generation_and_page_exactly(tmp_path):
     answer = "第一段🙂。\n\n```python\nprint('ok')\n```\n\n| A | B |\n|---|---|\n| 1 | 2 |"
     store.append_event(run["run_id"], {"type": "delta", "content": answer[:-12]})
     during = store.block_page(run["run_id"], tenant_user_hash=owner, max_blocks=1)
+    assert during["run_id"] == run["run_id"]
     assert during["status"] == "running"
     assert during["blocks"] and during["has_more"] is True
     store.append_event(run["run_id"], {"type": "delta", "content": answer[-12:]})

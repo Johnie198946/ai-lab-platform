@@ -133,6 +133,51 @@ final class ChatResponseRecoveryRegressionTests: XCTestCase {
         XCTAssertFalse(coordinator.messages[1].degraded)
     }
 
+    func testStatusRecoveredAnswerKeepsRunIdForFullAnswerPagination() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manager = SessionManager(store: try ChatHistoryStore(
+            databaseURL: root.appendingPathComponent("history.sqlite"),
+            legacyDirectory: root.appendingPathComponent("legacy"),
+            performLegacyMigration: false
+        ))
+        let sessionID = manager.createSession()
+        manager.setMessages([
+            ChatMessage(sessionId: sessionID, role: .user, content: "长回答"),
+            ChatMessage(id: "output", sessionId: sessionID, role: .interrupted, content: "")
+        ], for: sessionID)
+        let pageJSON = Data(#"{"run_id":"run-recovered","message_id":"output","revision":1,"status":"completed","blocks":[{"block_index":0,"kind":"markdown","content":"第一页"}],"bytes":9,"loaded_block_count":1,"available_block_count":2,"has_more":true,"next_cursor":"page-2"}"#.utf8)
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let recoveredPage = try decoder.decode(AnswerBlockPageDTO.self, from: pageJSON)
+        let coordinator = TenantSessionCoordinator(
+            sessionManager: manager,
+            hasAuthenticatedSession: { true },
+            fetchChatStatus: { _, _, _ in
+                ChatStatusDTO(
+                    status: "completed", phase: nil, answer: nil, reasoning: nil,
+                    latestStep: nil, clarify: nil, consumed: true,
+                    answerProjection: recoveredPage
+                )
+            },
+            fetchAnswerBlocks: { runId, cursor, _ in
+                XCTAssertEqual(runId, "run-recovered")
+                XCTAssertEqual(cursor, "page-2")
+                return AnswerBlockPageDTO(
+                    messageId: "output", revision: 1, status: "completed",
+                    blocks: [.init(blockIndex: 1, kind: "markdown", content: "第二页")],
+                    bytes: 9, loadedBlockCount: 2, availableBlockCount: 2,
+                    hasMore: false, nextCursor: nil, runId: runId
+                )
+            }
+        )
+
+        coordinator.reconcileActiveRun()
+        for _ in 0..<20 where coordinator.messages[1].content.isEmpty { await Task.yield() }
+        let fullAnswer = try await coordinator.fetchFullAnswer(messageId: "output")
+        XCTAssertEqual(fullAnswer, "第一页第二页")
+    }
+
     func testApplyCompletedStatusPreservesKnowledgeActionWhenAnswerIsEmpty() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

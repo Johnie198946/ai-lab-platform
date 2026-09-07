@@ -1717,6 +1717,9 @@ public final class TenantSessionCoordinator: ObservableObject {
     private func applyAnswerPage(
         _ page: AnswerBlockPageDTO, messageIndex: Int, replace: Bool
     ) {
+        if let runId = page.runId, !runId.isEmpty {
+            messages[messageIndex].runId = runId
+        }
         let content = page.blocks.map(\.content).joined()
         if replace {
             messages[messageIndex].content = content
