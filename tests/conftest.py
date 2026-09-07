@@ -34,3 +34,30 @@ def _init_test_db():
 
     asyncio.run(init_db())
     yield
+
+
+@pytest.fixture(autouse=True)
+def _business_tests_assume_agreement(request):
+    """Business-unit fixtures assume acceptance; agreement integration tests don't.
+
+    This is a test-only dependency override, never an environment bypass. It
+    leaves real JWT authentication and all runtime contribution fences intact.
+    """
+    if request.node.path.name.startswith("test_agreement"):
+        yield
+        return
+    from backend.main import app
+    from backend.api.agreement import require_current_agreement
+    from backend.api.auth import require_auth
+    from fastapi import Depends
+
+    async def accepted_business_principal(payload=Depends(require_auth)):
+        return payload
+
+    previous = app.dependency_overrides.get(require_current_agreement)
+    app.dependency_overrides[require_current_agreement] = accepted_business_principal
+    yield
+    if previous is None:
+        app.dependency_overrides.pop(require_current_agreement, None)
+    else:
+        app.dependency_overrides[require_current_agreement] = previous

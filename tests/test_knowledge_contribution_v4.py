@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from agreement_fixtures import set_user_contribution_consent
 from sqlalchemy import create_engine, inspect, select, text
 
 from backend.db import SessionLocal
@@ -12,7 +13,7 @@ from backend.services.knowledge_contribution import (
     ContributionCandidate, SOURCE_KINDS, enqueue_contribution, set_contribution_policy,
     register_contribution_run, accept_contribution_result, withdraw_contribution,
     get_contribution_projection, set_red_source_archived,
-    SERVICE_AGREEMENT_VERSION, set_user_contribution_consent,
+    SERVICE_AGREEMENT_VERSION,
 )
 from backend.services.knowledge_contribution_schema import (
     migrate_knowledge_contribution_v4, migrate_legacy_event_projections,
@@ -23,17 +24,17 @@ def now():
     return datetime.now(timezone.utc)
 
 
-async def setup_candidate():
+async def setup_candidate(user="alice"):
     tenant = "v4-" + uuid4().hex
     effective = now() - timedelta(minutes=1)
     await set_contribution_policy(tenant_key=tenant, enabled=True, agreement_version="v4",
                                   effective_at=effective)
     await set_user_contribution_consent(
-        tenant_key=tenant, user_id="alice",
+        tenant_key=tenant, user_id=user,
         service_agreement_version=SERVICE_AGREEMENT_VERSION,
         participation_enabled=True,
     )
-    return ContributionCandidate(tenant, "alice", "qws", "note", "n1", 1, "a" * 64, now()), effective
+    return ContributionCandidate(tenant, user, "qws", "note", "n1", 1, "a" * 64, now()), effective
 
 
 async def project(c, events, color="red", suffix=""):
@@ -296,7 +297,7 @@ async def test_exact_copies_and_derivative_fanout_do_not_inflate_evidence():
 @pytest.mark.asyncio
 async def test_cross_tenant_run_binding_and_projection_overwrite_rejected():
     c, _ = await setup_candidate()
-    other, _ = await setup_candidate()
+    other, _ = await setup_candidate(user="other-alice")
     e = await enqueue_contribution(c)
     foreign = await enqueue_contribution(other)
     with pytest.raises(ValueError, match="unauthorized source"):

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
@@ -17,9 +16,10 @@ from sqlalchemy.exc import IntegrityError
 from backend.api.auth import require_auth
 from backend.db import SessionLocal
 from backend.models.agreement import UserAgreementAcceptance
+from backend.services.agreement_authorization import project_acceptance, CURRENT_VERSION, CONTRIBUTION_VERSION, utc
 
 router = APIRouter(tags=["agreement"])
-CURRENT_AGREEMENT_VERSION = "2026-09-06"
+CURRENT_AGREEMENT_VERSION = CURRENT_VERSION
 CURRENT_AGREEMENT_LOCALE = "zh-CN"
 CURRENT_AGREEMENT_UPDATED_AT = datetime(2026, 9, 6, tzinfo=timezone.utc)
 CURRENT_IOS_CLIENT_CONTRACT = "ios-unified-agreement-v1"
@@ -124,73 +124,87 @@ async def put_acceptance(
 ) -> dict:
     user_id = _user_id(payload)
     key = str(body.idempotency_key)
-    async with SessionLocal() as db:
-        existing = await db.scalar(select(UserAgreementAcceptance).where(
-            UserAgreementAcceptance.user_id == user_id,
-            UserAgreementAcceptance.idempotency_key == key,
-        ))
-        if existing and existing.agreement_version != body.agreement_version:
-            raise HTTPException(status_code=409, detail={"code": "idempotency_key_conflict"})
-        if body.agreement_version != CURRENT_AGREEMENT_VERSION:
-            raise HTTPException(status_code=409, detail={
-                "code": "agreement_version_outdated",
-                "current_version": CURRENT_AGREEMENT_VERSION,
-            })
-        if not existing:
-            existing = await db.scalar(select(UserAgreementAcceptance).where(
-                UserAgreementAcceptance.user_id == user_id,
-                UserAgreementAcceptance.agreement_version == body.agreement_version,
-            ))
-        if not existing:
-            row = UserAgreementAcceptance(
-                user_id=user_id,
-                agreement_version=body.agreement_version,
-                locale=CURRENT_AGREEMENT_LOCALE,
-                source=body.source,
-                idempotency_key=key,
-            )
-            db.add(row)
+    # One transaction: acceptance + both contribution prerequisites. A failed
+    # projection cannot leave an apparently successful acceptance behind.
+    for attempt in range(3):
+        async with SessionLocal() as db:
             try:
-                await db.commit()
-            except IntegrityError:
-                await db.rollback()
-                row = await db.scalar(select(UserAgreementAcceptance).where(
+                existing = await db.scalar(select(UserAgreementAcceptance).where(
                     UserAgreementAcceptance.user_id == user_id,
                     UserAgreementAcceptance.idempotency_key == key,
                 ))
-                if row and row.agreement_version != body.agreement_version:
-                    raise HTTPException(
-                        status_code=409, detail={"code": "idempotency_key_conflict"}
-                    )
-                if row is None:
-                    row = await db.scalar(select(UserAgreementAcceptance).where(
+                if existing and existing.agreement_version != body.agreement_version:
+                    raise HTTPException(status_code=409, detail={"code": "idempotency_key_conflict"})
+                if body.agreement_version != CURRENT_AGREEMENT_VERSION:
+                    raise HTTPException(status_code=409, detail={
+                        "code": "agreement_version_outdated", "current_version": CURRENT_AGREEMENT_VERSION,
+                    })
+                if not existing:
+                    existing = await db.scalar(select(UserAgreementAcceptance).where(
                         UserAgreementAcceptance.user_id == user_id,
                         UserAgreementAcceptance.agreement_version == body.agreement_version,
                     ))
-                if row is None:
+                if not existing:
+                    existing = UserAgreementAcceptance(
+                        user_id=user_id, agreement_version=body.agreement_version,
+                        locale=CURRENT_AGREEMENT_LOCALE, source=body.source, idempotency_key=key,
+                    )
+                    db.add(existing)
+                    await db.flush()
+                report = await project_acceptance(
+                    db, acceptance=existing, tenant_key=str(payload.get("tenant_key") or ""),
+                )
+                if report["status"] != "ready":
+                    raise HTTPException(status_code=409, detail={
+                        "code": "agreement_authorization_conflict", "reason": report["status"],
+                    })
+                await db.commit()
+                return {"agreement_version": existing.agreement_version, "accepted_at": existing.accepted_at}
+            except IntegrityError:
+                await db.rollback()
+                if attempt == 2:
                     raise
-            else:
-                await db.refresh(row)
-            existing = row
-    return {"agreement_version": existing.agreement_version, "accepted_at": existing.accepted_at}
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail={
+                    "code": "agreement_authorization_conflict", "reason": str(exc),
+                }) from exc
+    raise RuntimeError("acceptance retry exhausted")
 
 
 async def require_current_agreement(
     payload: dict = Depends(require_auth),
     client_contract: str | None = Header(default=None, alias="X-Client-Contract"),
 ) -> dict:
-    # This user-controlled marker is rollout classification, never authorization.
-    # New iOS is gated now; omitted/unknown legacy clients stay compatible until
-    # deployment flips required mode, which is the only global enforcement boundary.
-    mode = os.getenv("AGREEMENT_ENFORCEMENT_MODE", "compatible").strip().lower()
-    if mode == "compatible" and client_contract != CURRENT_IOS_CLIENT_CONTRACT:
-        return payload
+    # Neither legacy JWTs, headers nor rollout environment can waive consent.
+    # This is deliberately a DB read on every protected request, not a JWT claim.
     user_id = _user_id(payload)
     async with SessionLocal() as db:
-        accepted = await db.scalar(select(UserAgreementAcceptance.id).where(
+        accepted = await db.scalar(select(UserAgreementAcceptance).where(
             UserAgreementAcceptance.user_id == user_id,
             UserAgreementAcceptance.agreement_version == CURRENT_AGREEMENT_VERSION,
+            UserAgreementAcceptance.accepted_at <= datetime.now(timezone.utc),
         ))
+        if accepted is not None:
+            from backend.models.knowledge_contribution import (
+                KnowledgeContributionPolicy as Policy, KnowledgeContributionUserConsent as Consent,
+            )
+            tenant = str(payload.get("tenant_key") or "")
+            policy = await db.get(Policy, tenant)
+            consent = await db.get(Consent, (tenant, user_id))
+            if (policy is not None and not policy.enabled) or (consent is not None and not consent.participation_enabled):
+                raise HTTPException(status_code=428, detail={
+                    "code": "agreement_participation_withdrawn", "current_version": CURRENT_AGREEMENT_VERSION,
+                })
+            now = datetime.now(timezone.utc)
+            if (policy is None or consent is None
+                    or policy.agreement_version != CONTRIBUTION_VERSION or policy.historical_backfill
+                    or not policy.effective_at or utc(policy.effective_at) > now
+                    or consent.service_agreement_version != CONTRIBUTION_VERSION
+                    or not consent.participation_effective_at
+                    or not (utc(accepted.accepted_at) <= utc(consent.participation_effective_at) <= now)):
+                raise HTTPException(status_code=428, detail={
+                    "code": "agreement_authorization_required", "current_version": CURRENT_AGREEMENT_VERSION,
+                })
     if accepted is None:
         raise HTTPException(status_code=428, detail={
             "code": "agreement_required",

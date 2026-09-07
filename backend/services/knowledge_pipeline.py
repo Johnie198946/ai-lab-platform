@@ -48,8 +48,14 @@ async def _event(event_id: str) -> Event:
 
 async def _set_event_status(event_id: str, status: str, error: str = "") -> None:
     async with SessionLocal() as db:
-        event = await db.get(Event, event_id)
-        if event is None:
+        from backend.services.knowledge_contribution import _policy, INACTIVE
+        hint = await db.get(Event, event_id)
+        if hint is None:
+            return
+        await _policy(db, hint.tenant_key)
+        await db.refresh(hint)
+        event = hint
+        if event.status in INACTIVE:
             return
         event.status = status
         event.last_error = error[:255] or None
@@ -74,6 +80,8 @@ async def _settle_run(run_id: str, status: str) -> None:
 
 async def submit_compile(store, *, event_id: str, content: str) -> dict[str, Any]:
     event = await _event(event_id)
+    if event.source_kind == "note" and hashlib.sha256(content.encode()).hexdigest() != event.content_hash:
+        raise ValueError("exact note source hash required")
     grant = await authorize_contribution_event(
         tenant_key=event.tenant_key, user_id=event.user_id, event_id=event_id,
     )

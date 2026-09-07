@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from agreement_fixtures import set_user_contribution_consent
 from sqlalchemy import func, select
 
 from backend.db import SessionLocal
@@ -10,7 +11,7 @@ from backend.models.knowledge_contribution import (
     KnowledgeContributionUserConsent,
 )
 from backend.services.knowledge_contribution import enqueue_note_contribution
-from backend.services.knowledge_contribution import SERVICE_AGREEMENT_VERSION, set_user_contribution_consent
+from backend.services.knowledge_contribution import SERVICE_AGREEMENT_VERSION
 
 
 @pytest.mark.asyncio
@@ -139,7 +140,7 @@ async def test_personal_consent_retry_is_stable_and_new_terms_revoke_old_epoch()
         service_agreement_version=SERVICE_AGREEMENT_VERSION,
         participation_enabled=True,
     )
-    assert renewed["service_agreement_accepted_at"] >= before
+    assert renewed["service_agreement_accepted_at"] == first["service_agreement_accepted_at"]
     assert renewed["participation_effective_at"] >= before
     async with SessionLocal() as db:
         old_event = await db.get(KnowledgeContributionOutbox, event["event_id"])

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from agreement_fixtures import set_user_contribution_consent
 import yaml
 from sqlalchemy import select
 
@@ -15,7 +16,7 @@ from backend.services.knowledge_catalog import (
 )
 from backend.services.knowledge_contribution import (
     ContributionCandidate, enqueue_contribution as _enqueue_contribution,
-    set_contribution_policy, set_user_contribution_consent, withdraw_contribution,
+    set_contribution_policy,  withdraw_contribution,
 )
 from backend.services.knowledge_pipeline import submit_compile, advance_completed
 from backend.services.knowledge_policy import resolve_policy, mint_capability
@@ -600,7 +601,7 @@ async def test_existing_public_title_without_increment_target_is_recompiled(tmp_
     await set_contribution_policy(tenant_key=tenant, enabled=True, agreement_version="v4",
                                   effective_at=now - timedelta(minutes=1))
     content = title + " new fact"
-    event = await enqueue_contribution(ContributionCandidate(tenant, "owner", "ios", "note", "n", 1,
+    event = await enqueue_contribution(ContributionCandidate(tenant, "collision-owner", "ios", "note", "n", 1,
         hashlib.sha256(content.encode()).hexdigest(), now))
     store = DurableChatRunStore(tmp_path / "collision-runs.db")
     run = await submit_compile(store, event_id=event["event_id"], content=content)

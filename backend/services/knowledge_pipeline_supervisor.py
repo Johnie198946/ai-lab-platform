@@ -41,6 +41,23 @@ def vault_path() -> Path:
 
 
 async def reconcile_once(store: DurableChatRunStore) -> int:
+    # Recover enqueue->queue crashes using exact persisted active notes only.
+    # Other source surfaces remain adapter-owned; never substitute fresh text.
+    from backend.services.knowledge_pending_sources import exact_pending_note
+    async with SessionLocal() as db:
+        pending = list((await db.scalars(select(KnowledgeContributionOutbox).where(
+            KnowledgeContributionOutbox.status == "pending",
+            KnowledgeContributionOutbox.source_surface == "ios",
+            KnowledgeContributionOutbox.source_kind == "note",
+        ).order_by(KnowledgeContributionOutbox.updated_at, KnowledgeContributionOutbox.event_id).limit(32))).all())
+    for event in pending:
+        content = exact_pending_note(event)
+        if content is None:
+            continue
+        try:
+            await submit_compile(store, event_id=event.event_id, content=content)
+        except Exception:
+            logger.exception("Pending note scheduling deferred: %s", event.event_id)
     async with SessionLocal() as db:
         rows = list((await db.execute(select(KnowledgeContributionRun).where(
             KnowledgeContributionRun.status.in_(("registered", "running"))

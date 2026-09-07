@@ -310,7 +310,7 @@ async def filter_database_live_documents(
             KnowledgeContributionUserConsent,
         )
         from backend.services.knowledge_contribution import (
-            _authorization_epoch, _user_authorized, _now, INACTIVE,
+            _authorization_epoch, _user_consent, _user_authorized, _now, INACTIVE,
         )
         async with SessionLocal() as db:
             # File label removal cannot turn a governed projection into an
@@ -346,8 +346,7 @@ async def filter_database_live_documents(
                 for binding in bindings:
                     event = await db.get(KnowledgeContributionOutbox, binding.event_id)
                     policy = await db.get(KnowledgeContributionPolicy, event.tenant_key) if event else None
-                    consent = await db.get(KnowledgeContributionUserConsent,
-                                           (event.tenant_key, event.user_id)) if event else None
+                    consent = await _user_consent(db, event.tenant_key, event.user_id, lock=False) if event else None
                     if (not event or event.status in INACTIVE or not policy or not policy.enabled
                             or not _user_authorized(consent, _now())
                             or event.authorization_epoch != _authorization_epoch(policy, consent)):
@@ -449,7 +448,7 @@ async def authorized_compile_candidates(
         KnowledgeContributionUserConsent,
     )
     from backend.services.knowledge_contribution import (
-        _authorization_epoch, _authorized, _user_authorized, _now, INACTIVE,
+        _authorization_epoch, _user_consent, _authorized, _user_authorized, _now, INACTIVE,
     )
     from backend.services.knowledge_contribution_artifacts import tenant_namespace
 
@@ -510,8 +509,7 @@ async def authorized_compile_candidates(
             for binding in bindings:
                 event = await db.get(KnowledgeContributionOutbox, binding.event_id)
                 source_policy = await db.get(KnowledgeContributionPolicy, event.tenant_key) if event else None
-                consent = await db.get(KnowledgeContributionUserConsent,
-                                       (event.tenant_key, event.user_id)) if event else None
+                consent = await _user_consent(db, event.tenant_key, event.user_id, lock=False) if event else None
                 if (not event or event.status in INACTIVE or not _authorized(source_policy, _now())
                         or not _user_authorized(consent, _now())
                         or event.authorization_epoch != _authorization_epoch(source_policy, consent)):

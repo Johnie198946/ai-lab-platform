@@ -136,14 +136,27 @@ def _merge_evidence(target: dict[str, list[str]], incoming: dict[str, list[str]]
 
 
 async def _policy(db, tenant: str) -> Policy | None:
+    # Cover absent-policy creation too; shared with acceptance/migration.
+    from backend.services.agreement_authorization import lock_tenant
+    await lock_tenant(db, tenant)
     # All mutations acquire this lock first (same order), fencing revoke/results.
     return await db.scalar(select(Policy).where(Policy.tenant_key == tenant).with_for_update())
 
 
-async def _user_consent(db, tenant: str, user: str) -> UserConsent | None:
-    return await db.scalar(select(UserConsent).where(
-        UserConsent.tenant_key == tenant, UserConsent.user_id == user,
-    ).with_for_update())
+async def _user_consent(db, tenant: str, user: str, *, lock: bool = True) -> UserConsent | None:
+    query = select(UserConsent).where(UserConsent.tenant_key == tenant, UserConsent.user_id == user)
+    consent = await db.scalar(query.with_for_update() if lock else query)
+    if consent is not None:
+        from backend.models.agreement import UserAgreementAcceptance
+        from backend.models.tenant import TenantMapping
+        from backend.services.agreement_authorization import CURRENT_VERSION
+        acceptance = await db.scalar(select(UserAgreementAcceptance).join(
+            TenantMapping, TenantMapping.user_id == UserAgreementAcceptance.user_id,
+        ).where(UserAgreementAcceptance.user_id == user,
+                UserAgreementAcceptance.agreement_version == CURRENT_VERSION,
+                TenantMapping.tenant_key == tenant))
+        consent._acceptance_at = acceptance.accepted_at if acceptance else None
+    return consent
 
 
 def _authorized(policy: Policy | None, now: datetime) -> bool:
@@ -152,9 +165,11 @@ def _authorized(policy: Policy | None, now: datetime) -> bool:
 
 
 def _user_authorized(consent: UserConsent | None, now: datetime) -> bool:
-    return bool(consent and consent.service_agreement_version == SERVICE_AGREEMENT_VERSION
+    accepted_at = getattr(consent, "_acceptance_at", None)
+    return bool(consent and accepted_at
+                and consent.service_agreement_version == SERVICE_AGREEMENT_VERSION
                 and consent.participation_enabled and consent.participation_effective_at
-                and _utc(consent.participation_effective_at) <= now)
+                and _utc(accepted_at) <= _utc(consent.participation_effective_at) <= now)
 
 
 def _authorization_epoch(policy: Policy, consent: UserConsent) -> str:
@@ -281,6 +296,15 @@ async def set_user_contribution_consent(*, tenant_key: str, user_id: str,
         raise ValueError("stale service agreement version")
     async with SessionLocal() as db:
         await _policy(db, tenant_key)
+        from backend.models.agreement import UserAgreementAcceptance
+        from backend.services.agreement_authorization import CURRENT_VERSION
+        acceptance = await db.scalar(select(UserAgreementAcceptance).where(
+            UserAgreementAcceptance.user_id == user_id,
+            UserAgreementAcceptance.agreement_version == CURRENT_VERSION,
+        ))
+        if not acceptance or _utc(acceptance.accepted_at) > now:
+            raise ValueError("current unified acceptance required")
+        accepted_at = _utc(acceptance.accepted_at)
         consent = await _user_consent(db, tenant_key, user_id)
         previous_enabled = bool(consent and consent.participation_enabled)
         previous_version = consent.service_agreement_version if consent else ""
@@ -289,7 +313,7 @@ async def set_user_contribution_consent(*, tenant_key: str, user_id: str,
                 tenant_key=tenant_key,
                 user_id=user_id,
                 service_agreement_version=SERVICE_AGREEMENT_VERSION,
-                service_agreement_accepted_at=now,
+                service_agreement_accepted_at=accepted_at,
                 participation_enabled=participation_enabled,
                 participation_effective_at=now if participation_enabled else None,
                 updated_at=now,
@@ -298,7 +322,7 @@ async def set_user_contribution_consent(*, tenant_key: str, user_id: str,
         else:
             if consent.service_agreement_version != SERVICE_AGREEMENT_VERSION:
                 consent.service_agreement_version = SERVICE_AGREEMENT_VERSION
-                consent.service_agreement_accepted_at = now
+                consent.service_agreement_accepted_at = accepted_at
                 consent.participation_effective_at = now if participation_enabled else None
             if participation_enabled != previous_enabled:
                 consent.participation_enabled = participation_enabled
@@ -605,7 +629,7 @@ async def _authorized_public_reuse(db, projection: Projection, reference: dict[s
     actual = []
     for event in events:
         policy = await db.get(Policy, event.tenant_key) if event else None
-        consent = await db.get(UserConsent, (event.tenant_key, event.user_id)) if event else None
+        consent = await _user_consent(db, event.tenant_key, event.user_id, lock=False) if event else None
         if (not event or event.status in INACTIVE or not _authorized(policy, _now())
                 or not _user_authorized(consent, _now())
                 or event.authorization_epoch != _authorization_epoch(policy, consent)
@@ -742,9 +766,7 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
             active_events = [await db.get(Event, binding.event_id) for binding in active_bindings]
             for active_event in active_events:
                 active_policy = await db.get(Policy, active_event.tenant_key) if active_event else None
-                active_consent = await db.get(UserConsent, (
-                    active_event.tenant_key, active_event.user_id
-                )) if active_event else None
+                active_consent = await _user_consent(db, active_event.tenant_key, active_event.user_id, lock=False) if active_event else None
                 if (not active_event or active_event.status in INACTIVE
                         or not _authorized(active_policy, _now())
                         or not _user_authorized(active_consent, _now())

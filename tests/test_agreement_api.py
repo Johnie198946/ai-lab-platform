@@ -16,6 +16,8 @@ from backend import db as db_module
 from backend.api import agreement as agreement_api, auth
 from backend.main import app
 from backend.models.agreement import UserAgreementAcceptance
+from backend.models.tenant import TenantMapping
+from backend.models.knowledge_contribution import KnowledgeContributionPolicy, KnowledgeContributionUserConsent
 
 
 def token(user_id: str) -> str:
@@ -29,6 +31,11 @@ def token(user_id: str) -> str:
 @pytest.fixture(autouse=True)
 def resolver(monkeypatch):
     async def resolve(user_id: str):
+        from sqlalchemy.dialects.sqlite import insert
+        async with agreement_api.SessionLocal() as db:
+            await db.execute(insert(TenantMapping).values(user_id=user_id, tenant_key=f"tenant-{user_id}")
+                             .on_conflict_do_nothing())
+            await db.commit()
         return {"tenant_key": f"tenant-{user_id}", "org_id": "", "is_super_admin": False}
 
     monkeypatch.setattr(auth, "tenant_resolver", resolve)
@@ -39,7 +46,8 @@ async def isolated_agreement_db(tmp_path: Path, monkeypatch):
     engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'agreement.db'}")
     session_factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
-        await connection.run_sync(UserAgreementAcceptance.__table__.create)
+        for model in (UserAgreementAcceptance, TenantMapping, KnowledgeContributionPolicy, KnowledgeContributionUserConsent):
+            await connection.run_sync(model.__table__.create)
     monkeypatch.setattr(agreement_api, "SessionLocal", session_factory)
     yield session_factory
     await engine.dispose()
@@ -286,14 +294,14 @@ async def test_reusing_a_current_key_with_a_stale_payload_is_an_idempotency_conf
 
 
 @pytest.mark.asyncio
-async def test_compatible_rollout_gates_new_ios_without_bricking_legacy(monkeypatch):
+async def test_legacy_clients_and_compatible_environment_cannot_waive_agreement(monkeypatch):
     monkeypatch.delenv("AGREEMENT_ENFORCEMENT_MODE", raising=False)
     user_id = f"agreement-{uuid4()}"
     legacy_headers = {"Authorization": f"Bearer {token(user_id)}"}
-    assert (await request("GET", "/api/screens", headers=legacy_headers)).status_code == 200
+    assert (await request("GET", "/api/screens", headers=legacy_headers)).status_code == 428
     # The old arbitrary opt-in header is ignored; it is not an authorization boundary.
     old_header = {**legacy_headers, "X-Agreement-Contract": "current"}
-    assert (await request("GET", "/api/screens", headers=old_header)).status_code == 200
+    assert (await request("GET", "/api/screens", headers=old_header)).status_code == 428
     headers = {**legacy_headers, "X-Client-Contract": "ios-unified-agreement-v1"}
     blocked = await request("GET", "/api/screens", headers=headers)
     assert blocked.status_code == 428
@@ -354,7 +362,7 @@ async def test_legacy_contribution_consent_is_not_current_agreement_state(monkey
             "participation_enabled": False,
         },
     )
-    assert legacy.status_code == 200
+    assert legacy.status_code == 428
     monkeypatch.setenv("AGREEMENT_ENFORCEMENT_MODE", "required")
     assert (await request("GET", "/api/screens", headers=headers)).status_code == 428
 
@@ -458,3 +466,31 @@ async def test_init_db_creates_the_acceptance_table_on_an_existing_database(
         tables = await connection.run_sync(lambda sync: set(inspect(sync).get_table_names()))
     assert UserAgreementAcceptance.__tablename__ in tables
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_websocket_legacy_token_requires_current_acceptance():
+    from backend.api.showroom import showroom_websocket
+    from fastapi import WebSocketDisconnect
+    class Socket:
+        accepted = False
+        closed = None
+        async def accept(self):
+            self.accepted = True
+        async def close(self, code, reason):
+            self.closed = code
+        async def send_json(self, value):
+            pass
+        async def receive_json(self):
+            raise WebSocketDisconnect()
+    user = "ws-" + uuid4().hex
+    denied = Socket()
+    await showroom_websocket(denied, token=token(user), session_id="test")
+    assert denied.closed == 4428 and not denied.accepted
+    headers = {"Authorization": f"Bearer {token(user)}"}
+    assert (await request("PUT", "/api/v1/me/agreement-acceptance", headers=headers, json={
+        "agreement_version": agreement_api.CURRENT_AGREEMENT_VERSION, "idempotency_key": str(uuid4()),
+    })).status_code == 200
+    allowed = Socket()
+    await showroom_websocket(allowed, token=token(user), session_id="test")
+    assert allowed.accepted and allowed.closed is None

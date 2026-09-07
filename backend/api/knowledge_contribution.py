@@ -96,6 +96,8 @@ async def update_policy(body: PolicyUpdate, payload: dict[str, Any] = Depends(re
             "code": "historical_backfill_forbidden",
             "message": "V4 contribution consent never backfills pre-authorization content",
         })
+    if body.enabled:
+        raise HTTPException(status_code=409, detail={"code": "use_unified_agreement_acceptance"})
     try:
         return await set_contribution_policy(
             tenant_key=str(payload.get("tenant_key") or ""),
@@ -140,6 +142,8 @@ async def update_user_consent(body: UserConsentWrite,
             "code": "service_agreement_required",
             "message": "必须明确同意当前服务协议后才能继续",
         })
+    if body.participation_enabled:
+        raise HTTPException(status_code=409, detail={"code": "use_unified_agreement_acceptance"})
     try:
         return await set_user_contribution_consent(
             tenant_key=str(payload.get("tenant_key") or ""),

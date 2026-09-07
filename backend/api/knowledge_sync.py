@@ -138,7 +138,7 @@ async def _finish_merge_outbox(
             tenant_key=tenant_key, user_id=user_id, note_id=body.target_note_id,
             source_revision=max(1, int(target_metadata.get("contribution_revision") or 1)),
             content_hash=_digest(target_path.read_bytes()),
-            source_changed_at=datetime.now(timezone.utc),
+            source_changed_at=datetime.fromisoformat(target_metadata["synced_at"]),
         )
         if contribution:
             contribution = await schedule_event(
@@ -532,6 +532,7 @@ async def sync_note(
             if body.updated_at else None
         ),
         "synced_at": synced_at.isoformat(),
+        "source_changed_at": (body.updated_at or synced_at).isoformat(),
         "source": "user_markdown",
         "ingest_target": "raw/dialogues",
         "contribution_revision": source_revision,

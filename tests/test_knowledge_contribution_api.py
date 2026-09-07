@@ -51,15 +51,15 @@ async def test_user_consent_refuses_false_required_acceptance():
 
 
 @pytest.mark.asyncio
-async def test_tenant_admin_can_enable_read_and_disable_without_backfill():
+async def test_tenant_admin_cannot_independently_enable_but_can_disable():
     tenant = "policy-" + uuid4().hex
-    enabled = await update_policy(PolicyUpdate(
-        enabled=True, agreement_version="contribution-v1",
-        effective_at=datetime.now(timezone.utc),
-    ), payload(tenant))
-    assert enabled["enabled"] is True
-    current = await get_policy(payload(tenant))
-    assert current["configured"] is True and current["historical_backfill"] is False
+    with pytest.raises(HTTPException) as refused:
+        await update_policy(PolicyUpdate(
+            enabled=True, agreement_version="contribution-v1",
+            effective_at=datetime.now(timezone.utc),
+        ), payload(tenant))
+    assert refused.value.status_code == 409
+    assert (await get_policy(payload(tenant)))["configured"] is False
     disabled = await update_policy(PolicyUpdate(
         enabled=False, agreement_version="contribution-v1",
         effective_at=datetime.now(timezone.utc),
@@ -86,7 +86,7 @@ async def test_policy_ignores_client_backdated_effective_at():
     tenant = "policy-" + uuid4().hex
     client_time = datetime(2000, 1, 1, tzinfo=timezone.utc)
     await update_policy(PolicyUpdate(
-        enabled=True, agreement_version="contribution-v1", effective_at=client_time,
+        enabled=False, agreement_version="contribution-v1", effective_at=client_time,
     ), payload(tenant))
     current = await get_policy(payload(tenant))
     assert current["effective_at"].replace(tzinfo=timezone.utc) > client_time
@@ -97,14 +97,14 @@ async def test_user_consent_is_individual_server_timed_and_rejects_stale_terms()
     tenant = "consent-" + uuid4().hex
     alice = payload(tenant, "tenant_member")
     bob = {**alice, "user_id": "bob", "sub": "bob"}
-    before = datetime.now(timezone.utc)
-    accepted = await update_user_consent(UserConsentWrite(
-        service_agreement_accepted=True,
-        service_agreement_version=SERVICE_AGREEMENT_VERSION,
-        participation_enabled=True,
-    ), alice)
-    assert accepted["service_agreement_accepted_at"] >= before
-    assert accepted["historical_backfill"] is False
+    with pytest.raises(HTTPException) as refused:
+        await update_user_consent(UserConsentWrite(
+            service_agreement_accepted=True,
+            service_agreement_version=SERVICE_AGREEMENT_VERSION,
+            participation_enabled=True,
+        ), alice)
+    assert refused.value.detail["code"] == "use_unified_agreement_acceptance"
+    assert (await get_user_consent(alice))["configured"] is False
     assert (await get_user_consent(bob))["configured"] is False
     with pytest.raises(HTTPException) as stale:
         await update_user_consent(UserConsentWrite(

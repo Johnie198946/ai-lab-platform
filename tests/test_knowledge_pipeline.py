@@ -4,10 +4,11 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from agreement_fixtures import set_user_contribution_consent
 
 from backend.services.knowledge_contribution import (
     ContributionCandidate, enqueue_contribution as _enqueue_contribution,
-    set_contribution_policy, set_user_contribution_consent,
+    set_contribution_policy,
 )
 from backend.services.knowledge_pipeline import advance_completed, submit_compile
 from backend.services.knowledge_run_adapter import receipt_for, validate_execution

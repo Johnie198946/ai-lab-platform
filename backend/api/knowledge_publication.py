@@ -29,7 +29,7 @@ from backend.services.knowledge_catalog import (
     CONTRIBUTION_PUBLICATION_POLICY, _live_frontmatter, clear_manifest_cache,
 )
 from backend.services.knowledge_color_projection import approve_color, color_approval_candidates, restore_note
-from backend.services.knowledge_contribution import _authorization_epoch, _user_authorized, _now
+from backend.services.knowledge_contribution import _authorization_epoch, _user_consent, _user_authorized, _now
 
 router = APIRouter(prefix="/api/v1/admin/knowledge-publication", tags=["knowledge-publication"])
 AUTHEN_URL = os.environ.get("AUTHEN_SUBSCRIPTION_URL", "http://host.docker.internal:8006").rstrip("/")
@@ -138,7 +138,7 @@ async def _green_contribution_gate(*, relative_path: str, projection_id: str) ->
             raise ValueError("candidate hash or authorization epoch mismatch")
         run = await db.scalar(select(Run).where(Run.projection_id == projection.projection_id))
         policy = await db.get(Policy, projection.tenant_key)
-        consent = await db.get(UserConsent, (projection.tenant_key, projection.user_id))
+        consent = await _user_consent(db, projection.tenant_key, projection.user_id, lock=False)
         if (not run or run.status != "accepted" or run.authorization_epoch != epochs[0]
                 or not policy or not policy.enabled or not _user_authorized(consent, _now())
                 or _authorization_epoch(policy, consent) != epochs[0]):
@@ -151,7 +151,7 @@ async def _green_contribution_gate(*, relative_path: str, projection_id: str) ->
         events = [await db.get(Event, binding.event_id) for binding in bindings]
         source_policies = [await db.get(Policy, event.tenant_key) if event else None for event in events]
         source_consents = [
-            await db.get(UserConsent, (event.tenant_key, event.user_id)) if event else None
+            await _user_consent(db, event.tenant_key, event.user_id, lock=False) if event else None
             for event in events
         ]
         if (any(event is None or event.status in {

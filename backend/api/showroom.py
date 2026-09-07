@@ -3170,9 +3170,12 @@ async def showroom_websocket(
     session_id: str = "",
 ) -> None:
     try:
-        _validate_websocket_token(token)
-    except JWTError:
-        await websocket.close(code=4401, reason="invalid token")
+        from fastapi.security import HTTPAuthorizationCredentials
+        payload = await require_auth(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
+        await require_current_agreement(payload=payload, client_contract=None)
+    except (JWTError, HTTPException) as exc:
+        code = 4428 if getattr(exc, "status_code", None) == 428 else 4401
+        await websocket.close(code=code, reason="agreement required" if code == 4428 else "invalid token")
         return
 
     await websocket.accept()
@@ -3182,10 +3185,26 @@ async def showroom_websocket(
     try:
         while True:
             try:
+                await require_current_agreement(payload=payload, client_contract=None)
+            except HTTPException:
+                await websocket.close(code=4428, reason="agreement required")
+                return
+            try:
                 message = await asyncio.wait_for(websocket.receive_json(), timeout=25)
             except asyncio.TimeoutError:
+                try:
+                    await require_current_agreement(payload=payload, client_contract=None)
+                except HTTPException:
+                    await websocket.close(code=4428, reason="agreement required")
+                    return
                 await websocket.send_json({"type": "PING"})
                 continue
+            # A client message cannot keep a withdrawn connection alive.
+            try:
+                await require_current_agreement(payload=payload, client_contract=None)
+            except HTTPException:
+                await websocket.close(code=4428, reason="agreement required")
+                return
             is_ready = message.get("type") == "READY"
             epoch_is_current = int(message.get("epoch", -1)) >= int(hub.state["epoch"])
             if is_ready and epoch_is_current:

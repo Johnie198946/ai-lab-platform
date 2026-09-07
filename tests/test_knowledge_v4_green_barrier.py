@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 import pytest
+from agreement_fixtures import set_user_contribution_consent
 import yaml
 
 from backend.db import SessionLocal
@@ -14,7 +15,7 @@ from backend.services.knowledge_contribution import (
     enqueue_contribution as _enqueue_contribution,
     register_contribution_run,
     set_contribution_policy,
-    set_user_contribution_consent,
+
 )
 
 

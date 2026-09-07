@@ -1,4 +1,4 @@
-"""Real SQLite + real existing worker; only Hermes inference is a test double."""
+"""Real queue + existing worker; inference and authorization are injected."""
 import json
 from types import SimpleNamespace
 
@@ -34,6 +34,8 @@ def encoded(value):
 def harness(tmp_path, monkeypatch):
     store = DurableChatRunStore(tmp_path / "existing-runs.sqlite3")
     adapter = KnowledgeRunAdapter(store)
+    # DB authorization is integration-tested in test_agreement_authorization.
+    monkeypatch.setattr(worker, "stage_is_authorized", lambda spec: True)
     monkeypatch.setattr(worker.bridge, "_tenant_sandbox_from_claims", lambda **_: SimpleNamespace(state_db=tmp_path / "state.db"))
     monkeypatch.setattr(worker.bridge, "_hermes_session_for_request", lambda *_: pytest.fail("stage resumed chat session"))
     monkeypatch.setattr(worker, "_renew_knowledge_capability", lambda *_: pytest.fail("stage minted knowledge capability"))

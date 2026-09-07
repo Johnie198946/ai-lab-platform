@@ -59,6 +59,11 @@ def test_accepts_snake_camel_and_mixed_keys(consent_client, spellings, participa
     if participation is not None:
         body[KEYS[2][spellings[2]]] = participation
     response = client.put(URL, json=body)
+    if participation is True:
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "use_unified_agreement_acceptance"
+        service.assert_not_awaited()
+        return
     assert response.status_code == 200, response.text
     assert response.json() == {"configured": True}
     service.assert_awaited_once_with(
@@ -141,8 +146,5 @@ def test_stale_version_stays_409(consent_client, style):
     body[KEYS[1][style]] = "old-version"
     response = client.put(URL, json=body)
     assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "service_agreement_changed"
-    service.assert_awaited_once_with(
-        tenant_key=AUTH["tenant_key"], user_id=AUTH["user_id"],
-        service_agreement_version="old-version", participation_enabled=True,
-    )
+    assert response.json()["detail"]["code"] == "use_unified_agreement_acceptance"
+    service.assert_not_awaited()

@@ -17,6 +17,7 @@ from typing import Any
 
 from backend.services.knowledge_policy import KnowledgePolicy, mint_capability
 from backend.services.user_note_context import persist_generated_private_note
+from backend.services.knowledge_worker_authorization import stage_is_authorized
 from scripts.chat_run_store import DurableChatRunStore
 from scripts import hermes_bridge as bridge
 
@@ -48,6 +49,9 @@ class KnowledgeEventSink(DurableEventSink):
 
         # Do not persist unvalidated text/tool payloads into the contribution log.
         if item.get("type") == "done":
+            if not stage_is_authorized(self.spec):
+                self.store.append_event(self.run_id, {"type": "error", "code": "knowledge_authorization_revoked"})
+                return
             try:
                 result = parse_result(
                     self.spec.stage, item.get("answer", ""), simulated=self.spec.simulated,
@@ -152,6 +156,10 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
         try:
             stage_spec = validate_execution(run)
             KnowledgeRunAdapter(store).validate_predecessor(stage_spec)
+            if not stage_is_authorized(stage_spec):
+                store.append_event(run_id, {"type": "error", "code": "knowledge_authorization_unavailable"})
+                _run_context.run_id = ""
+                return
         except (ValueError, KeyError, TypeError, PermissionError):
             store.append_event(run_id, {"type": "error", "code": "knowledge_input_invalid"})
             _run_context.run_id = ""
