@@ -1211,7 +1211,9 @@ _NOTE_DRAFT_REQUEST_RE = re.compile(
     r"(?:总结|整理|保存|入库|记录|生成|完善|补充|修改|更新).{0,40}(?:笔记|note)"
     r"|(?:笔记|note).{0,40}(?:保存|入库|总结|整理|完善|补充|修改|更新)"
     # “帮我入库/存到用户知识”是明确写入意图，即使用户没有说“笔记”。
-    r"|(?:帮我|请|把|将)?(?:入库|存入(?:我的|用户)?知识|加入(?:我的|用户)?知识|记到(?:我的|用户)?知识|记录到(?:我的|用户)?知识)",
+    r"|(?:帮我|请|把|将)?(?:入库|存入(?:我的|用户)?知识|加入(?:我的|用户)?知识|记到(?:我的|用户)?知识|记录到(?:我的|用户)?知识)"
+    r"|(?:以上|上述|这些|前面|刚才|全部|所有).{0,40}(?:帮我|给我|替我).{0,8}(?:保存|记下|收录|入库)"
+    r"|(?:把|将)(?:以上|上述|这些|前面|刚才|全部|所有).{0,40}(?:保存|记下|收录|入库)",
     re.IGNORECASE,
 )
 _FULL_KNOWLEDGE_CATEGORY_RE = re.compile(
@@ -5538,6 +5540,18 @@ def _run_agent_sync(
             if result_dict else str(result or "")
         )
         client_tool_context = getattr(_client_context_tool_context, "value", None)
+        if (
+            isinstance(client_tool_context, dict)
+            and note_draft_request
+            and knowledge_action_enabled
+            and not client_tool_context.get("knowledge_action_emitted")
+        ):
+            _qput(stream_q, {
+                "type": "error",
+                "code": "knowledge_action_missing",
+                "message": "未生成可确认的笔记操作方案，请重试。",
+            })
+            return
         if (
             isinstance(client_tool_context, dict)
             and _is_note_draft_request(goal)

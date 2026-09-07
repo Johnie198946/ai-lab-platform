@@ -139,7 +139,10 @@ def test_note_draft_request_detection_and_title_fallback():
     assert bridge._is_note_draft_request("总结为笔记")
     assert bridge._is_note_draft_request("把我们聊的内容保存入库成为笔记")
     assert bridge._is_note_draft_request("帮我完善《TokenBox》这篇笔记")
+    assert bridge._is_note_draft_request("以上所有关于采尔马特的都帮我保存")
+    assert bridge._is_note_draft_request("把刚才的内容都记下来")
     assert not bridge._is_note_draft_request("笔记功能怎么使用？")
+    assert not bridge._is_note_draft_request("iOS 如何保存图片到相册？")
     assert bridge._fallback_note_title("# 超聚变会话总结\n\n正文") == "超聚变会话总结"
     assert bridge._is_revision_request("这版不满意，请重写")
     assert bridge._is_revision_request("语气再正式一点")
@@ -356,6 +359,64 @@ def test_note_draft_runs_from_native_hermes_history_without_client_snapshot(
     draft_event = next(item for item in emitted if item.get("type") == "note_draft")
     assert draft_event["source_message_ids"] == ["1", "2"]
     assert emitted[-1]["type"] == "done"
+
+
+def test_save_request_without_knowledge_action_fails_closed(monkeypatch, tmp_path):
+    import queue
+    import sys
+    import types
+    from typing import Any, cast
+    import scripts.hermes_bridge as bridge
+
+    class FakeAgent:
+        session_id = "hermes-save-session"
+
+        def run_conversation(self, *_args, **_kwargs):
+            return {"final_response": "已生成保存确认卡。"}
+
+        def close(self):
+            return None
+
+    class FakeSessionDB:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(
+        bridge,
+        "_build_in_process_agent",
+        lambda *_args, **_kwargs: (FakeAgent(), FakeSessionDB(), {"triage": None}),
+    )
+    monkeypatch.setattr(bridge, "_update_session_mapping", lambda *_args, **_kwargs: None)
+    gateway_context = types.ModuleType("gateway.session_context")
+    setattr(gateway_context, "declare_stateless_channel", lambda: None)
+    monkeypatch.setitem(sys.modules, "gateway.session_context", gateway_context)
+
+    events = queue.Queue()
+    bridge._run_agent_sync(
+        "以上所有关于采尔马特的都帮我保存",
+        "stable-ios-session",
+        None,
+        events,
+        [None],
+        client_session_context={"session_id": "stable-ios-session", "messages": []},
+        client_context_claims={
+            "tenant_key": "tenant-a",
+            "user_id": "user-a",
+            "request_id": "request-save",
+        },
+        sandbox=cast(Any, types.SimpleNamespace(state_db=tmp_path / "state.db")),
+        knowledge_action_enabled=True,
+    )
+
+    emitted = []
+    while not events.empty():
+        emitted.append(events.get_nowait())
+    assert emitted[-1] == {
+        "type": "error",
+        "code": "knowledge_action_missing",
+        "message": "未生成可确认的笔记操作方案，请重试。",
+    }
+    assert not any(item.get("type") == "done" for item in emitted)
 
 
 

@@ -1091,6 +1091,11 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard !value.isEmpty else { return false }
         let explicit = ["记下来", "记到笔记", "保存为笔记", "存成笔记", "整理成笔记", "写入知识库"]
         if explicit.contains(where: value.contains) { return true }
+        let refersToPriorContent = ["以上", "上述", "这些", "前面", "刚才", "全部", "所有"]
+            .contains(where: value.contains)
+        let isReferentialSave = ["帮我", "给我", "替我", "把", "将"].contains(where: value.contains)
+            && ["保存", "记下", "收录", "入库"].contains(where: value.contains)
+        if refersToPriorContent && isReferentialSave { return true }
         let hasKnowledgeObject = value.contains("笔记") || value.contains("知识库")
             || value.contains("note") || value.contains("knowledge base")
         let hasMutation = ["保存", "写入", "创建", "新建", "修改", "更新", "重命名", "标签", "置顶", "合并", "归档", "恢复", "删除", "save", "create", "update", "merge", "archive", "restore", "delete"]

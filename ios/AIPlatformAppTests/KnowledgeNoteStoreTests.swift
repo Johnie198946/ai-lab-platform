@@ -449,6 +449,8 @@ final class KnowledgeNoteStoreTests: XCTestCase {
     func testSaveIntentRequiresProposalButUnrelatedSaveQuestionDoesNot() {
         XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("把这段整理成笔记并保存"))
         XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("合并这两篇笔记"))
+        XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("以上所有关于采尔马特的都帮我保存"))
+        XCTAssertTrue(TenantSessionCoordinator.requiresKnowledgeActionProposal("把刚才的内容都记下来"))
         XCTAssertFalse(TenantSessionCoordinator.requiresKnowledgeActionProposal("iOS 如何保存图片到相册？"))
         XCTAssertFalse(TenantSessionCoordinator.requiresKnowledgeActionProposal("解释一下这段内容"))
         XCTAssertTrue(TenantSessionCoordinator.shouldShowKnowledgeProposalRetry(
