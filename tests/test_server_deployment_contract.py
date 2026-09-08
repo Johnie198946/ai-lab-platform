@@ -58,8 +58,11 @@ def test_server_deploy_rechecks_private_note_write_access_after_runtime_restart(
 def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_access() -> None:
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")
     assert 'repair_runtime_store_permissions "$DATA_TARGET"' in script
+    assert 'repair_vault_runtime_permissions "$VAULT_ROOT"' in script
     assert 'chmod 0755 "$RELEASE_DIR"' in script
     assert 'chmod 0600 "$path"' in script
+    assert 'local vault_root="$1" lock="$1/.incremental-compile.lock"' in script
+    assert 'chmod 0600 "$lock"' in script
     assert 'data_probe=pathlib.Path(tempfile.mkdtemp' in script
 
 

@@ -207,6 +207,16 @@ repair_runtime_store_permissions() {
   done
 }
 
+repair_vault_runtime_permissions() {
+  local vault_root="$1" lock="$1/.incremental-compile.lock"
+  chown quantumn-hermes:quantumn-hermes "$vault_root"
+  chmod 0755 "$vault_root"
+  if [ -e "$lock" ]; then
+    chown quantumn-hermes:quantumn-hermes "$lock"
+    chmod 0600 "$lock"
+  fi
+}
+
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -387,8 +397,7 @@ printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
 
 echo "==> [4b/6] 建立 Hermes Vault 可见性链接并修复笔记共享权限"
 VAULT_ROOT="$DATA_TARGET/vault"
-chown quantumn-hermes:quantumn-hermes "$VAULT_ROOT"
-chmod 0755 "$VAULT_ROOT"
+repair_vault_runtime_permissions "$VAULT_ROOT"
 bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID" \
@@ -406,8 +415,7 @@ configure_cloud_agent_os_mode
 install_hermes_units
 restart_hermes_runtime
 repair_runtime_store_permissions "$DATA_TARGET"
-chown quantumn-hermes:quantumn-hermes "$VAULT_ROOT"
-chmod 0755 "$VAULT_ROOT"
+repair_vault_runtime_permissions "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID" \
   "$VAULT_ROOT/raw/dialogues/tenants"
