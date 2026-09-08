@@ -23,6 +23,7 @@ from backend.services.knowledge_catalog import (
     base_knowledge_status,
     compute_catalog as _compute_catalog,
     pending_review_count,
+    projection_state_fingerprint,
     tenant_private_knowledge_status,
 )
 
@@ -30,7 +31,7 @@ router = APIRouter(prefix="/api/v1", tags=["catalog"])
 
 _CATALOG_CACHE_SECONDS = max(1, int(os.environ.get("KNOWLEDGE_CATALOG_CACHE_SECONDS", "60")))
 _catalog_cache_lock = Lock()
-_catalog_cache: tuple[tuple[str, int, int], float, list[dict]] | None = None
+_catalog_cache: tuple[tuple[str, int, int, str], float, list[dict]] | None = None
 
 # 不可订阅的系统目录（不进入知识分类）
 SYSTEM_DIRS = {
@@ -78,10 +79,11 @@ def _catalog_fingerprint(vault: Path) -> tuple[str, int, int]:
 
 
 def compute_catalog() -> list[dict]:
-    """Versioned short cache; vault/matrix changes invalidate immediately."""
+    """Cache file projection only while durable SQL projection state is unchanged."""
     global _catalog_cache
     vault = knowledge._vault()
-    fingerprint = _catalog_fingerprint(vault)
+    projection_fingerprint = projection_state_fingerprint() or "database-unavailable"
+    fingerprint = (*_catalog_fingerprint(vault), projection_fingerprint)
     now = time.monotonic()
     cached = _catalog_cache
     if cached is not None and cached[0] == fingerprint and cached[1] > now:

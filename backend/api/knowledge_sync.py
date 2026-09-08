@@ -120,6 +120,11 @@ def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
 
+def _as_utc(value: datetime) -> datetime:
+    return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None
+            else value.astimezone(timezone.utc))
+
+
 def _merge_payload_digest(body: NoteMergeRequest) -> str:
     return _digest(json.dumps(body.model_dump(), sort_keys=True, separators=(",", ":")).encode())
 
@@ -200,8 +205,7 @@ async def merge_notes(
                 if prior.get("payload_digest") != payload_digest:
                     raise HTTPException(status_code=409, detail={"code": "operation_payload_conflict"})
                 if prior.get("status") == "completed":
-                    # ponytail: account-wide lock serializes merge/outbox replay;
-                    # move scheduling outside the lock if measured latency matters.
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
                     return await _finish_merge_outbox(
                         journal=prior, operation_path=operation_path,
                         tenant_key=tenant_key, user_id=user_id, body=body,
@@ -270,6 +274,7 @@ async def merge_notes(
                 "contribution_status": "pending",
             })
             _atomic_write(operation_path, json.dumps(journal, ensure_ascii=False, indent=2).encode())
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
             return await _finish_merge_outbox(
                 journal=journal, operation_path=operation_path,
                 tenant_key=tenant_key, user_id=user_id, body=body,
@@ -483,86 +488,92 @@ async def sync_note(
     tenant_key = str(payload.get("tenant_key") or "")
     user_id = str(payload.get("user_id") or payload.get("sub") or "")
     note_path, metadata_path = _paths(tenant_key, user_id, note_id)
-    current_hash = _digest(note_path.read_bytes()) if note_path.is_file() else None
-    if base_hash is not None and current_hash != base_hash:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "sync_conflict",
-                "current_hash": current_hash,
+    directory = note_path.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_path = directory / ".merge.lock"
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        current_hash = _digest(note_path.read_bytes()) if note_path.is_file() else None
+        previous_metadata = _read_metadata(metadata_path)
+        if base_hash is not None and current_hash != base_hash:
+            raise HTTPException(status_code=409, detail={
+                "code": "sync_conflict", "current_hash": current_hash,
                 "action": "pull_or_duplicate",
-            },
-        )
-
-    changed = current_hash != actual_hash
-    if not changed:
-        try:
-            index = json.loads(
-                private_note_index_path(tenant_key, user_id, _sync_root())
-                .read_text(encoding="utf-8")
-            )
-            index_hash = index["index_hash"]
-        except (OSError, json.JSONDecodeError, KeyError, TypeError):
-            index_hash = None
-        return {
-            "note_id": note_id,
+            })
+        changed = current_hash != actual_hash
+        prior_updated_at = previous_metadata.get("client_updated_at")
+        if changed and body.updated_at and prior_updated_at:
+            try:
+                stale = _as_utc(body.updated_at) <= _as_utc(datetime.fromisoformat(prior_updated_at))
+            except (TypeError, ValueError):
+                stale = False
+            if stale:
+                raise HTTPException(status_code=409, detail={
+                    "code": "stale_note_version", "current_hash": current_hash,
+                    "action": "pull_or_duplicate",
+                })
+        if not changed:
+            try:
+                index = json.loads(
+                    private_note_index_path(tenant_key, user_id, _sync_root())
+                    .read_text(encoding="utf-8")
+                )
+                index_hash = index["index_hash"]
+            except (OSError, json.JSONDecodeError, KeyError, TypeError):
+                index_hash = None
+            return {
+                "note_id": note_id, "content_hash": actual_hash, "changed": False,
+                "sync_status": "synced", "compile_status": "private_index_unchanged",
+                "private_index_hash": index_hash,
+            }
+        source_revision = int(previous_metadata.get("contribution_revision") or 0) + 1
+        prior_event_ids = list(previous_metadata.get("contribution_event_ids") or [])
+        if previous_metadata.get("contribution_event_id") not in prior_event_ids:
+            prior_event_ids.append(previous_metadata.get("contribution_event_id"))
+        prior_event_ids = [str(value) for value in prior_event_ids if value]
+        synced_at = datetime.now(timezone.utc)
+        source_changed_at = _as_utc(body.updated_at) if body.updated_at else synced_at
+        metadata = {
+            "version": 1, "note_id": note_id,
+            "tenant_namespace": _tenant_namespace(tenant_key),
+            "user_namespace": namespace(user_id), "owner_user_id": user_id,
             "content_hash": actual_hash,
-            "changed": False,
-            "sync_status": "synced",
-            "compile_status": "private_index_unchanged",
-            "private_index_hash": index_hash,
+            "client_updated_at": source_changed_at.isoformat() if body.updated_at else None,
+            "synced_at": synced_at.isoformat(),
+            "source_changed_at": source_changed_at.isoformat(),
+            "source": "user_markdown", "ingest_target": "raw/dialogues",
+            "contribution_revision": source_revision,
+            "contribution_event_ids": prior_event_ids,
         }
-    _atomic_write(note_path, encoded)
-    previous_metadata = _read_metadata(metadata_path)
-    source_revision = int(previous_metadata.get("contribution_revision") or 0) + 1
-    prior_event_ids = list(previous_metadata.get("contribution_event_ids") or [])
-    if previous_metadata.get("contribution_event_id") not in prior_event_ids:
-        prior_event_ids.append(previous_metadata.get("contribution_event_id"))
-    prior_event_ids = [str(value) for value in prior_event_ids if value]
-    synced_at = datetime.now(timezone.utc)
-    metadata = {
-        "version": 1,
-        "note_id": note_id,
-        "tenant_namespace": _tenant_namespace(tenant_key),
-        "user_namespace": namespace(user_id),
-        "owner_user_id": user_id,
-        "content_hash": actual_hash,
-        "client_updated_at": (
-            body.updated_at.astimezone(timezone.utc).isoformat()
-            if body.updated_at else None
-        ),
-        "synced_at": synced_at.isoformat(),
-        "source_changed_at": (body.updated_at or synced_at).isoformat(),
-        "source": "user_markdown",
-        "ingest_target": "raw/dialogues",
-        "contribution_revision": source_revision,
-        "contribution_event_ids": prior_event_ids,
-    }
-    _atomic_write(
-        metadata_path,
-        json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
-    )
-    private_index = update_private_note_index(
-        tenant_key, user_id, note_path, _sync_root()
-    )
+        _atomic_write(note_path, encoded)
+        _atomic_write(metadata_path, json.dumps(
+            metadata, ensure_ascii=False, indent=2,
+        ).encode("utf-8"))
+        private_index = update_private_note_index(
+            tenant_key, user_id, note_path, _sync_root()
+        )
     contribution = await enqueue_note_contribution(
         tenant_key=tenant_key,
         user_id=user_id,
         note_id=note_id,
         source_revision=source_revision,
         content_hash=actual_hash,
-        source_changed_at=body.updated_at or synced_at,
+        source_changed_at=source_changed_at,
     )
     if contribution:
         contribution = await schedule_event(contribution, source_content=body.markdown)
-        metadata["contribution_event_id"] = contribution["event_id"]
-        metadata["contribution_event_ids"] = [
-            *metadata.get("contribution_event_ids", []), contribution["event_id"],
-        ]
-        _atomic_write(
-            metadata_path,
-            json.dumps(metadata, ensure_ascii=False, indent=2).encode("utf-8"),
-        )
+        with lock_path.open("a+") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            latest = _read_metadata(metadata_path)
+            if (latest.get("content_hash") == actual_hash
+                    and latest.get("contribution_revision") == source_revision):
+                latest["contribution_event_id"] = contribution["event_id"]
+                latest["contribution_event_ids"] = [
+                    *latest.get("contribution_event_ids", []), contribution["event_id"],
+                ]
+                _atomic_write(metadata_path, json.dumps(
+                    latest, ensure_ascii=False, indent=2,
+                ).encode("utf-8"))
     return {
         "note_id": note_id,
         "content_hash": actual_hash,

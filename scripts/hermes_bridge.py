@@ -4185,7 +4185,7 @@ def _agent_cache_signature(
 
 def _take_cached_agent(
     cache_key: str, signature: str, hermes_sid: str | None,
-) -> tuple[Any, Any] | None:
+) -> tuple[Any, Any, str] | None:
     stale: tuple[Any, Any] | None = None
     with _AGENT_CACHE_LOCK:
         entry = _AGENT_CACHE.get(cache_key)
@@ -4219,7 +4219,7 @@ def _take_cached_agent(
                 agent._api_call_count = 0
                 if hasattr(agent, "_last_flushed_db_idx"):
                     agent._last_flushed_db_idx = 0
-                return agent, session_db
+                return agent, session_db, str(entry.get("cache_origin") or "prior_turn")
     if stale is not None:
         _close_agent_resources(*stale)
     return None
@@ -4227,20 +4227,21 @@ def _take_cached_agent(
 
 def _finish_cached_agent(
     cache_key: str, signature: str, agent: Any, session_db: Any, *, keep: bool,
-) -> None:
+    cache_origin: str = "prior_turn",
+) -> bool:
     if not keep or _AGENT_CACHE_MAX_SIZE == 0:
         with _AGENT_CACHE_LOCK:
             entry = _AGENT_CACHE.get(cache_key)
             if entry is not None and entry["agent"] is agent:
                 _AGENT_CACHE.pop(cache_key, None)
         _close_agent_resources(agent, session_db)
-        return
+        return False
 
     try:
         message_count = session_db.message_count(str(getattr(agent, "session_id", "") or ""))
     except Exception:
         _close_agent_resources(agent, session_db)
-        return
+        return False
 
     evicted: list[tuple[Any, Any]] = []
     retained = False
@@ -4255,6 +4256,7 @@ def _finish_cached_agent(
                 "signature": signature,
                 "message_count": message_count,
                 "in_use": False,
+                "cache_origin": cache_origin,
             }
             _AGENT_CACHE.move_to_end(cache_key)
             retained = True
@@ -4271,6 +4273,7 @@ def _finish_cached_agent(
         evicted.append((agent, session_db))
     for victim in evicted:
         _close_agent_resources(*victim)
+    return retained
 
 
 def _prewarm_session_agent(
@@ -4279,7 +4282,7 @@ def _prewarm_session_agent(
     sandbox: "TenantHermesSandbox",
     *,
     knowledge_action_enabled: bool = False,
-) -> str:
+) -> tuple[str, bool]:
     """Build the ordinary fast-lane agent without spending a model turn."""
     hermes_sid = _resolve_hermes_session(user_id)
     if not hermes_sid:
@@ -4303,15 +4306,17 @@ def _prewarm_session_agent(
             knowledge_action_enabled=knowledge_action_enabled,
             sandbox=sandbox,
         )
-        _finish_cached_agent(
+        source = str(route.get("agent_cache_source") or "cold_build")
+        retained = _finish_cached_agent(
             str(route["agent_cache_key"]),
             str(route["agent_cache_signature"]),
             agent,
             session_db,
             keep=True,
+            cache_origin="prewarm" if source == "cold_build" else source,
         )
         agent = session_db = None
-        return hermes_sid
+        return hermes_sid, retained
     finally:
         _sandbox_tool_context.value = None
         _skill_route_context.value = None
@@ -4786,19 +4791,20 @@ class DurableEventQueue(queue.Queue):
         if content:
             self._commit_and_enqueue({"type": "delta", "content": content})
 
-    def accept(self, item: dict) -> None:
+    def accept(self, item: dict) -> bool:
         if item.get("type") == "delta":
             with self._delta_lock:
                 self._delta_buffer += str(item.get("content") or "")
                 due = time.monotonic() - self._last_delta_flush >= 0.15
             if due:
                 self.flush_delta()
-            return
+            return True
         self.flush_delta()
         self._commit_and_enqueue(item)
+        return True
 
 
-def _qput(stream_q: queue.Queue, item: dict) -> None:
+def _qput(stream_q: queue.Queue, item: dict) -> bool:
     """Persist stable text chunks and every control event; never drop accepted events."""
     # ``importlib.reload`` and rolling worker upgrades can leave a sink derived
     # from the previous class object. Accept the durable protocol by capability,
@@ -4806,15 +4812,16 @@ def _qput(stream_q: queue.Queue, item: dict) -> None:
     accept = getattr(stream_q, "accept", None)
     if callable(accept):
         try:
-            accept(item)
+            return accept(item) is not False
         except KeyError:
             # Unit/direct compatibility path without a pre-created durable Run.
             stream_q.put_nowait(item)
+            return True
         except RuntimeError:
             # A losing worker may finish after explicit cancellation/regeneration.
-            return
-        return
+            return False
     stream_q.put_nowait(item)
+    return True
 
 
 def _stream_run_register(user_id: str, state: dict) -> None:
@@ -5201,6 +5208,7 @@ def _build_in_process_agent(
     client_context_enabled: bool = False,
     knowledge_action_enabled: bool = False,
     sandbox: TenantHermesSandbox | None = None,
+    timing_origin: float | None = None,
 ) -> tuple[object, object, dict[str, Any]]:
     """进程内构建 AIAgent（复用 oneshot 构建模式·保留全部流式回调）。
 
@@ -5209,7 +5217,10 @@ def _build_in_process_agent(
     - tool_start/tool_complete → tool 事件（载荷治理·不发 raw result）
     - clarify_callback → clarify_gateway 注册 + clarify 事件 + 阻塞等待解锁
     """
-    _build_t0 = time.monotonic()  # 延迟打点：构建入口
+    _build_t0 = time.monotonic()
+    timing_origin = timing_origin if timing_origin is not None else _build_t0
+    _qput(stream_q, {"type": "runtime_timing", "phase": "agent_context_build_start",
+                     "elapsed_ms": round((_build_t0 - timing_origin) * 1000, 3)})
     from run_agent import AIAgent
 
     cfg = _get_cached_config()  # 常驻单例：0ms 读盘
@@ -5445,9 +5456,20 @@ def _build_in_process_agent(
         # Steering Loop：前两轮明确禁止提前作答，并驱动 Agent 再次调用 clarify。
         return _steer_drill_me_response(str(resp), clarify_round, drill_me_enabled)
 
+    first_delta_emitted = False
+    tool_started: dict[str, float] = {}
+
     def _delta_cb(text) -> None:
+        nonlocal first_delta_emitted
         if text:
-            _qput(stream_q, {"type": "delta", "content": text})
+            accepted = _qput(stream_q, {"type": "delta", "content": text})
+            if accepted and not first_delta_emitted:
+                flush = getattr(stream_q, "flush_delta", None)
+                if callable(flush):
+                    flush()
+                first_delta_emitted = True
+                _qput(stream_q, {"type": "runtime_timing", "phase": "first_visible_delta",
+                                 "elapsed_ms": round((time.monotonic() - timing_origin) * 1000, 3)})
 
     def _reasoning_cb(text) -> None:
         # 思考流治理（2026-08-17 固化）：禁止向前端逐 token 倾泻原始思考长文（防长条铺屏与无谓等待）
@@ -5455,9 +5477,15 @@ def _build_in_process_agent(
         pass
 
     def _tool_start_cb(tool_call_id, function_name, function_args) -> None:
+        tool_started[str(tool_call_id)] = time.monotonic()
         _emit_tool_start(stream_q, tool_call_id, function_name, function_args)
 
     def _tool_complete_cb(tool_call_id, function_name, function_args, result) -> None:
+        started = tool_started.pop(str(tool_call_id), None)
+        if started is not None:
+            _qput(stream_q, {"type": "runtime_timing", "phase": "tool_duration",
+                             "tool": str(function_name)[:96],
+                             "duration_ms": round((time.monotonic() - started) * 1000, 3)})
         # 载荷治理：不发 raw result（对齐 api_server 契约·防内部信息泄露）
         _emit_tool_complete(stream_q, tool_call_id, function_name, function_args, result)
         _emit_delegate_receipt(stream_q, function_name, function_args, result)
@@ -5511,7 +5539,7 @@ def _build_in_process_agent(
     )
     cached = _take_cached_agent(user_id, cache_signature, hermes_sid)
     if cached is not None:
-        agent, session_db = cached
+        agent, session_db, cache_origin = cached
         agent.clarify_callback = _clarify_cb
         agent.stream_delta_callback = _delta_cb
         agent.reasoning_callback = _reasoning_cb
@@ -5519,6 +5547,9 @@ def _build_in_process_agent(
         agent.tool_complete_callback = _tool_complete_cb
         agent.reasoning_config = {"effort": "minimal"}
         print(f"[bridge] agent_cache_hit user={user_id}")
+        _qput(stream_q, {"type": "runtime_timing", "phase": "agent_context_build_end",
+                         "duration_ms": round((time.monotonic() - _build_t0) * 1000, 3),
+                         "cache_hit": True, "cache_source": cache_origin})
         return agent, session_db, {
             "triage": triage,
             "enabled_toolsets": tuple(toolsets_list),
@@ -5528,6 +5559,7 @@ def _build_in_process_agent(
             ),
             "agent_cache_key": user_id,
             "agent_cache_signature": cache_signature,
+            "agent_cache_source": cache_origin,
         }
 
     # 服务器 Hermes v0.19.0 AIAgent 无 requested_provider 参数（本地 v0.19.1 有）——
@@ -5643,6 +5675,9 @@ def _build_in_process_agent(
 
     build_ms = (time.monotonic() - _build_t0) * 1000.0
     print(f"[bridge] agent_build_ms={build_ms:.1f} user={user_id}")
+    _qput(stream_q, {"type": "runtime_timing", "phase": "agent_context_build_end",
+                     "duration_ms": round(build_ms, 3), "cache_hit": False,
+                     "cache_source": "cold_build"})
 
     return agent, session_db, {
         "triage": triage,
@@ -5653,6 +5688,7 @@ def _build_in_process_agent(
         ),
         "agent_cache_key": user_id,
         "agent_cache_signature": cache_signature,
+        "agent_cache_source": "cold_build",
     }
 
 
@@ -5673,6 +5709,7 @@ def _run_agent_sync(
     qws_business_context: dict[str, Any] | None = None,
 ) -> None:
     """Run one Hermes turn, retaining only a bounded session-safe warm agent."""
+    timing_origin = time.monotonic()
     agent: Any = None
     session_db: Any = None
     route_context: dict[str, Any] = {}
@@ -5810,6 +5847,7 @@ def _run_agent_sync(
             ),
             knowledge_action_enabled=knowledge_action_enabled,
             sandbox=sandbox,
+            timing_origin=timing_origin,
         )
         # 进程内 agent 会话映射（P0 断点恢复关键）：agent 可能自动创建新 session
         # （hermes_sid=None 首请求）。显式迁移/灾备快照必须先进入 Hermes
@@ -5850,6 +5888,8 @@ def _run_agent_sync(
                 sandbox.state_db if sandbox is not None else STATE_DB,
             )
         # 第二帧状态：agent 构建完成（build 返回后、run_conversation 前）→ 进入推理
+        _qput(stream_q, {"type": "runtime_timing", "phase": "reasoning_ready",
+                         "elapsed_ms": round((time.monotonic() - timing_origin) * 1000, 3)})
         _qput(stream_q, {"type": "status", "phase": "reasoning", "detail": "正在理解需求…"})
         applied_triage = route_context.get("triage")
         if applied_triage is not None:

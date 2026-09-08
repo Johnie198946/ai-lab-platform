@@ -62,6 +62,7 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
             && request.url?.host == "contract.invalid"
         let responseBody: Data
         var responseStatus = 200
+        var responseError: URLError?
         switch (isContractOrigin, method, path) {
         case (true, "GET", "/api/v1/legal/agreement"):
             responseBody = Data(#"{"version":"2026-09-06","title":"服务协议","updated_at":"2026-09-06T00:00:00Z","sections":[{"id":"service","title":"用户服务协议","clauses":["服务条款"]},{"id":"privacy","title":"隐私保护条款","clauses":["隐私条款"]},{"id":"knowledge-contribution","title":"知识共建协议","clauses":["共建条款"]}]}"#.utf8)
@@ -78,6 +79,13 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
             responseBody = Self.subscriptionResponse
         case (true, "DELETE", "/api/v1/me/book-subscriptions"):
             responseBody = Data(#"{"deleted":true}"#.utf8)
+        case (true, "PUT", let notePath) where notePath.hasPrefix("/api/v1/me/knowledge-notes/"):
+            let body = String(data: requestBody ?? Data(), encoding: .utf8) ?? ""
+            let object = (try? JSONSerialization.jsonObject(with: requestBody ?? Data())) as? [String: Any]
+            let contentHash = object?["content_hash"] as? String ?? String(repeating: "a", count: 64)
+            responseStatus = body.contains("delayed-401") ? 401 : 200
+            responseError = body.contains("lost-response") ? URLError(.timedOut) : nil
+            responseBody = Data("{\"note_id\":\"note-1\",\"content_hash\":\"\(contentHash)\",\"changed\":true,\"sync_status\":\"synced\",\"compile_status\":\"pending\",\"private_index_hash\":null}".utf8)
         default:
             responseBody = Data(#"{"detail":"unexpected contract request"}"#.utf8)
         }
@@ -88,9 +96,20 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
             httpVersion: nil,
             headerFields: ["Content-Type": "application/json"]
         )!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: responseBody)
-        client?.urlProtocolDidFinishLoading(self)
+        let deliver = { [self] in
+            if let responseError {
+                client?.urlProtocol(self, didFailWithError: responseError)
+                return
+            }
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: responseBody)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if path.hasPrefix("/api/v1/me/knowledge-notes/") {
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.1, execute: deliver)
+        } else {
+            deliver()
+        }
     }
 
     override func stopLoading() {}
@@ -349,6 +368,168 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertFalse(AgreementReplayPolicy.canReplay(statusCode: 409, replayCount: 0))
         XCTAssertTrue(KeychainSavePolicy.shouldUpdate(after: errSecDuplicateItem))
         XCTAssertFalse(KeychainSavePolicy.shouldUpdate(after: errSecMissingEntitlement))
+    }
+
+    @MainActor
+    func testLate401CannotClearReplacementCredential() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "token-a"
+        )
+        let generation = client.currentCredentialGeneration()
+        let pending = Task {
+            try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "delayed-401", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertTrue(client.saveToken("token-b"))
+        do {
+            _ = try await pending.value
+            XCTFail("Expected stale response cancellation")
+        } catch is CancellationError {}
+        XCTAssertEqual(client.currentToken(), "token-b")
+        XCTAssertFalse(client.needsReauth)
+    }
+
+    @MainActor
+    func testStaleKnowledgeSaveCannotStartWithReplacementCredential() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "token-a"
+        )
+        let generation = client.currentCredentialGeneration()
+        XCTAssertTrue(client.saveToken("token-b"))
+        do {
+            _ = try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "old-account-markdown", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+            XCTFail("Expected stale request cancellation")
+        } catch is CancellationError {}
+        XCTAssertTrue(APIContractURLProtocol.requests().isEmpty)
+    }
+
+    @MainActor
+    func testDelayedSuccessCannotAcknowledgeReplacementAccount() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "token-a"
+        )
+        let generation = client.currentCredentialGeneration()
+        let pending = Task {
+            try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "delayed-success", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertTrue(client.saveToken("token-b"))
+        do {
+            _ = try await pending.value
+            XCTFail("Expected stale response cancellation")
+        } catch is CancellationError {}
+        XCTAssertEqual(client.currentToken(), "token-b")
+    }
+
+    @MainActor
+    func testOverlappingKnowledgeSavesSerializeAndUsePriorHashCAS() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "token-a"
+        )
+        let generation = client.currentCredentialGeneration()
+        let first = Task {
+            try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "version-one", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        let second = Task {
+            try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "version-two", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+        }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        XCTAssertEqual(APIContractURLProtocol.requests().count, 1)
+        _ = try await first.value
+        _ = try await second.value
+
+        let requests = APIContractURLProtocol.requests()
+        XCTAssertEqual(requests.count, 2)
+        let firstBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(requests[0].body)) as? [String: Any]
+        )
+        let secondBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(requests[1].body)) as? [String: Any]
+        )
+        XCTAssertNil(firstBody["base_hash"])
+        XCTAssertEqual(secondBody["base_hash"] as? String, firstBody["content_hash"] as? String)
+    }
+
+    @MainActor
+    func testLostPredecessorResponseStillRequiresItsIntendedHash() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "token-a"
+        )
+        let generation = client.currentCredentialGeneration()
+        let first = Task {
+            try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "lost-response-version-one", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+        let second = Task {
+            try await client.syncKnowledgeNote(
+                id: "note-1", markdown: "version-two", updatedAt: Date(),
+                credentialGeneration: generation
+            )
+        }
+        do {
+            _ = try await first.value
+            XCTFail("Expected predecessor transport failure")
+        } catch APIError.timeout {}
+        _ = try await second.value
+
+        let requests = APIContractURLProtocol.requests()
+        XCTAssertEqual(requests.count, 2)
+        let firstBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(requests[0].body)) as? [String: Any]
+        )
+        let secondBody = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: try XCTUnwrap(requests[1].body)) as? [String: Any]
+        )
+        XCTAssertEqual(secondBody["base_hash"] as? String, firstBody["content_hash"] as? String)
     }
 
     func testLoginConsentErrorsAreBoundedAndDoNotLeakRawResponses() {
@@ -3513,10 +3694,12 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
 
         coordinator.switchSession(to: otherSession)
         await fulfillment(of: [stored], timeout: 1)
-        for _ in 0..<20 {
-            if manager.storedMessage(id: outputId, sessionId: runSession)?.pending == false { break }
+        for _ in 0..<100 {
+            if coordinator.backgroundMonitorCountForTesting == 0 { break }
             await Task.yield()
         }
+        XCTAssertEqual(coordinator.backgroundMonitorCountForTesting, 0)
+        await manager.flushPendingPersistence()
 
         XCTAssertEqual(manager.activeSessionID(), otherSession)
         let completed = try XCTUnwrap(manager.storedMessage(id: outputId, sessionId: runSession))

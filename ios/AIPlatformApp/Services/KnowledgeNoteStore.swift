@@ -761,7 +761,7 @@ private struct KnowledgeActionReceipt: Codable {
 @MainActor
 protocol KnowledgeActionSynchronizing: AnyObject {
     func fetchKnowledgeNotes(includeArchived: Bool) async throws -> CloudKnowledgeNotesResponse
-    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?) async throws
+    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?, credentialGeneration: UInt64) async throws
     func archiveKnowledgeNote(id: String, mergedIntoNoteId: String, expectedContentHash: String?) async throws
     func mergeKnowledgeNotes(_ body: KnowledgeNoteMergeRequestDTO) async throws -> KnowledgeNoteMergeResponseDTO
     func restoreKnowledgeNote(id: String) async throws
@@ -779,8 +779,11 @@ private final class LiveKnowledgeActionSynchronizer: KnowledgeActionSynchronizin
         try await APIClient.shared.fetchKnowledgeNotes(includeArchived: includeArchived)
     }
 
-    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?) async throws {
-        try await APIClient.shared.syncKnowledgeNote(id: id, markdown: markdown, updatedAt: updatedAt, baseHash: baseHash)
+    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?, credentialGeneration: UInt64) async throws {
+        try await APIClient.shared.syncKnowledgeNote(
+            id: id, markdown: markdown, updatedAt: updatedAt, baseHash: baseHash,
+            credentialGeneration: credentialGeneration
+        )
     }
 
     func archiveKnowledgeNote(id: String, mergedIntoNoteId: String, expectedContentHash: String?) async throws {
@@ -1024,6 +1027,7 @@ public final class KnowledgeActionExecutor {
     }
 
     private func synchronize(_ action: KnowledgeActionBlock, capability: String?, noteIds: [String], expectedFingerprint: String) async -> KnowledgeActionExecutionResult {
+        let credentialGeneration = APIClient.shared.currentCredentialGeneration()
         do {
             var mergeHandledIDs = Set<String>()
             for step in action.steps {
@@ -1032,7 +1036,7 @@ public final class KnowledgeActionExecutor {
                     try await synchronizer.trashKnowledgeNote(id: id)
                 } else if step.kind == "archive_note", let id = step.targetNoteId {
                     if let archived = store.archivedNote(id: id) {
-                        try await synchronizer.syncKnowledgeNote(id: id, markdown: store.markdown(for: archived), updatedAt: archived.updatedAt, baseHash: nil)
+                        try await synchronizer.syncKnowledgeNote(id: id, markdown: store.markdown(for: archived), updatedAt: archived.updatedAt, baseHash: nil, credentialGeneration: credentialGeneration)
                     }
                     try await synchronizer.archiveKnowledgeNote(id: id, mergedIntoNoteId: id, expectedContentHash: nil)
                 } else if step.kind == "restore_note", let id = step.targetNoteId {
@@ -1054,7 +1058,7 @@ public final class KnowledgeActionExecutor {
             for id in noteIds where !mergeHandledIDs.contains(id) {
                 guard store.accountFingerprint == expectedFingerprint else { throw ActionError.accountChanged }
                 if let note = store.note(id: id) {
-                    try await synchronizer.syncKnowledgeNote(id: id, markdown: store.markdown(for: note), updatedAt: note.updatedAt, baseHash: nil)
+                    try await synchronizer.syncKnowledgeNote(id: id, markdown: store.markdown(for: note), updatedAt: note.updatedAt, baseHash: nil, credentialGeneration: credentialGeneration)
                 }
             }
             try await finalizeLedger(

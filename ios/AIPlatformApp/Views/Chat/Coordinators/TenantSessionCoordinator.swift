@@ -3044,18 +3044,21 @@ public final class TenantSessionCoordinator: ObservableObject {
             showToast("已保存到本地，可在笔记页继续编辑")
         }
         let expectedEpoch = tenantEpoch
+        let expectedCredentialGeneration = APIClient.shared.currentCredentialGeneration()
         Task { [weak self] in
             do {
                 try await APIClient.shared.syncKnowledgeNote(
                     id: note.id,
                     markdown: KnowledgeNoteStore.shared.markdown(for: note),
-                    updatedAt: note.updatedAt
+                    updatedAt: note.updatedAt,
+                    credentialGeneration: expectedCredentialGeneration
                 )
                 for archived in archivedNotes {
                     try await APIClient.shared.syncKnowledgeNote(
                         id: archived.id,
                         markdown: KnowledgeNoteStore.shared.markdown(for: archived),
-                        updatedAt: archived.updatedAt
+                        updatedAt: archived.updatedAt,
+                        credentialGeneration: expectedCredentialGeneration
                     )
                     try await APIClient.shared.archiveKnowledgeNote(
                         id: archived.id, mergedIntoNoteId: note.id

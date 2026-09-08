@@ -8,10 +8,11 @@ never reflected as subscription products.
 from __future__ import annotations
 
 import hashlib
+import math
 import json
 from contextvars import ContextVar
 from functools import partial
-from threading import BoundedSemaphore
+from threading import BoundedSemaphore, Thread
 
 import asyncio
 from anyio.to_thread import run_sync
@@ -49,6 +50,9 @@ LEGACY_PUBLIC_CATEGORIES: tuple[str, ...] = (
 BLOCKED_LIFECYCLE_STATES = frozenset({
     "archived", "deleted", "superseded", "stale", "quarantined",
     "withdraw_pending", "withdrawing", "withdrawn", "recompile_required",
+})
+NON_KNOWLEDGE_LABELS = frozenset({
+    "knowledge_gap", "unknown", "question", "unanswered", "insufficient_evidence",
 })
 CONTRIBUTION_PUBLICATION_POLICY = "tenant_contribution_policy_v1"
 SEARCH_CACHE: dict = {}
@@ -133,6 +137,19 @@ def clear_manifest_cache() -> None:
 _UNREADABLE_FRONTMATTER: dict[str, Any] = {}
 
 
+def _assertion_admitted(labels: dict[str, Any], *, require_confidence: bool = False) -> bool:
+    if any(str(labels.get(field) or "").strip().casefold() in NON_KNOWLEDGE_LABELS
+           for field in ("type", "claim_status", "evidence_type", "fact_classification")):
+        return False
+    try:
+        if "confidence" not in labels:
+            return not require_confidence
+        confidence = float(labels["confidence"])
+        return math.isfinite(confidence) and confidence > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _live_frontmatter(vault: Path, relative_path: str) -> dict[str, Any]:
     """Read lifecycle metadata on every access, outside projection caches."""
     try:
@@ -187,9 +204,17 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
     # A v2 compiled manifest is itself the legacy approval projection; atomic
     # color records instead require their live source labels on every read.
     atomic = item.get("approval_source") == "atomic_color_approval"
-    labels = metadata if atomic else {**item, **metadata}
+    generated = bool(metadata.get("projection_operation_id")
+                     or metadata.get("contribution_projection_id"))
+    labels = metadata if generated or atomic else {**item, **metadata}
     if (labels.get("classification_status") != "approved"
-            or labels.get("security_level") not in {"red", "yellow", "green"}):
+            or labels.get("security_level") not in {"red", "yellow", "green"}
+            or generated and not str(labels.get("type") or "").strip()
+            or not _assertion_admitted(labels, require_confidence=generated)):
+        return None
+    if (generated and labels["security_level"] == "red"
+            and (not str(labels.get("claim_status") or "").strip()
+                 or not str(labels.get("evidence_type") or "").strip())):
         return None
     if item.get("security_level") and labels.get("security_level") != item.get("security_level"):
         return None
@@ -427,6 +452,87 @@ async def filter_database_live_documents(
     return live
 
 
+def filter_database_live_documents_sync(
+    documents: list[dict[str, Any]], vault: Path | None = None,
+) -> list[dict[str, Any]]:
+    """Apply the same durable projection-status barrier to synchronous views."""
+    if not documents:
+        return []
+    vault = vault or _vault()
+    live = []
+    file_by_path = {}
+    for document in documents:
+        item = _apply_file_read_barrier(vault, document)
+        if item is not None:
+            governed = (item.get("contribution_projection_id")
+                        or item.get("publication_policy") == CONTRIBUTION_PUBLICATION_POLICY)
+            if governed:
+                file_by_path[str(item["path"])] = item
+            else:
+                live.append(item)
+    if not file_by_path:
+        return live
+    result = _projection_rows_sync(sorted(file_by_path))
+    if result is None:
+        return live
+    by_path: dict[str, list[tuple[str, str, str, str]]] = {}
+    for row in result:
+        by_path.setdefault(row[1], []).append(row)
+    for path, item in file_by_path.items():
+        rows = by_path.get(path, [])
+        projection_id = str(item.get("contribution_projection_id") or "")
+        if not rows:
+            continue
+        matches = [row for row in rows if row[3] == "active"
+                   and (not projection_id or row[0] == projection_id)
+                   and row[2] == item.get("security_level")]
+        if len(matches) == 1:
+            live.append(item)
+    return live
+
+
+def _projection_rows_sync(paths: list[str] | None) -> list[tuple[str, str, str, str]] | None:
+    result: list[tuple[str, str, str, str]] | None = None
+
+    async def read_rows():
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+        from sqlalchemy.pool import NullPool
+        from backend.db import engine
+        from backend.models.knowledge_contribution import KnowledgeContributionProjection
+
+        db_engine = create_async_engine(engine.url, poolclass=NullPool)
+        try:
+            async with async_sessionmaker(db_engine, expire_on_commit=False)() as db:
+                statement = select(KnowledgeContributionProjection)
+                if paths is not None:
+                    statement = statement.where(KnowledgeContributionProjection.artifact_ref.in_(paths))
+                rows = (await db.scalars(statement)).all()
+                return [(row.projection_id, row.artifact_ref, row.security_level, row.status)
+                        for row in rows]
+        finally:
+            await db_engine.dispose()
+
+    def query() -> None:
+        nonlocal result
+        try:
+            result = asyncio.run(read_rows())
+        except Exception:
+            result = None
+
+    worker = Thread(target=query, daemon=True)
+    worker.start()
+    worker.join()
+    return result
+
+
+def projection_state_fingerprint() -> str | None:
+    rows = _projection_rows_sync(None)
+    return hashlib.sha256(json.dumps(
+        sorted(rows), separators=(",", ":"),
+    ).encode()).hexdigest() if rows is not None else None
+
+
 def resolve_authorized_version(
     relative: str, documents: dict[str, dict[str, Any]], scopes: set[str] | frozenset[str] | None,
 ) -> dict[str, Any] | None:
@@ -499,7 +605,8 @@ async def authorized_compile_candidates(
                 continue
             if (metadata.get("owner_tenant") not in {tenant_key, "public"}
                     or metadata.get("classification_status") != "approved"
-                    or str(metadata.get("status") or "active").lower() in BLOCKED_LIFECYCLE_STATES):
+                    or str(metadata.get("status") or "active").lower() in BLOCKED_LIFECYCLE_STATES
+                    or not _assertion_admitted(metadata)):
                 continue
             score = sum(2 if term == haystack else 1 for term in terms if term in haystack or haystack in term)
             candidates.append((score, path, metadata))
@@ -632,7 +739,8 @@ def compute_catalog(vault: Path | None = None) -> list[dict[str, Any]]:
     elif LEGACY_FALLBACK_ENABLED:
         compiled = _legacy_catalog(vault)
     by_category = {str(item["category"]): item for item in compiled}
-    for item in color_packs(approved_color_documents(vault)):
+    color_documents = filter_database_live_documents_sync(approved_color_documents(vault), vault)
+    for item in color_packs(color_documents):
         by_category[str(item["category"])] = item
     from backend.services.knowledge_publication_store import (
         PUBLICATION_CATEGORY, PublicationStore,
@@ -663,12 +771,13 @@ def base_knowledge_status(vault: Path | None = None) -> dict[str, Any]:
     manifest = load_manifest(vault)
     documents = [
         item
-        for item in document_index(vault).values()
+        for item in filter_database_live_documents_sync(list(document_index(vault).values()), vault)
         if isinstance(item, dict)
         and item.get("classification_status") == "approved"
         and item.get("security_level") == "green"
         and item.get("path")
         and item.get("pack_id")
+        and _assertion_admitted(item)
     ]
     categories = sorted({str(item["pack_id"]) for item in documents})
     document_count = len(documents)
@@ -702,6 +811,7 @@ def tenant_private_knowledge_status(
         and item.get("owner_tenant") == tenant_key
         and item.get("path")
         and item.get("pack_id")
+        and _assertion_admitted(item)
     ]
     categories = sorted({str(item["pack_id"]) for item in documents})
     return {

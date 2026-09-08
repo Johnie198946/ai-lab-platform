@@ -200,12 +200,14 @@ async def test_round2_migration_is_read_only_then_audited_idempotent(env):
 
 
 @pytest.mark.asyncio
-async def test_round3_withdrawal_cannot_be_reenabled_by_replay_or_migration(env):
+@pytest.mark.parametrize("version", ["knowledge-run-v4.1", "knowledge-run-v4.2"])
+async def test_round3_withdrawal_cannot_be_reenabled_by_replay_or_migration(env, version):
     sessions, root, tmp = env
     await sign()
     event = await contribution.enqueue_contribution(candidate())
     store = DurableChatRunStore(tmp / "runs.sqlite3")
-    run = await pipeline.submit_compile(store, event_id=event["event_id"], content="private source")
+    run = await pipeline.submit_compile(store, event_id=event["event_id"], content="private source",
+                                        version=version)
     spec = validate_execution(run)
     async with sessions() as db:
         assert await authorized_stage(db, spec)
@@ -294,7 +296,8 @@ async def test_round3_real_worker_and_queue_to_red_and_green_with_live_evidence(
     await sign()
     event = await contribution.enqueue_contribution(candidate())
     store = DurableChatRunStore(tmp / "runs.sqlite3")
-    run = await pipeline.submit_compile(store, event_id=event["event_id"], content="private source")
+    run = await pipeline.submit_compile(store, event_id=event["event_id"], content="private source",
+                                        version="knowledge-run-v4.1")
     monkeypatch.setattr(worker.bridge, "_tenant_sandbox_from_claims", lambda **kw: SimpleNamespace(state_db=tmp / "state.db"))
     outcomes = iter((COMPILE, SANITIZE, PRIVACY))
     calls = []
@@ -370,4 +373,3 @@ async def test_round1_database_failure_never_opens_business(env, monkeypatch):
     monkeypatch.setattr(api, "SessionLocal", Unavailable)
     with pytest.raises(RuntimeError, match="offline"):
         await api.require_current_agreement(principal(), None)
-

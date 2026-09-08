@@ -81,6 +81,9 @@ def write_red_projection(
     canonical_id: str | None = None,
     canonical_kind: str | None = None,
     operation_id: str = "",
+    claim_status: str = "candidate",
+    evidence_type: str = "source",
+    replace_withdrawn: bool = False,
 ) -> str:
     projection_id = _id(projection_id)
     relative = Path("wiki/tenant") / tenant_namespace(tenant_key) / f"{projection_id}.md"
@@ -97,6 +100,8 @@ def write_red_projection(
         "source_content_hash": source_content_hash,
         "source_revision": source_revision,
         "confidence": confidence,
+        "claim_status": claim_status,
+        "evidence_type": evidence_type,
         "compiler_version": compiler_version,
         "editable": False,
         "projection_operation_id": operation_id or None,
@@ -109,8 +114,8 @@ def write_red_projection(
         from backend.services.compiler import CompilerService
         increment = incremental or {"target": canonical_id, "kind": canonical_kind,
                                     "base_hash": "", "decision": "update",
-                                    "conflicts": [], "evidence_type": "observed",
-                                    "claim_status": "candidate"}
+                                    "conflicts": [], "evidence_type": evidence_type,
+                                    "claim_status": claim_status}
         target = str(increment["target"])
         if not _ID.fullmatch(target) or increment["kind"] not in {"entity", "concept", "topic"}:
             raise ValueError("invalid canonical Wiki identity")
@@ -122,10 +127,33 @@ def write_red_projection(
                       "claim_status": increment["claim_status"]},
             content=content, decision=increment["decision"],
             dependencies=dependencies or [], conflicts=increment["conflicts"],
+            replace_withdrawn=replace_withdrawn,
         )
     else:
         _atomic_markdown(vault / relative, metadata, content, directory_mode=0o700, file_mode=0o600)
     return relative.as_posix()
+
+
+def quarantine_projection_artifact(vault: Path, *, operation_id: str,
+                                   artifact_ref: str) -> str | None:
+    """Move an unaccepted exact operation artifact out of all Wiki scans."""
+    operation_id = _id(operation_id)
+    source = (vault / artifact_ref).resolve()
+    if vault.resolve() not in source.parents or source.suffix != ".md" or not source.is_file():
+        return None
+    raw = source.read_text(encoding="utf-8")
+    if not raw.startswith("---\n") or "\n---\n" not in raw[4:]:
+        raise ValueError("invalid projection artifact")
+    metadata = yaml.safe_load(raw.split("\n---\n", 1)[0][4:])
+    if not isinstance(metadata, dict) or metadata.get("projection_operation_id") != operation_id:
+        raise ValueError("projection artifact operation mismatch")
+    destination = vault / ".quarantine" / "projection-operations" / f"{operation_id}.md"
+    destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(destination.parent, 0o700)
+    if destination.exists() and destination.read_bytes() != source.read_bytes():
+        raise ValueError("projection quarantine conflict")
+    os.replace(source, destination)
+    return destination.relative_to(vault).as_posix()
 
 
 def stage_green_projection(

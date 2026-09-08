@@ -32,7 +32,8 @@ class CompilerService:
 
     def apply_verified_increment(self, *, relative_path: str, base_hash: str,
                                  metadata: Dict, content: str, decision: str,
-                                 dependencies: List[Dict], conflicts: List[str]) -> Dict:
+                                 dependencies: List[Dict], conflicts: List[str],
+                                 replace_withdrawn: bool = False) -> Dict:
         """Deterministic apply of a verified Hermes result, not another AI runtime.
 
         The caller owns admission/authorization. File CAS is cross-process and
@@ -81,7 +82,10 @@ class CompilerService:
                 return {"path": relative_path, "changed": False, "version": current}
             if current != base_hash:
                 raise ValueError("wiki_cas_conflict")
-            if original:
+            if replace_withdrawn and (metadata.get("security_level") != "red"
+                                      or not metadata.get("projection_operation_id")):
+                raise ValueError("withdrawn replacement requires private operation")
+            if original and not replace_withdrawn:
                 match = FRONTMATTER_RE.match(original.decode())
                 prior = yaml.safe_load(match.group(1)) if match else {}
                 prior_dependencies = (prior or {}).get("source_dependencies", [])

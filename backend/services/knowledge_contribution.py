@@ -373,7 +373,9 @@ async def enqueue_note_contribution(
 async def _refresh_projections(db, event_ids: set[str]) -> None:
     if not event_ids:
         return
-    bindings = list((await db.scalars(select(Binding).where(Binding.event_id.in_(event_ids)))).all())
+    bindings = list((await db.scalars(select(Binding).where(
+        Binding.event_id.in_(event_ids), Binding.active.is_(True),
+    ))).all())
     for binding in bindings:
         binding.active = False
     await db.flush()
@@ -414,6 +416,12 @@ async def _withdraw(db, tenant: str, event_ids: set[str], status: str = "withdra
     runs = (await db.scalars(select(Run).where(Run.tenant_key == tenant))).all()
     for run in runs:
         if affected.intersection(run.event_ids):
+            if run.status in {"registered", "running"}:
+                for event in events:
+                    if (event.event_id in run.event_ids and event.event_id not in affected
+                            and event.status in {"compiling", "sanitizing", "privacy_reviewing"}):
+                        event.status = "recompile_pending"
+                        event.business_state = {**event.business_state, "status": "recompile_pending"}
             run.status = "revoked"
     return affected
 
@@ -563,7 +571,10 @@ async def get_projection_operation(operation_id: str) -> dict[str, Any] | None:
         if operation is None:
             return None
         return {"operation_id": operation.operation_id, "status": operation.status,
-                "base_digest": operation.base_digest, "intent": dict(operation.intent)}
+                "run_id": operation.run_id, "projection_id": operation.projection_id,
+                "artifact_ref": operation.artifact_ref, "operation_stage": operation.operation_stage,
+                "payload_digest": operation.payload_digest, "base_digest": operation.base_digest,
+                "result_digest": operation.result_digest, "intent": dict(operation.intent)}
 
 
 async def mark_projection_operation(operation_id: str, status: str) -> None:
@@ -586,24 +597,44 @@ async def mark_projection_operation(operation_id: str, status: str) -> None:
         await db.commit()
 
 
-async def unfinished_projection_operations() -> list[dict[str, str]]:
+_operation_scan_after = ""
+
+
+async def unfinished_projection_operations() -> list[dict[str, Any]]:
+    global _operation_scan_after
+    from sqlalchemy import or_
     async with SessionLocal() as db:
-        rows = list((await db.scalars(select(Operation).where(
-            Operation.status.notin_(("completed", "quarantined"))
-        ).order_by(Operation.created_at).limit(32))).all())
+        query = select(Operation).join(Run, Run.run_id == Operation.run_id).where(
+            Operation.status.notin_(("completed", "quarantined")),
+            Run.status.in_(("registered", "accepted", "running")),
+            or_(Run.status == "accepted", Run.expires_at > _now()),
+        ).order_by(Operation.operation_id).limit(32)
+        rows = list((await db.scalars(query.where(
+            Operation.operation_id > _operation_scan_after
+        ))).all())
+        if not rows and _operation_scan_after:
+            rows = list((await db.scalars(query)).all())
+        _operation_scan_after = rows[-1].operation_id if rows else ""
         return [{"operation_id": row.operation_id, "run_id": row.run_id,
-                 "status": row.status} for row in rows]
+                 "projection_id": row.projection_id, "artifact_ref": row.artifact_ref,
+                 "status": row.status, "intent": row.intent} for row in rows]
 
 
-async def quarantine_projection_operations(run_id: str) -> None:
+async def quarantine_projection_operations(*, run_id: str = "",
+                                           review_run_id: str = "") -> list[dict[str, str]]:
+    if not run_id and not review_run_id:
+        raise ValueError("operation owner required")
     async with SessionLocal() as db:
         rows = list((await db.scalars(select(Operation).where(
-            Operation.run_id == run_id,
             Operation.status.notin_(("completed", "quarantined")),
         ).with_for_update())).all())
+        rows = [row for row in rows if row.run_id == run_id
+                or str((row.intent or {}).get("review_run_id") or "") == review_run_id]
         for row in rows:
             row.status = "quarantined"
         await db.commit()
+        return [{"operation_id": row.operation_id, "artifact_ref": row.artifact_ref}
+                for row in rows]
 
 
 async def _authorized_public_reuse(db, projection: Projection, reference: dict[str, Any]) -> list[Event]:
@@ -656,7 +687,8 @@ async def authorized_public_reuse_dependencies(reference: dict[str, Any]) -> lis
 
 async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: str,
     authorization_epoch: str, projection_id: str, artifact_ref: str,
-    security_level: str, governance: dict[str, Any]) -> dict[str, Any]:
+    security_level: str, governance: dict[str, Any],
+    recovery_operation_id: str = "") -> dict[str, Any]:
     """Project an authenticated Hermes artifact, never make a quality decision.
 
     Green requires the existing governance pipeline's approved decision; K-level,
@@ -674,9 +706,21 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
         policy = await _policy(db, tenant_key)
         consent = await _user_consent(db, tenant_key, user_id)
         run = await db.get(Run, run_id)
+        recovery = await db.get(Operation, recovery_operation_id) if recovery_operation_id else None
+        exact_operation = bool(recovery and recovery.run_id == run_id
+            and recovery.projection_id == projection_id
+            and recovery.artifact_ref == artifact_ref and recovery.operation_stage == security_level
+            and recovery.result_digest == governance.get("result_digest"))
+        accepted_recovery = bool(run and run.status == "accepted"
+            and run.projection_id == projection_id and exact_operation
+            and recovery.status in {"file_published", "sql_accepted"})
+        accepted_unbound = bool(run and run.status == "accepted"
+            and not run.projection_id and exact_operation
+            and recovery.status in {"prepared", "file_published"})
         if (not _authorized(policy, _now()) or not _user_authorized(consent, _now()) or not run
             or (run.tenant_key, run.user_id) != (tenant_key, user_id)
-            or run.status not in {"registered", "accepted"} or _utc(run.expires_at) <= _now()
+            or run.status not in {"registered", "accepted"}
+            or _utc(run.expires_at) <= _now() and not accepted_recovery
             or authorization_epoch != run.authorization_epoch
             or _authorization_epoch(policy, consent) != authorization_epoch):
             raise ValueError("stale, expired or unauthorized Hermes result")
@@ -699,8 +743,17 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
             Projection.projection_id == projection_id).with_for_update())
         reused_events: list[Event] = []
         public_reference = governance.get("authorized_public_input")
+        public_references = governance.get("authorized_public_inputs") or []
         if public_reference is not None and not isinstance(public_reference, dict):
             raise ValueError("invalid public canonical input")
+        if (not isinstance(public_references, list) or len(public_references) > 64
+                or any(not isinstance(reference, dict) for reference in public_references)):
+            raise ValueError("invalid public canonical inputs")
+        for reference in public_references:
+            public_projection = await db.get(Projection, str(reference.get("projection_id") or ""))
+            if public_projection is None:
+                raise ValueError("stale public canonical input")
+            reused_events += await _authorized_public_reuse(db, public_projection, reference)
         if existing:
             same_owner = (existing.tenant_key, existing.user_id) == (tenant_key, user_id)
             if ((existing.artifact_ref, existing.security_level) != (artifact_ref, security_level)
@@ -717,17 +770,22 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
             if security_level == "green":
                 if not public_reference:
                     raise ValueError("public canonical was not supplied to Hermes")
-                reused_events = await _authorized_public_reuse(db, existing, public_reference)
+                reused_events += await _authorized_public_reuse(db, existing, public_reference)
         elif public_reference:
             raise ValueError("stale public canonical input")
-        if run.status == "accepted":
+        if run.status == "accepted" and not accepted_unbound:
             raise ValueError("run already bound to another projection")
         accepted_events = list({event.event_id: event for event in reused_events + events}.values())
+        evidence = {}
+        for event in accepted_events:
+            _merge_evidence(evidence, event.business_state.get("root_evidence", {}))
+        roots = _independent_components(evidence)
         snapshot = {"governance": dict(governance), "independent_roots": roots,
-                "independent_source_count": len(roots), "source_event_ids": run.event_ids,
+                "independent_source_count": len(roots),
+                "source_event_ids": sorted(event.event_id for event in accepted_events),
                 "source_dependencies": [{"event_id": e.event_id, "source_revision": e.source_revision,
                     "content_hash": e.content_hash, "root_source_fingerprint": e.root_source_fingerprint}
-                    for e in events],
+                    for e in sorted(accepted_events, key=lambda item: item.event_id)],
                 "runtime": "hermes", "enforced_searchable": True,
                 "enforced_summarizable": True, "enforced_agent_callable": True,
                 "canonical_identity": governance.get("canonical_identity"),
@@ -789,6 +847,8 @@ async def accept_contribution_result(*, tenant_key: str, user_id: str, run_id: s
         projection.metadata_snapshot = snapshot
         run.status, run.projection_id = "accepted", projection_id
         await db.commit()
+        from backend.services.knowledge_catalog import clear_knowledge_caches
+        clear_knowledge_caches()
         return _projection_view(projection)
 
 

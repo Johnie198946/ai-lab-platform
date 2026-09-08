@@ -607,6 +607,29 @@ public struct ChatContextScopeDTO: Codable, Hashable, Sendable {
     }
 }
 
+public struct KnowledgeNoteSyncResponseDTO: Codable, Hashable, Sendable {
+    public let noteId: String
+    public let contentHash: String
+    public let changed: Bool
+    public let syncStatus: String
+    public let compileStatus: String
+    public let privateIndexHash: String?
+}
+
+public struct KnowledgeNoteSyncStatusDTO: Codable, Hashable, Sendable {
+    public let noteId: String
+    public let contentHash: String
+    public let syncStatus: String
+}
+
+public enum KnowledgeNoteStatusPolicy {
+    public static func message(for status: KnowledgeNoteSyncStatusDTO, expectedContentHash: String) -> String {
+        status.syncStatus == "synced" && status.contentHash == expectedContentHash
+            ? "已保存并同步原始笔记，Wiki 状态待确认"
+            : "已保存到本地，原始笔记同步待确认"
+    }
+}
+
 public struct ClientSessionMessageDTO: Codable, Hashable, Sendable {
     public let id: String
     public let role: String
@@ -1674,7 +1697,12 @@ public final class APIClient: ObservableObject {
     /// immediate `/me` request must not depend on a second Security-framework
     /// lookup succeeding in the same login transaction.
     private var cachedToken: String?
+    private var credentialGeneration: UInt64 = 0
     private var agreementWaiters: [CheckedContinuation<Bool, Never>] = []
+    private var knowledgeNoteSyncTails: [String: (
+        token: UUID, contentHash: String, task: Task<KnowledgeNoteSyncResponseDTO, Error>
+    )] = [:]
+    private var knowledgeNoteSyncHashes: [String: String] = [:]
 
     public convenience init(baseURL: URL = URL(string: "https://120.24.248.58")!) {
         self.init(
@@ -1741,15 +1769,19 @@ public final class APIClient: ObservableObject {
 
     @discardableResult
     public func saveToken(_ token: String) -> Bool {
+        resetKnowledgeNoteSyncLanes()
         guard persistsCredentials else {
             cachedToken = token
+            credentialGeneration &+= 1
             return true
         }
         guard KeychainStore.save(token) else {
             cachedToken = nil
+            credentialGeneration &+= 1
             return false
         }
         cachedToken = token
+        credentialGeneration &+= 1
         return true
     }
 
@@ -1769,10 +1801,20 @@ public final class APIClient: ObservableObject {
     }
 
     public func clearToken() {
+        resetKnowledgeNoteSyncLanes()
         cachedToken = nil
+        credentialGeneration &+= 1
         if persistsCredentials {
             KeychainStore.delete()
         }
+    }
+
+    public func currentCredentialGeneration() -> UInt64 { credentialGeneration }
+
+    private func resetKnowledgeNoteSyncLanes() {
+        knowledgeNoteSyncTails.values.forEach { $0.task.cancel() }
+        knowledgeNoteSyncTails.removeAll()
+        knowledgeNoteSyncHashes.removeAll()
     }
 
     /// 对路径片段做百分号编码（保留 "/" 以便多段类目，如 knowledge/行业知识/金融）
@@ -1809,12 +1851,16 @@ public final class APIClient: ObservableObject {
         _ request: URLRequest,
         session: URLSession,
         canRetry: Bool,
-        reauthOn401: Bool = true
+        reauthOn401: Bool = true,
+        credentialGeneration expectedGeneration: UInt64? = nil
     ) async throws -> Data {
+        let requestGeneration = expectedGeneration ?? credentialGeneration
+        guard requestGeneration == credentialGeneration else { throw CancellationError() }
         var attempt = 0
         while true {
             do {
                 let (data, response) = try await session.data(for: request)
+                guard requestGeneration == credentialGeneration else { throw CancellationError() }
                 guard let http = response as? HTTPURLResponse else {
                     throw APIError.network("无效响应")
                 }
@@ -1835,8 +1881,10 @@ public final class APIClient: ObservableObject {
                 isOfflineMode = false
                 return data
             } catch let urlError as URLError where urlError.code == .cancelled {
+                guard requestGeneration == credentialGeneration else { throw CancellationError() }
                 throw urlError  // 请求取消，原样上抛，不误标离线
             } catch let urlError as URLError {
+                guard requestGeneration == credentialGeneration else { throw CancellationError() }
                 if canRetry && attempt == 0 && Self.isTransientNetworkError(urlError) {
                     attempt += 1
                     continue
@@ -1859,8 +1907,11 @@ public final class APIClient: ObservableObject {
         method: String = "GET",
         body: Encodable? = nil,
         queryItems: [URLQueryItem] = [],
-        reauthOn401: Bool = true
+        reauthOn401: Bool = true,
+        credentialGeneration expectedGeneration: UInt64? = nil
     ) async throws -> T {
+        let requestGeneration = expectedGeneration ?? credentialGeneration
+        guard requestGeneration == credentialGeneration else { throw CancellationError() }
         var components = URLComponents(
             url: baseURL
             .appendingPathComponent("api/v1")
@@ -1886,19 +1937,22 @@ public final class APIClient: ObservableObject {
         let data: Data
         do {
             data = try await perform(
-                request, session: session, canRetry: method == "GET", reauthOn401: reauthOn401
+                request, session: session, canRetry: method == "GET", reauthOn401: reauthOn401,
+                credentialGeneration: requestGeneration
             )
         } catch APIError.server(let status, let raw)
             where AgreementReplayPolicy.canReplay(statusCode: status, replayCount: 0) {
             guard let version = Self.agreementVersion(from: raw) else {
                 throw APIError.server(status, raw)
             }
+            guard requestGeneration == credentialGeneration else { throw CancellationError() }
             requiredAgreementVersion = version
             let accepted = await withCheckedContinuation { agreementWaiters.append($0) }
-            guard accepted else { throw APIError.server(428, raw) }
+            guard accepted, requestGeneration == credentialGeneration else { throw CancellationError() }
             // A protected request is replayed exactly once after explicit acceptance.
             data = try await perform(
-                request, session: session, canRetry: false, reauthOn401: reauthOn401
+                request, session: session, canRetry: false, reauthOn401: reauthOn401,
+                credentialGeneration: requestGeneration
             )
         }
         do {
@@ -2585,12 +2639,55 @@ public final class APIClient: ObservableObject {
 
     // MARK: - 对话 / 思维链
 
+    @discardableResult
     public func syncKnowledgeNote(
         id: String,
         markdown: String,
         updatedAt: Date,
-        baseHash: String? = nil
-    ) async throws {
+        baseHash: String? = nil,
+        credentialGeneration: UInt64
+    ) async throws -> KnowledgeNoteSyncResponseDTO {
+        let key = "\(credentialGeneration):\(id)"
+        let predecessor = knowledgeNoteSyncTails[key]
+        let knownHash = knowledgeNoteSyncHashes[key]
+        let contentHash = SHA256.hash(data: Data(markdown.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            _ = try? await predecessor?.task.value
+            guard let self else { throw CancellationError() }
+            return try await self.performKnowledgeNoteSync(
+                id: id, markdown: markdown, updatedAt: updatedAt,
+                contentHash: contentHash,
+                baseHash: baseHash ?? predecessor?.contentHash ?? knownHash,
+                credentialGeneration: credentialGeneration
+            )
+        }
+        knowledgeNoteSyncTails[key] = (token, contentHash, task)
+        do {
+            let response = try await task.value
+            if knowledgeNoteSyncTails[key]?.token == token {
+                knowledgeNoteSyncTails.removeValue(forKey: key)
+                knowledgeNoteSyncHashes[key] = response.contentHash
+            }
+            return response
+        } catch {
+            if knowledgeNoteSyncTails[key]?.token == token {
+                knowledgeNoteSyncTails.removeValue(forKey: key)
+            }
+            throw error
+        }
+    }
+
+    private func performKnowledgeNoteSync(
+        id: String,
+        markdown: String,
+        updatedAt: Date,
+        contentHash: String,
+        baseHash: String?,
+        credentialGeneration: UInt64
+    ) async throws -> KnowledgeNoteSyncResponseDTO {
         struct Body: Encodable {
             let markdown: String
             let contentHash: String
@@ -2603,22 +2700,29 @@ public final class APIClient: ObservableObject {
                 case updatedAt = "updated_at"
             }
         }
-        struct Response: Decodable { let syncStatus: String }
-        let digest = SHA256.hash(data: Data(markdown.utf8))
-            .map { String(format: "%02x", $0) }
-            .joined()
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let _: Response = try await request(
-            Response.self,
+        return try await request(
+            KnowledgeNoteSyncResponseDTO.self,
             path: "me/knowledge-notes/\(encodedPath(id))",
             method: "PUT",
             body: Body(
                 markdown: markdown,
-                contentHash: digest,
+                contentHash: contentHash,
                 baseHash: baseHash,
                 updatedAt: formatter.string(from: updatedAt)
-            )
+            ),
+            credentialGeneration: credentialGeneration
+        )
+    }
+
+    public func fetchKnowledgeNoteStatus(
+        id: String, credentialGeneration: UInt64
+    ) async throws -> KnowledgeNoteSyncStatusDTO {
+        try await request(
+            KnowledgeNoteSyncStatusDTO.self,
+            path: "me/knowledge-notes/\(encodedPath(id))/status",
+            credentialGeneration: credentialGeneration
         )
     }
 

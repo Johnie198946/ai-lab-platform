@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 
-from backend.services.knowledge_catalog import bookshelf_catalog, clear_manifest_cache, reader_book_body
+from backend.services.knowledge_catalog import (
+    _apply_file_read_barrier, bookshelf_catalog, clear_manifest_cache, reader_book_body,
+)
 
 
 def test_bookshelf_only_exposes_public_and_owned_admitted_books(tmp_path):
@@ -169,6 +171,71 @@ def test_bookshelf_only_rechecks_explicit_admission_candidates(tmp_path, monkeyp
 
     assert [book["knowledge_id"] for book in books] == ["admitted"]
     assert calls == ["wiki/admitted.md"]
+
+
+def test_bookshelf_rejects_non_knowledge_labels_and_zero_confidence(tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    documents = []
+    for index, labels in enumerate((
+        {"claim_status": "knowledge_gap"},
+        {"evidence_type": "unknown"},
+        {"fact_classification": "question"},
+        {"confidence": 0},
+    )):
+        relative = f"wiki/rejected-{index}.md"
+        frontmatter = {
+            "classification_status": "approved", "security_level": "green",
+            "book_publication_authorized": True, "book_title": f"Rejected {index}",
+            "book_author": "Editorial", "book_summary": "Must remain hidden.", **labels,
+        }
+        (tmp_path / relative).write_text(
+            "---\n" + "\n".join(f"{key}: {json.dumps(value)}" for key, value in frontmatter.items())
+            + "\n---\nHidden body.", encoding="utf-8")
+        documents.append({
+            "knowledge_id": f"rejected-{index}", "path": relative,
+            "pack_id": "knowledge/public", **frontmatter,
+        })
+    (tmp_path / "knowledge_catalog.json").write_text(json.dumps({
+        "version": "2.0", "packs": [{"category": "knowledge/public", "title": "Public"}],
+        "documents": documents,
+    }), encoding="utf-8")
+    clear_manifest_cache()
+
+    assert bookshelf_catalog("tenant-a", tmp_path) == []
+
+
+def test_generated_projection_cannot_restore_removed_live_labels_from_manifest(tmp_path):
+    wiki = tmp_path / "wiki"
+    wiki.mkdir()
+    path = wiki / "generated.md"
+    cached = {
+        "path": "wiki/generated.md", "classification_status": "approved",
+        "security_level": "red", "type": "concept", "claim_status": "fact",
+        "evidence_type": "observed", "confidence": 0.9,
+    }
+    base = (
+        "---\nclassification_status: approved\nsecurity_level: red\n"
+        "projection_operation_id: kop-test\nowner_tenant: tenant-a\n"
+    )
+    for omitted in ("type", "claim_status", "evidence_type", "confidence"):
+        live = {
+            "type": "concept", "claim_status": "fact",
+            "evidence_type": "observed", "confidence": 0.9,
+        }
+        live.pop(omitted)
+        path.write_text(base + "".join(f"{key}: {value}\n" for key, value in live.items())
+                        + "---\nGenerated body.\n", encoding="utf-8")
+        assert _apply_file_read_barrier(tmp_path, cached) is None
+    path.write_text(base + "type: concept\nclaim_status: fact\nevidence_type: observed\n"
+                    "confidence: null\n---\nGenerated body.\n", encoding="utf-8")
+    assert _apply_file_read_barrier(tmp_path, cached) is None
+
+    path.write_text("---\nclassification_status: approved\nsecurity_level: red\n"
+                    "owner_tenant: tenant-a\n---\nLegacy body.\n", encoding="utf-8")
+    legacy = {"path": "wiki/generated.md", "classification_status": "approved",
+              "security_level": "red", "owner_tenant": "tenant-a"}
+    assert _apply_file_read_barrier(tmp_path, legacy) is not None
 
 
 def test_reader_sections_preserve_empty_headings_and_ignore_fenced_hashes():

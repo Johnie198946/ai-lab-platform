@@ -504,7 +504,7 @@ private final class FakeKnowledgeActionSynchronizer: KnowledgeActionSynchronizin
         return .init(items: items, count: items.count, compileStatus: "ready")
     }
 
-    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?) async throws {
+    func syncKnowledgeNote(id: String, markdown: String, updatedAt: Date, baseHash: String?, credentialGeneration: UInt64) async throws {
         legacyMergeMutationCount += 1
         let hash = SHA256.hash(data: Data(markdown.utf8)).map { String(format: "%02x", $0) }.joined()
         notes[id] = .init(

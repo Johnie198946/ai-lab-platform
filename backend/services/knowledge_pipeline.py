@@ -13,7 +13,7 @@ from sqlalchemy import select
 from backend.db import SessionLocal
 from backend.models.knowledge_contribution import (
     KnowledgeContributionOutbox as Event, KnowledgeContributionRun as BusinessRun,
-    KnowledgeContributionProjection as Projection,
+    KnowledgeContributionProjection as Projection, KnowledgeContributionBinding as Binding,
 )
 from backend.services.knowledge_contribution import (
     accept_contribution_result,
@@ -28,9 +28,12 @@ from backend.services.knowledge_contribution import (
 from backend.services.knowledge_contribution_artifacts import (
     stage_green_projection,
     write_red_projection, tenant_namespace, canonical_identity,
-    canonical_projection_id,
+    canonical_projection_id, quarantine_projection_artifact,
 )
-from backend.services.knowledge_run_adapter import KnowledgeRunAdapter, STAGES, digest
+from backend.services.knowledge_run_adapter import (
+    KnowledgeRunAdapter, STAGES, digest, source_review_supports_projection,
+    source_review_supports_public, validate_source_review,
+)
 from backend.services.knowledge_catalog import authorized_compile_candidates
 
 GREEN_CONFIDENCE_THRESHOLD = 0.60
@@ -80,7 +83,8 @@ async def _settle_run(run_id: str, status: str) -> None:
         await db.commit()
 
 
-async def submit_compile(store, *, event_id: str, content: str) -> dict[str, Any]:
+async def submit_compile(store, *, event_id: str, content: str,
+                         version: str = "knowledge-run-v4.2") -> dict[str, Any]:
     event = await _event(event_id)
     if event.source_kind == "note" and hashlib.sha256(content.encode()).hexdigest() != event.content_hash:
         raise ValueError("exact note source hash required")
@@ -97,6 +101,7 @@ async def submit_compile(store, *, event_id: str, content: str) -> dict[str, Any
     adapter = KnowledgeRunAdapter(store)
     run = adapter.submit_compile(
         authorized=True,
+        version=version,
         tenant_id=event.tenant_key,
         user_id=event.user_id,
         event_id=event_id,
@@ -156,14 +161,23 @@ def _canonical_kind(result: dict[str, Any]) -> str:
     return "entity"
 
 
-async def _run_dependencies(run_id: str) -> list[dict[str, Any]]:
+async def _run_dependencies(run_id: str, *, allow_terminal: bool = False) -> list[dict[str, Any]]:
+    from backend.services.knowledge_contribution import INACTIVE, _utc
     async with SessionLocal() as db:
         run = await db.get(BusinessRun, run_id)
         if run is None:
             raise ValueError("business run unavailable")
+        allowed = {"registered", "accepted"} | ({"rejected", "quarantined"} if allow_terminal else set())
+        if (run.status not in allowed
+                or run.status != "accepted" and not allow_terminal
+                and _utc(run.expires_at) <= _now()):
+            raise ValueError("business run revoked or expired")
         events = [await db.get(Event, event_id) for event_id in run.event_ids]
         if any(event is None for event in events):
             raise ValueError("business run source unavailable")
+        if any(event.status in INACTIVE or event.authorization_epoch != run.authorization_epoch
+               for event in events):
+            raise ValueError("business run source revoked")
         return sorted([{"event_id": event.event_id, "source_revision": event.source_revision,
                         "content_hash": event.content_hash,
                         "root_source_fingerprint": event.root_source_fingerprint}
@@ -174,6 +188,243 @@ async def _projection_version(projection_id: str) -> str:
     async with SessionLocal() as db:
         projection = await db.get(Projection, projection_id)
         return str((projection.metadata_snapshot or {}).get("projection_version") or "") if projection else ""
+
+
+async def _accepted_private_projection(run_id: str, projection_id: str,
+                                       artifact_ref: str) -> bool:
+    async with SessionLocal() as db:
+        run = await db.get(BusinessRun, run_id)
+        projection = await db.get(Projection, projection_id)
+        bindings = list((await db.scalars(select(Binding).where(
+            Binding.projection_id == projection_id, Binding.active.is_(True),
+        ))).all())
+        snapshot = (projection.metadata_snapshot or {}) if projection else {}
+        expected_event_ids = set(snapshot.get("source_event_ids") or [])
+        return bool(
+            run and projection and run.status == "accepted" and run.projection_id == projection_id
+            and projection.status == "active" and projection.security_level == "red"
+            and (projection.tenant_key, projection.user_id) == (run.tenant_key, run.user_id)
+            and projection.artifact_ref == artifact_ref
+            and {item.event_id for item in bindings} == expected_event_ids
+            and set(run.event_ids).issubset(expected_event_ids)
+        )
+
+
+def _reviewed_public_references(compile_spec, review: dict[str, Any]) -> list[dict[str, Any]]:
+    references: dict[str, dict[str, Any]] = {}
+    for assertion in review["assertions"]:
+        if assertion["source_origin"] != "existing_wiki":
+            continue
+        matches = [item for item in compile_spec.existing_wiki
+                   if item.canonical_id == assertion["source_canonical_id"]
+                   and item.base_version == assertion["source_base_version"]]
+        if len(matches) != 1:
+            raise ValueError("reviewed canonical input was not dispatched")
+        if matches[0].public_evidence:
+            reference = matches[0].public_evidence.model_dump()
+            references[reference["projection_id"]] = reference
+    return [references[key] for key in sorted(references)]
+
+
+async def _write_reviewed_private(store, adapter: KnowledgeRunAdapter, *, compile_run_id: str,
+                                  review_run_id: str, vault: Path) -> dict[str, Any]:
+    compile_spec, compiled = adapter.verified_result(
+        compile_run_id, tenant_id=str(store.get_unchecked(compile_run_id)["tenant_id"]),
+        user_id=str(store.get_unchecked(compile_run_id)["user_id"]),
+    )
+    review_spec, review = adapter.verified_result(
+        review_run_id, tenant_id=compile_spec.tenant_id, user_id=compile_spec.user_id,
+    )
+    if (review_spec.version != "knowledge-run-v4.2"
+            or review_spec.predecessor_run_id != compile_run_id):
+        raise ValueError("source review lineage mismatch")
+    validate_source_review(review_spec, review)
+    event = await _event(compile_spec.event_id)
+    increment = compiled.get("incremental")
+    modalities = {item["draft_modality"] for item in review["assertions"]
+                  if item["private_support"] == "entailed"}
+    private_modality = (next(iter(modalities)) if len(modalities) == 1 else
+                        next((value for value in (
+                            "question", "hypothesis", "conditional", "plan", "opinion", "fact"
+                        ) if value in modalities), str(compiled["claim_status"])))
+    private_type = (compiled["type"] if private_modality == "fact" else
+                    "plan" if private_modality in {"plan", "conditional"} else private_modality)
+    private_claim_status = private_modality
+    private_evidence_type = (compiled["evidence_type"] if private_modality == "fact"
+                             else "reviewed_source")
+    private_confidence = min(compiled["confidence"], review["confidence"])
+    kind = _canonical_kind({**compiled, "type": private_type})
+    identity = increment["target"] if increment else canonical_identity(kind, compiled["title"])
+    projection_id = canonical_projection_id(
+        "private", tenant_namespace(compile_spec.tenant_id), kind, identity,
+    )
+    artifact_ref = (Path("wiki/tenant") / tenant_namespace(compile_spec.tenant_id)
+                    / f"{identity}.md").as_posix()
+    operation_id = "kop-" + digest([compile_run_id, "red"])[:48]
+    result_digest = digest({"compiled": compiled, "source_review": review})
+    intent = {"tenant_id": compile_spec.tenant_id, "user_id": compile_spec.user_id,
+              "authorization_epoch": compile_spec.authorization_epoch,
+              "review_run_id": review_run_id, "review_result_digest": digest(review)}
+    prior_operation = await get_projection_operation(operation_id)
+    if prior_operation and (
+            prior_operation["run_id"] != compile_run_id
+            or prior_operation["projection_id"] != projection_id
+            or prior_operation["artifact_ref"] != artifact_ref
+            or prior_operation["operation_stage"] != "red"
+            or prior_operation["payload_digest"] != digest(review_spec.model_dump())
+            or prior_operation["result_digest"] != result_digest
+            or prior_operation["intent"] != intent):
+        raise ValueError("projection operation review binding conflict")
+    accepted_projection = await _accepted_private_projection(
+        compile_run_id, projection_id, artifact_ref,
+    )
+    terminal_recovery = bool(prior_operation and accepted_projection
+                             and prior_operation["status"] in {"file_published", "sql_accepted", "completed"})
+    expected_terminal = "rejected" if review["decision"] == "reject" else "quarantined"
+    async with SessionLocal() as db:
+        review_business = await db.get(BusinessRun, review_run_id)
+        if (review_business and review_business.status in {"rejected", "quarantined"}
+                and (not terminal_recovery or review_business.status != expected_terminal)):
+            raise ValueError("source review run was not accepted for recovery")
+    compile_dependencies = await _run_dependencies(compile_run_id)
+    review_dependencies = await _run_dependencies(review_run_id, allow_terminal=terminal_recovery)
+    if compile_dependencies != review_dependencies:
+        raise ValueError("source review authorization mismatch")
+    public_references = _reviewed_public_references(compile_spec, review)
+    public_dependencies: list[dict[str, Any]] = []
+    for reference in public_references:
+        public_dependencies.extend(await authorized_public_reuse_dependencies(reference))
+    private_dependencies = sorted(
+        {item["event_id"]: item for item in compile_dependencies + public_dependencies}.values(),
+        key=lambda item: item["event_id"],
+    )
+    if prior_operation and prior_operation["status"] == "completed":
+        return {"status": event.status, "run_id": review_run_id,
+                "red_projection_id": projection_id}
+    non_knowledge = {"knowledge_gap", "question", "unanswered", "insufficient_evidence", "unknown"}
+    if (not source_review_supports_projection(review) or compiled["confidence"] == 0
+            or any(str(compiled.get(field) or "").strip().casefold() in non_knowledge
+                   for field in ("type", "claim_status", "evidence_type"))):
+        await _set_event_status(compile_spec.event_id, "no_increment", "source review found no supported increment")
+        await _settle_run(review_run_id, "accepted")
+        return {"status": "no_increment", "run_id": review_run_id,
+                "reason": "unsupported_source_assertions"}
+
+    if increment and increment["decision"] == "no_increment":
+        candidate = next(item for item in compile_spec.existing_wiki
+                         if item.canonical_id == identity and item.base_version == increment["base_hash"])
+        current = hashlib.sha256((vault / candidate.relative_path).read_bytes()).hexdigest()
+        if candidate.public_evidence:
+            await authorized_public_reuse_dependencies(candidate.public_evidence.model_dump())
+        if current != candidate.base_version:
+            await _set_event_status(compile_spec.event_id, "recompile_pending", "wiki_cas_conflict")
+            raise ValueError("wiki_cas_conflict")
+        await _set_event_status(compile_spec.event_id, "no_increment")
+        await _settle_run(review_run_id, "accepted")
+        return {"status": "no_increment", "run_id": review_run_id,
+                "artifact_ref": candidate.relative_path}
+
+    private_candidate = next((item for item in compile_spec.existing_wiki
+        if item.canonical_id == identity and not item.public_evidence), None)
+    red_increment = ({**increment, "base_hash": private_candidate.base_version
+                      if private_candidate else "", "claim_status": private_claim_status,
+                      "evidence_type": private_evidence_type} if increment else None)
+    if not increment:
+        base_hash = (prior_operation or {}).get("base_digest") or None
+        if not prior_operation:
+            async with SessionLocal() as db:
+                previous = await db.get(Projection, projection_id)
+                active_binding = await db.scalar(select(Binding).where(
+                    Binding.projection_id == projection_id, Binding.active.is_(True),
+                ).limit(1))
+                if (previous is not None and previous.status == "withdrawn"
+                        and (previous.tenant_key, previous.user_id, previous.artifact_ref)
+                        == (compile_spec.tenant_id, compile_spec.user_id, artifact_ref)
+                        and active_binding is None):
+                    path = vault / artifact_ref
+                    if path.is_file() and not path.is_symlink():
+                        base_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        if base_hash:
+            red_increment = {"target": identity, "kind": kind, "base_hash": base_hash,
+                             "decision": "update", "conflicts": [],
+                             "claim_status": private_claim_status,
+                             "evidence_type": private_evidence_type}
+    operation = await prepare_projection_operation(
+        operation_id=operation_id, run_id=compile_run_id, projection_id=projection_id,
+        artifact_ref=artifact_ref, operation_stage="red",
+        payload_digest=digest(review_spec.model_dump()),
+        base_digest=(red_increment or {}).get("base_hash", ""), result_digest=result_digest,
+        intent=intent,
+    )
+    if operation["status"] == "quarantined":
+        raise ValueError("projection operation is quarantined")
+    if operation["status"] in {"prepared", "file_published"}:
+        try:
+            artifact_ref = write_red_projection(
+                vault, projection_id=projection_id, tenant_key=compile_spec.tenant_id,
+                title=compiled["title"], knowledge_type=private_type,
+                knowledge_level=compiled["knowledge_level"], confidence=private_confidence,
+                content=compiled["content"], source_ref_hash=event.business_state["source_key"],
+                source_content_hash=event.content_hash, source_revision=event.source_revision,
+                incremental=red_increment, dependencies=private_dependencies,
+                canonical_id=identity, canonical_kind=kind, operation_id=operation_id,
+                claim_status=private_claim_status, evidence_type=private_evidence_type,
+                replace_withdrawn=not increment and red_increment is not None,
+            )
+        except ValueError as exc:
+            if str(exc) == "wiki_cas_conflict":
+                await mark_projection_operation(operation_id, "quarantined")
+                await _set_event_status(compile_spec.event_id, "recompile_pending", str(exc))
+            raise
+        await mark_projection_operation(operation_id, "file_published")
+    if operation["status"] in {"prepared", "file_published"}:
+        try:
+            await accept_contribution_result(
+                tenant_key=compile_spec.tenant_id, user_id=compile_spec.user_id,
+                run_id=compile_run_id, authorization_epoch=compile_spec.authorization_epoch,
+                projection_id=projection_id, artifact_ref=artifact_ref, security_level="red",
+                recovery_operation_id=operation_id,
+                governance={"classification_status": "approved", "security_level": "red",
+                            "approved_by": "hermes:knowledge_source_review",
+                            "canonical_identity": identity,
+                            "base_projection_version": await _projection_version(projection_id),
+                            "source_review_run_id": review_run_id,
+                            "source_review_digest": digest(review),
+                            "authorized_public_inputs": public_references,
+                            "result_digest": result_digest},
+            )
+        except ValueError:
+            await mark_projection_operation(operation_id, "quarantined")
+            quarantine_projection_artifact(
+                vault, operation_id=operation_id, artifact_ref=artifact_ref,
+            )
+            raise
+        await mark_projection_operation(operation_id, "sql_accepted")
+
+    factual = (compiled["claim_status"] == "fact"
+               and review["fact_classification"] == "fact"
+               and (compiled.get("incremental") or {}).get("claim_status", "fact") == "fact")
+    if (not factual or review["decision"] != "publish"
+            or not source_review_supports_public(review)):
+        status = expected_terminal
+        await _set_event_status(compile_spec.event_id, status, "material retained only in reviewed private projection")
+        await _settle_run(review_run_id, status)
+        await mark_projection_operation(operation_id, "completed")
+        return {"status": status, "run_id": review_run_id,
+                "red_projection_id": projection_id}
+
+    next_run = adapter.advance(review_run_id, tenant_id=compile_spec.tenant_id,
+                               user_id=compile_spec.user_id, authorized=True)
+    await register_contribution_run(
+        tenant_key=compile_spec.tenant_id, user_id=compile_spec.user_id,
+        run_id=next_run["run_id"], event_ids=[item["event_id"] for item in review_dependencies],
+        expires_at=_now() + timedelta(hours=1),
+    )
+    await _settle_run(review_run_id, "accepted")
+    await _set_event_status(compile_spec.event_id, "privacy_reviewing")
+    await mark_projection_operation(operation_id, "completed")
+    return {"status": "privacy_reviewing", "run_id": next_run["run_id"],
+            "red_projection_id": projection_id}
 
 
 async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any]:
@@ -187,9 +438,45 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     )
     if not grant or grant["authorization_epoch"] != spec.authorization_epoch:
         await _set_event_status(spec.event_id, "stale", "authorization changed")
-        await quarantine_projection_operations(run_id)
+        for operation in await quarantine_projection_operations(
+            run_id=run_id, review_run_id=run_id,
+        ):
+            quarantine_projection_artifact(
+                vault, operation_id=operation["operation_id"],
+                artifact_ref=operation["artifact_ref"],
+            )
         raise ValueError("contribution authorization changed")
     event = await _event(spec.event_id)
+
+    if spec.version == "knowledge-run-v4.2" and spec.stage == STAGES[0]:
+        await _run_dependencies(run_id)
+        operation_id = "kop-" + digest([run_id, "red"])[:48]
+        recovery = await get_projection_operation(operation_id)
+        review_run_id = str((recovery or {}).get("intent", {}).get("review_run_id") or "")
+        if review_run_id:
+            return await _write_reviewed_private(
+                store, adapter, compile_run_id=run_id,
+                review_run_id=review_run_id, vault=vault,
+            )
+        dependencies = await _run_dependencies(run_id)
+        next_run = adapter.advance(run_id, tenant_id=spec.tenant_id,
+                                   user_id=spec.user_id, authorized=True)
+        await register_contribution_run(
+            tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=next_run["run_id"],
+            event_ids=[item["event_id"] for item in dependencies],
+            expires_at=_now() + timedelta(hours=1),
+        )
+        await _settle_run(run_id, "accepted")
+        await _set_event_status(spec.event_id, "sanitizing")
+        return {"status": "sanitizing", "run_id": next_run["run_id"]}
+
+    if spec.version == "knowledge-run-v4.2" and spec.stage == STAGES[1]:
+        return await _write_reviewed_private(
+            store, adapter, compile_run_id=spec.predecessor_run_id,
+            review_run_id=run_id, vault=vault,
+        )
+
+    await _run_dependencies(run_id)
 
     if spec.stage == STAGES[0]:
         increment = result.get("incremental")
@@ -257,6 +544,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
                 tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=run_id,
                 authorization_epoch=spec.authorization_epoch, projection_id=projection_id,
                 artifact_ref=artifact_ref, security_level="red",
+                recovery_operation_id=operation_id,
                 governance={"classification_status": "approved", "security_level": "red",
                             "approved_by": "hermes:knowledge_tenant_compile",
                             "canonical_identity": identity,
@@ -309,6 +597,12 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         compile_run_id, tenant_id=spec.tenant_id, user_id=spec.user_id,
     )
     publication_confidence = min(compiled["confidence"], sanitized["confidence"])
+    if (compiled["claim_status"] != "fact" or sanitized["fact_classification"] != "fact"
+            or (compiled.get("incremental") or {}).get("claim_status", "fact") != "fact"):
+        await _set_event_status(spec.event_id, "quarantined", "non-factual material is private only")
+        await _settle_run(run_id, "quarantined")
+        return {"status": "quarantined", "run_id": run_id,
+                "reason": "non_factual_shared_evidence"}
     if publication_confidence < GREEN_CONFIDENCE_THRESHOLD:
         await _set_event_status(spec.event_id, "rejected", "green confidence below threshold")
         await _settle_run(run_id, "rejected")
@@ -325,6 +619,14 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     artifact_ref = (Path("wiki/contributions") / f"{projection_id}.md").as_posix()
     result_digest = digest({"compiled": compiled, "sanitized": sanitized, "privacy": result})
     green_dependencies = await _run_dependencies(run_id)
+    public_references = (_reviewed_public_references(compile_spec, sanitized)
+                         if compile_spec.version == "knowledge-run-v4.2" else [])
+    for reference in public_references:
+        try:
+            green_dependencies += await authorized_public_reuse_dependencies(reference)
+        except ValueError as exc:
+            await _set_event_status(spec.event_id, "recompile_pending", str(exc))
+            raise
     increment = compiled.get("incremental")
     public_candidate = next((item for item in compile_spec.existing_wiki
         if increment and item.canonical_id == increment["target"] and item.public_evidence), None)
@@ -360,7 +662,8 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
                 vault, projection_id=projection_id, title=compiled["title"],
                 knowledge_type=compiled["type"], knowledge_level=compiled["knowledge_level"],
                 confidence=publication_confidence,
-                content=sanitized["content"],
+                    content=(sanitized["sanitized_content"] if compile_spec.version == "knowledge-run-v4.2"
+                             else sanitized["content"]),
                 source_count=len({item["root_source_fingerprint"] for item in green_dependencies}),
                 operation_id=operation_id,
                 base_hash=operation["base_digest"],
@@ -383,7 +686,8 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         "candidate_hash": spec.candidate_hash,
         "authorization_epoch": spec.authorization_epoch,
         "stage_receipts": receipts,
-        "published_body_hash": hashlib.sha256(sanitized["content"].strip().encode()).hexdigest(),
+        "published_body_hash": hashlib.sha256((sanitized["sanitized_content"]
+            if compile_spec.version == "knowledge-run-v4.2" else sanitized["content"]).strip().encode()).hexdigest(),
         "derivation_permitted": True,
         "publication_audience": ["public"],
         "disclosure_granularity": "summary",
@@ -392,6 +696,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         "canonical_kind": kind,
         "base_projection_version": base_projection_version,
         "authorized_public_input": public_reference,
+        "authorized_public_inputs": public_references,
         "result_digest": result_digest,
     }
     projection = None
@@ -400,6 +705,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
             tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=run_id,
             authorization_epoch=spec.authorization_epoch, projection_id=projection_id,
             artifact_ref=artifact_ref, security_level="green", governance=governance,
+            recovery_operation_id=operation_id,
         )
         await mark_projection_operation(operation_id, "sql_accepted")
     from backend.services.knowledge_publication_gate import machine_approve_green

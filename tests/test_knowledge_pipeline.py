@@ -10,7 +10,7 @@ from backend.services.knowledge_contribution import (
     ContributionCandidate, enqueue_contribution as _enqueue_contribution,
     set_contribution_policy,
 )
-from backend.services.knowledge_pipeline import advance_completed, submit_compile
+from backend.services.knowledge_pipeline import advance_completed, submit_compile as _submit_compile
 from backend.services.knowledge_run_adapter import receipt_for, validate_execution
 from scripts.chat_run_store import DurableChatRunStore
 
@@ -37,6 +37,10 @@ async def enqueue_contribution(candidate):
     return await _enqueue_contribution(ContributionCandidate(
         **{**candidate.__dict__, "source_changed_at": datetime.now(timezone.utc)}
     ))
+
+
+async def submit_compile(store, **fields):
+    return await _submit_compile(store, version="knowledge-run-v4.1", **fields)
 
 
 def complete(store, run_id, result):

@@ -1788,8 +1788,12 @@ public struct SubscriptionCenterView: View {
             tags: ["书籍摘录", "quantum-books"]
         ) else { return }
         let markdown = KnowledgeNoteStore.shared.markdown(for: note)
+        let credentialGeneration = api.currentCredentialGeneration()
         Task {
-            try? await api.syncKnowledgeNote(id: note.id, markdown: markdown, updatedAt: note.updatedAt)
+            try? await api.syncKnowledgeNote(
+                id: note.id, markdown: markdown, updatedAt: note.updatedAt,
+                credentialGeneration: credentialGeneration
+            )
         }
         showSuccess("已摘录到笔记")
     }
@@ -2211,9 +2215,13 @@ private struct KnowledgeBookReadingView: View {
         ) else { return }
         let account = KnowledgeNoteStore.shared.accountFingerprint
         let markdown = KnowledgeNoteStore.shared.markdown(for: note)
+        let credentialGeneration = api.currentCredentialGeneration()
         Task {
             guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
-            try? await api.syncKnowledgeNote(id: note.id, markdown: markdown, updatedAt: note.updatedAt)
+            try? await api.syncKnowledgeNote(
+                id: note.id, markdown: markdown, updatedAt: note.updatedAt,
+                credentialGeneration: credentialGeneration
+            )
         }
         saveMessage = "已保存到当前账号的笔记"
     }

@@ -8,7 +8,9 @@ from sqlalchemy import create_engine, text
 
 from backend.api import subscriptions
 from backend.db import _migrate_book_subscription_version
-from test_book_subscriptions import AUTH, BODY, BOOK, VERSION, book_db, run  # noqa: F401
+from test_book_subscriptions import AUTH, BODY, BOOK, VERSION, run
+
+pytest_plugins = ("test_book_subscriptions",)
 
 
 @pytest.fixture

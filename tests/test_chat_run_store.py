@@ -89,6 +89,23 @@ def test_same_session_serializes_and_restart_marks_stalled(tmp_path):
     assert store.get(parallel["run_id"], tenant_user_hash=owner)["status"] == "stalled"
 
 
+def test_retry_queue_delay_starts_when_run_becomes_stalled(tmp_path, monkeypatch):
+    clock = iter((100.0, 101.0, 200.0, 201.25))
+    monkeypatch.setattr(module.time, "time", lambda: next(clock))
+    store = DurableChatRunStore(tmp_path / "runs.sqlite3")
+    owner = store.tenant_user_hash("tenant-a", "user-a")
+    run, _ = store.create_or_get(
+        tenant_user_hash=owner, session_id="session-1", request_id="request-123"
+    )
+    claimed = store.claim_next("worker")
+    assert claimed["queue_delay_ms"] == 1_000
+    with store._connect() as conn:
+        conn.execute("UPDATE chat_runs SET lease_expires_at=0 WHERE run_id=?", (run["run_id"],))
+    assert store.recover_after_restart() == 1
+    retried = store.claim_next("worker")
+    assert retried["queue_delay_ms"] == 1_250
+
+
 def test_interactive_chat_keeps_one_owner_slot_ahead_of_background_runs(tmp_path):
     store = DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")

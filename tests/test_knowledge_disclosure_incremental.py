@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 from agreement_fixtures import set_user_contribution_consent
+from fastapi import HTTPException
 import yaml
 from sqlalchemy import select
 
@@ -18,7 +19,7 @@ from backend.services.knowledge_contribution import (
     ContributionCandidate, enqueue_contribution as _enqueue_contribution,
     set_contribution_policy,  withdraw_contribution,
 )
-from backend.services.knowledge_pipeline import submit_compile, advance_completed
+from backend.services.knowledge_pipeline import submit_compile as _submit_compile, advance_completed
 from backend.services.knowledge_policy import resolve_policy, mint_capability
 from backend.db import SessionLocal
 from backend.models.knowledge_contribution import (
@@ -38,6 +39,10 @@ async def enqueue_contribution(candidate):
     return await _enqueue_contribution(ContributionCandidate(
         **{**candidate.__dict__, "source_changed_at": datetime.now(timezone.utc)}
     ))
+
+
+async def submit_compile(store, **fields):
+    return await _submit_compile(store, version="knowledge-run-v4.1", **fields)
 
 
 def test_compiler_concurrent_cas_has_one_winner(tmp_path):
@@ -175,8 +180,10 @@ async def test_real_pipeline_gateway_summary_and_revocation(tmp_path, monkeypatc
         current_visibility.reset(token)
     await withdraw_contribution(tenant_key=tenant, user_id="owner", event_id=event["event_id"])
     assert await filter_database_live_documents(live, tmp_path) == []
-    response = await capability_search(GatewaySearchRequest(query="验收", include_content=True), capability)
-    assert response["docs"] == []
+    with pytest.raises(HTTPException) as denied:
+        await capability_search(GatewaySearchRequest(query="验收", include_content=True), capability)
+    assert denied.value.status_code == 403
+    assert denied.value.detail["code"] == "knowledge_scope_denied"
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Thread
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -119,6 +120,96 @@ def test_note_sync_is_tenant_scoped_idempotent_and_conflict_safe():
             "archived": False,
             "merged_into_note_id": None,
         }]
+
+
+def test_late_unconditional_note_write_cannot_replace_newer_client_version():
+    import backend.api.auth as auth
+    import backend.api.knowledge_sync as sync
+
+    async def resolver(_user_id):
+        return {"tenant_key": "tenant-late", "org_id": "org", "is_super_admin": False,
+                "categories": set()}
+
+    older, newer = "# version one\n", "# version two\n"
+    older_hash = hashlib.sha256(older.encode()).hexdigest()
+    newer_hash = hashlib.sha256(newer.encode()).hexdigest()
+    with tempfile.TemporaryDirectory() as directory, \
+         patch.object(auth, "tenant_resolver", side_effect=resolver), \
+         patch.object(sync, "_sync_root", return_value=Path(directory)):
+        assert _request("PUT", "/api/v1/me/knowledge-notes/late-note", json={
+            "markdown": older, "content_hash": older_hash,
+            "updated_at": "2026-09-08T09:00:00Z",
+        }).status_code == 200
+        assert _request("PUT", "/api/v1/me/knowledge-notes/late-note", json={
+            "markdown": newer, "content_hash": newer_hash,
+            "updated_at": "2026-09-08T09:00:01Z",
+        }).status_code == 200
+
+        late = _request("PUT", "/api/v1/me/knowledge-notes/late-note", json={
+            "markdown": older, "content_hash": older_hash,
+            "updated_at": "2026-09-08T09:00:00Z",
+        })
+        assert late.status_code == 409
+        assert late.json()["detail"] == {
+            "code": "stale_note_version", "current_hash": newer_hash,
+            "action": "pull_or_duplicate",
+        }
+        listed = _request("GET", "/api/v1/me/knowledge-notes").json()["items"]
+        assert listed[0]["content_hash"] == newer_hash
+        assert listed[0]["markdown"] == newer
+
+
+def test_sync_does_not_deadlock_while_merge_outbox_yields():
+    import backend.api.knowledge_sync as sync
+
+    async def run():
+        payload = {"tenant_key": "tenant-lock", "user_id": "owner"}
+        root = Path(tempfile.mkdtemp())
+
+        async def no_contribution(**_kwargs):
+            return None
+
+        def body(markdown: str):
+            return sync.NoteSyncRequest(
+                markdown=markdown,
+                content_hash=hashlib.sha256(markdown.encode()).hexdigest(),
+            )
+
+        with patch.object(sync, "_sync_root", return_value=root), \
+             patch.object(sync, "enqueue_note_contribution", side_effect=no_contribution):
+            await sync.sync_note("target", body("initial"), payload)
+            entered = asyncio.Event()
+
+            async def yielding_outbox(**_kwargs):
+                entered.set()
+                await asyncio.sleep(0.05)
+                return {}
+
+            with patch.object(sync, "_finish_merge_outbox", side_effect=yielding_outbox):
+                merge = asyncio.create_task(sync.merge_notes(sync.NoteMergeRequest(
+                    operation_id="lock-operation", target_note_id="target",
+                    target_base_hash=hashlib.sha256(b"initial").hexdigest(),
+                    source_versions={}, revised_content="merged",
+                ), payload))
+                await asyncio.wait_for(entered.wait(), timeout=0.5)
+                await asyncio.wait_for(
+                    sync.sync_note("other", body("new"), payload), timeout=0.5,
+                )
+                await asyncio.wait_for(merge, timeout=0.5)
+
+    errors = []
+
+    def execute():
+        try:
+            asyncio.run(run())
+        except BaseException as exc:
+            errors.append(exc)
+
+    watchdog = Thread(target=execute, daemon=True)
+    watchdog.start()
+    watchdog.join(timeout=2)
+    assert not watchdog.is_alive(), "merge/sync shared flock blocked the event loop"
+    assert not errors
 
 
 def test_note_archive_is_recoverable_and_scoped_to_authenticated_owner():

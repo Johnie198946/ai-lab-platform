@@ -3,6 +3,8 @@ import inspect
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 ROOT = Path(__file__).parents[1]
 SPEC = importlib.util.spec_from_file_location("chat_run_worker", ROOT / "scripts/chat_run_worker.py")
@@ -50,10 +52,16 @@ def test_worker_executes_claimed_run_and_persists_terminal(monkeypatch, tmp_path
     snapshot = store.get(run["run_id"], tenant_user_hash=owner)
     assert snapshot["status"] == "completed"
     assert snapshot["final_answer"] == "hello"
-    assert snapshot["event_sequence"] == 2
+    assert snapshot["event_sequence"] == 3
+    events = store.events_after(run["run_id"], 0, tenant_user_hash=owner)
+    assert [(item["event_sequence"], item["type"]) for item in events] == [
+        (1, "runtime_timing"), (2, "delta"), (3, "done"),
+    ]
+    assert events[0]["phase"] == "queue_claimed" and events[0]["queue_delay_ms"] >= 0
 
 
-def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_path):
+@pytest.mark.parametrize("retained", [True, False])
+def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_path, retained):
     store = worker.DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")
     run, _ = store.create_or_get(
@@ -78,7 +86,7 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
         "_prewarm_session_agent",
         lambda user_key, config, actual_sandbox, **kwargs: observed.append(
             (user_key, config, actual_sandbox, kwargs)
-        ) or "hermes-session",
+        ) or ("hermes-session", retained),
     )
     monkeypatch.setattr(
         worker.bridge,
@@ -96,6 +104,19 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
         sandbox,
         {"knowledge_action_enabled": True},
     )]
+    timing = store.events_after(run["run_id"], 0, tenant_user_hash=owner)
+    assert [event.get("phase") for event in timing[:-1]] == [
+        "queue_claimed", "agent_build_start", "agent_build_end",
+    ]
+    assert timing[1]["prewarm_requested"] is True
+    assert timing[2]["prewarm_completed"] is True
+    assert timing[2]["cache_populated"] is retained
+    assert timing[-1]["type"] == "done"
+
+
+def test_knowledge_sink_rejects_suppressed_delta_visibility():
+    sink = worker.KnowledgeEventSink(None, {"run_id": "knowledge-run"}, None)
+    assert worker.bridge._qput(sink, {"type": "delta", "content": "private"}) is False
 
 
 def test_worker_auto_ingests_high_confidence_research(monkeypatch, tmp_path):

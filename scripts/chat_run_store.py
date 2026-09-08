@@ -516,6 +516,10 @@ class DurableChatRunStore:
             row = conn.execute("SELECT * FROM chat_runs WHERE run_id=?", (selected["run_id"],)).fetchone()
             conn.execute("COMMIT")
             result = dict(row)
+            # For a retry, updated_at is when the lease was moved to stalled;
+            # for an initial run it equals creation time. This is queue wait,
+            # not total run age.
+            result["queue_delay_ms"] = round(max(0.0, now - float(selected["updated_at"])) * 1000, 3)
             result["execution_payload"] = json.loads(result.get("execution_payload_json") or "{}")
             return result
 

@@ -1036,6 +1036,9 @@ def test_bridge_declares_finite_session_before_running_agent(monkeypatch, tmp_pa
     assert observed["async_delivery_supported"] is False
     assert observed["agent_closed"] is True
     assert observed["db_closed"] is True
+    timing = events.get_nowait()
+    assert timing["type"] == "runtime_timing"
+    assert timing["phase"] == "reasoning_ready" and timing["elapsed_ms"] >= 0
     assert events.get_nowait()["type"] == "status"
     assert events.get_nowait()["type"] == "done"
 

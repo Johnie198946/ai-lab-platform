@@ -105,6 +105,7 @@ async def contribution_projection(tmp_path):
     wiki.mkdir(exist_ok=True)
     (wiki / "contributed.md").write_text(
         "---\ntitle: contributed\nsecurity_level: green\n"
+        "type: concept\nconfidence: 0.8\n"
         "classification_status: approved\npublication_policy: tenant_contribution_policy_v1\n"
         f"contribution_projection_id: {projection_id}\n"
         "enforced_searchable: true\nenforced_summarizable: true\n"

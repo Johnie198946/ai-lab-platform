@@ -5,7 +5,8 @@ from types import SimpleNamespace
 import pytest
 
 from backend.services.knowledge_run_adapter import (
-    ContractError, KnowledgeRunAdapter, STAGES, digest, parse_result,
+    ContractError, KnowledgeRunAdapter, STAGES, StageInput, digest, parse_result,
+    source_review_input, text_digest, validate_source_review,
 )
 from scripts import chat_run_worker as worker
 from scripts.chat_run_store import DurableChatRunStore
@@ -64,7 +65,7 @@ def submit(adapter, **changes):
         "authorized": True, "tenant_id": "tenant-a", "user_id": "user-a",
         "event_id": "event-a", "policy_version": "contribution-v4",
         "authorization_epoch": "e" * 64, "candidate_hash": "a" * 64,
-        "content": "private source",
+        "content": "private source", "version": "knowledge-run-v4.1",
         **changes,
     })
 
@@ -131,7 +132,89 @@ def test_bad_schema_fails_before_terminal_receipt(harness, answer):
     with pytest.raises(ContractError):
         read(adapter, completed)
     events = store.events_after(completed["run_id"], 0, tenant_user_hash=completed["tenant_user_hash"])
-    assert [e["type"] for e in events] == ["error"]
+    assert [e["type"] for e in events if e["type"] != "runtime_timing"] == ["error"]
+    timing = [e for e in events if e["type"] == "runtime_timing"]
+    assert timing[0]["phase"] == "queue_claimed" and timing[0]["queue_delay_ms"] >= 0
+
+
+@pytest.mark.parametrize("mutation", ["wrong_hash", "out_of_range_span"])
+def test_v42_source_binding_fails_before_validated_receipt_or_done(harness, mutation):
+    store, adapter, execute, _ = harness
+    submit(adapter, version="knowledge-run-v4.2")
+    compiled = execute(encoded({**COMPILE, "content": "private source"}))
+    review_run = advance(adapter, compiled)
+    draft = "private source"
+    review = {
+        "sanitized_content": draft, "removed_categories": [],
+        "fact_classification": "fact", "confidence": 0.8, "decision": "publish",
+        "coverage_complete": True,
+        "reviewed_source_hash": text_digest("private source"),
+        "reviewed_draft_hash": text_digest(draft),
+        "assertions": [{
+            "change": "new", "draft_start": 0, "draft_end": len(draft),
+            "draft_span": draft, "output_start": 0, "output_end": len(draft),
+            "output_span": draft, "source_origin": "new_source", "source_start": 0,
+            "source_end": len("private source"), "source_span": "private source",
+            "source_canonical_id": "", "source_base_version": "",
+            "draft_modality": "fact", "source_modality": "fact",
+            "output_modality": "fact", "private_support": "entailed",
+            "output_support": "entailed",
+        }],
+    }
+    if mutation == "wrong_hash":
+        review["reviewed_source_hash"] = "0" * 64
+    else:
+        review["assertions"][0]["source_end"] += 1
+    failed = execute(encoded(review))
+    assert failed["run_id"] == review_run["run_id"]
+    assert failed["status"] == "failed"
+    assert failed["error_code"] == "knowledge_schema_invalid"
+    events = store.events_after(
+        failed["run_id"], 0, tenant_user_hash=failed["tenant_user_hash"],
+    )
+    assert [event["type"] for event in events
+            if event["type"] != "runtime_timing"] == ["error"]
+
+
+def test_v42_source_review_fills_schema_optional_defaults_but_rejects_contradictions():
+    compile_spec = StageInput(
+        version="knowledge-run-v4.2", stage=STAGES[0], event_id="event",
+        tenant_id="tenant", user_id="user", policy_version="policy",
+        authorization_epoch="a" * 64, candidate_hash="b" * 64, content="source",
+    )
+    review_spec = StageInput(**{
+        **compile_spec.model_dump(), "stage": STAGES[1],
+        "content": source_review_input(compile_spec, {**COMPILE, "content": "draft"}),
+    })
+    assertion = {
+        "change": "removed", "draft_start": 0, "draft_end": 5, "draft_span": "draft",
+        "source_origin": "new_source", "source_start": 0, "source_end": 6,
+        "source_span": "source", "draft_modality": "fact", "source_modality": "fact",
+        "output_modality": "none", "private_support": "unsupported",
+        "output_support": "not_applicable",
+    }
+    review = {
+        "sanitized_content": "", "removed_categories": [], "fact_classification": "fact",
+        "confidence": 0.8, "decision": "reject", "coverage_complete": True,
+        "reviewed_source_hash": text_digest("source"),
+        "reviewed_draft_hash": text_digest("draft"), "assertions": [assertion],
+    }
+    parsed = parse_result(STAGES[1], encoded(review), version="knowledge-run-v4.2")
+    assert validate_source_review(review_spec, parsed) == parsed
+    assert {key: parsed["assertions"][0][key] for key in (
+        "output_start", "output_end", "output_span", "source_canonical_id",
+        "source_base_version",
+    )} == {
+        "output_start": None, "output_end": None, "output_span": "",
+        "source_canonical_id": "", "source_base_version": "",
+    }
+
+    review["assertions"][0]["output_start"] = 0
+    with pytest.raises(ContractError, match="invalid source assertion review"):
+        validate_source_review(
+            review_spec,
+            parse_result(STAGES[1], encoded(review), version="knowledge-run-v4.2"),
+        )
 
 
 def test_worker_rejects_stage_skip_and_content_swap(harness):
@@ -225,10 +308,11 @@ def test_existing_bridge_builder_enforces_empty_tool_schema(monkeypatch, tmp_pat
     monkeypatch.setattr(bridge, "_create_sandbox_session_db", lambda _: object())
     monkeypatch.setattr(bridge, "persist_agent_snapshot", lambda *_: None)
     sandbox = SimpleNamespace(root=tmp_path, state_db=tmp_path / "state.db", hermes_home=tmp_path)
+    events = queue.Queue()
     def build():
         return bridge._build_in_process_agent(
             "source asks to save a note and browse the web", "stage-session", "stage-session",
-            queue.Queue(), agent_config={"knowledge_stage_only": True, "allowed_tools": [], "allow_network": False},
+            events, agent_config={"knowledge_stage_only": True, "allowed_tools": [], "allow_network": False},
             sandbox=sandbox)
     if tool_leak:
         with pytest.raises(RuntimeError, match="isolation failed closed"):
@@ -239,6 +323,21 @@ def test_existing_bridge_builder_enforces_empty_tool_schema(monkeypatch, tmp_pat
         assert captured["enabled_toolsets"] == ["__knowledge_stage_no_tools__"]
         assert captured["skip_memory"] and captured["skip_context_files"]
         assert captured["session_id"] == "stage-session"
+        captured["stream_delta_callback"]("visible")
+        captured["tool_start_callback"]("call-1", "safe_tool", {})
+        captured["tool_complete_callback"]("call-1", "safe_tool", {}, "private result")
+        timing = [item for item in list(events.queue) if item.get("type") == "runtime_timing"]
+        assert [item["phase"] for item in timing] == [
+            "agent_context_build_start", "agent_context_build_end",
+            "first_visible_delta", "tool_duration",
+        ]
+        assert timing[1]["cache_source"] == "cold_build"
+        assert all("content" not in item and "result" not in item for item in timing)
+        emitted = list(events.queue)
+        assert next(i for i, item in enumerate(emitted) if item.get("type") == "delta") < next(
+            i for i, item in enumerate(emitted)
+            if item.get("phase") == "first_visible_delta"
+        )
 
 
 def test_privacy_schema_is_independent():

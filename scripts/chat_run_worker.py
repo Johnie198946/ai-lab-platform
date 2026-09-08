@@ -45,30 +45,40 @@ class KnowledgeEventSink(DurableEventSink):
         self.store, self.run, self.spec = store, run, spec
 
     def accept(self, item):
-        from backend.services.knowledge_run_adapter import parse_result, receipt_for
+        from backend.services.knowledge_run_adapter import (
+            parse_result, receipt_for, validate_result_for_receipt,
+        )
 
         # Do not persist unvalidated text/tool payloads into the contribution log.
         if item.get("type") == "done":
             if not stage_is_authorized(self.spec):
                 self.store.append_event(self.run_id, {"type": "error", "code": "knowledge_authorization_revoked"})
-                return
+                return True
             try:
                 result = parse_result(
                     self.spec.stage, item.get("answer", ""), simulated=self.spec.simulated,
+                    version=self.spec.version,
                 )
+                validate_result_for_receipt(self.spec, result)
             except ValueError:
                 self.store.append_event(self.run_id, {
                     "type": "error", "code": "knowledge_schema_invalid",
                     "message": "Knowledge output failed strict validation",
                 })
-                return
+                return True
             self.store.append_event(self.run_id, receipt_for(self.run, self.spec, result))
             self.store.append_event(self.run_id, {"type": "done", "answer": item["answer"]})
+            return True
         elif item.get("type") in {"error", "cancelled"}:
             self.store.append_event(self.run_id, {
                 "type": item["type"], "code": "knowledge_execution_failed",
                 "message": "Knowledge stage did not complete",
             })
+            return True
+        elif item.get("type") == "runtime_timing":
+            self.store.append_event(self.run_id, item)
+            return True
+        return False
 
 
 class DurableClarifyGateway:
@@ -146,6 +156,10 @@ def _watch_run(store: DurableChatRunStore, run_id: str, agent_holder: list[Any],
 
 def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     run_id = str(run["run_id"])
+    store.append_event(run_id, {
+        "type": "runtime_timing", "phase": "queue_claimed",
+        "queue_delay_ms": float(run.get("queue_delay_ms") or 0.0),
+    })
     bridge._chat_run_store = store
     _run_context.run_id = run_id
     payload = run.get("execution_payload") or json.loads(run.get("execution_payload_json") or "{}")
@@ -184,7 +198,12 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     monitor.start()
     try:
         if run_type == "chat_prewarm":
-            hermes_sid = bridge._prewarm_session_agent(
+            build_started = time.perf_counter()
+            store.append_event(run_id, {
+                "type": "runtime_timing", "phase": "agent_build_start",
+                "prewarm_requested": True,
+            })
+            hermes_sid, cache_populated = bridge._prewarm_session_agent(
                 user_key,
                 dict(payload.get("agent_config") or {}),
                 sandbox,
@@ -192,6 +211,11 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
                     payload.get("knowledge_action_enabled")
                 ),
             )
+            store.append_event(run_id, {
+                "type": "runtime_timing", "phase": "agent_build_end",
+                "agent_build_ms": round((time.perf_counter() - build_started) * 1000, 3),
+                "prewarm_completed": True, "cache_populated": cache_populated,
+            })
             store.append_event(run_id, {
                 "type": "done", "answer": "", "session_id": hermes_sid,
             })

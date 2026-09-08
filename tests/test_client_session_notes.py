@@ -167,10 +167,10 @@ def test_session_agent_cache_reuses_only_unchanged_native_history():
     db = FakeDB()
     bridge._AGENT_CACHE.clear()
     try:
-        bridge._finish_cached_agent("user", "signature", agent, db, keep=True)
+        assert bridge._finish_cached_agent("user", "signature", agent, db, keep=True) is True
         assert bridge._take_cached_agent(
             "user", "signature", "hermes-session"
-        ) == (agent, db)
+        ) == (agent, db, "prior_turn")
         assert agent._api_call_count == 0
         assert agent._last_flushed_db_idx == 0
         bridge._finish_cached_agent("user", "signature", agent, db, keep=True)
@@ -178,6 +178,21 @@ def test_session_agent_cache_reuses_only_unchanged_native_history():
         db.count += 1
         assert bridge._take_cached_agent("user", "signature", "hermes-session") is None
         assert db.closed is True
+    finally:
+        bridge._AGENT_CACHE.clear()
+
+
+def test_prewarm_cache_hit_is_distinguished_from_prior_turn():
+    import scripts.hermes_bridge as bridge
+
+    db = SimpleNamespace(message_count=lambda _session_id: 0, close=lambda: None)
+    agent = SimpleNamespace(session_id="sid", _api_call_count=0, close=lambda: None)
+    bridge._AGENT_CACHE.clear()
+    try:
+        bridge._finish_cached_agent(
+            "user", "signature", agent, db, keep=True, cache_origin="prewarm")
+        assert bridge._take_cached_agent("user", "signature", "sid") == (
+            agent, db, "prewarm")
     finally:
         bridge._AGENT_CACHE.clear()
 
@@ -237,27 +252,49 @@ def test_session_prewarm_creates_empty_native_session_and_retains_agent(monkeypa
         return (
             agent,
             cached_db,
-            {"agent_cache_key": "user", "agent_cache_signature": "signature"},
+            {"agent_cache_key": "user", "agent_cache_signature": "signature",
+             "agent_cache_source": "cold_build"},
         )
     monkeypatch.setattr(bridge, "_build_in_process_agent", build)
     monkeypatch.setattr(
         bridge, "_finish_cached_agent",
-        lambda *args, **kwargs: retained.append((args, kwargs)),
+        lambda *args, **kwargs: retained.append((args, kwargs)) or True,
     )
     sandbox = SimpleNamespace(root="/tenant", state_db="/tenant/state.db")
 
-    session_id = bridge._prewarm_session_agent(
+    session_id, populated = bridge._prewarm_session_agent(
         "user", {"triage": {}}, sandbox, knowledge_action_enabled=True
     )
 
     assert session_id.startswith("prewarm_")
+    assert populated is True
     assert bootstrap.created == [(session_id, "cli")]
     assert bootstrap.closed is True
     assert mappings == [("user", session_id, "/tenant/state.db")]
     assert retained[0][0] == ("user", "signature", agent, cached_db)
-    assert retained[0][1] == {"keep": True}
+    assert retained[0][1] == {"keep": True, "cache_origin": "prewarm"}
     assert build_kwargs["client_context_enabled"] is False
     assert build_kwargs["knowledge_action_enabled"] is True
+
+
+def test_prewarm_does_not_relabel_prior_turn_cache(monkeypatch):
+    import scripts.hermes_bridge as bridge
+
+    agent = SimpleNamespace(close=lambda: None)
+    db = SimpleNamespace(close=lambda: None)
+    observed = []
+    monkeypatch.setattr(bridge, "_resolve_hermes_session", lambda _user: "existing")
+    monkeypatch.setattr(bridge, "_build_in_process_agent", lambda *_args, **_kwargs: (
+        agent, db, {"agent_cache_key": "user", "agent_cache_signature": "signature",
+                    "agent_cache_source": "prior_turn"},
+    ))
+    monkeypatch.setattr(bridge, "_finish_cached_agent",
+                        lambda *args, **kwargs: observed.append(kwargs) or True)
+
+    assert bridge._prewarm_session_agent(
+        "user", {}, SimpleNamespace(state_db="state.db")
+    ) == ("existing", True)
+    assert observed == [{"keep": True, "cache_origin": "prior_turn"}]
 
 
 def test_bridge_startup_prewarms_configured_runtime_and_closes_agent(monkeypatch):

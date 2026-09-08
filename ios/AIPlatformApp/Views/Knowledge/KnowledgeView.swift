@@ -636,31 +636,47 @@ public struct KnowledgeView: View {
 
     private func syncInBackground(_ note: KnowledgeNote) {
         let markdown = store.markdown(for: note)
+        let credentialGeneration = APIClient.shared.currentCredentialGeneration()
         Task {
-            try? await APIClient.shared.syncKnowledgeNote(
-                id: note.id, markdown: markdown, updatedAt: note.updatedAt
+            _ = try? await APIClient.shared.syncKnowledgeNote(
+                id: note.id, markdown: markdown, updatedAt: note.updatedAt,
+                credentialGeneration: credentialGeneration
             )
         }
     }
 
     private func syncLocalNotes() async {
+        let credentialGeneration = APIClient.shared.currentCredentialGeneration()
+        let account = store.accountFingerprint
         for note in store.notes {
-            try? await APIClient.shared.syncKnowledgeNote(
+            guard account == store.accountFingerprint,
+                  credentialGeneration == APIClient.shared.currentCredentialGeneration() else { return }
+            _ = try? await APIClient.shared.syncKnowledgeNote(
                 id: note.id,
                 markdown: store.markdown(for: note),
-                updatedAt: note.updatedAt
+                updatedAt: note.updatedAt,
+                credentialGeneration: credentialGeneration
             )
         }
         for note in store.archivedNotes {
+            guard account == store.accountFingerprint,
+                  credentialGeneration == APIClient.shared.currentCredentialGeneration() else { return }
             guard let mergedIntoNoteId = note.mergedIntoNoteId else { continue }
-            try? await APIClient.shared.syncKnowledgeNote(
-                id: note.id,
-                markdown: store.markdown(for: note),
-                updatedAt: note.updatedAt
-            )
-            try? await APIClient.shared.archiveKnowledgeNote(
-                id: note.id, mergedIntoNoteId: mergedIntoNoteId
-            )
+            do {
+                _ = try await APIClient.shared.syncKnowledgeNote(
+                    id: note.id,
+                    markdown: store.markdown(for: note),
+                    updatedAt: note.updatedAt,
+                    credentialGeneration: credentialGeneration
+                )
+                guard account == store.accountFingerprint,
+                      credentialGeneration == APIClient.shared.currentCredentialGeneration() else { return }
+                try await APIClient.shared.archiveKnowledgeNote(
+                    id: note.id, mergedIntoNoteId: mergedIntoNoteId
+                )
+            } catch is CancellationError {
+                return
+            } catch {}
         }
     }
 
@@ -1224,14 +1240,44 @@ private struct KnowledgeNoteEditor: View {
         if let saved = store.save(id: noteID, title: title, body: noteContent, tags: tags, isPinned: isPinned) {
             saveStatus = "已保存到本地"
             let markdown = store.markdown(for: saved)
+            let expectedContentHash = store.contentHash(for: saved)
+            let expectedAccount = store.accountFingerprint
+            let expectedCredentialGeneration = APIClient.shared.currentCredentialGeneration()
             Task { @MainActor in
                 do {
-                    try await APIClient.shared.syncKnowledgeNote(
-                        id: saved.id, markdown: markdown, updatedAt: saved.updatedAt
+                    guard store.accountFingerprint == expectedAccount,
+                          APIClient.shared.currentCredentialGeneration() == expectedCredentialGeneration,
+                          store.note(id: saved.id).map(store.contentHash(for:)) == expectedContentHash else {
+                        return
+                    }
+                    let receipt = try await APIClient.shared.syncKnowledgeNote(
+                        id: saved.id, markdown: markdown, updatedAt: saved.updatedAt,
+                        credentialGeneration: expectedCredentialGeneration
                     )
-                    saveStatus = "已保存并编译为私有知识"
+                    guard store.accountFingerprint == expectedAccount,
+                          receipt.noteId == saved.id,
+                          receipt.contentHash == expectedContentHash,
+                          store.note(id: saved.id).map(store.contentHash(for:)) == expectedContentHash else {
+                        return
+                    }
+                    let status = try await APIClient.shared.fetchKnowledgeNoteStatus(
+                        id: saved.id, credentialGeneration: expectedCredentialGeneration
+                    )
+                    guard store.accountFingerprint == expectedAccount,
+                          APIClient.shared.currentCredentialGeneration() == expectedCredentialGeneration,
+                          status.noteId == saved.id,
+                          store.note(id: saved.id).map(store.contentHash(for:)) == expectedContentHash else {
+                        return
+                    }
+                    saveStatus = KnowledgeNoteStatusPolicy.message(
+                        for: status, expectedContentHash: expectedContentHash
+                    )
                 } catch {
-                    saveStatus = "本地已保存，私有知识同步失败"
+                    guard store.accountFingerprint == expectedAccount,
+                          store.note(id: saved.id).map(store.contentHash(for:)) == expectedContentHash else {
+                        return
+                    }
+                    saveStatus = "已保存到本地，原始笔记同步待确认"
                 }
             }
         } else {
