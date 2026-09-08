@@ -1,7 +1,9 @@
 from pathlib import Path
+import subprocess
 
 
 UPDATE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "update.sh"
+SYSTEMD_DIR = UPDATE_SCRIPT.parents[1] / "ops" / "systemd"
 
 
 def test_server_deploy_pins_cloud_agent_os_mode_and_refreshes_runtime() -> None:
@@ -42,5 +44,51 @@ def test_server_deploy_rechecks_private_note_write_access_after_runtime_restart(
 def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_access() -> None:
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")
     assert 'repair_runtime_store_permissions "$DATA_TARGET"' in script
+    assert 'chmod 0755 "$RELEASE_DIR"' in script
     assert 'chmod 0600 "$path"' in script
     assert 'data_probe=pathlib.Path(tempfile.mkdtemp' in script
+
+
+def test_hermes_units_share_hardened_unprivileged_runtime_contract() -> None:
+    for name in ("hermes-bridge.service", "hermes-chat-worker.service"):
+        unit = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+        for contract in (
+            "User=quantumn-hermes",
+            "Group=quantumn-hermes",
+            "WorkingDirectory=/opt/ai-lab-platform",
+            "EnvironmentFile=/opt/ai-lab-platform/.env",
+            "Environment=HERMES_HOME=/var/lib/quantumn-hermes/.hermes",
+            "Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-sol",
+            "Environment=AI_LAB_AGENT_OS_MODE=cloud_multi_tenant",
+            "Environment=HERMES_CHAT_RUN_DB=/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3",
+            "NoNewPrivileges=true",
+            "PrivateTmp=true",
+            "ProtectSystem=strict",
+            "ReadWritePaths=/opt/ai-lab-platform/data /var/lib/quantumn-hermes/.hermes",
+        ):
+            assert contract in unit
+        assert "PROVIDER=" not in unit
+    bridge = (SYSTEMD_DIR / "hermes-bridge.service").read_text(encoding="utf-8")
+    worker = (SYSTEMD_DIR / "hermes-chat-worker.service").read_text(encoding="utf-8")
+    assert "chat_run_worker" not in bridge
+    assert "scripts.chat_run_worker" in worker
+
+
+def test_server_deploy_installs_units_without_starting_them_during_quarantine() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    install = script.index("install_hermes_units\n", script.index("SWITCHED=1"))
+    restart = script.index("restart_hermes_runtime\n", install)
+    assert install < restart
+    assert "systemctl enable" not in script
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f'source "{UPDATE_SCRIPT}"; systemctl() {{ echo unexpected-systemctl; }}; restart_hermes_runtime',
+        ],
+        env={"AI_LAB_UPDATE_LIBRARY_ONLY": "1", "AI_LAB_HERMES_QUARANTINED": "1"},
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "hermes_restart_status=skipped_quarantined"

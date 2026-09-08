@@ -118,6 +118,42 @@ def test_retry_queue_delay_starts_when_run_becomes_stalled(tmp_path, monkeypatch
     assert retried["queue_delay_ms"] == 1_250
 
 
+def test_claim_cutoff_leaves_older_queued_and_stalled_runs_unchanged(tmp_path):
+    store = DurableChatRunStore(tmp_path / "runs.sqlite3")
+    owner = store.tenant_user_hash("tenant-a", "user-a")
+    old_queued, _ = store.create_or_get(
+        tenant_user_hash=owner, session_id="old-queued", request_id="old-queued"
+    )
+    old_stalled, _ = store.create_or_get(
+        tenant_user_hash=owner, session_id="old-stalled", request_id="old-stalled"
+    )
+    new_queued, _ = store.create_or_get(
+        tenant_user_hash=owner, session_id="new-queued", request_id="new-queued"
+    )
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE chat_runs SET created_at=10 WHERE run_id IN (?, ?)",
+            (old_queued["run_id"], old_stalled["run_id"]),
+        )
+        conn.execute(
+            "UPDATE chat_runs SET status='stalled', attempt=1, worker_id='old-worker' WHERE run_id=?",
+            (old_stalled["run_id"],),
+        )
+        conn.execute(
+            "UPDATE chat_runs SET created_at=20 WHERE run_id=?", (new_queued["run_id"],)
+        )
+
+    claimed = store.claim_next("new-worker", created_at_or_after=20)
+
+    assert claimed and claimed["run_id"] == new_queued["run_id"]
+    assert store.get_unchecked(old_queued["run_id"])["status"] == "queued"
+    old_stalled_after = store.get_unchecked(old_stalled["run_id"])
+    assert old_stalled_after["status"] == "stalled"
+    assert old_stalled_after["worker_id"] == "old-worker"
+    assert old_stalled_after["attempt"] == 1
+    assert store.claim_next("new-worker", created_at_or_after=20) is None
+
+
 def test_interactive_chat_keeps_one_owner_slot_ahead_of_background_runs(tmp_path):
     store = DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")

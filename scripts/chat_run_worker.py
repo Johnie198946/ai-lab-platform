@@ -6,6 +6,7 @@ invokes Hermes outside the Bridge API process, so API/SSE restarts do not kill w
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -35,6 +36,10 @@ WORKER_HEARTBEAT_SECONDS = max(
     )
 )
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
+_claim_after = os.environ.get("HERMES_CHAT_WORKER_CLAIM_AFTER", "").strip()
+CLAIM_AFTER = float(_claim_after) if _claim_after else None
+if CLAIM_AFTER is not None and (not math.isfinite(CLAIM_AFTER) or CLAIM_AFTER < 0):
+    raise ValueError("HERMES_CHAT_WORKER_CLAIM_AFTER must be a non-negative epoch")
 _run_context = threading.local()
 _AUTO_INGEST_RE = re.compile(r"调研|研究|分析|评估|方案|报告|诊断|规划|research|analysis|report|plan", re.I)
 
@@ -301,7 +306,11 @@ def main() -> None:
             futures = {future for future in futures if not future.done()}
             claimed = False
             while len(futures) < MAX_WORKERS:
-                run = store.claim_next(WORKER_ID, max_parallel_per_owner=MAX_PARALLEL)
+                run = store.claim_next(
+                    WORKER_ID,
+                    max_parallel_per_owner=MAX_PARALLEL,
+                    created_at_or_after=CLAIM_AFTER,
+                )
                 if run is None:
                     break
                 futures.add(pool.submit(execute, store, run))

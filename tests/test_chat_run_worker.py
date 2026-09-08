@@ -29,6 +29,11 @@ def test_worker_default_queue_pickup_is_interactive():
     assert worker.POLL_SECONDS <= 0.1
 
 
+def test_worker_passes_optional_claim_cutoff_to_store():
+    source = inspect.getsource(worker.main)
+    assert "created_at_or_after=CLAIM_AFTER" in source
+
+
 def test_worker_executes_claimed_run_and_persists_terminal(monkeypatch, tmp_path):
     store = worker.DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")

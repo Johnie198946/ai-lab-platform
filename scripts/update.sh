@@ -39,6 +39,27 @@ configure_cloud_agent_os_mode() {
   fi
 }
 
+ensure_hermes_account() {
+  if ! getent group quantumn-hermes >/dev/null; then
+    groupadd --system quantumn-hermes
+  fi
+  if ! id -u quantumn-hermes >/dev/null 2>&1; then
+    useradd --system --gid quantumn-hermes --home-dir /var/lib/quantumn-hermes \
+      --shell /usr/sbin/nologin quantumn-hermes
+  fi
+  install -d -o quantumn-hermes -g quantumn-hermes -m 0700 \
+    /var/lib/quantumn-hermes /var/lib/quantumn-hermes/.hermes
+}
+
+install_hermes_units() {
+  ensure_hermes_account
+  install -m 0644 "$APP_LINK/ops/systemd/hermes-bridge.service" \
+    /etc/systemd/system/hermes-bridge.service
+  install -m 0644 "$APP_LINK/ops/systemd/hermes-chat-worker.service" \
+    /etc/systemd/system/hermes-chat-worker.service
+  systemctl daemon-reload
+}
+
 restart_hermes_runtime() {
   if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
     echo "hermes_restart_status=skipped_quarantined"
@@ -53,11 +74,11 @@ restart_hermes_runtime() {
 
 repair_runtime_store_permissions() {
   local data_root="$1" path
-  chown 0:0 "$data_root"
+  chown quantumn-hermes:quantumn-hermes "$data_root"
   chmod 0755 "$data_root"
   for path in "$data_root"/hermes_chat_runs.sqlite3*; do
     [ -e "$path" ] || continue
-    chown 0:0 "$path"
+    chown quantumn-hermes:quantumn-hermes "$path"
     chmod 0600 "$path"
   done
 }
@@ -155,6 +176,7 @@ curl -fsSL --retry 3 \
   "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
   -o "$TARBALL"
 tar xzf "$TARBALL" --strip-components=1 -C "$STAGING_DIR"
+chmod 0755 "$RELEASE_DIR"
 test -f "$STAGING_DIR/docker-compose.yml"
 test -f "$STAGING_DIR/scripts/update.sh"
 
@@ -163,6 +185,7 @@ mkdir -p "$SHARED_ROOT"
 if [ ! -f "$SHARED_ROOT/.env" ]; then
   install -m 600 "$CURRENT_DIR/.env" "$SHARED_ROOT/.env"
 fi
+ensure_hermes_account
 for name in backups rollbacks; do
   if [ ! -e "$SHARED_ROOT/$name" ]; then
     if [ -e "$CURRENT_DIR/$name" ]; then
@@ -236,6 +259,7 @@ ln -s "$RELEASE_DIR" "$LINK_TMP"
 mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
 configure_cloud_agent_os_mode
+install_hermes_units
 restart_hermes_runtime
 repair_runtime_store_permissions "$DATA_TARGET"
 chown 0:0 "$VAULT_ROOT"

@@ -469,13 +469,22 @@ class DurableChatRunStore:
                 "has_more": has_more, "next_cursor": next_cursor,
             }
 
-    def claim_next(self, worker_id: str, *, max_parallel_per_owner: int = 3, lease_seconds: int = 120) -> dict[str, Any] | None:
+    def claim_next(
+        self,
+        worker_id: str,
+        *,
+        max_parallel_per_owner: int = 3,
+        lease_seconds: int = 120,
+        created_at_or_after: float | None = None,
+    ) -> dict[str, Any] | None:
         now = time.time()
         with self._lock, self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 """SELECT * FROM chat_runs WHERE status IN ('queued','stalled')
-                   AND attempt < 2 ORDER BY CASE status WHEN 'stalled' THEN 0 ELSE 1 END, created_at"""
+                   AND attempt < 2 AND (? IS NULL OR created_at >= ?)
+                   ORDER BY CASE status WHEN 'stalled' THEN 0 ELSE 1 END, created_at""",
+                (created_at_or_after, created_at_or_after),
             ).fetchall()
             rows = sorted(rows, key=lambda row: (
                 self._is_background_run(row),
