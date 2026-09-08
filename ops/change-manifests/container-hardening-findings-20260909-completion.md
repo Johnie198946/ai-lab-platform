@@ -1,15 +1,15 @@
 # Container hardening findings — completion record
 
 - task_id: `container-hardening-findings-20260909`
-- status: `TESTED`
+- status: `VERIFIED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909`
 - starting_head: `a6604ada6a2251a7726ab206494dd3b21d99be8a`
-- head/local_commit: `a6604ada6a2251a7726ab206494dd3b21d99be8a` (working tree only; commit forbidden by task)
-- remote_sha: `a6604ada6a2251a7726ab206494dd3b21d99be8a` (cached `origin/main`; fetch blocked by sandbox write denial)
-- server_before: not queried
-- server_after: not deployed
-- rollback_point: not created; no deployment
+- head/local_commit: final receipt commit containing this file; implementation verified at `4254bfbb1514b8b4d3f1a3745b855e1ac1d5ccb7`
+- remote_sha: final receipt commit containing this file; `origin/main` is verified before each deployment
+- server_before: `/opt/releases/ai-lab-platform-a6604ada6a22.clean` (`a6604ada6a2251a7726ab206494dd3b21d99be8a`)
+- server_after: implementation release `/opt/releases/ai-lab-platform-4254bfbb1514.5zxubz` (`4254bfbb1514b8b4d3f1a3745b855e1ac1d5ccb7`); the receipt-only successor is redeployed as the final marker
+- rollback_point: `/opt/releases/ai-lab-platform-a6604ada6a22.clean`
 
 ## Inventory and changes
 
@@ -52,12 +52,18 @@
 - The final write probes found restored ownership on both `.incremental-compile.lock` and the `raw/dialogues` ancestors. The updater now repairs the known Vault runtime lock to `quantumn-hermes:quantumn-hermes 0600`, the Vault root, and the real note-path ancestors before checking API writes; symlink ancestors still fail closed.
 - Follow-up verification: deployment contract tests `14 passed`; `bash -n scripts/update.sh` and `git diff --check` passed. Production deployment and final receipt are recorded below after the exact implementation SHA is verified and deployed.
 
+## Production receipt
+
+- Deployment status: passed with updater exit code `0` for implementation SHA `4254bfbb1514b8b4d3f1a3745b855e1ac1d5ccb7`.
+- API: `GET /ready -> {"status":"ready","version":"0.8.0"}`; runtime contract audit passed during deployment.
+- Hermes: Bridge and Worker are active from `/var/lib/quantumn-hermes/bridge-worker-venv`; fixed Hermes distribution is `0.21.1`; private bind `172.18.0.1:9118` returned the v6 health contract from both host and API container.
+- Runtime permissions: matrix `0640`, compile lock `0600`, and note-path ancestors are owned by `quantumn-hermes:quantumn-hermes`; deployment write probes passed; no failed `.build.*` venv directories remain.
+- Frontend: the clean-host Let's Encrypt tree retained root-only traversal, so UID/GID `101:101` initially could not read the mounted private key. Existing ACLs were backed up to `/opt/ai-lab-shared/rollbacks/letsencrypt-acl-before-20260909T0606.txt`; narrowly scoped UID 101 read/traverse and inherited archive ACLs were installed. The recreated frontend is healthy and local HTTPS `/health` returns `200` with the API health JSON.
+- Docker recovery rollback: malformed daemon config retained at `/etc/docker/daemon.json.bad-20260909T051336`; valid config uses `https://docker.m.daocloud.io`; Docker 29.1.3 is active.
+- Independent checks: local/remote updater SHA-256 matched for every attempt; local `main` and `origin/main` matched before deployment; Vault tools local/server tree hashes matched.
+
 ## Remaining risks
 
-- The earlier sandbox limitation is no longer current: `git fetch origin main` succeeded before this follow-up, and local `main` matched `origin/main` at `0555e8b2956981005da4074f5c277ca00c738658` before modification.
-- The lock-installed Bridge/Worker venv, Hermes `0.21.1` source/version check, systemd effective commands, service restart, rollback-link restoration, private listener, firewall path, and API-container health probe remain unverified on the production Linux host because deployment was explicitly forbidden.
-- The target host's chosen UID/GID must not collide with an existing account inside the pinned minimal Python base; the Docker build fails closed if it does.
-- Production must verify that the resolved private bind address equals the `ss` listener and that an API-container `/health` probe succeeds; no server was contacted in this task.
-- The non-root frontend's ability to read the production host-mounted TLS private key remains unverified until the real image is run with the production mount permissions.
-- Deployment and production validation remain pending.
-- No commit, push, remote SHA verification, deployment, server health check, or functional check was performed, as requested.
+- The rebuilt host does not currently contain `ai-lab-ip-cert-renew.service` or its timer. The inherited ACL on the Let’s Encrypt archive covers newly created files, but certificate renewal scheduling itself remains a separate server-operations task.
+- The external browser verifier timed out; HTTPS was verified from the host through the production frontend listener, and the frontend container is healthy with ports 80/443 published.
+- Optional official Hermes serve/forward/gateway units are absent on this clean host and are therefore skipped; the platform’s required Bridge and durable Worker units are active and verified.
