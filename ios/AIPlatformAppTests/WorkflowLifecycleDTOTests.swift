@@ -64,6 +64,12 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
         var responseStatus = 200
         var responseError: URLError?
         switch (isContractOrigin, method, path) {
+        case (true, "GET", "/api/v1/auth/capabilities"):
+            // TEST FIXTURE: delayed public success exposes credential-generation races.
+            responseBody = Data(#"{"phone":{"enabled":true},"oauth":{"wechat":{"enabled":false},"alipay":{"enabled":true}}}"#.utf8)
+        case (true, "GET", "/api/v1/workflow-activities/active"):
+            responseStatus = 401
+            responseBody = Data(#"{"detail":"test fixture unauthorized"}"#.utf8)
         case (true, "GET", "/api/v1/legal/agreement"):
             responseBody = Data(#"{"version":"2026-09-06","title":"服务协议","updated_at":"2026-09-06T00:00:00Z","sections":[{"id":"service","title":"用户服务协议","clauses":["服务条款"]},{"id":"privacy","title":"隐私保护条款","clauses":["隐私条款"]},{"id":"knowledge-contribution","title":"知识共建协议","clauses":["共建条款"]}]}"#.utf8)
         case (true, "PUT", "/api/v1/me/agreement-acceptance"):
@@ -105,7 +111,7 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
             client?.urlProtocol(self, didLoad: responseBody)
             client?.urlProtocolDidFinishLoading(self)
         }
-        if path.hasPrefix("/api/v1/me/knowledge-notes/") {
+        if path == "/api/v1/auth/capabilities" || path.hasPrefix("/api/v1/me/knowledge-notes/") {
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.1, execute: deliver)
         } else {
             deliver()
@@ -396,6 +402,65 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         } catch is CancellationError {}
         XCTAssertEqual(client.currentToken(), "token-b")
         XCTAssertFalse(client.needsReauth)
+    }
+
+    @MainActor
+    func testPublicAuthCapabilitiesSurviveConcurrentProtected401WithoutAuthorization() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "stale-token"
+        )
+
+        let capabilitiesTask = Task { try await client.fetchAuthCapabilities() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        do {
+            _ = try await client.request(
+                AuthCapabilitiesDTO.self,
+                path: "workflow-activities/active"
+            )
+            XCTFail("Expected protected test fixture to return 401")
+        } catch APIError.unauthorized {}
+
+        let capabilities = try await capabilitiesTask.value
+        XCTAssertTrue(capabilities.phone.enabled)
+        XCTAssertFalse(capabilities.oauth.wechat.enabled)
+        XCTAssertTrue(capabilities.oauth.alipay.enabled)
+
+        let request = try XCTUnwrap(APIContractURLProtocol.requests().first {
+            $0.request.url?.path == "/api/v1/auth/capabilities"
+        }?.request)
+        XCTAssertEqual(request.httpMethod, "GET")
+        XCTAssertEqual(request.url?.absoluteString, "https://contract.invalid/api/v1/auth/capabilities")
+        XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    @MainActor
+    func testCancellingPublicAuthCapabilitiesRemainsCancellation() async throws {
+        APIContractURLProtocol.reset()
+        defer { APIContractURLProtocol.reset() }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [APIContractURLProtocol.self]
+        let client = APIClient(
+            baseURL: try XCTUnwrap(URL(string: "https://contract.invalid")),
+            sessionConfiguration: configuration,
+            inMemoryToken: "stale-token"
+        )
+
+        let task = Task { try await client.fetchAuthCapabilities() }
+        try await Task.sleep(nanoseconds: 20_000_000)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected task cancellation")
+        } catch is CancellationError {
+        } catch let error as URLError {
+            XCTAssertEqual(error.code, .cancelled)
+        }
     }
 
     @MainActor

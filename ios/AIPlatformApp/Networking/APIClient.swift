@@ -1823,9 +1823,9 @@ public final class APIClient: ObservableObject {
             ?? component
     }
 
-    private func applyClientContract(to request: inout URLRequest) {
+    private func applyClientContract(to request: inout URLRequest, includeAuthorization: Bool = true) {
         request.setValue(Self.clientContract, forHTTPHeaderField: "X-Client-Contract")
-        if let token = currentToken(), !token.isEmpty {
+        if includeAuthorization, let token = currentToken(), !token.isEmpty {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
     }
@@ -1852,15 +1852,16 @@ public final class APIClient: ObservableObject {
         session: URLSession,
         canRetry: Bool,
         reauthOn401: Bool = true,
-        credentialGeneration expectedGeneration: UInt64? = nil
+        credentialGeneration expectedGeneration: UInt64? = nil,
+        anonymous: Bool = false
     ) async throws -> Data {
         let requestGeneration = expectedGeneration ?? credentialGeneration
-        guard requestGeneration == credentialGeneration else { throw CancellationError() }
+        guard anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
         var attempt = 0
         while true {
             do {
                 let (data, response) = try await session.data(for: request)
-                guard requestGeneration == credentialGeneration else { throw CancellationError() }
+                guard anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
                 guard let http = response as? HTTPURLResponse else {
                     throw APIError.network("无效响应")
                 }
@@ -1881,10 +1882,10 @@ public final class APIClient: ObservableObject {
                 isOfflineMode = false
                 return data
             } catch let urlError as URLError where urlError.code == .cancelled {
-                guard requestGeneration == credentialGeneration else { throw CancellationError() }
+                guard anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
                 throw urlError  // 请求取消，原样上抛，不误标离线
             } catch let urlError as URLError {
-                guard requestGeneration == credentialGeneration else { throw CancellationError() }
+                guard anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
                 if canRetry && attempt == 0 && Self.isTransientNetworkError(urlError) {
                     attempt += 1
                     continue
@@ -1908,10 +1909,11 @@ public final class APIClient: ObservableObject {
         body: Encodable? = nil,
         queryItems: [URLQueryItem] = [],
         reauthOn401: Bool = true,
-        credentialGeneration expectedGeneration: UInt64? = nil
+        credentialGeneration expectedGeneration: UInt64? = nil,
+        anonymous: Bool = false
     ) async throws -> T {
         let requestGeneration = expectedGeneration ?? credentialGeneration
-        guard requestGeneration == credentialGeneration else { throw CancellationError() }
+        guard anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
         var components = URLComponents(
             url: baseURL
             .appendingPathComponent("api/v1")
@@ -1928,7 +1930,7 @@ public final class APIClient: ObservableObject {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
-        applyClientContract(to: &request)
+        applyClientContract(to: &request, includeAuthorization: !anonymous)
         if let body {
             request.httpBody = try JSONEncoder().encode(body)
         }
@@ -1938,21 +1940,21 @@ public final class APIClient: ObservableObject {
         do {
             data = try await perform(
                 request, session: session, canRetry: method == "GET", reauthOn401: reauthOn401,
-                credentialGeneration: requestGeneration
+                credentialGeneration: requestGeneration, anonymous: anonymous
             )
         } catch APIError.server(let status, let raw)
             where AgreementReplayPolicy.canReplay(statusCode: status, replayCount: 0) {
             guard let version = Self.agreementVersion(from: raw) else {
                 throw APIError.server(status, raw)
             }
-            guard requestGeneration == credentialGeneration else { throw CancellationError() }
+            guard anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
             requiredAgreementVersion = version
             let accepted = await withCheckedContinuation { agreementWaiters.append($0) }
-            guard accepted, requestGeneration == credentialGeneration else { throw CancellationError() }
+            guard accepted, anonymous || requestGeneration == credentialGeneration else { throw CancellationError() }
             // A protected request is replayed exactly once after explicit acceptance.
             data = try await perform(
                 request, session: session, canRetry: false, reauthOn401: reauthOn401,
-                credentialGeneration: requestGeneration
+                credentialGeneration: requestGeneration, anonymous: anonymous
             )
         }
         do {
@@ -3460,7 +3462,8 @@ public final class APIClient: ObservableObject {
         try await request(
             AuthCapabilitiesDTO.self,
             path: "auth/capabilities",
-            reauthOn401: false
+            reauthOn401: false,
+            anonymous: true
         )
     }
 
