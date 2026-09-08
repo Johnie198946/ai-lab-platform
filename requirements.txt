@@ -7,18 +7,19 @@ asyncpg>=0.30
 redis>=5.0
 apscheduler>=3.10
 croniter>=2.0
-# Hermes Agent 0.19 pins httpx 0.28.1. FastAPI 0.115+ selects a
-# Starlette release whose TestClient supports that httpx API.
+# FastAPI 0.115+ selects a Starlette release whose TestClient supports this httpx API.
 httpx==0.28.1
 pyyaml>=6.0
 jieba>=0.42
 python-jose[cryptography]>=3.3
+# Security floors for transitive runtime dependencies.
+cryptography>=50.0.0
 email-validator>=2.0
 pytest>=8.0
 pytest-asyncio>=0.24
 ruff>=0.6
-hermes-agent>=0.19.0
 pypdf>=6.0
 python-docx>=1.2
 openpyxl>=3.1
 python-pptx>=1.0
+pillow>=12.3.0

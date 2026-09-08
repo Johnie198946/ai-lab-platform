@@ -1,28 +1,41 @@
 # Backend reproducible dependency contract
 
 The deployment keeps **Python 3.12** (it is not downgraded to match an old macOS test venv).
-`backend/Dockerfile` pins Python 3.12.12/bookworm by immutable multi-platform digest.
-`requirements.txt` remains the human-maintained direct-dependency input; production
-API and all existing compose workers install `requirements.lock`, not floating inputs.
-The lock preserves all 86 versions from the independently green 3.11 environment,
-re-resolved for Linux/Python 3.12.12. New Linux image tests, not that old run, establish compatibility.
+`backend/Dockerfile` pins Python 3.12.14/bookworm by immutable multi-platform digest.
+`requirements.txt` is the API/Compose-worker input and `requirements.lock` is its hashed
+runtime lock. Neither may contain the `hermes-agent` distribution: the API image does not
+import or execute Hermes. The host-only `requirements-bridge-worker.in` explicitly records
+the fixed Hermes source's dependencies, and `requirements-bridge-worker.lock` preserves
+their reviewed hashes independently of future API lock regeneration.
+
+The host `hermes-bridge` and durable chat worker use both hashed dependency locks in
+an owner-only, lock-digest-addressed venv under `/var/lib/quantumn-hermes/bridge-worker-venvs`.
+The stable `bridge-worker-venv` symlink is switched atomically with the application release
+and restored with it on deployment failure. After installing hashed API and Bridge dependencies,
+the updater installs the validated local Hermes 0.21.1 source there with `--no-deps` and checks
+its exact distribution version. Subprocess fallback invokes the fixed launcher.
+Hermes' self-managed runtime venv is never modified with platform packages.
+The lock keeps the 86-package independently green dependency set, with deliberate
+security upgrades, re-resolved for Linux/Python 3.12.14. New Linux image tests,
+not that old run, establish compatibility.
 
 `requirements-build.in` / `requirements-build.lock` pin setuptools and wheel for jieba's
 source distribution. The image installs these with hashes, disables build isolation
 (no hidden floating build downloads), installs all runtime dependencies with hashes,
-and runs `pip check`. Pip itself is fixed by the immutable base. No extra unpinned
+and runs `pip check`, then removes those build-only packages from the runtime image.
+Pip itself is fixed by the immutable base. No extra unpinned
 `pyyaml`, alternate runtime, private index, credentials, production DB or vault is required.
 This fixes dependency/base reproducibility, not bit-for-bit Docker layer timestamps.
 
 ## Rebuild (repository root)
 
 ```sh
-docker build --platform linux/arm64 -f backend/Dockerfile -t qws-release-repro:local .
+docker build --platform linux/amd64 -f backend/Dockerfile -t qws-release-repro:local .
 docker run --rm --network none qws-release-repro:local python -m pip check
 ```
 
-Use `--platform linux/amd64` on the production architecture, and rerun its suite before
-release. Never infer cross-architecture success from a successful ARM image.
+Use the production architecture and rerun its suite before release. Never infer
+cross-architecture success from a successful image for another platform.
 
 ## Deliberate lock updates only
 
@@ -31,14 +44,19 @@ reviewing upgrades (the initial lock used the previous independently tested free
 
 ```sh
 uv pip compile requirements.txt --constraint requirements.lock \
-  --python-version 3.12.12 --python-platform aarch64-unknown-linux-gnu \
+  --python-version 3.12.14 --python-platform x86_64-unknown-linux-gnu \
   --generate-hashes --no-header --no-annotate --output-file /tmp/requirements.next.lock
-uv pip compile requirements-build.in --python-version 3.12.12 \
-  --python-platform aarch64-unknown-linux-gnu --generate-hashes \
+uv pip compile requirements-build.in --python-version 3.12.14 \
+  --python-platform x86_64-unknown-linux-gnu --generate-hashes \
   --no-header --no-annotate --output-file /tmp/requirements-build.next.lock
+uv pip compile requirements-bridge-worker.in --constraint requirements-bridge-worker.lock \
+  --python-version 3.12.14 --python-platform x86_64-unknown-linux-gnu \
+  --generate-hashes --no-header --no-annotate \
+  --output-file /tmp/requirements-bridge-worker.next.lock
 ```
 
-Review the next locks, update the checked-in files explicitly, build from the Dockerfile,
+Review all next locks explicitly. Updating Hermes requires updating the Bridge input and lock;
+never add Hermes to the API input/lock. Then build from the Dockerfile,
 run `pip check`, import `backend.main`, and run the **whole** backend suite with an empty
 isolated SQLite DB/vault/HOME. No `pip freeze` from a personal global environment.
 Changing Python patch/base digest also requires this gate; never change only the tag.

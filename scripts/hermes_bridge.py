@@ -29,6 +29,7 @@ import asyncio
 from collections import OrderedDict
 import contextvars
 import hashlib
+import ipaddress
 import json
 import os
 import queue
@@ -48,7 +49,7 @@ from typing import Any, Literal, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 import uvicorn
 
 # Hermes 与本仓库都包含顶级 ``tools`` 包。Python 总把当前工作目录
@@ -421,6 +422,62 @@ def _get_user_lock(user_id: str) -> asyncio.Lock:
     return lock
 
 
+class AgentDelegationConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    max_concurrent_children: int = Field(..., ge=0, le=3)
+    max_spawn_depth: int = Field(..., ge=0, le=1)
+
+
+class AgentTriageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    version: str = Field(..., min_length=1, max_length=40)
+    route_class: Literal["CASUAL", "GENERAL_QA", "PROFESSIONAL_TASK"]
+    confidence: float = Field(..., ge=0, le=1)
+    reason_code: str = Field(..., min_length=1, max_length=100)
+    evidence_requirements: list[str] = Field(default_factory=list, max_length=8)
+    agency_enabled: bool = False
+    skill_enabled: bool = False
+
+    @field_validator("evidence_requirements")
+    @classmethod
+    def _bounded_evidence_requirements(cls, values: list[str]) -> list[str]:
+        if any(not value or len(value) > 100 for value in values):
+            raise ValueError("invalid evidence requirement")
+        return values
+
+
+class AgentCompositionConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    business_surface: Literal["agency"] | None = None
+
+
+class TrustedAgentConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = Field(None, min_length=1, max_length=100)
+    base_agent_id: str | None = Field(None, min_length=1, max_length=100)
+    name: str | None = Field(None, max_length=200)
+    prompt: str | None = Field(None, max_length=12000)
+    allowed_tools: list[str] = Field(default_factory=list, max_length=32)
+    capability_agent_ids: list[str] = Field(default_factory=list, max_length=16)
+    knowledge_scope: list[str] = Field(default_factory=list, max_length=32)
+    allow_network: bool | None = None
+    delegation: AgentDelegationConfig | None = None
+    triage: AgentTriageConfig | None = None
+    composition: AgentCompositionConfig | None = None
+    knowledge_stage_only: bool | None = None
+
+    @field_validator("allowed_tools", "capability_agent_ids", "knowledge_scope")
+    @classmethod
+    def _bounded_string_list(cls, values: list[str]) -> list[str]:
+        if any(not value or len(value) > 200 for value in values):
+            raise ValueError("invalid agent configuration list")
+        return values
+
+
 class GoalRequest(BaseModel):
     # V2 权限只能来自平台签发的 KnowledgeCapability。旧客户端继续发送
     # pure/standard/kb 时必须显式失败，不能静默忽略后造成“看似隔离”的假象。
@@ -444,6 +501,11 @@ class GoalRequest(BaseModel):
     qws_business_context: dict[str, Any] | None = None
     qws_context_capability: str | None = None
     client_capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("agent_config")
+    @classmethod
+    def _trusted_agent_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return TrustedAgentConfig.model_validate(value).model_dump(exclude_none=True)
 
 
 class WorkflowPlanRequest(BaseModel):
@@ -7209,7 +7271,24 @@ async def health():
     }
 
 
+def _private_bridge_bind_address() -> str:
+    raw = os.environ.get("HERMES_BRIDGE_BIND_ADDRESS", "")
+    try:
+        address = ipaddress.ip_address(raw)
+    except ValueError as exc:
+        raise RuntimeError("HERMES_BRIDGE_BIND_ADDRESS must be an IPv4 address") from exc
+    private_networks = tuple(
+        ipaddress.ip_network(network) for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+    )
+    if address.version != 4 or not any(address in network for network in private_networks):
+        raise RuntimeError("HERMES_BRIDGE_BIND_ADDRESS must be an RFC1918 IPv4 address")
+    return str(address)
+
+
 if __name__ == "__main__":
+    if len(sys.argv) != 1:
+        raise RuntimeError("hermes_bridge.py does not accept command-line bind overrides")
+    bind_address = _private_bridge_bind_address()
     # 实例池预热：后台线程预加载核心库与 AIAgent 单例，消除首次请求 3~4s 冷启动
     _prewarm_bridge_agent()
-    uvicorn.run(app, host="0.0.0.0", port=9118)
+    uvicorn.run(app, host=bind_address, port=9118)

@@ -57,6 +57,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        AI_LAB_RUNTIME_UID: ${AI_LAB_RUNTIME_UID:-10001}
+        AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     restart: unless-stopped
     read_only: true
     cap_drop:
@@ -65,7 +68,6 @@ services:
       - no-new-privileges:true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
-      - /root/.cache:rw,noexec,nosuid,size=256m
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -119,12 +121,13 @@ services:
       # Hermes Dashboard 会话 Token（Tab 1 官方 Web 容器认证通道 · B-2-2；
       # 部署时须与宿主机 hermes-serve 的 HERMES_DASHBOARD_SESSION_TOKEN 同值，否则 401）
       HERMES_SERVE_TOKEN: ${HERMES_SERVE_TOKEN:-}
+      HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      # Hermes CLI 配置挂载（无需挂载可执行文件，已在 requirements.txt 中安装）
-      - /root/.hermes/skills:/root/.hermes/skills  # skills 目录可写
-      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro  # config 只读
-      - /root/.hermes/profiles:/root/.hermes/profiles  # profiles 配置
+      # API 只挂载 Hermes 配置；Hermes 可执行代码仅运行在宿主 Bridge/Worker venv。
+      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills  # skills 目录可写
+      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro  # config 只读
+      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles  # profiles 配置
       - /opt/ai-lab-platform:/opt/ai-lab-platform:ro  # 代码真源只读；运行数据走 /app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -140,6 +143,9 @@ services:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        AI_LAB_RUNTIME_UID: ${AI_LAB_RUNTIME_UID:-10001}
+        AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     command: ["python", "-m", "backend.workers.workflow_worker"]
     restart: unless-stopped
     depends_on:
@@ -155,20 +161,26 @@ services:
       AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
       AUTHEN_SUBSCRIPTION_URL: ${AUTHEN_SUBSCRIPTION_URL:-http://host.docker.internal:8006}
       WORKFLOW_EXECUTION_V2: ${WORKFLOW_EXECUTION_V2:-true}
+      HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      - /root/.hermes/skills:/root/.hermes/skills
-      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro
-      - /root/.hermes/profiles:/root/.hermes/profiles
-      - /opt/ai-lab-platform:/opt/ai-lab-platform
+      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills
+      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro
+      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles
+      - /opt/ai-lab-platform:/opt/ai-lab-platform:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      disable: true
 
   # 持久方案规划器：独立租约队列，API/客户端/Worker 重启后继续同一规划任务
   planning-worker:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        AI_LAB_RUNTIME_UID: ${AI_LAB_RUNTIME_UID:-10001}
+        AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     command: ["python", "-m", "backend.workers.workflow_planning_worker"]
     restart: unless-stopped
     depends_on:
@@ -184,20 +196,26 @@ services:
       KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
       AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
       AUTHEN_SUBSCRIPTION_URL: ${AUTHEN_SUBSCRIPTION_URL:-http://host.docker.internal:8006}
+      HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      - /root/.hermes/skills:/root/.hermes/skills
-      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro
-      - /root/.hermes/profiles:/root/.hermes/profiles
-      - /opt/ai-lab-platform:/opt/ai-lab-platform
+      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills
+      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro
+      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles
+      - /opt/ai-lab-platform:/opt/ai-lab-platform:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      disable: true
 
   # 持久 Agent 正式评估队列：独立租约，客户端或服务重启后可恢复
   agent-evaluation-worker:
     build:
       context: .
       dockerfile: backend/Dockerfile
+      args:
+        AI_LAB_RUNTIME_UID: ${AI_LAB_RUNTIME_UID:-10001}
+        AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     command: ["python", "-m", "backend.workers.agent_evaluation_worker"]
     restart: unless-stopped
     depends_on:
@@ -212,14 +230,17 @@ services:
       KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
       AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
       AUTHEN_SUBSCRIPTION_URL: ${AUTHEN_SUBSCRIPTION_URL:-http://host.docker.internal:8006}
+      HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      - /root/.hermes/skills:/root/.hermes/skills
-      - /root/.hermes/config.yaml:/root/.hermes/config.yaml:ro
-      - /root/.hermes/profiles:/root/.hermes/profiles
-      - /opt/ai-lab-platform:/opt/ai-lab-platform
+      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills
+      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro
+      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles
+      - /opt/ai-lab-platform:/opt/ai-lab-platform:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    healthcheck:
+      disable: true
 
   # Dashi Taskboard — upstream UI and issue-management runtime.
   # AI execution remains owned by AI Lab and is entered through the QWS host bridge.
@@ -228,6 +249,7 @@ services:
       context: ./apps/dashi-taskboard
       dockerfile: Dockerfile
     restart: unless-stopped
+    user: "1000:1000"
     environment:
       CODEX_TASKBOARD_HOST: 0.0.0.0
       CODEX_TASKBOARD_PORT: 47823
@@ -252,6 +274,16 @@ services:
       context: .
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m,uid=101,gid=101
     ports:
       - "80:80"
       - "443:443"
@@ -263,7 +295,7 @@ services:
       - api
       - taskboard
     volumes:
-      - ./docs/charts:/usr/share/nginx/html/charts
+      - ./docs/charts:/usr/share/nginx/html/charts:ro
       # Development defaults to the repository certificate. Production sets these
       # two variables to the host-managed Let's Encrypt certificate and key.
       - ${AI_LAB_TLS_CERT_FILE:-./frontend/nginx/ailab.crt}:/etc/nginx/ssl/ailab.crt:ro

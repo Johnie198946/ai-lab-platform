@@ -19,7 +19,7 @@ Environment=HERMES_DURABLE_CHAT_WORKER=true
 Environment=HERMES_CHAT_RUN_DB=/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3
 Environment=HERMES_CHAT_MAX_PARALLEL_PER_USER=3
 Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-sol
-ExecStart=/var/lib/quantumn-hermes/.hermes/hermes-agent/venv/bin/python -m scripts.chat_run_worker
+ExecStart=/var/lib/quantumn-hermes/bridge-worker-venv/bin/python -m scripts.chat_run_worker
 Restart=always
 RestartSec=5
 UMask=0077

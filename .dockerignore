@@ -5,6 +5,7 @@ __pycache__/
 .gitignore
 .hermes/
 .env
+frontend/nginx/*.key
 tests/
 docs/
 *.md

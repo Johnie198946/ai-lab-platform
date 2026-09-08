@@ -24,6 +24,53 @@ os.environ.setdefault("HERMES_STATE_DB", "/tmp/test_state.db")
 class TestBridgeCLIParms(unittest.TestCase):
     """验收项 #2: CLI 参数与路径规范。"""
 
+    def test_bridge_bind_address_accepts_only_rfc1918_ipv4(self):
+        import scripts.hermes_bridge as bridge
+
+        with patch.dict(os.environ, {"HERMES_BRIDGE_BIND_ADDRESS": "172.17.0.1"}):
+            self.assertEqual(bridge._private_bridge_bind_address(), "172.17.0.1")
+        for invalid in ("", "127.0.0.1", "0.0.0.0", "203.0.113.10", "::1"):
+            with self.subTest(address=invalid):
+                with patch.dict(os.environ, {"HERMES_BRIDGE_BIND_ADDRESS": invalid}):
+                    with self.assertRaises(RuntimeError):
+                        bridge._private_bridge_bind_address()
+
+    def test_goal_request_accepts_only_the_bounded_trusted_agent_shape(self):
+        import scripts.hermes_bridge as bridge
+
+        request = bridge.GoalRequest(
+            goal="总结选中的书",
+            agent_config={
+                "id": "main_agent",
+                "base_agent_id": "main_agent",
+                "name": "Main",
+                "prompt": "Use the selected context.",
+                "allowed_tools": ["knowledge_search", "delegate_task"],
+                "capability_agent_ids": ["main_agent"],
+                "knowledge_scope": [],
+                "allow_network": True,
+                "delegation": {"max_concurrent_children": 3, "max_spawn_depth": 1},
+                "triage": {
+                    "version": "2026-08-27.v1",
+                    "route_class": "GENERAL_QA",
+                    "confidence": 0.8,
+                    "reason_code": "default",
+                    "evidence_requirements": ["knowledge_search"],
+                    "agency_enabled": False,
+                    "skill_enabled": False,
+                },
+            },
+        )
+        self.assertEqual(request.agent_config["delegation"]["max_spawn_depth"], 1)
+        for invalid in (
+            {"unexpected": {"arbitrary": "input"}},
+            {"delegation": {"max_concurrent_children": 99, "max_spawn_depth": 1}},
+            {"allowed_tools": ["x" * 201]},
+        ):
+            with self.subTest(agent_config=invalid):
+                with self.assertRaises(ValueError):
+                    bridge.GoalRequest(goal="test", agent_config=invalid)
+
     def test_session_context_read_returns_all_selected_source_sessions(self):
         import scripts.hermes_bridge as bridge
 

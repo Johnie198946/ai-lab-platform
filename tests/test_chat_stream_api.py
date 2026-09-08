@@ -323,6 +323,79 @@ async def test_stream_expands_requested_skill(
 
 
 @pytest.mark.asyncio
+async def test_selected_book_stream_payload_validates_at_the_bridge_contract(monkeypatch):
+    import backend.api.chat as chat_mod
+    from scripts.hermes_bridge import GoalRequest
+
+    main = effective_agent("main_agent", "Main 智能编排")
+    observed = {}
+
+    async def fake_policy(_payload):
+        return SimpleNamespace(policy_version="v1")
+
+    async def fake_source_context(**kwargs):
+        assert kwargs["scope"].selected_book_id == "book-v1"
+        return SimpleNamespace(
+            evidence="\n\n[SELECTED BOOK]\ntrusted excerpt",
+            capability=None,
+            policy_version="v1",
+            knowledge_query=kwargs["question"],
+            sources=[{"id": "book-v1", "source": "selected_book"}],
+        )
+
+    async def fake_route(**_kwargs):
+        return main, AgentInvocationMatch(status="none")
+
+    class BridgeResponse:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def aiter_lines(self):
+            yield 'data: {"type":"done","answer":"ok"}'
+            yield ""
+
+    class BridgeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, _method, _url, **kwargs):
+            observed.update(kwargs)
+            return BridgeResponse()
+
+    monkeypatch.setattr(chat_mod, "_resolve_chat_policy", fake_policy)
+    monkeypatch.setattr(chat_mod, "_resolve_source_context", fake_source_context)
+    monkeypatch.setattr(chat_mod, "_resolve_agent_route", fake_route)
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: BridgeClient())
+
+    response = await chat_mod.chat_stream(
+        StreamRequest(
+            question="这本书的核心观点是什么？",
+            session_id="book-session",
+            context_scope={"mode": "platform_only", "selected_book_id": "book-v1"},
+        ),
+        payload={"tenant_key": "u-test", "user_id": "1"},
+    )
+    body = "".join([frame async for frame in response.body_iterator])
+
+    validated = GoalRequest.model_validate(observed["json"])
+    assert validated.agent_config["delegation"] == {
+        "max_concurrent_children": 1,
+        "max_spawn_depth": 1,
+    }
+    assert validated.agent_config["triage"]["route_class"] == "GENERAL_QA"
+    assert "trusted excerpt" in validated.goal
+    assert '"type":"done"' in body
+
+
+@pytest.mark.asyncio
 async def test_stream_signs_client_context_and_never_trusts_client_tenant(
     app: FastAPI, transport: httpx.ASGITransport, monkeypatch
 ):

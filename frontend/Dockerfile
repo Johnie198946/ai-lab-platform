@@ -1,18 +1,18 @@
-FROM node:20-alpine AS build
+FROM node:22.23.2-alpine3.24@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN apk upgrade --no-cache && npm ci
 COPY frontend/ .
 COPY apps/shared /app/apps/shared
 # Build
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginxinc/nginx-unprivileged:1.30.4-alpine3.24@sha256:9b87ad3dd9f431c733f19dfb278c7eb3dba9dca381942c79818bb42f1a566a83
+USER root
+RUN apk upgrade --no-cache
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 # Quantum fork 官方 Web 引擎（web-dashboard dist → 9080 server 块；官方仓库零改动）
 COPY web-dashboard/dist /usr/share/nginx/html/web-dashboard
-COPY frontend/nginx/ailab.crt /etc/nginx/ssl/ailab.crt
-COPY frontend/nginx/ailab.key /etc/nginx/ssl/ailab.key
 RUN echo $'server {\n\
     listen 80;\n\
     return 308 https://$host$request_uri;\n\
@@ -263,4 +263,7 @@ server {\n\
     }\n\
 }\n' > /etc/nginx/conf.d/default.conf
 EXPOSE 80 443 9080 9081
+USER nginx
+HEALTHCHECK --interval=10s --timeout=5s --start-period=10s --retries=5 \
+    CMD ["wget", "--no-check-certificate", "-q", "-O", "/dev/null", "https://127.0.0.1:9081/"]
 CMD ["nginx", "-g", "daemon off;"]

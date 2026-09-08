@@ -10,6 +10,10 @@ HERMES_HOME="$HERMES_ACCOUNT_HOME/.hermes"
 HERMES_AGENT_ROOT="$HERMES_HOME/hermes-agent"
 HERMES_PYTHON="$HERMES_AGENT_ROOT/venv/bin/python"
 HERMES_LAUNCHER="$HERMES_ACCOUNT_HOME/.local/bin/hermes"
+HERMES_RUNTIME_VERSION=0.21.1
+BRIDGE_WORKER_VENV_LINK="$HERMES_ACCOUNT_HOME/bridge-worker-venv"
+BRIDGE_WORKER_VENV_ROOT="$HERMES_ACCOUNT_HOME/bridge-worker-venvs"
+BRIDGE_WORKER_PYTHON="$BRIDGE_WORKER_VENV_LINK/bin/python"
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
   exit 2
@@ -61,15 +65,119 @@ verify_hermes_install() {
     echo "ERROR: official Hermes install is incomplete under $HERMES_ACCOUNT_HOME" >&2
     return 1
   fi
+  if ! HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$HERMES_PYTHON" -c \
+    'import importlib.metadata, os; assert importlib.metadata.version("hermes-agent") == os.environ["HERMES_RUNTIME_VERSION"]'; then
+    echo "ERROR: Hermes runtime must be exactly $HERMES_RUNTIME_VERSION" >&2
+    return 1
+  fi
+}
+
+prepare_bridge_worker_venv() {
+  local release_dir="$1" lock_digest target temp_dir=""
+  lock_digest="$(printf '%s\0' "$HERMES_RUNTIME_VERSION" | cat - "$release_dir/requirements.lock" "$release_dir/requirements-bridge-worker.lock" "$release_dir/requirements-build.lock" | sha256sum | cut -d' ' -f1)"
+  target="$BRIDGE_WORKER_VENV_ROOT/$lock_digest"
+  install -d -o quantumn-hermes -g quantumn-hermes -m 0700 "$BRIDGE_WORKER_VENV_ROOT"
+  if [ ! -x "$target/bin/python" ]; then
+    temp_dir="$(mktemp -d "$BRIDGE_WORKER_VENV_ROOT/.build.XXXXXX")"
+    chown quantumn-hermes:quantumn-hermes "$temp_dir"
+    if ! runuser -u quantumn-hermes -- python3 -m venv "$temp_dir" \
+      || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
+        --require-hashes -r "$release_dir/requirements-build.lock" \
+      || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
+        --require-hashes --no-build-isolation -r "$release_dir/requirements.lock" \
+      || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
+        --require-hashes --no-build-isolation -r "$release_dir/requirements-bridge-worker.lock" \
+      || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
+        --no-deps --no-build-isolation "$HERMES_AGENT_ROOT" \
+      || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip check; then
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    mv "$temp_dir" "$target"
+  fi
+  if ! HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$target/bin/python" -c \
+    'from importlib.metadata import version; import os, httpx, sqlalchemy, run_agent; assert version("hermes-agent") == os.environ["HERMES_RUNTIME_VERSION"]'; then
+    echo "ERROR: Bridge/Worker venv cannot import platform dependencies and fixed Hermes source" >&2
+    return 1
+  fi
+  BRIDGE_WORKER_VENV_TARGET="$target"
+}
+
+activate_bridge_worker_venv() {
+  local next_link="$BRIDGE_WORKER_VENV_LINK.next.$$"
+  if [ -L "$BRIDGE_WORKER_VENV_LINK" ]; then
+    BRIDGE_WORKER_VENV_BEFORE="$(readlink -f "$BRIDGE_WORKER_VENV_LINK")"
+    BRIDGE_WORKER_VENV_HAD_LINK=1
+  fi
+  ln -s "$BRIDGE_WORKER_VENV_TARGET" "$next_link"
+  mv -Tf "$next_link" "$BRIDGE_WORKER_VENV_LINK"
+  BRIDGE_WORKER_VENV_SWITCHED=1
+}
+
+resolve_hermes_bridge_bind_address() {
+  local address
+  address="$(docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    'import socket; print(socket.gethostbyname("host.docker.internal"))' 2>/dev/null)" || {
+    echo "ERROR: cannot resolve host.docker.internal inside the API container" >&2
+    return 1
+  }
+  if ! python3 - "$address" <<'PY'
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+allowed = tuple(ipaddress.ip_network(item) for item in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+raise SystemExit(0 if address.version == 4 and any(address in network for network in allowed) else 1)
+PY
+  then
+    echo "ERROR: Docker host-gateway is not an RFC1918 IPv4 address: ${address:-<empty>}" >&2
+    return 1
+  fi
+  if ! ip -4 -o addr show | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fqx "$address"; then
+    echo "ERROR: Docker host-gateway is not assigned to this host: $address" >&2
+    return 1
+  fi
+  printf '%s\n' "$address"
+}
+
+configure_hermes_bridge_network() {
+  local env_dir=/etc/ai-lab-platform env_file temp_file
+  HERMES_BRIDGE_BIND_ADDRESS="$(resolve_hermes_bridge_bind_address)"
+  export HERMES_BRIDGE_BIND_ADDRESS
+  install -d -o root -g root -m 0755 "$env_dir"
+  env_file="$env_dir/hermes-bridge.env"
+  temp_file="$(mktemp "$env_dir/.hermes-bridge.XXXXXX")"
+  printf 'HERMES_BRIDGE_BIND_ADDRESS=%s\n' "$HERMES_BRIDGE_BIND_ADDRESS" > "$temp_file"
+  chmod 0644 "$temp_file"
+  mv -f "$temp_file" "$env_file"
+}
+
+verify_hermes_bridge_unit() {
+  local bridge_effective worker_effective
+  bridge_effective="$(systemctl show hermes-bridge.service --property=ExecStart --value)"
+  worker_effective="$(systemctl show hermes-chat-worker.service --property=ExecStart --value)"
+  if [[ "$bridge_effective" != *"$BRIDGE_WORKER_PYTHON"* || "$bridge_effective" != *"scripts/hermes_bridge.py"* || "$bridge_effective" == *"--host"* ]]; then
+    echo "ERROR: effective hermes-bridge ExecStart bypasses the private bind contract: $bridge_effective" >&2
+    return 1
+  fi
+  if [[ "$worker_effective" != *"$BRIDGE_WORKER_PYTHON"* || "$worker_effective" != *"scripts.chat_run_worker"* ]]; then
+    echo "ERROR: effective hermes-chat-worker ExecStart bypasses the dedicated venv: $worker_effective" >&2
+    return 1
+  fi
 }
 
 install_hermes_units() {
   ensure_hermes_account
+  configure_hermes_bridge_network
   install -m 0644 "$APP_LINK/ops/systemd/hermes-bridge.service" \
     /etc/systemd/system/hermes-bridge.service
   install -m 0644 "$APP_LINK/ops/systemd/hermes-chat-worker.service" \
     /etc/systemd/system/hermes-chat-worker.service
   systemctl daemon-reload
+  verify_hermes_bridge_unit
 }
 
 restart_hermes_runtime() {
@@ -118,6 +226,10 @@ TARBALL_VALIDATED=0
 RELEASE_VALIDATED=0
 SWITCHED=0
 RUNTIME_CHANGED=0
+BRIDGE_WORKER_VENV_TARGET=""
+BRIDGE_WORKER_VENV_BEFORE=""
+BRIDGE_WORKER_VENV_HAD_LINK=0
+BRIDGE_WORKER_VENV_SWITCHED=0
 cleanup() {
   rc=$?
   trap - EXIT
@@ -130,6 +242,15 @@ cleanup() {
       rollback_link="$APP_LINK.rollback.$$"
       ln -s "$CURRENT_DIR" "$rollback_link"
       mv -Tf "$rollback_link" "$APP_LINK"
+    fi
+    if [ "$BRIDGE_WORKER_VENV_SWITCHED" -eq 1 ]; then
+      if [ "$BRIDGE_WORKER_VENV_HAD_LINK" -eq 1 ]; then
+        rollback_venv_link="$BRIDGE_WORKER_VENV_LINK.rollback.$$"
+        ln -s "$BRIDGE_WORKER_VENV_BEFORE" "$rollback_venv_link"
+        mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK"
+      else
+        rm -f -- "$BRIDGE_WORKER_VENV_LINK"
+      fi
     fi
     cd "$CURRENT_DIR"
     docker compose -p "$COMPOSE_PROJECT" up -d --build || true
@@ -198,6 +319,8 @@ if [ ! -f "$SHARED_ROOT/.env" ]; then
   install -m 600 "$CURRENT_DIR/.env" "$SHARED_ROOT/.env"
 fi
 ensure_hermes_account
+export AI_LAB_RUNTIME_UID="$(id -u quantumn-hermes)"
+export AI_LAB_RUNTIME_GID="$(id -g quantumn-hermes)"
 for name in backups rollbacks; do
   if [ ! -e "$SHARED_ROOT/$name" ]; then
     if [ -e "$CURRENT_DIR/$name" ]; then
@@ -221,14 +344,14 @@ ln -s "$SHARED_ROOT/rollbacks" "$STAGING_DIR/rollbacks"
 cd "$RELEASE_DIR"
 echo "==> [3/6] 重建 Compose 服务"
 verify_hermes_install
-if ! "$HERMES_PYTHON" -c 'import ddgs' >/dev/null 2>&1; then
-  "$HERMES_PYTHON" -m pip install --no-cache-dir \
-    -i https://pypi.tuna.tsinghua.edu.cn/simple/ 'ddgs>=9.0'
-fi
+prepare_bridge_worker_venv "$RELEASE_DIR"
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
 docker compose -p "$COMPOSE_PROJECT" build api
 docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps api \
   python scripts/migrate_quantum_workspace.py
+docker compose -p "$COMPOSE_PROJECT" build taskboard
+docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --user 0 --entrypoint chown taskboard \
+  -R 1000:1000 /data
 RUNTIME_CHANGED=1
 docker compose -p "$COMPOSE_PROJECT" up -d --build
 
@@ -257,28 +380,29 @@ printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
 
 echo "==> [4b/6] 建立 Hermes Vault 可见性链接并修复笔记共享权限"
 VAULT_ROOT="$DATA_TARGET/vault"
-chown 0:0 "$VAULT_ROOT"
+chown quantumn-hermes:quantumn-hermes "$VAULT_ROOT"
 chmod 0755 "$VAULT_ROOT"
 bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
-  --owner-uid 0 --owner-gid 0 \
+  --owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID" \
   "$VAULT_ROOT/raw/dialogues/tenants"
-install -d -o 0 -g 0 -m 0700 "$VAULT_ROOT/wiki/tenant"
-install -d -o 0 -g 0 -m 0755 "$VAULT_ROOT/wiki/contributions"
+install -d -o quantumn-hermes -g quantumn-hermes -m 0700 "$VAULT_ROOT/wiki/tenant"
+install -d -o quantumn-hermes -g quantumn-hermes -m 0755 "$VAULT_ROOT/wiki/contributions"
 
 echo "==> [5/6] 原子切换 release 并重启 Hermes runtime"
 LINK_TMP="$APP_LINK.next.$$"
 ln -s "$RELEASE_DIR" "$LINK_TMP"
 mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
+activate_bridge_worker_venv
 configure_cloud_agent_os_mode
 install_hermes_units
 restart_hermes_runtime
 repair_runtime_store_permissions "$DATA_TARGET"
-chown 0:0 "$VAULT_ROOT"
+chown quantumn-hermes:quantumn-hermes "$VAULT_ROOT"
 chmod 0755 "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
-  --owner-uid 0 --owner-gid 0 \
+  --owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID" \
   "$VAULT_ROOT/raw/dialogues/tenants"
 docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
   'import pathlib,tempfile; data=pathlib.Path("/app/data"); data_probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=data)); data_probe.rmdir(); vault=data/"vault"; lock=vault/".incremental-compile.lock"; lock.touch(exist_ok=True); root=vault/"raw/dialogues/tenants"; probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
@@ -300,7 +424,7 @@ if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
   echo "bridge_health_status=skipped_quarantined"
 else
   for _ in $(seq 1 30); do
-    bridge_status="$(curl -fsS --max-time 5 http://127.0.0.1:9118/health || true)"
+    bridge_status="$(curl -fsS --max-time 5 "http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health" || true)"
     [ -n "$bridge_status" ] && break
     sleep 1
   done
@@ -309,6 +433,9 @@ else
     exit 1
   fi
   printf '%s\n' "$bridge_status"
+  systemctl is-active --quiet hermes-bridge.service hermes-chat-worker.service
+  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import urllib.request; print(urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5).read().decode())"
 fi
 echo "deployed_sha=$EXPECTED_SHA"
 echo "release=$RELEASE_DIR"
