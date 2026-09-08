@@ -6,6 +6,7 @@ are derived from the verified JWT, while Authen remains the entitlement source.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import datetime, timezone
 from typing import Any
@@ -23,12 +24,17 @@ from backend.models.tenant import KnowledgeBookSubscription, KnowledgeSeriesSubs
 from backend.services.knowledge_catalog import (
     base_knowledge_status,
     bookshelf_catalog,
-    document_index,
+    bookshelf_document_index,
     filter_database_live_documents,
+    publication_book,
     reader_book_body,
     tenant_private_knowledge_status,
 )
-from backend.services.knowledge_publication_store import PublicationStore, reader_sections
+from backend.services.knowledge_publication_store import (
+    PUBLICATION_CATEGORY,
+    PublicationStore,
+    reader_sections,
+)
 
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"])
@@ -271,7 +277,9 @@ def _reader_identity(payload: dict[str, Any]) -> tuple[str, str]:
 
 async def _visible_bookshelves(payload: dict[str, Any]) -> list[dict[str, Any]]:
     vault = knowledge._vault()
-    documents = await filter_database_live_documents(list(document_index(vault).values()), vault)
+    documents = await filter_database_live_documents(
+        list(bookshelf_document_index(vault).values()), vault
+    )
     return bookshelf_catalog(
         payload["tenant_key"], vault, payload.get("visible_categories"), documents
     )
@@ -300,12 +308,22 @@ def _public_bookshelves(shelves: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
-    book = (await _available_books(payload)).get(book_id)
+    visible_categories = payload.get("visible_categories")
+    publication_id = book_id.startswith("publication-")
+    publication = (
+        PublicationStore().get_published(book_id, vault=knowledge._vault())
+        if publication_id
+        and (visible_categories is None or PUBLICATION_CATEGORY in visible_categories)
+        else None
+    )
+    book = (
+        publication_book(publication) if publication else None
+    ) if publication_id else (await _available_books(payload)).get(book_id)
     if book is None:
         raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
                      action="refresh_catalog", retryable=True)
     if book.get("source_kind") == "publication":
-        item = PublicationStore().get_published(book_id)
+        item = publication
         sections = reader_sections(item["body"]) if item and item.get("artifact_valid") else []
         body = ({
             "book_id": book_id, "title": book["title"], "author": book["author"],
@@ -322,8 +340,22 @@ async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[d
         if not source_path.startswith("wiki/") or not source_path.endswith(".md"):
             body = None
         else:
-            wiki = await knowledge.read_wiki_live(source_path[5:-3])
-            body = reader_book_body(book, wiki)
+            vault = knowledge._vault()
+            candidate = bookshelf_document_index(vault).get(source_path)
+            live = await filter_database_live_documents([candidate] if candidate else [], vault)
+            try:
+                text = await knowledge.run_knowledge_read(
+                    (vault / source_path).read_text, encoding="utf-8", errors="ignore"
+                ) if len(live) == 1 else ""
+            except OSError:
+                text = ""
+            current = bookshelf_document_index(vault).get(source_path)
+            after = await filter_database_live_documents([current] if current else [], vault)
+            body = reader_book_body(book, {
+                "content": text,
+                "version": hashlib.sha256(text.encode()).hexdigest(),
+                "citation": f"knowledge:{source_path}",
+            }) if text and len(after) == 1 and after[0] == live[0] else None
     if body is None:
         raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
                      action="refresh_catalog", retryable=True)

@@ -2145,8 +2145,9 @@ private struct KnowledgeBookReadingView: View {
         isLoading = true
         loadError = nil
         do {
-            let loaded = try await api.fetchKnowledgeBookBody(id: book.id)
-            let subscriptions = try await api.fetchBookSubscriptions()
+            async let bodyRequest = api.fetchKnowledgeBookBody(id: book.id)
+            async let subscriptionsRequest = api.fetchBookSubscriptions()
+            let (loaded, subscriptions) = try await (bodyRequest, subscriptionsRequest)
             guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
             bookBody = loaded
             if let subscription = subscriptions.first(where: { $0.book.id == book.id }),

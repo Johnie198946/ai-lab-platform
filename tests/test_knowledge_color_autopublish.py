@@ -142,7 +142,8 @@ def test_cached_atomic_projection_rejects_removed_red_owner_and_yellow_entitleme
 
     assert "wiki/private.md" in document_index(tmp_path)
     assert "wiki/paid.md" in document_index(tmp_path)
-    assert bookshelf_catalog("tenant-a", tmp_path)
+    # Color approval authorizes knowledge use, not publication as a book.
+    assert bookshelf_catalog("tenant-a", tmp_path) == []
 
     red.write_text(
         red.read_text(encoding="utf-8").replace("owner_tenant: tenant-a\n", ""),

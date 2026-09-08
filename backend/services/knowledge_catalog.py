@@ -226,6 +226,15 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
         result.pop(key, None)
         if key in metadata:
             result[key] = metadata[key]
+    # Catalog admission and live editorial consent must both hold. Green/color
+    # approval alone only authorizes knowledge use, never book publication.
+    result["book_publication_authorized"] = (
+        item.get("book_publication_authorized") is True
+        and metadata.get("book_publication_authorized") is True
+        and all(str(metadata.get(key) or "").strip() for key in (
+            "book_title", "book_author", "book_summary"
+        ))
+    )
     if metadata.get("disclosure_granularity") == "summary":
         if (metadata.get("derivation_permitted") is not True
                 or not metadata.get("summary_of")
@@ -258,6 +267,21 @@ def document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:
         path: live
         for path, item in compiled.items()
         if (live := _apply_file_read_barrier(vault, item)) is not None
+    }
+
+
+def bookshelf_document_index(vault: Path | None = None) -> dict[str, dict[str, Any]]:
+    """Return only explicitly compiled legacy books, with live revocation."""
+    vault = vault or _vault()
+    return {
+        str(item["path"]): live
+        for item in load_manifest(vault).get("documents", [])
+        if isinstance(item, dict)
+        and item.get("path")
+        and item.get("pack_id")
+        and item.get("book_publication_authorized") is True
+        and (live := _apply_file_read_barrier(vault, item)) is not None
+        and live.get("book_publication_authorized") is True
     }
 
 
@@ -613,7 +637,7 @@ def compute_catalog(vault: Path | None = None) -> list[dict[str, Any]]:
     from backend.services.knowledge_publication_store import (
         PUBLICATION_CATEGORY, PublicationStore,
     )
-    published = PublicationStore().published()
+    published = PublicationStore().published(include_body=False)
     if published:
         by_category[PUBLICATION_CATEGORY] = {
             "category": PUBLICATION_CATEGORY, "path_prefix": "publication:",
@@ -714,7 +738,10 @@ def _wiki_summary(path_text: str, mtime_ns: int) -> str:
 
 def reader_book_body(book: dict[str, Any], wiki: dict[str, Any]) -> dict[str, Any] | None:
     """Map the existing live Wiki read contract into reader sections."""
-    body = str(wiki.get("content") or "").strip()
+    body = re.sub(
+        r"\A---\s*\n.*?\n---\s*\n?", "", str(wiki.get("content") or ""),
+        count=1, flags=re.DOTALL,
+    ).strip()
     if not body:
         return None
     version = str(wiki.get("version") or "")
@@ -724,11 +751,7 @@ def reader_book_body(book: dict[str, Any], wiki: dict[str, Any]) -> dict[str, An
     # image sources, or external destinations as clickable authorization bypasses.
     body = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", body)
     body = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", body)
-    body = re.sub(
-        r"!?\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]",
-        lambda match: match.group(2) or match.group(1),
-        body,
-    )
+    body = re.sub(r"!?\[\[[^\]]+\]\]", "", body)
     body = re.sub(r"<?https?://[^\s)>]+>?", "（链接已隐藏）", body)
     sections: list[dict[str, Any]] = []
     title, level, lines = "开篇", 1, []
@@ -766,6 +789,32 @@ def reader_book_body(book: dict[str, Any], wiki: dict[str, Any]) -> dict[str, An
     }
 
 
+def _book_publication_admitted(item: dict[str, Any]) -> bool:
+    return item.get("book_publication_authorized") is True
+
+
+def publication_book(item: dict[str, Any]) -> dict[str, Any]:
+    """Map one verified publication record into the existing reader contract."""
+    from backend.services.knowledge_publication_store import SERIES
+
+    bundle = item["bundle"]
+    return {
+        "id": item["publication_id"], "source_kind": "publication",
+        "title": item["title"], "author": item["author"],
+        "author_source": bundle["authored_by"], "summary": item["summary"],
+        "cover_theme": SERIES[item["series_id"]]["cover_theme"],
+        "cover_variant": int(item["content_hash"][:4], 16) % 6, "cover_version": 1,
+        "security_level": "green", "knowledge_level": "editorial",
+        "freshness": "daily", "source_count": len(bundle["references"]),
+        "series_id": item["series_id"], "series_title": SERIES[item["series_id"]]["title"],
+        "issue_id": item["issue_id"], "issue_date": item["issue_date"],
+        "test_serial": True, "release_at": item["release_at"],
+        "actual_release_at": item["actual_release_at"], "edition_id": item["edition_id"],
+        "edition": item["edition"], "source_urls": [ref["url"] for ref in bundle["references"]],
+        "content_version": item["content_hash"],
+    }
+
+
 def bookshelf_catalog(
     tenant_key: str,
     vault: Path | None = None,
@@ -782,8 +831,8 @@ def bookshelf_catalog(
     }
     shelves: dict[str, dict[str, Any]] = {}
     # ponytail: one response is fine at 259 books; paginate after 300 books or 250 KB.
-    for item in documents if documents is not None else document_index(vault).values():
-        if not isinstance(item, dict):
+    for item in documents if documents is not None else bookshelf_document_index(vault).values():
+        if not isinstance(item, dict) or not _book_publication_admitted(item):
             continue
         security = str(item.get("security_level") or "")
         if security not in {"green", "red"}:
@@ -809,22 +858,17 @@ def bookshelf_catalog(
             "security_level": security,
             "books": [],
         })
-        source = vault / relative
-        try:
-            summary = _wiki_summary(str(source), source.stat().st_mtime_ns)
-        except OSError:
-            summary = ""
+        summary = str(item["book_summary"]).strip()[:220]
         knowledge_id = str(item.get("knowledge_id") or "")
         book_id = "book-" + hashlib.sha256(relative.encode("utf-8")).hexdigest()[:32]
-        editorial_summary = str(item.get("book_summary") or "").strip()
         shelf["books"].append({
             "id": book_id,
             "knowledge_id": knowledge_id,
             "source_path": relative,
-            "title": str(item.get("book_title") or item.get("title") or source.stem),
-            "author": str(item.get("book_author") or item.get("author") or "Quantum 研究团队"),
-            "author_source": str(item.get("author_source") or ("editorial" if item.get("book_author") else "fallback")),
-            "summary": editorial_summary[:220] or summary,
+            "title": str(item["book_title"]),
+            "author": str(item["book_author"]),
+            "author_source": "editorial",
+            "summary": summary,
             "cover_theme": cover_theme,
             "cover_variant": int.from_bytes(hashlib.sha256(book_id.encode()).digest()[:2], "big") % 6,
             "cover_version": 1,
@@ -834,34 +878,18 @@ def bookshelf_catalog(
             "source_count": int(item.get("source_count") or 0),
         })
     from backend.services.knowledge_publication_store import (
-        PUBLICATION_CATEGORY, SERIES, PublicationStore,
+        PUBLICATION_CATEGORY, PublicationStore,
     )
     if visible_categories is None or PUBLICATION_CATEGORY in visible_categories:
-        published = PublicationStore().published()
+        published = PublicationStore().published(include_body=False)
         if published:
             shelf = shelves.setdefault(PUBLICATION_CATEGORY, {
                 "id": PUBLICATION_CATEGORY, "title": "Quantumn 每日测试连载",
                 "security_level": "green", "books": [],
             })
-            for item in published:
-                bundle = item["bundle"]
-                if not item.get("artifact_valid"):
-                    continue
-                shelf["books"].append({
-                    "id": item["publication_id"], "source_kind": "publication",
-                    "title": item["title"], "author": item["author"],
-                    "author_source": bundle["authored_by"], "summary": item["summary"],
-                    "cover_theme": SERIES[item["series_id"]]["cover_theme"],
-                    "cover_variant": int(item["content_hash"][:4], 16) % 6, "cover_version": 1,
-                    "security_level": "green", "knowledge_level": "editorial",
-                    "freshness": "daily", "source_count": len(bundle["references"]),
-                    "series_id": item["series_id"], "series_title": SERIES[item["series_id"]]["title"],
-                    "issue_id": item["issue_id"], "issue_date": item["issue_date"],
-                    "test_serial": True, "release_at": item["release_at"],
-                    "actual_release_at": item["actual_release_at"], "edition_id": item["edition_id"],
-                    "edition": item["edition"], "source_urls": [ref["url"] for ref in bundle["references"]],
-                    "content_version": item["content_hash"],
-                })
+            shelf["books"].extend(
+                publication_book(item) for item in published if item.get("artifact_valid")
+            )
     for shelf in shelves.values():
         shelf["books"].sort(key=lambda book: book["title"])
         shelf["book_count"] = len(shelf["books"])

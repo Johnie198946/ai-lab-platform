@@ -90,6 +90,43 @@ def test_before_noon_invisible_and_exact_noon_releases(monkeypatch, tmp_path):
     assert store.published(now=at(4))[0]["actual_release_at"] == at(4).isoformat()
 
 
+def test_targeted_publication_reads_one_verified_record(monkeypatch, tmp_path):
+    runtime, vault = tmp_path / "runtime", tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setenv("KNOWLEDGE_PUBLICATION_DIR", str(runtime))
+    monkeypatch.setenv("AI_LAB_HOME", str(vault))
+    store = PublicationStore(runtime)
+    target = stage(store, bundle(), now=at(3))
+    stage(store, bundle(series="ai-practice", body=bundle()["body"] + "\nsecond"), now=at(3))
+    assert len(store.release_due(now=at(4))["released"]) == 2
+    calls = []
+    original = PublicationStore.get_published
+
+    def counted(self, publication_id, **kwargs):
+        calls.append(publication_id)
+        return original(self, publication_id, **kwargs)
+
+    async def no_catalog(_payload):
+        raise AssertionError("targeted publication must not enumerate the catalog")
+
+    monkeypatch.setattr(PublicationStore, "get_published", counted)
+    monkeypatch.setattr(subscriptions, "_available_books", no_catalog)
+    monkeypatch.setattr(
+        PublicationStore, "published",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("targeted publication must not enumerate published bodies")
+        ),
+    )
+
+    _, body = asyncio.run(subscriptions._available_book_body(
+        {"tenant_key": "tenant-a", "visible_categories": frozenset({PUBLICATION_CATEGORY})},
+        target["publication_id"],
+    ))
+
+    assert body["book_id"] == target["publication_id"]
+    assert calls == [target["publication_id"]]
+
+
 def test_missing_daily_series_are_reported(tmp_path):
     store = PublicationStore(tmp_path)
     stage(store, now=at(3))
@@ -271,6 +308,41 @@ def test_withdrawal_removes_all_read_search_chat_paths(monkeypatch, tmp_path):
     assert store.search("合成测试", 5) == [] and knowledge.search(q="合成测试", limit=5)["docs"] == []
     with pytest.raises(HTTPException):
         asyncio.run(subscriptions._available_book_body(payload, book["id"]))
+    with pytest.raises(HTTPException):
+        asyncio.run(subscriptions.subscribe_book(
+            subscriptions.BookSubscriptionWrite(book_id=book["id"]), payload
+        ))
+    with pytest.raises(HTTPException):
+        asyncio.run(subscriptions.update_book_progress(
+            subscriptions.BookProgressWrite(
+                book_id=book["id"], progress=0.5, content_version=body["content_version"]
+            ), payload,
+        ))
+    with pytest.raises(HTTPException):
+        asyncio.run(chat._resolve_source_context(
+            scope=chat.ChatContextScope(mode="platform_only", selected_book_id=book["id"]),
+            payload=payload, subject_id="session", question="解释本期", policy=policy,
+        ))
+
+
+def test_tampered_receipt_revokes_targeted_detail(monkeypatch, tmp_path):
+    runtime, vault = tmp_path / "runtime", tmp_path / "vault"
+    vault.mkdir()
+    monkeypatch.setenv("KNOWLEDGE_PUBLICATION_DIR", str(runtime))
+    monkeypatch.setenv("AI_LAB_HOME", str(vault))
+    store = PublicationStore(runtime)
+    staged = stage(store, now=at(3))
+    store.release_due(now=at(4))
+    receipt = staged["bundle"]["review"]["receipt"]
+    (runtime / "evidence" / f"{receipt['sha256']}.bin").write_text("tampered", encoding="utf-8")
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(subscriptions._available_book_body(
+            {"tenant_key": "tenant-a", "visible_categories": frozenset({PUBLICATION_CATEGORY})},
+            staged["publication_id"],
+        ))
+
+    assert error.value.status_code == 404
 
 
 def test_admin_serial_endpoints_remain_super_admin_only(tmp_path, monkeypatch):

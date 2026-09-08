@@ -5,11 +5,11 @@
 - status: TESTED
 - branch: main
 - worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-publication-20260908`
-- head/local_commit: `50e914b654c32426ea8a018ddde1ceb496e9587d` (no task commit)
-- remote_sha: parent verified `origin/main` at the same SHA
+- head/local_commit: `2714382d244ea880aa3603cc48c2528caead3741` (no task commit)
+- remote_sha: local tracking ref `origin/main` is the same SHA; fresh fetch was blocked by the workspace sandbox
 - server_before/server_after: not touched
 - health_check/functional_check: local only, detailed below
-- rollback_point: none created; no deployment authorized
+- rollback_point: pending; user authorized GitHub push, server deployment, and direct device installation on 2026-09-08
 
 ## Inventory and architecture reuse
 
@@ -43,6 +43,17 @@ Three adversarial rounds are recorded in `docs/publication-adversarial-review-20
 - Parent independently reported the preceding focused/regression suite at **59 passed** and iOS `WorkflowLifecycleDTOTests` at **115 passed** before this final backend/operator-only repair.
 - Parent-controlled private intake receipt reports three exact reviewed inputs staged as `scheduled`, zero blocked; its 09:26 Shanghai pre-release check correctly showed zero released/published. No private intake bundle was copied into Git.
 
+## Bookshelf repair continuation (2026-09-08)
+
+- Root causes: the interrupted guard treated Wiki `publication_suitable` and arbitrary `source_kind=publication` metadata as publication authority; stale manifest metadata could therefore outlive live approval. Publication detail also called the full bookshelf path, and catalog projections materialized every published body. iOS reader startup performed two independent reads serially.
+- Reconciliation: legacy Wiki books now require `book_publication_authorized: true` in both the compiled manifest and current frontmatter, plus current editorial title/author/summary. Color approval and `publication_suitable` remain knowledge/source-suitability facts only. Formal publications still come exclusively from `PublicationStore` with live artifact, receipt, review, rights and Wiki-reference checks.
+- Performance: list/catalog reads request publication metadata without returning bodies; targeted `publication-*` detail performs one indexed `get_published` and never enumerates the bookshelf or all published bodies. The iOS reader starts body and subscription reads with `async let` and joins them once.
+- Negative coverage: generic Green chat, `publication_suitable`-only Wiki, forged Wiki `source_kind=publication`, removed live legacy admission, wrong Red tenant/absent Yellow entitlement, withdrawn publication, expired rights, and tampered review receipt all fail closed. Withdrawal is checked across list, detail, subscribe, progress, search and selected-book Chat.
+- Focused first run: `43 passed, 1 failed`; the sole failure was a stale test expectation for a safe derived cover theme. Final focused: `44 passed`. Expanded knowledge/publication/Chat regression: `106 passed`.
+- Full backend first run: `1507 passed, 2 skipped, 1 failed`; the sole failure was Swift attempting to write its default module cache under sandbox-blocked `~/.cache`. Re-run with `CLANG_MODULE_CACHE_PATH` and `SWIFT_MODULECACHE_PATH` under `/tmp`: `1508 passed, 2 skipped, 11 warnings`, JUnit `/tmp/publication-bookshelf-repair-full-final.xml`.
+- Static checks: `git diff --check`, Python `compileall`, and Ruff on all changed Python/test files passed.
+- Governance at test completion: branch remained `main`; no commit, push, deploy, server action, private intake action, or other external write had occurred. Parent subsequently obtained explicit user authorization to push, deploy, and update the connected iPhone. Fresh `git ls-remote origin refs/heads/main` resolved to `2714382d244ea880aa3603cc48c2528caead3741` before delivery.
+
 ## Remaining risks / parent actions
 
 1. Parent must run the prepared private intake through the deployed final SHA, then verify the release wrapper/result against the real API container and durable root before scheduling.
@@ -57,13 +68,13 @@ task_id: publication-20260908
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-publication-20260908
-head/local_commit: 50e914b654c32426ea8a018ddde1ceb496e9587d (no task commit)
-remote_sha: 50e914b654c32426ea8a018ddde1ceb496e9587d (parent-verified)
+head/local_commit: 2714382d244ea880aa3603cc48c2528caead3741 (no task commit)
+remote_sha: local origin/main tracking ref 2714382d244ea880aa3603cc48c2528caead3741; fresh fetch blocked by sandbox
 server_before: not touched
 server_after: not touched
 health_check: not run; no deployment
-functional_check: 67 focused/regression backend tests passed; parent previously reported 115 iOS DTO tests passed; production/authenticated acceptance not run
+functional_check: 106 focused/regression and 1508 full backend tests passed; iOS app/simulator and production/authenticated acceptance not run
 rollback_point: none; no deployment
 manifest: ops/change-manifests/publication-20260908-completion.md
-remaining_risks: final-SHA private intake, production DB/deploy, release-wrapper execution, scheduler activation, and authenticated UI acceptance remain with parent
+remaining_risks: fresh remote fetch/SHA verification, final-SHA private intake, iOS app/device concurrency acceptance, production DB/deploy, release-wrapper execution, scheduler activation, and authenticated UI acceptance remain with parent
 ```

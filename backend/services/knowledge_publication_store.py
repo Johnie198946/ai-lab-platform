@@ -531,20 +531,37 @@ class PublicationStore:
     def status_report(self, publication_id: str | None = None, *, now: datetime | None = None) -> dict[str, Any]:
         return {"items": self.status(publication_id), "missing": self.missing(now)}
 
-    def published(self, *, now: datetime | None = None, vault: Path | None = None) -> list[dict[str, Any]]:
+    def published(
+        self, *, now: datetime | None = None, vault: Path | None = None,
+        include_body: bool = True,
+    ) -> list[dict[str, Any]]:
         if not self.db_path.exists():
             return []
         db, result, actual = self._connect(), [], now or _now()
         try:
             for row in db.execute("SELECT * FROM editions WHERE state='published' ORDER BY issue_date DESC,series_id").fetchall():
                 if not self._access_reasons(db, row, actual, vault):
-                    result.append(self._record(row, body=True))
+                    item = self._record(row, body=include_body)
+                    item["artifact_valid"] = True
+                    result.append(item)
             return result
         finally:
             db.close()
 
     def get_published(self, publication_id: str, **kwargs: Any) -> dict[str, Any] | None:
-        return next((item for item in self.published(**kwargs) if item["publication_id"] == publication_id), None)
+        if not self.db_path.exists():
+            return None
+        db, actual = self._connect(), kwargs.get("now") or _now()
+        try:
+            row = db.execute(
+                "SELECT * FROM editions WHERE state='published' AND publication_id=?",
+                (publication_id,),
+            ).fetchone()
+            if row is None or self._access_reasons(db, row, actual, kwargs.get("vault")):
+                return None
+            return self._record(row, body=True)
+        finally:
+            db.close()
 
     def search(self, query: str, limit: int = 20) -> list[dict[str, Any]]:
         terms = [value.casefold() for value in re.findall(r"[\w\u4e00-\u9fff]{2,}", query)]
