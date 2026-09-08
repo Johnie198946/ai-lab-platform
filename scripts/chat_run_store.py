@@ -88,6 +88,10 @@ class DurableChatRunStore:
                     ON chat_runs(tenant_user_hash,status,created_at);
                 CREATE INDEX IF NOT EXISTS ix_chat_runs_session_status
                     ON chat_runs(tenant_user_hash,session_id,status,created_at);
+                CREATE TABLE IF NOT EXISTS chat_workers (
+                    worker_id TEXT PRIMARY KEY,
+                    heartbeat_at REAL NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS chat_run_events (
                     run_id TEXT NOT NULL REFERENCES chat_runs(run_id) ON DELETE CASCADE,
                     sequence INTEGER NOT NULL,
@@ -540,6 +544,21 @@ class DurableChatRunStore:
                 (now + lease_seconds, now, run_id, worker_id),
             )
             return cursor.rowcount == 1
+
+    def worker_heartbeat(self, worker_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO chat_workers(worker_id,heartbeat_at) VALUES(?,?)
+                   ON CONFLICT(worker_id) DO UPDATE SET heartbeat_at=excluded.heartbeat_at""",
+                (worker_id, time.time()),
+            )
+
+    def worker_is_live(self, *, max_age_seconds: float = 5.0) -> bool:
+        with self._connect() as conn:
+            return conn.execute(
+                "SELECT 1 FROM chat_workers WHERE heartbeat_at>=? LIMIT 1",
+                (time.time() - max(0.0, max_age_seconds),),
+            ).fetchone() is not None
 
     def terminal(self, run_id: str, *, status: str, error_code: str = "") -> bool:
         if status not in _TERMINAL:

@@ -25,6 +25,15 @@ RUN_DB = Path(os.environ.get("HERMES_CHAT_RUN_DB", "/opt/ai-lab-platform/data/he
 POLL_SECONDS = float(os.environ.get("HERMES_CHAT_WORKER_POLL", "0.1"))
 MAX_PARALLEL = max(1, int(os.environ.get("HERMES_CHAT_MAX_PARALLEL_PER_USER", "3")))
 MAX_WORKERS = max(2, int(os.environ.get("HERMES_CHAT_WORKER_THREADS", "8")))
+WORKER_HEARTBEAT_MAX_AGE = max(
+    1.0, float(os.environ.get("HERMES_CHAT_WORKER_HEARTBEAT_MAX_AGE", "5"))
+)
+WORKER_HEARTBEAT_SECONDS = max(
+    0.1, min(
+        float(os.environ.get("HERMES_CHAT_WORKER_HEARTBEAT_INTERVAL", "1")),
+        WORKER_HEARTBEAT_MAX_AGE / 2,
+    )
+)
 WORKER_ID = f"{socket.gethostname()}:{os.getpid()}"
 _run_context = threading.local()
 _AUTO_INGEST_RE = re.compile(r"调研|研究|分析|评估|方案|报告|诊断|规划|research|analysis|report|plan", re.I)
@@ -279,11 +288,16 @@ def main() -> None:
     warmup.join(timeout=90)
     futures = set()
     next_recovery = 0.0
+    next_heartbeat = 0.0
     with ThreadPoolExecutor(max_workers=MAX_WORKERS, thread_name_prefix="durable-chat") as pool:
         while True:
-            if time.time() >= next_recovery:
+            now = time.time()
+            if now >= next_heartbeat:
+                store.worker_heartbeat(WORKER_ID)
+                next_heartbeat = now + WORKER_HEARTBEAT_SECONDS
+            if now >= next_recovery:
                 store.recover_after_restart()
-                next_recovery = time.time() + 30
+                next_recovery = now + 30
             futures = {future for future in futures if not future.done()}
             claimed = False
             while len(futures) < MAX_WORKERS:

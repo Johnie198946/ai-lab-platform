@@ -16,7 +16,13 @@ SPEC.loader.exec_module(worker)
 def test_worker_periodically_recovers_leases_that_expire_after_restart():
     source = inspect.getsource(worker.main)
     assert source.count("recover_after_restart()") == 2
-    assert "next_recovery = time.time() + 30" in source
+    assert "next_recovery = now + 30" in source
+
+
+def test_worker_publishes_process_liveness_from_main_loop():
+    source = inspect.getsource(worker.main)
+    assert "store.worker_heartbeat(WORKER_ID)" in source
+    assert worker.WORKER_HEARTBEAT_SECONDS < worker.WORKER_HEARTBEAT_MAX_AGE
 
 
 def test_worker_default_queue_pickup_is_interactive():

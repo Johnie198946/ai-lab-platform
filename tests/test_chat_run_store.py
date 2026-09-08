@@ -12,6 +12,18 @@ spec.loader.exec_module(module)
 DurableChatRunStore = module.DurableChatRunStore
 
 
+def test_worker_heartbeat_expires_fail_closed(tmp_path, monkeypatch):
+    now = 100.0
+    monkeypatch.setattr(module.time, "time", lambda: now)
+    store = DurableChatRunStore(tmp_path / "runs.sqlite3")
+
+    assert store.worker_is_live(max_age_seconds=5) is False
+    store.worker_heartbeat("worker-1")
+    assert store.worker_is_live(max_age_seconds=5) is True
+    now = 106.0
+    assert store.worker_is_live(max_age_seconds=5) is False
+
+
 def test_idempotency_replay_and_tenant_isolation(tmp_path):
     store = DurableChatRunStore(tmp_path / "runs.sqlite3")
     owner = store.tenant_user_hash("tenant-a", "user-a")

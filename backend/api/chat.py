@@ -1336,18 +1336,32 @@ async def _call_bridge_stream(
             if resp.status_code != 200:
                 body = await resp.aread()
                 raw = body.decode("utf-8", errors="replace")
+                try:
+                    detail = json.loads(raw).get("detail")
+                except (json.JSONDecodeError, AttributeError):
+                    detail = None
+                maintenance = (
+                    resp.status_code == 503
+                    and isinstance(detail, dict)
+                    and detail.get("code") == "execution_worker_unavailable"
+                )
                 denied = resp.status_code == 403 and (
                     "knowledge_scope_denied" in raw
                     or "套餐或知识权限已变化" in raw
                 )
-                event = {
+                event = ({
+                    "type": "error",
+                    "code": "execution_worker_unavailable",
+                    "message": str(detail.get("message") or "Execution unavailable"),
+                    "recoverable": bool(detail.get("recoverable")),
+                } if maintenance else {
                     "type": "error",
                     "code": "knowledge_scope_denied" if denied else "bridge",
                     "message": (
                         "套餐或知识权限已变化，请刷新知识权限后重试"
                         if denied else f"HTTP {resp.status_code}"
                     ),
-                }
+                })
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
                 return
             async for line in resp.aiter_lines():

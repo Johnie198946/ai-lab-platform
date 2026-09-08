@@ -1,5 +1,6 @@
 """测试 v7 真实流式端点（/api/chat/stream）与配套控制端点。"""
 import asyncio
+import json
 import os
 from types import SimpleNamespace
 
@@ -688,6 +689,46 @@ async def test_bridge_knowledge_denial_is_preserved_in_sse(monkeypatch):
     body = "".join(frames)
     assert '"code": "knowledge_scope_denied"' in body
     assert "套餐或知识权限已变化" in body
+
+
+@pytest.mark.asyncio
+async def test_bridge_worker_maintenance_is_preserved_in_sse(monkeypatch):
+    import backend.api.chat as chat_mod
+
+    class UnavailableResponse:
+        status_code = 503
+
+        async def aread(self):
+            return json.dumps({"detail": {
+                "code": "execution_worker_unavailable",
+                "message": "Durable chat execution is temporarily unavailable for maintenance.",
+                "recoverable": True,
+            }}).encode()
+
+    class StreamContext:
+        async def __aenter__(self):
+            return UnavailableResponse()
+
+        async def __aexit__(self, *_args):
+            return False
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        def stream(self, *_args, **_kwargs):
+            return StreamContext()
+
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    body = "".join([
+        frame async for frame in chat_mod._call_bridge_stream("question", "session-1")
+    ])
+    assert '"code": "execution_worker_unavailable"' in body
+    assert '"recoverable": true' in body
+    assert "maintenance" in body
 
 
 @pytest.mark.asyncio

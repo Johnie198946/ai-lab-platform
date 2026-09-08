@@ -337,6 +337,7 @@ async def test_bridge_prewarm_is_internal_durable_and_tenant_scoped(monkeypatch,
     import scripts.hermes_bridge as bridge
 
     store = bridge.DurableChatRunStore(tmp_path / "runs.sqlite3")
+    store.worker_heartbeat("worker-test")
     claims = {"tenant_key": "tenant-a", "user_id": "user-a"}
     monkeypatch.setattr(bridge, "DURABLE_CHAT_WORKER_ENABLED", True)
     monkeypatch.setattr(bridge, "_chat_run_store", store)

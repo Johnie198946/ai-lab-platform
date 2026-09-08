@@ -196,8 +196,38 @@ HERMES_CHAT_RUN_DB = Path(
     )
 )
 DURABLE_CHAT_WORKER_ENABLED = os.environ.get("HERMES_DURABLE_CHAT_WORKER", "false") == "true"
+DURABLE_WORKER_HEARTBEAT_MAX_AGE = max(
+    1.0, float(os.environ.get("HERMES_CHAT_WORKER_HEARTBEAT_MAX_AGE", "5"))
+)
 _chat_run_store: DurableChatRunStore | None = None
 _BRIDGE_PREWARM_EPOCH = uuid.uuid4().hex[:12]
+
+_WORKER_MAINTENANCE = {
+    "code": "execution_worker_unavailable",
+    "message": "Durable chat execution is temporarily unavailable for maintenance.",
+    "recoverable": True,
+}
+
+
+def _durable_worker_is_live() -> bool:
+    try:
+        return bool(
+            _chat_run_store is not None
+            and _chat_run_store.worker_is_live(
+                max_age_seconds=DURABLE_WORKER_HEARTBEAT_MAX_AGE
+            )
+        )
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def _require_durable_worker() -> None:
+    if not _durable_worker_is_live():
+        raise HTTPException(
+            status_code=503,
+            detail=_WORKER_MAINTENANCE,
+            headers={"Retry-After": str(int(DURABLE_WORKER_HEARTBEAT_MAX_AGE))},
+        )
 
 # 持久工作流运行投影。Hermes 负责计划节点推进、工具与模型调用；平台 Worker
 # 只通过内部 API 投递并同步这些事件，避免 FastAPI 与 Hermes 各维护一套编排器。
@@ -3369,6 +3399,7 @@ def _durable_status(
         return None
     run_id = str(run["run_id"])
     exact_status = str(run["status"])
+    execution_available = _durable_worker_is_live()
     status = (
         "running"
         if exact_status in {"queued", "running", "stalled"}
@@ -3437,6 +3468,11 @@ def _durable_status(
         phase = exact_status
         latest_step = ""
         clarify = None
+    elif not execution_available:
+        status = "unavailable"
+        phase = "maintenance"
+        latest_step = _WORKER_MAINTENANCE["message"]
+        clarify = None
     cursor = int(run["event_sequence"])
     return {
         "status": status,
@@ -3454,6 +3490,10 @@ def _durable_status(
         "event_sequence": cursor,
         "run_id": run_id,
         "consumed": float(run.get("consumed_at") or 0) > 0,
+        **({
+            "execution_available": False,
+            "execution_error": dict(_WORKER_MAINTENANCE),
+        } if exact_status in {"queued", "running", "stalled"} and not execution_available else {}),
     }
 
 
@@ -3689,7 +3729,9 @@ def _durable_replay_sse(run_id: str, owner_hash: str, *, blocks_v1: bool = False
         page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
         if page["blocks"]:
             yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
-    if snapshot["status"] in {"queued", "running"}:
+    if snapshot["status"] in {"queued", "running", "stalled"} and not _durable_worker_is_live():
+        yield f"data: {json.dumps({'type': 'error', **_WORKER_MAINTENANCE, 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
+    elif snapshot["status"] in {"queued", "running"}:
         yield f"data: {json.dumps({'type': 'status', 'phase': snapshot['status'], 'detail': '相同任务已在执行', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
     elif snapshot["status"] == "stalled":
         yield f"data: {json.dumps({'type': 'error', 'code': 'stalled', 'message': '任务在 Worker 重启后等待有界恢复', 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
@@ -3737,6 +3779,9 @@ async def _durable_subscribe_sse(
                 page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
                 if page["blocks"]:
                     yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
+            return
+        if not _durable_worker_is_live():
+            yield f"data: {json.dumps({'type': 'error', **_WORKER_MAINTENANCE, 'run_id': run_id, 'event_sequence': cursor}, ensure_ascii=False)}\n\n"
             return
         if not yielded_any:
             yielded_any = True
@@ -3787,7 +3832,10 @@ async def durable_chat_run(
         snapshot["answer_projection"] = _chat_run_store.block_page(
             run_id, tenant_user_hash=owner_hash
         )
-    return {"run": snapshot, "events": events, "dropped_event_count": 0}
+    response = {"run": snapshot, "events": events, "dropped_event_count": 0}
+    if snapshot["status"] in {"queued", "running", "stalled"} and not _durable_worker_is_live():
+        response["execution"] = {"available": False, "error": dict(_WORKER_MAINTENANCE)}
+    return response
 
 
 @app.get("/v1/chat/runs/{run_id}/blocks")
@@ -3807,11 +3855,15 @@ async def durable_chat_blocks(
     if not tenant_id or not user_id:
         raise HTTPException(status_code=403, detail="owner_context_required")
     try:
-        return _chat_run_store.block_page(
+        page = _chat_run_store.block_page(
             run_id,
             tenant_user_hash=_chat_run_store.tenant_user_hash(tenant_id, user_id),
             cursor=cursor, max_blocks=max_blocks, max_bytes=max_bytes,
         )
+        if page["status"] in {"queued", "running", "stalled"} and not _durable_worker_is_live():
+            page["execution_available"] = False
+            page["execution_error"] = dict(_WORKER_MAINTENANCE)
+        return page
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="run_not_found") from exc
     except ValueError as exc:
@@ -3856,8 +3908,8 @@ async def chat_stream(body: GoalRequest):
     # v7 主路径：进程内 AIAgent 真实流式（IN_PROCESS_STREAM_ENABLED 默认 true）
     if IN_PROCESS_STREAM_ENABLED:
         if DURABLE_CHAT_WORKER_ENABLED:
-            if _chat_run_store is None:
-                raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+            _require_durable_worker()
+            assert _chat_run_store is not None
             request_id = body.request_id or uuid.uuid4().hex
             identity_claims = knowledge_claims or client_context_claims or qws_context_claims or {}
             tenant_id = str(identity_claims.get("tenant_key") or "public")
@@ -4091,8 +4143,10 @@ async def chat_prewarm(
 ):
     """Queue one session-scoped Agent build in the durable Hermes worker."""
     _require_internal_strict(x_hermes_internal_token)
-    if not DURABLE_CHAT_WORKER_ENABLED or _chat_run_store is None:
+    if not DURABLE_CHAT_WORKER_ENABLED:
         raise HTTPException(status_code=503, detail="durable_run_store_unavailable")
+    _require_durable_worker()
+    assert _chat_run_store is not None
     user_id = body.session_id or ""
     if not user_id:
         raise HTTPException(status_code=422, detail="session_id_required")

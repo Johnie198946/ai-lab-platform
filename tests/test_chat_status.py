@@ -518,6 +518,7 @@ class TestDurableBridgeStatus(unittest.TestCase):
         user_ns = hashlib.sha256(self.user_id.encode()).hexdigest()[:12]
         self.session_id = f"t{tenant_ns}-u{user_ns}-main_agent-session-1"
         self.owner = self.store.tenant_user_hash(self.tenant_id, self.user_id)
+        self.store.worker_heartbeat("worker-test")
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -695,6 +696,48 @@ class TestDurableBridgeStatus(unittest.TestCase):
         self.assertEqual(result["status"], "timeout")
         self.assertEqual(result["run_status"], "failed")
         self.assertEqual(result["phase"], "failed")
+
+    def test_queued_run_reports_worker_maintenance_without_mutation(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-worker-maintenance",
+        )
+        with self.store._connect() as conn:
+            conn.execute("UPDATE chat_workers SET heartbeat_at=0")
+
+        result = self._status()
+
+        self.assertEqual(result["status"], "unavailable")
+        self.assertEqual(result["run_status"], "queued")
+        self.assertEqual(result["phase"], "maintenance")
+        self.assertFalse(result["execution_available"])
+        self.assertTrue(result["execution_error"]["recoverable"])
+        self.assertEqual(
+            self.store.get(run["run_id"], tenant_user_hash=self.owner)["status"],
+            "queued",
+        )
+
+    def test_queued_subscription_exposes_unavailable_worker_and_stops_polling(self):
+        run, _ = self.store.create_or_get(
+            tenant_user_hash=self.owner,
+            session_id=self.session_id,
+            request_id="request-worker-unavailable-sse",
+        )
+        with self.store._connect() as conn:
+            conn.execute("UPDATE chat_workers SET heartbeat_at=0")
+
+        async def collect():
+            return [item async for item in self.bridge._durable_subscribe_sse(
+                run["run_id"], self.owner
+            )]
+
+        with patch.object(self.bridge, "_chat_run_store", self.store):
+            frames = asyncio.run(collect())
+
+        self.assertEqual(len(frames), 1)
+        self.assertIn('"code": "execution_worker_unavailable"', frames[0])
+        self.assertIn('"recoverable": true', frames[0])
 
     def test_resolved_clarify_does_not_leave_stale_clarify_phase(self):
         run, _ = self.store.create_or_get(
@@ -996,6 +1039,7 @@ class TestInFlightUsers(unittest.TestCase):
         bridge._in_flight_users = {}
         with tempfile.TemporaryDirectory() as d:
             store = DurableChatRunStore(str(Path(d) / "runs.sqlite3"))
+            store.worker_heartbeat("worker-test")
             with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
                  patch.object(bridge, "DURABLE_CHAT_WORKER_ENABLED", True), \
                  patch.object(bridge, "_chat_run_store", store):
@@ -1014,6 +1058,30 @@ class TestInFlightUsers(unittest.TestCase):
         self.assertTrue(json.loads(run["execution_payload_json"])["knowledge_action_enabled"])
         self.assertNotIn("u_durable", bridge._in_flight_users)
         self.assertFalse(bridge._is_in_flight("u_durable"))
+
+    def test_durable_chat_rejects_admission_when_worker_is_inactive(self):
+        import scripts.hermes_bridge as bridge
+        from scripts.chat_run_store import DurableChatRunStore
+        from scripts.hermes_bridge import GoalRequest, chat_stream
+
+        with tempfile.TemporaryDirectory() as d:
+            store = DurableChatRunStore(str(Path(d) / "runs.sqlite3"))
+            with patch.object(bridge, "IN_PROCESS_STREAM_ENABLED", True), \
+                 patch.object(bridge, "DURABLE_CHAT_WORKER_ENABLED", True), \
+                 patch.object(bridge, "_chat_run_store", store):
+                with self.assertRaises(bridge.HTTPException) as caught:
+                    asyncio.run(chat_stream(GoalRequest(
+                        goal="hi",
+                        session_id="u_inactive",
+                        request_id="request-inactive-worker",
+                    )))
+            with store._connect() as conn:
+                queued = conn.execute("SELECT COUNT(*) FROM chat_runs").fetchone()[0]
+
+        self.assertEqual(caught.exception.status_code, 503)
+        self.assertEqual(caught.exception.detail["code"], "execution_worker_unavailable")
+        self.assertTrue(caught.exception.detail["recoverable"])
+        self.assertEqual(queued, 0)
 
 
 if __name__ == "__main__":
