@@ -1,0 +1,5 @@
+# Publication adversarial review (three rounds)
+
+1. Rights/source fidelity: strongest failure was treating declared hashes/URLs as receipts and forcing originals into daily slots. Resolution: byte ingestion into private evidence storage, access-time revalidation, perpetual-license evidence, stable source IDs, separate original collection. The Anthropic original stays blocked pending hash-bound review.
+2. Staging/privacy leak: strongest failure was draft metadata/body escaping through catalog, search, Chat, or arbitrary Markdown/local paths. Resolution: only valid `published` rows project, bundle JSON excludes body, CommonMark tokens gate links/raw HTML, Wiki provenance needs a sanitized receipt plus live publication permission, and selected-book text is bounded/untrusted.
+3. Atomic/retry/clock/tutorial: strongest failure was releasing multiple revisions, downgrading a newer issue, sharing progress across daily issues, or claiming execution from a URL. Resolution: immediate SQLite transactions, newest-due selection, access-time clock/rights checks, one series-follow row plus per-issue progress rows, and retained local execution receipts.

@@ -11,7 +11,7 @@ import re
 import httpx
 import yaml
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 
 from backend.api.auth import require_auth
@@ -29,6 +29,7 @@ from backend.services.knowledge_catalog import (
     CONTRIBUTION_PUBLICATION_POLICY, _live_frontmatter, clear_manifest_cache,
 )
 from backend.services.knowledge_color_projection import approve_color, color_approval_candidates, restore_note
+from backend.services.knowledge_publication_store import PublicationError, PublicationStore
 from backend.services.knowledge_contribution import _authorization_epoch, _user_consent, _user_authorized, _now
 
 router = APIRouter(prefix="/api/v1/admin/knowledge-publication", tags=["knowledge-publication"])
@@ -43,6 +44,43 @@ class PublicationDecision(BaseModel):
     entitlement_key: str = Field(default="", max_length=128)
     owner_tenant: str = Field(default="", max_length=64)
     contribution_projection_id: str = Field(default="", max_length=96)
+
+
+class SerialBundle(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    series_id: str = Field(..., min_length=2, max_length=96)
+    source_publication_id: str = Field(default="", max_length=160)
+    issue_date: str = Field(..., min_length=10, max_length=10)
+    title: str = Field(..., min_length=1, max_length=300)
+    summary: str = Field(..., min_length=1, max_length=1000)
+    body: str = Field(..., max_length=500_000)
+    author: str = Field(..., min_length=1, max_length=160)
+    institution: str = Field(..., min_length=1, max_length=160)
+    authored_by: str
+    content_kind: str
+    rights_scope: str
+    rights_reference: str = Field(default="", max_length=1000)
+    rights_valid_until: str | None = None
+    rights_perpetual: bool = False
+    rights_evidence: list[dict] = Field(default_factory=list)
+    rights_evidence_status: str
+    owner_policy_id: str = Field(default="", max_length=96)
+    release_at: str
+    state: str = "staged"
+    is_test: bool
+    source_snapshot_hash: str = Field(..., min_length=64, max_length=64)
+    source_receipts: list[dict]
+    body_hash: str = Field(..., min_length=64, max_length=64)
+    body_receipt: dict
+    references: list[dict]
+    wiki_references: list[dict] = Field(default_factory=list)
+    assets: list[dict] = Field(default_factory=list)
+    completeness: str
+    review: dict
+    execution_claim: str = "not_run"
+    execution_evidence: list[dict] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list, max_length=20)
 
 
 def _super(payload: dict) -> None:
@@ -232,6 +270,41 @@ async def machine_approve_green(*, relative_path: str, projection_id: str) -> di
 async def candidates(payload=Depends(require_auth)):
     _super(payload)
     return {"items": color_approval_candidates(_vault())}
+
+
+@router.post("/serials/stage")
+async def stage_serial(body: SerialBundle, payload=Depends(require_auth)):
+    _super(payload)
+    try:
+        item = PublicationStore().stage(body.model_dump(), vault=_vault())
+    except PublicationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _invalidate_publication_caches()
+    return item
+
+
+@router.get("/serials/status")
+async def serial_status(publication_id: str | None = None, payload=Depends(require_auth)):
+    _super(payload)
+    return PublicationStore().status_report(publication_id)
+
+
+@router.post("/serials/release-due")
+async def release_due_serials(payload=Depends(require_auth)):
+    _super(payload)
+    result = PublicationStore().release_due()
+    _invalidate_publication_caches()
+    return result
+
+
+@router.post("/serials/{publication_id}/withdraw")
+async def withdraw_serial(publication_id: str, payload=Depends(require_auth)):
+    _super(payload)
+    if not re.fullmatch(r"publication-[a-f0-9]{32}", publication_id):
+        raise HTTPException(status_code=422, detail="invalid publication_id")
+    result = PublicationStore().withdraw(publication_id)
+    _invalidate_publication_caches()
+    return result
 
 
 @router.post("/approve")

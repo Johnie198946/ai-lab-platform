@@ -442,6 +442,15 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(shelf.books.first?.authorSource, "raw")
     }
 
+    func testDailyPublicationDTOFieldsDecode() throws {
+        let data = Data(#"{"id":"publication-1","title":"第一期","author":"Quantumn","summary":"测试","security_level":"green","knowledge_level":"editorial","freshness":"daily","source_count":1,"series_id":"ai-history","series_title":"AI的前世今生","issue_id":"issue-1","issue_date":"2026-09-08","test_serial":true,"release_at":"2026-09-08T04:00:00+00:00","actual_release_at":"2026-09-08T04:00:01+00:00","edition_id":"edition-1","edition":1,"source_urls":["https://example.com/source"]}"#.utf8)
+        let book = try decoder().decode(KnowledgeBookDTO.self, from: data)
+        XCTAssertEqual(book.seriesId, "ai-history")
+        XCTAssertEqual(book.issueDate, "2026-09-08")
+        XCTAssertEqual(book.testSerial, true)
+        XCTAssertEqual(book.sourceUrls, ["https://example.com/source"])
+    }
+
     func testKnowledgeBookSubscriptionDecodesBookAndProgress() throws {
         let data = Data(#"{"book":{"id":"kn-1","title":"AI Lab 顶层设计","author":"Anthropic","author_source":"raw","summary":"从产品目标到系统边界。","cover_theme":"product","cover_variant":3,"cover_version":1,"security_level":"green","knowledge_level":"K5","freshness":"current","source_count":2},"edition":1,"progress":0.42,"subscribed_at":"2026-09-06T07:00:00Z","last_read_at":"2026-09-06T07:10:00Z"}"#.utf8)
 

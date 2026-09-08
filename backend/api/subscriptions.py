@@ -19,7 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from backend.api.auth import PERSONAL_PUBLIC_ORG_ID, require_auth
 from backend.api import knowledge
 from backend.db import SessionLocal
-from backend.models.tenant import KnowledgeBookSubscription
+from backend.models.tenant import KnowledgeBookSubscription, KnowledgeSeriesSubscription
 from backend.services.knowledge_catalog import (
     base_knowledge_status,
     bookshelf_catalog,
@@ -28,6 +28,7 @@ from backend.services.knowledge_catalog import (
     reader_book_body,
     tenant_private_knowledge_status,
 )
+from backend.services.knowledge_publication_store import PublicationStore, reader_sections
 
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"])
@@ -284,7 +285,9 @@ async def _available_books(payload: dict[str, Any]) -> dict[str, dict[str, Any]]
 _PUBLIC_BOOK_FIELDS = (
     "id", "title", "author", "author_source", "summary", "cover_theme",
     "cover_variant", "cover_version", "security_level", "knowledge_level",
-    "freshness", "source_count",
+    "freshness", "source_count", "series_id", "series_title", "issue_id",
+    "issue_date", "test_serial", "release_at", "actual_release_at", "edition_id",
+    "edition", "source_urls",
 )
 
 
@@ -301,28 +304,44 @@ async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[d
     if book is None:
         raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
                      action="refresh_catalog", retryable=True)
-    source_path = str(book["source_path"])
-    if not source_path.startswith("wiki/") or not source_path.endswith(".md"):
-        body = None
+    if book.get("source_kind") == "publication":
+        item = PublicationStore().get_published(book_id)
+        sections = reader_sections(item["body"]) if item and item.get("artifact_valid") else []
+        body = ({
+            "book_id": book_id, "title": book["title"], "author": book["author"],
+            "content_version": item["content_hash"], "edition": item["edition"],
+            "citation": item["bundle"]["references"][0]["url"], "sections": sections,
+            "series_id": item["series_id"], "series_title": book["series_title"],
+            "issue_id": item["issue_id"], "issue_date": item["issue_date"],
+            "test_serial": True, "release_at": item["release_at"],
+            "actual_release_at": item["actual_release_at"], "edition_id": item["edition_id"],
+            "source_urls": [ref["url"] for ref in item["bundle"]["references"]],
+        } if sections else None)
     else:
-        wiki = await knowledge.read_wiki_live(source_path[5:-3])
-        body = reader_book_body(book, wiki)
+        source_path = str(book["source_path"])
+        if not source_path.startswith("wiki/") or not source_path.endswith(".md"):
+            body = None
+        else:
+            wiki = await knowledge.read_wiki_live(source_path[5:-3])
+            body = reader_book_body(book, wiki)
     if body is None:
         raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
                      action="refresh_catalog", retryable=True)
     return book, body
 
 
-def _book_subscription(row: KnowledgeBookSubscription, book: dict[str, Any]) -> dict[str, Any]:
+def _book_subscription(row: KnowledgeBookSubscription | None, book: dict[str, Any], subscribed_at=None) -> dict[str, Any]:
+    current_version = str(book.get("content_version") or (row.content_version if row else ""))
+    changed = bool(row and current_version != row.content_version)
     return {
         "book": _public_book(book),
-        "edition": row.edition,
-        "content_version": row.content_version,
-        "progress": row.progress,
-        "legacy_progress": row.legacy_progress,
-        "legacy_last_read_at": row.legacy_last_read_at,
-        "subscribed_at": row.subscribed_at,
-        "last_read_at": row.last_read_at,
+        "edition": (row.edition + int(changed)) if row else int(book.get("edition") or 1),
+        "content_version": current_version,
+        "progress": 0 if changed or row is None else row.progress,
+        "legacy_progress": row.legacy_progress if row else None,
+        "legacy_last_read_at": row.legacy_last_read_at if row else None,
+        "subscribed_at": row.subscribed_at if row else subscribed_at,
+        "last_read_at": row.last_read_at if row else subscribed_at,
     }
 
 
@@ -355,13 +374,25 @@ async def my_book_subscriptions(payload=Depends(require_auth)):
                 .order_by(KnowledgeBookSubscription.last_read_at.desc())
             )
         ).scalars().all()
-    return {
-        "subscriptions": [
-            _book_subscription(row, available[row.book_id])
-            for row in rows
-            if row.book_id in available
-        ]
-    }
+        follows = (await db.execute(select(KnowledgeSeriesSubscription).where(
+            KnowledgeSeriesSubscription.tenant_key == tenant_key,
+            KnowledgeSeriesSubscription.owner_user_id == user_id,
+        ))).scalars().all()
+    latest_by_series = {}
+    for book in available.values():
+        if book.get("series_id") and (
+            book["series_id"] not in latest_by_series
+            or str(book.get("issue_date") or "") > str(latest_by_series[book["series_id"]].get("issue_date") or "")
+        ):
+            latest_by_series[book["series_id"]] = book
+    rows_by_book = {row.book_id: row for row in rows}
+    followed = [
+        _book_subscription(rows_by_book.get(latest_by_series[item.series_id]["id"]), latest_by_series[item.series_id], item.subscribed_at)
+        for item in follows if item.series_id in latest_by_series
+    ]
+    legacy = [_book_subscription(row, available[row.book_id]) for row in rows
+              if row.book_id in available and not row.series_id]
+    return {"subscriptions": followed + legacy}
 
 
 @router.put("/me/book-subscriptions")
@@ -380,7 +411,8 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
         if row is None:
             row = KnowledgeBookSubscription(
                 tenant_key=tenant_key, owner_user_id=user_id,
-                book_id=body.book_id, edition=1, content_version=current_version,
+                book_id=body.book_id, series_id=book.get("series_id"),
+                edition=1, content_version=current_version,
             )
             db.add(row)
         else:
@@ -389,6 +421,8 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
                 row.progress = 0
                 row.content_version = current_version
             row.last_read_at = datetime.now(timezone.utc)
+        if book.get("series_id") and await db.get(KnowledgeSeriesSubscription, (tenant_key, user_id, book["series_id"])) is None:
+            db.add(KnowledgeSeriesSubscription(tenant_key=tenant_key, owner_user_id=user_id, series_id=book["series_id"]))
         try:
             await db.commit()
         except IntegrityError:
@@ -401,12 +435,18 @@ async def subscribe_book(body: BookSubscriptionWrite, payload=Depends(require_au
                 )
             )
             if row is None:
-                raise
+                row = KnowledgeBookSubscription(
+                    tenant_key=tenant_key, owner_user_id=user_id, book_id=body.book_id,
+                    series_id=book.get("series_id"), edition=1, content_version=current_version,
+                )
+                db.add(row)
             if row.content_version != current_version:
                 row.edition += 1
                 row.progress = 0
                 row.content_version = current_version
             row.last_read_at = datetime.now(timezone.utc)
+            if book.get("series_id") and await db.get(KnowledgeSeriesSubscription, (tenant_key, user_id, book["series_id"])) is None:
+                db.add(KnowledgeSeriesSubscription(tenant_key=tenant_key, owner_user_id=user_id, series_id=book["series_id"]))
             await db.commit()
         await db.refresh(row)
     return _book_subscription(row, book)
@@ -427,6 +467,14 @@ async def update_book_progress(body: BookProgressWrite, payload=Depends(require_
                 KnowledgeBookSubscription.book_id == body.book_id,
             )
         )
+        if row is None and book.get("series_id") and await db.get(
+            KnowledgeSeriesSubscription, (tenant_key, user_id, book["series_id"])
+        ) is not None:
+            row = KnowledgeBookSubscription(
+                tenant_key=tenant_key, owner_user_id=user_id, book_id=body.book_id,
+                series_id=book["series_id"], edition=1, content_version=reader_body["content_version"],
+            )
+            db.add(row)
         if row is None:
             raise _error(
                 404, code="book_not_subscribed", message="请先订阅这本书",
@@ -470,15 +518,27 @@ async def update_book_progress(body: BookProgressWrite, payload=Depends(require_
 async def unsubscribe_book(body: BookSubscriptionWrite, payload=Depends(require_auth)):
     tenant_key, user_id = _reader_identity(payload)
     async with SessionLocal() as db:
-        result = await db.execute(
-            delete(KnowledgeBookSubscription).where(
-                KnowledgeBookSubscription.tenant_key == tenant_key,
-                KnowledgeBookSubscription.owner_user_id == user_id,
-                KnowledgeBookSubscription.book_id == body.book_id,
+        row = await db.get(KnowledgeBookSubscription, (tenant_key, user_id, body.book_id))
+        series_id = row.series_id if row else None
+        if row is None:
+            book = (await _available_books(payload)).get(body.book_id)
+            series_id = book.get("series_id") if book else next(
+                (item["series_id"] for item in PublicationStore().status(body.book_id)), None
             )
-        )
+        result = await db.execute(delete(KnowledgeBookSubscription).where(
+            KnowledgeBookSubscription.tenant_key == tenant_key,
+            KnowledgeBookSubscription.owner_user_id == user_id,
+            KnowledgeBookSubscription.book_id == body.book_id,
+        ))
+        follow_result = None
+        if series_id:
+            follow_result = await db.execute(delete(KnowledgeSeriesSubscription).where(
+                KnowledgeSeriesSubscription.tenant_key == tenant_key,
+                KnowledgeSeriesSubscription.owner_user_id == user_id,
+                KnowledgeSeriesSubscription.series_id == series_id,
+            ))
         await db.commit()
-    return {"book_id": body.book_id, "deleted": bool(result.rowcount)}
+    return {"book_id": body.book_id, "deleted": bool(result.rowcount or follow_result and follow_result.rowcount)}
 
 
 @router.post("/subscription-requests")

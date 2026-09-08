@@ -219,7 +219,7 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
         result_scope = {}
     result = {**item, **result_scope, "security_level": labels["security_level"], **{key: metadata[key] for key in (
         "disclosure_granularity", "summary_of", "publication_audience", "source_dependencies",
-        "version", "conditions", "effective_at", "source_kind",
+        "version", "conditions", "effective_at", "source_kind", "publication_suitable",
     ) if key in metadata}}
     # Editorial fields are live source facts, never durable cache authority.
     for key in ("book_title", "book_author", "book_summary", "author", "author_source", "title"):
@@ -610,6 +610,19 @@ def compute_catalog(vault: Path | None = None) -> list[dict[str, Any]]:
     by_category = {str(item["category"]): item for item in compiled}
     for item in color_packs(approved_color_documents(vault)):
         by_category[str(item["category"])] = item
+    from backend.services.knowledge_publication_store import (
+        PUBLICATION_CATEGORY, PublicationStore,
+    )
+    published = PublicationStore().published()
+    if published:
+        by_category[PUBLICATION_CATEGORY] = {
+            "category": PUBLICATION_CATEGORY, "path_prefix": "publication:",
+            "title": "Quantumn 每日测试连载", "doc_count": len(published),
+            "open": True, "security_level": "green", "owner_tenant": "public",
+            "entitlement_key": "", "knowledge_level": "K5",
+            "classification_status": "approved", "freshness": "daily",
+            "source_count": sum(len(item["bundle"]["references"]) for item in published),
+        }
     return list(by_category.values())
 
 
@@ -820,6 +833,35 @@ def bookshelf_catalog(
             "freshness": str(item.get("freshness") or "unknown"),
             "source_count": int(item.get("source_count") or 0),
         })
+    from backend.services.knowledge_publication_store import (
+        PUBLICATION_CATEGORY, SERIES, PublicationStore,
+    )
+    if visible_categories is None or PUBLICATION_CATEGORY in visible_categories:
+        published = PublicationStore().published()
+        if published:
+            shelf = shelves.setdefault(PUBLICATION_CATEGORY, {
+                "id": PUBLICATION_CATEGORY, "title": "Quantumn 每日测试连载",
+                "security_level": "green", "books": [],
+            })
+            for item in published:
+                bundle = item["bundle"]
+                if not item.get("artifact_valid"):
+                    continue
+                shelf["books"].append({
+                    "id": item["publication_id"], "source_kind": "publication",
+                    "title": item["title"], "author": item["author"],
+                    "author_source": bundle["authored_by"], "summary": item["summary"],
+                    "cover_theme": SERIES[item["series_id"]]["cover_theme"],
+                    "cover_variant": int(item["content_hash"][:4], 16) % 6, "cover_version": 1,
+                    "security_level": "green", "knowledge_level": "editorial",
+                    "freshness": "daily", "source_count": len(bundle["references"]),
+                    "series_id": item["series_id"], "series_title": SERIES[item["series_id"]]["title"],
+                    "issue_id": item["issue_id"], "issue_date": item["issue_date"],
+                    "test_serial": True, "release_at": item["release_at"],
+                    "actual_release_at": item["actual_release_at"], "edition_id": item["edition_id"],
+                    "edition": item["edition"], "source_urls": [ref["url"] for ref in bundle["references"]],
+                    "content_version": item["content_hash"],
+                })
     for shelf in shelves.values():
         shelf["books"].sort(key=lambda book: book["title"])
         shelf["book_count"] = len(shelf["books"])

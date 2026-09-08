@@ -1,0 +1,41 @@
+{
+  "timezone": "Asia/Shanghai",
+  "daily_release_time": "12:00:00",
+  "test_serial": true,
+  "free_subscription": true,
+  "series": [
+    {
+      "id": "ai-history",
+      "title": "AI的前世今生",
+      "editorial_mode": "historical_causal_narrative",
+      "audience": "非技术中文读者"
+    },
+    {
+      "id": "ai-practice",
+      "title": "趣味AI落地经历",
+      "editorial_mode": "evidence_led_practical_tutorial",
+      "audience": "非技术中文读者"
+    }
+  ],
+  "original_collections": [
+    {
+      "id": "anthropic-originals",
+      "title": "Anthropic 原作",
+      "daily_slot": false,
+      "requires_source_publication_id": true,
+      "requires_verified_redistribution_evidence": true
+    }
+  ],
+  "writer_job": {
+    "schedule": "0 8 * * *",
+    "no_agent": false,
+    "prompt_template": "docs/prompts/quantumn-daily-publication.md",
+    "deadline": "11:30:00",
+    "required_issue_count": 2
+  },
+  "release_job": {
+    "schedule": "*/5 * * * *",
+    "no_agent": true,
+    "command": "scripts/publication_release_due.sh"
+  }
+}

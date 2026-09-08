@@ -1903,6 +1903,7 @@ public struct SubscriptionCenterView: View {
 
 struct KnowledgeBookReaderView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var appState: AppState
 
     let book: KnowledgeBookDTO
     let isSubscribed: Bool
@@ -1943,7 +1944,7 @@ struct KnowledgeBookReaderView: View {
                         Text(book.author)
                             .font(.title3.weight(.medium))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
-                        Text(book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研")
+                        Text(book.testSerial == true ? "已审核冻结发布" : (book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研"))
                             .font(.caption.weight(.bold))
                             .tracking(0.7)
                             .foregroundStyle(AppTheme.Colors.primary)
@@ -1977,12 +1978,12 @@ struct KnowledgeBookReaderView: View {
                     .padding(.top, 34)
                     .offset(x: 22)
 
-                    readerPill(book.freshness == "current" ? "持续更新" : book.freshness, icon: "clock")
+                    readerPill(book.testSerial == true ? "冻结期次" : (book.freshness == "current" ? "持续更新" : book.freshness), icon: "clock")
                         .padding(.top, 10)
                         .offset(x: 104)
 
                     Label(
-                        "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。",
+                        book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。",
                         systemImage: "quote.opening"
                     )
                     .font(.footnote)
@@ -1990,6 +1991,22 @@ struct KnowledgeBookReaderView: View {
                     .lineSpacing(5)
                     .padding(.top, 48)
                     .frame(maxWidth: 330, alignment: .leading)
+
+                    if book.testSerial == true {
+                        Label("测试连载 · \(book.seriesTitle ?? "Quantumn 每日连载") · \(book.issueDate ?? "")", systemImage: "testtube.2")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(AppTheme.Colors.primary)
+                            .padding(.top, 18)
+                        Button("围绕本期向 Chat 提问") {
+                            appState.navigateToChatWithPrompt(
+                                "请结合我选择的本期内容，先说明证据与适用边界，再回答我的问题。",
+                                contextScope: ChatContextScopeDTO(mode: .platformOnly, selectedBookId: book.id)
+                            )
+                            onDismiss()
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityHint("切换到 Chat，并绑定当前已发布版本")
+                    }
 
                     Spacer(minLength: 80)
                 }

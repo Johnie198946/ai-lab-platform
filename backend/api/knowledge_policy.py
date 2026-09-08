@@ -251,6 +251,19 @@ async def capability_search(
                           "contribution_projection_id", "publication_policy"}
         docs.extend({**{k: v for k, v in item.items() if k not in private_fields},
                      "source": "tenant_knowledge"} for item in wiki_docs)
+        from backend.services.knowledge_publication_store import PUBLICATION_CATEGORY, PublicationStore
+        if PUBLICATION_CATEGORY in requested:
+            publication_docs = await run_knowledge_read(PublicationStore().search, body.query, body.limit)
+            if not body.include_content:
+                for item in publication_docs:
+                    item.pop("markdown", None)
+                    item.pop("content_status", None)
+            publications = [{**item, "source": "tenant_knowledge"} for item in publication_docs]
+            tenant_docs = [item for item in docs if item.get("source") == "tenant_knowledge"]
+            docs = [item for item in docs if item.get("source") != "tenant_knowledge"] + sorted(
+                tenant_docs + publications,
+                key=lambda item: (-int(item.get("score") or 0), str(item.get("path") or "")),
+            )
     if "user_notes" in requested_sources:
         user_id = str(claims.get("user_id") or "")
         if not user_id:
@@ -283,8 +296,13 @@ async def capability_search(
         if {item["path"] for item in final_live} != set(visible_index):
             raise HTTPException(status_code=409, detail="knowledge changed during read; retry")
         checked = await filter_database_live_documents(
-            [item for item in docs if item.get("source") == "tenant_knowledge"], knowledge._vault())
+            [item for item in docs if item.get("source") == "tenant_knowledge"
+             and not str(item.get("path") or "").startswith("publication:")], knowledge._vault())
         checked_paths = {item["path"] for item in checked}
+        checked_paths.update(
+            f"publication:{item['publication_id']}"
+            for item in PublicationStore().published() if item.get("artifact_valid")
+        )
         docs = [item for item in docs if item.get("source") != "tenant_knowledge"
                 or item["path"] in checked_paths]
     docs = docs[: body.limit]

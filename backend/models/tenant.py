@@ -65,6 +65,7 @@ class KnowledgeBookSubscription(Base):
     tenant_key: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     book_id: Mapped[str] = mapped_column(String(384), primary_key=True)
+    series_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
     edition: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     content_version: Mapped[str] = mapped_column(String(64), nullable=False, default="")
     progress: Mapped[float] = mapped_column(Float, nullable=False, default=0)
@@ -77,6 +78,17 @@ class KnowledgeBookSubscription(Base):
     last_read_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class KnowledgeSeriesSubscription(Base):
+    """Series-follow preference; daily issue progress remains one row per book."""
+
+    __tablename__ = "knowledge_series_subscriptions"
+
+    tenant_key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    series_id: Mapped[str] = mapped_column(String(96), primary_key=True)
+    subscribed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class KnowledgeCatalog(Base):

@@ -222,6 +222,16 @@ public struct KnowledgeBookDTO: Codable, Identifiable, Hashable {
     public let knowledgeLevel: String
     public let freshness: String
     public let sourceCount: Int
+    public var seriesId: String? = nil
+    public var seriesTitle: String? = nil
+    public var issueId: String? = nil
+    public var issueDate: String? = nil
+    public var testSerial: Bool? = nil
+    public var releaseAt: String? = nil
+    public var actualReleaseAt: String? = nil
+    public var editionId: String? = nil
+    public var edition: Int? = nil
+    public var sourceUrls: [String]? = nil
 }
 
 public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
@@ -264,6 +274,15 @@ public struct KnowledgeBookBodyDTO: Codable, Hashable {
     public let edition: Int
     public let citation: String
     public let sections: [KnowledgeBookSectionDTO]
+    public var seriesId: String? = nil
+    public var seriesTitle: String? = nil
+    public var issueId: String? = nil
+    public var issueDate: String? = nil
+    public var testSerial: Bool? = nil
+    public var releaseAt: String? = nil
+    public var actualReleaseAt: String? = nil
+    public var editionId: String? = nil
+    public var sourceUrls: [String]? = nil
 }
 
 private struct KnowledgeBookSubscriptionWrite: Encodable {
@@ -573,15 +592,18 @@ public struct ChatLocalNoteDTO: Codable, Hashable, Sendable {
 public struct ChatContextScopeDTO: Codable, Hashable, Sendable {
     public let mode: ChatContextMode
     public let localNotes: [ChatLocalNoteDTO]
+    public let selectedBookId: String?
 
-    public init(mode: ChatContextMode = .auto, localNotes: [ChatLocalNoteDTO] = []) {
+    public init(mode: ChatContextMode = .auto, localNotes: [ChatLocalNoteDTO] = [], selectedBookId: String? = nil) {
         self.mode = mode
         self.localNotes = localNotes
+        self.selectedBookId = selectedBookId
     }
 
     enum CodingKeys: String, CodingKey {
         case mode
         case localNotes = "local_notes"
+        case selectedBookId = "selected_book_id"
     }
 }
 
