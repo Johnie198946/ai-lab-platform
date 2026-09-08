@@ -50,6 +50,17 @@
                ReferencedContainer = "container:AIPlatformApp.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "FCE5BC30F0FE29F8A5D22898"
+               BuildableName = "AIPlatformAppUITests.xctest"
+               BlueprintName = "AIPlatformAppUITests"
+               ReferencedContainer = "container:AIPlatformApp.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
       <CommandLineArguments>
       </CommandLineArguments>

@@ -54,18 +54,34 @@ docker compose -p ai-lab-platform exec -T api python /app/scripts/publication_op
   --root /app/data/runtime/publications withdraw publication-…
 ```
 
-Only the server `no_agent` job may retry `release-due`. The wrapper enters the existing Compose `api` service and uses its `/app/data/runtime/publications` durable root; it does not depend on the Hermes host Python or working directory. After deployment and explicit scheduling authorization, parent installs through the existing Hermes CLI:
+The server-local wrapper enters the existing Compose `api` service and uses its `/app/data/runtime/publications` durable root. For scheduling on the trusted Mac, use `publication_release_remote.py`: it connects only as `admin@120.24.248.58`, pins an explicit identity and known-hosts file, runs `release-due`, always reads back `status`, preserves the release exit code, and prints one deterministic totals object. The SSH account needs passwordless permission for the exact `sudo docker compose` commands; root SSH and private-key contents are forbidden.
+
+After deployment and explicit scheduling authorization, install the reviewed local wrapper (this command does not create cron state):
+
+```bash
+install -m 0700 scripts/publication_release_remote.py ~/.hermes/scripts/publication_release_remote.py
+```
+
+The default paths are `~/.ssh/ai_lab_publication_ed25519` and `~/.ssh/known_hosts`. Override them with `AI_LAB_PUBLICATION_SSH_KEY` and `AI_LAB_PUBLICATION_KNOWN_HOSTS`, or the corresponding command flags. Verify the pinned host-key fingerprint out of band before activation.
+
+Keep the existing writer on the deployed server:
 
 ```bash
 DEPLOY=/opt/ai-lab-platform
-install -m 755 "$DEPLOY/scripts/publication_release_due.sh" ~/.hermes/scripts/publication_release_due.sh
 hermes cron create '0 8 * * *' "$(<"$DEPLOY/docs/prompts/quantumn-daily-publication.md")" \
   --name 'Quantumn 双轨每日测试连载写作' --workdir "$DEPLOY" --deliver local
-hermes cron create '*/5 * * * *' --name 'Quantumn 已审版本释放' \
-  --script publication_release_due.sh --no-agent --workdir "$DEPLOY" --deliver local
 ```
 
-Do not copy or mutate `~/.hermes/config/cron/jobs.json` by hand. The writer remains a Hermes agent job; the release job is deterministic `no_agent`. A release result with blocked or overdue unpublished issues returns `ok=false`, `status=attention_required`, and a nonzero exit code. Immediately record the returned job IDs, run `hermes cron doctor`, and do not activate before verified deployment and acceptance.
+On the local Mac, use these non-overlapping Asia/Shanghai release schedules. The first performs the exact noon attempt and the second retries every five minutes through 12:55 without duplicating 12:00:
+
+```bash
+hermes cron create '0 12 * * *' --name 'Quantumn 已审版本每日释放' \
+  --script publication_release_remote.py --no-agent --deliver local
+hermes cron create '5-55/5 12 * * *' --name 'Quantumn 已审版本释放重试' \
+  --script publication_release_remote.py --no-agent --deliver local
+```
+
+Do not copy or mutate `~/.hermes/config/cron/jobs.json` by hand. The writer remains a Hermes agent job; both release jobs are deterministic `no_agent` jobs. A release result with blocked or overdue unpublished issues returns a nonzero exit code. Immediately record the returned job IDs, run `hermes cron doctor`, and do not activate before verified deployment and acceptance.
 
 ## Verification and rollback
 

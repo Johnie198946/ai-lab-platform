@@ -59,6 +59,7 @@ targets:
     scheme:
       testTargets:
         - AIPlatformAppTests
+        - AIPlatformAppUITests
 
   AIPlatformAppTests:
     type: bundle.unit-test
@@ -75,3 +76,20 @@ targets:
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: YES
         SWIFT_VERSION: "5.9"
+
+  AIPlatformAppUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - AIPlatformAppUITests
+    dependencies:
+      - target: AIPlatformApp
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.ailab.AIPlatformAppUITests
+        DEVELOPMENT_TEAM: AALA948YY5
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        SWIFT_VERSION: "5.9"
+        TEST_TARGET_NAME: AIPlatformApp
