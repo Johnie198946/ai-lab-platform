@@ -4,6 +4,12 @@
 
 set -euo pipefail
 
+AI_LAB_HERMES_QUARANTINED="${AI_LAB_HERMES_QUARANTINED:-0}"
+if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
+  echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
+  exit 2
+fi
+
 allocate_release_dir() {
   local release_root="$1"
   local short_sha="$2"
@@ -34,6 +40,10 @@ configure_cloud_agent_os_mode() {
 }
 
 restart_hermes_runtime() {
+  if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
+    echo "hermes_restart_status=skipped_quarantined"
+    return 0
+  fi
   systemctl restart hermes-serve.service
   systemctl restart hermes-serve-forward.service
   systemctl restart hermes-gateway.service
@@ -249,16 +259,20 @@ if [ -z "$api_status" ]; then
   exit 1
 fi
 printf '%s\n' "$api_status"
-for _ in $(seq 1 30); do
-  bridge_status="$(curl -fsS --max-time 5 http://127.0.0.1:9118/health || true)"
-  [ -n "$bridge_status" ] && break
-  sleep 1
-done
-if [ -z "$bridge_status" ]; then
-  echo "ERROR: Hermes Bridge 重启后 30 秒内未就绪" >&2
-  exit 1
+if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
+  echo "bridge_health_status=skipped_quarantined"
+else
+  for _ in $(seq 1 30); do
+    bridge_status="$(curl -fsS --max-time 5 http://127.0.0.1:9118/health || true)"
+    [ -n "$bridge_status" ] && break
+    sleep 1
+  done
+  if [ -z "$bridge_status" ]; then
+    echo "ERROR: Hermes Bridge 重启后 30 秒内未就绪" >&2
+    exit 1
+  fi
+  printf '%s\n' "$bridge_status"
 fi
-printf '%s\n' "$bridge_status"
 echo "deployed_sha=$EXPECTED_SHA"
 echo "release=$RELEASE_DIR"
 echo "rollback_point=$CURRENT_DIR"
