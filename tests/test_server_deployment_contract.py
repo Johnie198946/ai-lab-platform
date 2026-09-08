@@ -124,7 +124,7 @@ def test_runtime_scripts_use_the_official_dedicated_user_install() -> None:
         "activate_bridge_worker_venv",
         '--require-hashes --no-build-isolation -r "$release_dir/requirements.lock"',
         '--require-hashes --no-build-isolation -r "$release_dir/requirements-bridge-worker.lock"',
-        '--no-deps --no-build-isolation "$HERMES_AGENT_ROOT"',
+        '--no-deps --no-build-isolation --editable "$HERMES_AGENT_ROOT"',
         'version("hermes-agent") == os.environ["HERMES_RUNTIME_VERSION"]',
         "verify_hermes_install",
         "configure_hermes_bridge_network",

@@ -88,7 +88,7 @@ prepare_bridge_worker_venv() {
       || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
         --require-hashes --no-build-isolation -r "$release_dir/requirements-bridge-worker.lock" \
       || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
-        --no-deps --no-build-isolation "$HERMES_AGENT_ROOT" \
+        --no-deps --no-build-isolation --editable "$HERMES_AGENT_ROOT" \
       || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip check; then
       rm -rf -- "$temp_dir"
       return 1
