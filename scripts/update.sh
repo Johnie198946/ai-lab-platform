@@ -181,15 +181,19 @@ install_hermes_units() {
 }
 
 restart_hermes_runtime() {
+  local unit
   if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
     echo "hermes_restart_status=skipped_quarantined"
     return 0
   fi
-  systemctl restart hermes-serve.service
-  systemctl restart hermes-serve-forward.service
-  systemctl restart hermes-gateway.service
-  systemctl restart hermes-bridge.service
-  systemctl restart hermes-chat-worker.service
+  for unit in hermes-serve.service hermes-serve-forward.service hermes-gateway.service \
+    hermes-bridge.service hermes-chat-worker.service; do
+    if systemctl cat "$unit" >/dev/null 2>&1; then
+      systemctl restart "$unit"
+    else
+      echo "hermes_restart_status=skipped_absent unit=$unit"
+    fi
+  done
 }
 
 repair_runtime_store_permissions() {
