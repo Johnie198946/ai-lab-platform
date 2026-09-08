@@ -11,17 +11,14 @@ WorkingDirectory=/opt/ai-lab-platform
 EnvironmentFile=/opt/ai-lab-platform/.env
 Environment=HOME=/var/lib/quantumn-hermes
 Environment=HERMES_HOME=/var/lib/quantumn-hermes/.hermes
-Environment=HERMES_AGENT_ROOT=/opt/hermes
+Environment=HERMES_AGENT_ROOT=/var/lib/quantumn-hermes/.hermes/hermes-agent
+Environment=HERMES_BIN=/var/lib/quantumn-hermes/.local/bin/hermes
 Environment=PYTHONUNBUFFERED=1
 Environment=AI_LAB_AGENT_OS_MODE=cloud_multi_tenant
 Environment=HERMES_DURABLE_CHAT_WORKER=true
 Environment=HERMES_CHAT_RUN_DB=/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3
 Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-sol
-Environment=HTTP_PROXY=http://127.0.0.1:7890
-Environment=HTTPS_PROXY=http://127.0.0.1:7890
-Environment=ALL_PROXY=http://127.0.0.1:7890
-Environment=NO_PROXY=127.0.0.1,localhost
-ExecStart=/opt/hermes/venv/bin/python3 scripts/hermes_bridge.py
+ExecStart=/var/lib/quantumn-hermes/.hermes/hermes-agent/venv/bin/python scripts/hermes_bridge.py
 Restart=always
 RestartSec=5
 UMask=0077

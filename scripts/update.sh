@@ -5,6 +5,11 @@
 set -euo pipefail
 
 AI_LAB_HERMES_QUARANTINED="${AI_LAB_HERMES_QUARANTINED:-0}"
+HERMES_ACCOUNT_HOME=/var/lib/quantumn-hermes
+HERMES_HOME="$HERMES_ACCOUNT_HOME/.hermes"
+HERMES_AGENT_ROOT="$HERMES_HOME/hermes-agent"
+HERMES_PYTHON="$HERMES_AGENT_ROOT/venv/bin/python"
+HERMES_LAUNCHER="$HERMES_ACCOUNT_HOME/.local/bin/hermes"
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
   exit 2
@@ -48,7 +53,14 @@ ensure_hermes_account() {
       --shell /usr/sbin/nologin quantumn-hermes
   fi
   install -d -o quantumn-hermes -g quantumn-hermes -m 0700 \
-    /var/lib/quantumn-hermes /var/lib/quantumn-hermes/.hermes
+    "$HERMES_ACCOUNT_HOME" "$HERMES_HOME"
+}
+
+verify_hermes_install() {
+  if [ ! -d "$HERMES_AGENT_ROOT" ] || [ ! -x "$HERMES_PYTHON" ] || [ ! -x "$HERMES_LAUNCHER" ]; then
+    echo "ERROR: official Hermes install is incomplete under $HERMES_ACCOUNT_HOME" >&2
+    return 1
+  fi
 }
 
 install_hermes_units() {
@@ -208,8 +220,9 @@ ln -s "$SHARED_ROOT/backups" "$STAGING_DIR/backups"
 ln -s "$SHARED_ROOT/rollbacks" "$STAGING_DIR/rollbacks"
 cd "$RELEASE_DIR"
 echo "==> [3/6] 重建 Compose 服务"
-if ! /opt/hermes/venv/bin/python3 -c 'import ddgs' >/dev/null 2>&1; then
-  /opt/hermes/venv/bin/pip install --no-cache-dir \
+verify_hermes_install
+if ! "$HERMES_PYTHON" -c 'import ddgs' >/dev/null 2>&1; then
+  "$HERMES_PYTHON" -m pip install --no-cache-dir \
     -i https://pypi.tuna.tsinghua.edu.cn/simple/ 'ddgs>=9.0'
 fi
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"

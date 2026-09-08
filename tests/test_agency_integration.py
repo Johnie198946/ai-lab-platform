@@ -621,6 +621,13 @@ def test_installer_preserves_pre_install_plugin_config_and_adds_both_routers():
     assert 'source = original if original and original.exists() else path' in installer
     assert '("agency-agents-router", "ai-lab-capabilities")' in installer
     assert "yaml.safe_load" in installer
+    assert 'HERMES_HOME="${HERMES_HOME:-/var/lib/quantumn-hermes/.hermes}"' in installer
+    assert (
+        'HERMES_PYTHON="${HERMES_PYTHON:-$HERMES_HOME/hermes-agent/venv/bin/python}"'
+        in installer
+    )
+    assert "/root/.hermes" not in installer
+    assert "/opt/hermes" not in installer
 
 
 def test_agency_plugins_are_added_after_lightweight_tool_selection():

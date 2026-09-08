@@ -117,7 +117,9 @@ def _routed_skill_catalog(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
         load_routing_overrides(str(SKILL_ROUTING_OVERRIDES)),
     )
 
-HERMES_BIN = os.environ.get("HERMES_BIN", "/opt/hermes/venv/bin/hermes")
+HERMES_BIN = os.environ.get(
+    "HERMES_BIN", "/var/lib/quantumn-hermes/.local/bin/hermes"
+)
 HERMES_CWD = os.environ.get("HERMES_CWD", "/opt/ai-lab-platform")
 # hermes serve 地址（本机回环·不暴露公网）
 HERMES_SERVE_URL = os.environ.get("HERMES_SERVE_URL", "http://127.0.0.1:9119")

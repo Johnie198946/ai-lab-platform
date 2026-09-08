@@ -5,8 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 AGENCY_AGENTS_SHA="${AGENCY_AGENTS_SHA:-3c9588880b7cafaec325a104899fd8bbe27e7d72}"
-HERMES_HOME="${HERMES_HOME:-/root/.hermes}"
-HERMES_PYTHON="${HERMES_PYTHON:-/opt/hermes/venv/bin/python3}"
+HERMES_HOME="${HERMES_HOME:-/var/lib/quantumn-hermes/.hermes}"
+HERMES_PYTHON="${HERMES_PYTHON:-$HERMES_HOME/hermes-agent/venv/bin/python}"
 config="$HERMES_HOME/config.yaml"
 original_config=""
 
