@@ -374,6 +374,9 @@ if [ ! -e data/knowledge_matrix.json ]; then
   fi
   ln -s vault/knowledge_matrix.json data/knowledge_matrix.json
 fi
+KNOWLEDGE_MATRIX_TARGET="$(readlink -f data/knowledge_matrix.json)"
+chown quantumn-hermes:quantumn-hermes "$KNOWLEDGE_MATRIX_TARGET"
+chmod 0640 "$KNOWLEDGE_MATRIX_TARGET"
 docker compose -p "$COMPOSE_PROJECT" exec -T api \
   python scripts/audit_runtime_contracts.py --data-dir /app/data
 printf '%s\n' "$EXPECTED_SHA" > .deployed-sha

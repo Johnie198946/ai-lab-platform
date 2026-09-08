@@ -42,9 +42,16 @@
 - Trivy `0.66.0` scans with `--ignore-unfixed --severity HIGH,CRITICAL` reported `0` findings for each of the API, taskboard, and frontend images.
 - Online `uv 0.7.3` regeneration: blocked by sandbox network denial. Offline regeneration also stopped because not every unchanged pinned package was cached. Target package versions/hashes were verified against PyPI metadata; all other locked packages were left byte-for-byte unchanged.
 
+## Deployment follow-up — 2026-09-09
+
+- The first production attempt at `e2f0a28d0052e056e367ff68f1f59c5603921c38` failed closed because Hermes intentionally rejects wheel/sdist builds. Commit `0555e8b2956981005da4074f5c277ca00c738658` corrected the dedicated Bridge/Worker venv to use the supported editable install.
+- The retry exposed a second fail-closed condition: the non-root API could not read `/app/data/knowledge_matrix.json`, which remained `admin:root 0660` after the clean-host restore. The updater now resolves the real matrix target and sets `quantumn-hermes:quantumn-hermes 0640` before running the in-container contract audit.
+- During recovery, `/etc/docker/daemon.json` was found malformed (`{registry-mirrors:[https://docker.m.daocloud.io]}`), preventing Docker startup. It was replaced with the pre-staged valid JSON and the malformed file was retained as root-only `/etc/docker/daemon.json.bad-20260909T051336`; Docker 29.1.3 then started with the intended mirror.
+- Follow-up verification: deployment contract tests `14 passed`; `bash -n scripts/update.sh` and `git diff --check` passed. Production deployment and final receipt are recorded below after the exact implementation SHA is verified and deployed.
+
 ## Remaining risks
 
-- The sandbox cannot write `.git/FETCH_HEAD`, so `git fetch origin main` failed with `Operation not permitted`; cached `origin/main` remains `a6604ada6a2251a7726ab206494dd3b21d99be8a`, but current remote freshness was not reverified.
+- The earlier sandbox limitation is no longer current: `git fetch origin main` succeeded before this follow-up, and local `main` matched `origin/main` at `0555e8b2956981005da4074f5c277ca00c738658` before modification.
 - The lock-installed Bridge/Worker venv, Hermes `0.21.1` source/version check, systemd effective commands, service restart, rollback-link restoration, private listener, firewall path, and API-container health probe remain unverified on the production Linux host because deployment was explicitly forbidden.
 - The target host's chosen UID/GID must not collide with an existing account inside the pinned minimal Python base; the Docker build fails closed if it does.
 - Production must verify that the resolved private bind address equals the `ss` listener and that an API-container `/health` probe succeeds; no server was contacted in this task.

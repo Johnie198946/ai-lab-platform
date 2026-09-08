@@ -60,6 +60,15 @@ def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_acce
     assert 'data_probe=pathlib.Path(tempfile.mkdtemp' in script
 
 
+def test_server_deploy_repairs_knowledge_matrix_before_non_root_audit() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    repair = script.index('KNOWLEDGE_MATRIX_TARGET="$(readlink -f data/knowledge_matrix.json)"')
+    chown = script.index('chown quantumn-hermes:quantumn-hermes "$KNOWLEDGE_MATRIX_TARGET"', repair)
+    chmod = script.index('chmod 0640 "$KNOWLEDGE_MATRIX_TARGET"', chown)
+    audit = script.index("python scripts/audit_runtime_contracts.py", chmod)
+    assert repair < chown < chmod < audit
+
+
 def test_hermes_units_share_hardened_unprivileged_runtime_contract() -> None:
     for name in ("hermes-bridge.service", "hermes-chat-worker.service"):
         unit = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
