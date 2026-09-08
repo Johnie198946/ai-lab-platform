@@ -59,10 +59,13 @@ def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_acce
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")
     assert 'repair_runtime_store_permissions "$DATA_TARGET"' in script
     assert 'repair_vault_runtime_permissions "$VAULT_ROOT"' in script
+    assert 'repair_note_path_ancestors "$VAULT_ROOT"' in script
     assert 'chmod 0755 "$RELEASE_DIR"' in script
     assert 'chmod 0600 "$path"' in script
     assert 'local vault_root="$1" lock="$1/.incremental-compile.lock"' in script
     assert 'chmod 0600 "$lock"' in script
+    assert 'for path in "$vault_root/raw" "$vault_root/raw/dialogues"' in script
+    assert 'echo "ERROR: note path ancestor must be a real directory: $path"' in script
     assert 'data_probe=pathlib.Path(tempfile.mkdtemp' in script
 
 

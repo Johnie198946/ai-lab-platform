@@ -217,6 +217,18 @@ repair_vault_runtime_permissions() {
   fi
 }
 
+repair_note_path_ancestors() {
+  local vault_root="$1" path
+  for path in "$vault_root/raw" "$vault_root/raw/dialogues"; do
+    if [ -L "$path" ] || [ ! -d "$path" ]; then
+      echo "ERROR: note path ancestor must be a real directory: $path" >&2
+      return 1
+    fi
+    chown quantumn-hermes:quantumn-hermes "$path"
+    chmod 0755 "$path"
+  done
+}
+
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -398,6 +410,7 @@ printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
 echo "==> [4b/6] 建立 Hermes Vault 可见性链接并修复笔记共享权限"
 VAULT_ROOT="$DATA_TARGET/vault"
 repair_vault_runtime_permissions "$VAULT_ROOT"
+repair_note_path_ancestors "$VAULT_ROOT"
 bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID" \
