@@ -487,7 +487,9 @@ def test_taskboard_health_probe_uses_node_fetch_instead_of_wget() -> None:
     assert "exec -T taskboard \\" + "\n    wget " not in script
 
 
-def test_offline_images_use_compose_service_mapping_and_strict_metadata(tmp_path: Path) -> None:
+def test_offline_images_extract_each_field_without_separator_parsing_and_validate_metadata(
+    tmp_path: Path,
+) -> None:
     services = (
         "api", "workflow-worker", "planning-worker",
         "agent-evaluation-worker", "taskboard", "frontend",
@@ -513,7 +515,14 @@ docker() {{
   case "$CHECK" in root|0|00|00:1000) [ "$service" = taskboard ] && user="$CHECK" ;; esac
   [ "$CHECK" = health ] && [ "$service" = frontend ] && health=null
   [ "$CHECK" = disabled-health ] && [ "$service" = frontend ] && health='{{"Test":["NONE"]}}'
-  printf '%s\t%s\t%s\t%s\n' "$actual" "$architecture" "$user" "$health"
+  case "$4" in
+    '{{{{.Id}}}}') printf '%s\n' "$actual" ;;
+    '{{{{.Architecture}}}}') printf '%s\n' "$architecture" ;;
+    '{{{{.Config.User}}}}') printf '%s\n' "$user" ;;
+    '{{{{json .Config.Healthcheck}}}}') printf '%s\n' "$health" ;;
+    *'\\t'*) printf '%s\\\\t%s\\\\t%s\\\\t%s\n' "$actual" "$architecture" "$user" "$health" ;;
+    *) return 98 ;;
+  esac
 }}
 SHARED_ROOT='{tmp_path}'
 COMPOSE_PROJECT=contract-test

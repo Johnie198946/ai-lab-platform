@@ -336,7 +336,7 @@ repair_note_path_ancestors() {
 }
 
 verify_offline_images() {
-  local config service image metadata architecture user healthcheck actual expected count
+  local config service image architecture user healthcheck actual expected count
   local services=(api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
   local attestations="${AI_LAB_OFFLINE_IMAGE_ATTESTATIONS:-$SHARED_ROOT/offline-images.attested}"
   if [ -L "$attestations" ] || [ ! -f "$attestations" ]; then
@@ -361,12 +361,13 @@ verify_offline_images() {
       echo "ERROR: missing or invalid offline image attestation: $service" >&2
       return 1
     fi
-    if ! metadata="$(docker image inspect --format \
-      '{{.Id}}\t{{.Architecture}}\t{{.Config.User}}\t{{json .Config.Healthcheck}}' "$image")"; then
+    if ! actual="$(docker image inspect --format '{{.Id}}' "$image")" \
+      || ! architecture="$(docker image inspect --format '{{.Architecture}}' "$image")" \
+      || ! user="$(docker image inspect --format '{{.Config.User}}' "$image")" \
+      || ! healthcheck="$(docker image inspect --format '{{json .Config.Healthcheck}}' "$image")"; then
       echo "ERROR: required offline image is missing: $service=$image" >&2
       return 1
     fi
-    IFS=$'\t' read -r actual architecture user healthcheck <<< "$metadata"
     if [ "$actual" != "$expected" ]; then
       echo "ERROR: offline image hash mismatch: $service=$image" >&2
       return 1
