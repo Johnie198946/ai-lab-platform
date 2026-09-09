@@ -3,6 +3,19 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 COMPOSE_PROJECT="${AI_LAB_COMPOSE_PROJECT:-ai-lab-platform}"
+CERTBOT=/opt/certbot-venv/bin/certbot
+CERTBOT_VERSION=5.8.0
+
+verify_certbot_runtime() {
+  [ -x "$CERTBOT" ] || {
+    echo "ERROR: required Certbot executable is missing: $CERTBOT" >&2
+    return 1
+  }
+  [ "$($CERTBOT --version 2>&1)" = "certbot $CERTBOT_VERSION" ] || {
+    echo "ERROR: Certbot must be exactly $CERTBOT_VERSION" >&2
+    return 1
+  }
+}
 
 resolve_tls_sources() {
   docker compose -p "$COMPOSE_PROJECT" config --format json | python3 -c '
@@ -59,6 +72,7 @@ if [ "${AI_LAB_DEPLOY_LOCK_HELD:-0}" != "1" ]; then
 fi
 
 prepare_frontend_tls_access
+verify_certbot_runtime
 [ "${1:-}" = "--preflight-only" ] && exit 0
 
 frontend_stopped=0
@@ -66,7 +80,7 @@ restore_frontend() {
   local rc=$? rollback_rc=0
   trap - EXIT
   if [ "$frontend_stopped" -eq 1 ]; then
-    docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never frontend || rollback_rc=1
+    docker compose -p "$COMPOSE_PROJECT" up -d --no-deps --no-build --pull never frontend || rollback_rc=1
     docker compose -p "$COMPOSE_PROJECT" exec -T frontend \
       wget --no-check-certificate -q -O /dev/null https://127.0.0.1:9081/ || rollback_rc=1
   fi
@@ -80,9 +94,9 @@ trap restore_frontend EXIT
 
 docker compose -p "$COMPOSE_PROJECT" stop frontend
 frontend_stopped=1
-/opt/certbot-venv/bin/certbot renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet
+"$CERTBOT" renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet
 prepare_frontend_tls_access
-docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never frontend
+docker compose -p "$COMPOSE_PROJECT" up -d --no-deps --no-build --pull never frontend
 docker compose -p "$COMPOSE_PROJECT" exec -T frontend \
   wget --no-check-certificate -q -O /dev/null https://127.0.0.1:9081/
 frontend_stopped=0

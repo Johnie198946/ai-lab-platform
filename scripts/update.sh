@@ -21,6 +21,12 @@ BRIDGE_WORKER_RUNTIME_SHA256=72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e
 BRIDGE_WORKER_RUNTIME_ROOT="$HERMES_ACCOUNT_HOME/python-runtimes"
 BRIDGE_WORKER_RUNTIME_DIR="$BRIDGE_WORKER_RUNTIME_ROOT/cpython-3.12.14+20260901"
 BRIDGE_WORKER_RUNTIME_PYTHON="$BRIDGE_WORKER_RUNTIME_DIR/bin/python3"
+CERTBOT_VERSION=5.8.0
+CERTBOT_ARCHIVE=/home/deploy/certbot-wheelhouse-5.8.0-linux-amd64.tar.zst
+CERTBOT_ARCHIVE_SHA256=c701b7929a9073d0b005ea7833f5f9ee38ac30f2805c0cf64aad683fb418a685
+CERTBOT_VENV_LINK=/opt/certbot-venv
+CERTBOT_VENV_ROOT=/opt/certbot-venvs
+CERTBOT_VENV_DIR="$CERTBOT_VENV_ROOT/$CERTBOT_VERSION-linux-amd64-${CERTBOT_ARCHIVE_SHA256:0:12}"
 HERMES_BRIDGE_ENV_FILE=/etc/ai-lab-platform/hermes-bridge.env
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
@@ -253,6 +259,165 @@ activate_bridge_worker_venv() {
       rm -f -- "$BRIDGE_WORKER_VENV_LINK"
     fi
     BRIDGE_WORKER_VENV_SWITCHED=0
+    return 1
+  fi
+}
+
+verify_certbot_venv() {
+  local venv="$1" python="$1/bin/python" certbot="$1/bin/certbot"
+  if [ -L "$venv" ] || [ ! -d "$venv" ] \
+    || [ "$(stat -c '%u' "$venv")" -ne 0 ] \
+    || [ -n "$(find "$venv" \( ! -user root -o -perm /022 \) -print -quit)" ] \
+    || [ ! -x "$python" ] || [ ! -x "$certbot" ]; then
+    echo "ERROR: Certbot venv must be root-owned, non-writable, and executable" >&2
+    return 1
+  fi
+  verify_bridge_worker_python "$python" || return 1
+  CERTBOT_VERSION="$CERTBOT_VERSION" "$python" -c '
+import platform
+from importlib.metadata import version
+import ConfigArgParse, OpenSSL, _cffi_backend, acme, certbot, certifi, charset_normalizer
+import configobj, cryptography, distro, idna, josepy, parsedatetime, pycparser
+import pyrfc3339, requests, typing_extensions, urllib3
+assert platform.machine() == "x86_64"
+assert version("certbot") == __import__("os").environ["CERTBOT_VERSION"]
+' || return 1
+  [ "$($certbot --version 2>&1)" = "certbot $CERTBOT_VERSION" ]
+}
+
+prepare_certbot_venv() {
+  local archive="$CERTBOT_ARCHIVE" target="$CERTBOT_VENV_DIR" actual_sha temp_dir wheelhouse
+  if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+    echo "ERROR: Certbot wheelhouse requires Linux x86_64" >&2
+    return 1
+  fi
+  if [ -L "$archive" ] || [ ! -f "$archive" ]; then
+    echo "ERROR: Certbot wheelhouse archive is missing or not a regular file: $archive" >&2
+    return 1
+  fi
+  actual_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+  if [ "$actual_sha" != "$CERTBOT_ARCHIVE_SHA256" ]; then
+    echo "ERROR: Certbot wheelhouse archive SHA256 mismatch" >&2
+    return 1
+  fi
+  if [ -e "$CERTBOT_VENV_ROOT" ] \
+    && { [ -L "$CERTBOT_VENV_ROOT" ] || [ ! -d "$CERTBOT_VENV_ROOT" ]; }; then
+    echo "ERROR: Certbot venv root must be a real directory" >&2
+    return 1
+  fi
+  install -d -o root -g root -m 0755 "$CERTBOT_VENV_ROOT"
+  if [ -L "$target" ]; then
+    echo "ERROR: versioned Certbot venv target must not be a symlink" >&2
+    return 1
+  fi
+  if [ ! -e "$target" ]; then
+    command -v zstd >/dev/null || {
+      echo "ERROR: zstd is required to extract the Certbot wheelhouse" >&2
+      return 1
+    }
+    temp_dir="$(mktemp -d "$CERTBOT_VENV_ROOT/.build.XXXXXX")"
+    wheelhouse="$temp_dir/certbot-wheelhouse-$CERTBOT_VERSION"
+    if ! zstd -dc -- "$archive" > "$temp_dir/wheelhouse.tar" \
+      || ! "$BRIDGE_WORKER_RUNTIME_PYTHON" - "$temp_dir/wheelhouse.tar" "$temp_dir" "$CERTBOT_VERSION" <<'PY'
+import pathlib
+import sys
+import tarfile
+
+archive, output, version = sys.argv[1:]
+root = f"certbot-wheelhouse-{version}"
+with tarfile.open(archive, "r:") as source:
+    members = source.getmembers()
+    if not members:
+        raise ValueError("empty Certbot wheelhouse archive")
+    for member in members:
+        path = pathlib.PurePosixPath(member.name)
+        if not path.parts or path.parts[0] != root or ".." in path.parts:
+            raise ValueError(f"archive member is outside {root}/: {member.name}")
+        if not (member.isdir() or member.isfile()):
+            raise ValueError(f"unsupported archive member: {member.name}")
+    source.extractall(output, members=members, filter="data")
+PY
+    then
+      echo "ERROR: Certbot wheelhouse extraction failed or archive is unsafe" >&2
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    rm -f -- "$temp_dir/wheelhouse.tar"
+    if ! "$BRIDGE_WORKER_RUNTIME_PYTHON" - "$wheelhouse" <<'PY'
+import hashlib
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+manifest = root / "manifest.sha256"
+lines = manifest.read_text(encoding="utf-8").splitlines()
+entries = {}
+for line in lines:
+    match = re.fullmatch(r"([0-9a-f]{64})  (requirements-linux-amd64\.txt|wheels/[^/]+\.whl)", line)
+    if not match or match.group(2) in entries:
+        raise ValueError("invalid Certbot wheelhouse manifest")
+    entries[match.group(2)] = match.group(1)
+files = {str(path.relative_to(root)) for path in root.rglob("*") if path.is_file()}
+if len(entries) != 19 or files != {*entries, "manifest.sha256"}:
+    raise ValueError("Certbot wheelhouse manifest does not cover exactly 19 files")
+for name, expected in entries.items():
+    if hashlib.sha256((root / name).read_bytes()).hexdigest() != expected:
+        raise ValueError(f"Certbot wheelhouse manifest mismatch: {name}")
+requirements = (root / "requirements-linux-amd64.txt").read_text(encoding="utf-8").splitlines()
+pattern = re.compile(r"[A-Za-z0-9_.-]+==[^ ]+ --hash=sha256:[0-9a-f]{64}")
+if len(requirements) != 18 or len(set(requirements)) != 18 or not all(pattern.fullmatch(line) for line in requirements):
+    raise ValueError("Certbot requirements must contain 18 unique exact hashes")
+PY
+    then
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    if ! "$BRIDGE_WORKER_RUNTIME_PYTHON" -m venv "$temp_dir/venv" \
+      || ! "$temp_dir/venv/bin/python" -m pip install --no-index \
+        --find-links "$wheelhouse/wheels" --require-hashes \
+        -r "$wheelhouse/requirements-linux-amd64.txt" \
+      || ! "$temp_dir/venv/bin/python" -m pip check \
+      || ! chmod -R go-w,u-s,g-s "$temp_dir/venv" \
+      || ! verify_certbot_venv "$temp_dir/venv" \
+      || ! mv -T "$temp_dir/venv" "$target"; then
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    rm -rf -- "$temp_dir"
+  fi
+  verify_certbot_venv "$target"
+  CERTBOT_VENV_TARGET="$target"
+}
+
+activate_certbot_venv() {
+  local next_link="$CERTBOT_VENV_LINK.next.$$" rollback_link resolved_target
+  if [ -e "$CERTBOT_VENV_LINK" ] && [ ! -L "$CERTBOT_VENV_LINK" ]; then
+    echo "ERROR: Certbot venv activation path is not a symlink" >&2
+    return 1
+  fi
+  if [ -L "$CERTBOT_VENV_LINK" ]; then
+    CERTBOT_VENV_BEFORE="$(readlink -f "$CERTBOT_VENV_LINK")" \
+      && [ -d "$CERTBOT_VENV_BEFORE" ] || {
+        echo "ERROR: existing Certbot venv symlink is broken" >&2
+        return 1
+      }
+    CERTBOT_VENV_HAD_LINK=1
+  fi
+  ln -s "$CERTBOT_VENV_TARGET" "$next_link"
+  mv -Tf "$next_link" "$CERTBOT_VENV_LINK"
+  CERTBOT_VENV_SWITCHED=1
+  if ! resolved_target="$(readlink -f -- "$CERTBOT_VENV_LINK")" \
+    || [ "$resolved_target" != "$CERTBOT_VENV_TARGET" ] \
+    || ! verify_certbot_venv "$resolved_target"; then
+    if [ "$CERTBOT_VENV_HAD_LINK" -eq 1 ]; then
+      rollback_link="$CERTBOT_VENV_LINK.rollback.$$"
+      ln -s "$CERTBOT_VENV_BEFORE" "$rollback_link"
+      mv -Tf "$rollback_link" "$CERTBOT_VENV_LINK"
+    else
+      rm -f -- "$CERTBOT_VENV_LINK"
+    fi
+    CERTBOT_VENV_SWITCHED=0
     return 1
   fi
 }
@@ -924,7 +1089,7 @@ verify_rollback_health() {
 }
 
 rollback_deployment() {
-  local rollback_link rollback_venv_link
+  local rollback_link rollback_venv_link rollback_certbot_link
   restore_managed_units || return 1
   if [ "$SWITCHED" -eq 1 ]; then
     rollback_link="$APP_LINK.rollback.$$"
@@ -938,6 +1103,17 @@ rollback_deployment() {
       mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK" || return 1
     else
       rm -f -- "$BRIDGE_WORKER_VENV_LINK" || return 1
+    fi
+  fi
+  if [ "${CERTBOT_VENV_SWITCHED:-0}" -eq 1 ]; then
+    if [ "$CERTBOT_VENV_HAD_LINK" -eq 1 ]; then
+      rollback_certbot_link="$CERTBOT_VENV_LINK.rollback.$$"
+      ln -s "$CERTBOT_VENV_BEFORE" "$rollback_certbot_link" || return 1
+      mv -Tf "$rollback_certbot_link" "$CERTBOT_VENV_LINK" || return 1
+      [ "$(readlink -f "$CERTBOT_VENV_LINK")" = "$CERTBOT_VENV_BEFORE" ] || return 1
+      [ -x "$CERTBOT_VENV_LINK/bin/certbot" ] || return 1
+    else
+      rm -f -- "$CERTBOT_VENV_LINK" || return 1
     fi
   fi
   cd "$CURRENT_DIR" || return 1
@@ -974,6 +1150,10 @@ BRIDGE_WORKER_VENV_TARGET=""
 BRIDGE_WORKER_VENV_BEFORE=""
 BRIDGE_WORKER_VENV_HAD_LINK=0
 BRIDGE_WORKER_VENV_SWITCHED=0
+CERTBOT_VENV_TARGET=""
+CERTBOT_VENV_BEFORE=""
+CERTBOT_VENV_HAD_LINK=0
+CERTBOT_VENV_SWITCHED=0
 UNIT_BACKUP_DIR=""
 IMAGE_ROLLBACK_FILE=""
 CERT_TIMER_WAS_ENABLED=0
@@ -1104,14 +1284,16 @@ cd "$RELEASE_DIR"
 echo "==> [3/6] 验证预载离线镜像并启动 Compose 服务"
 verify_hermes_install
 prepare_bridge_worker_venv "$RELEASE_DIR"
+prepare_certbot_venv
 verify_offline_images
 resolve_api_runtime_identity
 configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"
-AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only
 snapshot_managed_units
 snapshot_managed_images
-activate_bridge_worker_venv
 RUNTIME_CHANGED=1
+activate_bridge_worker_venv
+activate_certbot_venv
+AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
 docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never api \
   python scripts/migrate_quantum_workspace.py

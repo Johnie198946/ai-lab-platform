@@ -21,6 +21,7 @@ HERMES_PYTHON = f"{HERMES_AGENT_ROOT}/venv/bin/python"
 HERMES_LAUNCHER = f"{HERMES_ACCOUNT_HOME}/.local/bin/hermes"
 BRIDGE_WORKER_PYTHON = f"{HERMES_ACCOUNT_HOME}/bridge-worker-venv/bin/python"
 RUNTIME_SHA256 = "72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c"
+CERTBOT_ARCHIVE_SHA256 = "c701b7929a9073d0b005ea7833f5f9ee38ac30f2805c0cf64aad683fb418a685"
 MANAGED_COMPOSE_SERVICES = (
     "postgres", "redis", "api", "workflow-worker", "planning-worker",
     "agent-evaluation-worker", "taskboard", "frontend",
@@ -567,9 +568,85 @@ def test_bridge_worker_venv_is_atomic_and_rollback_coupled() -> None:
     assert 'chown quantumn-hermes:quantumn-hermes "$temp_dir"' in script
     assert 'mv -Tf "$next_link" "$BRIDGE_WORKER_VENV_LINK"' in script
     assert 'mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK"' in script
-    activation = script.index("activate_bridge_worker_venv\n", script.index("snapshot_managed_images\n"))
-    changed = script.index("RUNTIME_CHANGED=1", activation)
-    assert activation < changed
+    changed = script.index("RUNTIME_CHANGED=1", script.index("snapshot_managed_images\n"))
+    activation = script.index("activate_bridge_worker_venv\n", changed)
+    assert changed < activation
+
+
+def test_certbot_runtime_is_fixed_offline_and_hash_verified() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+
+    for contract in (
+        "CERTBOT_VERSION=5.8.0",
+        "CERTBOT_ARCHIVE=/home/deploy/certbot-wheelhouse-5.8.0-linux-amd64.tar.zst",
+        f"CERTBOT_ARCHIVE_SHA256={CERTBOT_ARCHIVE_SHA256}",
+        "CERTBOT_VENV_LINK=/opt/certbot-venv",
+        "CERTBOT_VENV_ROOT=/opt/certbot-venvs",
+        'CERTBOT_VENV_DIR="$CERTBOT_VENV_ROOT/$CERTBOT_VERSION-linux-amd64-${CERTBOT_ARCHIVE_SHA256:0:12}"',
+        '[ "$actual_sha" != "$CERTBOT_ARCHIVE_SHA256" ]',
+        '"$BRIDGE_WORKER_RUNTIME_PYTHON" -m venv "$temp_dir/venv"',
+        'assert version("certbot") == __import__("os").environ["CERTBOT_VERSION"]',
+        '[ "$($certbot --version 2>&1)" = "certbot $CERTBOT_VERSION" ]',
+    ):
+        assert contract in script
+
+
+def test_certbot_wheelhouse_is_safely_extracted_and_complete() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    prepare = script[script.index("prepare_certbot_venv() {"):script.index(
+        "activate_certbot_venv() {"
+    )]
+
+    for contract in (
+        'path.parts[0] != root or ".." in path.parts',
+        "member.isdir() or member.isfile()",
+        'source.extractall(output, members=members, filter="data")',
+        'if len(entries) != 19 or files != {*entries, "manifest.sha256"}:',
+        "Certbot wheelhouse manifest does not cover exactly 19 files",
+        "hashlib.sha256((root / name).read_bytes()).hexdigest() != expected",
+        "len(requirements) != 18 or len(set(requirements)) != 18",
+        're.compile(r"[A-Za-z0-9_.-]+==[^ ]+ --hash=sha256:[0-9a-f]{64}")',
+        "pip install --no-index",
+        "--require-hashes",
+    ):
+        assert contract in prepare
+    assert "tar -xf" not in prepare
+
+
+def test_certbot_venv_enforces_root_ownership_and_verifies_real_target() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    verifier = script[script.index("verify_certbot_venv() {"):script.index(
+        "prepare_certbot_venv() {"
+    )]
+    activation = script[script.index("activate_certbot_venv() {"):script.index(
+        "validate_private_host_address() {"
+    )]
+
+    assert '[ -L "$venv" ] || [ ! -d "$venv" ]' in verifier
+    assert 'stat -c \'%u\' "$venv"' in verifier
+    assert 'find "$venv" \\( ! -user root -o -perm /022 \\)' in verifier
+    assert 'resolved_target="$(readlink -f -- "$CERTBOT_VENV_LINK")"' in activation
+    assert '[ "$resolved_target" != "$CERTBOT_VENV_TARGET" ]' in activation
+    assert 'verify_certbot_venv "$resolved_target"' in activation
+    assert 'verify_certbot_venv "$CERTBOT_VENV_LINK"' not in activation
+
+
+def test_runtime_activation_precedes_tls_preflight_and_compose_changes() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    stage = script[script.index('echo "==> [3/6]'):script.index('echo "==> [4/6]')]
+
+    ordered = (
+        "snapshot_managed_units\n",
+        "snapshot_managed_images\n",
+        "RUNTIME_CHANGED=1\n",
+        "activate_bridge_worker_venv\n",
+        "activate_certbot_venv\n",
+        "AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only\n",
+        'echo "==> [3a/6]',
+        "docker compose",
+    )
+    positions = [stage.index(item) for item in ordered]
+    assert positions == sorted(positions)
 
 
 def test_bridge_worker_runtime_is_fixed_offline_and_version_gated() -> None:
@@ -1447,11 +1524,53 @@ def test_rollback_restores_units_links_and_verifies_runtime_without_suppression(
         "restore_managed_units || return 1",
         "systemctl daemon-reload || return 1",
         'mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK" || return 1',
+        'mv -Tf "$rollback_certbot_link" "$CERTBOT_VENV_LINK" || return 1',
         'mv -Tf "$rollback_link" "$APP_LINK" || return 1',
         "verify_application_services || return 1",
     ):
         assert contract in script
     assert "|| true" not in rollback
+
+
+@pytest.mark.parametrize("had_link", (False, True))
+def test_rollback_restores_or_removes_certbot_link(tmp_path: Path, had_link: bool) -> None:
+    old = tmp_path / "old-certbot"
+    new = tmp_path / "new-certbot"
+    for target in (old, new):
+        (target / "bin").mkdir(parents=True)
+        certbot = target / "bin" / "certbot"
+        certbot.touch()
+        certbot.chmod(0o755)
+    link = tmp_path / "certbot-venv"
+    link.symlink_to(new)
+    command = f'''source "{UPDATE_SCRIPT}"
+restore_managed_units() {{ return 0; }}
+restore_managed_images() {{ return 0; }}
+restart_hermes_runtime() {{ return 0; }}
+verify_rollback_health() {{ return 0; }}
+docker() {{ return 0; }}
+mv() {{ rm -f "$3"; command mv "$2" "$3"; }}
+CURRENT_DIR='{tmp_path}'
+COMPOSE_PROJECT=contract-test
+SWITCHED=0
+BRIDGE_WORKER_VENV_SWITCHED=0
+CERTBOT_VENV_LINK='{link}'
+CERTBOT_VENV_BEFORE='{old}'
+CERTBOT_VENV_HAD_LINK={int(had_link)}
+CERTBOT_VENV_SWITCHED=1
+rollback_deployment
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    if had_link:
+        assert link.resolve() == old
+    else:
+        assert not link.exists() and not link.is_symlink()
 
 
 def test_failed_release_diagnostics_run_before_rollback_restore() -> None:
@@ -1502,9 +1621,28 @@ def test_certificate_renewal_units_use_safe_locked_wrapper() -> None:
     assert "flock -n 9" in wrapper
     assert "setfacl -m u:101:r--" in wrapper
     assert "setpriv --reuid=101" in wrapper
-    assert 'certbot renew --cert-name "$TLS_CERT_NAME"' in wrapper
+    assert '"$CERTBOT" renew --cert-name "$TLS_CERT_NAME"' in wrapper
     assert "certificate and key do not match" in wrapper
     assert "frontend recovery after certificate renewal failed" in wrapper
+
+
+def test_certificate_renewal_preflight_requires_exact_certbot_runtime() -> None:
+    wrapper = (UPDATE_SCRIPT.parents[1] / "scripts/renew_tls_certificate.sh").read_text(encoding="utf-8")
+    assert "CERTBOT=/opt/certbot-venv/bin/certbot" in wrapper
+    assert "CERTBOT_VERSION=5.8.0" in wrapper
+    assert '[ -x "$CERTBOT" ]' in wrapper
+    assert '[ "$($CERTBOT --version 2>&1)" = "certbot $CERTBOT_VERSION" ]' in wrapper
+    assert wrapper.index("verify_certbot_runtime\n") < wrapper.index(
+        '[ "${1:-}" = "--preflight-only" ] && exit 0'
+    )
+    assert '"$CERTBOT" renew --cert-name "$TLS_CERT_NAME"' in wrapper
+
+
+def test_certificate_renewal_frontend_starts_are_dependency_safe() -> None:
+    wrapper = (UPDATE_SCRIPT.parents[1] / "scripts/renew_tls_certificate.sh").read_text(encoding="utf-8")
+    command = 'docker compose -p "$COMPOSE_PROJECT" up -d --no-deps --no-build --pull never frontend'
+    assert wrapper.count(command) == 2
+    assert 'up -d --no-build --pull never frontend' not in wrapper
 
 
 def test_every_backend_execution_client_sends_the_internal_token() -> None:
