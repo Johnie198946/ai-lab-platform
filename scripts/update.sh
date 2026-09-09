@@ -16,6 +16,11 @@ HERMES_RUNTIME_COMMIT=c8aa5608c24e3636e77c267650c0f1f52e44adb0
 BRIDGE_WORKER_VENV_LINK="$HERMES_ACCOUNT_HOME/bridge-worker-venv"
 BRIDGE_WORKER_VENV_ROOT="$HERMES_ACCOUNT_HOME/bridge-worker-venvs"
 BRIDGE_WORKER_PYTHON="$BRIDGE_WORKER_VENV_LINK/bin/python"
+BRIDGE_WORKER_RUNTIME_ARCHIVE=/opt/ai-lab-shared/offline-runtime/cpython-3.12.14+20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz
+BRIDGE_WORKER_RUNTIME_SHA256=72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c
+BRIDGE_WORKER_RUNTIME_ROOT="$HERMES_ACCOUNT_HOME/python-runtimes"
+BRIDGE_WORKER_RUNTIME_DIR="$BRIDGE_WORKER_RUNTIME_ROOT/cpython-3.12.14+20260901"
+BRIDGE_WORKER_RUNTIME_PYTHON="$BRIDGE_WORKER_RUNTIME_DIR/bin/python3"
 HERMES_BRIDGE_ENV_FILE=/etc/ai-lab-platform/hermes-bridge.env
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
@@ -90,15 +95,121 @@ verify_hermes_install() {
   fi
 }
 
+verify_bridge_worker_python() {
+  local python="$1"
+  "$python" -c '
+import sqlite3
+import re
+import ssl
+import sys
+
+assert sys.version_info[:3] == (3, 12, 14)
+assert sqlite3.sqlite_version_info >= (3, 51, 3)
+assert ssl.OPENSSL_VERSION.startswith("OpenSSL ")
+openssl_version = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", ssl.OPENSSL_VERSION)
+assert openssl_version and tuple(map(int, openssl_version.groups())) >= (3, 5, 8)
+'
+}
+
+verify_bridge_worker_runtime_tree() {
+  local runtime_dir="$1" path resolved
+  if [ -L "$runtime_dir" ] || [ ! -d "$runtime_dir" ] \
+    || [ "$(stat -c '%u' "$runtime_dir")" -ne 0 ] \
+    || [ $((8#$(stat -c '%a' "$runtime_dir") & 8#022)) -ne 0 ] \
+    || [ -n "$(find "$runtime_dir" ! -type l \( ! -user root -o -perm /022 \) -print -quit)" ]; then
+    echo "ERROR: Bridge/Worker Python runtime must be root-owned and not group/world writable" >&2
+    return 1
+  fi
+  while IFS= read -r -d '' path; do
+    resolved="$(readlink -f -- "$path")" || return 1
+    if [[ "$resolved" != "$runtime_dir/"* ]]; then
+      echo "ERROR: Bridge/Worker Python runtime symlink escapes its root: $path" >&2
+      return 1
+    fi
+  done < <(find "$runtime_dir" -type l -print0)
+  [ -x "$runtime_dir/bin/python3" ] || return 1
+  verify_bridge_worker_python "$runtime_dir/bin/python3"
+}
+
+prepare_bridge_worker_python_runtime() {
+  local archive="$BRIDGE_WORKER_RUNTIME_ARCHIVE" target="$BRIDGE_WORKER_RUNTIME_DIR"
+  local temp_dir="" actual_sha
+  if [ -L "$archive" ] || [ ! -f "$archive" ] \
+    || [ "$(stat -c '%u' "$archive")" -ne 0 ] \
+    || [ $((8#$(stat -c '%a' "$archive") & 8#022)) -ne 0 ]; then
+    echo "ERROR: offline Bridge/Worker Python archive must be a root-owned, non-writable regular file" >&2
+    return 1
+  fi
+  actual_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+  if [ "$actual_sha" != "$BRIDGE_WORKER_RUNTIME_SHA256" ]; then
+    echo "ERROR: offline Bridge/Worker Python archive SHA256 mismatch" >&2
+    return 1
+  fi
+  if [ -e "$BRIDGE_WORKER_RUNTIME_ROOT" ] \
+    && { [ -L "$BRIDGE_WORKER_RUNTIME_ROOT" ] || [ ! -d "$BRIDGE_WORKER_RUNTIME_ROOT" ]; }; then
+    echo "ERROR: Bridge/Worker Python runtime root must be a real directory" >&2
+    return 1
+  fi
+  install -d -o root -g root -m 0755 "$BRIDGE_WORKER_RUNTIME_ROOT"
+  if [ -L "$target" ]; then
+    echo "ERROR: Bridge/Worker Python runtime target must not be a symlink" >&2
+    return 1
+  fi
+  if [ ! -e "$target" ]; then
+    temp_dir="$(mktemp -d "$BRIDGE_WORKER_RUNTIME_ROOT/.build.XXXXXX")"
+    if ! python3 - "$archive" "$temp_dir" <<'PY'
+import pathlib
+import sys
+import tarfile
+
+assert sys.version_info >= (3, 12)
+archive, staging_dir = sys.argv[1:]
+with tarfile.open(archive, "r:gz") as source:
+    members = source.getmembers()
+    if not members:
+        raise ValueError("empty runtime archive")
+    for member in members:
+        path = pathlib.PurePosixPath(member.name)
+        if not path.parts or path.parts[0] != "python" or ".." in path.parts:
+            raise ValueError(f"archive member is outside python/: {member.name}")
+        if member.isdev() or member.isfifo():
+            raise ValueError(f"archive member is a device or FIFO: {member.name}")
+    source.extractall(staging_dir, members=members, filter="data")
+PY
+    then
+      echo "ERROR: offline Bridge/Worker Python archive has unsafe contents" >&2
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    if ! chown -R root:root "$temp_dir/python" \
+      || ! chmod -R go-w,u-s,g-s "$temp_dir/python" \
+      || ! verify_bridge_worker_runtime_tree "$temp_dir/python" \
+      || ! mv -T "$temp_dir/python" "$target"; then
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    rmdir "$temp_dir"
+  fi
+  verify_bridge_worker_runtime_tree "$target"
+}
+
+verify_bridge_worker_venv() {
+  local python="$1"
+  verify_bridge_worker_python "$python" || return 1
+  HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$python" -c \
+    'from importlib.metadata import version; import os, httpx, sqlalchemy, run_agent; assert version("hermes-agent") == os.environ["HERMES_RUNTIME_VERSION"]'
+}
+
 prepare_bridge_worker_venv() {
   local release_dir="$1" lock_digest target temp_dir=""
-  lock_digest="$(printf '%s\0%s\0' "$HERMES_RUNTIME_VERSION" "$HERMES_RUNTIME_COMMIT" | cat - "$release_dir/requirements.lock" "$release_dir/requirements-bridge-worker.lock" "$release_dir/requirements-build.lock" | sha256sum | cut -d' ' -f1)"
+  prepare_bridge_worker_python_runtime || return 1
+  lock_digest="$(printf '%s\0%s\0%s\0' "$HERMES_RUNTIME_VERSION" "$HERMES_RUNTIME_COMMIT" "$BRIDGE_WORKER_RUNTIME_SHA256" | cat - "$release_dir/requirements.lock" "$release_dir/requirements-bridge-worker.lock" "$release_dir/requirements-build.lock" | sha256sum | cut -d' ' -f1)"
   target="$BRIDGE_WORKER_VENV_ROOT/$lock_digest"
   install -d -o quantumn-hermes -g quantumn-hermes -m 0700 "$BRIDGE_WORKER_VENV_ROOT"
   if [ ! -x "$target/bin/python" ]; then
     temp_dir="$(mktemp -d "$BRIDGE_WORKER_VENV_ROOT/.build.XXXXXX")"
     chown quantumn-hermes:quantumn-hermes "$temp_dir"
-    if ! runuser -u quantumn-hermes -- python3 -m venv "$temp_dir" \
+    if ! runuser -u quantumn-hermes -- "$BRIDGE_WORKER_RUNTIME_PYTHON" -m venv "$temp_dir" \
       || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
         --require-hashes -r "$release_dir/requirements-build.lock" \
       || ! runuser -u quantumn-hermes -- "$temp_dir/bin/python" -m pip install \
@@ -113,8 +224,7 @@ prepare_bridge_worker_venv() {
     fi
     mv "$temp_dir" "$target"
   fi
-  if ! HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$target/bin/python" -c \
-    'from importlib.metadata import version; import os, httpx, sqlalchemy, run_agent; assert version("hermes-agent") == os.environ["HERMES_RUNTIME_VERSION"]'; then
+  if ! verify_bridge_worker_venv "$target/bin/python"; then
     echo "ERROR: Bridge/Worker venv cannot import platform dependencies and fixed Hermes source" >&2
     return 1
   fi
@@ -122,7 +232,11 @@ prepare_bridge_worker_venv() {
 }
 
 activate_bridge_worker_venv() {
-  local next_link="$BRIDGE_WORKER_VENV_LINK.next.$$"
+  local next_link="$BRIDGE_WORKER_VENV_LINK.next.$$" rollback_link
+  if [ -e "$BRIDGE_WORKER_VENV_LINK" ] && [ ! -L "$BRIDGE_WORKER_VENV_LINK" ]; then
+    echo "ERROR: Bridge/Worker venv link path is not a symlink" >&2
+    return 1
+  fi
   if [ -L "$BRIDGE_WORKER_VENV_LINK" ]; then
     BRIDGE_WORKER_VENV_BEFORE="$(readlink -f "$BRIDGE_WORKER_VENV_LINK")"
     BRIDGE_WORKER_VENV_HAD_LINK=1
@@ -130,6 +244,17 @@ activate_bridge_worker_venv() {
   ln -s "$BRIDGE_WORKER_VENV_TARGET" "$next_link"
   mv -Tf "$next_link" "$BRIDGE_WORKER_VENV_LINK"
   BRIDGE_WORKER_VENV_SWITCHED=1
+  if ! verify_bridge_worker_venv "$BRIDGE_WORKER_PYTHON"; then
+    if [ "$BRIDGE_WORKER_VENV_HAD_LINK" -eq 1 ]; then
+      rollback_link="$BRIDGE_WORKER_VENV_LINK.rollback.$$"
+      ln -s "$BRIDGE_WORKER_VENV_BEFORE" "$rollback_link"
+      mv -Tf "$rollback_link" "$BRIDGE_WORKER_VENV_LINK"
+    else
+      rm -f -- "$BRIDGE_WORKER_VENV_LINK"
+    fi
+    BRIDGE_WORKER_VENV_SWITCHED=0
+    return 1
+  fi
 }
 
 validate_private_host_address() {
@@ -301,11 +426,12 @@ restart_hermes_runtime() {
   for unit in hermes-serve.service hermes-serve-forward.service hermes-gateway.service \
     hermes-bridge.service hermes-chat-worker.service; do
     if systemctl cat "$unit" >/dev/null 2>&1; then
-      systemctl restart "$unit"
+      systemctl restart "$unit" || return 1
     else
       echo "hermes_restart_status=skipped_absent unit=$unit"
     fi
   done
+  return 0
 }
 
 repair_runtime_store_permissions() {
@@ -941,6 +1067,7 @@ configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID
 AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only
 snapshot_managed_units
 snapshot_managed_images
+activate_bridge_worker_venv
 RUNTIME_CHANGED=1
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
 docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never api \
@@ -996,7 +1123,6 @@ LINK_TMP="$APP_LINK.next.$$"
 ln -s "$RELEASE_DIR" "$LINK_TMP"
 mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
-activate_bridge_worker_venv
 configure_cloud_agent_os_mode
 install_hermes_units
 restart_hermes_runtime

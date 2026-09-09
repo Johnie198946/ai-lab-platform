@@ -4,15 +4,15 @@ task_id: production-security-deploy-blockers-20260909
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: 0d1d9d4635e70c57d30bde6c7d8bca11520e8044 plus uncommitted changes
-remote_sha: not reverified; fetch was blocked because the sandbox cannot write `.git/FETCH_HEAD`
-server_before: not inspected (deployment was explicitly excluded)
-server_after: not applicable
+head/local_commit: 88a673029199ee808c46a7ad27ae974f8602e6e1 plus uncommitted changes
+remote_sha: not reverified; fetch was explicitly excluded from this continuation
+server_before: production was rolled back before this continuation
+server_after: production remains rolled back; no deployment was performed
 health_check: not rerun for the newly pinned taskboard/frontend images; the earlier isolated local Compose runtime was healthy, while production-host health remains untested
-functional_check: current image blocker contract passed (10 tests), both additional Dockerfile-reading tests passed, Ruff passed, and git diff --check passed; earlier broader checks are recorded below
+functional_check: `tests/test_server_deployment_contract.py` passed (75 tests); `bash -n scripts/update.sh`, Ruff, and `git diff --check` passed; earlier broader checks are recorded below
 rollback_point: not created (no deployment)
 manifest: ops/change-manifests/production-security-deploy-blockers-20260909-completion.md
-remaining_risks: the newly pinned images were not built or runtime-probed in this follow-up; the local Docker host is arm64, so required production amd64 image presence/hash attestations remain untested; Docker bridge/firewall preflight, systemd installation, TLS ACL/preflight, rollback, and restored production health must still be exercised on the deployment host
+remaining_risks: the fixed CPython archive was not present or extracted locally, so its real payload and production-host execution remain untested; no build or deployment was performed; production remains rolled back
 
 ## Inventory and architecture decision
 
@@ -25,6 +25,8 @@ remaining_risks: the newly pinned images were not built or runtime-probed in thi
 
 ## Verification
 
+- Authorized continuation: the fixed offline CPython archive/ownership/hash and Python 3.12 `tarfile` data-filter extraction contract, Python 3.12.14 + SQLite 3.51.3 + semantically parsed OpenSSL 3.5.8 gates, venv cache identity and pre/post-activation checks, no-system-Python behavior, and Hermes restart success/failure semantics are covered by `tests/test_server_deployment_contract.py` (`75 passed`, 4 pre-existing Pydantic deprecation warnings).
+- Continuation checks: `bash -n scripts/update.sh`, `python3 -m ruff check tests/test_server_deployment_contract.py`, and `git diff --check` passed. ShellCheck was unavailable.
 - Current image blocker follow-up: `python3 -m pytest tests/test_container_hardening_contract.py -q` passed (`10 passed`).
 - Additional Dockerfile readers: `python3 -m pytest tests/test_backend_dependency_contract.py::test_docker_consumes_hash_locks_and_pinned_python_not_floating_input tests/test_showroom_api.py::test_frontend_public_edge_blocks_direct_hermes_websockets -q` passed (`2 passed`).
 - Current follow-up lint/checks: `ruff check tests/test_container_hardening_contract.py` and `git diff --check` passed.
@@ -46,3 +48,4 @@ remaining_risks: the newly pinned images were not built or runtime-probed in thi
 - commit: not created by request.
 - push: not performed by request.
 - deploy: not performed by request.
+- production status: rolled back; this continuation must not be treated as a successful deployment.

@@ -1,7 +1,10 @@
 from pathlib import Path
+import hashlib
+import io
 import json
 import os
 import subprocess
+import tarfile
 
 import pytest
 import yaml
@@ -17,6 +20,7 @@ HERMES_AGENT_ROOT = f"{HERMES_HOME}/hermes-agent"
 HERMES_PYTHON = f"{HERMES_AGENT_ROOT}/venv/bin/python"
 HERMES_LAUNCHER = f"{HERMES_ACCOUNT_HOME}/.local/bin/hermes"
 BRIDGE_WORKER_PYTHON = f"{HERMES_ACCOUNT_HOME}/bridge-worker-venv/bin/python"
+RUNTIME_SHA256 = "72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e47008e7faba4c"
 MANAGED_COMPOSE_SERVICES = (
     "postgres", "redis", "api", "workflow-worker", "planning-worker",
     "agent-evaluation-worker", "taskboard", "frontend",
@@ -43,8 +47,12 @@ def test_server_deploy_pins_cloud_agent_os_mode_and_refreshes_runtime() -> None:
     ):
         assert unit in script
     assert 'if systemctl cat "$unit" >/dev/null 2>&1; then' in script
-    assert 'systemctl restart "$unit"' in script
+    assert 'systemctl restart "$unit" || return 1' in script
     assert 'hermes_restart_status=skipped_absent unit=$unit' in script
+    restart_function = script[script.index("restart_hermes_runtime() {"):script.index(
+        "repair_runtime_store_permissions() {"
+    )]
+    assert restart_function.rstrip().endswith("return 0\n}")
 
 
 def test_server_deploy_does_not_manage_periodic_tasks() -> None:
@@ -449,10 +457,238 @@ def test_bridge_worker_venv_is_atomic_and_rollback_coupled() -> None:
 
     assert 'BRIDGE_WORKER_VENV_ROOT="$HERMES_ACCOUNT_HOME/bridge-worker-venvs"' in script
     assert '"$release_dir/requirements-bridge-worker.lock"' in script
-    assert 'printf \'%s\\0%s\\0\' "$HERMES_RUNTIME_VERSION" "$HERMES_RUNTIME_COMMIT"' in script
+    assert RUNTIME_SHA256 in script
+    assert 'printf \'%s\\0%s\\0%s\\0\'' in script
+    assert '"$BRIDGE_WORKER_RUNTIME_PYTHON" -m venv' in script
+    assert "runuser -u quantumn-hermes -- python3 -m venv" not in script
     assert 'chown quantumn-hermes:quantumn-hermes "$temp_dir"' in script
     assert 'mv -Tf "$next_link" "$BRIDGE_WORKER_VENV_LINK"' in script
     assert 'mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK"' in script
+    activation = script.index("activate_bridge_worker_venv\n", script.index("snapshot_managed_images\n"))
+    changed = script.index("RUNTIME_CHANGED=1", activation)
+    assert activation < changed
+
+
+def test_bridge_worker_runtime_is_fixed_offline_and_version_gated() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+
+    for contract in (
+        "/opt/ai-lab-shared/offline-runtime/cpython-3.12.14+20260901-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+        'BRIDGE_WORKER_RUNTIME_DIR="$BRIDGE_WORKER_RUNTIME_ROOT/cpython-3.12.14+20260901"',
+        '[ -L "$archive" ]',
+        "stat -c '%u' \"$archive\"",
+        '[ "$actual_sha" != "$BRIDGE_WORKER_RUNTIME_SHA256" ]',
+        'mv -T "$temp_dir/python" "$target"',
+        'assert sys.version_info[:3] == (3, 12, 14)',
+        'assert sqlite3.sqlite_version_info >= (3, 51, 3)',
+        're.search(r"\\b(\\d+)\\.(\\d+)\\.(\\d+)\\b", ssl.OPENSSL_VERSION)',
+        "assert sys.version_info >= (3, 12)",
+        'source.extractall(staging_dir, members=members, filter="data")',
+        'verify_bridge_worker_venv "$target/bin/python"',
+        'verify_bridge_worker_venv "$BRIDGE_WORKER_PYTHON"',
+    ):
+        assert contract in script
+    assert "OPENSSL_VERSION_INFO" not in script
+    assert "tar -tzf" not in script
+    assert "tar -xzf" not in script[script.index("prepare_bridge_worker_python_runtime() {"):]
+
+
+def test_bridge_worker_python_parses_openssl_semantic_version(tmp_path: Path) -> None:
+    python = tmp_path / "python3"
+    python.write_text(
+        """#!/usr/bin/env python3
+import sys
+import types
+sys.version_info = (3, 12, 14)
+sys.modules["sqlite3"] = types.SimpleNamespace(sqlite_version_info=(3, 51, 3))
+sys.modules["ssl"] = types.SimpleNamespace(
+    OPENSSL_VERSION="OpenSSL 3.5.8 25 Aug 2026",
+    OPENSSL_VERSION_INFO=(3, 5, 0, 8, 0),
+)
+exec(sys.argv[2])
+""",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", f'source "{UPDATE_SCRIPT}"; verify_bridge_worker_python "{python}"'],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_bridge_worker_runtime_allows_internal_symlink_and_rejects_escape(
+    tmp_path: Path,
+) -> None:
+    runtime = tmp_path / "runtime"
+    (runtime / "bin").mkdir(parents=True)
+    (runtime / "lib").mkdir()
+    internal_python = runtime / "lib" / "python3"
+    internal_python.write_text("#!/bin/sh\n", encoding="utf-8")
+    internal_python.chmod(0o755)
+    python_link = runtime / "bin" / "python3"
+    python_link.symlink_to("../lib/python3")
+    common = f'''source "{UPDATE_SCRIPT}"
+stat() {{ [ "$2" = '%u' ] && printf '0\\n' || printf '755\\n'; }}
+find() {{
+  if [[ "$*" == *"! -user root"* ]]; then
+    [[ "$*" == *"! -type l"* ]] || printf '%s\\n' '{python_link}'
+  else
+    command find "$@"
+  fi
+}}
+readlink() {{
+  [ "$1" = -f ] && python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${{@: -1}}"
+}}
+verify_bridge_worker_python() {{ return 0; }}
+verify_bridge_worker_runtime_tree '{runtime}'
+'''
+    safe = subprocess.run(
+        ["bash", "-c", common],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert safe.returncode == 0, safe.stderr
+
+    python_link.unlink()
+    python_link.symlink_to(tmp_path / "outside-python")
+    escaping = subprocess.run(
+        ["bash", "-c", common],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert escaping.returncode != 0
+    assert "runtime symlink escapes its root" in escaping.stderr
+
+
+@pytest.mark.parametrize(
+    "kind", ("absolute", "traversal", "symlink", "hardlink", "device")
+)
+def test_bridge_worker_runtime_rejects_malicious_archive(
+    tmp_path: Path, kind: str,
+) -> None:
+    archive = tmp_path / "python.tar.gz"
+    member = tarfile.TarInfo("python/entry")
+    if kind == "absolute":
+        member.name = "/python/escape"
+        member.size = 1
+    elif kind == "traversal":
+        member.name = "python/../../escape"
+        member.size = 1
+    elif kind == "symlink":
+        member.type = tarfile.SYMTYPE
+        member.linkname = "../../escape"
+    elif kind == "hardlink":
+        member.type = tarfile.LNKTYPE
+        member.linkname = "../../escape"
+    else:
+        member.type = tarfile.CHRTYPE
+        member.devmajor = 1
+        member.devminor = 3
+    with tarfile.open(archive, "w:gz") as target:
+        target.addfile(member, io.BytesIO(b"x") if member.size else None)
+
+    command = f'''source "{UPDATE_SCRIPT}"
+stat() {{ [ "$2" = '%u' ] && printf '0\\n' || printf '600\\n'; }}
+install() {{ mkdir -p "${{@: -1}}"; }}
+BRIDGE_WORKER_RUNTIME_ARCHIVE='{archive}'
+BRIDGE_WORKER_RUNTIME_SHA256='{hashlib.sha256(archive.read_bytes()).hexdigest()}'
+BRIDGE_WORKER_RUNTIME_ROOT='{tmp_path / "runtimes"}'
+BRIDGE_WORKER_RUNTIME_DIR="$BRIDGE_WORKER_RUNTIME_ROOT/cpython-3.12.14+20260901"
+prepare_bridge_worker_python_runtime
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "archive has unsafe contents" in result.stderr
+    assert not (tmp_path / "escape").exists()
+
+
+@pytest.mark.parametrize("mode", ("missing", "symlink", "wrong-owner", "wrong-hash"))
+def test_bridge_worker_runtime_rejects_untrusted_archive(tmp_path: Path, mode: str) -> None:
+    archive = tmp_path / "python.tar.gz"
+    if mode == "symlink":
+        target = tmp_path / "target.tar.gz"
+        target.write_bytes(b"archive")
+        archive.symlink_to(target)
+    elif mode != "missing":
+        archive.write_bytes(b"archive")
+    stat_override = 'stat() { [ "$2" = \'%u\' ] && printf \'1000\\n\' || printf \'600\\n\'; }'
+    if mode in ("symlink", "wrong-hash"):
+        stat_override = "stat() { [ \"$2\" = '%u' ] && printf '0\\n' || printf '600\\n'; }"
+    command = f'''source "{UPDATE_SCRIPT}"
+{stat_override}
+BRIDGE_WORKER_RUNTIME_ARCHIVE='{archive}'
+BRIDGE_WORKER_RUNTIME_ROOT='{tmp_path / "runtimes"}'
+BRIDGE_WORKER_RUNTIME_DIR="$BRIDGE_WORKER_RUNTIME_ROOT/cpython-3.12.14+20260901"
+prepare_bridge_worker_python_runtime
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+
+
+def test_bridge_worker_venv_does_not_fallback_when_offline_runtime_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "system-python-used"
+    command = f'''source "{UPDATE_SCRIPT}"
+prepare_bridge_worker_python_runtime() {{ return 1; }}
+python3() {{ touch '{marker}'; return 0; }}
+prepare_bridge_worker_venv '{tmp_path}'
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize("mode", ("python", "sqlite", "openssl"))
+def test_bridge_worker_python_rejects_unsafe_runtime_versions(tmp_path: Path, mode: str) -> None:
+    python = tmp_path / "python3"
+    python.write_text(f"#!/bin/sh\n[ '{mode}' = safe ]\n", encoding="utf-8")
+    python.chmod(0o755)
+    result = subprocess.run(
+        ["bash", "-c", f'source "{UPDATE_SCRIPT}"; verify_bridge_worker_python "{python}"'],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+
+
+def test_restart_hermes_runtime_absent_units_succeed_and_restart_failure_propagates() -> None:
+    absent = subprocess.run(
+        ["bash", "-c", f'source "{UPDATE_SCRIPT}"; systemctl() {{ return 1; }}; restart_hermes_runtime'],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"}, capture_output=True, text=True,
+    )
+    assert absent.returncode == 0, absent.stderr
+    assert absent.stdout.count("hermes_restart_status=skipped_absent") == 5
+
+    failed = subprocess.run(
+        ["bash", "-c", f'''source "{UPDATE_SCRIPT}"
+systemctl() {{ [ "$1" = cat ] && return 0; [ "$1" = restart ] && return 23; }}
+if restart_hermes_runtime; then exit 0; else exit $?; fi
+'''],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"}, capture_output=True, text=True,
+    )
+    assert failed.returncode != 0
 
 
 def test_server_deploy_enables_units_without_starting_them_during_quarantine() -> None:
