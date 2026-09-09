@@ -29,6 +29,21 @@ def test_worker_default_queue_pickup_is_interactive():
     assert worker.POLL_SECONDS <= 0.1
 
 
+def test_worker_revalidates_stored_agent_config_before_execution(tmp_path):
+    store = worker.DurableChatRunStore(tmp_path / "runs.sqlite3")
+    owner = store.tenant_user_hash("tenant-a", "user-a")
+    run, _ = store.create_or_get(
+        tenant_user_hash=owner, tenant_id="tenant-a", user_id="user-a",
+        user_key="session-key", session_id="session-key", request_id="request-invalid",
+        execution_payload={"goal": "hello", "agent_config": {"allowed_tools": ["terminal"]}},
+    )
+    claimed = store.claim_next("worker-test")
+    worker.execute(store, claimed)
+    events = store.events_after(run["run_id"], 0, tenant_user_hash=owner)
+    assert events[-1]["type"] == "error"
+    assert events[-1]["code"] == "agent_config_invalid"
+
+
 def test_worker_passes_optional_claim_cutoff_to_store():
     source = inspect.getsource(worker.main)
     assert "created_at_or_after=CLAIM_AFTER" in source
@@ -84,7 +99,10 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
         request_id="request-prewarm",
         execution_payload={
             "run_type": "chat_prewarm",
-            "agent_config": {"triage": {"route_class": "GENERAL_QA"}},
+            "agent_config": {"triage": {
+                "version": "v1", "route_class": "GENERAL_QA", "confidence": 0.8,
+                "reason_code": "test", "evidence_requirements": [],
+            }},
             "knowledge_action_enabled": True,
         },
     )
@@ -111,7 +129,14 @@ def test_worker_prewarms_agent_without_running_a_model_turn(monkeypatch, tmp_pat
     assert snapshot["status"] == "completed"
     assert observed == [(
         "session-key",
-        {"triage": {"route_class": "GENERAL_QA"}},
+        {
+            "allowed_tools": [], "capability_agent_ids": [], "knowledge_scope": [],
+            "triage": {
+            "version": "v1", "route_class": "GENERAL_QA", "confidence": 0.8,
+            "reason_code": "test", "evidence_requirements": [],
+            "agency_enabled": False, "skill_enabled": False,
+            },
+        },
         sandbox,
         {"knowledge_action_enabled": True},
     )]
@@ -138,7 +163,10 @@ def test_worker_auto_ingests_high_confidence_research(monkeypatch, tmp_path):
         user_key="session-key", session_id="session-key", request_id="request-research",
         execution_payload={
             "goal": "研究华为财报并给出分析报告",
-            "agent_config": {"triage": {"confidence": 0.84, "route_class": "PROFESSIONAL_TASK"}},
+            "agent_config": {"triage": {
+                "version": "v1", "route_class": "PROFESSIONAL_TASK", "confidence": 0.84,
+                "reason_code": "test", "evidence_requirements": [],
+            }},
         },
     )
     claimed = store.claim_next("worker-test")

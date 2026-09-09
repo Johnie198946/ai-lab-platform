@@ -1020,7 +1020,10 @@ class TestInFlightUsers(unittest.TestCase):
                  patch.object(bridge, "_session_exists", return_value=False), \
                  patch.object(bridge, "_run_hermes", side_effect=fake_run):
                 result = asyncio.run(
-                    chat(GoalRequest(goal="hi", session_id="u_inflight"))
+                    chat(
+                        GoalRequest(goal="hi", session_id="u_inflight"),
+                        "test-internal-token",
+                    )
                 )
 
         self.assertEqual(result["reply"], "ok")
@@ -1051,7 +1054,7 @@ class TestInFlightUsers(unittest.TestCase):
                     request_id="request-durable-inflight",
                     knowledge_query=None,
                     client_capabilities=["knowledge_action_v1"],
-                )))
+                ), "test-internal-token"))
                 run = store.get_unchecked(response.headers["x-run-id"])
 
         self.assertEqual(response.headers["x-session-id"], "u_durable")
@@ -1074,7 +1077,7 @@ class TestInFlightUsers(unittest.TestCase):
                         goal="hi",
                         session_id="u_inactive",
                         request_id="request-inactive-worker",
-                    )))
+                    ), "test-internal-token"))
             with store._connect() as conn:
                 queued = conn.execute("SELECT COUNT(*) FROM chat_runs").fetchone()[0]
 

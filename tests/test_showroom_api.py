@@ -201,22 +201,11 @@ def test_screen_0035_and_004_use_hermes_incremental_insight_contract() -> None:
     assert all(binding["source"] != "/api/chat/stream" for binding in insight["data_bindings"])
 
 
-def test_frontend_nginx_normalizes_hermes_websocket_origin() -> None:
+def test_frontend_public_edge_blocks_direct_hermes_websockets() -> None:
     dockerfile = Path("frontend/Dockerfile").read_text(encoding="utf-8")
 
-    websocket_blocks = []
-    marker = "location = /api/ws {"
-    end_marker = "    }\\n\\\n"
-    cursor = 0
-    while (start := dockerfile.find(marker, cursor)) >= 0:
-        end = dockerfile.index(end_marker, start)
-        websocket_blocks.append(dockerfile[start:end])
-        cursor = end + len(end_marker)
-    assert len(websocket_blocks) == 2
-    assert all(
-        block.count("proxy_set_header Origin http://127.0.0.1;") == 1
-        for block in websocket_blocks
-    )
+    assert dockerfile.count("location = /api/ws { return 404; }") == 2
+    assert dockerfile.count("location = /api/pty { return 404; }") == 2
 
 
 def test_new_showroom_session_has_no_seed_business_data() -> None:

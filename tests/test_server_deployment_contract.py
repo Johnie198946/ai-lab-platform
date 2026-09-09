@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 import os
 import subprocess
 
@@ -137,6 +138,7 @@ def test_runtime_scripts_use_the_official_dedicated_user_install() -> None:
         'HERMES_PYTHON="$HERMES_AGENT_ROOT/venv/bin/python"',
         'HERMES_LAUNCHER="$HERMES_ACCOUNT_HOME/.local/bin/hermes"',
         "HERMES_RUNTIME_VERSION=0.21.1",
+        "HERMES_RUNTIME_COMMIT=c8aa5608c24e3636e77c267650c0f1f52e44adb0",
         'BRIDGE_WORKER_VENV_LINK="$HERMES_ACCOUNT_HOME/bridge-worker-venv"',
         "prepare_bridge_worker_venv",
         "activate_bridge_worker_venv",
@@ -170,7 +172,11 @@ def test_bridge_binding_uses_the_local_private_docker_host_gateway() -> None:
     assert "urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health'" in update
 
     command = f'''source "{UPDATE_SCRIPT}"
-docker() {{ printf '%s\\n' 172.17.0.1; }}
+docker() {{
+  if [ "$1" = compose ] && [[ "$*" == *"ps -q api"* ]]; then printf '%s\\n' api-container;
+  elif [ "$1" = compose ]; then printf '%s\\n' 172.17.0.1;
+  else printf '%s\\n' 'contract_default 172.17.0.1'; fi
+}}
 ip() {{ printf '%s\\n' '2: docker0 inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0'; }}
 resolve_hermes_bridge_bind_address
 '''
@@ -194,7 +200,11 @@ def test_bridge_binding_fails_closed_for_public_or_unassigned_addresses() -> Non
         ("172.17.0.1", "192.168.1.10/24"),
     ):
         command = f'''source "{UPDATE_SCRIPT}"
-docker() {{ printf '%s\\n' {gateway}; }}
+docker() {{
+  if [ "$1" = compose ] && [[ "$*" == *"ps -q api"* ]]; then printf '%s\\n' api-container;
+  elif [ "$1" = compose ]; then printf '%s\\n' {gateway};
+  else printf '%s\\n' 'contract_default {gateway}'; fi
+}}
 ip() {{ printf '%s\\n' '2: eth0 inet {host_addresses} brd 192.168.1.255 scope global eth0'; }}
 resolve_hermes_bridge_bind_address
 '''
@@ -252,7 +262,7 @@ def test_bridge_worker_venv_is_atomic_and_rollback_coupled() -> None:
 
     assert 'BRIDGE_WORKER_VENV_ROOT="$HERMES_ACCOUNT_HOME/bridge-worker-venvs"' in script
     assert '"$release_dir/requirements-bridge-worker.lock"' in script
-    assert 'printf \'%s\\0\' "$HERMES_RUNTIME_VERSION"' in script
+    assert 'printf \'%s\\0%s\\0\' "$HERMES_RUNTIME_VERSION" "$HERMES_RUNTIME_COMMIT"' in script
     assert 'chown quantumn-hermes:quantumn-hermes "$temp_dir"' in script
     assert 'mv -Tf "$next_link" "$BRIDGE_WORKER_VENV_LINK"' in script
     assert 'mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK"' in script
@@ -263,7 +273,8 @@ def test_server_deploy_installs_units_without_starting_them_during_quarantine() 
     install = script.index("install_hermes_units\n", script.index("SWITCHED=1"))
     restart = script.index("restart_hermes_runtime\n", install)
     assert install < restart
-    assert "systemctl enable" not in script
+    assert "systemctl enable --now ai-lab-certbot-renew.timer" in script
+    assert "systemctl enable hermes-bridge" not in script
     result = subprocess.run(
         [
             "bash",
@@ -276,3 +287,135 @@ def test_server_deploy_installs_units_without_starting_them_during_quarantine() 
         text=True,
     )
     assert result.stdout.strip() == "hermes_restart_status=skipped_quarantined"
+
+
+def test_taskboard_health_probe_uses_node_fetch_instead_of_wget() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert """docker compose -p "$COMPOSE_PROJECT" exec -T taskboard \\
+    node -e "fetch('http://127.0.0.1:47823/api/meta').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))" || return 1""" in script
+    assert "exec -T taskboard \\" + "\n    wget " not in script
+
+
+def test_offline_images_use_compose_service_mapping_and_strict_metadata(tmp_path: Path) -> None:
+    services = (
+        "api", "workflow-worker", "planning-worker",
+        "agent-evaluation-worker", "taskboard", "frontend",
+    )
+    digest = "sha256:" + "a" * 64
+    config = json.dumps({
+        "services": {service: {"image": f"registry.local/{service}:release"} for service in services}
+    })
+    attestations = tmp_path / "images.attested"
+    attestations.write_text(
+        "".join(f"{service}={digest}\n" for service in services), encoding="utf-8"
+    )
+    command = f'''source "{UPDATE_SCRIPT}"
+stat() {{ [ "$2" = '%u' ] && printf '0\n' || printf '600\n'; }}
+docker() {{
+  if [ "$1" = compose ]; then printf '%s\n' "$CONFIG"; return; fi
+  image="${{@: -1}}"
+  service="${{image#registry.local/}}"; service="${{service%:release}}"
+  [ "$CHECK" = missing ] && [ "$service" = workflow-worker ] && return 1
+  architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'
+  [ "$CHECK" = architecture ] && [ "$service" = planning-worker ] && architecture=arm64
+  [ "$CHECK" = hash ] && [ "$service" = api ] && actual='sha256:{'b' * 64}'
+  case "$CHECK" in root|0|00|00:1000) [ "$service" = taskboard ] && user="$CHECK" ;; esac
+  [ "$CHECK" = health ] && [ "$service" = frontend ] && health=null
+  [ "$CHECK" = disabled-health ] && [ "$service" = frontend ] && health='{{"Test":["NONE"]}}'
+  printf '%s\t%s\t%s\t%s\n' "$actual" "$architecture" "$user" "$health"
+}}
+SHARED_ROOT='{tmp_path}'
+COMPOSE_PROJECT=contract-test
+AI_LAB_OFFLINE_IMAGE_ATTESTATIONS='{attestations}'
+verify_offline_images
+'''
+    for check, expected in (
+        ("valid", 0), ("missing", 1), ("architecture", 1), ("hash", 1),
+        ("root", 1), ("0", 1), ("00", 1), ("00:1000", 1), ("health", 1),
+        ("disabled-health", 1),
+    ):
+        result = subprocess.run(
+            ["bash", "-c", command],
+            env={
+                **os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+                "CONFIG": config, "CHECK": check,
+            },
+            capture_output=True, text=True,
+        )
+        assert result.returncode == expected, result.stderr
+
+
+def test_production_update_is_serialized_preflighted_and_offline_only() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    preflight = script.index("preflight_hermes_bridge_network\n", script.index("CURRENT_DIR="))
+    first_container_switch = script.index('docker compose -p "$COMPOSE_PROJECT" run --rm')
+    first_unit_switch = script.index("install_hermes_units\n", script.index("SWITCHED=1"))
+    assert "flock -n 9" in script
+    assert preflight < first_container_switch < first_unit_switch
+    assert "host.docker.internal does not match the API Compose gateway" in script
+    assert "verify_offline_images\n" in script
+    assert 'up -d --no-build --pull never' in script
+    assert script.count('run --rm --no-deps --pull never') == 2
+    assert 'docker compose -p "$COMPOSE_PROJECT" build' not in script
+    assert 'up -d --build' not in script
+
+
+def test_rollback_restores_units_links_and_verifies_runtime_without_suppression() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    rollback = script[script.index("rollback_deployment() {"):script.index(
+        "if [ \"${AI_LAB_UPDATE_LIBRARY_ONLY", script.index("rollback_deployment() {")
+    )]
+    for contract in (
+        "restore_managed_units || return 1",
+        "systemctl daemon-reload || return 1",
+        'mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK" || return 1',
+        'mv -Tf "$rollback_link" "$APP_LINK" || return 1',
+        "verify_application_services || return 1",
+    ):
+        assert contract in script
+    assert "|| true" not in rollback
+
+
+def test_certificate_renewal_units_use_safe_locked_wrapper() -> None:
+    service = (SYSTEMD_DIR / "ai-lab-certbot-renew.service").read_text(encoding="utf-8")
+    timer = (SYSTEMD_DIR / "ai-lab-certbot-renew.timer").read_text(encoding="utf-8")
+    wrapper = (UPDATE_SCRIPT.parents[1] / "scripts/renew_tls_certificate.sh").read_text(encoding="utf-8")
+    assert "scripts/renew_tls_certificate.sh" in service
+    assert "Persistent=true" in timer
+    assert "flock -n 9" in wrapper
+    assert "setfacl -m u:101:r--" in wrapper
+    assert "setpriv --reuid=101" in wrapper
+    assert 'certbot renew --cert-name "$TLS_CERT_NAME"' in wrapper
+    assert "certificate and key do not match" in wrapper
+    assert "frontend recovery after certificate renewal failed" in wrapper
+
+
+def test_every_backend_execution_client_sends_the_internal_token() -> None:
+    root = UPDATE_SCRIPT.parents[1]
+    expected_counts = {
+        "backend/api/chat.py": 8,
+        "backend/api/agents.py": 1,
+        "backend/api/orchestration.py": 2,
+        "backend/services/agent_scheduler.py": 1,
+        "backend/services/clarification_planner.py": 1,
+        "backend/services/workflow_planner.py": 1,
+        "backend/services/workflow_planning.py": 1,
+        "backend/services/workflow_executor.py": 1,
+        "backend/services/agent_evaluation.py": 1,
+    }
+    for path, minimum in expected_counts.items():
+        text = (root / path).read_text(encoding="utf-8")
+        assert text.count("X-Hermes-Internal-Token") >= minimum, path
+
+
+def test_bridge_execution_routes_all_use_the_strict_guard() -> None:
+    bridge = BRIDGE_SCRIPT.read_text(encoding="utf-8")
+    assert "def _require_internal(token: str | None)" in bridge
+    assert "_require_internal_strict(token)" in bridge
+    for function in (
+        "chat_stream", "chat", "start_workflow_plan", "workflow_plan",
+        "start_agent_evaluation", "start_workflow_run",
+    ):
+        start = bridge.index(f"async def {function}(")
+        body = bridge[start:bridge.find("\n\n@app.", start)]
+        assert "_require_internal" in body, function

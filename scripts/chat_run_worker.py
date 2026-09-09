@@ -176,7 +176,21 @@ def execute(store: DurableChatRunStore, run: dict[str, Any]) -> None:
     })
     bridge._chat_run_store = store
     _run_context.run_id = run_id
-    payload = run.get("execution_payload") or json.loads(run.get("execution_payload_json") or "{}")
+    payload = dict(
+        run.get("execution_payload")
+        or json.loads(run.get("execution_payload_json") or "{}")
+    )
+    try:
+        payload["agent_config"] = bridge.TrustedAgentConfig.model_validate(
+            payload.get("agent_config") or {}
+        ).model_dump(exclude_none=True)
+    except (TypeError, ValueError):
+        store.append_event(run_id, {
+            "type": "error", "code": "agent_config_invalid",
+            "message": "Stored Agent configuration failed strict validation",
+        })
+        _run_context.run_id = ""
+        return
     run_type = str(payload.get("run_type") or "chat")
     stage_spec = None
     if "knowledge_stage" in payload or run_type.startswith("knowledge_"):

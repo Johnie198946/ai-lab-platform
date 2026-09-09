@@ -293,5 +293,5 @@ def test_bridge_fails_closed_when_mapped_history_cannot_be_loaded(
 
 def test_deployment_restarts_durable_chat_worker() -> None:
     update_script = Path("scripts/update.sh").read_text(encoding="utf-8")
-    assert "systemctl restart hermes-bridge.service" in update_script
-    assert "systemctl restart hermes-chat-worker.service" in update_script
+    assert "hermes-bridge.service hermes-chat-worker.service" in update_script
+    assert 'systemctl restart "$unit"' in update_script

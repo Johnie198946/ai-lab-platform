@@ -27,6 +27,7 @@ from backend.services.llm_usage import record_llm_usage
 
 HERMES_BRIDGE_URL = os.environ.get("HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat")
 HERMES_BRIDGE_STREAM_URL = os.environ.get("HERMES_BRIDGE_STREAM_URL", "http://host.docker.internal:9118/v1/chat/stream")
+HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
 HERMES_TIMEOUT = 300
 _last_usage: ContextVar[dict[str, Any]] = ContextVar(
     "orchestration_last_usage", default={}
@@ -102,7 +103,11 @@ async def _call_hermes(
     if session_id:
         payload["session_id"] = session_id
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
-        r = await client.post(HERMES_BRIDGE_URL, json=payload)
+        r = await client.post(
+            HERMES_BRIDGE_URL,
+            headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
+            json=payload,
+        )
         if r.status_code == 200:
             data = r.json()
             _last_usage.set(
@@ -133,6 +138,7 @@ async def _stream_hermes(
         async with client.stream(
             "POST",
             HERMES_BRIDGE_STREAM_URL,
+            headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
             json=payload,
         ) as response:
             if response.status_code != 200:

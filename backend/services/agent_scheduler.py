@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 HERMES_BRIDGE_URL = os.environ.get(
     "HERMES_BRIDGE_URL", "http://host.docker.internal:9118/v1/chat"
 )
+HERMES_BRIDGE_INTERNAL_TOKEN = os.environ.get("HERMES_BRIDGE_INTERNAL_TOKEN", "")
 HERMES_TIMEOUT = 240  # Agent 定时执行更宽松(采集+入库+编译)
 
 _scheduler: AsyncIOScheduler | None = None
@@ -56,7 +57,11 @@ async def _call_hermes_bridge(goal: str) -> str:
     """透传 Hermes bridge。"""
     try:
         async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
-            r = await client.post(HERMES_BRIDGE_URL, json={"goal": goal})
+            r = await client.post(
+                HERMES_BRIDGE_URL,
+                headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
+                json={"goal": goal},
+            )
             if r.status_code == 200:
                 return r.json().get("reply", "").strip()
             return f"⚠️ Hermes 桥接失败（HTTP {r.status_code}）"

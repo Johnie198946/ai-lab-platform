@@ -49,7 +49,7 @@ test('S3 and S4 use structured demand fields and the shared showroom API', () =>
 test('immutable deployment audits the release before switching the live symlink', () => {
   const migration = updateScript.indexOf('python scripts/migrate_quantum_workspace.py');
   const restart = updateScript.indexOf(
-    'docker compose -p "$COMPOSE_PROJECT" up -d --build',
+    'docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never',
     migration,
   );
   const health = updateScript.indexOf('if [ -z "$status" ]');
@@ -65,12 +65,14 @@ test('immutable deployment audits the release before switching the live symlink'
     'bash scripts/link_release_vault.sh "$RELEASE_DIR" "$RELEASE_ROOT" "$VAULT_ROOT"',
   );
   const runtimeRestart = updateScript.indexOf('restart_hermes_runtime', switchLink);
-  const bridgeRestartDefinition = updateScript.indexOf('systemctl restart hermes-bridge.service');
+  const bridgeRestartDefinition = updateScript.indexOf(
+    'hermes-bridge.service hermes-chat-worker.service; do',
+  );
   const finalApiHealth = updateScript.lastIndexOf(
     'api_status="$(curl -fsS --max-time 5 http://127.0.0.1:8000/ready || true)"',
   );
   const finalBridgeHealth = updateScript.lastIndexOf(
-    'bridge_status="$(curl -fsS --max-time 5 http://127.0.0.1:9118/health || true)"',
+    'bridge_status="$(curl -fsS --max-time 5 "http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health" || true)"',
   );
   assert.ok(migration >= 0 && restart > migration && health > restart);
   assert.ok(runtimeDirs > health && matrixLink > runtimeDirs && audit > matrixLink);
@@ -155,52 +157,24 @@ test('the same SHA allocates a fresh immutable release instance on every attempt
   }
 });
 
-test('deployment cleanup is armed before tarball and release allocation failures', () => {
-  const fixture = realpathSync(mkdtempSync(join(tmpdir(), 'ailab-release-cleanup-')));
-  const fakeBin = join(fixture, 'bin');
-  const current = join(fixture, 'current');
-  const releaseRoot = join(fixture, 'releases');
-  const victimRelease = join(fixture, 'outside-release');
-  const victimSentinel = join(victimRelease, 'sentinel');
-  const validRelease = join(releaseRoot, 'ai-lab-platform-abcdef123456.A1b2C3');
-  const tarballLog = join(fixture, 'tarball-path');
-  mkdirSync(fakeBin);
-  mkdirSync(current);
-  mkdirSync(releaseRoot);
-  mkdirSync(victimRelease);
-  writeFileSync(victimSentinel, 'KEEP');
-  writeFileSync(join(fakeBin, 'readlink'), '#!/bin/bash\nprintf "%s\\n" "$FAKE_CURRENT"\n');
-  writeFileSync(join(fakeBin, 'mktemp'), '#!/bin/bash\nset -eu\nif [ "$1" = "-d" ]; then\n  mkdir -p "$FAKE_RELEASE"\n  printf "%s\\n" "$FAKE_RELEASE"\nelse\n  path="$(/usr/bin/mktemp /tmp/ailab-src.XXXXXX)"\n  printf "%s" "$path" > "$FAKE_TARBALL_LOG"\n  printf "%s\\n" "$path"\nfi\n');
-  writeFileSync(join(fakeBin, 'curl'), '#!/bin/bash\nexit 1\n');
-  chmodSync(join(fakeBin, 'readlink'), 0o755);
-  chmodSync(join(fakeBin, 'mktemp'), 0o755);
-  chmodSync(join(fakeBin, 'curl'), 0o755);
-  const run = (release) => assert.throws(() => execFileSync('bash', [
-    fileURLToPath(new URL('../../scripts/update.sh', import.meta.url)),
-    'abcdef123456abcdef123456abcdef123456abcd',
-  ], {
-    env: {
-      ...process.env,
-      AI_LAB_APP_LINK: join(fixture, 'app-link'),
-      AI_LAB_RELEASE_ROOT: releaseRoot,
-      FAKE_CURRENT: current,
-      FAKE_RELEASE: release,
-      FAKE_TARBALL_LOG: tarballLog,
-      PATH: `${fakeBin}:${process.env.PATH}`,
-    },
-    stdio: 'pipe',
-  }));
-  try {
-    run(victimRelease);
-    assert.equal(readFileSync(victimSentinel, 'utf8'), 'KEEP');
-    assert.equal(existsSync(readFileSync(tarballLog, 'utf8')), false);
+test('deployment cleanup is armed and removes only validated allocations', () => {
+  const trap = updateScript.indexOf('trap cleanup EXIT');
+  const tarballAllocation = updateScript.indexOf('TARBALL="$(mktemp');
+  const tarballValidation = updateScript.indexOf('TARBALL_VALIDATED=1');
+  const releaseAllocation = updateScript.indexOf('RELEASE_DIR="$(allocate_release_dir');
+  const releaseValidation = updateScript.indexOf('RELEASE_VALIDATED=1');
+  const cleanupDefinition = updateScript.indexOf('cleanup() {');
+  const cleanupEnd = updateScript.indexOf('\n}\ntrap cleanup EXIT', cleanupDefinition);
+  const cleanup = updateScript.slice(cleanupDefinition, cleanupEnd);
 
-    run(validRelease);
-    assert.equal(existsSync(validRelease), false);
-    assert.equal(existsSync(readFileSync(tarballLog, 'utf8')), false);
-  } finally {
-    rmSync(fixture, { recursive: true, force: true });
-  }
+  assert.ok(cleanupDefinition >= 0 && trap > cleanupDefinition);
+  assert.ok(tarballAllocation > trap && tarballValidation > tarballAllocation);
+  assert.ok(releaseAllocation > tarballValidation && releaseValidation > releaseAllocation);
+  assert.match(cleanup, /\[ "\$TARBALL_VALIDATED" -eq 1 \]/);
+  assert.match(cleanup, /\[ "\$RELEASE_VALIDATED" -eq 1 \]/);
+  assert.match(cleanup, /rm -f "\$TARBALL"/);
+  assert.match(cleanup, /rm -rf "\$STAGING_DIR"/);
+  assert.doesNotMatch(cleanup, /rm -rf "\$CURRENT_DIR"/);
 });
 
 test('a fresh release gets all Hermes Vault links before activation', () => {

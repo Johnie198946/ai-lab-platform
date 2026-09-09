@@ -12,10 +12,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 ARG AI_LAB_RUNTIME_UID=10001
 ARG AI_LAB_RUNTIME_GID=10001
-RUN apt-get update \
-    && apt-get upgrade -y \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --gid "$AI_LAB_RUNTIME_GID" ailab \
+RUN groupadd --gid "$AI_LAB_RUNTIME_GID" ailab \
     && useradd --uid "$AI_LAB_RUNTIME_UID" --gid ailab --create-home --home-dir /home/ailab --shell /usr/sbin/nologin ailab
 
 WORKDIR /app

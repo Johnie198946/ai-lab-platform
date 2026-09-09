@@ -5,17 +5,23 @@
 set -euo pipefail
 
 AI_LAB_HERMES_QUARANTINED="${AI_LAB_HERMES_QUARANTINED:-0}"
+AI_LAB_OFFLINE_IMAGES="${AI_LAB_OFFLINE_IMAGES:-1}"
 HERMES_ACCOUNT_HOME=/var/lib/quantumn-hermes
 HERMES_HOME="$HERMES_ACCOUNT_HOME/.hermes"
 HERMES_AGENT_ROOT="$HERMES_HOME/hermes-agent"
 HERMES_PYTHON="$HERMES_AGENT_ROOT/venv/bin/python"
 HERMES_LAUNCHER="$HERMES_ACCOUNT_HOME/.local/bin/hermes"
 HERMES_RUNTIME_VERSION=0.21.1
+HERMES_RUNTIME_COMMIT=c8aa5608c24e3636e77c267650c0f1f52e44adb0
 BRIDGE_WORKER_VENV_LINK="$HERMES_ACCOUNT_HOME/bridge-worker-venv"
 BRIDGE_WORKER_VENV_ROOT="$HERMES_ACCOUNT_HOME/bridge-worker-venvs"
 BRIDGE_WORKER_PYTHON="$BRIDGE_WORKER_VENV_LINK/bin/python"
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
+  exit 2
+fi
+if [ "$AI_LAB_OFFLINE_IMAGES" != "1" ]; then
+  echo "ERROR: production deployment requires AI_LAB_OFFLINE_IMAGES=1" >&2
   exit 2
 fi
 
@@ -61,8 +67,14 @@ ensure_hermes_account() {
 }
 
 verify_hermes_install() {
+  local runtime_commit
   if [ ! -d "$HERMES_AGENT_ROOT" ] || [ ! -x "$HERMES_PYTHON" ] || [ ! -x "$HERMES_LAUNCHER" ]; then
     echo "ERROR: official Hermes install is incomplete under $HERMES_ACCOUNT_HOME" >&2
+    return 1
+  fi
+  if ! runtime_commit="$(git -C "$HERMES_AGENT_ROOT" rev-parse HEAD 2>/dev/null)" \
+    || [ "$runtime_commit" != "$HERMES_RUNTIME_COMMIT" ]; then
+    echo "ERROR: Hermes runtime source must be exactly $HERMES_RUNTIME_COMMIT" >&2
     return 1
   fi
   if ! HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$HERMES_PYTHON" -c \
@@ -74,7 +86,7 @@ verify_hermes_install() {
 
 prepare_bridge_worker_venv() {
   local release_dir="$1" lock_digest target temp_dir=""
-  lock_digest="$(printf '%s\0' "$HERMES_RUNTIME_VERSION" | cat - "$release_dir/requirements.lock" "$release_dir/requirements-bridge-worker.lock" "$release_dir/requirements-build.lock" | sha256sum | cut -d' ' -f1)"
+  lock_digest="$(printf '%s\0%s\0' "$HERMES_RUNTIME_VERSION" "$HERMES_RUNTIME_COMMIT" | cat - "$release_dir/requirements.lock" "$release_dir/requirements-bridge-worker.lock" "$release_dir/requirements-build.lock" | sha256sum | cut -d' ' -f1)"
   target="$BRIDGE_WORKER_VENV_ROOT/$lock_digest"
   install -d -o quantumn-hermes -g quantumn-hermes -m 0700 "$BRIDGE_WORKER_VENV_ROOT"
   if [ ! -x "$target/bin/python" ]; then
@@ -115,12 +127,27 @@ activate_bridge_worker_venv() {
 }
 
 resolve_hermes_bridge_bind_address() {
-  local address
+  local address container network_rows gateway
+  container="$(docker compose -p "$COMPOSE_PROJECT" ps -q api)"
+  if [ -z "$container" ]; then
+    echo "ERROR: running Compose API container is required for Bridge preflight" >&2
+    return 1
+  fi
   address="$(docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
     'import socket; print(socket.gethostbyname("host.docker.internal"))' 2>/dev/null)" || {
     echo "ERROR: cannot resolve host.docker.internal inside the API container" >&2
     return 1
   }
+  network_rows="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name $network.Gateway}}{{end}}' "$container")"
+  if [ "$(printf '%s\n' "$network_rows" | awk 'NF == 2 {count++} END {print count+0}')" -ne 1 ]; then
+    echo "ERROR: API container must use exactly one Compose bridge network" >&2
+    return 1
+  fi
+  gateway="$(printf '%s\n' "$network_rows" | awk 'NF == 2 {print $2}')"
+  if [ "$address" != "$gateway" ]; then
+    echo "ERROR: host.docker.internal does not match the API Compose gateway" >&2
+    return 1
+  fi
   if ! python3 - "$address" <<'PY'
 import ipaddress
 import sys
@@ -133,7 +160,7 @@ allowed = tuple(ipaddress.ip_network(item) for item in ("10.0.0.0/8", "172.16.0.
 raise SystemExit(0 if address.version == 4 and any(address in network for network in allowed) else 1)
 PY
   then
-    echo "ERROR: Docker host-gateway is not an RFC1918 IPv4 address: ${address:-<empty>}" >&2
+    echo "ERROR: Compose gateway is not an RFC1918 IPv4 address: ${address:-<empty>}" >&2
     return 1
   fi
   if ! ip -4 -o addr show | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fqx "$address"; then
@@ -143,10 +170,16 @@ PY
   printf '%s\n' "$address"
 }
 
-configure_hermes_bridge_network() {
-  local env_dir=/etc/ai-lab-platform env_file temp_file
+preflight_hermes_bridge_network() {
   HERMES_BRIDGE_BIND_ADDRESS="$(resolve_hermes_bridge_bind_address)"
   export HERMES_BRIDGE_BIND_ADDRESS
+  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import urllib.request; urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5).read()"
+}
+
+configure_hermes_bridge_network() {
+  local env_dir=/etc/ai-lab-platform env_file temp_file
+  : "${HERMES_BRIDGE_BIND_ADDRESS:?Bridge network preflight was not completed}"
   install -d -o root -g root -m 0755 "$env_dir"
   env_file="$env_dir/hermes-bridge.env"
   temp_file="$(mktemp "$env_dir/.hermes-bridge.XXXXXX")"
@@ -176,8 +209,13 @@ install_hermes_units() {
     /etc/systemd/system/hermes-bridge.service
   install -m 0644 "$APP_LINK/ops/systemd/hermes-chat-worker.service" \
     /etc/systemd/system/hermes-chat-worker.service
+  install -m 0644 "$APP_LINK/ops/systemd/ai-lab-certbot-renew.service" \
+    /etc/systemd/system/ai-lab-certbot-renew.service
+  install -m 0644 "$APP_LINK/ops/systemd/ai-lab-certbot-renew.timer" \
+    /etc/systemd/system/ai-lab-certbot-renew.timer
   systemctl daemon-reload
   verify_hermes_bridge_unit
+  systemctl enable --now ai-lab-certbot-renew.timer
 }
 
 restart_hermes_runtime() {
@@ -229,6 +267,160 @@ repair_note_path_ancestors() {
   done
 }
 
+verify_offline_images() {
+  local config service image metadata architecture user healthcheck actual expected count
+  local services=(api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
+  local attestations="${AI_LAB_OFFLINE_IMAGE_ATTESTATIONS:-$SHARED_ROOT/offline-images.attested}"
+  if [ -L "$attestations" ] || [ ! -f "$attestations" ]; then
+    echo "ERROR: offline image attestation file is missing or a symlink: $attestations" >&2
+    return 1
+  fi
+  if [ "$(stat -c '%u' "$attestations")" != "0" ] \
+    || [ $((8#$(stat -c '%a' "$attestations") & 8#022)) -ne 0 ]; then
+    echo "ERROR: offline image attestations must be root-owned and not group/world writable" >&2
+    return 1
+  fi
+  config="$(docker compose -p "$COMPOSE_PROJECT" config --format json)" || return 1
+  for service in "${services[@]}"; do
+    image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$service" <<< "$config")" || return 1
+    if [ -z "$image" ]; then
+      echo "ERROR: required offline Compose image is unresolved: $service" >&2
+      return 1
+    fi
+    count="$(awk -F= -v service="$service" '$1 == service {count++} END {print count+0}' "$attestations")"
+    expected="$(awk -F= -v service="$service" '$1 == service {print $2}' "$attestations")"
+    if [ "$count" -ne 1 ] || [[ ! "$expected" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "ERROR: missing or invalid offline image attestation: $service" >&2
+      return 1
+    fi
+    if ! metadata="$(docker image inspect --format \
+      '{{.Id}}\t{{.Architecture}}\t{{.Config.User}}\t{{json .Config.Healthcheck}}' "$image")"; then
+      echo "ERROR: required offline image is missing: $service=$image" >&2
+      return 1
+    fi
+    IFS=$'\t' read -r actual architecture user healthcheck <<< "$metadata"
+    if [ "$actual" != "$expected" ]; then
+      echo "ERROR: offline image hash mismatch: $service=$image" >&2
+      return 1
+    fi
+    if [ "$architecture" != "amd64" ]; then
+      echo "ERROR: offline image must use amd64: $service=$image" >&2
+      return 1
+    fi
+    if [ -z "$user" ] || [[ "$user" =~ ^([Rr][Oo][Oo][Tt]|0+)(:|$) ]]; then
+      echo "ERROR: offline image must configure a non-root user: $service=$image" >&2
+      return 1
+    fi
+    if ! HEALTHCHECK_METADATA="$healthcheck" python3 -c '
+import json
+import os
+
+value = json.loads(os.environ["HEALTHCHECK_METADATA"])
+test = value.get("Test") if isinstance(value, dict) else None
+raise SystemExit(0 if isinstance(test, list) and test and test[0] in {"CMD", "CMD-SHELL"} else 1)
+'; then
+      echo "ERROR: offline image must configure a healthcheck: $service=$image" >&2
+      return 1
+    fi
+  done
+}
+
+managed_unit_paths() {
+  printf '%s\n' \
+    hermes-bridge.service:/etc/systemd/system/hermes-bridge.service \
+    hermes-chat-worker.service:/etc/systemd/system/hermes-chat-worker.service \
+    ai-lab-certbot-renew.service:/etc/systemd/system/ai-lab-certbot-renew.service \
+    ai-lab-certbot-renew.timer:/etc/systemd/system/ai-lab-certbot-renew.timer \
+    hermes-bridge.agent-os:/etc/systemd/system/hermes-bridge.service.d/agent-os-mode.conf \
+    hermes-serve.agent-os:/etc/systemd/system/hermes-serve.service.d/agent-os-mode.conf \
+    hermes-gateway.agent-os:/etc/systemd/system/hermes-gateway.service.d/agent-os-mode.conf \
+    hermes-bridge.env:/etc/ai-lab-platform/hermes-bridge.env
+}
+
+snapshot_managed_units() {
+  local key path
+  UNIT_BACKUP_DIR="$SHARED_ROOT/rollbacks/update-$SHORT_SHA-units.$(date +%s).$$"
+  install -d -o root -g root -m 0700 "$UNIT_BACKUP_DIR"
+  while IFS=: read -r key path; do
+    if [ -e "$path" ] || [ -L "$path" ]; then
+      cp -a "$path" "$UNIT_BACKUP_DIR/$key"
+    else
+      : > "$UNIT_BACKUP_DIR/$key.absent"
+    fi
+  done < <(managed_unit_paths)
+  systemctl is-enabled --quiet ai-lab-certbot-renew.timer && CERT_TIMER_WAS_ENABLED=1 || true
+  systemctl is-active --quiet ai-lab-certbot-renew.timer && CERT_TIMER_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet hermes-bridge.service && BRIDGE_WAS_ACTIVE=1 || true
+  systemctl is-active --quiet hermes-chat-worker.service && CHAT_WORKER_WAS_ACTIVE=1 || true
+}
+
+restore_managed_units() {
+  local key path
+  if systemctl cat ai-lab-certbot-renew.timer >/dev/null 2>&1; then
+    systemctl stop ai-lab-certbot-renew.timer || return 1
+  fi
+  while IFS=: read -r key path; do
+    if [ -e "$UNIT_BACKUP_DIR/$key.absent" ]; then
+      rm -f -- "$path"
+    else
+      install -d -o root -g root -m 0755 "$(dirname "$path")"
+      rm -f -- "$path"
+      cp -a "$UNIT_BACKUP_DIR/$key" "$path"
+    fi
+  done < <(managed_unit_paths)
+  systemctl daemon-reload || return 1
+  if [ "$CERT_TIMER_WAS_ENABLED" -eq 1 ]; then
+    systemctl enable ai-lab-certbot-renew.timer || return 1
+  fi
+  if [ "$CERT_TIMER_WAS_ACTIVE" -eq 1 ]; then
+    systemctl start ai-lab-certbot-renew.timer || return 1
+  fi
+}
+
+verify_application_services() {
+  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5).read()" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T taskboard \
+    node -e "fetch('http://127.0.0.1:47823/api/meta').then(response => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T workflow-worker python -c \
+    "import pathlib; assert b'backend.workers.workflow_worker' in pathlib.Path('/proc/1/cmdline').read_bytes()" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T planning-worker python -c \
+    "import pathlib; assert b'backend.workers.workflow_planning_worker' in pathlib.Path('/proc/1/cmdline').read_bytes()" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T agent-evaluation-worker python -c \
+    "import pathlib; assert b'backend.workers.agent_evaluation_worker' in pathlib.Path('/proc/1/cmdline').read_bytes()" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T frontend \
+    wget --no-check-certificate -q -O /dev/null https://127.0.0.1:9081/ || return 1
+}
+
+rollback_deployment() {
+  local rollback_link rollback_venv_link
+  restore_managed_units || return 1
+  if [ "$SWITCHED" -eq 1 ]; then
+    rollback_link="$APP_LINK.rollback.$$"
+    ln -s "$CURRENT_DIR" "$rollback_link" || return 1
+    mv -Tf "$rollback_link" "$APP_LINK" || return 1
+  fi
+  if [ "$BRIDGE_WORKER_VENV_SWITCHED" -eq 1 ]; then
+    if [ "$BRIDGE_WORKER_VENV_HAD_LINK" -eq 1 ]; then
+      rollback_venv_link="$BRIDGE_WORKER_VENV_LINK.rollback.$$"
+      ln -s "$BRIDGE_WORKER_VENV_BEFORE" "$rollback_venv_link" || return 1
+      mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK" || return 1
+    else
+      rm -f -- "$BRIDGE_WORKER_VENV_LINK" || return 1
+    fi
+  fi
+  cd "$CURRENT_DIR" || return 1
+  docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never || return 1
+  restart_hermes_runtime || return 1
+  verify_application_services || return 1
+  [ "$BRIDGE_WAS_ACTIVE" -eq 0 ] || systemctl is-active --quiet hermes-bridge.service || return 1
+  [ "$CHAT_WORKER_WAS_ACTIVE" -eq 0 ] || systemctl is-active --quiet hermes-chat-worker.service || return 1
+  if [ "$BRIDGE_WAS_ACTIVE" -eq 1 ]; then
+    docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+      "import urllib.request; urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5).read()" || return 1
+  fi
+}
+
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -256,34 +448,28 @@ BRIDGE_WORKER_VENV_TARGET=""
 BRIDGE_WORKER_VENV_BEFORE=""
 BRIDGE_WORKER_VENV_HAD_LINK=0
 BRIDGE_WORKER_VENV_SWITCHED=0
+UNIT_BACKUP_DIR=""
+CERT_TIMER_WAS_ENABLED=0
+CERT_TIMER_WAS_ACTIVE=0
+BRIDGE_WAS_ACTIVE=0
+CHAT_WORKER_WAS_ACTIVE=0
 cleanup() {
-  rc=$?
+  rc=$? rollback_ok=1
   trap - EXIT
   if [ "$TARBALL_VALIDATED" -eq 1 ] && [ -n "$TARBALL" ]; then
     rm -f "$TARBALL"
   fi
   if [ "$rc" -ne 0 ] && [ "$RUNTIME_CHANGED" -eq 1 ]; then
     echo "WARN: 发布失败，恢复旧 release: $CURRENT_DIR" >&2
-    if [ "$SWITCHED" -eq 1 ]; then
-      rollback_link="$APP_LINK.rollback.$$"
-      ln -s "$CURRENT_DIR" "$rollback_link"
-      mv -Tf "$rollback_link" "$APP_LINK"
+    if ! rollback_deployment; then
+      echo "ERROR: deployment rollback or restored health verification failed" >&2
+      rollback_ok=0
+      rc=1
     fi
-    if [ "$BRIDGE_WORKER_VENV_SWITCHED" -eq 1 ]; then
-      if [ "$BRIDGE_WORKER_VENV_HAD_LINK" -eq 1 ]; then
-        rollback_venv_link="$BRIDGE_WORKER_VENV_LINK.rollback.$$"
-        ln -s "$BRIDGE_WORKER_VENV_BEFORE" "$rollback_venv_link"
-        mv -Tf "$rollback_venv_link" "$BRIDGE_WORKER_VENV_LINK"
-      else
-        rm -f -- "$BRIDGE_WORKER_VENV_LINK"
-      fi
-    fi
-    cd "$CURRENT_DIR"
-    docker compose -p "$COMPOSE_PROJECT" up -d --build || true
-    configure_cloud_agent_os_mode || true
-    restart_hermes_runtime || true
   fi
-  if { [ "$SWITCHED" -eq 0 ] || [ "$rc" -ne 0 ]; } && [ "$RELEASE_VALIDATED" -eq 1 ]; then
+  if [ "$rollback_ok" -eq 1 ] \
+    && { [ "$SWITCHED" -eq 0 ] || [ "$rc" -ne 0 ]; } \
+    && [ "$RELEASE_VALIDATED" -eq 1 ]; then
     if [ -n "$STAGING_DIR" ] && [ -d "$STAGING_DIR" ]; then
       rm -rf "$STAGING_DIR"
     fi
@@ -300,6 +486,19 @@ if [ ! -d "$CURRENT_DIR" ]; then
   echo "ERROR: 当前 release 不存在: $CURRENT_DIR" >&2
   exit 1
 fi
+if ! command -v flock >/dev/null 2>&1; then
+  echo "ERROR: flock is required for serialized deployment" >&2
+  exit 1
+fi
+install -d -o root -g root -m 0755 /run/lock
+exec 9>/run/lock/ai-lab-platform-update.lock
+if ! flock -n 9; then
+  echo "ERROR: another AI Lab deployment is already running" >&2
+  exit 1
+fi
+cd "$CURRENT_DIR"
+docker compose -p "$COMPOSE_PROJECT" config >/dev/null
+preflight_hermes_bridge_network
 if [ ! -d "$RELEASE_ROOT" ] || [ -L "$RELEASE_ROOT" ]; then
   echo "ERROR: release root 必须是非符号链接目录: $RELEASE_ROOT" >&2
   exit 1
@@ -368,18 +567,19 @@ ln -s "$DATA_TARGET" "$STAGING_DIR/data"
 ln -s "$SHARED_ROOT/backups" "$STAGING_DIR/backups"
 ln -s "$SHARED_ROOT/rollbacks" "$STAGING_DIR/rollbacks"
 cd "$RELEASE_DIR"
-echo "==> [3/6] 重建 Compose 服务"
+echo "==> [3/6] 验证预载离线镜像并启动 Compose 服务"
 verify_hermes_install
 prepare_bridge_worker_venv "$RELEASE_DIR"
-echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
-docker compose -p "$COMPOSE_PROJECT" build api
-docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps api \
-  python scripts/migrate_quantum_workspace.py
-docker compose -p "$COMPOSE_PROJECT" build taskboard
-docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --user 0 --entrypoint chown taskboard \
-  -R 1000:1000 /data
+verify_offline_images
+AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only
+snapshot_managed_units
 RUNTIME_CHANGED=1
-docker compose -p "$COMPOSE_PROJECT" up -d --build
+echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
+docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never api \
+  python scripts/migrate_quantum_workspace.py
+docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never --user 0 --entrypoint chown taskboard \
+  -R 1000:1000 /data
+docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never
 
 echo "==> [4/6] API 健康检查与运行契约审计"
 status=""
@@ -448,6 +648,7 @@ if [ -z "$api_status" ]; then
   exit 1
 fi
 printf '%s\n' "$api_status"
+verify_application_services
 if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
   echo "bridge_health_status=skipped_quarantined"
 else

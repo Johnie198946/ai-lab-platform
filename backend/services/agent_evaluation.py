@@ -43,7 +43,7 @@ def bridge_base() -> str:
 
 
 def headers() -> dict[str, str]:
-    return {"X-Hermes-Internal-Token": INTERNAL_TOKEN} if INTERNAL_TOKEN else {}
+    return {"X-Hermes-Internal-Token": INTERNAL_TOKEN}
 
 
 async def claim_next(db: AsyncSession) -> AgentEvaluationRun | None:

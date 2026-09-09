@@ -18,6 +18,7 @@ os.environ.setdefault(
     "DATABASE_URL", f"sqlite+aiosqlite:///{_TMP_DB}"
 )
 os.environ.setdefault("AUTHEN_JWT_SECRET", "test-secret")
+os.environ.setdefault("HERMES_BRIDGE_INTERNAL_TOKEN", "test-internal-token")
 # 知识库指向临时 vault(避免污染真实知识库)
 os.environ.setdefault("AI_LAB_HOME", str(Path(tempfile.mkdtemp(prefix="ai-lab-vault-"))))
 

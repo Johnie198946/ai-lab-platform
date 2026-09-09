@@ -1,15 +1,14 @@
 FROM node:22.23.2-alpine3.24@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
 WORKDIR /app/frontend
 COPY frontend/package*.json ./
-RUN apk upgrade --no-cache && npm ci
+RUN npm ci
 COPY frontend/ .
 COPY apps/shared /app/apps/shared
 # Build
 RUN npm run build
 
-FROM nginxinc/nginx-unprivileged:1.30.4-alpine3.24@sha256:9b87ad3dd9f431c733f19dfb278c7eb3dba9dca381942c79818bb42f1a566a83
+FROM nginxinc/nginx-unprivileged:1.30.4-alpine3.24@sha256:442753882674b49ae2c1de83ed67896131c0777f56df5005e356e62bc3f7e7ce
 USER root
-RUN apk upgrade --no-cache
 COPY --from=build /app/frontend/dist /usr/share/nginx/html
 # Quantum fork 官方 Web 引擎（web-dashboard dist → 9080 server 块；官方仓库零改动）
 COPY web-dashboard/dist /usr/share/nginx/html/web-dashboard
@@ -67,25 +66,9 @@ RUN echo $'server {\n\
         proxy_set_header Host $host;\n\
         proxy_read_timeout 3600s;\n\
     }\n\
-    # B-2-1 最小 server 块：官方 Hermes WS 反代（精确路径优先于 /api/ → api:8000）\n\
-    location = /api/ws {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_set_header Origin http://127.0.0.1;\n\
-        proxy_read_timeout 3600s;\n\
-        proxy_buffering off;\n\
-    }\n\
-    location = /api/pty {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_read_timeout 3600s;\n\
-    }\n\
+    # Public edge never exposes the host Hermes interactive runtime.\n\
+    location = /api/ws { return 404; }\n\
+    location = /api/pty { return 404; }\n\
     location /health {\n\
         proxy_pass http://api:8000/health;\n\
         proxy_set_header Host $host;\n\
@@ -189,25 +172,8 @@ server {\n\
         proxy_set_header Host $host;\n\
         proxy_read_timeout 3600s;\n\
     }\n\
-    # B-2-1：443 同样支持官方 Hermes WS 反代（精确路径）\n\
-    location = /api/ws {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_set_header Origin http://127.0.0.1;\n\
-        proxy_read_timeout 3600s;\n\
-        proxy_buffering off;\n\
-    }\n\
-    location = /api/pty {\n\
-        proxy_pass http://host.docker.internal:9121;\n\
-        proxy_http_version 1.1;\n\
-        proxy_set_header Upgrade $http_upgrade;\n\
-        proxy_set_header Connection "upgrade";\n\
-        proxy_set_header Host 127.0.0.1;\n\
-        proxy_read_timeout 3600s;\n\
-    }\n\
+    location = /api/ws { return 404; }\n\
+    location = /api/pty { return 404; }\n\
     location /health {\n\
         proxy_pass http://api:8000/health;\n\
         proxy_set_header Host $host;\n\

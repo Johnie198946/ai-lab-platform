@@ -58,7 +58,7 @@ async def request_bridge_clarification(
     workflow_id: str,
 ) -> dict[str, Any]:
     """Call the protected structured bridge endpoint; never masquerade as model output."""
-    headers = {"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN} if HERMES_BRIDGE_INTERNAL_TOKEN else {}
+    headers = {"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN}
     try:
         async with httpx.AsyncClient(timeout=BRIDGE_TIMEOUT_SECONDS) as client:
             response = await client.post(
@@ -75,4 +75,3 @@ async def request_bridge_clarification(
             return _validate_bridge_payload(response.json())
     except Exception:
         return _honest_fallback()
-

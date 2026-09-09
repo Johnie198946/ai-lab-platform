@@ -126,8 +126,8 @@ bash scripts/update.sh   # 拉取最新代码 + 重建 + 健康检查
 ### 重新部署步骤
 ```bash
 # 服务器上，仓库根目录
-cp .env.example .env   # 修改数据库密码
-bash scripts/deploy.sh # 构建 + 启动 + 健康检查
+cp .env.example .env                     # 配置生产密钥与离线镜像
+bash scripts/deploy.sh <40位 commit SHA> # 验证预载镜像 + 启动 + 健康检查
 ```
 
 ### 平台契约审计

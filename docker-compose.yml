@@ -1,6 +1,11 @@
 # AI Lab Platform — 生产部署编排
-# 用法: docker compose up -d --build
+# 本地构建: docker compose up -d --build；生产发布仅由 scripts/update.sh 使用预载镜像启动
 # 配置: 复制 .env.example 为 .env 后按需修改
+
+x-app-hardening: &app-hardening
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
 
 services:
   # PostgreSQL — 知识库主库（仅本机可连；Authen 认证服务复用）
@@ -54,6 +59,8 @@ services:
 
   # API — 后端服务
   api:
+    <<: *app-hardening
+    image: ${AI_LAB_API_IMAGE:-ai-lab-platform-api:offline}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -61,11 +68,6 @@ services:
         AI_LAB_RUNTIME_UID: ${AI_LAB_RUNTIME_UID:-10001}
         AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     restart: unless-stopped
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=256m
     ports:
@@ -108,7 +110,9 @@ services:
       # 平台租户统一：新注册用户归入该租户（与 bridge TENANT_ID 一致，保证对话技能与 API 数据同租户可见）
       DEFAULT_TENANT_KEY: ${DEFAULT_TENANT_KEY:-}
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
-      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:?Set a non-empty HERMES_BRIDGE_INTERNAL_TOKEN in .env}
+      AI_LAB_ENV: production
+      AI_LAB_CORS_ORIGINS: ${AI_LAB_CORS_ORIGINS:-}
       TENANT_KNOWLEDGE_POLICY_V2: ${TENANT_KNOWLEDGE_POLICY_V2:-true}
       KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
       AUTHEN_ENTITLEMENT_WEBHOOK_SECRET: ${AUTHEN_ENTITLEMENT_WEBHOOK_SECRET:-}
@@ -124,10 +128,6 @@ services:
       HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      # API 只挂载 Hermes 配置；Hermes 可执行代码仅运行在宿主 Bridge/Worker venv。
-      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills  # skills 目录可写
-      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro  # config 只读
-      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles  # profiles 配置
       - /opt/ai-lab-platform:/opt/ai-lab-platform:ro  # 代码真源只读；运行数据走 /app/data
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -140,6 +140,8 @@ services:
 
   # 持久工作流执行器：独立消费 PostgreSQL 队列，API/客户端重启不丢任务
   workflow-worker:
+    <<: *app-hardening
+    image: ${AI_LAB_WORKFLOW_WORKER_IMAGE:-ai-lab-platform-workflow-worker:offline}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -148,6 +150,8 @@ services:
         AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     command: ["python", "-m", "backend.workers.workflow_worker"]
     restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
     depends_on:
       postgres:
         condition: service_healthy
@@ -155,7 +159,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
       AI_LAB_HOME: /app/data/vault
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
-      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:?Set a non-empty HERMES_BRIDGE_INTERNAL_TOKEN in .env}
       TENANT_KNOWLEDGE_POLICY_V2: ${TENANT_KNOWLEDGE_POLICY_V2:-true}
       KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
       AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
@@ -164,17 +168,20 @@ services:
       HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills
-      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro
-      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles
       - /opt/ai-lab-platform:/opt/ai-lab-platform:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import pathlib; assert b'backend.workers.workflow_worker' in pathlib.Path('/proc/1/cmdline').read_bytes()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   # 持久方案规划器：独立租约队列，API/客户端/Worker 重启后继续同一规划任务
   planning-worker:
+    <<: *app-hardening
+    image: ${AI_LAB_PLANNING_WORKER_IMAGE:-ai-lab-platform-planning-worker:offline}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -183,6 +190,8 @@ services:
         AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     command: ["python", "-m", "backend.workers.workflow_planning_worker"]
     restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
     depends_on:
       api:
         condition: service_healthy
@@ -190,7 +199,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
       AI_LAB_HOME: /app/data/vault
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
-      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:?Set a non-empty HERMES_BRIDGE_INTERNAL_TOKEN in .env}
       WORKFLOW_HERMES_PLANNING: ${WORKFLOW_HERMES_PLANNING:-true}
       TENANT_KNOWLEDGE_POLICY_V2: ${TENANT_KNOWLEDGE_POLICY_V2:-true}
       KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
@@ -199,17 +208,20 @@ services:
       HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills
-      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro
-      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles
       - /opt/ai-lab-platform:/opt/ai-lab-platform:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import pathlib; assert b'backend.workers.workflow_planning_worker' in pathlib.Path('/proc/1/cmdline').read_bytes()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   # 持久 Agent 正式评估队列：独立租约，客户端或服务重启后可恢复
   agent-evaluation-worker:
+    <<: *app-hardening
+    image: ${AI_LAB_AGENT_EVALUATION_WORKER_IMAGE:-ai-lab-platform-agent-evaluation-worker:offline}
     build:
       context: .
       dockerfile: backend/Dockerfile
@@ -218,6 +230,8 @@ services:
         AI_LAB_RUNTIME_GID: ${AI_LAB_RUNTIME_GID:-10001}
     command: ["python", "-m", "backend.workers.agent_evaluation_worker"]
     restart: unless-stopped
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m
     depends_on:
       postgres:
         condition: service_healthy
@@ -225,7 +239,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-ailab}:${POSTGRES_PASSWORD:-ailab_dev}@postgres:5432/${POSTGRES_DB:-ai_lab}
       AI_LAB_HOME: /app/data/vault
       HERMES_BRIDGE_URL: ${HERMES_BRIDGE_URL:-http://host.docker.internal:9118/v1/chat}
-      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:?Set a non-empty HERMES_BRIDGE_INTERNAL_TOKEN in .env}
       TENANT_KNOWLEDGE_POLICY_V2: ${TENANT_KNOWLEDGE_POLICY_V2:-true}
       KNOWLEDGE_CAPABILITY_SECRET: ${KNOWLEDGE_CAPABILITY_SECRET:-}
       AUTHEN_AI_PLATFORM_SERVICE_TOKEN: ${AUTHEN_AI_PLATFORM_SERVICE_TOKEN:-}
@@ -233,23 +247,28 @@ services:
       HOME: /home/ailab
     volumes:
       - ./data:/app/data
-      - /var/lib/quantumn-hermes/.hermes/skills:/home/ailab/.hermes/skills
-      - /var/lib/quantumn-hermes/.hermes/config.yaml:/home/ailab/.hermes/config.yaml:ro
-      - /var/lib/quantumn-hermes/.hermes/profiles:/home/ailab/.hermes/profiles
       - /opt/ai-lab-platform:/opt/ai-lab-platform:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
-      disable: true
+      test: ["CMD", "python", "-c", "import pathlib; assert b'backend.workers.agent_evaluation_worker' in pathlib.Path('/proc/1/cmdline').read_bytes()"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 20s
 
   # Dashi Taskboard — upstream UI and issue-management runtime.
   # AI execution remains owned by AI Lab and is entered through the QWS host bridge.
   taskboard:
+    <<: *app-hardening
+    image: ${AI_LAB_TASKBOARD_IMAGE:-ai-lab-platform-taskboard:offline}
     build:
       context: ./apps/dashi-taskboard
       dockerfile: Dockerfile
     restart: unless-stopped
     user: "1000:1000"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=128m,uid=1000,gid=1000
     environment:
       CODEX_TASKBOARD_HOST: 0.0.0.0
       CODEX_TASKBOARD_PORT: 47823
@@ -257,7 +276,7 @@ services:
       CODEX_TASKBOARD_VERSION: qws-dashi-5c96d1a
       CODEX_TASKBOARD_QWS_MODE: "true"
       AI_LAB_INTERNAL_BASE_URL: http://api:8000
-      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:-}
+      HERMES_BRIDGE_INTERNAL_TOKEN: ${HERMES_BRIDGE_INTERNAL_TOKEN:?Set a non-empty HERMES_BRIDGE_INTERNAL_TOKEN in .env}
     volumes:
       - taskboard_data:/data
       - /opt/ai-lab-platform:/workspace:ro
@@ -270,16 +289,13 @@ services:
 
   # 前端服务
   frontend:
+    <<: *app-hardening
+    image: ${AI_LAB_FRONTEND_IMAGE:-ai-lab-platform-frontend:offline}
     build:
       context: .
       dockerfile: frontend/Dockerfile
     restart: unless-stopped
     user: "101:101"
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "0"
     tmpfs:

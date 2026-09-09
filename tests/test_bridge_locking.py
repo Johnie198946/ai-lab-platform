@@ -266,7 +266,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
         self.tmp_dir.cleanup()
 
     def _run_chat(self, body):
-        return asyncio.run(chat(body))
+        return asyncio.run(chat(body, "test-internal-token"))
 
     def test_chat_returns_reasoning_from_readback(self):
         import scripts.hermes_bridge as bridge
@@ -317,7 +317,7 @@ class TestChatReasoningIntegration(unittest.TestCase):
 
             async def run():
                 bodies = [GoalRequest(goal="g", session_id="same_user") for _ in range(4)]
-                await asyncio.gather(*[chat(b) for b in bodies])
+                await asyncio.gather(*[chat(b, "test-internal-token") for b in bodies])
 
             asyncio.run(run())
 
@@ -420,7 +420,7 @@ class TestConcurrencyGuard(unittest.TestCase):
              }), \
              patch.object(bridge, "_sse_from_in_process") as mock_sse:
             resp = asyncio.run(bridge.chat_stream(
-                GoalRequest(goal="hi", session_id="u_busy")
+                GoalRequest(goal="hi", session_id="u_busy"), "test-internal-token"
             ))
             body = self._collect(resp)
         self.assertIn('"phase": "running"', body)
@@ -437,7 +437,7 @@ class TestConcurrencyGuard(unittest.TestCase):
              patch.object(bridge, "_stream_run_get", return_value=None), \
              patch.object(bridge, "_sse_from_in_process", side_effect=fake_sse):
             resp = asyncio.run(bridge.chat_stream(
-                GoalRequest(goal="hi", session_id="u_free")
+                GoalRequest(goal="hi", session_id="u_free"), "test-internal-token"
             ))
             body = self._collect(resp)
         self.assertIn('"phase": "boot"', body)

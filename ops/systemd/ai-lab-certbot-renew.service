@@ -6,4 +6,8 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/ai-lab-platform
-ExecStart=/opt/certbot-venv/bin/certbot renew --cert-name 120.24.248.58 --non-interactive --quiet --pre-hook "/usr/bin/docker compose -f /opt/ai-lab-platform/docker-compose.yml stop frontend" --post-hook "/usr/bin/docker compose -f /opt/ai-lab-platform/docker-compose.yml up -d frontend" --deploy-hook "/usr/bin/docker compose -f /opt/ai-lab-platform/docker-compose.yml restart frontend"
+ExecStart=/bin/bash /opt/ai-lab-platform/scripts/renew_tls_certificate.sh
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/etc/letsencrypt /var/lib/letsencrypt /var/log/letsencrypt /run/lock

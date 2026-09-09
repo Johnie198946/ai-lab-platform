@@ -66,11 +66,7 @@ def bridge_base_url() -> str:
 
 
 def bridge_headers() -> dict[str, str]:
-    return (
-        {"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN}
-        if HERMES_BRIDGE_INTERNAL_TOKEN
-        else {}
-    )
+    return {"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN}
 
 
 async def emit(

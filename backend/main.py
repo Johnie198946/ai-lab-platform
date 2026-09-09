@@ -3,6 +3,7 @@ FastAPI 主入口 — OpenAPI 文档配置
 """
 
 import logging
+import os
 
 from fastapi import FastAPI, Depends
 from fastapi.openapi.utils import get_openapi
@@ -45,6 +46,12 @@ from backend.db import SessionLocal, init_db
 from backend.models.workspace import WorkspaceProject
 
 logger = logging.getLogger(__name__)
+_production = os.environ.get("AI_LAB_ENV", "development").casefold() == "production"
+_cors_origins = [
+    origin.strip()
+    for origin in os.environ.get("AI_LAB_CORS_ORIGINS", "").split(",")
+    if origin.strip() and origin.strip() != "*"
+]
 
 
 @asynccontextmanager
@@ -135,15 +142,15 @@ app = FastAPI(
 使用 Authen 统一认证，所有接口需带 `Authorization: Bearer <Authen JWT>`。
 """,
     version="0.8.0",
-    docs_url="/docs",  # Swagger UI
-    redoc_url="/redoc",  # ReDoc
-    openapi_url="/openapi.json",
+    docs_url=None if _production else "/docs",
+    redoc_url=None if _production else "/redoc",
+    openapi_url=None if _production else "/openapi.json",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins if _production else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

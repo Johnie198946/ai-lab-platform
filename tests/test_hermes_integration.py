@@ -37,8 +37,8 @@ class _BridgeClient:
     async def __aexit__(self, exc_type, exc, tb):
         return False
 
-    async def post(self, url, json):
-        self.calls.append((url, json))
+    async def post(self, url, json, headers=None):
+        self.calls.append((url, json, headers))
         await asyncio.sleep(0)
         return self.response
 
@@ -54,6 +54,10 @@ class TestHermesBridgeGateway(unittest.TestCase):
 
         self.assertEqual(answer, "bridge answer")
         self.assertEqual(calls[0][1], {"goal": "目标", "session_id": "session-1"})
+        self.assertEqual(
+            calls[0][2]["X-Hermes-Internal-Token"],
+            orchestration.HERMES_BRIDGE_INTERNAL_TOKEN,
+        )
 
     def test_non_200_is_visible_without_local_cli_fallback(self):
         from backend.api import orchestration

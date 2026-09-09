@@ -96,6 +96,7 @@ from backend.services.chat_triage import (  # noqa: E402
     GENERAL_QA,
     PROFESSIONAL_TASK,
 )
+from backend.services.agent_capabilities import SAFE_GLOBAL_TOOLS  # noqa: E402
 from backend.services.skill_router import (  # noqa: E402
     apply_routing_overrides,
     candidate_prompt,
@@ -477,6 +478,13 @@ class TrustedAgentConfig(BaseModel):
             raise ValueError("invalid agent configuration list")
         return values
 
+    @field_validator("allowed_tools")
+    @classmethod
+    def _server_authorized_tools(cls, values: list[str]) -> list[str]:
+        if any(value not in SAFE_GLOBAL_TOOLS for value in values):
+            raise ValueError("unsupported agent tool")
+        return values
+
 
 class GoalRequest(BaseModel):
     # V2 权限只能来自平台签发的 KnowledgeCapability。旧客户端继续发送
@@ -527,6 +535,8 @@ class WorkflowPlanningStartRequest(WorkflowPlanRequest):
 
 
 class WorkflowRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     tenant_id: str = Field(..., min_length=1, max_length=64)
     execution_id: str = Field(..., min_length=1, max_length=64)
     idempotency_key: str = Field(..., min_length=8, max_length=160)
@@ -544,6 +554,11 @@ class WorkflowRunRequest(BaseModel):
     knowledge_capability: str = Field(..., min_length=20)
     knowledge_policy_version: str = Field(..., min_length=8, max_length=80)
     agent_config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("agent_config")
+    @classmethod
+    def _trusted_agent_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return TrustedAgentConfig.model_validate(value).model_dump(exclude_none=True)
 
 
 class ClarificationTurn(BaseModel):
@@ -575,12 +590,19 @@ class WorkflowRetryRequest(BaseModel):
 
 
 class AgentEvaluationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     run_id: str = Field(..., min_length=8, max_length=64)
     idempotency_key: str = Field(..., min_length=8, max_length=160)
     agent_config: dict[str, Any]
     suite: list[dict[str, Any]] = Field(default_factory=list)
     knowledge_capability: str = Field(..., min_length=20)
     knowledge_policy_version: str = Field(..., min_length=8, max_length=80)
+
+    @field_validator("agent_config")
+    @classmethod
+    def _trusted_agent_config(cls, value: dict[str, Any]) -> dict[str, Any]:
+        return TrustedAgentConfig.model_validate(value).model_dump(exclude_none=True)
 
 
 def _expand_requested_skill(
@@ -1059,8 +1081,7 @@ def _extract_session_from_usage(usage_file: Path) -> str | None:
 
 
 def _require_internal(token: str | None) -> None:
-    if HERMES_BRIDGE_INTERNAL_TOKEN and token != HERMES_BRIDGE_INTERNAL_TOKEN:
-        raise HTTPException(status_code=401, detail="invalid bridge token")
+    _require_internal_strict(token)
 
 
 def _require_internal_strict(token: str | None) -> None:
@@ -3935,13 +3956,17 @@ async def durable_chat_blocks(
 
 
 @app.post("/v1/chat/stream")
-async def chat_stream(body: GoalRequest):
+async def chat_stream(
+    body: GoalRequest,
+    x_hermes_internal_token: str | None = Header(None),
+):
     """SSE 流式对话入口（Bridge v7 核心端点）。
 
     优先级：进程内 agent runner（真实逐 token·v7 主路径）→ WS PTY（默认禁用）→ CLI -z 非流式降级。
     全部以 SSE data: {type:...} 格式推送给前端。
     在途标记 _in_flight_users 首秒登记、finally 移除，供 /v1/chat/status 瞬时 running 兜底。
     """
+    _require_internal_strict(x_hermes_internal_token)
     user_id = body.session_id or "anonymous"
     knowledge_claims = _validated_knowledge_claims(
         body.knowledge_capability,
@@ -6575,8 +6600,12 @@ async def _legacy_nonstream_chat(body: GoalRequest, user_id: str) -> dict[str, A
 
 
 @app.post("/v1/chat")
-async def chat(body: GoalRequest):
+async def chat(
+    body: GoalRequest,
+    x_hermes_internal_token: str | None = Header(None),
+):
     """Non-streaming endpoint; signed requests use the tenant sandbox."""
+    _require_internal_strict(x_hermes_internal_token)
     user_id = body.session_id or "anonymous"
     knowledge_claims = _validated_knowledge_claims(
         body.knowledge_capability,

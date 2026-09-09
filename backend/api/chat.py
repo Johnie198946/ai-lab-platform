@@ -439,7 +439,11 @@ async def _call_hermes(
     if agent_config:
         payload["agent_config"] = agent_config
     async with httpx.AsyncClient(timeout=HERMES_TIMEOUT) as client:
-        r = await client.post(HERMES_BRIDGE_URL, json=payload)
+        r = await client.post(
+            HERMES_BRIDGE_URL,
+            headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
+            json=payload,
+        )
         if r.status_code == 200:
             data = r.json()
             _last_hermes_usage.set(
@@ -1316,6 +1320,7 @@ async def _call_bridge_stream(
         async with client.stream(
             "POST",
             HERMES_BRIDGE_STREAM_URL,
+            headers={"X-Hermes-Internal-Token": HERMES_BRIDGE_INTERNAL_TOKEN},
             json={
                 "goal": _bounded_bridge_goal(goal),
                 "session_id": session_id,
