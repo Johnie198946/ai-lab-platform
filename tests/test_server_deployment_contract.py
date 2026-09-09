@@ -1351,6 +1351,45 @@ def test_rollback_restores_units_links_and_verifies_runtime_without_suppression(
     assert "|| true" not in rollback
 
 
+def test_failed_release_diagnostics_run_before_rollback_restore() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    cleanup = script[script.index("cleanup() {"):script.index("trap cleanup EXIT")]
+    assert cleanup.index("capture_failed_release_diagnostics\n") < cleanup.index(
+        "rollback_deployment"
+    )
+
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{ return 1; }}
+COMPOSE_PROJECT=contract-test
+capture_failed_release_diagnostics
+printf 'rollback-continues\n'
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0
+    assert result.stdout == "rollback-continues\n"
+
+
+def test_failed_release_diagnostics_are_bounded_and_do_not_inspect_secrets() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    diagnostics = script[script.index("capture_failed_release_diagnostics() {"):script.index(
+        "normalize_mutable_image_reference() {"
+    )]
+    assert "managed_compose_services" in diagnostics
+    assert "docker compose" in diagnostics and " ps --format " in diagnostics
+    assert "docker logs --timestamps --since 10m --tail 200" in diagnostics
+    assert ".Config.Image" in diagnostics
+    assert ".State.Health.Log" in diagnostics
+    for forbidden in (
+        ".Config.Env", ".Config.Cmd", ".Config.Labels", ".Mounts",
+        "docker compose config", "environment",
+    ):
+        assert forbidden not in diagnostics
+
+
 def test_certificate_renewal_units_use_safe_locked_wrapper() -> None:
     service = (SYSTEMD_DIR / "ai-lab-certbot-renew.service").read_text(encoding="utf-8")
     timer = (SYSTEMD_DIR / "ai-lab-certbot-renew.timer").read_text(encoding="utf-8")

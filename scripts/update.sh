@@ -684,6 +684,36 @@ managed_compose_services() {
     agent-evaluation-worker taskboard frontend
 }
 
+capture_failed_release_diagnostics() {
+  local service containers container timestamp
+  timestamp="$(date --iso-8601=seconds 2>/dev/null)" || timestamp=unknown
+  echo "==> failed release diagnostics timestamp=$timestamp" >&2
+  if ! docker compose -p "$COMPOSE_PROJECT" ps --format \
+    'table {{.Name}}\t{{.Image}}\t{{.State}}\t{{.Status}}' \
+    $(managed_compose_services) >&2; then
+    echo "WARN: failed to capture Compose service status" >&2
+  fi
+  while IFS= read -r service; do
+    if ! containers="$(docker compose -p "$COMPOSE_PROJECT" ps -q --all "$service" 2>/dev/null)"; then
+      echo "WARN: failed to locate diagnostic container name=$service" >&2
+      continue
+    fi
+    while IFS= read -r container; do
+      [ -n "$container" ] || continue
+      if ! docker inspect --format \
+        '{{printf "name=%q image_id=%q image_ref=%q state_status=%q exit_code=%d restart_count=%d" .Name .Image .Config.Image .State.Status .State.ExitCode .RestartCount}}{{if .State.Health}}{{printf " health_status=%q" .State.Health.Status}}{{range .State.Health.Log}}{{printf "\nhealth_log exit_code=%d output=%.2048q" .ExitCode .Output}}{{end}}{{else}} health_status="none"{{end}}' \
+        "$container" >&2; then
+        echo "WARN: failed to inspect diagnostic container name=$service" >&2
+      fi
+      echo "logs name=$service timestamp=$timestamp since=10m tail=200" >&2
+      if ! docker logs --timestamps --since 10m --tail 200 "$container" >&2; then
+        echo "WARN: failed to capture container logs name=$service" >&2
+      fi
+    done <<< "$containers"
+  done < <(managed_compose_services)
+  return 0
+}
+
 normalize_mutable_image_reference() {
   local reference="$1" leaf="${1##*/}"
   if [[ -z "$reference" || "$reference" == *@* || "$reference" =~ ^sha256: \
@@ -951,6 +981,7 @@ cleanup() {
     rm -f "$TARBALL"
   fi
   if [ "$rc" -ne 0 ] && [ "$RUNTIME_CHANGED" -eq 1 ]; then
+    capture_failed_release_diagnostics
     echo "WARN: 发布失败，恢复旧 release: $CURRENT_DIR" >&2
     if ! rollback_deployment; then
       echo "ERROR: deployment rollback or restored health verification failed" >&2
