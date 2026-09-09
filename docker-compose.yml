@@ -64,12 +64,6 @@ services:
         exec redis-server /tmp/redis.conf
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m
-    healthcheck:
-      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-
   # API — 后端服务
   api:
     <<: *app-hardening

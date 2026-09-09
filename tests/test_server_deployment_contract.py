@@ -1246,11 +1246,9 @@ def test_offline_images_extract_each_field_without_separator_parsing_and_validat
     service_configs = {
         service: {"image": f"registry.local/{service}:release"} for service in services
     }
+    service_configs["postgres"]["healthcheck"] = {"test": ["CMD-SHELL", "true"]}
     for service in ("postgres", "redis"):
-        service_configs[service].update({
-            "healthcheck": {"test": ["CMD-SHELL", "true"]},
-            "ports": [{"host_ip": "127.0.0.1"}],
-        })
+        service_configs[service]["ports"] = [{"host_ip": "127.0.0.1"}]
     attestations = tmp_path / "images.attested"
     attestations.write_text(
         "".join(f"{service}={digest}\n" for service in services), encoding="utf-8"
@@ -1318,7 +1316,7 @@ verify_offline_images
             },
             capture_output=True, text=True,
         )
-        assert result.returncode == expected, result.stderr
+        assert result.returncode == expected, f"{check}: {result.stderr}"
 
 
 def test_production_update_is_serialized_preflighted_and_offline_only() -> None:

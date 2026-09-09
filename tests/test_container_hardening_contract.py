@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+import os
 import re
 import subprocess
 
@@ -152,10 +153,11 @@ def test_compose_preserves_storage_tls_routes_and_non_root_users() -> None:
     assert "redis:7-alpine" not in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
     for name, binding in (("postgres", "127.0.0.1:5432:5432"), ("redis", "127.0.0.1:6379:6379")):
         assert services[name]["ports"] == [binding]
-        assert services[name]["healthcheck"]["test"][0] == "CMD-SHELL"
-        assert services[name]["healthcheck"]["interval"] == "5s"
-        assert services[name]["healthcheck"]["timeout"] == "3s"
-        assert services[name]["healthcheck"]["retries"] == 10
+    assert services["postgres"]["healthcheck"]["test"][0] == "CMD-SHELL"
+    assert services["postgres"]["healthcheck"]["interval"] == "5s"
+    assert services["postgres"]["healthcheck"]["timeout"] == "3s"
+    assert services["postgres"]["healthcheck"]["retries"] == 10
+    assert "healthcheck" not in services["redis"]
 
     api_build_args = services["api"]["build"]["args"]
     assert api_build_args == {
@@ -177,6 +179,27 @@ def test_compose_preserves_storage_tls_routes_and_non_root_users() -> None:
     assert "127.0.0.1:9081:9081" in services["frontend"]["ports"]
     assert all(volume.endswith(":ro") for volume in services["frontend"]["volumes"])
     assert services["frontend"]["sysctls"]["net.ipv4.ip_unprivileged_port_start"] == "0"
+
+
+def test_rendered_compose_uses_redis_image_healthcheck_without_embedding_its_secret() -> None:
+    rendered = subprocess.run(
+        ["docker", "compose", "config", "--format", "json"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "REDIS_PASSWORD": "0123456789abcdef0123456789abcdef",
+            "HERMES_BRIDGE_INTERNAL_TOKEN": "dummy-internal-token",
+            "AI_LAB_TLS_CERT_FILE": "/tmp/dummy.crt",
+            "AI_LAB_TLS_KEY_FILE": "/tmp/dummy.key",
+        },
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    redis = json.loads(rendered)["services"]["redis"]
+
+    assert "healthcheck" not in redis
+    assert "REDISCLI_AUTH" not in json.dumps(redis)
 
 
 def test_all_services_are_hardened_with_only_required_writable_storage() -> None:

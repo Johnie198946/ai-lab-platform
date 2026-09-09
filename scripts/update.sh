@@ -581,7 +581,7 @@ import json
 import os
 
 services = json.loads(os.environ["COMPOSE_CONFIG"])["services"]
-for name in ("postgres", "redis"):
+for name in ("postgres",):
     healthcheck = services[name].get("healthcheck")
     test = healthcheck.get("test") if isinstance(healthcheck, dict) else None
     if (
@@ -591,6 +591,7 @@ for name in ("postgres", "redis"):
         or not all(isinstance(item, str) and item for item in test[1:])
     ):
         raise SystemExit(f"ERROR: {name} must have a structured Compose healthcheck")
+for name in ("postgres", "redis"):
     if any(port.get("host_ip") != "127.0.0.1" for port in services[name].get("ports", [])):
         raise SystemExit(f"ERROR: {name} host ports must bind to 127.0.0.1")
 PY
