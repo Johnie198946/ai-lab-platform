@@ -4,15 +4,15 @@ task_id: production-security-deploy-blockers-20260909
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: 5284db6f5090cde578b51656ad2d1ad9420a1748 plus the current uncommitted Certbot work
-remote_sha: not queried per instruction; the local `origin/main` tracking ref is 5284db6f5090cde578b51656ad2d1ad9420a1748
+head/local_commit: 7739951d3c2e99b5d96370edf7cab1e508f542cb plus the current uncommitted Bridge stream boundary fix
+remote_sha: not queried per instruction; no fetch or remote operation was performed
 server_before: 789c89aee7699d36573cbd182a631db940aec23a
 server_after: unchanged at 789c89aee7699d36573cbd182a631db940aec23a; the prepare-only POC did not activate Certbot or change any service
 health_check: parent coordinator verified production remained healthy on 789c89aee7699d36573cbd182a631db940aec23a
-functional_check: parent coordinator verified the full focused deployment/container contracts passed (`113 passed`, 4 pre-existing Pydantic warnings) and the production prepare-only Certbot POC succeeded; live renewal was not rerun
+functional_check: Bridge stream regression passed (`27 passed`, 6 pre-existing warnings); Ruff passed for the changed Python files
 rollback_point: existing production release 789c89aee7699d36573cbd182a631db940aec23a; no new rollback point was needed because nothing was deployed
 manifest: ops/change-manifests/production-security-deploy-blockers-20260909-completion.md
-remaining_risks: the Certbot work is uncommitted, unpushed, and undeployed; live renewal was not rerun
+remaining_risks: the Bridge stream boundary fix is uncommitted, unpushed, and undeployed; production remains exposed to the verified oversized source-context failure until this fix is delivered
 
 ## Inventory and architecture decision
 
@@ -80,10 +80,13 @@ remaining_risks: the Certbot work is uncommitted, unpushed, and undeployed; live
 - Bytecode-cache POC follow-up: `relocate_certbot_venv` now removes directories named `__pycache__` and remaining regular `*.pyc` files within the staging venv before the unchanged fatal all-file prefix scan. The two focused relocation tests passed, covering a cached and a loose `.pyc` containing staging bytes while an unrelated `.bin` containing the same bytes remains fatal (`2 passed`, 4 pre-existing Pydantic deprecation warnings); no bytecode rewriting, binary-file exclusion, broader tests, fetch, remote query, commit, push, or deployment was performed.
 - Latest parent-verified focused regression: the full focused deployment/container contracts passed (`113 passed`, 4 pre-existing Pydantic warnings).
 - Successful production prepare-only POC: `/opt/certbot-venvs/5.8.0-linux-amd64-c701b7929a90` was prepared with an independent root-owned runtime using x86_64 Python 3.12.14, SQLite 3.53.1, and OpenSSL 3.5.8. Exact Certbot 5.8.0 and all 18 hashed wheels were verified; shebang relocation and the residual staging-prefix scan passed. `/opt/certbot-venv` remained absent, so no activation or service change occurred. Production remained healthy on release `789c89aee7699d36573cbd182a631db940aec23a`. This does not claim deployment or certificate-renewal success; live renewal was not rerun.
+- Parent-verified iPhone failure chain: the API returned HTTP 200 and opened SSE, then the host Bridge rejected the forwarded request with HTTP 422 because `source_context.knowledge_query` exceeded `GoalRequest`'s 200-character limit (`string_too_long`). The parent established this chain through root-only packet diagnosis; the packet capture was deleted after diagnosis, and no request body or token was retained in this record.
+- Root cause and local fix status: `_call_bridge_stream` was the final unguarded trust boundary. It now applies the existing `_bounded_knowledge_query` to every non-null value before constructing the JSON request; `None` remains `None`, and Bridge `GoalRequest` validation remains unchanged.
+- Bridge stream regression: `python3 -m pytest -p no:cacheprovider -q tests/test_chat_stream_api.py` passed (`27 passed`, 6 pre-existing warnings), proving deterministic truncation above 200 characters, preservation at exactly 200, and null preservation before `httpx` receives JSON. `python3 -m ruff check backend/api/chat.py tests/test_chat_stream_api.py` passed.
 
 ## Delivery
 
-- commit: local `main` is `5284db6f5090cde578b51656ad2d1ad9420a1748`; the current Certbot work is uncommitted.
-- push: not performed; no fetch or remote query was performed, and the local `origin/main` tracking ref is `5284db6f5090cde578b51656ad2d1ad9420a1748`.
+- commit: local `main` is `7739951d3c2e99b5d96370edf7cab1e508f542cb`; the Bridge stream boundary fix is uncommitted.
+- push: not performed; no fetch or remote query was performed.
 - deploy: no deployment was performed; the production action was prepare-only and did not activate `/opt/certbot-venv` or change services.
-- production status: release `789c89aee7699d36573cbd182a631db940aec23a` remained healthy. The Certbot work remains local and undeployed, and live renewal was not rerun.
+- production status: no deployment was performed. The Bridge stream boundary fix remains local and undeployed.

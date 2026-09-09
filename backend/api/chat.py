@@ -1329,7 +1329,11 @@ async def _call_bridge_stream(
                 "request_id": request_id,
                 "knowledge_capability": knowledge_capability,
                 "knowledge_policy_version": policy_version,
-                "knowledge_query": knowledge_query,
+                "knowledge_query": (
+                    _bounded_knowledge_query(knowledge_query)
+                    if knowledge_query is not None
+                    else None
+                ),
                 "agent_config": agent_config or {},
                 "client_session_context": client_session_context,
                 "client_context_capability": client_context_capability,

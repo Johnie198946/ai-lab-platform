@@ -847,6 +847,57 @@ async def test_bridge_stream_bounds_oversized_goal_before_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("knowledge_query", "expected"),
+    [
+        ("查询" * 101, "查询" * 100),
+        ("查" * 200, "查" * 200),
+        (None, None),
+    ],
+)
+async def test_bridge_stream_bounds_knowledge_query_before_request(
+    monkeypatch, knowledge_query, expected
+):
+    import backend.api.chat as chat_mod
+
+    observed: dict = {}
+
+    class AcceptedResponse:
+        status_code = 200
+
+        async def aiter_lines(self):
+            yield 'data: {"type":"done","answer":"ok"}'
+
+    class StreamContext:
+        async def __aenter__(self):
+            return AcceptedResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, *args, **kwargs):
+            observed.update(kwargs["json"])
+            return StreamContext()
+
+    monkeypatch.setattr(chat_mod.httpx, "AsyncClient", lambda *args, **kwargs: FakeClient())
+    frames = [
+        frame async for frame in chat_mod._call_bridge_stream(
+            "question", "session-1", knowledge_query=knowledge_query
+        )
+    ]
+
+    assert observed["knowledge_query"] == expected
+    assert '"type":"done"' in "".join(frames)
+
+
+@pytest.mark.asyncio
 async def test_stream_cancel_endpoint(app: FastAPI, transport: httpx.ASGITransport, monkeypatch):
     """取消端点透传 bridge 并清除 streaming 标记。"""
     import backend.api.chat as chat_mod
