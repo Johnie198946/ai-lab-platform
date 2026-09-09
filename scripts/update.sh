@@ -21,6 +21,9 @@ BRIDGE_WORKER_RUNTIME_SHA256=72748da13197c1fb161e3afeef20a6a385ff24f2165e6e2758e
 BRIDGE_WORKER_RUNTIME_ROOT="$HERMES_ACCOUNT_HOME/python-runtimes"
 BRIDGE_WORKER_RUNTIME_DIR="$BRIDGE_WORKER_RUNTIME_ROOT/cpython-3.12.14+20260901"
 BRIDGE_WORKER_RUNTIME_PYTHON="$BRIDGE_WORKER_RUNTIME_DIR/bin/python3"
+CERTBOT_PYTHON_RUNTIME_ROOT=/opt/certbot-python-runtimes
+CERTBOT_PYTHON_RUNTIME_DIR="$CERTBOT_PYTHON_RUNTIME_ROOT/$BRIDGE_WORKER_RUNTIME_SHA256"
+CERTBOT_PYTHON_RUNTIME_PYTHON="$CERTBOT_PYTHON_RUNTIME_DIR/bin/python3"
 CERTBOT_VERSION=5.8.0
 CERTBOT_ARCHIVE=/home/deploy/certbot-wheelhouse-5.8.0-linux-amd64.tar.zst
 CERTBOT_ARCHIVE_SHA256=c701b7929a9073d0b005ea7833f5f9ee38ac30f2805c0cf64aad683fb418a685
@@ -110,31 +113,58 @@ import ssl
 import sys
 
 assert sys.version_info[:3] == (3, 12, 14)
-assert sqlite3.sqlite_version_info >= (3, 51, 3)
+assert sqlite3.sqlite_version_info == (3, 53, 1)
 assert ssl.OPENSSL_VERSION.startswith("OpenSSL ")
 openssl_version = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", ssl.OPENSSL_VERSION)
-assert openssl_version and tuple(map(int, openssl_version.groups())) >= (3, 5, 8)
+assert openssl_version and tuple(map(int, openssl_version.groups())) == (3, 5, 8)
 '
 }
 
-verify_bridge_worker_runtime_tree() {
-  local runtime_dir="$1" path resolved
+verify_python_runtime_tree() {
+  local runtime_dir="$1" python="$2" path resolved
   if [ -L "$runtime_dir" ] || [ ! -d "$runtime_dir" ] \
     || [ "$(stat -c '%u' "$runtime_dir")" -ne 0 ] \
     || [ $((8#$(stat -c '%a' "$runtime_dir") & 8#022)) -ne 0 ] \
     || [ -n "$(find "$runtime_dir" ! -type l \( ! -user root -o -perm /022 \) -print -quit)" ]; then
-    echo "ERROR: Bridge/Worker Python runtime must be root-owned and not group/world writable" >&2
+    echo "ERROR: Python runtime must be root-owned and not group/world writable" >&2
     return 1
   fi
   while IFS= read -r -d '' path; do
     resolved="$(readlink -f -- "$path")" || return 1
     if [[ "$resolved" != "$runtime_dir/"* ]]; then
-      echo "ERROR: Bridge/Worker Python runtime symlink escapes its root: $path" >&2
+      echo "ERROR: Python runtime symlink escapes its root: $path" >&2
       return 1
     fi
   done < <(find "$runtime_dir" -type l -print0)
-  [ -x "$runtime_dir/bin/python3" ] || return 1
-  verify_bridge_worker_python "$runtime_dir/bin/python3"
+  [ -x "$python" ] || return 1
+  verify_bridge_worker_python "$python"
+}
+
+verify_bridge_worker_runtime_tree() {
+  verify_python_runtime_tree "$1" "$1/bin/python3"
+}
+
+extract_python_runtime_archive() {
+  local archive="$1" staging_dir="$2"
+  python3 - "$archive" "$staging_dir" <<'PY'
+import pathlib
+import sys
+import tarfile
+
+assert sys.version_info >= (3, 12)
+archive, staging_dir = sys.argv[1:]
+with tarfile.open(archive, "r:gz") as source:
+    members = source.getmembers()
+    if not members:
+        raise ValueError("empty runtime archive")
+    for member in members:
+        path = pathlib.PurePosixPath(member.name)
+        if not path.parts or path.parts[0] != "python" or ".." in path.parts:
+            raise ValueError(f"archive member is outside python/: {member.name}")
+        if member.isdev() or member.isfifo():
+            raise ValueError(f"archive member is a device or FIFO: {member.name}")
+    source.extractall(staging_dir, members=members, filter="data")
+PY
 }
 
 prepare_bridge_worker_python_runtime() {
@@ -163,26 +193,7 @@ prepare_bridge_worker_python_runtime() {
   fi
   if [ ! -e "$target" ]; then
     temp_dir="$(mktemp -d "$BRIDGE_WORKER_RUNTIME_ROOT/.build.XXXXXX")"
-    if ! python3 - "$archive" "$temp_dir" <<'PY'
-import pathlib
-import sys
-import tarfile
-
-assert sys.version_info >= (3, 12)
-archive, staging_dir = sys.argv[1:]
-with tarfile.open(archive, "r:gz") as source:
-    members = source.getmembers()
-    if not members:
-        raise ValueError("empty runtime archive")
-    for member in members:
-        path = pathlib.PurePosixPath(member.name)
-        if not path.parts or path.parts[0] != "python" or ".." in path.parts:
-            raise ValueError(f"archive member is outside python/: {member.name}")
-        if member.isdev() or member.isfifo():
-            raise ValueError(f"archive member is a device or FIFO: {member.name}")
-    source.extractall(staging_dir, members=members, filter="data")
-PY
-    then
+    if ! extract_python_runtime_archive "$archive" "$temp_dir"; then
       echo "ERROR: offline Bridge/Worker Python archive has unsafe contents" >&2
       rm -rf -- "$temp_dir"
       return 1
@@ -197,6 +208,70 @@ PY
     rmdir "$temp_dir"
   fi
   verify_bridge_worker_runtime_tree "$target"
+}
+
+verify_certbot_python_runtime_tree() {
+  local runtime_dir="$1" python="$1/bin/python3"
+  verify_python_runtime_tree "$runtime_dir" "$python" || return 1
+  "$python" -c '
+import hashlib
+import pathlib
+import platform
+import sys
+import tarfile
+import venv
+assert sys.platform == "linux"
+assert platform.machine() == "x86_64"
+'
+}
+
+prepare_certbot_python_runtime() {
+  local archive="$BRIDGE_WORKER_RUNTIME_ARCHIVE" target="$CERTBOT_PYTHON_RUNTIME_DIR"
+  local temp_dir="" actual_sha
+  if [ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]; then
+    echo "ERROR: Certbot Python runtime requires Linux x86_64" >&2
+    return 1
+  fi
+  if [ -L "$archive" ] || [ ! -f "$archive" ] \
+    || [ "$(stat -c '%u' "$archive")" -ne 0 ] \
+    || [ $((8#$(stat -c '%a' "$archive") & 8#022)) -ne 0 ]; then
+    echo "ERROR: offline Certbot Python archive must be a root-owned, non-writable regular file" >&2
+    return 1
+  fi
+  actual_sha="$(sha256sum "$archive" | cut -d' ' -f1)"
+  if [ "$actual_sha" != "$BRIDGE_WORKER_RUNTIME_SHA256" ]; then
+    echo "ERROR: offline Certbot Python archive SHA256 mismatch" >&2
+    return 1
+  fi
+  if [ -e "$CERTBOT_PYTHON_RUNTIME_ROOT" ] \
+    && { [ -L "$CERTBOT_PYTHON_RUNTIME_ROOT" ] || [ ! -d "$CERTBOT_PYTHON_RUNTIME_ROOT" ]; }; then
+    echo "ERROR: Certbot Python runtime root must be a real directory" >&2
+    return 1
+  fi
+  install -d -o root -g root -m 0755 "$CERTBOT_PYTHON_RUNTIME_ROOT"
+  if [ "$(stat -c '%u' "$CERTBOT_PYTHON_RUNTIME_ROOT")" -ne 0 ] \
+    || [ $((8#$(stat -c '%a' "$CERTBOT_PYTHON_RUNTIME_ROOT") & 8#022)) -ne 0 ]; then
+    echo "ERROR: Certbot Python runtime root must be root-owned and not group/world writable" >&2
+    return 1
+  fi
+  if [ -L "$target" ]; then
+    echo "ERROR: versioned Certbot Python runtime target must not be a symlink" >&2
+    return 1
+  fi
+  if [ ! -e "$target" ]; then
+    temp_dir="$(mktemp -d "$CERTBOT_PYTHON_RUNTIME_ROOT/.build.XXXXXX")"
+    if ! extract_python_runtime_archive "$archive" "$temp_dir" \
+      || ! chown -R root:root "$temp_dir/python" \
+      || ! chmod -R go-w,u-s,g-s "$temp_dir/python" \
+      || ! verify_certbot_python_runtime_tree "$temp_dir/python" \
+      || ! mv -T "$temp_dir/python" "$target"; then
+      echo "ERROR: offline Certbot Python runtime extraction or verification failed" >&2
+      rm -rf -- "$temp_dir"
+      return 1
+    fi
+    rmdir "$temp_dir"
+  fi
+  verify_certbot_python_runtime_tree "$target"
 }
 
 verify_bridge_worker_venv() {
@@ -263,26 +338,117 @@ activate_bridge_worker_venv() {
   fi
 }
 
+relocate_certbot_venv() {
+  local staging="$1" target="$2"
+  rm -f -- "$staging/bin/activate" "$staging/bin/activate.csh" \
+    "$staging/bin/activate.fish" "$staging/bin/Activate.ps1" || return 1
+  "$CERTBOT_PYTHON_RUNTIME_PYTHON" - "$staging" "$target" <<'PY'
+import pathlib
+import shutil
+import sys
+
+staging, target = map(pathlib.Path, sys.argv[1:])
+old = {
+    f"#!{staging}/bin/{interpreter}".encode()
+    for interpreter in ("python", "python3", "python3.12")
+}
+new = f"#!{target}/bin/python".encode()
+for path in (staging / "bin").iterdir():
+    if path.is_symlink() or not path.is_file():
+        continue
+    data = path.read_bytes()
+    first, separator, rest = data.partition(b"\n")
+    if first.removesuffix(b"\r") in old:
+        ending = b"\r\n" if first.endswith(b"\r") else separator
+        path.write_bytes(new + ending + rest)
+
+config = staging / "pyvenv.cfg"
+data = config.read_bytes()
+config.write_bytes(data.replace(str(staging).encode(), str(target).encode()))
+
+for path in sorted(staging.rglob("__pycache__"), reverse=True):
+    if not path.is_symlink() and path.is_dir():
+        shutil.rmtree(path)
+for path in sorted(staging.rglob("*.pyc")):
+    if not path.is_symlink() and path.is_file():
+        path.unlink()
+
+prefix = str(staging).encode()
+for path in staging.rglob("*"):
+    if not path.is_symlink() and path.is_file() and prefix in path.read_bytes():
+        raise ValueError(f"Certbot venv retains staging path: {path}")
+PY
+}
+
+discard_invalid_inactive_certbot_venv() {
+  local target="$1" active_target=""
+  [ -e "$target" ] || return 0
+  verify_certbot_venv "$target" && return 0
+  if [ -L "$CERTBOT_VENV_LINK" ]; then
+    active_target="$(readlink -f -- "$CERTBOT_VENV_LINK")" || active_target=""
+  fi
+  if [ "$active_target" = "$target" ]; then
+    echo "ERROR: active Certbot venv target failed verification; refusing to delete it" >&2
+    return 1
+  fi
+  rm -rf -- "$target"
+}
+
 verify_certbot_venv() {
-  local venv="$1" python="$1/bin/python" certbot="$1/bin/certbot"
+  local venv="$1" python="$1/bin/python" certbot="$1/bin/certbot" path relative resolved
+  local runtime_python venv_lib certbot_first_line
   if [ -L "$venv" ] || [ ! -d "$venv" ] \
     || [ "$(stat -c '%u' "$venv")" -ne 0 ] \
-    || [ -n "$(find "$venv" \( ! -user root -o -perm /022 \) -print -quit)" ] \
+    || [ -n "$(find "$venv" ! -user root -print -quit)" ] \
+    || [ -n "$(find "$venv" \( -type f -o -type d \) -perm /022 -print -quit)" ] \
+    || [ -n "$(find "$venv" ! -type f ! -type d ! -type l -print -quit)" ] \
     || [ ! -x "$python" ] || [ ! -x "$certbot" ]; then
     echo "ERROR: Certbot venv must be root-owned, non-writable, and executable" >&2
     return 1
   fi
+  IFS= read -r certbot_first_line < "$certbot" || return 1
+  if [ -L "$certbot" ] || [ ! -f "$certbot" ] \
+    || [ "$(stat -c '%u' "$certbot")" -ne 0 ] \
+    || [ $((8#$(stat -c '%a' "$certbot") & 8#022)) -ne 0 ] \
+    || [ "$certbot_first_line" != "#!$venv/bin/python" ]; then
+    echo "ERROR: Certbot launcher must be a root-owned, non-writable regular file with the expected shebang" >&2
+    return 1
+  fi
+  runtime_python="$(readlink -f -- "$CERTBOT_PYTHON_RUNTIME_PYTHON")" || return 1
+  venv_lib="$(readlink -f -- "$venv/lib")" || return 1
+  while IFS= read -r -d '' path; do
+    relative="${path#"$venv"/}"
+    resolved="$(readlink -f -- "$path")" || return 1
+    case "$relative" in
+      bin/python|bin/python3|bin/python3.12)
+        [ "$resolved" = "$runtime_python" ] || {
+          echo "ERROR: Certbot venv Python symlink has an untrusted target: $path" >&2
+          return 1
+        }
+        ;;
+      lib64)
+        [ "$resolved" = "$venv_lib" ] || {
+          echo "ERROR: Certbot venv lib64 symlink escapes its lib directory" >&2
+          return 1
+        }
+        ;;
+      *)
+        echo "ERROR: Certbot venv contains an unexpected symlink: $path" >&2
+        return 1
+        ;;
+    esac
+  done < <(find "$venv" -type l -print0)
   verify_bridge_worker_python "$python" || return 1
   CERTBOT_VERSION="$CERTBOT_VERSION" "$python" -c '
 import platform
 from importlib.metadata import version
-import ConfigArgParse, OpenSSL, _cffi_backend, acme, certbot, certifi, charset_normalizer
+import configargparse, OpenSSL, _cffi_backend, acme, certbot, certifi, charset_normalizer
 import configobj, cryptography, distro, idna, josepy, parsedatetime, pycparser
 import pyrfc3339, requests, typing_extensions, urllib3
 assert platform.machine() == "x86_64"
 assert version("certbot") == __import__("os").environ["CERTBOT_VERSION"]
 ' || return 1
-  [ "$($certbot --version 2>&1)" = "certbot $CERTBOT_VERSION" ]
+  [ "$(TERM=dumb "$certbot" --version 2>/dev/null)" = "certbot $CERTBOT_VERSION" ]
 }
 
 prepare_certbot_venv() {
@@ -291,6 +457,7 @@ prepare_certbot_venv() {
     echo "ERROR: Certbot wheelhouse requires Linux x86_64" >&2
     return 1
   fi
+  prepare_certbot_python_runtime || return 1
   if [ -L "$archive" ] || [ ! -f "$archive" ]; then
     echo "ERROR: Certbot wheelhouse archive is missing or not a regular file: $archive" >&2
     return 1
@@ -310,6 +477,7 @@ prepare_certbot_venv() {
     echo "ERROR: versioned Certbot venv target must not be a symlink" >&2
     return 1
   fi
+  discard_invalid_inactive_certbot_venv "$target" || return 1
   if [ ! -e "$target" ]; then
     command -v zstd >/dev/null || {
       echo "ERROR: zstd is required to extract the Certbot wheelhouse" >&2
@@ -318,7 +486,7 @@ prepare_certbot_venv() {
     temp_dir="$(mktemp -d "$CERTBOT_VENV_ROOT/.build.XXXXXX")"
     wheelhouse="$temp_dir/certbot-wheelhouse-$CERTBOT_VERSION"
     if ! zstd -dc -- "$archive" > "$temp_dir/wheelhouse.tar" \
-      || ! "$BRIDGE_WORKER_RUNTIME_PYTHON" - "$temp_dir/wheelhouse.tar" "$temp_dir" "$CERTBOT_VERSION" <<'PY'
+      || ! "$CERTBOT_PYTHON_RUNTIME_PYTHON" - "$temp_dir/wheelhouse.tar" "$temp_dir" "$CERTBOT_VERSION" <<'PY'
 import pathlib
 import sys
 import tarfile
@@ -343,7 +511,7 @@ PY
       return 1
     fi
     rm -f -- "$temp_dir/wheelhouse.tar"
-    if ! "$BRIDGE_WORKER_RUNTIME_PYTHON" - "$wheelhouse" <<'PY'
+    if ! "$CERTBOT_PYTHON_RUNTIME_PYTHON" - "$wheelhouse" <<'PY'
 import hashlib
 import pathlib
 import re
@@ -373,13 +541,14 @@ PY
       rm -rf -- "$temp_dir"
       return 1
     fi
-    if ! "$BRIDGE_WORKER_RUNTIME_PYTHON" -m venv "$temp_dir/venv" \
+    if ! "$CERTBOT_PYTHON_RUNTIME_PYTHON" -m venv "$temp_dir/venv" \
       || ! "$temp_dir/venv/bin/python" -m pip install --no-index \
-        --find-links "$wheelhouse/wheels" --require-hashes \
+        --find-links "$wheelhouse/wheels" --require-hashes --no-compile \
         -r "$wheelhouse/requirements-linux-amd64.txt" \
       || ! "$temp_dir/venv/bin/python" -m pip check \
       || ! chmod -R go-w,u-s,g-s "$temp_dir/venv" \
       || ! verify_certbot_venv "$temp_dir/venv" \
+      || ! relocate_certbot_venv "$temp_dir/venv" "$target" \
       || ! mv -T "$temp_dir/venv" "$target"; then
       rm -rf -- "$temp_dir"
       return 1

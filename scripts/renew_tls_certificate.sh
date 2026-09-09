@@ -11,7 +11,7 @@ verify_certbot_runtime() {
     echo "ERROR: required Certbot executable is missing: $CERTBOT" >&2
     return 1
   }
-  [ "$($CERTBOT --version 2>&1)" = "certbot $CERTBOT_VERSION" ] || {
+  [ "$(TERM=dumb "$CERTBOT" --version 2>/dev/null)" = "certbot $CERTBOT_VERSION" ] || {
     echo "ERROR: Certbot must be exactly $CERTBOT_VERSION" >&2
     return 1
   }
@@ -94,7 +94,7 @@ trap restore_frontend EXIT
 
 docker compose -p "$COMPOSE_PROJECT" stop frontend
 frontend_stopped=1
-"$CERTBOT" renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet
+TERM=dumb "$CERTBOT" renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet
 prepare_frontend_tls_access
 docker compose -p "$COMPOSE_PROJECT" up -d --no-deps --no-build --pull never frontend
 docker compose -p "$COMPOSE_PROJECT" exec -T frontend \

@@ -4,6 +4,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tarfile
 
 import pytest
@@ -575,8 +576,14 @@ def test_bridge_worker_venv_is_atomic_and_rollback_coupled() -> None:
 
 def test_certbot_runtime_is_fixed_offline_and_hash_verified() -> None:
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    prepare = script[script.index("prepare_certbot_venv() {"):script.index(
+        "activate_certbot_venv() {"
+    )]
 
     for contract in (
+        "CERTBOT_PYTHON_RUNTIME_ROOT=/opt/certbot-python-runtimes",
+        'CERTBOT_PYTHON_RUNTIME_DIR="$CERTBOT_PYTHON_RUNTIME_ROOT/$BRIDGE_WORKER_RUNTIME_SHA256"',
+        'CERTBOT_PYTHON_RUNTIME_PYTHON="$CERTBOT_PYTHON_RUNTIME_DIR/bin/python3"',
         "CERTBOT_VERSION=5.8.0",
         "CERTBOT_ARCHIVE=/home/deploy/certbot-wheelhouse-5.8.0-linux-amd64.tar.zst",
         f"CERTBOT_ARCHIVE_SHA256={CERTBOT_ARCHIVE_SHA256}",
@@ -584,11 +591,38 @@ def test_certbot_runtime_is_fixed_offline_and_hash_verified() -> None:
         "CERTBOT_VENV_ROOT=/opt/certbot-venvs",
         'CERTBOT_VENV_DIR="$CERTBOT_VENV_ROOT/$CERTBOT_VERSION-linux-amd64-${CERTBOT_ARCHIVE_SHA256:0:12}"',
         '[ "$actual_sha" != "$CERTBOT_ARCHIVE_SHA256" ]',
-        '"$BRIDGE_WORKER_RUNTIME_PYTHON" -m venv "$temp_dir/venv"',
+        '"$CERTBOT_PYTHON_RUNTIME_PYTHON" -m venv "$temp_dir/venv"',
+        "import configargparse",
         'assert version("certbot") == __import__("os").environ["CERTBOT_VERSION"]',
-        '[ "$($certbot --version 2>&1)" = "certbot $CERTBOT_VERSION" ]',
+        '[ "$(TERM=dumb "$certbot" --version 2>/dev/null)" = "certbot $CERTBOT_VERSION" ]',
     ):
         assert contract in script
+    assert "import ConfigArgParse" not in script
+    assert '"$BRIDGE_WORKER_RUNTIME_PYTHON"' not in prepare
+
+
+def test_certbot_python_runtime_is_root_only_and_safely_extracted() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    prepare = script[script.index("verify_certbot_python_runtime_tree() {"):script.index(
+        "verify_bridge_worker_venv() {"
+    )]
+
+    for contract in (
+        'local archive="$BRIDGE_WORKER_RUNTIME_ARCHIVE" target="$CERTBOT_PYTHON_RUNTIME_DIR"',
+        '[ "$(uname -s)" != Linux ] || [ "$(uname -m)" != x86_64 ]',
+        '[ "$actual_sha" != "$BRIDGE_WORKER_RUNTIME_SHA256" ]',
+        '[ -L "$CERTBOT_PYTHON_RUNTIME_ROOT" ] || [ ! -d "$CERTBOT_PYTHON_RUNTIME_ROOT" ]',
+        'install -d -o root -g root -m 0755 "$CERTBOT_PYTHON_RUNTIME_ROOT"',
+        'stat -c \'%u\' "$CERTBOT_PYTHON_RUNTIME_ROOT"',
+        '[ -L "$target" ]',
+        'extract_python_runtime_archive "$archive" "$temp_dir"',
+        'verify_certbot_python_runtime_tree "$temp_dir/python"',
+        'mv -T "$temp_dir/python" "$target"',
+        'assert sys.platform == "linux"',
+        'assert platform.machine() == "x86_64"',
+    ):
+        assert contract in prepare
+    assert "/var/lib/quantumn-hermes" not in prepare
 
 
 def test_certbot_wheelhouse_is_safely_extracted_and_complete() -> None:
@@ -624,11 +658,110 @@ def test_certbot_venv_enforces_root_ownership_and_verifies_real_target() -> None
 
     assert '[ -L "$venv" ] || [ ! -d "$venv" ]' in verifier
     assert 'stat -c \'%u\' "$venv"' in verifier
-    assert 'find "$venv" \\( ! -user root -o -perm /022 \\)' in verifier
+    assert 'find "$venv" ! -user root -print -quit' in verifier
+    assert 'find "$venv" \\( -type f -o -type d \\) -perm /022 -print -quit' in verifier
+    assert 'find "$venv" ! -type f ! -type d ! -type l -print -quit' in verifier
+    assert "bin/python|bin/python3|bin/python3.12)" in verifier
+    assert '[ "$resolved" = "$runtime_python" ]' in verifier
+    assert "lib64)" in verifier
+    assert '[ "$resolved" = "$venv_lib" ]' in verifier
+    assert "Certbot venv contains an unexpected symlink" in verifier
+    assert '[ -L "$certbot" ] || [ ! -f "$certbot" ]' in verifier
+    assert 'stat -c \'%u\' "$certbot"' in verifier
+    assert 'stat -c \'%a\' "$certbot"' in verifier
+    assert '[ "$certbot_first_line" != "#!$venv/bin/python" ]' in verifier
+    assert '[ "$(TERM=dumb "$certbot" --version 2>/dev/null)" = "certbot $CERTBOT_VERSION" ]' in verifier
+    assert "$certbot --version 2>&1" not in verifier
     assert 'resolved_target="$(readlink -f -- "$CERTBOT_VENV_LINK")"' in activation
     assert '[ "$resolved_target" != "$CERTBOT_VENV_TARGET" ]' in activation
     assert 'verify_certbot_venv "$resolved_target"' in activation
     assert 'verify_certbot_venv "$CERTBOT_VENV_LINK"' not in activation
+
+
+def test_certbot_venv_rewrites_staging_shebangs_before_relocation(tmp_path: Path) -> None:
+    staging = tmp_path / "build" / "venv"
+    target = tmp_path / "certbot-venv"
+    (staging / "bin").mkdir(parents=True)
+    old_shebang = f"#!{staging}/bin/python"
+    (staging / "bin" / "certbot").write_text(f"{old_shebang}\nprint('certbot')\n")
+    (staging / "bin" / "pip").write_text(f"#!{staging}/bin/python3\n")
+    (staging / "bin" / "python-tool").write_text(f"#!{staging}/bin/python3.12\n")
+    (staging / "bin" / "unchanged").write_text("#!/usr/bin/python3\n")
+    activation_helpers = ("activate", "activate.csh", "activate.fish", "Activate.ps1")
+    for helper in activation_helpers:
+        (staging / "bin" / helper).write_text(f"VIRTUAL_ENV={staging}\n")
+    (staging / "pyvenv.cfg").write_text(f"command = python -m venv {staging}\n")
+    pycache = staging / "lib" / "python3.12" / "site-packages" / "__pycache__"
+    pycache.mkdir(parents=True)
+    (pycache / "typing_extensions.cpython-312.pyc").write_bytes(bytes(str(staging), "utf-8"))
+    loose_pyc = staging / "lib" / "orphan.pyc"
+    loose_pyc.write_bytes(bytes(str(staging), "utf-8"))
+
+    result = subprocess.run(
+        ["bash", "-c", f'''source "{UPDATE_SCRIPT}"
+CERTBOT_PYTHON_RUNTIME_PYTHON={json.dumps(sys.executable)}
+relocate_certbot_venv {json.dumps(str(staging))} {json.dumps(str(target))}
+'''],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (staging / "bin" / "certbot").read_text().splitlines()[0] == f"#!{target}/bin/python"
+    assert (staging / "bin" / "pip").read_text().splitlines()[0] == f"#!{target}/bin/python"
+    assert (staging / "bin" / "python-tool").read_text().splitlines()[0] == f"#!{target}/bin/python"
+    assert (staging / "bin" / "unchanged").read_text().splitlines()[0] == "#!/usr/bin/python3"
+    assert all(not (staging / "bin" / helper).exists() for helper in activation_helpers)
+    assert str(staging) not in (staging / "pyvenv.cfg").read_text()
+    assert not pycache.exists()
+    assert not loose_pyc.exists()
+
+
+def test_certbot_venv_relocation_rejects_any_staging_prefix_remnant(tmp_path: Path) -> None:
+    staging = tmp_path / "build" / "venv"
+    target = tmp_path / "certbot-venv"
+    (staging / "bin").mkdir(parents=True)
+    (staging / "bin" / "certbot").write_text(f"#!{staging}/bin/python\n")
+    binary = staging / "staging-reference.bin"
+    binary.write_bytes(bytes(str(staging), "utf-8"))
+    (staging / "pyvenv.cfg").write_text("clean\n")
+
+    result = subprocess.run(
+        ["bash", "-c", f'''source "{UPDATE_SCRIPT}"
+CERTBOT_PYTHON_RUNTIME_PYTHON={json.dumps(sys.executable)}
+relocate_certbot_venv {json.dumps(str(staging))} {json.dumps(str(target))}
+'''],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode != 0
+    assert "Certbot venv retains staging path" in result.stderr
+    assert binary.exists()
+
+
+@pytest.mark.parametrize("active", (False, True), ids=("inactive-rebuild", "active-fail-closed"))
+def test_invalid_certbot_target_is_only_removed_when_inactive(tmp_path: Path, active: bool) -> None:
+    target = tmp_path / "invalid-certbot"
+    target.mkdir()
+    link = tmp_path / "certbot-venv"
+    if active:
+        link.symlink_to(target)
+    command = f'''source "{UPDATE_SCRIPT}"
+verify_certbot_venv() {{ return 1; }}
+CERTBOT_VENV_LINK={json.dumps(str(link))}
+discard_invalid_inactive_certbot_venv {json.dumps(str(target))}
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+
+    assert result.returncode == int(active)
+    assert target.exists() is active
+    if active:
+        assert "refusing to delete it" in result.stderr
 
 
 def test_runtime_activation_precedes_tls_preflight_and_compose_changes() -> None:
@@ -660,8 +793,9 @@ def test_bridge_worker_runtime_is_fixed_offline_and_version_gated() -> None:
         '[ "$actual_sha" != "$BRIDGE_WORKER_RUNTIME_SHA256" ]',
         'mv -T "$temp_dir/python" "$target"',
         'assert sys.version_info[:3] == (3, 12, 14)',
-        'assert sqlite3.sqlite_version_info >= (3, 51, 3)',
+        'assert sqlite3.sqlite_version_info == (3, 53, 1)',
         're.search(r"\\b(\\d+)\\.(\\d+)\\.(\\d+)\\b", ssl.OPENSSL_VERSION)',
+        'tuple(map(int, openssl_version.groups())) == (3, 5, 8)',
         "assert sys.version_info >= (3, 12)",
         'source.extractall(staging_dir, members=members, filter="data")',
         'verify_bridge_worker_venv "$target/bin/python"',
@@ -680,7 +814,7 @@ def test_bridge_worker_python_parses_openssl_semantic_version(tmp_path: Path) ->
 import sys
 import types
 sys.version_info = (3, 12, 14)
-sys.modules["sqlite3"] = types.SimpleNamespace(sqlite_version_info=(3, 51, 3))
+sys.modules["sqlite3"] = types.SimpleNamespace(sqlite_version_info=(3, 53, 1))
 sys.modules["ssl"] = types.SimpleNamespace(
     OPENSSL_VERSION="OpenSSL 3.5.8 25 Aug 2026",
     OPENSSL_VERSION_INFO=(3, 5, 0, 8, 0),
@@ -1621,7 +1755,8 @@ def test_certificate_renewal_units_use_safe_locked_wrapper() -> None:
     assert "flock -n 9" in wrapper
     assert "setfacl -m u:101:r--" in wrapper
     assert "setpriv --reuid=101" in wrapper
-    assert '"$CERTBOT" renew --cert-name "$TLS_CERT_NAME"' in wrapper
+    assert 'TERM=dumb "$CERTBOT" renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet' in wrapper
+    assert '"$CERTBOT" renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet' in wrapper
     assert "certificate and key do not match" in wrapper
     assert "frontend recovery after certificate renewal failed" in wrapper
 
@@ -1631,11 +1766,12 @@ def test_certificate_renewal_preflight_requires_exact_certbot_runtime() -> None:
     assert "CERTBOT=/opt/certbot-venv/bin/certbot" in wrapper
     assert "CERTBOT_VERSION=5.8.0" in wrapper
     assert '[ -x "$CERTBOT" ]' in wrapper
-    assert '[ "$($CERTBOT --version 2>&1)" = "certbot $CERTBOT_VERSION" ]' in wrapper
+    assert '[ "$(TERM=dumb "$CERTBOT" --version 2>/dev/null)" = "certbot $CERTBOT_VERSION" ]' in wrapper
+    assert "$CERTBOT --version 2>&1" not in wrapper
     assert wrapper.index("verify_certbot_runtime\n") < wrapper.index(
         '[ "${1:-}" = "--preflight-only" ] && exit 0'
     )
-    assert '"$CERTBOT" renew --cert-name "$TLS_CERT_NAME"' in wrapper
+    assert 'TERM=dumb "$CERTBOT" renew --cert-name "$TLS_CERT_NAME" --non-interactive --quiet' in wrapper
 
 
 def test_certificate_renewal_frontend_starts_are_dependency_safe() -> None:
