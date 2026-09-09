@@ -357,7 +357,7 @@ PY
 }
 
 verify_hermes_bridge_network() {
-  local candidate_address
+  local attempt candidate_address
   candidate_address="$(resolve_hermes_bridge_bind_address)"
   if [ "$candidate_address" != "$HERMES_BRIDGE_BIND_ADDRESS" ]; then
     echo "ERROR: candidate API Compose gateway does not match the preflight gateway" >&2
@@ -365,8 +365,16 @@ verify_hermes_bridge_network() {
   fi
   docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
     "import socket; assert socket.gethostbyname('host.docker.internal') == '$HERMES_BRIDGE_BIND_ADDRESS'"
-  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-    "import json,urllib.request; assert json.load(urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5)).get('status') == 'ok'"
+  for attempt in $(seq 1 30); do
+    if docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+      "import json,urllib.request; assert json.load(urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=1)).get('status') == 'ok'" \
+      2>/dev/null; then
+      return 0
+    fi
+    [ "$attempt" -eq 30 ] || sleep 1
+  done
+  echo "ERROR: Hermes Bridge did not become healthy from the candidate API container within 30 attempts" >&2
+  return 1
 }
 
 configure_hermes_bridge_network() {

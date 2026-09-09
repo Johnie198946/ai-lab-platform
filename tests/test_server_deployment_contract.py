@@ -414,6 +414,72 @@ def test_candidate_bridge_network_is_verified_after_runtime_restart() -> None:
     health_check = function.index("http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health")
     assert gateway_check < hostname_check < health_check
     assert ".get('status') == 'ok'" in function
+    assert "for attempt in $(seq 1 30)" in function
+    assert "|| true" not in function
+
+
+def test_candidate_bridge_health_retries_until_success(tmp_path: Path) -> None:
+    attempts = tmp_path / "attempts"
+    sleeps = tmp_path / "sleeps"
+    command = f'''source "{UPDATE_SCRIPT}"
+resolve_hermes_bridge_bind_address() {{ printf '%s\n' 172.17.0.1; }}
+docker() {{
+  [[ "$*" == *"host.docker.internal"* ]] && return 0
+  printf '%s\n' attempt >> '{attempts}'
+  [ "$(wc -l < '{attempts}')" -eq 3 ] && return 0
+  printf '%s\n' 'Traceback: Bridge starting' >&2
+  return 1
+}}
+sleep() {{ printf '%s\n' "$1" >> '{sleeps}'; }}
+HERMES_BRIDGE_BIND_ADDRESS=172.17.0.1
+verify_hermes_bridge_network
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "COMPOSE_PROJECT": "contract-test",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert attempts.read_text(encoding="utf-8").splitlines() == ["attempt"] * 3
+    assert sleeps.read_text(encoding="utf-8").splitlines() == ["1"] * 2
+    assert "Traceback" not in result.stderr
+
+
+def test_candidate_bridge_health_fails_after_30_attempts(tmp_path: Path) -> None:
+    attempts = tmp_path / "attempts"
+    sleeps = tmp_path / "sleeps"
+    command = f'''source "{UPDATE_SCRIPT}"
+resolve_hermes_bridge_bind_address() {{ printf '%s\n' 172.17.0.1; }}
+docker() {{
+  [[ "$*" == *"host.docker.internal"* ]] && return 0
+  printf '%s\n' attempt >> '{attempts}'
+  printf '%s\n' 'Traceback: Bridge starting' >&2
+  return 1
+}}
+sleep() {{ printf '%s\n' "$1" >> '{sleeps}'; }}
+HERMES_BRIDGE_BIND_ADDRESS=172.17.0.1
+verify_hermes_bridge_network
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "COMPOSE_PROJECT": "contract-test",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert attempts.read_text(encoding="utf-8").splitlines() == ["attempt"] * 30
+    assert sleeps.read_text(encoding="utf-8").splitlines() == ["1"] * 29
+    assert "ERROR: Hermes Bridge did not become healthy" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 def test_bridge_install_rejects_effective_systemd_runtime_overrides() -> None:

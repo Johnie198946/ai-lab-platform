@@ -4,15 +4,15 @@ task_id: production-security-deploy-blockers-20260909
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: a32901dc75493259e8356fcac3d186bc1b7ba8e5 plus the uncommitted Redis working-directory fix
-remote_sha: a32901dc75493259e8356fcac3d186bc1b7ba8e5; parent coordinator verified clean local `main` and `origin/main` equal before this continuation
-server_before: production was on the prior rollback release before deployment of a32901dc75493259e8356fcac3d186bc1b7ba8e5
-server_after: deployment of a32901dc75493259e8356fcac3d186bc1b7ba8e5 failed at Redis and rollback restored the prior release; 8 containers were healthy and `hermes-bridge`/`hermes-chat-worker` were active; the local Redis working-directory fix has not been deployed
-health_check: failed-release diagnostics captured Redis exit 1 and `restart_count=6`; preserved logs proved its inherited `/data` working directory and legacy anonymous `/data` volume exposed an unreadable `dump.rdb`; after rollback, 8 containers were healthy
-functional_check: after rollback, `hermes-bridge` and `hermes-chat-worker` were active; focused local container/deployment contracts for the uncommitted fix passed (`92 passed`, 4 pre-existing warnings), along with dummy-secret Compose rendering, Bash syntax checks, Ruff, and `git diff --check`
-rollback_point: rollback restored the prior production release after the failed a32901dc75493259e8356fcac3d186bc1b7ba8e5 deployment; the exact rollback path was not captured in this local continuation
+head/local_commit: bae860cf572c31d6fb8ad8266889f354607fbbd0 plus the uncommitted Bridge readiness-race fix
+remote_sha: bae860cf572c31d6fb8ad8266889f354607fbbd0; parent coordinator verified clean local `main` and `origin/main` equal before this continuation
+server_before: production was on the prior rollback release before deployment of bae860cf572c31d6fb8ad8266889f354607fbbd0
+server_after: deployment of bae860cf572c31d6fb8ad8266889f354607fbbd0 reached 8 healthy candidate containers, including API and Redis, but the immediate Bridge health gate raced its restart and rollback restored the prior release; the local Bridge polling fix has not been deployed
+health_check: candidate API and Redis passed; `hermes-bridge.service` restarted at 19:53:36, verification failed and rollback began at 19:53:37, while the journal showed Bridge listening at 19:53:39 and warmed at 19:53:49
+functional_check: focused deployment contracts passed (`80 passed`, 4 pre-existing Pydantic deprecation warnings); retry success, exact 30-attempt exhaustion, 1-second cadence, transient traceback suppression, explicit final failure, and no `|| true` gate bypass are covered; `bash -n`, Ruff, and `git diff --check` passed
+rollback_point: rollback restored the prior production release after the failed bae860cf572c31d6fb8ad8266889f354607fbbd0 deployment; the exact rollback path was not captured in this local continuation
 manifest: ops/change-manifests/production-security-deploy-blockers-20260909-completion.md
-remaining_risks: the local `dir /tmp` Redis working-directory fix is TESTED but uncommitted, unpushed, and undeployed; production is healthy on the prior rollback release, but the fix still requires commit, push, deployment, and production verification
+remaining_risks: the local Bridge readiness polling fix is TESTED but uncommitted, unpushed, and undeployed; production is healthy on the prior rollback release, but the fix still requires commit, push, deployment, and production verification
 
 ## Inventory and architecture decision
 
@@ -28,6 +28,9 @@ remaining_risks: the local `dir /tmp` Redis working-directory fix is TESTED but 
 - Production Redis isolation: an isolated candidate used the actual production secret without printing it and reached healthy through the image `Config.Healthcheck`.
 - Production deployment attempt: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 subsequently failed at Redis under the Compose `CMD-SHELL` healthcheck override; automated rollback completed and production remains on the rolled-back release.
 - Subsequent production deployment attempt: after failed-release observability was added in a32901dc75493259e8356fcac3d186bc1b7ba8e5, that commit was deployed. Redis failed because the legacy anonymous `/data` volume exposed an unreadable `/data/dump.rdb`; diagnostics captured exit 1 and `restart_count=6`. Rollback restored the prior release with 8 containers healthy and `hermes-bridge`/`hermes-chat-worker` active.
+- Latest production deployment attempt: bae860cf572c31d6fb8ad8266889f354607fbbd0 passed all 8 candidate-container health gates, including Redis and API. `hermes-bridge.service` restarted at 19:53:36, the immediate API-container Bridge verification failed and rollback began at 19:53:37, then the journal showed Bridge listening at 19:53:39 and warmed at 19:53:49. This proves a restart-readiness race rather than a container, gateway, DNS, authentication, or bind failure.
+- Minimal local fix, not deployed: `verify_hermes_bridge_network` retains exact candidate gateway equality and `host.docker.internal` DNS assertions, then polls the unauthenticated private Bridge `/health` JSON `status == ok` from the API container for at most 30 attempts at one-second cadence. Transient probe tracebacks are suppressed; exhaustion emits an explicit error and remains a rollback-triggering nonzero gate without `|| true`.
+- Bridge race regression: `PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q tests/test_server_deployment_contract.py` passed (`80 passed`, 4 pre-existing Pydantic deprecation warnings). Focused contracts prove success on the third attempt, 30-attempt final failure with only 29 sleeps, one-second sleep cadence, suppressed transient tracebacks, an explicit final error, and no `|| true` inside the verifier. `bash -n scripts/update.sh`, Ruff on the deployment contract, and `git diff --check` passed.
 - Root cause proved from the preserved failed-release logs: the candidate Redis image inherits `WORKDIR=/data` and `VOLUME /data`; Compose recreation preserved the legacy anonymous `/data` volume containing an unreadable `dump.rdb`, so the non-root Redis process exited 1 with `Fatal cannot open dump.rdb: Permission denied`.
 - Minimal fix: the generated `redis.conf` now sets `dir /tmp`, keeping `save ""` and `appendonly no`. This explicitly nonpersistent cache uses the existing bounded 16 MiB writable tmpfs and ignores legacy `/data` snapshots; no cache-volume chown, migration, recovery, named volume, root user, or relaxed read-only gate was added.
 - Redis working-directory regression: `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py tests/test_server_deployment_contract.py` passed (`92 passed`, 4 pre-existing Pydantic deprecation warnings). The contract proves persistence is disabled, `dir /tmp`, bounded `/tmp` tmpfs, no Redis service or named volume, and the existing non-root image healthcheck gates.
@@ -57,7 +60,7 @@ remaining_risks: the local `dir /tmp` Redis working-directory fix is TESTED but 
 
 ## Delivery
 
-- commit: the Redis working-directory fix is uncommitted on top of `a32901dc75493259e8356fcac3d186bc1b7ba8e5`.
-- push: the parent coordinator verified `a32901dc75493259e8356fcac3d186bc1b7ba8e5` on `origin/main` before this continuation; the Redis working-directory fix has not been pushed.
-- deploy: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 was first attempted, failed at Redis, and completed rollback. After observability was added, a32901dc75493259e8356fcac3d186bc1b7ba8e5 was also deployed; it failed on the legacy unreadable `/data/dump.rdb`, diagnostics captured exit 1 and `restart_count=6`, and rollback restored the prior release. The local `dir /tmp` fix has not been deployed.
-- production status: healthy on the restored prior release with 8 containers healthy and `hermes-bridge`/`hermes-chat-worker` active; a32901dc75493259e8356fcac3d186bc1b7ba8e5 was deployed but rolled back, and the local `dir /tmp` fix remains uncommitted and undeployed.
+- commit: the Bridge readiness-race fix is uncommitted on top of `bae860cf572c31d6fb8ad8266889f354607fbbd0`.
+- push: the parent coordinator verified `bae860cf572c31d6fb8ad8266889f354607fbbd0` on `origin/main` before this continuation; the Bridge readiness-race fix has not been pushed.
+- deploy: bae860cf572c31d6fb8ad8266889f354607fbbd0 passed all 8 candidate-container health gates, including Redis and API, then raced the restarting Bridge and completed rollback. The local bounded Bridge polling fix has not been deployed.
+- production status: healthy on the restored prior release after the bae860cf572c31d6fb8ad8266889f354607fbbd0 rollback; the local Bridge readiness-race fix is tested but remains uncommitted, unpushed, and undeployed.
