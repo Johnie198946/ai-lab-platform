@@ -119,6 +119,7 @@ public struct ChatInputBar: View {
                 .lineLimit(1...5)
                 .font(AppTheme.Typography.body)
                 .padding(.vertical, 11)
+                .accessibilityIdentifier("selected-book-chat-input")
 
             if !inputText.isEmpty {
                 Button(action: { inputText = "" }) {
@@ -143,6 +144,7 @@ public struct ChatInputBar: View {
                 }
                 .buttonStyle(SoftButtonStyle())
                 .accessibilityLabel(isGenerating ? "加入消息队列" : "发送消息")
+                .accessibilityIdentifier("selected-book-chat-send")
             }
         }
         .padding(.horizontal, AppTheme.Metrics.contentGutter)

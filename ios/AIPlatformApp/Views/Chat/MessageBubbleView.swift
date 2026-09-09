@@ -140,6 +140,7 @@ public struct MessageBubbleView: View {
         }
         .padding(.horizontal, AppTheme.Spacing.md)
         .padding(.vertical, AppTheme.Spacing.xs)
+        .accessibilityIdentifier(message.role == .user ? "selected-book-chat-request" : "selected-book-chat-response")
         .sheet(isPresented: $isChoosingQuoteFragment) {
             QuoteFragmentPicker(sourceText: message.content, text: $quoteFragmentDraft) {
                 let fragment = quoteFragmentDraft.trimmingCharacters(in: .whitespacesAndNewlines)

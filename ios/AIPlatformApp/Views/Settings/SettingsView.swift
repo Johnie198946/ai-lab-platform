@@ -581,6 +581,15 @@ public struct SubscriptionCenterView: View {
                     .accessibilityLabel("返回知识")
                 }
             }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button { Task { await loadBookshelves() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .frame(width: 44, height: 44)
+                }
+                .disabled(isLoading)
+                .accessibilityLabel("刷新知识书架")
+                .accessibilityIdentifier("publication-bookshelf-refresh")
+            }
         }
         .task {
             guard previewCenter == nil else { return }
@@ -673,6 +682,7 @@ public struct SubscriptionCenterView: View {
             .padding(.bottom, AppTheme.Spacing.xxxl)
         }
         .refreshable { await loadBookshelves() }
+        .accessibilityIdentifier("publication-bookshelf-container")
     }
 
     private func bookshelfSearch(placeholder: String) -> some View {
@@ -754,6 +764,7 @@ public struct SubscriptionCenterView: View {
         .buttonStyle(SoftButtonStyle())
         .accessibilityLabel("\(shelf.title)，\(shelf.bookCount) 本书")
         .accessibilityHint("点按打开分类书架")
+        .accessibilityIdentifier("bookshelf-collection.\(shelf.id)")
     }
 
     private func bookshelfDetail(_ shelf: KnowledgeBookshelfDTO) -> some View {
@@ -795,6 +806,7 @@ public struct SubscriptionCenterView: View {
                             .buttonStyle(SoftButtonStyle())
                             .accessibilityLabel("\(book.title)，作者 \(book.author)")
                             .accessibilityHint("点按查看概要")
+                            .accessibilityIdentifier("publication-book-card.\(book.seriesId ?? "none").\(book.id)")
                         }
                     }
                     .padding(.bottom, 36)
@@ -2010,6 +2022,7 @@ struct KnowledgeBookReaderView: View {
                         }
                         .frame(minHeight: 44)
                         .accessibilityHint("切换到 Chat，并绑定当前已发布版本")
+                        .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
                     }
 
                     Spacer(minLength: 80)
@@ -2044,10 +2057,13 @@ struct KnowledgeBookReaderView: View {
                     .disabled(isBusy && !isSubscribed)
                     .buttonStyle(SoftButtonStyle())
                     .accessibilityLabel(isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架")
+                    .accessibilityValue(isSubscribed ? "subscribed" : "unsubscribed")
+                    .accessibilityIdentifier("publication-subscription-control.\(book.id)")
                     HStack(spacing: 18) {
                         if isSubscribed {
                             Button("移出书架", action: onToggleSubscription)
                                 .disabled(isBusy)
+                                .accessibilityIdentifier("publication-subscription-remove.\(book.id)")
                         }
                         if let onSaveExcerpt {
                             Button("将概述摘录到笔记", action: onSaveExcerpt)
@@ -2135,6 +2151,7 @@ private struct KnowledgeBookReadingView: View {
     @State private var loadError: String?
     @State private var progressError: String?
     @State private var progress = 0.0
+    @State private var originalProgress = 0.0
     @State private var lastSentProgress = 0.0
     @State private var pendingProgressIndex: Int?
     @State private var selectedExcerpt = ""
@@ -2157,9 +2174,11 @@ private struct KnowledgeBookReadingView: View {
             if let subscription = subscriptions.first(where: { $0.book.id == book.id }),
                subscription.contentVersion == loaded.contentVersion {
                 progress = subscription.progress
+                originalProgress = subscription.progress
                 lastSentProgress = subscription.progress
             } else {
                 progress = 0
+                originalProgress = 0
                 lastSentProgress = 0
             }
         } catch {
@@ -2266,6 +2285,8 @@ private struct KnowledgeBookReadingView: View {
                         Text("第 \(bookBody.edition) 版 · 已读 \(Int(progress * 100))%")
                             .font(.system(.footnote, design: .serif, weight: .semibold))
                             .foregroundStyle(Color.brown.opacity(0.72))
+                            .accessibilityValue("original=\(originalProgress);current=\(progress)")
+                            .accessibilityIdentifier("publication-reader-progress.\(book.id)")
                         LazyVStack(alignment: .leading, spacing: 36) {
                             ForEach(Array(bookBody.sections.enumerated()), id: \.element.id) { index, section in
                                 VStack(alignment: .leading, spacing: 14) {
@@ -2280,6 +2301,13 @@ private struct KnowledgeBookReadingView: View {
                             }
                         }
                         .padding(.top, 22)
+                        .accessibilityElement(children: .contain)
+                        .accessibilityLabel("已发布正文内容")
+                        .accessibilityValue(String(
+                            ([bookBody.title] + bookBody.sections.flatMap { [$0.title, $0.markdown] })
+                                .joined(separator: "\n").prefix(1_000)
+                        ))
+                        .accessibilityIdentifier("publication-reader-content.\(book.id)")
                         if !selectedExcerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                             Button("将所选文字摘录到笔记", action: saveExcerpt)
                                 .buttonStyle(.borderedProminent)
@@ -2303,6 +2331,7 @@ private struct KnowledgeBookReadingView: View {
                 .padding(.horizontal, 34)
                 .padding(.top, 42)
             }
+            .accessibilityIdentifier("publication-reader-body.\(book.id)")
             .foregroundStyle(Color(red: 0.23, green: 0.17, blue: 0.11))
             .background(
                 ZStack {
