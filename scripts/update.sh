@@ -127,28 +127,19 @@ activate_bridge_worker_venv() {
 }
 
 resolve_hermes_bridge_bind_address() {
-  local address container network_rows gateway
+  local container network_rows gateway
   container="$(docker compose -p "$COMPOSE_PROJECT" ps -q api)"
   if [ -z "$container" ]; then
     echo "ERROR: running Compose API container is required for Bridge preflight" >&2
     return 1
   fi
-  address="$(docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-    'import socket; print(socket.gethostbyname("host.docker.internal"))' 2>/dev/null)" || {
-    echo "ERROR: cannot resolve host.docker.internal inside the API container" >&2
-    return 1
-  }
   network_rows="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name $network.Gateway}}{{end}}' "$container")"
   if [ "$(printf '%s\n' "$network_rows" | awk 'NF == 2 {count++} END {print count+0}')" -ne 1 ]; then
     echo "ERROR: API container must use exactly one Compose bridge network" >&2
     return 1
   fi
   gateway="$(printf '%s\n' "$network_rows" | awk 'NF == 2 {print $2}')"
-  if [ "$address" != "$gateway" ]; then
-    echo "ERROR: host.docker.internal does not match the API Compose gateway" >&2
-    return 1
-  fi
-  if ! python3 - "$address" <<'PY'
+  if ! python3 - "$gateway" <<'PY'
 import ipaddress
 import sys
 
@@ -160,21 +151,86 @@ allowed = tuple(ipaddress.ip_network(item) for item in ("10.0.0.0/8", "172.16.0.
 raise SystemExit(0 if address.version == 4 and any(address in network for network in allowed) else 1)
 PY
   then
-    echo "ERROR: Compose gateway is not an RFC1918 IPv4 address: ${address:-<empty>}" >&2
+    echo "ERROR: Compose gateway is not an RFC1918 IPv4 address: ${gateway:-<empty>}" >&2
     return 1
   fi
-  if ! ip -4 -o addr show | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fqx "$address"; then
-    echo "ERROR: Docker host-gateway is not assigned to this host: $address" >&2
+  if ! ip -4 -o addr show | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fqx "$gateway"; then
+    echo "ERROR: Docker host-gateway is not assigned to this host: $gateway" >&2
     return 1
   fi
-  printf '%s\n' "$address"
+  printf '%s\n' "$gateway"
 }
 
 preflight_hermes_bridge_network() {
   HERMES_BRIDGE_BIND_ADDRESS="$(resolve_hermes_bridge_bind_address)"
   export HERMES_BRIDGE_BIND_ADDRESS
+  if docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import json,urllib.request; assert json.load(urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5)).get('status') == 'ok'"; then
+    return 0
+  fi
+  (
+    local probe_dir probe_pid="" rc
+    probe_dir="$(mktemp -d /tmp/hermes-bridge-probe.XXXXXX)"
+    cleanup_probe() {
+      rc=$?
+      trap - EXIT INT TERM
+      if [ -n "$probe_pid" ]; then
+        kill "$probe_pid" 2>/dev/null || true
+        wait "$probe_pid" 2>/dev/null || true
+      fi
+      rm -rf -- "$probe_dir"
+      exit "$rc"
+    }
+    trap cleanup_probe EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    python3 - "$HERMES_BRIDGE_BIND_ADDRESS" "$probe_dir/ready" <<'PY' &
+import http.server
+import json
+import sys
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path != "/health":
+            self.send_error(404)
+            return
+        body = json.dumps({"status": "ok"}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+server = http.server.HTTPServer((sys.argv[1], 9118), Handler)
+open(sys.argv[2], "x").close()
+server.serve_forever()
+PY
+    probe_pid=$!
+    for _ in $(seq 1 20); do
+      kill -0 "$probe_pid" 2>/dev/null || return 1
+      [ ! -e "$probe_dir/ready" ] || break
+      sleep 0.1
+    done
+    [ -e "$probe_dir/ready" ] || return 1
+    docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+      "import json,urllib.request; assert json.load(urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5)).get('status') == 'ok'"
+  )
+}
+
+verify_hermes_bridge_network() {
+  local candidate_address
+  candidate_address="$(resolve_hermes_bridge_bind_address)"
+  if [ "$candidate_address" != "$HERMES_BRIDGE_BIND_ADDRESS" ]; then
+    echo "ERROR: candidate API Compose gateway does not match the preflight gateway" >&2
+    return 1
+  fi
   docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-    "import urllib.request; urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5).read()"
+    "import socket; assert socket.gethostbyname('host.docker.internal') == '$HERMES_BRIDGE_BIND_ADDRESS'"
+  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import json,urllib.request; assert json.load(urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5)).get('status') == 'ok'"
 }
 
 configure_hermes_bridge_network() {
@@ -215,7 +271,14 @@ install_hermes_units() {
     /etc/systemd/system/ai-lab-certbot-renew.timer
   systemctl daemon-reload
   verify_hermes_bridge_unit
+  systemctl enable hermes-bridge.service hermes-chat-worker.service
+  verify_hermes_units_enabled
   systemctl enable --now ai-lab-certbot-renew.timer
+}
+
+verify_hermes_units_enabled() {
+  systemctl is-enabled --quiet hermes-bridge.service
+  systemctl is-enabled --quiet hermes-chat-worker.service
 }
 
 restart_hermes_runtime() {
@@ -349,6 +412,8 @@ snapshot_managed_units() {
     fi
   done < <(managed_unit_paths)
   systemctl is-enabled --quiet ai-lab-certbot-renew.timer && CERT_TIMER_WAS_ENABLED=1 || true
+  systemctl is-enabled --quiet hermes-bridge.service && BRIDGE_WAS_ENABLED=1 || true
+  systemctl is-enabled --quiet hermes-chat-worker.service && CHAT_WORKER_WAS_ENABLED=1 || true
   systemctl is-active --quiet ai-lab-certbot-renew.timer && CERT_TIMER_WAS_ACTIVE=1 || true
   systemctl is-active --quiet hermes-bridge.service && BRIDGE_WAS_ACTIVE=1 || true
   systemctl is-active --quiet hermes-chat-worker.service && CHAT_WORKER_WAS_ACTIVE=1 || true
@@ -371,6 +436,16 @@ restore_managed_units() {
   systemctl daemon-reload || return 1
   if [ "$CERT_TIMER_WAS_ENABLED" -eq 1 ]; then
     systemctl enable ai-lab-certbot-renew.timer || return 1
+  fi
+  if [ "$BRIDGE_WAS_ENABLED" -eq 1 ]; then
+    systemctl enable hermes-bridge.service || return 1
+  else
+    systemctl disable hermes-bridge.service || return 1
+  fi
+  if [ "$CHAT_WORKER_WAS_ENABLED" -eq 1 ]; then
+    systemctl enable hermes-chat-worker.service || return 1
+  else
+    systemctl disable hermes-chat-worker.service || return 1
   fi
   if [ "$CERT_TIMER_WAS_ACTIVE" -eq 1 ]; then
     systemctl start ai-lab-certbot-renew.timer || return 1
@@ -453,6 +528,8 @@ CERT_TIMER_WAS_ENABLED=0
 CERT_TIMER_WAS_ACTIVE=0
 BRIDGE_WAS_ACTIVE=0
 CHAT_WORKER_WAS_ACTIVE=0
+BRIDGE_WAS_ENABLED=0
+CHAT_WORKER_WAS_ENABLED=0
 cleanup() {
   rc=$? rollback_ok=1
   trap - EXIT
@@ -627,6 +704,9 @@ activate_bridge_worker_venv
 configure_cloud_agent_os_mode
 install_hermes_units
 restart_hermes_runtime
+if [ "$AI_LAB_HERMES_QUARANTINED" != "1" ]; then
+  verify_hermes_bridge_network
+fi
 repair_runtime_store_permissions "$DATA_TARGET"
 repair_vault_runtime_permissions "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
@@ -649,6 +729,7 @@ if [ -z "$api_status" ]; then
 fi
 printf '%s\n' "$api_status"
 verify_application_services
+verify_hermes_units_enabled
 if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
   echo "bridge_health_status=skipped_quarantined"
 else
