@@ -1,92 +1,62 @@
-# Production security and deployment blockers — completion record
+# Production security and deployment blockers — final evidence manifest
 
 task_id: production-security-deploy-blockers-20260909
-status: TESTED
+status: VERIFIED
+overall_status: NO-GO
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: 7739951d3c2e99b5d96370edf7cab1e508f542cb plus the current uncommitted Bridge stream boundary fix
-remote_sha: not queried per instruction; no fetch or remote operation was performed
-server_before: 789c89aee7699d36573cbd182a631db940aec23a
-server_after: unchanged at 789c89aee7699d36573cbd182a631db940aec23a; the prepare-only POC did not activate Certbot or change any service
-health_check: parent coordinator verified production remained healthy on 789c89aee7699d36573cbd182a631db940aec23a
-functional_check: Bridge stream regression passed (`27 passed`, 6 pre-existing warnings); Ruff passed for the changed Python files
-rollback_point: existing production release 789c89aee7699d36573cbd182a631db940aec23a; no new rollback point was needed because nothing was deployed
+head/local_commit: 77e435c15de64ea6de428d36aeef284c79fdd020
+remote_sha: 77e435c15de64ea6de428d36aeef284c79fdd020 (parent-verified GitHub `main`; not queried in this manifest-only turn)
+server_before: prior failed image deployment attempts rolled back to the preceding production state and restored all 8/8 container IDs
+server_after: bbde8cf0b8ee8824d31bb01eaaab2d8736c8e4b1
+health_check: 8/8 production containers healthy; container Image, tag, and attestation agree
+functional_check: parent-verified backend, iOS, security, authentication, durable-worker, TLS, SSH, cleanup, HTTPS, and physical-device checks passed as recorded below
+rollback_point: the verified pre-attempt production container identities and release state used by the successful prior rollbacks
 manifest: ops/change-manifests/production-security-deploy-blockers-20260909-completion.md
-remaining_risks: the Bridge stream boundary fix is uncommitted, unpushed, and undeployed; production remains exposed to the verified oversized source-context failure until this fix is delivered
+remaining_risks: no stable overseas OpenAI production egress; `quantumn.app` has no DNS records and the certificate covers only the public IP; incident remains open
 
-## Inventory and architecture decision
+## Delivery and release decision
 
-- Determination: the controls were partially implemented; the existing FastAPI → host Hermes Bridge → Hermes Worker path was extended. No second AI runtime or execution path was added.
-- Reference only: uncommitted `scripts/update.sh` and `tests/test_server_deployment_contract.py` in `../ai-lab-platform-publication-20260908` were read but not modified.
-- Runtime/API: `.env.example`, `backend/api/agents.py`, `backend/api/chat.py`, `backend/api/orchestration.py`, `backend/main.py`, `backend/services/agent_evaluation.py`, `backend/services/agent_scheduler.py`, `backend/services/clarification_planner.py`, `backend/services/workflow_executor.py`, `backend/services/workflow_planner.py`, `backend/services/workflow_planning.py`, `scripts/chat_run_worker.py`, `scripts/hermes_bridge.py`.
-- Containers/builds: `.dockerignore`, `backend/Dockerfile`, `apps/dashi-taskboard/Dockerfile`, `apps/dashi-taskboard/package.json`, `apps/dashi-taskboard/package-lock.json`, `frontend/Dockerfile`, `frontend/package-lock.json`, `docker-compose.yml`.
-- Deployment/TLS/docs: `scripts/update.sh`, `scripts/deploy.sh`, `scripts/renew_tls_certificate.sh`, `ops/systemd/ai-lab-certbot-renew.service`, `ops/systemd/ai-lab-certbot-renew.timer`, `README.md`.
-- Tests: `frontend/tests/showroom-journey.test.mjs`, `tests/conftest.py`, `tests/test_bridge_locking.py`, `tests/test_chat_run_worker.py`, `tests/test_chat_status.py`, `tests/test_container_hardening_contract.py`, `tests/test_hermes_bridge.py`, `tests/test_hermes_integration.py`, `tests/test_qws_hermes_context.py`, `tests/test_server_deployment_contract.py`, `tests/test_showroom_api.py`.
+| Stage | Exact state |
+|---|---|
+| Commit | Current local `main` base is `77e435c15de64ea6de428d36aeef284c79fdd020`. No commit was created in this manifest-only turn. |
+| Push | Parent verified GitHub `main` at `77e435c15de64ea6de428d36aeef284c79fdd020`. No fetch, remote query, or push was performed in this turn. |
+| Deploy | Production `deployed_sha` is `bbde8cf0b8ee8824d31bb01eaaab2d8736c8e4b1`. The later GitHub/local commit is iOS/test-only and was not deployed. No deployment was performed in this turn. |
+| Test | Results below are parent-verified evidence; no suite was rerun in this manifest-only turn. |
+| Decision | **NO-GO.** The deployed production state is internally consistent, but the two external production blockers below remain unresolved. This record does not claim the incident is closed. |
 
-## Verification
+## Final evidence
 
-- Production TLS renewal failure evidence: the wrapper exited `127` because `/opt/certbot-venv/bin/certbot` was missing. Its exit trap recovered the frontend to healthy, but the old frontend start command omitted `--no-deps` and unnecessarily recreated the API. Certbot never ran, so no certificate renewal occurred.
-- Production authentication evidence supplied and verified by the parent coordinator: login returned `200`; wrong credentials, missing token, malformed token, expired token, wrong issuer, wrong audience, and refresh token each returned `401`; a valid signed access token reached the agreement gate and returned `428`. No bearer, access, or refresh token value was recorded or exposed in this manifest or the verification evidence.
-- Production JWT configuration hardening: the API Compose environment now requires non-empty `AUTHEN_JWT_SECRET`, `AUTHEN_JWT_ISSUER`, `AUTHEN_JWT_AUDIENCE`, and `AUTHEN_JWT_STRICT_PROVENANCE`. Before Uvicorn starts, the API rejects secrets shorter than 32 characters, whitespace-only issuer or audience values, and every strict-provenance value except exact literal `true`; error messages name only the invalid variable and never print its value. The existing authentication implementation and developer login remain unchanged.
-- Focused JWT/Compose contract: `python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py` passed (`15 passed`, 4 pre-existing Pydantic deprecation warnings), retaining a valid rendered-Compose check and covering missing/empty required substitutions; unset, empty, and short secrets at startup; whitespace-only issuer/audience; and strict values `false`, `TRUE`, `1`, ` true`, and `true `.
-- Combined focused regression: `python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py tests/test_server_deployment_contract.py` passed (`100 passed`, 4 pre-existing Pydantic deprecation warnings).
-- Static checks: `python3 -m ruff check tests/test_container_hardening_contract.py` and `git diff --check` passed.
+| Area | Parent-verified evidence |
+|---|---|
+| Backend suite | Correct virtualenv full suite: **1683 passed, 2 skipped, 11 subtests**. |
+| iOS unit tests | **158/158 passed**. |
+| Image scanning | Trivy **0.74.0** with a freshly updated database reported **0 HIGH / 0 CRITICAL** for API, taskboard, frontend, PostgreSQL, and Redis. |
+| Production containers | Final production has **8/8 healthy** containers. Each running container's Image, expected tag, and attestation agree. |
+| API boundary fix | Running API source contains the `knowledge_query` boundary fix. The prior oversized request was diagnosed as a Bridge HTTP 422 and then fixed at the shared outbound boundary. |
+| Durable execution | Bridge and host durable worker are active. An authentic durable receipt completed on attempt 1 with events and provider/model `openai-codex/gpt-5.6-sol` while temporary test egress was enabled. |
+| Authentication | Strict authentication matrix passed. Developer login was used for verification, then disabled; all temporary `DEV_LOGIN` fields were removed. The JWT secret remains only in the root production environment and a local mode-0600 escrow. No secret or credential value is recorded here. |
+| Certbot and renewal | Independent root runtime with Certbot **5.8.0** is deployed. Live renewal changed the certificate serial and extended expiry to **Sep 15 06:26:59 2026 GMT**. Certificate and private key match; private-key mode is **0640** with minimal ACL; `ai-lab-certbot-renew.timer` is active and enabled. |
+| SSH | Forwarding exceptions were removed. Effective `allowtcpforwarding` is `no` for deploy and admin access. |
+| Temporary access cleanup | Temporary proxy environment and tunnel were removed; port **17897** is absent. |
+| Public TLS | HTTPS through the public IP returns **200**. |
+| Physical-device UI | A clean, no-secret physical **iPhone 17 Pro / iOS 26.6** UI test passed **1/1, 0 skipped**, validating exact books, body, subscription, progress, and the nonsecret expected acceptance marker for the real selected-book flow. Five screenshots were captured. Result bundle: `/tmp/quantumn-device-e2e-20260910-final-no-secrets.xcresult`. Credential keys were absent, and the installed TestFlight app remained **1.0.3 (29)**. |
+| Embedded Node runtime | Node's embedded OpenSSL **3.5.7** remains VEX-limited and was not upgraded. |
 
-- Production Redis isolation: an isolated candidate used the actual production secret without printing it and reached healthy through the image `Config.Healthcheck`.
-- Production deployment attempt: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 subsequently failed at Redis under the Compose `CMD-SHELL` healthcheck override; automated rollback completed and production remains on the rolled-back release.
-- Subsequent production deployment attempt: after failed-release observability was added in a32901dc75493259e8356fcac3d186bc1b7ba8e5, that commit was deployed. Redis failed because the legacy anonymous `/data` volume exposed an unreadable `/data/dump.rdb`; diagnostics captured exit 1 and `restart_count=6`. Rollback restored the prior release with 8 containers healthy and `hermes-bridge`/`hermes-chat-worker` active.
-- Prior production deployment attempt: bae860cf572c31d6fb8ad8266889f354607fbbd0 passed all 8 candidate-container health gates, including Redis and API. `hermes-bridge.service` restarted at 19:53:36, the immediate API-container Bridge verification failed and rollback began at 19:53:37, then the journal showed Bridge listening at 19:53:39 and warmed at 19:53:49. This proves a restart-readiness race rather than a container, gateway, DNS, authentication, or bind failure.
-- Readiness fix delivered in b0c9f60467ca6c5b5d3562296e294d2fa3c3158f: `verify_hermes_bridge_network` retains exact candidate address equality and `host.docker.internal` DNS assertions, then polls the unauthenticated private Bridge `/health` JSON `status == ok` from the API container for at most 30 attempts at one-second cadence. Transient probe tracebacks are suppressed; exhaustion emits an explicit error and remains a rollback-triggering nonzero gate without `|| true`.
-- Host-gateway identity attempt: b0c9f60467ca6c5b5d3562296e294d2fa3c3158f was deployed and rolled back. Post-rollback evidence showed the API Compose network gateway was 172.19.0.1 while `host.docker.internal` resolved inside that same API container to 172.18.0.1; the Bridge environment and listener were correctly 172.18.0.1, and Docker daemon `host-gateway-ip` was unset.
-- Exact root cause: `resolve_hermes_bridge_bind_address` conflated the API container's project-network Gateway with Docker's `host-gateway` mapping. The verifier therefore compared 172.19.0.1 against the correct preflight/bind address 172.18.0.1 and failed before health polling even though container DNS and the private Bridge listener agreed.
-- Minimal local identity fix, not deployed: resolve `host.docker.internal` with a five-second stdlib Python alarm inside the running API container, require exactly one nonempty result, and pass it through the existing RFC1918 IPv4 plus host-interface validation. The temporary private probe, candidate equality, independent DNS assertion, bounded health polling, private bind, and rollback checks remain unchanged.
-- Host-gateway identity regression: `python3 -m pytest -p no:cacheprovider -q tests/test_server_deployment_contract.py` passed (`85 passed`, 4 pre-existing Pydantic deprecation warnings). `bash -n scripts/update.sh`, `python3 -m ruff check tests/test_server_deployment_contract.py`, and `git diff --check` passed.
-- Bridge race regression: `PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q tests/test_server_deployment_contract.py` passed (`80 passed`, 4 pre-existing Pydantic deprecation warnings). Focused contracts prove success on the third attempt, 30-attempt final failure with only 29 sleeps, one-second sleep cadence, suppressed transient tracebacks, an explicit final error, and no `|| true` inside the verifier. `bash -n scripts/update.sh`, Ruff on the deployment contract, and `git diff --check` passed.
-- Root cause proved from the preserved failed-release logs: the candidate Redis image inherits `WORKDIR=/data` and `VOLUME /data`; Compose recreation preserved the legacy anonymous `/data` volume containing an unreadable `dump.rdb`, so the non-root Redis process exited 1 with `Fatal cannot open dump.rdb: Permission denied`.
-- Minimal fix: the generated `redis.conf` now sets `dir /tmp`, keeping `save ""` and `appendonly no`. This explicitly nonpersistent cache uses the existing bounded 16 MiB writable tmpfs and ignores legacy `/data` snapshots; no cache-volume chown, migration, recovery, named volume, root user, or relaxed read-only gate was added.
-- Redis working-directory regression: `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py tests/test_server_deployment_contract.py` passed (`92 passed`, 4 pre-existing Pydantic deprecation warnings). The contract proves persistence is disabled, `dir /tmp`, bounded `/tmp` tmpfs, no Redis service or named volume, and the existing non-root image healthcheck gates.
-- Redis working-directory static checks: dummy-secret `docker compose config --format json`, `bash -n scripts/update.sh scripts/deploy.sh scripts/renew_tls_certificate.sh`, Ruff over both focused contract files, and `git diff --check` passed.
-- Failed-release observability now captures bounded, timestamped, field-scoped diagnostics before rollback without inspecting environment/configuration data; diagnostic failures remain non-blocking. Deployment contract tests passed (`78 passed`, 4 pre-existing warnings).
-- Fixed CPython runtime: the archive had already been uploaded and hash-verified, and its runtime verifier passed. The earlier statement that the archive was absent or unverified was stale and has been removed.
-- Redis healthcheck follow-up: removed the Compose override that embedded `REDISCLI_AUTH`; `verify_offline_images` now requires a structured Compose healthcheck only for PostgreSQL, while its existing image `Config.Healthcheck` validation still covers Redis and all seven other service labels. PostgreSQL and Redis loopback binding checks remain enforced.
-- Latest focused regression: `python3 -m pytest tests/test_container_hardening_contract.py tests/test_server_deployment_contract.py -q` passed (`90 passed`, 4 pre-existing Pydantic deprecation warnings). The rendered-Compose regression confirms Redis has no Compose healthcheck and no `REDISCLI_AUTH`; the deployment fixture succeeds without a Redis Compose healthcheck but still rejects missing, disabled, empty, or malformed Redis image healthcheck metadata.
-- Latest static checks: dummy-env `docker compose config --format json`, `bash -n scripts/update.sh`, Ruff over both focused test files, and `git diff --check` passed.
-- Authorized continuation: the fixed offline CPython archive/ownership/hash and Python 3.12 `tarfile` data-filter extraction contract, Python 3.12.14 + SQLite 3.51.3 + semantically parsed OpenSSL 3.5.8 gates, venv cache identity and pre/post-activation checks, no-system-Python behavior, and Hermes restart success/failure semantics are covered by `tests/test_server_deployment_contract.py` (`75 passed`, 4 pre-existing Pydantic deprecation warnings).
-- Continuation checks: `bash -n scripts/update.sh`, `python3 -m ruff check tests/test_server_deployment_contract.py`, and `git diff --check` passed. ShellCheck was unavailable.
-- Current image blocker follow-up: `python3 -m pytest tests/test_container_hardening_contract.py -q` passed (`10 passed`).
-- Additional Dockerfile readers: `python3 -m pytest tests/test_backend_dependency_contract.py::test_docker_consumes_hash_locks_and_pinned_python_not_floating_input tests/test_showroom_api.py::test_frontend_public_edge_blocks_direct_hermes_websockets -q` passed (`2 passed`).
-- Current follow-up lint/checks: `ruff check tests/test_container_hardening_contract.py` and `git diff --check` passed.
-- Parent coordinator verified clean local `main` and `origin/main` equal at `bf85616634665023fe86836b1f8aef5b8a46b0c5`; this continuation did not fetch or query the remote.
-- Focused regression after the final offline-healthcheck tightening: `191 passed, 2 skipped, 8 warnings, 11 subtests passed in 5.17s`.
-- Full backend suite after the final changes: `1596 passed, 2 skipped, 13 warnings, 11 subtests passed in 67.12s` using the compatible sibling virtualenv and writable temporary Swift/Clang module caches.
-- Frontend suite: `149 passed`; `npm run build` passed.
-- Taskboard JavaScript tests passed. `js-yaml` was updated to `4.3.2`; taskboard and frontend `npm audit --omit=dev --package-lock-only --registry=https://registry.npmjs.org` reported zero vulnerabilities.
-- `bash -n scripts/update.sh scripts/deploy.sh scripts/renew_tls_certificate.sh`: passed.
-- `docker compose config` with explicit Hermes/JWT/Postgres/Redis/TLS test values: passed.
-- Ruff over every changed Python file: passed.
-- `python3 -m json.tool frontend/package-lock.json apps/dashi-taskboard/package-lock.json` (one file per invocation): passed.
-- `git diff --check`: passed.
-- Local image builds completed for API, all three worker tags, taskboard, and frontend. `.dockerignore` now excludes host `frontend/node_modules` and `frontend/dist`, preventing host-architecture artifacts from overwriting the container's locked dependencies. An isolated Compose project then reported all application services healthy with read-only root filesystems, `cap_drop: ALL`, no-new-privileges, bounded tmpfs, and configured non-root users. Direct taskboard, worker-process, and frontend HTTPS probes passed; the temporary containers, volumes, and network were removed afterward.
-- The first full-suite attempt under the incompatible system Python environment failed (`27 failed, 73 errors`) because its Starlette/httpx versions do not match the lock and because test state cascaded across suites. The lock-compatible sibling virtualenv produced the passing full result above.
-- Production deployment evidence for `5284db6f5090cde578b51656ad2d1ad9420a1748`: all 18 hashed Certbot wheels installed successfully, but the first verifier falsely treated the required root-owned venv symlink mode `0777` as writable. Deployment stopped before any switch and production remained at `789c89aee7699d36573cbd182a631db940aec23a`; the Certbot link was absent, all 8 containers were healthy, and the Bridge, Worker, and timer were active.
-- Subsequent security review found that the Hermes runtime path traversed low-privilege-owned `/var/lib/quantumn-hermes`; the root Certbot runtime was therefore redesigned to use an independent root-owned `/opt` runtime.
-- Independent-root runtime production POC: the root-owned `/opt` Python runtime prepared successfully, all 18 hashed wheels installed, and `pip check` passed. Verification then stopped before activation with `ModuleNotFoundError: No module named 'ConfigArgParse'`: the `ConfigArgParse` distribution imports as lowercase `configargparse`. The Certbot link remained absent.
-- Lowercase Certbot import correction: the focused deployment contract requires `import configargparse` and forbids `import ConfigArgParse`; Certbot-focused tests passed (`7 passed`, `87 deselected`, 4 pre-existing Pydantic deprecation warnings), and `bash -n scripts/update.sh` plus `git diff --check` passed.
-- Second independent-root runtime production POC: the root-owned `/opt` runtime prepared successfully, all 18 hashed Certbot wheels installed, `pip check` passed, and all required module imports passed. Exact version verification then failed because noninteractive SSH supplied `TERM=unknown`, causing Certbot to emit `No entry for terminal type "unknown"; using dumb terminal settings.` on stderr before stdout `certbot 5.8.0`; activation did not occur and the Certbot link remained absent.
-- TERM-safe Certbot follow-up: both runtime verifiers now run `certbot --version` with `TERM=dumb`, suppress stderr, and still require exact stdout `certbot 5.8.0`; the real renewal command also uses `TERM=dumb` while retaining `--non-interactive --quiet`. Certbot-focused tests passed (`7 passed`, `87 deselected`, 4 pre-existing Pydantic deprecation warnings); `bash -n scripts/update.sh scripts/renew_tls_certificate.sh` and `git diff --check` passed.
-- Proven relocation failure: after the atomic move into the versioned target, `target/bin/certbot` exited `127` because its console-script shebang still named the deleted staging venv Python. The local fix rewrites exact staging-Python shebangs before the move, rejects any remaining staging prefix, verifies the final Certbot file and shebang, rebuilds only an invalid inactive target, and fails closed for an invalid active target. No deployment or certificate-renewal success is claimed for this continuation.
-- Relocation POC follow-up: pip-generated launchers used exact staging `bin/python3` shebangs, while the first relocation fix handled only `bin/python`. `relocate_certbot_venv` now rewrites only exact first-line staging interpreters `python`, `python3`, and `python3.12`, normalizes each to the final target `bin/python`, and leaves the fatal all-file staging-prefix scan unchanged. The two focused relocation tests passed, including `pip` with `python3`, a `python3.12` launcher, an unrelated shebang left unchanged, and rejection of unsupported staging `python3.11`; no fetch, remote query, commit, push, or deployment was performed.
-- Activation-helper POC follow-up: the standard venv helpers `bin/activate`, `bin/activate.csh`, `bin/activate.fish`, and `bin/Activate.ps1` retained the staging prefix but are not used by systemd or renewal. `relocate_certbot_venv` now removes exactly those four fixed paths with `rm -f` before the unchanged fatal all-file prefix scan. The two focused relocation tests passed, proving all four helpers are removed and an unrelated file retaining the staging prefix still fails; no broader tests, fetch, remote query, commit, push, or deployment were performed.
-- Bytecode-cache POC follow-up: `relocate_certbot_venv` now removes directories named `__pycache__` and remaining regular `*.pyc` files within the staging venv before the unchanged fatal all-file prefix scan. The two focused relocation tests passed, covering a cached and a loose `.pyc` containing staging bytes while an unrelated `.bin` containing the same bytes remains fatal (`2 passed`, 4 pre-existing Pydantic deprecation warnings); no bytecode rewriting, binary-file exclusion, broader tests, fetch, remote query, commit, push, or deployment was performed.
-- Latest parent-verified focused regression: the full focused deployment/container contracts passed (`113 passed`, 4 pre-existing Pydantic warnings).
-- Successful production prepare-only POC: `/opt/certbot-venvs/5.8.0-linux-amd64-c701b7929a90` was prepared with an independent root-owned runtime using x86_64 Python 3.12.14, SQLite 3.53.1, and OpenSSL 3.5.8. Exact Certbot 5.8.0 and all 18 hashed wheels were verified; shebang relocation and the residual staging-prefix scan passed. `/opt/certbot-venv` remained absent, so no activation or service change occurred. Production remained healthy on release `789c89aee7699d36573cbd182a631db940aec23a`. This does not claim deployment or certificate-renewal success; live renewal was not rerun.
-- Parent-verified iPhone failure chain: the API returned HTTP 200 and opened SSE, then the host Bridge rejected the forwarded request with HTTP 422 because `source_context.knowledge_query` exceeded `GoalRequest`'s 200-character limit (`string_too_long`). The parent established this chain through root-only packet diagnosis; the packet capture was deleted after diagnosis, and no request body or token was retained in this record.
-- Root cause and local fix status: `_call_bridge_stream` was the final unguarded trust boundary. It now applies the existing `_bounded_knowledge_query` to every non-null value before constructing the JSON request; `None` remains `None`, and Bridge `GoalRequest` validation remains unchanged.
-- Bridge stream regression: `python3 -m pytest -p no:cacheprovider -q tests/test_chat_stream_api.py` passed (`27 passed`, 6 pre-existing warnings), proving deterministic truncation above 200 characters, preservation at exactly 200, and null preservation before `httpx` receives JSON. `python3 -m ruff check backend/api/chat.py tests/test_chat_stream_api.py` passed.
+## Failure and rollback evidence
 
-## Delivery
+| Failure | Diagnosis, correction, and recovery evidence |
+|---|---|
+| Redis startup | A legacy `/data/dump.rdb` was unreadable by the non-root process. Redis was corrected to use `dir /tmp`; persistence remains disabled. |
+| Bridge startup/network | The startup readiness race and incorrect project-gateway/host-gateway identity assumption were diagnosed. Readiness polling and container resolution of `host.docker.internal` fixed the Bridge startup and DNS path. |
+| Prior image deployments | Failed image deployment attempts triggered rollback and restored all **8/8** prior container IDs before further work. |
+| Oversized knowledge query | The physical-device failure path was traced to Bridge HTTP 422 from an oversized `knowledge_query`; the running API now bounds the value before constructing the Bridge request. No raw prompt was retained here. |
+| Image transfer and identity | Local Docker save required `--platform linux/amd64`. Because daemon loading can normalize image IDs, final proof uses target-daemon Image/tag/attestation agreement. |
+| Final consistency | Production is consistent at deployed SHA `bbde8cf0b8ee8824d31bb01eaaab2d8736c8e4b1`, with 8/8 healthy containers and matching runtime identity evidence. |
 
-- commit: local `main` is `7739951d3c2e99b5d96370edf7cab1e508f542cb`; the Bridge stream boundary fix is uncommitted.
-- push: not performed; no fetch or remote query was performed.
-- deploy: no deployment was performed; the production action was prepare-only and did not activate `/opt/certbot-venv` or change services.
-- production status: no deployment was performed. The Bridge stream boundary fix remains local and undeployed.
+## Remaining blockers
+
+1. After removal of temporary egress, a direct server request to `chatgpt.com` returned **curl rc35 / HTTP 000**. Production therefore has no stable overseas OpenAI egress. The temporary test path is not accepted as a production solution.
+2. `quantumn.app` has **zero DNS records**, and the deployed certificate covers only the public IP. Public-IP TLS works, but hostname-based production access is not established.
+
+Overall release decision remains **NO-GO**. The incident is not closed.
