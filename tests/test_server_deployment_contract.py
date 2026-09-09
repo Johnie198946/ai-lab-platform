@@ -260,6 +260,11 @@ def test_bridge_preflight_accepts_existing_health_without_starting_probe(tmp_pat
     preflight = update[update.index("preflight_hermes_bridge_network() {"):update.index(
         "verify_hermes_bridge_network() {"
     )]
+    resolver = update[update.index("resolve_hermes_bridge_bind_address() {"):update.index(
+        "preflight_hermes_bridge_network() {"
+    )]
+    assert "signal.alarm(5)" in resolver
+    assert "docker inspect" not in resolver
     assert 'python3 - "$HERMES_BRIDGE_BIND_ADDRESS" "$probe_dir/ready"' in preflight
     assert "HTTPServer((sys.argv[1], 9118), Handler)" in preflight
     assert "0.0.0.0" not in preflight
@@ -366,31 +371,63 @@ exit 1
             assert lines[2:] == ["container-health", "probe-reaped"]
 
 
-def test_bridge_binding_fails_closed_for_public_or_unassigned_addresses() -> None:
-    for gateway, host_addresses in (
-        ("203.0.113.10", "203.0.113.10/24"),
-        ("172.17.0.1", "192.168.1.10/24"),
-    ):
-        command = f'''source "{UPDATE_SCRIPT}"
+def test_bridge_binding_resolves_host_gateway_inside_api_container() -> None:
+    command = f'''source "{UPDATE_SCRIPT}"
 docker() {{
-  if [ "$1" = compose ] && [[ "$*" == *"ps -q api"* ]]; then printf '%s\\n' api-container;
-  elif [ "$1" = inspect ]; then printf '%s\\n' 'contract_default {gateway}';
+  if [[ "$*" == *"ps -q api"* ]]; then printf '%s\n' api-container;
+  elif [[ "$*" == *"gethostbyname('host.docker.internal')"* ]]; then printf '%s\n' 172.18.0.1;
+  else return 99; fi
+}}
+ip() {{ printf '%s\n' '2: docker0 inet 172.18.0.1/16 scope global docker0'; }}
+resolve_hermes_bridge_bind_address
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "COMPOSE_PROJECT": "contract-test",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "172.18.0.1"
+
+
+@pytest.mark.parametrize(
+    ("resolved", "host_addresses"),
+    (
+        ("", "172.18.0.1/16"),
+        ("172.18.0.1\n172.19.0.1", "172.18.0.1/16"),
+        ("not-an-address", "172.18.0.1/16"),
+        ("203.0.113.10", "203.0.113.10/24"),
+        ("172.18.0.1", "192.168.1.10/24"),
+    ),
+)
+def test_bridge_binding_rejects_empty_multiple_malformed_public_or_unassigned_addresses(
+    resolved: str, host_addresses: str,
+) -> None:
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{
+  if [[ "$*" == *"ps -q api"* ]]; then printf '%s\\n' api-container;
+  elif [[ "$*" == *"gethostbyname('host.docker.internal')"* ]]; then printf '%s\\n' '{resolved}';
   else return 99; fi
 }}
 ip() {{ printf '%s\\n' '2: eth0 inet {host_addresses} brd 192.168.1.255 scope global eth0'; }}
 resolve_hermes_bridge_bind_address
 '''
-        result = subprocess.run(
-            ["bash", "-c", command],
-            env={
-                **os.environ,
-                "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
-                "COMPOSE_PROJECT": "contract-test",
-            },
-            capture_output=True,
-            text=True,
-        )
-        assert result.returncode != 0
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "COMPOSE_PROJECT": "contract-test",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
 
 
 def test_candidate_bridge_network_is_verified_after_runtime_restart() -> None:
@@ -407,12 +444,12 @@ def test_candidate_bridge_network_is_verified_after_runtime_restart() -> None:
     function = script[script.index("verify_hermes_bridge_network() {"):script.index(
         "configure_hermes_bridge_network() {"
     )]
-    gateway_check = function.index('[ "$candidate_address" != "$HERMES_BRIDGE_BIND_ADDRESS" ]')
+    candidate_check = function.index('[ "$candidate_address" != "$HERMES_BRIDGE_BIND_ADDRESS" ]')
     hostname_check = function.index(
         "socket.gethostbyname('host.docker.internal') == '$HERMES_BRIDGE_BIND_ADDRESS'"
     )
     health_check = function.index("http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health")
-    assert gateway_check < hostname_check < health_check
+    assert candidate_check < hostname_check < health_check
     assert ".get('status') == 'ok'" in function
     assert "for attempt in $(seq 1 30)" in function
     assert "|| true" not in function
@@ -1392,7 +1429,7 @@ def test_production_update_is_serialized_preflighted_and_offline_only() -> None:
     first_unit_switch = script.index("install_hermes_units\n", script.index("SWITCHED=1"))
     assert "flock -n 9" in script
     assert preflight < first_container_switch < first_unit_switch
-    assert "candidate API Compose gateway does not match the preflight gateway" in script
+    assert "candidate host-gateway address does not match the preflight address" in script
     assert "verify_offline_images\n" in script
     assert 'up -d --no-build --pull never' in script
     assert script.count('run --rm --no-deps --pull never') == 1

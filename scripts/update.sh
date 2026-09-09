@@ -281,20 +281,23 @@ PY
 }
 
 resolve_hermes_bridge_bind_address() {
-  local container network_rows gateway
+  local address container
   container="$(docker compose -p "$COMPOSE_PROJECT" ps -q api)"
   if [ -z "$container" ]; then
     echo "ERROR: running Compose API container is required for Bridge preflight" >&2
     return 1
   fi
-  network_rows="$(docker inspect --format '{{range $name, $network := .NetworkSettings.Networks}}{{println $name $network.Gateway}}{{end}}' "$container")"
-  if [ "$(printf '%s\n' "$network_rows" | awk 'NF == 2 {count++} END {print count+0}')" -ne 1 ]; then
-    echo "ERROR: API container must use exactly one Compose bridge network" >&2
+  if ! address="$(docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import signal,socket; signal.alarm(5); print(socket.gethostbyname('host.docker.internal'))")"; then
+    echo "ERROR: API container could not resolve host.docker.internal" >&2
     return 1
   fi
-  gateway="$(printf '%s\n' "$network_rows" | awk 'NF == 2 {print $2}')"
-  validate_private_host_address "$gateway" || return 1
-  printf '%s\n' "$gateway"
+  if [ -z "$address" ] || [[ "$address" == *$'\n'* ]]; then
+    echo "ERROR: API container must resolve host.docker.internal to exactly one address" >&2
+    return 1
+  fi
+  validate_private_host_address "$address" || return 1
+  printf '%s\n' "$address"
 }
 
 preflight_hermes_bridge_network() {
@@ -360,7 +363,7 @@ verify_hermes_bridge_network() {
   local attempt candidate_address
   candidate_address="$(resolve_hermes_bridge_bind_address)"
   if [ "$candidate_address" != "$HERMES_BRIDGE_BIND_ADDRESS" ]; then
-    echo "ERROR: candidate API Compose gateway does not match the preflight gateway" >&2
+    echo "ERROR: candidate host-gateway address does not match the preflight address" >&2
     return 1
   fi
   docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
