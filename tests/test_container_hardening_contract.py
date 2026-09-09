@@ -189,6 +189,10 @@ def test_rendered_compose_uses_redis_image_healthcheck_without_embedding_its_sec
             **os.environ,
             "REDIS_PASSWORD": "0123456789abcdef0123456789abcdef",
             "HERMES_BRIDGE_INTERNAL_TOKEN": "dummy-internal-token",
+            "AUTHEN_JWT_SECRET": "0123456789abcdef0123456789abcdef",
+            "AUTHEN_JWT_ISSUER": "contract-issuer",
+            "AUTHEN_JWT_AUDIENCE": "contract-audience",
+            "AUTHEN_JWT_STRICT_PROVENANCE": "true",
             "AI_LAB_TLS_CERT_FILE": "/tmp/dummy.crt",
             "AI_LAB_TLS_KEY_FILE": "/tmp/dummy.key",
         },
@@ -200,6 +204,94 @@ def test_rendered_compose_uses_redis_image_healthcheck_without_embedding_its_sec
 
     assert "healthcheck" not in redis
     assert "REDISCLI_AUTH" not in json.dumps(redis)
+
+
+def test_production_jwt_provenance_configuration_fails_closed() -> None:
+    compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
+    api = compose["services"]["api"]
+    required = {
+        "AUTHEN_JWT_SECRET": (
+            "${AUTHEN_JWT_SECRET:?Set a non-empty AUTHEN_JWT_SECRET in .env}"
+        ),
+        "AUTHEN_JWT_ISSUER": "${AUTHEN_JWT_ISSUER:?Set a non-empty AUTHEN_JWT_ISSUER in .env}",
+        "AUTHEN_JWT_AUDIENCE": "${AUTHEN_JWT_AUDIENCE:?Set a non-empty AUTHEN_JWT_AUDIENCE in .env}",
+        "AUTHEN_JWT_STRICT_PROVENANCE": (
+            "${AUTHEN_JWT_STRICT_PROVENANCE:?Set AUTHEN_JWT_STRICT_PROVENANCE=true in .env}"
+        ),
+    }
+    assert {name: api["environment"][name] for name in required} == required
+
+    valid_env = {
+        **os.environ,
+        "REDIS_PASSWORD": "0123456789abcdef0123456789abcdef",
+        "HERMES_BRIDGE_INTERNAL_TOKEN": "dummy-internal-token",
+        "AI_LAB_TLS_CERT_FILE": "/tmp/dummy.crt",
+        "AI_LAB_TLS_KEY_FILE": "/tmp/dummy.key",
+        "AUTHEN_JWT_SECRET": "0123456789abcdef0123456789abcdef",
+        "AUTHEN_JWT_ISSUER": "contract-issuer",
+        "AUTHEN_JWT_AUDIENCE": "contract-audience",
+        "AUTHEN_JWT_STRICT_PROVENANCE": "true",
+    }
+    for name in required:
+        for value in (None, ""):
+            env = dict(valid_env)
+            if value is None:
+                env.pop(name, None)
+            else:
+                env[name] = value
+            result = subprocess.run(
+                ["docker", "compose", "--env-file", "/dev/null", "config"],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode != 0
+            assert name in result.stderr
+
+    command = api["command"]
+    assert command[:2] == ["/bin/sh", "-c"]
+    assert '[ "$${#AUTHEN_JWT_SECRET}" -lt 32 ]' in command[2]
+    assert 'case "$$AUTHEN_JWT_ISSUER" in' in command[2]
+    assert 'case "$$AUTHEN_JWT_AUDIENCE" in' in command[2]
+    assert '[ "$$AUTHEN_JWT_STRICT_PROVENANCE" = true ]' in command[2]
+    preflight = command[2].split("exec uvicorn", 1)[0].replace("$$", "$") + "exit 0\n"
+    assert subprocess.run(
+        [*command[:2], preflight],
+        cwd=ROOT,
+        env=valid_env,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    ).returncode == 0
+    invalid_startup = (
+        ("AUTHEN_JWT_SECRET", None, "AUTHEN_JWT_SECRET must be at least 32 characters"),
+        ("AUTHEN_JWT_SECRET", "", "AUTHEN_JWT_SECRET must be at least 32 characters"),
+        ("AUTHEN_JWT_SECRET", "short", "AUTHEN_JWT_SECRET must be at least 32 characters"),
+        ("AUTHEN_JWT_ISSUER", " \t", "AUTHEN_JWT_ISSUER must contain a non-whitespace character"),
+        ("AUTHEN_JWT_AUDIENCE", "\n", "AUTHEN_JWT_AUDIENCE must contain a non-whitespace character"),
+        ("AUTHEN_JWT_STRICT_PROVENANCE", "false", "AUTHEN_JWT_STRICT_PROVENANCE must be literal true"),
+        ("AUTHEN_JWT_STRICT_PROVENANCE", "TRUE", "AUTHEN_JWT_STRICT_PROVENANCE must be literal true"),
+        ("AUTHEN_JWT_STRICT_PROVENANCE", "1", "AUTHEN_JWT_STRICT_PROVENANCE must be literal true"),
+        ("AUTHEN_JWT_STRICT_PROVENANCE", " true", "AUTHEN_JWT_STRICT_PROVENANCE must be literal true"),
+        ("AUTHEN_JWT_STRICT_PROVENANCE", "true ", "AUTHEN_JWT_STRICT_PROVENANCE must be literal true"),
+    )
+    for name, value, error in invalid_startup:
+        env = dict(valid_env)
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+        result = subprocess.run(
+            [*command[:2], preflight],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        assert result.returncode != 0
+        assert result.stderr.strip() == f"ERROR: {error}"
 
 
 def test_all_services_are_hardened_with_only_required_writable_storage() -> None:

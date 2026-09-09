@@ -4,15 +4,15 @@ task_id: production-security-deploy-blockers-20260909
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: b0c9f60467ca6c5b5d3562296e294d2fa3c3158f plus the uncommitted host-gateway identity fix
-remote_sha: b0c9f60467ca6c5b5d3562296e294d2fa3c3158f; parent coordinator verified clean local `main` and `origin/main` equal before this continuation
+head/local_commit: 21dd46ff4a44739e649386c80f5678cff00af0c0 plus the uncommitted production JWT Compose hardening
+remote_sha: 21dd46ff4a44739e649386c80f5678cff00af0c0; parent coordinator verified clean local `main` and `origin/main` equal before this continuation
 server_before: production was on the prior rollback release before deployment of b0c9f60467ca6c5b5d3562296e294d2fa3c3158f
 server_after: deployment of b0c9f60467ca6c5b5d3562296e294d2fa3c3158f rolled back; afterward the API Compose network gateway was 172.19.0.1, API `host.docker.internal` resolved to 172.18.0.1, and the Bridge environment/listener remained 172.18.0.1
-health_check: the b0c9f60467ca6c5b5d3562296e294d2fa3c3158f verifier rejected the candidate before bounded Bridge health polling because it incorrectly compared the 172.19.0.1 Compose network gateway with the preflight 172.18.0.1 host-gateway address
-functional_check: focused deployment contracts passed (`85 passed`, 4 pre-existing Pydantic deprecation warnings); valid container DNS resolution and rejection of empty, multiple, malformed, public, and host-unassigned results are covered; `bash -n`, Ruff, and `git diff --check` passed
+health_check: no deployment or production health check was performed in this continuation
+functional_check: parent-verified production authentication evidence: login `200`; wrong credentials, missing token, malformed token, expired token, wrong issuer, wrong audience, and refresh token each returned `401`; a valid signed access token reached the agreement gate and returned `428`; no token material was exposed. Focused container/deployment contracts passed (`100 passed`, 4 pre-existing Pydantic deprecation warnings).
 rollback_point: rollback restored the prior production release after the failed b0c9f60467ca6c5b5d3562296e294d2fa3c3158f deployment; the exact rollback path was not captured in this local continuation
 manifest: ops/change-manifests/production-security-deploy-blockers-20260909-completion.md
-remaining_risks: the local host-gateway identity fix is uncommitted, unpushed, and undeployed; production validation remains outstanding
+remaining_risks: the production JWT Compose hardening is uncommitted, unpushed, and undeployed; the production checks verify current authentication behavior but not the new deployment-time configuration guards
 
 ## Inventory and architecture decision
 
@@ -24,6 +24,12 @@ remaining_risks: the local host-gateway identity fix is uncommitted, unpushed, a
 - Tests: `frontend/tests/showroom-journey.test.mjs`, `tests/conftest.py`, `tests/test_bridge_locking.py`, `tests/test_chat_run_worker.py`, `tests/test_chat_status.py`, `tests/test_container_hardening_contract.py`, `tests/test_hermes_bridge.py`, `tests/test_hermes_integration.py`, `tests/test_qws_hermes_context.py`, `tests/test_server_deployment_contract.py`, `tests/test_showroom_api.py`.
 
 ## Verification
+
+- Production authentication evidence supplied and verified by the parent coordinator: login returned `200`; wrong credentials, missing token, malformed token, expired token, wrong issuer, wrong audience, and refresh token each returned `401`; a valid signed access token reached the agreement gate and returned `428`. No bearer, access, or refresh token value was recorded or exposed in this manifest or the verification evidence.
+- Production JWT configuration hardening: the API Compose environment now requires non-empty `AUTHEN_JWT_SECRET`, `AUTHEN_JWT_ISSUER`, `AUTHEN_JWT_AUDIENCE`, and `AUTHEN_JWT_STRICT_PROVENANCE`. Before Uvicorn starts, the API rejects secrets shorter than 32 characters, whitespace-only issuer or audience values, and every strict-provenance value except exact literal `true`; error messages name only the invalid variable and never print its value. The existing authentication implementation and developer login remain unchanged.
+- Focused JWT/Compose contract: `python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py` passed (`15 passed`, 4 pre-existing Pydantic deprecation warnings), retaining a valid rendered-Compose check and covering missing/empty required substitutions; unset, empty, and short secrets at startup; whitespace-only issuer/audience; and strict values `false`, `TRUE`, `1`, ` true`, and `true `.
+- Combined focused regression: `python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py tests/test_server_deployment_contract.py` passed (`100 passed`, 4 pre-existing Pydantic deprecation warnings).
+- Static checks: `python3 -m ruff check tests/test_container_hardening_contract.py` and `git diff --check` passed.
 
 - Production Redis isolation: an isolated candidate used the actual production secret without printing it and reached healthy through the image `Config.Healthcheck`.
 - Production deployment attempt: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 subsequently failed at Redis under the Compose `CMD-SHELL` healthcheck override; automated rollback completed and production remains on the rolled-back release.
@@ -64,7 +70,7 @@ remaining_risks: the local host-gateway identity fix is uncommitted, unpushed, a
 
 ## Delivery
 
-- commit: b0c9f60467ca6c5b5d3562296e294d2fa3c3158f is local `main`; the host-gateway identity fix is tested but uncommitted.
-- push: the parent coordinator verified local `main` and `origin/main` equal at b0c9f60467ca6c5b5d3562296e294d2fa3c3158f before this continuation; no fetch, remote query, or push was performed.
-- deploy: b0c9f60467ca6c5b5d3562296e294d2fa3c3158f was deployed and rolled back after the false Compose-gateway/preflight-address mismatch; the local host-gateway identity fix has not been deployed.
-- production status: the post-rollback network and listener facts are recorded above; this local continuation did not perform production health or functional checks. The identity fix remains uncommitted, unpushed, and undeployed.
+- commit: local `main` is `21dd46ff4a44739e649386c80f5678cff00af0c0`; the production JWT Compose hardening is tested but uncommitted as requested.
+- push: the parent coordinator verified local `main` and `origin/main` equal at `21dd46ff4a44739e649386c80f5678cff00af0c0` before this continuation; no fetch, remote query, or push was performed.
+- deploy: no deployment was performed in this continuation.
+- production status: the parent coordinator verified the authentication status matrix recorded above without exposing token material. The new Compose guards remain local and undeployed.
