@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 
+import pytest
 import yaml
 
 
@@ -156,6 +157,71 @@ def test_runtime_scripts_use_the_official_dedicated_user_install() -> None:
     assert "127.0.0.1:7890" not in update
     for proxy_variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
         assert proxy_variable not in update
+
+
+@pytest.mark.parametrize(
+    ("runtime_commit", "runtime_status", "expected_returncode", "expected_error", "expected_commands"),
+    (
+        (
+            "c8aa5608c24e3636e77c267650c0f1f52e44adb0",
+            "",
+            0,
+            "",
+            ("rev-parse HEAD", "status --porcelain"),
+        ),
+        (
+            "0000000000000000000000000000000000000000",
+            "",
+            1,
+            "Hermes runtime source must be exactly c8aa5608c24e3636e77c267650c0f1f52e44adb0",
+            ("rev-parse HEAD",),
+        ),
+        (
+            "c8aa5608c24e3636e77c267650c0f1f52e44adb0",
+            " M tracked-file\n?? untracked-file",
+            1,
+            "Hermes runtime source checkout must be clean",
+            ("rev-parse HEAD", "status --porcelain"),
+        ),
+    ),
+)
+def test_verify_hermes_install_checks_repository_as_owner_and_fails_closed(
+    tmp_path: Path,
+    runtime_commit: str,
+    runtime_status: str,
+    expected_returncode: int,
+    expected_error: str,
+    expected_commands: tuple[str, ...],
+) -> None:
+    events = tmp_path / "events"
+    command = f'''source "{UPDATE_SCRIPT}"
+HERMES_AGENT_ROOT='{tmp_path}'
+HERMES_PYTHON="$(type -P true)"
+HERMES_LAUNCHER="$HERMES_PYTHON"
+runuser() {{
+  printf '%s\n' "$*" >> '{events}'
+  [ "$1" = -u ] && [ "$2" = quantumn-hermes ] && [ "$3" = -- ] \
+    && [ "$4" = git ] && [ "$5" = -C ] && [ "$6" = "$HERMES_AGENT_ROOT" ] || return 90
+  case "$7 $8" in
+    'rev-parse HEAD') printf '%s\n' '{runtime_commit}' ;;
+    'status --porcelain') printf '%s\n' '{runtime_status}' ;;
+    *) return 91 ;;
+  esac
+}}
+verify_hermes_install
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == expected_returncode
+    assert expected_error in result.stderr
+    prefix = f"-u quantumn-hermes -- git -C {tmp_path} "
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        prefix + git_command for git_command in expected_commands
+    ]
 
 
 def test_bridge_preflight_accepts_existing_health_without_starting_probe(tmp_path: Path) -> None:

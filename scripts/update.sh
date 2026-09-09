@@ -67,14 +67,19 @@ ensure_hermes_account() {
 }
 
 verify_hermes_install() {
-  local runtime_commit
+  local runtime_commit runtime_status
   if [ ! -d "$HERMES_AGENT_ROOT" ] || [ ! -x "$HERMES_PYTHON" ] || [ ! -x "$HERMES_LAUNCHER" ]; then
     echo "ERROR: official Hermes install is incomplete under $HERMES_ACCOUNT_HOME" >&2
     return 1
   fi
-  if ! runtime_commit="$(git -C "$HERMES_AGENT_ROOT" rev-parse HEAD 2>/dev/null)" \
+  if ! runtime_commit="$(runuser -u quantumn-hermes -- git -C "$HERMES_AGENT_ROOT" rev-parse HEAD 2>/dev/null)" \
     || [ "$runtime_commit" != "$HERMES_RUNTIME_COMMIT" ]; then
     echo "ERROR: Hermes runtime source must be exactly $HERMES_RUNTIME_COMMIT" >&2
+    return 1
+  fi
+  if ! runtime_status="$(runuser -u quantumn-hermes -- git -C "$HERMES_AGENT_ROOT" status --porcelain 2>/dev/null)" \
+    || [ -n "$runtime_status" ]; then
+    echo "ERROR: Hermes runtime source checkout must be clean" >&2
     return 1
   fi
   if ! HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$HERMES_PYTHON" -c \
