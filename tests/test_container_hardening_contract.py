@@ -84,6 +84,11 @@ def test_compose_preserves_storage_tls_routes_and_non_root_users() -> None:
     assert "./data:/app/data" in services["api"]["volumes"]
     assert "taskboard_data:/data" in services["taskboard"]["volumes"]
     assert "/opt/ai-lab-platform:/workspace:ro" in services["taskboard"]["volumes"]
+    assert services["taskboard"]["healthcheck"]["test"] == [
+        "CMD", "node", "-e",
+        "fetch('http://127.0.0.1:47823/api/meta').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+    ]
+    assert "wget" not in str(services["taskboard"]["healthcheck"]["test"])
     assert "443:443" in services["frontend"]["ports"]
     assert "127.0.0.1:9081:9081" in services["frontend"]["ports"]
     assert all(volume.endswith(":ro") for volume in services["frontend"]["volumes"])
@@ -100,6 +105,7 @@ def test_application_services_are_read_only_and_do_not_mount_host_hermes_state()
         service = services[name]
         assert service["read_only"] is True
         assert service["cap_drop"] == ["ALL"]
+        assert "cap_add" not in service
         assert "no-new-privileges:true" in service["security_opt"]
         assert service["tmpfs"]
         assert all("size=" in mount for mount in service["tmpfs"])
@@ -150,8 +156,25 @@ def test_api_identity_and_host_owned_mounts_use_the_same_uid() -> None:
 def test_deploy_repairs_existing_taskboard_volume() -> None:
     script = (ROOT / "scripts/update.sh").read_text(encoding="utf-8")
 
-    assert "--user 0 --entrypoint chown taskboard" in script
-    assert "-R 1000:1000 /data" in script
+    helper = script[script.index("repair_taskboard_data_permissions() {"):script.index(
+        "managed_unit_paths() {"
+    )]
+    for restriction in (
+        'docker run --rm --pull never --network none --read-only',
+        '--cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges --user 0',
+        '--mount "type=volume,src=$volume,dst=/data" --entrypoint chown "$image"',
+        '-R 1000:1000 /data',
+        'label=com.docker.compose.project=$COMPOSE_PROJECT',
+        'label=com.docker.compose.volume=taskboard_data',
+    ):
+        assert restriction in helper
+    assert "docker compose" not in helper[helper.index("docker run"):]
+    assert "/var/run/docker.sock" not in helper
+    assert "type=bind" not in helper
+    deployment = script[script.index('echo "==> [3/6]'):]
+    assert deployment.index("RUNTIME_CHANGED=1") < deployment.index(
+        "repair_taskboard_data_permissions\n"
+    ) < deployment.index('up -d --no-build --pull never')
 
 
 def test_measured_language_findings_are_removed_from_runtime() -> None:

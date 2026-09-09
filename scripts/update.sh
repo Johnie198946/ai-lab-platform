@@ -394,6 +394,34 @@ raise SystemExit(0 if isinstance(test, list) and test and test[0] in {"CMD", "CM
   done
 }
 
+repair_taskboard_data_permissions() {
+  local config image volume_rows volume count
+  config="$(docker compose -p "$COMPOSE_PROJECT" config --format json)" || return 1
+  image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["taskboard"]["image"])' <<< "$config")" || return 1
+  if [[ ! "$image" =~ ^[[:alnum:]][[:alnum:]./_:@-]*$ ]]; then
+    echo "ERROR: invalid taskboard image reference: ${image:-<empty>}" >&2
+    return 1
+  fi
+  volume_rows="$(docker volume ls \
+    --filter "label=com.docker.compose.project=$COMPOSE_PROJECT" \
+    --filter "label=com.docker.compose.volume=taskboard_data" \
+    --format '{{.Name}}')" || return 1
+  count="$(printf '%s\n' "$volume_rows" | awk 'NF {count++} END {print count+0}')"
+  if [ "$count" -ne 1 ]; then
+    echo "ERROR: expected exactly one Compose taskboard_data volume, found $count" >&2
+    return 1
+  fi
+  volume="$(printf '%s\n' "$volume_rows" | awk 'NF {print}')"
+  if [[ ! "$volume" =~ ^[[:alnum:]][[:alnum:]_.-]*$ ]]; then
+    echo "ERROR: invalid taskboard_data volume name: $volume" >&2
+    return 1
+  fi
+  docker run --rm --pull never --network none --read-only \
+    --cap-drop ALL --cap-add CHOWN --security-opt no-new-privileges --user 0 \
+    --mount "type=volume,src=$volume,dst=/data" --entrypoint chown "$image" \
+    -R 1000:1000 /data
+}
+
 managed_unit_paths() {
   printf '%s\n' \
     hermes-bridge.service:/etc/systemd/system/hermes-bridge.service \
@@ -660,8 +688,7 @@ RUNTIME_CHANGED=1
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
 docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never api \
   python scripts/migrate_quantum_workspace.py
-docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never --user 0 --entrypoint chown taskboard \
-  -R 1000:1000 /data
+repair_taskboard_data_permissions
 docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never
 
 echo "==> [4/6] API 健康检查与运行契约审计"

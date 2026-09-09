@@ -487,6 +487,93 @@ def test_taskboard_health_probe_uses_node_fetch_instead_of_wget() -> None:
     assert "exec -T taskboard \\" + "\n    wget " not in script
 
 
+@pytest.mark.parametrize(
+    ("volumes", "expected_returncode"),
+    (("contract_taskboard_data", 0), ("", 1), ("first\nsecond", 1)),
+)
+def test_taskboard_permission_helper_is_exact_and_fails_closed(
+    tmp_path: Path, volumes: str, expected_returncode: int,
+) -> None:
+    events = tmp_path / "events"
+    lookup = tmp_path / "lookup"
+    config = json.dumps({"services": {"taskboard": {"image": "registry.local/taskboard@sha256:" + "a" * 64}}})
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{
+  if [ "$1" = compose ]; then printf '%s\n' "$CONFIG"; return; fi
+  if [ "$1 $2" = 'volume ls' ]; then printf '<%s>\n' "$@" > '{lookup}'; printf '%s\n' "$VOLUMES"; return; fi
+  printf '<%s>\n' "$@" > '{events}'
+}}
+COMPOSE_PROJECT=contract-test
+repair_taskboard_data_permissions
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "CONFIG": config,
+            "VOLUMES": volumes,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == expected_returncode
+    if expected_returncode:
+        assert not events.exists()
+        assert "expected exactly one Compose taskboard_data volume" in result.stderr
+        return
+    assert lookup.read_text(encoding="utf-8").splitlines() == [
+        "<volume>", "<ls>", "<--filter>",
+        "<label=com.docker.compose.project=contract-test>", "<--filter>",
+        "<label=com.docker.compose.volume=taskboard_data>", "<--format>", "<{{.Name}}>",
+    ]
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        "<run>", "<--rm>", "<--pull>", "<never>", "<--network>", "<none>",
+        "<--read-only>", "<--cap-drop>", "<ALL>", "<--cap-add>", "<CHOWN>",
+        "<--security-opt>", "<no-new-privileges>", "<--user>", "<0>", "<--mount>",
+        "<type=volume,src=contract_taskboard_data,dst=/data>", "<--entrypoint>",
+        "<chown>", "<registry.local/taskboard@sha256:" + "a" * 64 + ">",
+        "<-R>", "<1000:1000>", "</data>",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("image", "volume", "expected_error"),
+    (
+        ("--privileged", "contract_taskboard_data", "invalid taskboard image reference"),
+        ("registry.local/taskboard:release", "../host", "invalid taskboard_data volume name"),
+    ),
+)
+def test_taskboard_permission_helper_rejects_invalid_image_and_volume_values(
+    tmp_path: Path, image: str, volume: str, expected_error: str,
+) -> None:
+    events = tmp_path / "events"
+    config = json.dumps({"services": {"taskboard": {"image": image}}})
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{
+  if [ "$1" = compose ]; then printf '%s\n' "$CONFIG"; return; fi
+  if [ "$1 $2" = 'volume ls' ]; then printf '%s\n' "$VOLUME"; return; fi
+  printf '%s\n' unexpected-run > '{events}'
+}}
+COMPOSE_PROJECT=contract-test
+repair_taskboard_data_permissions
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "CONFIG": config,
+            "VOLUME": volume,
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert expected_error in result.stderr
+    assert not events.exists()
+
+
 def test_offline_images_extract_each_field_without_separator_parsing_and_validate_metadata(
     tmp_path: Path,
 ) -> None:
@@ -555,7 +642,8 @@ def test_production_update_is_serialized_preflighted_and_offline_only() -> None:
     assert "candidate API Compose gateway does not match the preflight gateway" in script
     assert "verify_offline_images\n" in script
     assert 'up -d --no-build --pull never' in script
-    assert script.count('run --rm --no-deps --pull never') == 2
+    assert script.count('run --rm --no-deps --pull never') == 1
+    assert 'docker run --rm --pull never --network none --read-only' in script
     assert 'docker compose -p "$COMPOSE_PROJECT" build' not in script
     assert 'up -d --build' not in script
 
