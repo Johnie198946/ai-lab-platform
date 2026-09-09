@@ -100,7 +100,7 @@ class TestOrchestrationAPIWithBridge(unittest.TestCase):
     def auth_headers():
         from datetime import datetime, timedelta, timezone
 
-        from jose import jwt as jose_jwt
+        import jwt as jose_jwt
 
         token = jose_jwt.encode(
             {

@@ -128,7 +128,7 @@ def _issue_jwt(
     """签发平台 JWT（与 Authen 同 secret/算法，sub=user_id，供 require_auth 校验）。"""
     from datetime import datetime, timedelta, timezone
 
-    from jose import jwt
+    import jwt
 
     # Use the verifier's process snapshot as the signing source of truth. Reading
     # os.environ again here can mint tokens with a rotated value while

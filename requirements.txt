@@ -11,7 +11,7 @@ croniter>=2.0
 httpx==0.28.1
 pyyaml>=6.0
 jieba>=0.42
-python-jose[cryptography]>=3.3
+PyJWT[crypto]>=2.13.0
 # Security floors for transitive runtime dependencies.
 cryptography>=50.0.0
 email-validator>=2.0

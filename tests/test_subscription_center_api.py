@@ -13,7 +13,7 @@ os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
 
 
 def _headers(user_id: str = "member-1") -> dict[str, str]:
-    from jose import jwt
+    import jwt
 
     token = jwt.encode(
         {"sub": user_id, "exp": datetime.utcnow() + timedelta(hours=1)},

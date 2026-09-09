@@ -36,7 +36,7 @@ except Exception:
 
 
 def _token(username="tester"):
-    from jose import jwt as jose_jwt
+    import jwt as jose_jwt
 
     return jose_jwt.encode(
         {

@@ -1,6 +1,6 @@
 # AI Lab Platform — API 镜像
 # Keep the deployed Python minor; immutable multi-platform base + hashed locks.
-FROM python:3.12.14-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254
+FROM python:3.12.14-alpine3.23@sha256:167bc85084c9df34480efc26b4528fb68feaa8a79183b5658952137025b6f061
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -12,8 +12,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 ARG AI_LAB_RUNTIME_UID=10001
 ARG AI_LAB_RUNTIME_GID=10001
-RUN groupadd --gid "$AI_LAB_RUNTIME_GID" ailab \
-    && useradd --uid "$AI_LAB_RUNTIME_UID" --gid ailab --create-home --home-dir /home/ailab --shell /usr/sbin/nologin ailab
+RUN apk add --no-cache libuuid=2.41.6-r1 \
+    && addgroup -S -g "$AI_LAB_RUNTIME_GID" ailab \
+    && adduser -S -D -u "$AI_LAB_RUNTIME_UID" -G ailab -h /home/ailab -s /sbin/nologin ailab
 
 WORKDIR /app
 

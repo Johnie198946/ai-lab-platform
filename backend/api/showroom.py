@@ -26,7 +26,8 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import select
 
@@ -828,7 +829,7 @@ def _validate_websocket_token(token: str) -> dict[str, Any]:
     if not AUTHEN_JWT_SECRET:
         return {"sub": "dev", "username": "dev"}
     if not token:
-        raise JWTError("missing token")
+        raise PyJWTError("missing token")
     return jwt.decode(token, AUTHEN_JWT_SECRET, algorithms=[AUTHEN_JWT_ALGORITHM])
 
 
@@ -3173,7 +3174,7 @@ async def showroom_websocket(
         from fastapi.security import HTTPAuthorizationCredentials
         payload = await require_auth(HTTPAuthorizationCredentials(scheme="Bearer", credentials=token))
         await require_current_agreement(payload=payload, client_contract=None)
-    except (JWTError, HTTPException) as exc:
+    except (PyJWTError, HTTPException) as exc:
         code = 4428 if getattr(exc, "status_code", None) == 428 else 4401
         await websocket.close(code=code, reason="agreement required" if code == 4428 else "invalid token")
         return

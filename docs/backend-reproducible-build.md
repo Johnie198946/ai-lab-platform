@@ -1,7 +1,8 @@
 # Backend reproducible dependency contract
 
 The deployment keeps **Python 3.12** (it is not downgraded to match an old macOS test venv).
-`backend/Dockerfile` pins Python 3.12.14/bookworm by immutable multi-platform digest.
+`backend/Dockerfile` pins Python 3.12.14/Alpine 3.23 by immutable multi-platform digest
+and installs the fixed `libuuid=2.41.6-r1` package without a versionless upgrade.
 `requirements.txt` is the API/Compose-worker input and `requirements.lock` is its hashed
 runtime lock. Neither may contain the `hermes-agent` distribution: the API image does not
 import or execute Hermes. The host-only `requirements-bridge-worker.in` explicitly records
@@ -15,7 +16,7 @@ and restored with it on deployment failure. After installing hashed API and Brid
 the updater installs the validated local Hermes 0.21.1 source there with `--no-deps` and checks
 its exact distribution version. Subprocess fallback invokes the fixed launcher.
 Hermes' self-managed runtime venv is never modified with platform packages.
-The lock keeps the 86-package independently green dependency set, with deliberate
+The lock keeps the 81-package independently green dependency set, with deliberate
 security upgrades, re-resolved for Linux/Python 3.12.14. New Linux image tests,
 not that old run, establish compatibility.
 
@@ -44,10 +45,10 @@ reviewing upgrades (the initial lock used the previous independently tested free
 
 ```sh
 uv pip compile requirements.txt --constraint requirements.lock \
-  --python-version 3.12.14 --python-platform x86_64-unknown-linux-gnu \
+  --python-version 3.12.14 --python-platform x86_64-unknown-linux-musl \
   --generate-hashes --no-header --no-annotate --output-file /tmp/requirements.next.lock
 uv pip compile requirements-build.in --python-version 3.12.14 \
-  --python-platform x86_64-unknown-linux-gnu --generate-hashes \
+  --python-platform x86_64-unknown-linux-musl --generate-hashes \
   --no-header --no-annotate --output-file /tmp/requirements-build.next.lock
 uv pip compile requirements-bridge-worker.in --constraint requirements-bridge-worker.lock \
   --python-version 3.12.14 --python-platform x86_64-unknown-linux-gnu \

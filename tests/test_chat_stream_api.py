@@ -34,7 +34,7 @@ def effective_agent(agent_id: str, name: str) -> EffectiveAgent:
 
 def auth_headers() -> dict:
     from datetime import datetime, timedelta, timezone
-    from jose import jwt as jose_jwt
+    import jwt as jose_jwt
 
     token = jose_jwt.encode(
         {

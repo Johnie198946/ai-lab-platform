@@ -756,13 +756,18 @@ def test_offline_images_extract_each_field_without_separator_parsing_and_validat
     tmp_path: Path,
 ) -> None:
     services = (
-        "api", "workflow-worker", "planning-worker",
+        "postgres", "redis", "api", "workflow-worker", "planning-worker",
         "agent-evaluation-worker", "taskboard", "frontend",
     )
     digest = "sha256:" + "a" * 64
-    config = json.dumps({
-        "services": {service: {"image": f"registry.local/{service}:release"} for service in services}
-    })
+    service_configs = {
+        service: {"image": f"registry.local/{service}:release"} for service in services
+    }
+    for service in ("postgres", "redis"):
+        service_configs[service].update({
+            "healthcheck": {"test": ["CMD-SHELL", "true"]},
+            "ports": [{"host_ip": "127.0.0.1"}],
+        })
     attestations = tmp_path / "images.attested"
     attestations.write_text(
         "".join(f"{service}={digest}\n" for service in services), encoding="utf-8"
@@ -773,15 +778,19 @@ docker() {{
   if [ "$1" = compose ]; then printf '%s\n' "$CONFIG"; return; fi
   image="${{@: -1}}"
   service="${{image#registry.local/}}"; service="${{service%:release}}"
-  [ "$CHECK" = missing ] && [ "$service" = workflow-worker ] && return 1
-  architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'
-  [ "$CHECK" = architecture ] && [ "$service" = planning-worker ] && architecture=arm64
-  [ "$CHECK" = hash ] && [ "$service" = api ] && actual='sha256:{'b' * 64}'
-  case "$CHECK" in root|0|00|00:1000) [ "$service" = taskboard ] && user="$CHECK" ;; esac
-  [ "$CHECK" = health ] && [ "$service" = frontend ] && health=null
-  [ "$CHECK" = disabled-health ] && [ "$service" = frontend ] && health='{{"Test":["NONE"]}}'
+  [ "$CHECK" = missing ] && [ "$service" = redis ] && return 1
+  operating_system=linux; architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'
+  [ "$CHECK" = os ] && [ "$service" = postgres ] && operating_system=windows
+  [ "$CHECK" = architecture ] && [ "$service" = redis ] && architecture=arm64
+  [ "$CHECK" = hash ] && [ "$service" = postgres ] && actual='sha256:{'b' * 64}'
+  case "$CHECK" in root|0|00|00:1000) [ "$service" = postgres ] && user="$CHECK" ;; esac
+  [ "$CHECK" = health ] && [ "$service" = redis ] && health=null
+  [ "$CHECK" = disabled-health ] && [ "$service" = redis ] && health='{{"Test":["NONE"]}}'
+  [ "$CHECK" = empty-health ] && [ "$service" = redis ] && health='{{"Test":["CMD-SHELL",""]}}'
+  [ "$CHECK" = missing-health-command ] && [ "$service" = redis ] && health='{{"Test":["CMD-SHELL"]}}'
   case "$4" in
     '{{{{.Id}}}}') printf '%s\n' "$actual" ;;
+    '{{{{.Os}}}}') printf '%s\n' "$operating_system" ;;
     '{{{{.Architecture}}}}') printf '%s\n' "$architecture" ;;
     '{{{{.Config.User}}}}') printf '%s\n' "$user" ;;
     '{{{{json .Config.Healthcheck}}}}') printf '%s\n' "$health" ;;
@@ -794,16 +803,35 @@ COMPOSE_PROJECT=contract-test
 AI_LAB_OFFLINE_IMAGE_ATTESTATIONS='{attestations}'
 verify_offline_images
 '''
-    for check, expected in (
-        ("valid", 0), ("missing", 1), ("architecture", 1), ("hash", 1),
+    cases = (
+        ("valid", 0), ("missing", 1), ("os", 1), ("architecture", 1), ("hash", 1),
         ("root", 1), ("0", 1), ("00", 1), ("00:1000", 1), ("health", 1),
-        ("disabled-health", 1),
-    ):
+        ("disabled-health", 1), ("empty-health", 1), ("missing-health-command", 1),
+        ("missing-record", 1), ("duplicate", 1),
+        ("unexpected", 1), ("malformed", 1), ("compose-health", 1),
+        ("public-binding", 1),
+    )
+    for check, expected in cases:
+        config = json.loads(json.dumps({"services": service_configs}))
+        if check == "compose-health":
+            config["services"]["postgres"]["healthcheck"] = {"test": ["NONE"]}
+        elif check == "public-binding":
+            config["services"]["redis"]["ports"][0]["host_ip"] = "0.0.0.0"
+        records = [f"{service}={digest}" for service in services]
+        if check == "missing-record":
+            records.pop()
+        elif check == "duplicate":
+            records.append(records[0])
+        elif check == "unexpected":
+            records.append(f"other={digest}")
+        elif check == "malformed":
+            records[0] += " trailing"
+        attestations.write_text("\n".join(records) + "\n", encoding="utf-8")
         result = subprocess.run(
             ["bash", "-c", command],
             env={
                 **os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
-                "CONFIG": config, "CHECK": check,
+                "CONFIG": json.dumps(config), "CHECK": check,
             },
             capture_output=True, text=True,
         )

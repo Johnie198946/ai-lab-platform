@@ -20,7 +20,7 @@ FAKE_SUPER = False
 
 
 def _headers() -> dict[str, str]:
-    from jose import jwt as jose_jwt
+    import jwt as jose_jwt
 
     token = jose_jwt.encode(
         {"sub": "1", "exp": datetime.utcnow() + timedelta(hours=1)},

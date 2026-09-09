@@ -9,6 +9,9 @@ venv/
 .env.bak
 .env.*.bak
 
+# Host TLS private keys must never enter Git.
+/frontend/nginx/*.key
+
 # Node
 node_modules/
 .next/

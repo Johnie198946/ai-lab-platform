@@ -423,8 +423,8 @@ for root in (data, data / "vault/raw/dialogues/tenants"):
 }
 
 verify_offline_images() {
-  local config service image architecture user healthcheck actual expected count
-  local services=(api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
+  local config service image operating_system architecture user healthcheck actual expected count
+  local services=(postgres redis api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
   local attestations="${AI_LAB_OFFLINE_IMAGE_ATTESTATIONS:-$SHARED_ROOT/offline-images.attested}"
   if [ -L "$attestations" ] || [ ! -f "$attestations" ]; then
     echo "ERROR: offline image attestation file is missing or a symlink: $attestations" >&2
@@ -435,7 +435,39 @@ verify_offline_images() {
     echo "ERROR: offline image attestations must be root-owned and not group/world writable" >&2
     return 1
   fi
+  python3 - "$attestations" "${services[@]}" <<'PY' || return 1
+import re
+import sys
+
+path, *expected = sys.argv[1:]
+records = []
+for line in open(path, encoding="utf-8").read().splitlines():
+    match = re.fullmatch(r"([a-z][a-z0-9-]*)=(sha256:[0-9a-f]{64})", line)
+    if not match:
+        raise SystemExit(f"ERROR: invalid offline image attestation record: {line!r}")
+    records.append(match.group(1))
+if len(records) != len(set(records)) or set(records) != set(expected):
+    raise SystemExit("ERROR: offline image attestations must contain exactly: " + " ".join(expected))
+PY
   config="$(docker compose -p "$COMPOSE_PROJECT" config --format json)" || return 1
+  COMPOSE_CONFIG="$config" python3 - <<'PY' || return 1
+import json
+import os
+
+services = json.loads(os.environ["COMPOSE_CONFIG"])["services"]
+for name in ("postgres", "redis"):
+    healthcheck = services[name].get("healthcheck")
+    test = healthcheck.get("test") if isinstance(healthcheck, dict) else None
+    if (
+        not isinstance(test, list)
+        or len(test) < 2
+        or test[0] not in {"CMD", "CMD-SHELL"}
+        or not all(isinstance(item, str) and item for item in test[1:])
+    ):
+        raise SystemExit(f"ERROR: {name} must have a structured Compose healthcheck")
+    if any(port.get("host_ip") != "127.0.0.1" for port in services[name].get("ports", [])):
+        raise SystemExit(f"ERROR: {name} host ports must bind to 127.0.0.1")
+PY
   for service in "${services[@]}"; do
     image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$service" <<< "$config")" || return 1
     if [ -z "$image" ]; then
@@ -449,9 +481,8 @@ verify_offline_images() {
       return 1
     fi
     if ! actual="$(docker image inspect --format '{{.Id}}' "$image")" \
-      || ! architecture="$(docker image inspect --format '{{.Architecture}}' "$image")" \
-      || ! user="$(docker image inspect --format '{{.Config.User}}' "$image")" \
-      || ! healthcheck="$(docker image inspect --format '{{json .Config.Healthcheck}}' "$image")"; then
+      || ! operating_system="$(docker image inspect --format '{{.Os}}' "$image")" \
+      || ! architecture="$(docker image inspect --format '{{.Architecture}}' "$image")"; then
       echo "ERROR: required offline image is missing: $service=$image" >&2
       return 1
     fi
@@ -459,8 +490,13 @@ verify_offline_images() {
       echo "ERROR: offline image hash mismatch: $service=$image" >&2
       return 1
     fi
-    if [ "$architecture" != "amd64" ]; then
-      echo "ERROR: offline image must use amd64: $service=$image" >&2
+    if [ "$operating_system" != "linux" ] || [ "$architecture" != "amd64" ]; then
+      echo "ERROR: offline image must use linux/amd64: $service=$image" >&2
+      return 1
+    fi
+    if ! user="$(docker image inspect --format '{{.Config.User}}' "$image")" \
+      || ! healthcheck="$(docker image inspect --format '{{json .Config.Healthcheck}}' "$image")"; then
+      echo "ERROR: required offline image metadata is missing: $service=$image" >&2
       return 1
     fi
     if [ -z "$user" ] || [[ "$user" =~ ^([Rr][Oo][Oo][Tt]|0+)(:|$) ]]; then
@@ -473,7 +509,13 @@ import os
 
 value = json.loads(os.environ["HEALTHCHECK_METADATA"])
 test = value.get("Test") if isinstance(value, dict) else None
-raise SystemExit(0 if isinstance(test, list) and test and test[0] in {"CMD", "CMD-SHELL"} else 1)
+valid = (
+    isinstance(test, list)
+    and len(test) >= 2
+    and test[0] in {"CMD", "CMD-SHELL"}
+    and all(isinstance(item, str) and item for item in test[1:])
+)
+raise SystemExit(0 if valid else 1)
 '; then
       echo "ERROR: offline image must configure a healthcheck: $service=$image" >&2
       return 1

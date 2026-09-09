@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 
 from backend.api.showroom import (
     DemandConfirmation,
@@ -162,7 +163,7 @@ def test_review_requires_comment_for_non_approval() -> None:
 
 def test_websocket_token_validation() -> None:
     assert _validate_websocket_token(auth_token())["username"] == "guide"
-    with pytest.raises(JWTError):
+    with pytest.raises(PyJWTError):
         _validate_websocket_token("not-a-token")
 
 

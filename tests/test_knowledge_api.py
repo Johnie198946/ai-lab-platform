@@ -19,7 +19,7 @@ def auth_token() -> str:
     if TEST_TOKEN is None:
         from datetime import datetime, timedelta
 
-        from jose import jwt as jose_jwt
+        import jwt as jose_jwt
 
         TEST_TOKEN = jose_jwt.encode(
             {

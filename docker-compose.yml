@@ -10,7 +10,11 @@ x-app-hardening: &app-hardening
 services:
   # PostgreSQL — 知识库主库（仅本机可连；Authen 认证服务复用）
   postgres:
-    image: postgres:16-alpine
+    <<: *app-hardening
+    image: ${AI_LAB_POSTGRES_IMAGE:-ai-lab-platform-postgres:offline}
+    build:
+      context: ./infrastructure/postgres
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "127.0.0.1:5432:5432"
@@ -20,6 +24,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ailab_dev}
     volumes:
       - pgdata:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+      - /var/run/postgresql:rw,noexec,nosuid,size=16m,uid=70,gid=70,mode=0775
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ailab} -d ${POSTGRES_DB:-ai_lab}"]
       interval: 5s
@@ -28,7 +35,11 @@ services:
 
   # Redis — 会话 / 缓存（仅本机可连；Authen 认证服务复用）
   redis:
-    image: redis:7-alpine
+    <<: *app-hardening
+    image: ${AI_LAB_REDIS_IMAGE:-ai-lab-platform-redis:offline}
+    build:
+      context: ./infrastructure/redis
+      dockerfile: Dockerfile
     restart: unless-stopped
     ports:
       - "127.0.0.1:6379:6379"
@@ -48,9 +59,11 @@ services:
             ;;
         esac
         umask 077
-        printf 'requirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
+        printf 'save ""\nappendonly no\nrequirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
         chmod 600 /tmp/redis.conf
         exec redis-server /tmp/redis.conf
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
     healthcheck:
       test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping"]
       interval: 5s
@@ -312,10 +325,9 @@ services:
       - taskboard
     volumes:
       - ./docs/charts:/usr/share/nginx/html/charts:ro
-      # Development defaults to the repository certificate. Production sets these
-      # two variables to the host-managed Let's Encrypt certificate and key.
-      - ${AI_LAB_TLS_CERT_FILE:-./frontend/nginx/ailab.crt}:/etc/nginx/ssl/ailab.crt:ro
-      - ${AI_LAB_TLS_KEY_FILE:-./frontend/nginx/ailab.key}:/etc/nginx/ssl/ailab.key:ro
+      # TLS material must be supplied by the host; repository fallbacks are forbidden.
+      - ${AI_LAB_TLS_CERT_FILE:?Set a non-empty AI_LAB_TLS_CERT_FILE to the host TLS certificate path}:/etc/nginx/ssl/ailab.crt:ro
+      - ${AI_LAB_TLS_KEY_FILE:?Set a non-empty AI_LAB_TLS_KEY_FILE to the host TLS private key path}:/etc/nginx/ssl/ailab.key:ro
 
 volumes:
   pgdata:

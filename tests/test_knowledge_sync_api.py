@@ -15,7 +15,7 @@ os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
 
 def _headers() -> dict[str, str]:
     from datetime import datetime, timedelta, timezone
-    from jose import jwt
+    import jwt
 
     token = jwt.encode(
         {"sub": "sync-user", "exp": datetime.now(timezone.utc) + timedelta(hours=1)},

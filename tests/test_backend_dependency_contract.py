@@ -46,6 +46,10 @@ def test_api_and_bridge_dependency_boundary_excludes_packaged_hermes():
     assert 'hermes-agent==' not in bridge_lock
     assert 'cryptography==50.0.0' in api_lock
     assert 'cryptography==50.0.0' in bridge_lock
+    assert re.search(r'^pyjwt==2\.13\.0 \\$', api_lock, re.MULTILINE)
+    assert not re.search(r'^(?:python-jose|ecdsa|rsa|pyasn1)==', api_lock, re.MULTILINE)
+    assert 'sha256:7cec5b856506da6defb290f30c9ee687d5f5e8cb0bd3f6459dde43b0b4fa40ef' in api_lock
+    assert 'sha256:0dd2064cbc55aaec028ef5fbb60fa47bb6c3e7918e07ff17935284b227a9d2df' in api_lock
     for dependency in ('firecrawl-anydoc', 'nemo-relay', 'snowballstemmer'):
         assert dependency in bridge_input
         assert f'{dependency}==' in bridge_lock
@@ -53,7 +57,13 @@ def test_api_and_bridge_dependency_boundary_excludes_packaged_hermes():
 
 def test_docker_consumes_hash_locks_and_pinned_python_not_floating_input():
     dockerfile = (ROOT / 'backend/Dockerfile').read_text()
-    assert re.search(r'FROM python:3\.12\.\d+-slim-bookworm@sha256:[a-f0-9]{64}', dockerfile)
+    assert re.findall(r'^FROM (\S+)', dockerfile, re.MULTILINE) == [
+        'python:3.12.14-alpine3.23@sha256:'
+        '167bc85084c9df34480efc26b4528fb68feaa8a79183b5658952137025b6f061'
+    ]
+    assert 'RUN apk add --no-cache libuuid=2.41.6-r1 \\' in dockerfile
+    assert 'apk upgrade' not in dockerfile
+    assert not re.search(r'\blibuuid(?=\s|\\|$)', dockerfile)
     assert '--require-hashes -r requirements-build.lock' in dockerfile
     assert '--require-hashes --no-build-isolation -r requirements.lock' in dockerfile
     assert 'requirements-bridge-worker' not in dockerfile

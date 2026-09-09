@@ -1,6 +1,7 @@
 from pathlib import Path
 import json
 import re
+import subprocess
 
 import yaml
 
@@ -29,10 +30,40 @@ def test_runtime_images_are_pinned_reproducible_non_root_and_healthy() -> None:
     assert "registry.npmmirror.com" not in _dockerfile("frontend/package-lock.json")
 
 
+def test_infrastructure_wrappers_are_exact_non_root_and_healthy() -> None:
+    postgres = _dockerfile("infrastructure/postgres/Dockerfile")
+    redis = _dockerfile("infrastructure/redis/Dockerfile")
+
+    assert postgres.startswith(
+        "FROM postgres@sha256:"
+        "075f7ba66bc9b3ce7d6b8b635208ff61cd7cf1a67d71ec530eec5d7ae0cbe571\n"
+    )
+    assert redis.startswith(
+        "FROM redis@sha256:"
+        "1db42ccef14898aa29bae778452d567534b59c107129cbc1163fb552de184d3c\n"
+    )
+    assert re.findall(r"^RUN apk add --no-cache (.+?) \\$", postgres, re.MULTILINE) == [
+        "libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 libuuid=2.42.3-r1"
+    ]
+    assert not re.search(r"\b(?:libcrypto3|libssl3|libuuid)(?=\s|\\|$)", postgres)
+    assert "apk upgrade" not in postgres + redis
+    assert "rm -f /usr/local/bin/gosu" in postgres
+    assert "USER postgres" in postgres
+    assert 'pg_isready -U "${POSTGRES_USER:-postgres}" -d "${POSTGRES_DB:-postgres}"' in postgres
+    assert "USER redis" in redis
+    assert 'CMD ["sh", "-c", "REDISCLI_AUTH=\\"$REDIS_PASSWORD\\" redis-cli ping"]' in redis
+    assert 'CMD ["CMD-SHELL",' not in redis
+    assert not re.search(r"REDISCLI_AUTH=\s", redis)
+    assert "HEALTHCHECK" in postgres
+    assert "HEALTHCHECK" in redis
+    assert "ENTRYPOINT" not in postgres + redis
+    assert not re.search(r"^CMD ", postgres + redis, re.MULTILINE)
+
+
 def test_current_image_vulnerability_blockers_are_fixed() -> None:
     node_image = (
-        "node:22.23.2-bookworm-slim@sha256:"
-        "83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5"
+        "node:22.23.2-alpine3.23@sha256:"
+        "46825fbbd4e996a78b7a2cdc08d75e38a5a505bdab95dcda55605359bf124bc6"
     )
     taskboard = _dockerfile("apps/dashi-taskboard/Dockerfile")
     frontend = _dockerfile("frontend/Dockerfile")
@@ -51,6 +82,8 @@ def test_current_image_vulnerability_blockers_are_fixed() -> None:
     assert "apk upgrade" not in taskboard + frontend
 
     runtime = taskboard.split(f"FROM {node_image}\n", 1)[1]
+    assert "RUN apk add --no-cache libcrypto3=3.5.8-r0 libssl3=3.5.8-r0 \\" in runtime
+    assert not re.search(r"\b(?:libcrypto3|libssl3)(?=\s|\\|$)", runtime)
     assert "rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack" in runtime
     for link in ("npm", "npx", "corepack", "yarn", "yarnpkg", "pnpm", "pnpx"):
         assert f"/usr/local/bin/{link}" in runtime
@@ -69,9 +102,60 @@ def test_frontend_image_never_receives_or_copies_tls_private_keys() -> None:
     assert "frontend/nginx/*.key" in dockerignore
 
 
+def test_frontend_tls_files_are_untracked_and_require_explicit_host_paths() -> None:
+    compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    tracked_keys = subprocess.run(
+        ["git", "ls-files", "--", "frontend/nginx/*.key"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.splitlines()
+
+    assert all(not (ROOT / path).exists() for path in tracked_keys)
+    assert "/frontend/nginx/*.key" in gitignore
+    assert (
+        "${AI_LAB_TLS_CERT_FILE:?Set a non-empty AI_LAB_TLS_CERT_FILE to the host TLS certificate path}"
+        in compose
+    )
+    assert (
+        "${AI_LAB_TLS_KEY_FILE:?Set a non-empty AI_LAB_TLS_KEY_FILE to the host TLS private key path}"
+        in compose
+    )
+    assert "./frontend/nginx/ailab.crt" not in compose
+    assert "./frontend/nginx/ailab.key" not in compose
+    assert "AI_LAB_TLS_CERT_FILE=/path/to/tls/fullchain.pem" in env_example
+    assert "AI_LAB_TLS_KEY_FILE=/path/to/tls/privkey.pem" in env_example
+
+
 def test_compose_preserves_storage_tls_routes_and_non_root_users() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
+
+    assert services["postgres"]["image"] == (
+        "${AI_LAB_POSTGRES_IMAGE:-ai-lab-platform-postgres:offline}"
+    )
+    assert services["redis"]["image"] == (
+        "${AI_LAB_REDIS_IMAGE:-ai-lab-platform-redis:offline}"
+    )
+    assert services["postgres"]["build"] == {
+        "context": "./infrastructure/postgres",
+        "dockerfile": "Dockerfile",
+    }
+    assert services["redis"]["build"] == {
+        "context": "./infrastructure/redis",
+        "dockerfile": "Dockerfile",
+    }
+    assert "postgres:16-alpine" not in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "redis:7-alpine" not in (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+    for name, binding in (("postgres", "127.0.0.1:5432:5432"), ("redis", "127.0.0.1:6379:6379")):
+        assert services[name]["ports"] == [binding]
+        assert services[name]["healthcheck"]["test"][0] == "CMD-SHELL"
+        assert services[name]["healthcheck"]["interval"] == "5s"
+        assert services[name]["healthcheck"]["timeout"] == "3s"
+        assert services[name]["healthcheck"]["retries"] == 10
 
     api_build_args = services["api"]["build"]["args"]
     assert api_build_args == {
@@ -95,13 +179,15 @@ def test_compose_preserves_storage_tls_routes_and_non_root_users() -> None:
     assert services["frontend"]["sysctls"]["net.ipv4.ip_unprivileged_port_start"] == "0"
 
 
-def test_application_services_are_read_only_and_do_not_mount_host_hermes_state() -> None:
+def test_all_services_are_hardened_with_only_required_writable_storage() -> None:
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))
     services = compose["services"]
-    for name in (
-        "api", "workflow-worker", "planning-worker",
+    expected = {
+        "postgres", "redis", "api", "workflow-worker", "planning-worker",
         "agent-evaluation-worker", "taskboard", "frontend",
-    ):
+    }
+    assert set(services) == expected
+    for name in expected:
         service = services[name]
         assert service["read_only"] is True
         assert service["cap_drop"] == ["ALL"]
@@ -114,6 +200,17 @@ def test_application_services_are_read_only_and_do_not_mount_host_hermes_state()
             "quantumn-hermes/.hermes" in volume
             for volume in service.get("volumes", [])
         )
+
+    assert services["postgres"]["volumes"] == ["pgdata:/var/lib/postgresql/data"]
+    assert services["postgres"]["tmpfs"] == [
+        "/tmp:rw,noexec,nosuid,size=64m",
+        "/var/run/postgresql:rw,noexec,nosuid,size=16m,uid=70,gid=70,mode=0775",
+    ]
+    assert not services["redis"].get("volumes")
+    assert services["redis"]["tmpfs"] == ["/tmp:rw,noexec,nosuid,size=16m"]
+    redis_command = services["redis"]["command"][0]
+    assert "save \"\"\\nappendonly no\\nrequirepass %s\\n" in redis_command
+    assert "exec redis-server /tmp/redis.conf" in redis_command
 
 
 def test_production_requires_bridge_secret_and_closes_public_hermes_socket_routes() -> None:
@@ -145,8 +242,15 @@ def test_api_identity_is_attested_and_shared_mount_access_uses_acl() -> None:
 
     assert "resolve_api_runtime_identity" in script
     assert 'configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"' in script
-    assert 'groupadd --gid "$AI_LAB_RUNTIME_GID" ailab' in dockerfile
-    assert 'useradd --uid "$AI_LAB_RUNTIME_UID" --gid ailab' in dockerfile
+    assert 'ARG AI_LAB_RUNTIME_UID=10001' in dockerfile
+    assert 'ARG AI_LAB_RUNTIME_GID=10001' in dockerfile
+    assert 'addgroup -S -g "$AI_LAB_RUNTIME_GID" ailab' in dockerfile
+    assert (
+        'adduser -S -D -u "$AI_LAB_RUNTIME_UID" -G ailab '
+        '-h /home/ailab -s /sbin/nologin ailab'
+    ) in dockerfile
+    assert "groupadd" not in dockerfile
+    assert "useradd" not in dockerfile
     assert "HOME=/home/ailab" in dockerfile
     assert "USER ailab" in dockerfile
     assert 'verify_shared_data_access "$DATA_TARGET" "$API_RUNTIME_IMAGE" "$API_RUNTIME_UID"' in script
@@ -197,3 +301,36 @@ def test_measured_language_findings_are_removed_from_runtime() -> None:
     assert package_lock["packages"][""]["dependencies"]["js-yaml"] == "4.3.2"
     assert package_lock["packages"]["node_modules/js-yaml"]["version"] == "4.3.2"
     assert "rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack" in taskboard_dockerfile
+
+
+def test_taskboard_openssl_vex_is_bound_to_the_deployed_tcp_runtime() -> None:
+    node_image = (
+        "node:22.23.2-alpine3.23@sha256:"
+        "46825fbbd4e996a78b7a2cdc08d75e38a5a505bdab95dcda55605359bf124bc6"
+    )
+    vex = (ROOT / "ops/change-manifests/node-openssl-cve-2026-14456-vex.md").read_text(
+        encoding="utf-8"
+    )
+    taskboard_dockerfile = _dockerfile("apps/dashi-taskboard/Dockerfile")
+    entrypoint = _dockerfile("apps/dashi-taskboard/server/index.mjs")
+    server = _dockerfile("apps/dashi-taskboard/server/app.mjs")
+    taskboard = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))[
+        "services"
+    ]["taskboard"]
+
+    assert re.findall(r"^FROM (\S+)", taskboard_dockerfile, re.MULTILINE) == [
+        node_image,
+        node_image,
+    ]
+    assert 'CMD ["node", "server/index.mjs"]' in taskboard_dockerfile
+    assert re.findall(r"^EXPOSE (\S+)", taskboard_dockerfile, re.MULTILINE) == ["47823"]
+    assert taskboard["environment"]["CODEX_TASKBOARD_PORT"] == 47823
+    assert taskboard.get("ports", []) == []
+    assert 'import { createServer } from "node:http";' in server
+    forbidden_import = re.compile(
+        r'(?:from\s+|import\s*\(\s*|require\(\s*)["\'](?:node:)?(?:quic|http3|dgram)["\']'
+    )
+    assert forbidden_import.search(entrypoint + server) is None
+    assert node_image in vex
+    assert "process.versions.openssl=3.5.7" in vex
+    assert "https://openssl-library.org/news/secadv/20260813.txt" in vex

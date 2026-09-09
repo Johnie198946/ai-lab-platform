@@ -16,7 +16,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 
 os.environ.setdefault("AUTHEN_JWT_SECRET", "test-secret")
 

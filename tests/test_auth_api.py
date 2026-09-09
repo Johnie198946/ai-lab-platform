@@ -15,7 +15,7 @@ os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
 def _token(secret="test-secret", valid=True, **claims):
     from datetime import datetime, timedelta, timezone
 
-    from jose import jwt as jose_jwt
+    import jwt as jose_jwt
 
     payload = {"sub": "1", "username": "tester"}
     payload.update(claims)
@@ -251,7 +251,7 @@ class TestAuthAPI(unittest.TestCase):
         token = r.json()["token"]
         self.assertTrue(token)
         self.assertEqual(r.json()["tenant_key"], "u-test-dev")
-        from jose import jwt as jose_jwt
+        import jwt as jose_jwt
         import backend.api.auth as auth
         claims = jose_jwt.decode(
             token,

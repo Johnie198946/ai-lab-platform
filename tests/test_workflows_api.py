@@ -13,7 +13,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import httpx
-from jose import jwt as jose_jwt
+import jwt as jose_jwt
 from sqlalchemy import delete, func, select
 
 os.environ.setdefault("AUTHEN_JWT_SECRET", "test-secret")

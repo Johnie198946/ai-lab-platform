@@ -21,7 +21,8 @@ from typing import Any, Callable, Dict, FrozenSet, Optional
 
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 
 from backend.api.tenant import (
     current_org,
@@ -213,7 +214,7 @@ async def require_auth(
             )
         else:
             # Compatibility mode accepts both legacy tokens without provenance
-            # and new platform tokens that carry aud/iss. python-jose otherwise
+            # and new platform tokens that carry aud/iss. PyJWT otherwise
             # rejects a token containing aud when no expected audience is passed.
             decode_kwargs["options"] = {
                 "verify_aud": False,
@@ -226,10 +227,10 @@ async def require_auth(
             **decode_kwargs,
         )
         if AUTHEN_JWT_STRICT_PROVENANCE and payload.get("token_use") != "access":
-            raise JWTError("wrong token_use")
+            raise PyJWTError("wrong token_use")
         if not str(payload.get("sub") or "").strip():
-            raise JWTError("missing subject")
-    except JWTError:
+            raise PyJWTError("missing subject")
+    except PyJWTError:
         raise HTTPException(
             status_code=401,
             detail="Token 无效或已过期",

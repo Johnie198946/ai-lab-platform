@@ -11,7 +11,7 @@ os.environ["AUTHEN_JWT_SECRET"] = "test-secret"
 
 
 def _token(username="tester"):
-    from jose import jwt as jose_jwt
+    import jwt as jose_jwt
 
     return jose_jwt.encode(
         {
