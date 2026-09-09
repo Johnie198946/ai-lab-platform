@@ -59,7 +59,7 @@ services:
             ;;
         esac
         umask 077
-        printf 'save ""\nappendonly no\nrequirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
+        printf 'save ""\nappendonly no\ndir /tmp\nrequirepass %s\n' "$$REDIS_PASSWORD" > /tmp/redis.conf
         chmod 600 /tmp/redis.conf
         exec redis-server /tmp/redis.conf
     tmpfs:

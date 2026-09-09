@@ -4,15 +4,15 @@ task_id: production-security-deploy-blockers-20260909
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: bf85616634665023fe86836b1f8aef5b8a46b0c5 plus uncommitted failed-release observability changes
-remote_sha: bf85616634665023fe86836b1f8aef5b8a46b0c5; parent coordinator verified clean local `main` and `origin/main` equal before this continuation
-server_before: production was on the rollback release before the attempted deployment of 1944da7848ef5e4a8caeaf192d56436cf3a7b868
-server_after: deployment of 1944da7848ef5e4a8caeaf192d56436cf3a7b868 failed at Redis and completed rollback; production remains rolled back and the local healthcheck fix has not been deployed
-health_check: daemon evidence showed the failed Redis main process restarting without OOM; an isolated Compose candidate passed; rollback completed, but the exact cause remains pending preserved failed-release logs
-functional_check: deployment contracts passed (`78 passed`, 4 pre-existing warnings); `bash -n scripts/update.sh`, Ruff, and `git diff --check` passed; earlier broader checks are recorded below
-rollback_point: the failed deployment completed rollback to the prior production release; the exact rollback path was not captured in this local continuation
+head/local_commit: a32901dc75493259e8356fcac3d186bc1b7ba8e5 plus the uncommitted Redis working-directory fix
+remote_sha: a32901dc75493259e8356fcac3d186bc1b7ba8e5; parent coordinator verified clean local `main` and `origin/main` equal before this continuation
+server_before: production was on the prior rollback release before deployment of a32901dc75493259e8356fcac3d186bc1b7ba8e5
+server_after: deployment of a32901dc75493259e8356fcac3d186bc1b7ba8e5 failed at Redis and rollback restored the prior release; 8 containers were healthy and `hermes-bridge`/`hermes-chat-worker` were active; the local Redis working-directory fix has not been deployed
+health_check: failed-release diagnostics captured Redis exit 1 and `restart_count=6`; preserved logs proved its inherited `/data` working directory and legacy anonymous `/data` volume exposed an unreadable `dump.rdb`; after rollback, 8 containers were healthy
+functional_check: after rollback, `hermes-bridge` and `hermes-chat-worker` were active; focused local container/deployment contracts for the uncommitted fix passed (`92 passed`, 4 pre-existing warnings), along with dummy-secret Compose rendering, Bash syntax checks, Ruff, and `git diff --check`
+rollback_point: rollback restored the prior production release after the failed a32901dc75493259e8356fcac3d186bc1b7ba8e5 deployment; the exact rollback path was not captured in this local continuation
 manifest: ops/change-manifests/production-security-deploy-blockers-20260909-completion.md
-remaining_risks: the exact Redis restart cause remains unknown pending preserved failed-release logs; the Redis healthcheck fix is locally TESTED but not deployed; production remains rolled back, so production deployment plus health and functional verification of the fix are still pending
+remaining_risks: the local `dir /tmp` Redis working-directory fix is TESTED but uncommitted, unpushed, and undeployed; production is healthy on the prior rollback release, but the fix still requires commit, push, deployment, and production verification
 
 ## Inventory and architecture decision
 
@@ -27,7 +27,11 @@ remaining_risks: the exact Redis restart cause remains unknown pending preserved
 
 - Production Redis isolation: an isolated candidate used the actual production secret without printing it and reached healthy through the image `Config.Healthcheck`.
 - Production deployment attempt: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 subsequently failed at Redis under the Compose `CMD-SHELL` healthcheck override; automated rollback completed and production remains on the rolled-back release.
-- Daemon evidence from that attempt showed the failed Redis main process restarting and no OOM event. An isolated Compose candidate passes; the exact cause remains pending preserved failed-release logs.
+- Subsequent production deployment attempt: after failed-release observability was added in a32901dc75493259e8356fcac3d186bc1b7ba8e5, that commit was deployed. Redis failed because the legacy anonymous `/data` volume exposed an unreadable `/data/dump.rdb`; diagnostics captured exit 1 and `restart_count=6`. Rollback restored the prior release with 8 containers healthy and `hermes-bridge`/`hermes-chat-worker` active.
+- Root cause proved from the preserved failed-release logs: the candidate Redis image inherits `WORKDIR=/data` and `VOLUME /data`; Compose recreation preserved the legacy anonymous `/data` volume containing an unreadable `dump.rdb`, so the non-root Redis process exited 1 with `Fatal cannot open dump.rdb: Permission denied`.
+- Minimal fix: the generated `redis.conf` now sets `dir /tmp`, keeping `save ""` and `appendonly no`. This explicitly nonpersistent cache uses the existing bounded 16 MiB writable tmpfs and ignores legacy `/data` snapshots; no cache-volume chown, migration, recovery, named volume, root user, or relaxed read-only gate was added.
+- Redis working-directory regression: `PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q tests/test_container_hardening_contract.py tests/test_server_deployment_contract.py` passed (`92 passed`, 4 pre-existing Pydantic deprecation warnings). The contract proves persistence is disabled, `dir /tmp`, bounded `/tmp` tmpfs, no Redis service or named volume, and the existing non-root image healthcheck gates.
+- Redis working-directory static checks: dummy-secret `docker compose config --format json`, `bash -n scripts/update.sh scripts/deploy.sh scripts/renew_tls_certificate.sh`, Ruff over both focused contract files, and `git diff --check` passed.
 - Failed-release observability now captures bounded, timestamped, field-scoped diagnostics before rollback without inspecting environment/configuration data; diagnostic failures remain non-blocking. Deployment contract tests passed (`78 passed`, 4 pre-existing warnings).
 - Fixed CPython runtime: the archive had already been uploaded and hash-verified, and its runtime verifier passed. The earlier statement that the archive was absent or unverified was stale and has been removed.
 - Redis healthcheck follow-up: removed the Compose override that embedded `REDISCLI_AUTH`; `verify_offline_images` now requires a structured Compose healthcheck only for PostgreSQL, while its existing image `Config.Healthcheck` validation still covers Redis and all seven other service labels. PostgreSQL and Redis loopback binding checks remain enforced.
@@ -53,7 +57,7 @@ remaining_risks: the exact Redis restart cause remains unknown pending preserved
 
 ## Delivery
 
-- commit: the failed-release observability changes are uncommitted; the Redis healthcheck fix is committed at `bf85616634665023fe86836b1f8aef5b8a46b0c5`.
-- push: the parent coordinator verified `bf85616634665023fe86836b1f8aef5b8a46b0c5` on `origin/main`; the observability changes have not been pushed.
-- deploy: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 was attempted, failed at Redis, and completed rollback; neither `bf85616634665023fe86836b1f8aef5b8a46b0c5` nor the observability changes have been deployed.
-- production status: rolled back; neither the Redis fix nor the observability change may be treated as deployed or online.
+- commit: the Redis working-directory fix is uncommitted on top of `a32901dc75493259e8356fcac3d186bc1b7ba8e5`.
+- push: the parent coordinator verified `a32901dc75493259e8356fcac3d186bc1b7ba8e5` on `origin/main` before this continuation; the Redis working-directory fix has not been pushed.
+- deploy: 1944da7848ef5e4a8caeaf192d56436cf3a7b868 was first attempted, failed at Redis, and completed rollback. After observability was added, a32901dc75493259e8356fcac3d186bc1b7ba8e5 was also deployed; it failed on the legacy unreadable `/data/dump.rdb`, diagnostics captured exit 1 and `restart_count=6`, and rollback restored the prior release. The local `dir /tmp` fix has not been deployed.
+- production status: healthy on the restored prior release with 8 containers healthy and `hermes-bridge`/`hermes-chat-worker` active; a32901dc75493259e8356fcac3d186bc1b7ba8e5 was deployed but rolled back, and the local `dir /tmp` fix remains uncommitted and undeployed.

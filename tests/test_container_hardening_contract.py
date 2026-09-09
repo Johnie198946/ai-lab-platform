@@ -230,9 +230,12 @@ def test_all_services_are_hardened_with_only_required_writable_storage() -> None
         "/var/run/postgresql:rw,noexec,nosuid,size=16m,uid=70,gid=70,mode=0775",
     ]
     assert not services["redis"].get("volumes")
+    assert "redis" not in compose.get("volumes", {})
     assert services["redis"]["tmpfs"] == ["/tmp:rw,noexec,nosuid,size=16m"]
     redis_command = services["redis"]["command"][0]
-    assert "save \"\"\\nappendonly no\\nrequirepass %s\\n" in redis_command
+    assert "save \"\"\\n" in redis_command
+    assert "appendonly no\\n" in redis_command
+    assert "dir /tmp\\n" in redis_command
     assert "exec redis-server /tmp/redis.conf" in redis_command
 
 
