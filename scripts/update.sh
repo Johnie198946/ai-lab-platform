@@ -552,6 +552,107 @@ repair_taskboard_data_permissions() {
     -R 1000:1000 /data
 }
 
+managed_compose_services() {
+  printf '%s\n' postgres redis api workflow-worker planning-worker \
+    agent-evaluation-worker taskboard frontend
+}
+
+normalize_mutable_image_reference() {
+  local reference="$1" leaf="${1##*/}"
+  if [[ -z "$reference" || "$reference" == *@* || "$reference" =~ ^sha256: \
+    || "$reference" =~ ^[0-9a-f]{12,64}$ ]]; then
+    echo "ERROR: rollback requires an ordinary mutable image tag: ${reference:-<empty>}" >&2
+    return 1
+  fi
+  if [[ "$leaf" != *:* ]]; then
+    reference="$reference:latest"
+  fi
+  if [[ ! "$reference" =~ ^[a-z0-9]+([._-][a-z0-9]+)*(:[0-9]+)?(/[a-z0-9]+([._-][a-z0-9]+)*)*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+    echo "ERROR: rollback requires an ordinary mutable image tag: ${reference:-<empty>}" >&2
+    return 1
+  fi
+  printf '%s\n' "$reference"
+}
+
+validate_mutable_image_reference() {
+  normalize_mutable_image_reference "$1" >/dev/null
+}
+
+snapshot_managed_images() {
+  local config service containers count container image_id available_id image_ref temp_file
+  config="$(cd "$CURRENT_DIR" && docker compose -p "$COMPOSE_PROJECT" config --format json)" || return 1
+  if ! python3 -c '
+import json, sys
+services = json.load(sys.stdin).get("services", {})
+raise SystemExit(0 if all(service in services for service in sys.argv[1:]) else 1)
+' $(managed_compose_services) <<< "$config"; then
+    echo "ERROR: Compose config must contain all managed services" >&2
+    return 1
+  fi
+  IMAGE_ROLLBACK_FILE="$UNIT_BACKUP_DIR/compose-images.tsv"
+  temp_file="$(mktemp "$UNIT_BACKUP_DIR/.compose-images.XXXXXX")"
+  chmod 0600 "$temp_file"
+  while IFS= read -r service; do
+    containers="$(cd "$CURRENT_DIR" && docker compose -p "$COMPOSE_PROJECT" ps -q --all "$service")" || return 1
+    count="$(printf '%s\n' "$containers" | awk 'NF {count++} END {print count+0}')"
+    if [ "$count" -ne 1 ]; then
+      echo "ERROR: expected exactly one existing container for rollback: $service (found $count)" >&2
+      return 1
+    fi
+    container="$(printf '%s\n' "$containers" | awk 'NF {print}')"
+    image_id="$(docker inspect --format '{{.Image}}' "$container")" || return 1
+    image_ref="$(docker inspect --format '{{.Config.Image}}' "$container")" || return 1
+    if [[ ! "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "ERROR: invalid existing container image ID for rollback: $service=${image_id:-<empty>}" >&2
+      return 1
+    fi
+    image_ref="$(normalize_mutable_image_reference "$image_ref")" || return 1
+    available_id="$(docker image inspect --format '{{.Id}}' "$image_id")" || return 1
+    if [ "$available_id" != "$image_id" ]; then
+      echo "ERROR: existing container image is unavailable for rollback: $service" >&2
+      return 1
+    fi
+    printf '%s\t%s\t%s\n' "$service" "$image_id" "$image_ref" >> "$temp_file"
+  done < <(managed_compose_services)
+  mv -f "$temp_file" "$IMAGE_ROLLBACK_FILE"
+}
+
+restore_managed_images() {
+  local service expected_id image_ref actual count
+  if [ -L "$IMAGE_ROLLBACK_FILE" ] || [ ! -f "$IMAGE_ROLLBACK_FILE" ] \
+    || [ "$(stat -c '%u' "$IMAGE_ROLLBACK_FILE")" != "0" ] \
+    || [ $((8#$(stat -c '%a' "$IMAGE_ROLLBACK_FILE") & 8#077)) -ne 0 ]; then
+    echo "ERROR: rollback image snapshot is missing or not root-only" >&2
+    return 1
+  fi
+  if ! awk -F '\t' 'NF != 3 {bad=1} END {exit bad || NR != 8}' "$IMAGE_ROLLBACK_FILE"; then
+    echo "ERROR: rollback image snapshot must contain exactly eight valid records" >&2
+    return 1
+  fi
+  while IFS= read -r service; do
+    count="$(awk -F '\t' -v service="$service" '$1 == service {count++} END {print count+0}' "$IMAGE_ROLLBACK_FILE")"
+    if [ "$count" -ne 1 ]; then
+      echo "ERROR: rollback image snapshot must contain exactly one record: $service" >&2
+      return 1
+    fi
+    IFS=$'\t' read -r _ expected_id image_ref < <(awk -F '\t' -v service="$service" '$1 == service {print}' "$IMAGE_ROLLBACK_FILE")
+    if [[ ! "$expected_id" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+      echo "ERROR: invalid saved rollback image ID: $service" >&2
+      return 1
+    fi
+    validate_mutable_image_reference "$image_ref" || return 1
+    docker image tag "$expected_id" "$image_ref" || return 1
+  done < <(managed_compose_services)
+  while IFS= read -r service; do
+    IFS=$'\t' read -r _ expected_id image_ref < <(awk -F '\t' -v service="$service" '$1 == service {print}' "$IMAGE_ROLLBACK_FILE")
+    actual="$(docker image inspect --format '{{.Id}}' "$image_ref")" || return 1
+    if [ "$actual" != "$expected_id" ]; then
+      echo "ERROR: restored rollback image tag does not resolve to saved ID: $service" >&2
+      return 1
+    fi
+  done < <(managed_compose_services)
+}
+
 managed_unit_paths() {
   printf '%s\n' \
     hermes-bridge.service:/etc/systemd/system/hermes-bridge.service \
@@ -672,6 +773,7 @@ rollback_deployment() {
     fi
   fi
   cd "$CURRENT_DIR" || return 1
+  restore_managed_images || return 1
   docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never || return 1
   restart_hermes_runtime || return 1
   verify_rollback_health || return 1
@@ -705,6 +807,7 @@ BRIDGE_WORKER_VENV_BEFORE=""
 BRIDGE_WORKER_VENV_HAD_LINK=0
 BRIDGE_WORKER_VENV_SWITCHED=0
 UNIT_BACKUP_DIR=""
+IMAGE_ROLLBACK_FILE=""
 CERT_TIMER_WAS_ENABLED=0
 CERT_TIMER_WAS_ACTIVE=0
 BRIDGE_WAS_ACTIVE=0
@@ -837,6 +940,7 @@ resolve_api_runtime_identity
 configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"
 AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only
 snapshot_managed_units
+snapshot_managed_images
 RUNTIME_CHANGED=1
 echo "==> [3a/6] 执行 QuantumWorkspace additive schema migration"
 docker compose -p "$COMPOSE_PROJECT" run --rm --no-deps --pull never api \

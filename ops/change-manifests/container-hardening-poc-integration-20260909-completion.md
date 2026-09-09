@@ -1,21 +1,22 @@
 # Container hardening POC integration — tested, not deployed
 
 task_id: container-hardening-poc-integration-20260909
-status: TESTED_NOT_DEPLOYED
+status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: 297ffc617a34592acce3021e401851de1a8b9288 plus uncommitted changes
+head/local_commit: 364a8c80fb34fdd08598735e6a25659418f1b630 plus uncommitted changes
 remote_sha: not reverified in this documentation step
 server_before: not inspected
 server_after: not applicable; no deployment performed
 health_check: local image and Compose health checks passed as recorded below; no production health check ran
-functional_check: focused dependency/container/deployment contracts `60 passed`; Ruff, `bash -n`, Compose config with complete dummy secrets, and `git diff --check` passed
+functional_check: focused deployment contract `59 passed`; production-shaped build-only Compose, implicit-`latest` container refs, registry-port normalization, fail-closed cases, and retag-before-Compose ordering passed. `bash -n scripts/update.sh` and `git diff --check` passed.
 rollback_point: not created; no deployment performed
 manifest: ops/change-manifests/container-hardening-poc-integration-20260909-completion.md
-remaining_risks: generate the eight-label archive and exact eight-line attestation; verify archive image IDs and SHA-256; commit and push; deploy; then verify production readback, authentication, durable Chat, TLS renewal, rollback, and iOS. Production authentication remains unverified. This phase did not deploy or close the incident.
+remaining_risks: generate the eight-label archive and exact eight-line attestation; verify archive image IDs and SHA-256; commit and push; deploy; then verify production readback, authentication, durable Chat, TLS renewal, real-Docker rollback image identity restoration, and iOS. Production authentication and rollback remain unverified. This phase did not load images, deploy, or close the incident.
 
 ## Independently verified evidence
 
+- `PYTHONPATH=. PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider -q tests/test_server_deployment_contract.py`: `59 passed`, including all eight production-shaped `.Image`/`.Config.Image` snapshot rows, implicit-`latest` normalization, retag-before-Compose ordering, and fail-closed missing/duplicate/bad-ID/digest cases. `bash -n scripts/update.sh` and `git diff --check` also passed.
 - Final image IDs:
   - API, workflow worker, planning worker, and agent-evaluation worker: `sha256:f660751bc4466dd0863a814df0010519fa9d16c4d0586eb96b7acc55539cceda`.
   - Taskboard: `sha256:9f9dd0f22fbe10a4cb49ed02fdaf80add3b5d31e0418e93102f21bf8a604ac34`.

@@ -17,6 +17,18 @@ HERMES_AGENT_ROOT = f"{HERMES_HOME}/hermes-agent"
 HERMES_PYTHON = f"{HERMES_AGENT_ROOT}/venv/bin/python"
 HERMES_LAUNCHER = f"{HERMES_ACCOUNT_HOME}/.local/bin/hermes"
 BRIDGE_WORKER_PYTHON = f"{HERMES_ACCOUNT_HOME}/bridge-worker-venv/bin/python"
+MANAGED_COMPOSE_SERVICES = (
+    "postgres", "redis", "api", "workflow-worker", "planning-worker",
+    "agent-evaluation-worker", "taskboard", "frontend",
+)
+PRODUCTION_ROLLBACK_REFS = {
+    "postgres": "postgres:16-alpine",
+    "redis": "redis:7-alpine",
+    **{
+        service: f"ai-lab-platform-{service}"
+        for service in MANAGED_COMPOSE_SERVICES[2:]
+    },
+}
 
 
 def test_server_deploy_pins_cloud_agent_os_mode_and_refreshes_runtime() -> None:
@@ -750,6 +762,241 @@ verify_rollback_health
         capture_output=True, text=True,
     )
     assert result.returncode != 0
+
+
+def test_rollback_image_snapshot_uses_container_refs_for_build_only_services(
+    tmp_path: Path,
+) -> None:
+    current = tmp_path / "current"
+    rollback = tmp_path / "rollback"
+    current.mkdir()
+    rollback.mkdir()
+    config = json.dumps({"services": {
+        service: (
+            {"image": PRODUCTION_ROLLBACK_REFS[service]}
+            if service in ("postgres", "redis")
+            else {"build": {"context": "."}}
+        )
+        for service in MANAGED_COMPOSE_SERVICES
+    }})
+    image_ids = {service: "sha256:" + f"{index:x}" * 64
+                 for index, service in enumerate(MANAGED_COMPOSE_SERVICES, 1)}
+    inspect_cases = "\n".join(
+        f"    {service}-container) image_id='{image_id}'; "
+        f"image_ref='{PRODUCTION_ROLLBACK_REFS[service]}' ;;"
+        for service, image_id in image_ids.items()
+    )
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{
+  if [ "$1" = compose ] && [[ "$*" == *" config --format json"* ]]; then printf '%s\n' "$CONFIG"; return; fi
+  if [ "$1" = compose ] && [[ "$*" == *" ps -q --all "* ]]; then printf '%s-container\n' "${{@: -1}}"; return; fi
+  if [ "$1 $2" = 'image inspect' ]; then printf '%s\n' "${{@: -1}}"; return; fi
+  if [ "$1" = inspect ]; then
+    case "${{@: -1}}" in
+{inspect_cases}
+      *) return 98 ;;
+    esac
+    if [[ "$3" == *Config.Image* ]]; then printf '%s\n' "$image_ref"; else printf '%s\n' "$image_id"; fi
+    return
+  fi
+  return 99
+}}
+CURRENT_DIR='{current}'
+UNIT_BACKUP_DIR='{rollback}'
+COMPOSE_PROJECT=contract-test
+snapshot_managed_images
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1", "CONFIG": config},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (rollback / "compose-images.tsv").read_text(encoding="utf-8").splitlines() == [
+        f"{service}\t{image_ids[service]}\t"
+        f"{PRODUCTION_ROLLBACK_REFS[service]}{'' if service in ('postgres', 'redis') else ':latest'}"
+        for service in MANAGED_COMPOSE_SERVICES
+    ]
+
+
+def test_rollback_image_reference_normalization_is_registry_port_aware() -> None:
+    command = f'''source "{UPDATE_SCRIPT}"
+normalize_mutable_image_reference registry.local:5000/team/api
+normalize_mutable_image_reference registry.local:5000/team/api:old
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        "registry.local:5000/team/api:latest",
+        "registry.local:5000/team/api:old",
+    ]
+
+
+@pytest.mark.parametrize("mode", (
+    "missing-service", "missing-container", "duplicate-container", "missing-ref",
+    "digest-ref", "id-ref", "malformed-ref", "bad-id",
+))
+def test_rollback_image_snapshot_fails_closed_for_missing_or_invalid_state(
+    tmp_path: Path, mode: str,
+) -> None:
+    current = tmp_path / "current"
+    rollback = tmp_path / "rollback"
+    current.mkdir()
+    rollback.mkdir()
+    services = {name: {"build": {"context": "."}} for name in MANAGED_COMPOSE_SERVICES}
+    if mode == "missing-service":
+        del services["redis"]
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{
+  if [ "$1" = compose ] && [[ "$*" == *" config --format json"* ]]; then printf '%s\n' "$CONFIG"; return; fi
+  if [ "$1" = compose ]; then
+    service="${{@: -1}}"
+    [ "$MODE" = missing-container ] && [ "$service" = redis ] && return
+    printf '%s-container\n' "$service"
+    [ "$MODE" = duplicate-container ] && [ "$service" = redis ] && printf '%s-container-2\n' "$service"
+    return
+  fi
+  if [ "$1" = inspect ]; then
+    image_id="sha256:$(printf '%064d' 0)"
+    image_ref="registry.local:5000/team/${{@: -1}}"
+    [ "$MODE" = bad-id ] && [ "${{@: -1}}" = redis-container ] && image_id=invalid
+    [ "$MODE" = missing-ref ] && [ "${{@: -1}}" = redis-container ] && image_ref=
+    [ "$MODE" = digest-ref ] && [ "${{@: -1}}" = redis-container ] && image_ref="redis@sha256:$(printf '%064d' 0)"
+    [ "$MODE" = id-ref ] && [ "${{@: -1}}" = redis-container ] && image_ref="sha256:$(printf '%064d' 0)"
+    [ "$MODE" = malformed-ref ] && [ "${{@: -1}}" = redis-container ] && image_ref='UPPER/repo'
+    if [[ "$3" == *Config.Image* ]]; then printf '%s\n' "$image_ref"; else printf '%s\n' "$image_id"; fi
+    return
+  fi
+  printf 'sha256:%064d\n' 0
+}}
+CURRENT_DIR='{current}'
+UNIT_BACKUP_DIR='{rollback}'
+COMPOSE_PROJECT=contract-test
+snapshot_managed_images
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "CONFIG": json.dumps({"services": services}), "MODE": mode,
+        },
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert not (rollback / "compose-images.tsv").exists()
+
+
+def test_rollback_retags_and_verifies_every_old_image_before_compose_up(tmp_path: Path) -> None:
+    snapshot = tmp_path / "compose-images.tsv"
+    records = []
+    cases = []
+    for index, service in enumerate(MANAGED_COMPOSE_SERVICES, 1):
+        image_id = "sha256:" + f"{index:x}" * 64
+        ref = PRODUCTION_ROLLBACK_REFS[service]
+        if service not in ("postgres", "redis"):
+            ref += ":latest"
+        records.append(f"{service}\t{image_id}\t{ref}\n")
+        cases.append(f"    {ref}) printf '%s\\n' '{image_id}' ;;")
+    snapshot.write_text("".join(records), encoding="utf-8")
+    events = tmp_path / "events"
+    command = f'''source "{UPDATE_SCRIPT}"
+stat() {{ [ "$2" = '%u' ] && printf '0\n' || printf '600\n'; }}
+restore_managed_units() {{ return 0; }}
+restart_hermes_runtime() {{ return 0; }}
+verify_rollback_health() {{ return 0; }}
+docker() {{
+  if [ "$1 $2" = 'image tag' ]; then printf 'tag %s %s\n' "$3" "$4" >> '{events}'; return; fi
+  if [ "$1 $2" = 'image inspect' ]; then
+    printf 'inspect %s\n' "${{@: -1}}" >> '{events}'
+    case "${{@: -1}}" in
+{chr(10).join(cases)}
+      *) return 98 ;;
+    esac
+    return
+  fi
+  printf 'compose %s\n' "$*" >> '{events}'
+}}
+IMAGE_ROLLBACK_FILE='{snapshot}'
+CURRENT_DIR='{tmp_path}'
+COMPOSE_PROJECT=contract-test
+SWITCHED=0
+BRIDGE_WORKER_VENV_SWITCHED=0
+rollback_deployment
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    lines = events.read_text(encoding="utf-8").splitlines()
+    compose_index = next(i for i, line in enumerate(lines) if line.startswith("compose "))
+    assert compose_index == 16
+    assert all(line.startswith("tag ") for line in lines[:8])
+    assert all(line.startswith("inspect ") for line in lines[8:16])
+    assert lines[compose_index] == "compose compose -p contract-test up -d --no-build --pull never"
+
+
+@pytest.mark.parametrize("mode", ("missing-record", "identity-mismatch"))
+def test_rollback_image_restore_fails_closed_for_missing_record_or_identity_mismatch(
+    tmp_path: Path, mode: str,
+) -> None:
+    snapshot = tmp_path / "compose-images.tsv"
+    records = []
+    for service in MANAGED_COMPOSE_SERVICES:
+        if mode == "missing-record" and service == "redis":
+            continue
+        records.append(f"{service}\t{'sha256:' + 'a' * 64}\tregistry.local/{service}:old\n")
+    snapshot.write_text("".join(records), encoding="utf-8")
+    command = f'''source "{UPDATE_SCRIPT}"
+stat() {{ [ "$2" = '%u' ] && printf '0\n' || printf '600\n'; }}
+docker() {{
+  [ "$1 $2" = 'image tag' ] && return
+  [ "$MODE" = identity-mismatch ] && [ "${{@: -1}}" = registry.local/redis:old ] && {{ printf 'sha256:%064d\n' 0; return; }}
+  printf 'sha256:%064s\n' a | tr ' ' a
+}}
+IMAGE_ROLLBACK_FILE='{snapshot}'
+restore_managed_images
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1", "MODE": mode},
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+
+
+def test_code_only_symlink_rollback_cannot_pass_without_image_snapshot(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    new = tmp_path / "new"
+    old.mkdir()
+    new.mkdir()
+    app = tmp_path / "app"
+    app.symlink_to(new)
+    events = tmp_path / "events"
+    command = f'''source "{UPDATE_SCRIPT}"
+restore_managed_units() {{ return 0; }}
+mv() {{ rm -f "$3"; command mv "$2" "$3"; }}
+docker() {{ printf '%s\n' "$*" >> '{events}'; }}
+CURRENT_DIR='{old}'
+APP_LINK='{app}'
+IMAGE_ROLLBACK_FILE='{tmp_path / "missing.tsv"}'
+SWITCHED=1
+BRIDGE_WORKER_VENV_SWITCHED=0
+rollback_deployment
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert app.resolve() == old
+    assert not events.exists()
 
 
 def test_offline_images_extract_each_field_without_separator_parsing_and_validate_metadata(

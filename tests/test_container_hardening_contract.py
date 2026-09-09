@@ -260,7 +260,7 @@ def test_deploy_repairs_existing_taskboard_volume() -> None:
     script = (ROOT / "scripts/update.sh").read_text(encoding="utf-8")
 
     helper = script[script.index("repair_taskboard_data_permissions() {"):script.index(
-        "managed_unit_paths() {"
+        "managed_compose_services() {"
     )]
     for restriction in (
         'docker run --rm --pull never --network none --read-only',
