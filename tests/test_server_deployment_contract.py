@@ -52,9 +52,10 @@ def test_server_deploy_rechecks_private_note_write_access_after_runtime_restart(
     script = UPDATE_SCRIPT.read_text(encoding="utf-8")
     restart = script.index("restart_hermes_runtime\n", script.index("SWITCHED=1"))
     second_repair = script.index("repair_user_note_permissions.py", restart)
-    write_probe = script.index(".api-write-probe-", second_repair)
+    acl_repair = script.index('configure_shared_data_acl "$DATA_TARGET"', second_repair)
+    write_probe = script.index('verify_shared_data_access "$DATA_TARGET"', acl_repair)
     final_health = script.index('echo "==> [6/6] 最终健康检查"', write_probe)
-    assert restart < second_repair < write_probe < final_health
+    assert restart < second_repair < acl_repair < write_probe < final_health
 
 
 def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_access() -> None:
@@ -68,7 +69,7 @@ def test_server_deploy_repairs_durable_store_directory_and_probes_api_write_acce
     assert 'chmod 0600 "$lock"' in script
     assert 'for path in "$vault_root/raw" "$vault_root/raw/dialogues"' in script
     assert 'echo "ERROR: note path ancestor must be a real directory: $path"' in script
-    assert 'data_probe=pathlib.Path(tempfile.mkdtemp' in script
+    assert 'verify_shared_data_access "$DATA_TARGET" "$API_RUNTIME_IMAGE" "$API_RUNTIME_UID"' in script
 
 
 def test_server_deploy_repairs_knowledge_matrix_before_non_root_audit() -> None:
@@ -572,6 +573,183 @@ repair_taskboard_data_permissions
     assert result.returncode != 0
     assert expected_error in result.stderr
     assert not events.exists()
+
+
+@pytest.mark.parametrize(
+    ("runtime_uid", "expected"),
+    (("10001", 0), ("0", 1), ("", 1), ("root", 1), ("12x", 1)),
+)
+def test_api_runtime_uid_is_read_from_hardened_attested_image_and_validated(
+    tmp_path: Path, runtime_uid: str, expected: int,
+) -> None:
+    events = tmp_path / "events"
+    image = "registry.local/api@sha256:" + "a" * 64
+    config = json.dumps({"services": {"api": {"image": image}}})
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{
+  if [ "$1" = compose ]; then printf '%s\n' "$CONFIG"; return; fi
+  printf '<%s>\n' "$@" > '{events}'
+  printf '%s\n' "$RUNTIME_UID"
+}}
+COMPOSE_PROJECT=contract-test
+ATTESTED_API_IMAGE='{image}'
+resolve_api_runtime_identity
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "CONFIG": config, "RUNTIME_UID": runtime_uid,
+        },
+        capture_output=True, text=True,
+    )
+    assert result.returncode == expected
+    assert events.read_text(encoding="utf-8").splitlines() == [
+        "<run>", "<--rm>", "<--pull>", "<never>", "<--network>", "<none>",
+        "<--read-only>", "<--cap-drop>", "<ALL>", "<--security-opt>",
+        "<no-new-privileges>", "<--entrypoint>", "<id>", f"<{image}>", "<-u>",
+    ]
+    if expected:
+        assert "runtime UID must be a non-zero integer" in result.stderr
+
+
+@pytest.mark.parametrize("missing", ("setfacl", "getfacl"))
+def test_shared_data_acl_requires_acl_tools(tmp_path: Path, missing: str) -> None:
+    shared = tmp_path / "shared"
+    data = shared / "data"
+    data.mkdir(parents=True)
+    command = f'''source "{UPDATE_SCRIPT}"
+command() {{ [ "$1" = -v ] || return 99; [ "$2" != "$MISSING" ]; }}
+SHARED_ROOT='{shared}'
+configure_shared_data_acl '{data}' 10001 995
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1", "MISSING": missing},
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
+    assert f"{missing} is required" in result.stderr
+
+
+def test_shared_data_acl_is_exact_bounded_recursive_and_defaulted(tmp_path: Path) -> None:
+    shared = tmp_path / "shared"
+    data = shared / "data"
+    (data / "nested").mkdir(parents=True)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    events = tmp_path / "events"
+    command = f'''source "{UPDATE_SCRIPT}"
+command() {{ [ "$1" = -v ]; }}
+setfacl() {{ printf '<%s>\n' "$@" >> '{events}'; }}
+getfacl() {{ printf '%s\n' user:10001:rwx user:995:rwx default:user:10001:rwx default:user:995:rwx; }}
+SHARED_ROOT='{shared}'
+configure_shared_data_acl "$TARGET" 10001 995
+'''
+    rejected = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1", "TARGET": str(outside)},
+        capture_output=True, text=True,
+    )
+    assert rejected.returncode != 0
+    assert "exact shared data tree" in rejected.stderr
+    assert not events.exists()
+
+    accepted = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1", "TARGET": str(data)},
+        capture_output=True, text=True,
+    )
+    assert accepted.returncode == 0, accepted.stderr
+    calls = events.read_text(encoding="utf-8")
+    assert "<-P>" in calls and "<u:10001:rwX,u:995:rwX,m::rwX>" in calls
+    assert calls.count("<d:u:10001:rwx,d:u:995:rwx,d:m::rwx>") == 2
+    assert f"<{data}>" in calls and f"<{data / 'nested'}>" in calls
+    assert "o::" not in calls and str(outside) not in calls
+
+
+def test_shared_data_runtime_probes_use_only_exact_data_mount_and_both_identities(
+    tmp_path: Path,
+) -> None:
+    events = tmp_path / "events"
+    data = tmp_path / "shared" / "data"
+    data.mkdir(parents=True)
+    image = "registry.local/api@sha256:" + "b" * 64
+    command = f'''source "{UPDATE_SCRIPT}"
+docker() {{ printf 'docker <%s>\n' "$@" >> '{events}'; }}
+runuser() {{ printf 'runuser <%s>\n' "$@" >> '{events}'; }}
+SHARED_ROOT='{data.parent}'
+verify_shared_data_access '{data}' '{image}' 10001
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = events.read_text(encoding="utf-8")
+    for token in (
+        "docker <--pull>", "docker <never>", "docker <--network>", "docker <none>",
+        "docker <--read-only>", "docker <--cap-drop>", "docker <ALL>",
+        "docker <no-new-privileges>",
+        f"docker <type=bind,src={data},dst=/app/data>", "docker <EXPECTED_UID=10001>",
+        "knowledge_matrix.json", "hermes_chat_runs.sqlite3", ".incremental-compile.lock",
+        "vault/raw/dialogues/tenants", "runuser <-u>", "runuser <quantumn-hermes>",
+    ):
+        assert token in calls
+    assert calls.count("docker <type=bind,") == 1
+
+
+def test_rollback_health_uses_restored_legacy_bridge_address_not_candidate(tmp_path: Path) -> None:
+    env_file = tmp_path / "hermes-bridge.env"
+    env_file.write_text("HERMES_BRIDGE_BIND_ADDRESS=172.18.0.1\n", encoding="utf-8")
+    events = tmp_path / "events"
+    command = f'''source "{UPDATE_SCRIPT}"
+verify_application_services() {{ printf '%s\n' applications >> '{events}'; }}
+systemctl() {{ return 0; }}
+ip() {{ printf '%s\n' '7: br-old inet 172.18.0.1/16 scope global br-old'; }}
+docker() {{ printf '%s\n' "$*" >> '{events}'; [[ "$*" == *172.18.0.1* ]]; }}
+HERMES_BRIDGE_ENV_FILE='{env_file}'
+HERMES_BRIDGE_BIND_ADDRESS=172.19.0.1
+COMPOSE_PROJECT=contract-test
+BRIDGE_WAS_ACTIVE=1
+CHAT_WORKER_WAS_ACTIVE=1
+verify_rollback_health
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = events.read_text(encoding="utf-8")
+    assert "host.docker.internal" in calls
+    assert "http://172.18.0.1:9118/health" in calls
+    assert "172.19.0.1" not in calls
+
+
+@pytest.mark.parametrize("restored", ("172.18.0.1;true", "203.0.113.8", "172.18.0.2"))
+def test_rollback_health_rejects_malformed_public_or_unassigned_restored_address(
+    tmp_path: Path, restored: str,
+) -> None:
+    env_file = tmp_path / "hermes-bridge.env"
+    env_file.write_text(f"HERMES_BRIDGE_BIND_ADDRESS={restored}\n", encoding="utf-8")
+    command = f'''source "{UPDATE_SCRIPT}"
+verify_application_services() {{ return 0; }}
+systemctl() {{ return 0; }}
+ip() {{ printf '%s\n' '7: br-old inet 172.18.0.1/16 scope global br-old'; }}
+docker() {{ return 99; }}
+HERMES_BRIDGE_ENV_FILE='{env_file}'
+BRIDGE_WAS_ACTIVE=1
+CHAT_WORKER_WAS_ACTIVE=1
+verify_rollback_health
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True, text=True,
+    )
+    assert result.returncode != 0
 
 
 def test_offline_images_extract_each_field_without_separator_parsing_and_validate_metadata(

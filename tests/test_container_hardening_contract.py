@@ -139,18 +139,17 @@ def test_production_cors_is_explicit_and_api_docs_are_disabled() -> None:
     assert "allow_origins=_cors_origins if _production else [\"*\"]" in main
 
 
-def test_api_identity_and_host_owned_mounts_use_the_same_uid() -> None:
+def test_api_identity_is_attested_and_shared_mount_access_uses_acl() -> None:
     script = (ROOT / "scripts/update.sh").read_text(encoding="utf-8")
     dockerfile = _dockerfile("backend/Dockerfile")
 
-    assert 'export AI_LAB_RUNTIME_UID="$(id -u quantumn-hermes)"' in script
-    assert 'export AI_LAB_RUNTIME_GID="$(id -g quantumn-hermes)"' in script
+    assert "resolve_api_runtime_identity" in script
+    assert 'configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"' in script
     assert 'groupadd --gid "$AI_LAB_RUNTIME_GID" ailab' in dockerfile
     assert 'useradd --uid "$AI_LAB_RUNTIME_UID" --gid ailab' in dockerfile
     assert "HOME=/home/ailab" in dockerfile
     assert "USER ailab" in dockerfile
-    assert 'repair_runtime_store_permissions "$DATA_TARGET"' in script
-    assert '--owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID"' in script
+    assert 'verify_shared_data_access "$DATA_TARGET" "$API_RUNTIME_IMAGE" "$API_RUNTIME_UID"' in script
 
 
 def test_deploy_repairs_existing_taskboard_volume() -> None:

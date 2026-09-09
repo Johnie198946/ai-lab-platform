@@ -16,6 +16,7 @@ HERMES_RUNTIME_COMMIT=c8aa5608c24e3636e77c267650c0f1f52e44adb0
 BRIDGE_WORKER_VENV_LINK="$HERMES_ACCOUNT_HOME/bridge-worker-venv"
 BRIDGE_WORKER_VENV_ROOT="$HERMES_ACCOUNT_HOME/bridge-worker-venvs"
 BRIDGE_WORKER_PYTHON="$BRIDGE_WORKER_VENV_LINK/bin/python"
+HERMES_BRIDGE_ENV_FILE=/etc/ai-lab-platform/hermes-bridge.env
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
   exit 2
@@ -131,6 +132,29 @@ activate_bridge_worker_venv() {
   BRIDGE_WORKER_VENV_SWITCHED=1
 }
 
+validate_private_host_address() {
+  local address="$1"
+  if ! python3 - "$address" <<'PY'
+import ipaddress
+import sys
+
+try:
+    address = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+allowed = tuple(ipaddress.ip_network(item) for item in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
+raise SystemExit(0 if address.version == 4 and any(address in network for network in allowed) else 1)
+PY
+  then
+    echo "ERROR: Bridge address is not an RFC1918 IPv4 address: ${address:-<empty>}" >&2
+    return 1
+  fi
+  if ! ip -4 -o addr show | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fqx "$address"; then
+    echo "ERROR: Bridge address is not assigned to this host: $address" >&2
+    return 1
+  fi
+}
+
 resolve_hermes_bridge_bind_address() {
   local container network_rows gateway
   container="$(docker compose -p "$COMPOSE_PROJECT" ps -q api)"
@@ -144,25 +168,7 @@ resolve_hermes_bridge_bind_address() {
     return 1
   fi
   gateway="$(printf '%s\n' "$network_rows" | awk 'NF == 2 {print $2}')"
-  if ! python3 - "$gateway" <<'PY'
-import ipaddress
-import sys
-
-try:
-    address = ipaddress.ip_address(sys.argv[1])
-except ValueError:
-    raise SystemExit(1)
-allowed = tuple(ipaddress.ip_network(item) for item in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"))
-raise SystemExit(0 if address.version == 4 and any(address in network for network in allowed) else 1)
-PY
-  then
-    echo "ERROR: Compose gateway is not an RFC1918 IPv4 address: ${gateway:-<empty>}" >&2
-    return 1
-  fi
-  if ! ip -4 -o addr show | awk '{sub(/\/.*/, "", $4); print $4}' | grep -Fqx "$gateway"; then
-    echo "ERROR: Docker host-gateway is not assigned to this host: $gateway" >&2
-    return 1
-  fi
+  validate_private_host_address "$gateway" || return 1
   printf '%s\n' "$gateway"
 }
 
@@ -239,10 +245,10 @@ verify_hermes_bridge_network() {
 }
 
 configure_hermes_bridge_network() {
-  local env_dir=/etc/ai-lab-platform env_file temp_file
+  local env_dir env_file="$HERMES_BRIDGE_ENV_FILE" temp_file
   : "${HERMES_BRIDGE_BIND_ADDRESS:?Bridge network preflight was not completed}"
+  env_dir="$(dirname "$env_file")"
   install -d -o root -g root -m 0755 "$env_dir"
-  env_file="$env_dir/hermes-bridge.env"
   temp_file="$(mktemp "$env_dir/.hermes-bridge.XXXXXX")"
   printf 'HERMES_BRIDGE_BIND_ADDRESS=%s\n' "$HERMES_BRIDGE_BIND_ADDRESS" > "$temp_file"
   chmod 0644 "$temp_file"
@@ -335,6 +341,87 @@ repair_note_path_ancestors() {
   done
 }
 
+resolve_api_runtime_identity() {
+  local config image runtime_uid
+  config="$(docker compose -p "$COMPOSE_PROJECT" config --format json)" || return 1
+  image="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["services"]["api"]["image"])' <<< "$config")" || return 1
+  if [[ ! "$image" =~ ^[[:alnum:]][[:alnum:]./_:@-]*$ ]]; then
+    echo "ERROR: invalid API image reference: ${image:-<empty>}" >&2
+    return 1
+  fi
+  if [ -z "${ATTESTED_API_IMAGE:-}" ] || [ "$image" != "$ATTESTED_API_IMAGE" ]; then
+    echo "ERROR: API runtime identity image is not the already-attested Compose image" >&2
+    return 1
+  fi
+  runtime_uid="$(docker run --rm --pull never --network none --read-only \
+    --cap-drop ALL --security-opt no-new-privileges --entrypoint id "$image" -u)" || return 1
+  if [[ ! "$runtime_uid" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: hardened API image runtime UID must be a non-zero integer: ${runtime_uid:-<empty>}" >&2
+    return 1
+  fi
+  API_RUNTIME_IMAGE="$image"
+  API_RUNTIME_UID="$runtime_uid"
+}
+
+validate_shared_data_root() {
+  local data_root="$1" expected="$SHARED_ROOT/data"
+  if [ "$data_root" != "$expected" ] || [ -L "$data_root" ] \
+    || [ "$(readlink -f -- "$data_root")" != "$data_root" ]; then
+    echo "ERROR: ACL/probe target must be the exact shared data tree: $expected" >&2
+    return 1
+  fi
+}
+
+configure_shared_data_acl() {
+  local data_root="$1" api_uid="$2" hermes_uid="$3" directory acl
+  for tool in setfacl getfacl; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      echo "ERROR: $tool is required for shared data interoperability" >&2
+      return 1
+    fi
+  done
+  validate_shared_data_root "$data_root" || return 1
+  setfacl -P -R -m "u:$api_uid:rwX,u:$hermes_uid:rwX,m::rwX" -- "$data_root" || return 1
+  while IFS= read -r -d '' directory; do
+    setfacl -m "d:u:$api_uid:rwx,d:u:$hermes_uid:rwx,d:m::rwx" -- "$directory" || return 1
+  done < <(find -P "$data_root" -type d -print0)
+  acl="$(getfacl -cpn -- "$data_root")" || return 1
+  for entry in "user:$api_uid:rwx" "user:$hermes_uid:rwx" \
+    "default:user:$api_uid:rwx" "default:user:$hermes_uid:rwx"; do
+    grep -Fqx "$entry" <<< "$acl" || {
+      echo "ERROR: shared data ACL verification failed: $entry" >&2
+      return 1
+    }
+  done
+}
+
+verify_shared_data_access() {
+  local data_root="$1" image="$2" api_uid="$3"
+  validate_shared_data_root "$data_root" || return 1
+  docker run --rm --pull never --network none --read-only \
+    --cap-drop ALL --security-opt no-new-privileges \
+    --mount "type=bind,src=$data_root,dst=/app/data" --env "EXPECTED_UID=$api_uid" \
+    --entrypoint python "$image" -c '
+import os, pathlib, tempfile
+assert os.getuid() == int(os.environ["EXPECTED_UID"])
+data = pathlib.Path("/app/data")
+(data / "knowledge_matrix.json").read_bytes()
+(data / "hermes_chat_runs.sqlite3").open("r+b").close()
+for root in (data, data / "vault/raw/dialogues/tenants"):
+    pathlib.Path(tempfile.mkdtemp(prefix=".api-acl-probe-", dir=root)).rmdir()
+(data / "vault/.incremental-compile.lock").touch(exist_ok=True)
+'
+  runuser -u quantumn-hermes -- python3 -c '
+import pathlib, sys, tempfile
+data = pathlib.Path(sys.argv[1])
+(data / "knowledge_matrix.json").read_bytes()
+(data / "hermes_chat_runs.sqlite3").open("r+b").close()
+for root in (data, data / "vault/raw/dialogues/tenants"):
+    pathlib.Path(tempfile.mkdtemp(prefix=".hermes-acl-probe-", dir=root)).rmdir()
+(data / "vault/.incremental-compile.lock").touch(exist_ok=True)
+' "$data_root"
+}
+
 verify_offline_images() {
   local config service image architecture user healthcheck actual expected count
   local services=(api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
@@ -391,6 +478,7 @@ raise SystemExit(0 if isinstance(test, list) and test and test[0] in {"CMD", "CM
       echo "ERROR: offline image must configure a healthcheck: $service=$image" >&2
       return 1
     fi
+    [ "$service" != api ] || ATTESTED_API_IMAGE="$image"
   done
 }
 
@@ -431,7 +519,7 @@ managed_unit_paths() {
     hermes-bridge.agent-os:/etc/systemd/system/hermes-bridge.service.d/agent-os-mode.conf \
     hermes-serve.agent-os:/etc/systemd/system/hermes-serve.service.d/agent-os-mode.conf \
     hermes-gateway.agent-os:/etc/systemd/system/hermes-gateway.service.d/agent-os-mode.conf \
-    hermes-bridge.env:/etc/ai-lab-platform/hermes-bridge.env
+    hermes-bridge.env:"$HERMES_BRIDGE_ENV_FILE"
 }
 
 snapshot_managed_units() {
@@ -501,6 +589,29 @@ verify_application_services() {
     wget --no-check-certificate -q -O /dev/null https://127.0.0.1:9081/ || return 1
 }
 
+verify_rollback_health() {
+  local env_file="$HERMES_BRIDGE_ENV_FILE" line restored_address
+  verify_application_services || return 1
+  [ "$BRIDGE_WAS_ACTIVE" -eq 0 ] || systemctl is-active --quiet hermes-bridge.service || return 1
+  [ "$CHAT_WORKER_WAS_ACTIVE" -eq 0 ] || systemctl is-active --quiet hermes-chat-worker.service || return 1
+  [ "$BRIDGE_WAS_ACTIVE" -eq 1 ] || return 0
+  if [ -L "$env_file" ] || [ ! -f "$env_file" ] || [ "$(wc -l < "$env_file")" -ne 1 ]; then
+    echo "ERROR: restored Hermes Bridge environment is missing or invalid" >&2
+    return 1
+  fi
+  IFS= read -r line < "$env_file"
+  if [[ ! "$line" =~ ^HERMES_BRIDGE_BIND_ADDRESS=([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+    echo "ERROR: restored Hermes Bridge bind address is malformed" >&2
+    return 1
+  fi
+  restored_address="${line#HERMES_BRIDGE_BIND_ADDRESS=}"
+  validate_private_host_address "$restored_address" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import socket; assert socket.gethostbyname('host.docker.internal') == '$restored_address'" || return 1
+  docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
+    "import json,urllib.request; assert json.load(urllib.request.urlopen('http://$restored_address:9118/health', timeout=5)).get('status') == 'ok'" || return 1
+}
+
 rollback_deployment() {
   local rollback_link rollback_venv_link
   restore_managed_units || return 1
@@ -521,13 +632,7 @@ rollback_deployment() {
   cd "$CURRENT_DIR" || return 1
   docker compose -p "$COMPOSE_PROJECT" up -d --no-build --pull never || return 1
   restart_hermes_runtime || return 1
-  verify_application_services || return 1
-  [ "$BRIDGE_WAS_ACTIVE" -eq 0 ] || systemctl is-active --quiet hermes-bridge.service || return 1
-  [ "$CHAT_WORKER_WAS_ACTIVE" -eq 0 ] || systemctl is-active --quiet hermes-chat-worker.service || return 1
-  if [ "$BRIDGE_WAS_ACTIVE" -eq 1 ]; then
-    docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-      "import urllib.request; urllib.request.urlopen('http://$HERMES_BRIDGE_BIND_ADDRESS:9118/health', timeout=5).read()" || return 1
-  fi
+  verify_rollback_health || return 1
 }
 
 if [ "${AI_LAB_UPDATE_LIBRARY_ONLY:-0}" = "1" ]; then
@@ -564,6 +669,9 @@ BRIDGE_WAS_ACTIVE=0
 CHAT_WORKER_WAS_ACTIVE=0
 BRIDGE_WAS_ENABLED=0
 CHAT_WORKER_WAS_ENABLED=0
+API_RUNTIME_IMAGE=""
+API_RUNTIME_UID=""
+ATTESTED_API_IMAGE=""
 cleanup() {
   rc=$? rollback_ok=1
   trap - EXIT
@@ -671,6 +779,7 @@ if [ ! -d "$DATA_TARGET" ]; then
   echo "ERROR: 持久数据目录不存在: $DATA_TARGET" >&2
   exit 1
 fi
+validate_shared_data_root "$DATA_TARGET"
 repair_runtime_store_permissions "$DATA_TARGET"
 rm -rf "$STAGING_DIR/data" "$STAGING_DIR/backups" "$STAGING_DIR/rollbacks"
 ln -s "$SHARED_ROOT/.env" "$STAGING_DIR/.env"
@@ -682,6 +791,8 @@ echo "==> [3/6] 验证预载离线镜像并启动 Compose 服务"
 verify_hermes_install
 prepare_bridge_worker_venv "$RELEASE_DIR"
 verify_offline_images
+resolve_api_runtime_identity
+configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"
 AI_LAB_DEPLOY_LOCK_HELD=1 bash scripts/renew_tls_certificate.sh --preflight-only
 snapshot_managed_units
 RUNTIME_CHANGED=1
@@ -711,8 +822,13 @@ if [ ! -e data/knowledge_matrix.json ]; then
   ln -s vault/knowledge_matrix.json data/knowledge_matrix.json
 fi
 KNOWLEDGE_MATRIX_TARGET="$(readlink -f data/knowledge_matrix.json)"
+if [[ "$KNOWLEDGE_MATRIX_TARGET" != "$DATA_TARGET/"* ]]; then
+  echo "ERROR: knowledge_matrix.json must resolve inside the shared data tree" >&2
+  exit 1
+fi
 chown quantumn-hermes:quantumn-hermes "$KNOWLEDGE_MATRIX_TARGET"
 chmod 0640 "$KNOWLEDGE_MATRIX_TARGET"
+configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"
 docker compose -p "$COMPOSE_PROJECT" exec -T api \
   python scripts/audit_runtime_contracts.py --data-dir /app/data
 printf '%s\n' "$EXPECTED_SHA" > .deployed-sha
@@ -727,6 +843,7 @@ python3 scripts/repair_user_note_permissions.py \
   "$VAULT_ROOT/raw/dialogues/tenants"
 install -d -o quantumn-hermes -g quantumn-hermes -m 0700 "$VAULT_ROOT/wiki/tenant"
 install -d -o quantumn-hermes -g quantumn-hermes -m 0755 "$VAULT_ROOT/wiki/contributions"
+configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"
 
 echo "==> [5/6] 原子切换 release 并重启 Hermes runtime"
 LINK_TMP="$APP_LINK.next.$$"
@@ -745,8 +862,8 @@ repair_vault_runtime_permissions "$VAULT_ROOT"
 python3 scripts/repair_user_note_permissions.py \
   --owner-uid "$AI_LAB_RUNTIME_UID" --owner-gid "$AI_LAB_RUNTIME_GID" \
   "$VAULT_ROOT/raw/dialogues/tenants"
-docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
-  'import pathlib,tempfile; data=pathlib.Path("/app/data"); data_probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=data)); data_probe.rmdir(); vault=data/"vault"; lock=vault/".incremental-compile.lock"; lock.touch(exist_ok=True); root=vault/"raw/dialogues/tenants"; probe=pathlib.Path(tempfile.mkdtemp(prefix=".api-write-probe-",dir=root)); probe.rmdir()'
+configure_shared_data_acl "$DATA_TARGET" "$API_RUNTIME_UID" "$AI_LAB_RUNTIME_UID"
+verify_shared_data_access "$DATA_TARGET" "$API_RUNTIME_IMAGE" "$API_RUNTIME_UID"
 
 echo "==> [6/6] 最终健康检查"
 api_status=""
