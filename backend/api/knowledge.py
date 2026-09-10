@@ -584,11 +584,14 @@ def search(
         raise HTTPException(status_code=404, detail=f"vault not found: {vault}")
     docs = _search_docs(vault, q, limit)
     from backend.services.knowledge_publication_store import PUBLICATION_CATEGORY, PublicationStore
+    store = PublicationStore()
     vis = _visibility()
+    known = {item["path"] for item in docs}
+    docs.extend(item for item in store.search(q, limit, public_metadata_only=True) if item["path"] not in known)
     if vis is None or PUBLICATION_CATEGORY in vis:
         known = {item["path"] for item in docs}
-        docs.extend(item for item in PublicationStore().search(q, limit) if item["path"] not in known)
-        docs = sorted(docs, key=lambda item: (-item["score"], item["path"]))[:limit]
+        docs.extend(item for item in store.search(q, limit) if item["path"] not in known)
+    docs = sorted(docs, key=lambda item: (-item["score"], item["path"]))[:limit]
 
     # 实体命中（矩阵 entity_index）
     entities: List[str] = []

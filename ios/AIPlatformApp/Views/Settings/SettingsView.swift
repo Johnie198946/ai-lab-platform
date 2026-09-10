@@ -477,6 +477,7 @@ public struct SubscriptionCenterView: View {
     @State private var center: SubscriptionCenterResponse?
     @State private var knowledgeAccess: KnowledgeAccessResponse?
     @State private var bookshelves: [KnowledgeBookshelfDTO] = []
+    @State private var publicCollections: [PublicKnowledgeCollectionDTO] = []
     @State private var ownerPrivateCollections: [OwnerPrivateCollectionDTO] = []
     @State private var adminRequests: [SubscriptionRequestDTO] = []
     @State private var isLoading = true
@@ -656,6 +657,9 @@ public struct SubscriptionCenterView: View {
         return ScrollView {
             LazyVStack(spacing: AppTheme.Spacing.lg) {
                 bookshelfSearch(placeholder: "搜索分类或作者")
+                ForEach(publicCollections) { collection in
+                    publicRoster(collection)
+                }
                 ForEach(ownerPrivateCollections) { collection in
                     ownerPrivateRoster(collection)
                 }
@@ -765,6 +769,56 @@ public struct SubscriptionCenterView: View {
         .accessibilityIdentifier("follow-builders-owner-private-roster")
     }
 
+    private func publicRoster(_ collection: PublicKnowledgeCollectionDTO) -> some View {
+        let authorities = collection.authorities.filter {
+            bookshelfQuery.isEmpty || $0.recordedHandle.localizedStandardContains(bookshelfQuery)
+                || $0.recordedDisplayName.localizedStandardContains(bookshelfQuery)
+        }
+        return DisclosureGroup {
+            LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                ForEach(authorities) { authority in
+                    HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(authority.recordedDisplayName)
+                                .font(AppTheme.Typography.supporting.weight(.semibold))
+                            Text(authority.admissionStatus == "website_entry_only_x_mapping_quarantined"
+                                 ? "X 身份映射已隔离" : "@\(authority.recordedHandle) · 未独立核验")
+                                .font(AppTheme.Typography.micro)
+                                .foregroundStyle(authority.admissionStatus == "website_entry_only_x_mapping_quarantined"
+                                                 ? AppTheme.Icons.destructive : AppTheme.Colors.textSecondary)
+                            Text("与 \(collection.sourceCount) 条来源的作者或背书关系：未建立")
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.Colors.textTertiary)
+                            if let note = authority.specificQualifications.first {
+                                Text(note).font(.caption2).foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
+                        }
+                        Spacer()
+                        if let url = URL(string: authority.recordedWebsiteUrl),
+                           ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                            Link(destination: url) { Image(systemName: "arrow.up.right.square") }
+                                .frame(width: 44, height: 44)
+                                .accessibilityLabel("打开原样保存的网站入口")
+                        }
+                    }
+                }
+            }
+            .padding(.top, AppTheme.Spacing.sm)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("公开关注名册 · \(collection.authorityCount)")
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                Text("未独立核验；与下方来源分开展示，不代表作者关系或背书。")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+        .accessibilityIdentifier("follow-builders-public-roster")
+    }
+
     private func bookshelfCollectionCard(_ shelf: KnowledgeBookshelfDTO) -> some View {
         Button {
             withAnimation(reduceMotion ? nil : .spring(response: 0.52, dampingFraction: 0.84)) {
@@ -870,6 +924,9 @@ public struct SubscriptionCenterView: View {
     }
 
     private func shelfSubtitle(_ shelf: KnowledgeBookshelfDTO) -> String {
+        if shelf.id == "knowledge/publication/follow-builders" {
+            return "PUBLIC · 仅来源元数据与链接，不含第三方全文"
+        }
         if shelf.id.hasPrefix("owner-private/follow-builders/") {
             return "OWNER PRIVATE · 外部来源按原始署名收录"
         }
@@ -1808,6 +1865,7 @@ public struct SubscriptionCenterView: View {
         do {
             let response = try await api.fetchKnowledgeBookshelves()
             bookshelves = response.bookshelves
+            publicCollections = response.publicCollections ?? []
             ownerPrivateCollections = response.ownerPrivateCollections ?? []
             if let subscriptions = try? await api.fetchBookSubscriptions() {
                 subscribedBookIDs = Set(subscriptions.map(\.book.id))
@@ -1991,7 +2049,7 @@ struct KnowledgeBookReaderView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(book.sourceKind == "owner_private_external" ? "FOLLOW BUILDERS  /  OWNER PRIVATE" : "QUANTUM EDITIONS  /  01")
+                    Text(book.sourceKind == "owner_private_external" ? "FOLLOW BUILDERS  /  OWNER PRIVATE" : (book.sourceKind == "public_source_index" ? "FOLLOW BUILDERS  /  PUBLIC SOURCE INDEX" : "QUANTUM EDITIONS  /  01"))
                         .font(.caption2.weight(.bold))
                         .tracking(1.4)
                         .foregroundStyle(AppTheme.Colors.textTertiary)
@@ -2016,7 +2074,7 @@ struct KnowledgeBookReaderView: View {
                         Text(book.author)
                             .font(.title3.weight(.medium))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
-                        Text(book.sourceKind == "owner_private_external" ? "外部来源原始署名 · 非 Quantumn 出版物" : (book.testSerial == true ? "已审核冻结发布" : (book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研")))
+                        Text(book.sourceKind == "owner_private_external" ? "外部来源原始署名 · 非 Quantumn 出版物" : (book.sourceKind == "public_source_index" ? "原样保存的署名 · 未独立核验" : (book.testSerial == true ? "已审核冻结发布" : (book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研"))))
                             .font(.caption.weight(.bold))
                             .tracking(0.7)
                             .foregroundStyle(AppTheme.Colors.primary)
@@ -2044,10 +2102,10 @@ struct KnowledgeBookReaderView: View {
                         .frame(maxWidth: 344, alignment: .leading)
 
                     HStack(spacing: 10) {
-                        readerPill(book.sourceKind == "owner_private_external" ? "外部来源" : book.knowledgeLevel, icon: "checkmark.seal")
+                        readerPill(book.sourceKind == "owner_private_external" ? "外部来源" : (book.sourceKind == "public_source_index" ? "公开元数据" : book.knowledgeLevel), icon: "checkmark.seal")
                         readerPill("\(book.sourceCount) 个来源", icon: "link")
                         if let status = book.contentStatus {
-                            readerPill(status == "snapshot" ? "快照正文" : (status == "summary" ? "来源摘要" : (status == "unavailable" ? "正文不可用" : "仅链接")), icon: status == "link_only" ? "link" : "doc.text")
+                            readerPill(status == "snapshot" ? "快照正文" : (status == "summary" ? "来源摘要" : (status == "metadata_only" ? "仅元数据" : (status == "unavailable" ? "正文不可用" : "仅链接"))), icon: status == "link_only" ? "link" : "doc.text")
                         }
                     }
                     .padding(.top, 34)
@@ -2060,7 +2118,7 @@ struct KnowledgeBookReaderView: View {
                     Label(
                         book.sourceKind == "owner_private_external"
                             ? (book.contentStatus == "snapshot" ? "这是私有消费的外部快照；正文来源与完整性状态见上方，不表示已获公共再发布许可。" : (book.contentStatus == "summary" ? "这里只提供来源记录摘要，不表示完整原文。" : (book.unavailableReason ?? "这里只提供原始来源链接，没有可验证的正文。")))
-                            : (book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。"),
+                            : (book.sourceKind == "public_source_index" ? "这里只展示原样保存的元数据与字面来源 URL；不包含第三方全文、快照或编辑摘要。" : (book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。")),
                         systemImage: "quote.opening"
                     )
                     .font(.footnote)
@@ -2097,7 +2155,7 @@ struct KnowledgeBookReaderView: View {
                         .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
                     }
 
-                    if book.sourceKind == "owner_private_external",
+                    if ["owner_private_external", "public_source_index"].contains(book.sourceKind ?? ""),
                        let value = book.canonicalUrl, let url = URL(string: value),
                        ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
                         Link("查看原始来源", destination: url)

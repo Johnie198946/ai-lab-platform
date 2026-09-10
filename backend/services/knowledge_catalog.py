@@ -745,11 +745,14 @@ def compute_catalog(vault: Path | None = None) -> list[dict[str, Any]]:
     from backend.services.knowledge_publication_store import (
         PUBLICATION_CATEGORY, PublicationStore,
     )
-    published = PublicationStore().published(include_body=False)
+    store = PublicationStore()
+    published = store.published(include_body=False)
+    public_sources, _ = store.public_source_catalog()
     if published:
+        serial_count = sum(item["bundle"].get("content_kind") != "source_index" for item in published)
         by_category[PUBLICATION_CATEGORY] = {
             "category": PUBLICATION_CATEGORY, "path_prefix": "publication:",
-            "title": "Quantumn 每日测试连载", "doc_count": len(published),
+            "title": "公开出版物与来源索引", "doc_count": serial_count + len(public_sources),
             "open": True, "security_level": "green", "owner_tenant": "public",
             "entitlement_key": "", "knowledge_level": "K5",
             "classification_status": "approved", "freshness": "daily",
@@ -992,14 +995,22 @@ def bookshelf_catalog(
     )
     if visible_categories is None or PUBLICATION_CATEGORY in visible_categories:
         published = PublicationStore().published(include_body=False)
-        if published:
+        serials = [item for item in published if item["bundle"].get("content_kind") != "source_index"]
+        if serials:
             shelf = shelves.setdefault(PUBLICATION_CATEGORY, {
                 "id": PUBLICATION_CATEGORY, "title": "Quantumn 每日测试连载",
                 "security_level": "green", "books": [],
             })
             shelf["books"].extend(
-                publication_book(item) for item in published if item.get("artifact_valid")
+                publication_book(item) for item in serials if item.get("artifact_valid")
             )
+    public_sources, _ = PublicationStore().public_source_catalog()
+    if public_sources:
+        shelf = shelves.setdefault("knowledge/publication/follow-builders", {
+            "id": "knowledge/publication/follow-builders", "title": "Follow Builders 公开来源索引",
+            "security_level": "green", "books": [],
+        })
+        shelf["books"].extend(public_sources)
     for shelf in shelves.values():
         shelf["books"].sort(key=lambda book: book["title"])
         shelf["book_count"] = len(shelf["books"])

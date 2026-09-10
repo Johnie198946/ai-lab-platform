@@ -257,7 +257,31 @@ public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
 
 public struct KnowledgeBookshelvesResponse: Codable {
     public let bookshelves: [KnowledgeBookshelfDTO]
+    public var publicCollections: [PublicKnowledgeCollectionDTO]? = nil
     public var ownerPrivateCollections: [OwnerPrivateCollectionDTO]? = nil
+}
+
+public struct PublicKnowledgeAuthorityDTO: Codable, Identifiable, Hashable {
+    public var id: Int { rosterId }
+    public let rosterId: Int
+    public let recordedHandle: String
+    public let recordedDisplayName: String
+    public let recordedWebsiteUrl: String
+    public let identityStatus: String
+    public let websiteStatus: String
+    public let sourceRelationshipStatus: String
+    public let admissionStatus: String
+    public let specificQualifications: [String]
+}
+
+public struct PublicKnowledgeCollectionDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let title: String
+    public let visibility: String
+    public let authorityCount: Int
+    public let sourceCount: Int
+    public let authorities: [PublicKnowledgeAuthorityDTO]
+    public let admissionDecision: String
 }
 
 public struct OwnerPrivateAuthorityDTO: Codable, Identifiable, Hashable {

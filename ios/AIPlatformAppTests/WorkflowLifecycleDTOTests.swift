@@ -697,6 +697,14 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(book.sourceUrls, ["https://example.com/source"])
     }
 
+    func testPublicFollowBuildersMetadataAndQuarantinedRosterDecode() throws {
+        let data = Data(#"{"bookshelves":[{"id":"knowledge/publication/follow-builders","title":"Follow Builders 公开来源索引","security_level":"green","book_count":1,"books":[{"id":"follow-builders-public-source-0123456789abcdef01234567","title":"Stored title","author":"Stored attribution","summary":"Recorded metadata; unverified","security_level":"green","knowledge_level":"source_metadata","freshness":"unknown","source_count":1,"source_kind":"public_source_index","content_status":"metadata_only","canonical_url":"https://example.com/source","readable":true}]}],"public_collections":[{"id":"follow-builders-public","title":"Follow Builders 公开来源索引","visibility":"public","authority_count":1,"source_count":1,"admission_decision":"conditional","authorities":[{"roster_id":21,"recorded_handle":"palantir","recorded_display_name":"Palantir Technologies","recorded_website_url":"https://www.palantir.com/insights/","identity_status":"conflicting_identity_do_not_treat_as_official_x_account","website_status":"recorded website","source_relationship_status":"not established","admission_status":"website_entry_only_x_mapping_quarantined","specific_qualifications":["wrong X profile"]}]}],"owner_private_collections":[]}"#.utf8)
+        let response = try decoder().decode(KnowledgeBookshelvesResponse.self, from: data)
+        XCTAssertEqual(response.bookshelves.first?.books.first?.sourceKind, "public_source_index")
+        XCTAssertEqual(response.bookshelves.first?.books.first?.canonicalUrl, "https://example.com/source")
+        XCTAssertEqual(response.publicCollections?.first?.authorities.first?.admissionStatus, "website_entry_only_x_mapping_quarantined")
+    }
+
     func testKnowledgeBookSubscriptionDecodesBookAndProgress() throws {
         let data = Data(#"{"book":{"id":"kn-1","title":"AI Lab 顶层设计","author":"Anthropic","author_source":"raw","summary":"从产品目标到系统边界。","cover_theme":"product","cover_variant":3,"cover_version":1,"security_level":"green","knowledge_level":"K5","freshness":"current","source_count":2},"edition":1,"progress":0.42,"subscribed_at":"2026-09-06T07:00:00Z","last_read_at":"2026-09-06T07:10:00Z"}"#.utf8)
 

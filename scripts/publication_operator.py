@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from backend.services.knowledge_publication_store import PublicationError, PublicationStore, receipt_set_hash
+from backend.services.follow_builders_publication import load_candidate
 
 
 def _file(value: str) -> tuple[str, Path]:
@@ -30,6 +31,9 @@ def main() -> int:
     stage.add_argument("--rights-file", action="append", type=_file, default=[])
     stage.add_argument("--review-file", type=Path)
     stage.add_argument("--execution-file", action="append", type=_file, default=[])
+    source_index = commands.add_parser("stage-source-index")
+    source_index.add_argument("package", type=Path)
+    source_index.add_argument("--review-file", type=Path)
     status = commands.add_parser("status")
     status.add_argument("--publication-id")
     commands.add_parser("release-due")
@@ -38,7 +42,18 @@ def main() -> int:
     args = parser.parse_args()
     store = PublicationStore(args.root)
     try:
-        if args.command == "stage":
+        if args.command == "stage-source-index":
+            bundle, body_file, record_files = load_candidate(args.package)
+            bundle["body"] = body_file.read_text(encoding="utf-8")
+            bundle["body_receipt"] = store.ingest_file(body_file, "publication_body")
+            bundle["source_receipts"] = [store.ingest_file(path, kind) for kind, path in record_files]
+            bundle["source_snapshot_hash"] = receipt_set_hash(bundle["source_receipts"])
+            if args.review_file:
+                review = json.loads(args.review_file.read_text(encoding="utf-8"))
+                bundle["review"] = {**review, "receipt": store.ingest_file(args.review_file, "content_review")}
+            vault = Path(os.environ.get("AI_LAB_HOME", Path(__file__).resolve().parent.parent / "data" / "vault"))
+            result = store.stage(bundle, vault=vault)
+        elif args.command == "stage":
             bundle = json.loads(args.bundle.read_text(encoding="utf-8"))
             if args.body_file:
                 bundle["body"] = args.body_file.read_text(encoding="utf-8")

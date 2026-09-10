@@ -81,6 +81,8 @@ class SerialBundle(BaseModel):
     execution_claim: str = "not_run"
     execution_evidence: list[dict] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+    source_index: dict | None = None
+    source_index_review_hash: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 def _super(payload: dict) -> None:

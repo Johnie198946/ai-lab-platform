@@ -272,8 +272,10 @@ async def knowledge_bookshelves(payload=Depends(require_auth)):
     """Reader catalog independent of organization subscription state."""
     tenant_key, user_id = _owner_reader_identity(payload)
     collection = _owner_private_store(payload).collection(tenant_key, user_id) if tenant_key and user_id else None
+    _, public_collections = PublicationStore().public_source_catalog()
     return {
         "bookshelves": _public_bookshelves(await _visible_bookshelves(payload)),
+        "public_collections": public_collections,
         "owner_private_collections": [collection] if collection else [],
     }
 
@@ -342,6 +344,12 @@ def _public_bookshelves(shelves: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    if book_id.startswith("follow-builders-public-source-"):
+        result = PublicationStore().get_public_source(book_id)
+        if result is None:
+            raise _error(404, code="book_not_found", message="这条公开来源已下架或未通过复核",
+                         action="refresh_catalog", retryable=True)
+        return result
     if book_id.startswith("follow-builders-source-"):
         tenant_key, user_id = _owner_reader_identity(payload)
         if not user_id:
