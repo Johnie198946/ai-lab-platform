@@ -4,14 +4,24 @@
 - status: `TESTED`
 - branch: `main`
 - worktree: `/Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909`
-- head/local_commit: `c66a1fc0f0e407f27725cbff85b6e623b374b15a` (the nine task files remain uncommitted)
-- remote_sha: not freshly verified; local `origin/main` is `c66a1fc0f0e407f27725cbff85b6e623b374b15a`
+- head/local_commit: `b64e74247252737a6ee7b873c75b2052eb3424ce` (dependency declaration and this manifest are uncommitted)
+- remote_sha: not freshly verified; local `origin/main` is `b64e74247252737a6ee7b873c75b2052eb3424ce`
 - server_before: not inspected
 - server_after: not deployed
 - health_check: not run
-- functional_check: local focused, related, full-suite, adversarial scripts, and isolated real-59 POC checks passed
+- functional_check: clean Python 3.11 dependency collection, 18 targeted tests, and the unchanged full pytest suite passed after the direct dependency correction; earlier focused, related, adversarial, and isolated real-59 POC checks remain recorded below
 - rollback_point: none; no commit, push, or deployment
 - manifest: `ops/change-manifests/follow-builders-private-bookshelf-20260910-completion.md`
+
+## Direct dependency declaration closure — locally tested, CI rerun pending
+
+- Historical GitHub Actions run `34481000632` on `b64e74247252737a6ee7b873c75b2052eb3424ce` had successful lint/frontend jobs, while pytest exited 2. Its hosted logs required sign-in, so no inaccessible log content was treated as evidence.
+- The failure was independently reproduced with Python 3.11.15 in `/tmp/fb-clean-ci-env`, initially populated only by `requirements.txt`. `/tmp/fb-clean-ci-collection.log` records 1,616 collected tests followed by nine collection errors, all `ModuleNotFoundError: No module named 'markdown_it'`, across `test_agents_api.py`, `test_agreement_api.py`, `test_book_progress_legacy.py`, `test_book_subscriptions.py`, `test_daily_publication.py`, `test_knowledge_v4_green_barrier.py`, `test_owner_private_bookshelf.py`, `test_quantum_workspace_api.py`, and `test_quantum_workspace_m05a.py`.
+- Root cause: `backend/services/owner_private_bookshelf.py` and `backend/services/knowledge_publication_store.py` directly import `markdown_it`, and `requirements.lock` already pins `markdown-it-py==4.2.0`, but `requirements.txt` omitted that direct dependency. `pypdf` was already declared and installed, so it was not added or changed.
+- Correction: add only `markdown-it-py==4.2.0` to `requirements.txt`, matching the existing lock. No application, test, workflow, lock, or security-gate file changed.
+- The first patched `pip install -r requirements.txt` reached the new requirement and then exited 1 because the sandbox could not reach the configured PyPI proxy. To exercise the patched declaration without network, the already-installed `markdown-it-py==4.2.0` and its `mdurl==0.1.2` dependency from the adjacent Python 3.11 project venv were repacked into temporary wheels under `/tmp/fb-markdown-wheels.Ww3O5f`; `python -m pip install --no-index --find-links=/tmp/fb-markdown-wheels.Ww3O5f -r requirements.txt` then exited 0 in `/tmp/fb-clean-ci-env`, and `python -m pip check` reported `No broken requirements found`.
+- With `PATH=/tmp/fb-clean-ci-env/bin:$PATH`, `PYTHONPATH=.`, `CLANG_MODULE_CACHE_PATH=/tmp/fb-clean-ci-clang`, and `SWIFT_MODULE_CACHE_PATH=/tmp/fb-clean-ci-swift`: patched collection completed with 1,772 tests and exit 0 (`/tmp/fb-clean-ci-patched-collection.log`); `tests/test_owner_private_bookshelf.py` passed 18 tests with 4 warnings in 3.57s (`/tmp/fb-clean-ci-targeted.log`); unchanged `pytest -q` passed 1,770 tests, skipped 2, reported 291 warnings and 14 passed subtests in 53.00s (`/tmp/fb-clean-ci-full.log`).
+- This is a local `TESTED` dependency-declaration correction only. Parent-owned GitHub CI rerun and independent verification remain pending; delivery is not complete.
 
 ## Narrow closure scope
 
@@ -130,13 +140,13 @@ task_id: follow-builders-private-bookshelf-20260910
 status: TESTED
 branch: main
 worktree: /Users/dengzhaoyu/Projects/ai-lab-platform-container-hardening-main-20260909
-head/local_commit: c66a1fc0f0e407f27725cbff85b6e623b374b15a (uncommitted nine-file task diff)
-remote_sha: not freshly verified; local origin/main c66a1fc0f0e407f27725cbff85b6e623b374b15a
+head/local_commit: b64e74247252737a6ee7b873c75b2052eb3424ce (uncommitted requirements.txt and manifest diff)
+remote_sha: not freshly verified; local origin/main b64e74247252737a6ee7b873c75b2052eb3424ce
 server_before: not inspected
 server_after: not deployed
 health_check: not run
-functional_check: 18 targeted; 63 related; 1770 full-suite; 2 skipped; 290 warnings; 14 subtests; direct read_book CommonMark-token regression passed; earlier supplied probe/regressions exit 0; real 59/25 local POC verified
+functional_check: clean-env patched collection 1772 exit 0; 18 targeted passed; unchanged full suite 1770 passed, 2 skipped, 291 warnings, 14 subtests; earlier related/probe/real-59 checks remain recorded above
 rollback_point: none
 manifest: ops/change-manifests/follow-builders-private-bookshelf-20260910-completion.md
-remaining_risks: production recipient binding, post-commit GitHub SHA verification, rollback/deploy/health/functional gates, and required iOS release gates remain pending; independent final code review subsequently completed PASS as recorded above
+remaining_risks: parent-owned rerun and independent verification of GitHub CI run 34481000632's pytest correction remain pending; production recipient binding, post-commit GitHub SHA verification, rollback/deploy/health/functional gates, and required iOS release gates also remain pending
 ```
