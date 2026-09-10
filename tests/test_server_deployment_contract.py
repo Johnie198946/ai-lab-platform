@@ -14,6 +14,7 @@ import yaml
 UPDATE_SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "update.sh"
 SYSTEMD_DIR = UPDATE_SCRIPT.parents[1] / "ops" / "systemd"
 BRIDGE_SCRIPT = UPDATE_SCRIPT.parents[1] / "scripts" / "hermes_bridge.py"
+EGRESS_TUNNEL_SCRIPT = UPDATE_SCRIPT.parents[1] / "ops" / "scripts" / "clash-verge-egress-tunnel.sh"
 
 HERMES_ACCOUNT_HOME = "/var/lib/quantumn-hermes"
 HERMES_HOME = f"{HERMES_ACCOUNT_HOME}/.hermes"
@@ -139,6 +140,144 @@ def test_hermes_units_share_hardened_unprivileged_runtime_contract() -> None:
     assert "127.0.0.1" not in bridge
 
 
+def test_optional_hermes_egress_is_file_only_and_not_inlined() -> None:
+    for name in ("hermes-bridge.service", "hermes-chat-worker.service"):
+        unit = (SYSTEMD_DIR / name).read_text(encoding="utf-8")
+        assert unit.count("EnvironmentFile=-/etc/ai-lab-platform/hermes-egress.env") == 1
+        for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+            assert f"Environment={key}=" not in unit
+
+
+def _verify_egress_env(
+    tmp_path: Path,
+    content: str,
+    metadata: str = "0:0:600:160",
+    bridge: str = "172.18.0.1",
+) -> subprocess.CompletedProcess[str]:
+    env_file = tmp_path / "hermes-egress.env"
+    env_file.write_text(content, encoding="utf-8")
+    command = f'''source "{UPDATE_SCRIPT}"
+stat() {{ printf '%s\n' '{metadata}'; }}
+HERMES_EGRESS_ENV_FILE='{env_file}'
+verify_hermes_egress_env '{bridge}'
+'''
+    return subprocess.run(
+        ["bash", "-c", command],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_hermes_egress_env_accepts_only_exact_metadata_and_loopback_contract(
+    tmp_path: Path,
+) -> None:
+    valid = (
+        "HTTPS_PROXY=http://127.0.0.1:17897\n"
+        "HTTP_PROXY=http://127.0.0.1:17897\n"
+        "NO_PROXY=localhost,127.0.0.1,172.18.0.1,::1\n"
+    )
+    result = _verify_egress_env(tmp_path, valid)
+    assert result.returncode == 0, result.stderr
+    for metadata in (
+        "1:0:600:160", "0:1:600:160", "0:0:640:160", "0:0:600:0", "0:0:600:1025",
+    ):
+        assert _verify_egress_env(tmp_path, valid, metadata=metadata).returncode != 0
+
+    env_file = tmp_path / "hermes-egress.env"
+    env_file.unlink()
+    env_file.symlink_to(tmp_path / "missing-target")
+    result = subprocess.run(
+        ["bash", "-c", f'''source "{UPDATE_SCRIPT}"
+HERMES_EGRESS_ENV_FILE='{env_file}'
+verify_hermes_egress_env 172.18.0.1
+'''],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize(
+    "content",
+    (
+        "HTTPS_PROXY=http://127.0.0.1:17897\nHTTP_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\nALL_PROXY=http://127.0.0.1:17897\n",
+        "HTTPS_PROXY=http://127.0.0.1:17897\nhttp_proxy=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        "HTTPS_PROXY=http://user:pass@127.0.0.1:17897\nHTTP_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        "HTTPS_PROXY=http://192.0.2.1:17897\nHTTP_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        "HTTPS_PROXY=http://127.0.0.1:7897\nHTTP_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        "HTTPS_PROXY=http://127.0.0.1:17897\nHTTPS_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        "HTTPS_PROXY=http://127.0.0.1:17897\nUNKNOWN=value\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        "HTTPS_PROXY=http://127.0.0.1:17897\nHTTP_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,$(id)\n",
+    ),
+)
+def test_hermes_egress_env_rejects_unsafe_keys_values_and_expansion(
+    tmp_path: Path, content: str,
+) -> None:
+    assert _verify_egress_env(tmp_path, content).returncode != 0
+
+
+def test_hermes_egress_env_is_optional_but_present_file_requires_bind(
+    tmp_path: Path,
+) -> None:
+    result = subprocess.run(
+        ["bash", "-c", f'''source "{UPDATE_SCRIPT}"
+HERMES_EGRESS_ENV_FILE='{tmp_path / "absent"}'
+unset HERMES_BRIDGE_BIND_ADDRESS
+verify_hermes_egress_env
+'''],
+        env={**os.environ, "AI_LAB_UPDATE_LIBRARY_ONLY": "1"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    result = _verify_egress_env(
+        tmp_path,
+        "HTTPS_PROXY=http://127.0.0.1:17897\nHTTP_PROXY=http://127.0.0.1:17897\nNO_PROXY=localhost,127.0.0.1,172.18.0.1\n",
+        bridge="",
+    )
+    assert result.returncode != 0
+    assert "initialized Bridge bind address" in result.stderr
+
+
+def test_egress_verifier_guards_restart_final_verification_and_rollback() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    switched = script.index("SWITCHED=1")
+    pre_restart = script.index("verify_hermes_egress_env\n", switched)
+    restart = script.index("restart_hermes_runtime\n", pre_restart)
+    final = script.index('echo "==> [6/6]')
+    final_verify = script.index("verify_hermes_egress_env\n", final)
+    assert pre_restart < restart < final < final_verify
+
+    rollback_health = script[script.index("verify_rollback_health() {"):script.index(
+        "rollback_deployment() {"
+    )]
+    restored = rollback_health.index('restored_address="${line#HERMES_BRIDGE_BIND_ADDRESS=}"')
+    egress = rollback_health.index('verify_hermes_egress_env "$restored_address"', restored)
+    health = rollback_health.index("http://$restored_address:9118/health", egress)
+    assert restored < egress < health
+
+
+def test_macos_clash_tunnel_is_loopback_only_and_noninteractive() -> None:
+    script = EGRESS_TUNNEL_SCRIPT.read_text(encoding="utf-8")
+    assert "/usr/bin/nc -z -w 3 127.0.0.1 7897" in script
+    assert "lsof" not in script
+    assert "-R 127.0.0.1:17897:127.0.0.1:7897" in script
+    assert "StrictHostKeyChecking=yes" in script
+    assert 'require_private_file "$identity_file" "SSH identity"' in script
+    assert "require_known_hosts" in script
+    for contract in (
+        "-N -T", "RequestTTY=no", "ForwardAgent=no", "ForwardX11=no", "PermitLocalCommand=no",
+    ):
+        assert contract in script
+    for forbidden in (
+        "0.0.0.0:17897", "*:17897", "GatewayPorts=yes", "StrictHostKeyChecking=no",
+        "ProxyCommand", "subscription", "controller-secret", "secret:",
+    ):
+        assert forbidden not in script
+
+
 def test_compose_callers_share_the_docker_host_gateway_bridge_contract() -> None:
     compose = yaml.safe_load((UPDATE_SCRIPT.parents[1] / "docker-compose.yml").read_text(encoding="utf-8"))
     for name in ("api", "workflow-worker", "planning-worker", "agent-evaluation-worker"):
@@ -178,8 +317,13 @@ def test_runtime_scripts_use_the_official_dedicated_user_install() -> None:
     assert "/opt/hermes" not in update
     assert '"$HERMES_PYTHON" -m pip install' not in update
     assert "127.0.0.1:7890" not in update
+    bridge_config = update[update.index("configure_hermes_bridge_network() {"):update.index(
+        "verify_hermes_bridge_unit() {"
+    )]
     for proxy_variable in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
-        assert proxy_variable not in update
+        assert f"export {proxy_variable}=" not in update
+        assert f"Environment={proxy_variable}=" not in update
+        assert f"{proxy_variable}=" not in bridge_config
 
 
 @pytest.mark.parametrize(

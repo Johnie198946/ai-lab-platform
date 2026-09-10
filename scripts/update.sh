@@ -31,6 +31,7 @@ CERTBOT_VENV_LINK=/opt/certbot-venv
 CERTBOT_VENV_ROOT=/opt/certbot-venvs
 CERTBOT_VENV_DIR="$CERTBOT_VENV_ROOT/$CERTBOT_VERSION-linux-amd64-${CERTBOT_ARCHIVE_SHA256:0:12}"
 HERMES_BRIDGE_ENV_FILE=/etc/ai-lab-platform/hermes-bridge.env
+HERMES_EGRESS_ENV_FILE=/etc/ai-lab-platform/hermes-egress.env
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
   exit 2
@@ -100,6 +101,54 @@ verify_hermes_install() {
   if ! HERMES_RUNTIME_VERSION="$HERMES_RUNTIME_VERSION" "$HERMES_PYTHON" -c \
     'import importlib.metadata, os; assert importlib.metadata.version("hermes-agent") == os.environ["HERMES_RUNTIME_VERSION"]'; then
     echo "ERROR: Hermes runtime must be exactly $HERMES_RUNTIME_VERSION" >&2
+    return 1
+  fi
+}
+
+verify_hermes_egress_env() {
+  local bridge_address="${1:-${HERMES_BRIDGE_BIND_ADDRESS:-}}"
+  local env_file="$HERMES_EGRESS_ENV_FILE" metadata
+  if [ -L "$env_file" ]; then
+    echo "ERROR: Hermes egress environment must be a regular non-symlink file" >&2
+    return 1
+  fi
+  [ -e "$env_file" ] || return 0
+  if [ -z "$bridge_address" ]; then
+    echo "ERROR: Hermes egress environment requires an initialized Bridge bind address" >&2
+    return 1
+  fi
+  if [ ! -f "$env_file" ]; then
+    echo "ERROR: Hermes egress environment must be a regular non-symlink file" >&2
+    return 1
+  fi
+  metadata="$(stat -c '%u:%g:%a:%s' "$env_file")" || return 1
+  if [[ ! "$metadata" =~ ^0:0:600:([1-9][0-9]{0,3})$ ]] \
+    || [ "${BASH_REMATCH[1]}" -gt 1024 ] \
+    || [ "$(wc -l < "$env_file")" -ne 3 ]; then
+    echo "ERROR: Hermes egress environment must be root:root, mode 0600, and bounded" >&2
+    return 1
+  fi
+  if ! awk -v bridge="$bridge_address" '
+    BEGIN { expected["HTTPS_PROXY"] = "http://127.0.0.1:17897"; expected["HTTP_PROXY"] = "http://127.0.0.1:17897" }
+    /\r/ || !match($0, /^[A-Z_]+=[^=]*$/) { bad = 1; next }
+    {
+      key = substr($0, 1, index($0, "=") - 1)
+      value = substr($0, index($0, "=") + 1)
+      if (++seen[key] != 1 || (key != "HTTPS_PROXY" && key != "HTTP_PROXY" && key != "NO_PROXY")) bad = 1
+      if (key in expected && value != expected[key]) bad = 1
+      if (key == "NO_PROXY") {
+        count = split(value, item, ",")
+        if (count < 3 || count > 4) bad = 1
+        for (i = 1; i <= count; i++) {
+          if (++bypass[item[i]] != 1) bad = 1
+          if (item[i] != "localhost" && item[i] != "127.0.0.1" && item[i] != bridge && item[i] != "::1") bad = 1
+        }
+        if (!bypass["localhost"] || !bypass["127.0.0.1"] || !bypass[bridge]) bad = 1
+      }
+    }
+    END { exit bad || NR != 3 || !seen["HTTPS_PROXY"] || !seen["HTTP_PROXY"] || !seen["NO_PROXY"] }
+  ' "$env_file"; then
+    echo "ERROR: Hermes egress environment violates the loopback-only proxy contract" >&2
     return 1
   fi
 }
@@ -1251,6 +1300,7 @@ verify_rollback_health() {
   fi
   restored_address="${line#HERMES_BRIDGE_BIND_ADDRESS=}"
   validate_private_host_address "$restored_address" || return 1
+  verify_hermes_egress_env "$restored_address" || return 1
   docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
     "import socket; assert socket.gethostbyname('host.docker.internal') == '$restored_address'" || return 1
   docker compose -p "$COMPOSE_PROJECT" exec -T api python -c \
@@ -1518,6 +1568,7 @@ ln -s "$RELEASE_DIR" "$LINK_TMP"
 mv -Tf "$LINK_TMP" "$APP_LINK"
 SWITCHED=1
 configure_cloud_agent_os_mode
+verify_hermes_egress_env
 install_hermes_units
 restart_hermes_runtime
 if [ "$AI_LAB_HERMES_QUARANTINED" != "1" ]; then
@@ -1546,6 +1597,7 @@ fi
 printf '%s\n' "$api_status"
 verify_application_services
 verify_hermes_units_enabled
+verify_hermes_egress_env
 if [ "$AI_LAB_HERMES_QUARANTINED" = "1" ]; then
   echo "bridge_health_status=skipped_quarantined"
 else
