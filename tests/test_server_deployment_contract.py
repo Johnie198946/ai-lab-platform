@@ -135,6 +135,8 @@ def test_hermes_units_share_hardened_unprivileged_runtime_contract() -> None:
     worker = (SYSTEMD_DIR / "hermes-chat-worker.service").read_text(encoding="utf-8")
     assert "chat_run_worker" not in bridge
     assert "scripts.chat_run_worker" in worker
+    assert "EnvironmentFile=/etc/ai-lab-platform/hermes-chat-worker.env" in worker
+    assert "hermes-chat-worker.env" not in bridge
     assert "EnvironmentFile=/etc/ai-lab-platform/hermes-bridge.env" in bridge
     assert "--host" not in bridge
     assert "127.0.0.1" not in bridge
@@ -146,6 +148,58 @@ def test_optional_hermes_egress_is_file_only_and_not_inlined() -> None:
         assert unit.count("EnvironmentFile=-/etc/ai-lab-platform/hermes-egress.env") == 1
         for key in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
             assert f"Environment={key}=" not in unit
+
+
+def test_worker_database_env_is_derived_without_compose_json_or_secret_arguments(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "hermes-chat-worker.env"
+    command = f'''source "{UPDATE_SCRIPT}"
+install() {{ mkdir -p "${{@: -1}}"; }}
+chown() {{ return 0; }}
+stat() {{ printf '0:0:600:%d\n' "$(wc -c < "${{@: -1}}")"; }}
+docker() {{
+  [ "$1" = compose ] && [ "$4" = exec ] && [ "$6" = api ] || return 1
+  shift 6
+  DATABASE_URL="$SOURCE_DATABASE_URL" "$@"
+}}
+COMPOSE_PROJECT=contract-test
+HERMES_WORKER_DATABASE_ENV_FILE='{env_file}'
+configure_hermes_worker_database
+'''
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "AI_LAB_UPDATE_LIBRARY_ONLY": "1",
+            "SOURCE_DATABASE_URL": "postgresql+asyncpg://worker:dummy@postgres:5432/ai_lab",
+        },
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_text(encoding="utf-8") == (
+        "DATABASE_URL=postgresql+asyncpg://worker:dummy@127.0.0.1:5432/ai_lab\n"
+    )
+    assert "docker compose" not in result.stdout + result.stderr
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    function = script[script.index("configure_hermes_worker_database() {"):script.index(
+        "verify_hermes_worker_database_contract() {"
+    )]
+    assert "config --format json" not in function
+    assert 'exec -T api python -c' in function
+
+
+def test_worker_database_env_is_worker_only_and_rollback_managed() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    managed = script[script.index("managed_unit_paths() {"):script.index(
+        "snapshot_managed_units() {"
+    )]
+    assert 'hermes-chat-worker.env:"$HERMES_WORKER_DATABASE_ENV_FILE"' in managed
+    configure = script.index("configure_hermes_worker_database\n", script.index("CURRENT_DIR="))
+    restart = script.index("restart_hermes_runtime\n", configure)
+    verify = script.index("verify_hermes_worker_database_contract\n", restart)
+    assert configure < restart < verify
 
 
 def _verify_egress_env(

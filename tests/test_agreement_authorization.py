@@ -326,6 +326,13 @@ def test_round1_worker_missing_database_is_not_a_compatibility_bypass(monkeypatc
     assert stage_is_authorized(SimpleNamespace()) is False
 
 
+def test_round1_worker_unreachable_database_is_not_a_compatibility_bypass(monkeypatch):
+    monkeypatch.setenv(
+        "DATABASE_URL", "postgresql+asyncpg://unused:unused@127.0.0.1:1/unused"
+    )
+    assert stage_is_authorized(SimpleNamespace()) is False
+
+
 @pytest.mark.asyncio
 async def test_round2_acceptance_replay_racing_withdrawal_never_reenables(env):
     sessions, _, _ = env

@@ -32,6 +32,7 @@ CERTBOT_VENV_ROOT=/opt/certbot-venvs
 CERTBOT_VENV_DIR="$CERTBOT_VENV_ROOT/$CERTBOT_VERSION-linux-amd64-${CERTBOT_ARCHIVE_SHA256:0:12}"
 HERMES_BRIDGE_ENV_FILE=/etc/ai-lab-platform/hermes-bridge.env
 HERMES_EGRESS_ENV_FILE=/etc/ai-lab-platform/hermes-egress.env
+HERMES_WORKER_DATABASE_ENV_FILE=/etc/ai-lab-platform/hermes-chat-worker.env
 if [[ ! "$AI_LAB_HERMES_QUARANTINED" =~ ^[01]$ ]]; then
   echo "ERROR: AI_LAB_HERMES_QUARANTINED must be 0 or 1" >&2
   exit 2
@@ -774,6 +775,102 @@ configure_hermes_bridge_network() {
   mv -f "$temp_file" "$env_file"
 }
 
+verify_hermes_worker_database_env() {
+  local env_file="${1:-$HERMES_WORKER_DATABASE_ENV_FILE}" metadata
+  if [ -L "$env_file" ] || [ ! -f "$env_file" ]; then
+    echo "ERROR: Hermes worker database environment must be a regular non-symlink file" >&2
+    return 1
+  fi
+  metadata="$(stat -c '%u:%g:%a:%s' "$env_file")" || return 1
+  if [[ ! "$metadata" =~ ^0:0:600:([1-9][0-9]{0,3})$ ]] \
+    || [ "${BASH_REMATCH[1]}" -gt 4096 ] \
+    || [ "$(wc -l < "$env_file")" -ne 1 ]; then
+    echo "ERROR: Hermes worker database environment must be root:root, mode 0600, and bounded" >&2
+    return 1
+  fi
+  python3 - "$env_file" <<'PY'
+from pathlib import Path
+import sys
+from urllib.parse import urlsplit
+
+try:
+    line = Path(sys.argv[1]).read_text(encoding="utf-8")
+    if not line.startswith("DATABASE_URL=") or line.count("\n") != 1:
+        raise ValueError
+    value = line.removeprefix("DATABASE_URL=").removesuffix("\n")
+    parsed = urlsplit(value)
+    if (parsed.scheme != "postgresql+asyncpg" or parsed.hostname != "127.0.0.1"
+            or parsed.port != 5432 or parsed.username is None
+            or parsed.password is None or parsed.path in ("", "/")
+            or any(ord(char) < 32 or ord(char) == 127 or char in "'\"\\" for char in value)):
+        raise ValueError
+except (OSError, UnicodeError, ValueError):
+    raise SystemExit(1)
+PY
+}
+
+configure_hermes_worker_database() {
+  local env_dir env_file="$HERMES_WORKER_DATABASE_ENV_FILE" temp_file
+  env_dir="$(dirname "$env_file")"
+  install -d -o root -g root -m 0755 "$env_dir"
+  temp_file="$(mktemp "$env_dir/.hermes-chat-worker.XXXXXX")"
+  if ! docker compose -p "$COMPOSE_PROJECT" exec -T api python -c '
+import os
+import sys
+
+value = os.environ.get("DATABASE_URL", "")
+source = "@postgres:5432/"
+if (value.count(source) != 1 or len(value) > 4060
+        or any(ord(char) < 32 or ord(char) == 127 or char in "\047\042\\" for char in value)):
+    raise SystemExit(1)
+sys.stdout.write("DATABASE_URL=" + value.replace(source, "@127.0.0.1:5432/", 1) + "\n")
+' > "$temp_file" \
+    || ! chown root:root "$temp_file" \
+    || ! chmod 0600 "$temp_file" \
+    || ! verify_hermes_worker_database_env "$temp_file"; then
+    rm -f -- "$temp_file"
+    echo "ERROR: could not derive the host worker database environment from the API runtime" >&2
+    return 1
+  fi
+  mv -f "$temp_file" "$env_file"
+}
+
+verify_hermes_worker_database_contract() {
+  local pid
+  verify_hermes_worker_database_env || return 1
+  pid="$(systemctl show hermes-chat-worker.service --property=MainPID --value)" || return 1
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  runuser -u quantumn-hermes -- "$BRIDGE_WORKER_PYTHON" - "$pid" <<'PY'
+import asyncio
+import sys
+
+from sqlalchemy import text
+from sqlalchemy.engine import make_url
+from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.pool import NullPool
+
+async def check(value):
+    url = make_url(value)
+    assert (url.drivername == "postgresql+asyncpg" and url.host == "127.0.0.1"
+            and url.port == 5432 and url.username is not None and url.password is not None
+            and url.database)
+    engine = create_async_engine(value, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            assert await connection.scalar(text("SELECT 1")) == 1
+    finally:
+        await engine.dispose()
+
+try:
+    with open(f"/proc/{sys.argv[1]}/environ", "rb") as environ_file:
+        entries = environ_file.read().split(b"\0")
+    environment = dict(entry.split(b"=", 1) for entry in entries if b"=" in entry)
+    asyncio.run(check(environment[b"DATABASE_URL"].decode("utf-8")))
+except BaseException:
+    raise SystemExit(1)
+PY
+}
+
 verify_hermes_bridge_unit() {
   local bridge_effective worker_effective
   bridge_effective="$(systemctl show hermes-bridge.service --property=ExecStart --value)"
@@ -1213,7 +1310,8 @@ managed_unit_paths() {
     hermes-bridge.agent-os:/etc/systemd/system/hermes-bridge.service.d/agent-os-mode.conf \
     hermes-serve.agent-os:/etc/systemd/system/hermes-serve.service.d/agent-os-mode.conf \
     hermes-gateway.agent-os:/etc/systemd/system/hermes-gateway.service.d/agent-os-mode.conf \
-    hermes-bridge.env:"$HERMES_BRIDGE_ENV_FILE"
+    hermes-bridge.env:"$HERMES_BRIDGE_ENV_FILE" \
+    hermes-chat-worker.env:"$HERMES_WORKER_DATABASE_ENV_FILE"
 }
 
 snapshot_managed_units() {
@@ -1530,6 +1628,7 @@ if [ -z "$status" ]; then
   echo "ERROR: API 30 秒内未就绪" >&2
   exit 1
 fi
+configure_hermes_worker_database
 mkdir -p data/manifests data/runtime
 if [ ! -e data/knowledge_matrix.json ]; then
   if [ ! -f data/vault/knowledge_matrix.json ]; then
@@ -1572,6 +1671,7 @@ verify_hermes_egress_env
 install_hermes_units
 restart_hermes_runtime
 if [ "$AI_LAB_HERMES_QUARANTINED" != "1" ]; then
+  verify_hermes_worker_database_contract
   verify_hermes_bridge_network
 fi
 repair_runtime_store_permissions "$DATA_TARGET"
