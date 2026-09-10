@@ -54,7 +54,7 @@ docker compose -p ai-lab-platform exec -T api python /app/scripts/publication_op
   --root /app/data/runtime/publications withdraw publication-…
 ```
 
-The server-local wrapper enters the existing Compose `api` service and uses its `/app/data/runtime/publications` durable root. For scheduling on the trusted Mac, use `publication_release_remote.py`: it connects only as `admin@120.24.248.58`, pins an explicit identity and known-hosts file, runs `release-due`, always reads back `status`, preserves the release exit code, and prints one deterministic totals object. The SSH account needs passwordless permission for the exact `sudo docker compose` commands; root SSH and private-key contents are forbidden.
+The server-local wrapper enters the existing Compose `api` service and uses its `/app/data/runtime/publications` durable root. For scheduling on the trusted Mac, use `publication_release_remote.py`: it connects only as `deploy@120.24.248.58`, pins an explicit identity and known-hosts file, reads status before and after `release-due`, never replaces a nonzero release exit, and prints a sanitized deterministic summary. The SSH account needs passwordless permission for the exact `sudo docker compose` commands; root/admin SSH and private-key contents are forbidden.
 
 After deployment and explicit scheduling authorization, install the reviewed local wrapper (this command does not create cron state):
 
@@ -62,26 +62,29 @@ After deployment and explicit scheduling authorization, install the reviewed loc
 install -m 0700 scripts/publication_release_remote.py ~/.hermes/scripts/publication_release_remote.py
 ```
 
-The default paths are `~/.ssh/ai_lab_publication_ed25519` and `~/.ssh/known_hosts`. Override them with `AI_LAB_PUBLICATION_SSH_KEY` and `AI_LAB_PUBLICATION_KNOWN_HOSTS`, or the corresponding command flags. Verify the pinned host-key fingerprint out of band before activation.
+The default paths are `~/.ssh/ai_lab_publication_ed25519` and `~/.ssh/known_hosts`. Override them with `AI_LAB_PUBLICATION_SSH_KEY` and `AI_LAB_PUBLICATION_KNOWN_HOSTS`, or the corresponding command flags. Alternatively, an optional owner-only `~/.hermes/config/publication-transport.json` may contain only path values:
 
-Keep the existing writer on the deployed server:
-
-```bash
-DEPLOY=/opt/ai-lab-platform
-hermes cron create '0 8 * * *' "$(<"$DEPLOY/docs/prompts/quantumn-daily-publication.md")" \
-  --name 'Quantumn 双轨每日测试连载写作' --workdir "$DEPLOY" --deliver local
+```json
+{"identity_file":"~/.ssh/ai_lab_publication_ed25519","known_hosts_file":"~/.ssh/known_hosts"}
 ```
 
-On the local Mac, use these non-overlapping Asia/Shanghai release schedules. The first performs the exact noon attempt and the second retries every five minutes through 12:55 without duplicating 12:00:
+Set the config and identity to mode `0600`; the known-hosts file must not be group/world writable. All three files must be regular files owned by the invoking user. Verify the pinned host-key fingerprint out of band before activation. The script reports paths only through SSH arguments and never reads key or known-host contents into its output.
+
+Use status-only mode to inspect the same sanitized contract without calling any publication mutation (`release-due`, `stage`, or `withdraw`):
 
 ```bash
-hermes cron create '0 12 * * *' --name 'Quantumn 已审版本每日释放' \
-  --script publication_release_remote.py --no-agent --deliver local
-hermes cron create '5-55/5 12 * * *' --name 'Quantumn 已审版本释放重试' \
-  --script publication_release_remote.py --no-agent --deliver local
+scripts/publication_release_remote.py --status-only
 ```
 
-Do not copy or mutate `~/.hermes/config/cron/jobs.json` by hand. The writer remains a Hermes agent job; both release jobs are deterministic `no_agent` jobs. A release result with blocked or overdue unpublished issues returns a nonzero exit code. Immediately record the returned job IDs, run `hermes cron doctor`, and do not activate before verified deployment and acceptance.
+This is not a promise of zero SQLite filesystem effects: the existing store connection may create directories, enable WAL, and initialize or migrate schema. The JSON summary keeps every historical edition state total separate from raw blocked/missing issues. It reports the Asia/Shanghai day and requires exactly one published `ai-history` plus exactly one `ai-practice`; unavailable observations are the string `unknown`, never synthetic zeroes. `released_edition_ids` is authoritative release-receipt output, while `observed_published_publication_id_delta` is only the before/after publication-ID set difference and may include concurrent work or omit a same-publication edition upgrade. Response bodies, hashes, titles, and other private metadata are excluded. Malformed/conflicting envelopes, missing trust files, remote nonzero exits, blocked/overdue receipt contradictions, blocked/missing status, or per-series count mismatches fail closed; attention conditions exit `3`.
+
+Publication scheduling is Mac-native and uses only the existing jobs and runtime. Update those jobs with the native `cronjob` tool; do not create duplicates, add server jobs or runtimes, or edit Cron storage by hand. The Asia/Shanghai topology is:
+
+- The existing `08:00` Hermes writer produces drafts and evidence only. It must not upload, stage, or release.
+- The existing `10:00` Hermes reviewer runs in a fresh, independent context. It validates byte-bound facts, privacy, rights, and execution evidence, then performs only the scoped upload and stage for approved bytes. Do not use child delegation: separate job contexts preserve independent review.
+- The existing deterministic `no_agent` release runs at noon (`0 12 * * *`). Its deterministic `no_agent` retry job runs every five minutes from `12:05` through `23:55` (`5-59/5 12-23 * * *`); there are no hour-zero retries.
+
+Both AI jobs use `skills=[]` and load a needed skill on demand with native `skill_view`. Their toolsets are `file`, `terminal`, `web`, `browser`, and `skills`; `execute_code` remains denied. The release jobs call the reviewed local wrapper and add no agent or publication logic. A blocked or overdue unpublished result remains nonzero. Keep job identifiers and secret paths out of this runbook, and do not treat job update or start receipts as end-to-end acceptance.
 
 ## Verification and rollback
 
