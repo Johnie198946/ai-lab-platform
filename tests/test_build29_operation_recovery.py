@@ -61,6 +61,28 @@ async def test_v42_sql_accepted_red_operation_recovers_after_crash_and_expiry(
 
 
 @pytest.mark.asyncio
+async def test_v43_excess_review_package_settles_explicit_safe_terminal(tmp_path, monkeypatch):
+    import backend.services.knowledge_run_adapter as adapter_module
+
+    monkeypatch.setenv("AI_LAB_HOME", str(tmp_path))
+    monkeypatch.setattr(adapter_module, "SOURCE_REVIEW_PACKAGE_MAX_LENGTH", 100)
+    text = "Bounded source-review package."
+    _, event, _ = await source(text)
+    store = DurableChatRunStore(tmp_path / "runs.db")
+    compile_run = await submit_compile(store, event_id=event["event_id"], content=text)
+    complete(store, compile_run["run_id"], {**COMPILE, "content": text})
+
+    result = await advance_completed(store, run_id=compile_run["run_id"], vault=tmp_path)
+    assert result == {"status": "quarantined", "run_id": compile_run["run_id"],
+                      "reason": "source review package budget exceeded"}
+    async with SessionLocal() as db:
+        assert (await db.get(BusinessRun, compile_run["run_id"])).status == "quarantined"
+        terminal = await db.get(Event, event["event_id"])
+        assert terminal.status == "quarantined"
+        assert terminal.last_error == "source review package budget exceeded"
+
+
+@pytest.mark.asyncio
 async def test_v42_file_only_operation_does_not_bypass_review_expiry(tmp_path, monkeypatch):
     import backend.services.knowledge_pipeline as pipeline
     import backend.services.knowledge_pipeline_supervisor as supervisor
@@ -297,12 +319,12 @@ async def test_recompile_scan_rotates_past_32_unresolvable_rows(tmp_path, monkey
         await db.commit()
     seen = []
 
-    async def capture(_store, *, event_id, content, version="knowledge-run-v4.2"):
+    async def capture(_store, *, event_id, content, version="knowledge-run-v4.3"):
         seen.append((event_id, content, version))
         return {"run_id": "fresh-run"}
 
     monkeypatch.setattr(supervisor, "submit_compile", capture)
     await supervisor.reconcile_once(store)
     await supervisor.reconcile_once(store)
-    assert (target["event_id"], target_text, "knowledge-run-v4.2") in seen
+    assert (target["event_id"], target_text, "knowledge-run-v4.3") in seen
     assert old["run_id"]

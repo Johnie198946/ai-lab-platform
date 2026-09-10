@@ -200,7 +200,9 @@ async def test_round2_migration_is_read_only_then_audited_idempotent(env):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", ["knowledge-run-v4.1", "knowledge-run-v4.2"])
+@pytest.mark.parametrize("version", [
+    "knowledge-run-v4.1", "knowledge-run-v4.2", "knowledge-run-v4.3",
+])
 async def test_round3_withdrawal_cannot_be_reenabled_by_replay_or_migration(env, version):
     sessions, root, tmp = env
     await sign()

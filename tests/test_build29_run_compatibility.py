@@ -23,7 +23,7 @@ from backend.services.knowledge_catalog import (
 )
 from backend.services.knowledge_run_adapter import (
     ContractError, ExistingWiki, KnowledgeRunAdapter, StageInput, STAGES, digest, execution_payload,
-    parse_result, receipt_for, session_for, source_review_input,
+    _anchor_span, _anchors, parse_result, receipt_for, session_for, source_review_input,
     validate_execution, validate_source_review,
 )
 from scripts.chat_run_store import DurableChatRunStore
@@ -64,6 +64,15 @@ def reviewed(source_text, draft, output=None, *, source_span=None, draft_modalit
     output = draft if output is None else output
     source_span = source_text if source_span is None else source_span
     removed = change == "removed"
+    def anchor_range(text, span, prefix):
+        start = text.index(span)
+        ids = [item[0] for item in _anchors(text, prefix)
+               if (bounds := _anchor_span(text, prefix, item[0], item[0]))[0] >= start
+               and bounds[1] <= start + len(span)]
+        assert ids
+        return ids[0], ids[-1]
+    draft_start, draft_end = anchor_range(draft, draft, "draft")
+    source_start, source_end = anchor_range(source_text, source_span, "source:new")
     return {
         "sanitized_content": output,
         "removed_categories": [],
@@ -75,14 +84,10 @@ def reviewed(source_text, draft, output=None, *, source_span=None, draft_modalit
         "reviewed_draft_hash": hashlib.sha256(draft.encode()).hexdigest(),
         "assertions": [{
             "change": change,
-            "draft_start": 0, "draft_end": len(draft), "draft_span": draft,
-            "output_start": None if removed else 0,
-            "output_end": None if removed else len(output),
             "output_span": "" if removed else output,
+            "draft_anchor_start": draft_start, "draft_anchor_end": draft_end,
             "source_origin": "new_source",
-            "source_start": source_text.index(source_span),
-            "source_end": source_text.index(source_span) + len(source_span),
-            "source_span": source_span,
+            "source_anchor_start": source_start, "source_anchor_end": source_end,
             "source_canonical_id": "", "source_base_version": "",
             "draft_modality": draft_modality,
             "source_modality": source_modality or draft_modality,
@@ -115,6 +120,32 @@ def test_v41_all_stage_payloads_and_sessions_remain_byte_compatible():
         "knowledge-d66d5559d2c7a0cc20c21fb6f19af72ee77880dc5f9f859b5b1d23073d2119db",
         "knowledge-74853928c75a331291c3cc9971d98e16d1fedb7a986fefca08fe107ad15134e3",
     ]
+
+
+def test_v42_all_stage_payloads_and_sessions_remain_byte_compatible():
+    base = dict(version="knowledge-run-v4.2", event_id="fixture-event",
+        tenant_id="fixture-tenant", user_id="fixture-user", policy_version="fixture-policy",
+        authorization_epoch="a" * 64, candidate_hash="b" * 64,
+        source_revision=1, existing_wiki=[], simulated=False)
+    specs = [
+        StageInput(stage=STAGES[0], content="synthetic compatibility fixture", **base),
+        StageInput(stage=STAGES[1], content="compiled private draft",
+                   predecessor_run_id="compile-run", predecessor_output_hash="c" * 64, **base),
+        StageInput(stage=STAGES[2], content="sanitized public draft",
+                   predecessor_run_id="sanitize-run", predecessor_output_hash="d" * 64, **base),
+    ]
+    assert [digest(execution_payload(item)) for item in specs] == [
+        "61bd31faec2bcadd8ff5b732487087ddcaecfd33f4e0d362afc28ea47304332e",
+        "2b5a2b841b2d208b586de97897fec4fbafa9e5ff841f28bf0e44154e4b68a37a",
+        "407b5f2d6f21327412ab7177c7de2ceb48ccc8384913e414bef6e749dd12fbf8",
+    ]
+    assert [session_for(item) for item in specs] == [
+        "knowledge-22d89fd6d3e45a5afb9f67b8297cd93d524dd483ac2bd00969e9c8e691df9283",
+        "knowledge-a725fc967dd204b69d7c8f17f763766ed90168435fe085eaa064aa1cf0900e83",
+        "knowledge-5cb67999d46a537d4f9508291205534af55e92ffa311ab44d86c36b156f446a0",
+    ]
+    assert "review_anchors" not in json.loads(source_review_input(
+        specs[0], {**COMPILE, "content": "compiled private draft"}))
 
 
 @pytest.mark.parametrize("result", [
@@ -297,14 +328,12 @@ async def test_source_review_fails_closed_on_adversarial_structure(tmp_path, mon
     if mutation == "false_coverage":
         result["coverage_complete"] = False
     elif mutation == "bad_anchor":
-        result["assertions"][0]["source_end"] = len(source_text) + 10
+        result["assertions"][0]["source_anchor_end"] = "source:new:999999"
     elif mutation == "modality_laundering":
         result["assertions"][0]["source_modality"] = "plan"
     elif mutation == "missing_draft":
-        result["assertions"][0]["draft_end"] = len("Plan A is approved.")
-        result["assertions"][0]["draft_span"] = "Plan A is approved."
+        result["assertions"][0]["draft_anchor_end"] = "draft:000003"
     else:
-        result["assertions"][0]["output_end"] = len("Plan A is approved.")
         result["assertions"][0]["output_span"] = "Plan A is approved."
     complete(store, review_run["run_id"], result)
     if mutation in {"bad_anchor", "missing_draft", "missing_output"}:
@@ -328,8 +357,9 @@ def test_existing_wiki_unchanged_review_requires_exact_span_identity():
         "predecessor_run_id": "compile", "predecessor_output_hash": digest(compiled)})
     review = reviewed("New note.", compiled["content"])
     item = review["assertions"][0]
-    item.update({"change": "unchanged", "source_origin": "existing_wiki", "source_start": 0,
-        "source_end": len(existing.body), "source_span": existing.body,
+    item.update({"change": "unchanged", "source_origin": "existing_wiki",
+        "source_anchor_start": "source:wiki:000000:000000",
+        "source_anchor_end": "source:wiki:000000:000002",
         "source_canonical_id": existing.canonical_id, "source_base_version": existing.base_version})
     with pytest.raises(ContractError, match="source assertion review"):
         validate_source_review(review_spec, review)
@@ -351,7 +381,9 @@ async def test_revocation_between_compile_and_review_prevents_private_write(tmp_
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("version", ["knowledge-run-v4.1", "knowledge-run-v4.2"])
+@pytest.mark.parametrize("version", [
+    "knowledge-run-v4.1", "knowledge-run-v4.2", "knowledge-run-v4.3",
+])
 async def test_legacy_and_current_runs_fence_revoked_dependencies_before_projection(
         tmp_path, monkeypatch, version):
     monkeypatch.setenv("AI_LAB_HOME", str(tmp_path))
@@ -393,7 +425,8 @@ async def test_revoked_public_evidence_during_review_denies_private_reuse(tmp_pa
     result = reviewed(text, public.body)
     result["assertions"][0].update({
         "change": "unchanged", "source_origin": "existing_wiki",
-        "source_start": 0, "source_end": len(public.body), "source_span": public.body,
+        "source_anchor_start": "source:wiki:000000:000000",
+        "source_anchor_end": _anchors(public.body, "source:wiki:000000")[-1][0],
         "source_canonical_id": public.canonical_id,
         "source_base_version": public.base_version,
     })
@@ -439,7 +472,8 @@ async def test_public_reuse_is_sql_bound_and_revocation_withdraws_derivatives(tm
     result = reviewed(derivative_source, public.body)
     result["assertions"][0].update({
         "change": "unchanged", "source_origin": "existing_wiki",
-        "source_start": 0, "source_end": len(public.body), "source_span": public.body,
+        "source_anchor_start": "source:wiki:000000:000000",
+        "source_anchor_end": _anchors(public.body, "source:wiki:000000")[-1][0],
         "source_canonical_id": public.canonical_id,
         "source_base_version": public.base_version,
     })

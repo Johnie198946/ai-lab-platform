@@ -31,8 +31,8 @@ from backend.services.knowledge_contribution_artifacts import (
     canonical_projection_id, quarantine_projection_artifact,
 )
 from backend.services.knowledge_run_adapter import (
-    KnowledgeRunAdapter, STAGES, digest, source_review_supports_projection,
-    source_review_supports_public, validate_source_review,
+    KnowledgeRunAdapter, SOURCE_REVIEW_VERSIONS, STAGES, SourceReviewPackageTooLarge, digest,
+    source_review_supports_projection, source_review_supports_public, validate_source_review,
 )
 from backend.services.knowledge_catalog import authorized_compile_candidates
 
@@ -84,7 +84,7 @@ async def _settle_run(run_id: str, status: str) -> None:
 
 
 async def submit_compile(store, *, event_id: str, content: str,
-                         version: str = "knowledge-run-v4.2") -> dict[str, Any]:
+                         version: str = "knowledge-run-v4.3") -> dict[str, Any]:
     event = await _event(event_id)
     if event.source_kind == "note" and hashlib.sha256(content.encode()).hexdigest() != event.content_hash:
         raise ValueError("exact note source hash required")
@@ -235,7 +235,7 @@ async def _write_reviewed_private(store, adapter: KnowledgeRunAdapter, *, compil
     review_spec, review = adapter.verified_result(
         review_run_id, tenant_id=compile_spec.tenant_id, user_id=compile_spec.user_id,
     )
-    if (review_spec.version != "knowledge-run-v4.2"
+    if (review_spec.version not in SOURCE_REVIEW_VERSIONS
             or review_spec.predecessor_run_id != compile_run_id):
         raise ValueError("source review lineage mismatch")
     validate_source_review(review_spec, review)
@@ -448,7 +448,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         raise ValueError("contribution authorization changed")
     event = await _event(spec.event_id)
 
-    if spec.version == "knowledge-run-v4.2" and spec.stage == STAGES[0]:
+    if spec.version in SOURCE_REVIEW_VERSIONS and spec.stage == STAGES[0]:
         await _run_dependencies(run_id)
         operation_id = "kop-" + digest([run_id, "red"])[:48]
         recovery = await get_projection_operation(operation_id)
@@ -459,8 +459,14 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
                 review_run_id=review_run_id, vault=vault,
             )
         dependencies = await _run_dependencies(run_id)
-        next_run = adapter.advance(run_id, tenant_id=spec.tenant_id,
-                                   user_id=spec.user_id, authorized=True)
+        try:
+            next_run = adapter.advance(run_id, tenant_id=spec.tenant_id,
+                                       user_id=spec.user_id, authorized=True)
+        except SourceReviewPackageTooLarge as exc:
+            await _settle_run(run_id, "quarantined")
+            await _set_event_status(spec.event_id, "quarantined", str(exc))
+            return {"status": "quarantined", "run_id": run_id,
+                    "reason": str(exc)}
         await register_contribution_run(
             tenant_key=spec.tenant_id, user_id=spec.user_id, run_id=next_run["run_id"],
             event_ids=[item["event_id"] for item in dependencies],
@@ -470,7 +476,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         await _set_event_status(spec.event_id, "sanitizing")
         return {"status": "sanitizing", "run_id": next_run["run_id"]}
 
-    if spec.version == "knowledge-run-v4.2" and spec.stage == STAGES[1]:
+    if spec.version in SOURCE_REVIEW_VERSIONS and spec.stage == STAGES[1]:
         return await _write_reviewed_private(
             store, adapter, compile_run_id=spec.predecessor_run_id,
             review_run_id=run_id, vault=vault,
@@ -620,7 +626,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     result_digest = digest({"compiled": compiled, "sanitized": sanitized, "privacy": result})
     green_dependencies = await _run_dependencies(run_id)
     public_references = (_reviewed_public_references(compile_spec, sanitized)
-                         if compile_spec.version == "knowledge-run-v4.2" else [])
+                         if compile_spec.version in SOURCE_REVIEW_VERSIONS else [])
     for reference in public_references:
         try:
             green_dependencies += await authorized_public_reuse_dependencies(reference)
@@ -662,7 +668,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
                 vault, projection_id=projection_id, title=compiled["title"],
                 knowledge_type=compiled["type"], knowledge_level=compiled["knowledge_level"],
                 confidence=publication_confidence,
-                    content=(sanitized["sanitized_content"] if compile_spec.version == "knowledge-run-v4.2"
+                    content=(sanitized["sanitized_content"] if compile_spec.version in SOURCE_REVIEW_VERSIONS
                              else sanitized["content"]),
                 source_count=len({item["root_source_fingerprint"] for item in green_dependencies}),
                 operation_id=operation_id,
@@ -687,7 +693,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         "authorization_epoch": spec.authorization_epoch,
         "stage_receipts": receipts,
         "published_body_hash": hashlib.sha256((sanitized["sanitized_content"]
-            if compile_spec.version == "knowledge-run-v4.2" else sanitized["content"]).strip().encode()).hexdigest(),
+            if compile_spec.version in SOURCE_REVIEW_VERSIONS else sanitized["content"]).strip().encode()).hexdigest(),
         "derivation_permitted": True,
         "publication_audience": ["public"],
         "disclosure_granularity": "summary",

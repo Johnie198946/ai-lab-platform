@@ -166,7 +166,7 @@ async def _green_contribution_gate(*, relative_path: str, projection_id: str) ->
                 or _receipt_value(ordered[2], "predecessor_run_id") != run_ids[1]
                 or any(item.get("validated") is not True or item.get("simulated") is not False
                        or item.get("type") != "knowledge_stage_receipt"
-                       or item.get("version") not in {"knowledge-run-v4.1", "knowledge-run-v4.2"}
+                       or item.get("version") not in {"knowledge-run-v4.1", "knowledge-run-v4.2", "knowledge-run-v4.3"}
                        or item.get("version") != ordered[0].get("version")
                        or item.get("tenant_id") != projection.tenant_key
                        or item.get("user_id") != projection.user_id for item in ordered)

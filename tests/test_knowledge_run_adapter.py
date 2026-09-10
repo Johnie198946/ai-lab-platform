@@ -5,8 +5,9 @@ from types import SimpleNamespace
 import pytest
 
 from backend.services.knowledge_run_adapter import (
-    ContractError, KnowledgeRunAdapter, STAGES, StageInput, digest, parse_result,
-    source_review_input, text_digest, validate_source_review,
+    ContractError, ExistingWiki, KnowledgeRunAdapter, SOURCE_REVIEW_PACKAGE_MAX_LENGTH, STAGES,
+    StageInput, _anchors, digest, execution_payload, parse_result, source_review_input,
+    source_review_supports_projection, text_digest, validate_execution, validate_source_review,
 )
 from scripts import chat_run_worker as worker
 from scripts.chat_run_store import DurableChatRunStore
@@ -29,6 +30,28 @@ PRIVACY = {
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False)
+
+
+def v43_review(source, draft, output=None):
+    output = draft if output is None else output
+    draft_anchors = _anchors(draft, "draft")
+    source_anchors = _anchors(source, "source:new")
+    return {
+        "sanitized_content": output, "removed_categories": [],
+        "fact_classification": "fact", "confidence": 0.8, "decision": "publish",
+        "coverage_complete": True, "reviewed_source_hash": text_digest(source),
+        "reviewed_draft_hash": text_digest(draft), "assertions": [{
+            "change": "new", "draft_anchor_start": "draft:000000",
+            "draft_anchor_end": draft_anchors[-1][0],
+            "output_span": output, "source_origin": "new_source",
+            "source_anchor_start": "source:new:000000",
+            "source_anchor_end": source_anchors[-1][0],
+            "source_canonical_id": "", "source_base_version": "",
+            "draft_modality": "fact", "source_modality": "fact",
+            "output_modality": "fact", "private_support": "entailed",
+            "output_support": "entailed",
+        }],
+    }
 
 
 @pytest.fixture
@@ -215,6 +238,181 @@ def test_v42_source_review_fills_schema_optional_defaults_but_rejects_contradict
             review_spec,
             parse_result(STAGES[1], encoded(review), version="knowledge-run-v4.2"),
         )
+
+
+def test_v42_persisted_source_review_receipt_replays_unchanged(harness):
+    _, adapter, execute, _ = harness
+    submit(adapter, version="knowledge-run-v4.2")
+    compiled = execute(encoded({**COMPILE, "content": "private source"}))
+    review_run = advance(adapter, compiled)
+    legacy = {
+        "sanitized_content": "private source", "removed_categories": [],
+        "fact_classification": "fact", "confidence": 0.8, "decision": "publish",
+        "coverage_complete": True, "reviewed_source_hash": text_digest("private source"),
+        "reviewed_draft_hash": text_digest("private source"), "assertions": [{
+            "change": "new", "draft_start": 0, "draft_end": 14,
+            "draft_span": "private source", "output_start": 0, "output_end": 14,
+            "output_span": "private source", "source_origin": "new_source",
+            "source_start": 0, "source_end": 14, "source_span": "private source",
+            "source_canonical_id": "", "source_base_version": "",
+            "draft_modality": "fact", "source_modality": "fact",
+            "output_modality": "fact", "private_support": "entailed",
+            "output_support": "entailed",
+        }],
+    }
+    completed = execute(encoded(legacy))
+    assert completed["run_id"] == review_run["run_id"]
+    spec, replayed = read(adapter, completed)
+    assert spec.version == "knowledge-run-v4.2" and replayed == legacy
+
+
+def test_v43_server_anchors_cover_unicode_without_model_offsets():
+    source = "Cafe\u0301🙂计划（α）已批准，\u3000周五发布。"
+    compiled = {**COMPILE, "content": source}
+    compile_spec = StageInput(
+        version="knowledge-run-v4.3", stage=STAGES[0], event_id="event",
+        tenant_id="tenant", user_id="user", policy_version="policy",
+        authorization_epoch="a" * 64, candidate_hash="b" * 64, content=source,
+    )
+    review_spec = StageInput(**{
+        **compile_spec.model_dump(), "stage": STAGES[1],
+        "content": source_review_input(compile_spec, compiled),
+    })
+    package = json.loads(review_spec.content)
+    anchors = package["review_anchors"]["draft"]
+    assert anchors == _anchors(source, "draft")
+    assert "".join(item[1] for item in anchors).encode() == "".join(
+        char for char in source if not char.isspace()).encode()
+    goal = execution_payload(review_spec)["goal"]
+    assert '"review_package"' in goal and '"draft_anchor_start"' in goal
+    assert '"draft_start"' not in goal and "calculate character offsets" in goal
+    parsed = parse_result(STAGES[1], encoded(v43_review(source, source)),
+                          version="knowledge-run-v4.3")
+    assert validate_source_review(review_spec, parsed) == parsed
+
+
+def test_v43_no_space_chinese_fact_and_plan_use_separate_assertions():
+    source = "设备已上线。计划明天扩容。"
+    compiled = {**COMPILE, "content": source}
+    compile_spec = StageInput(
+        version="knowledge-run-v4.3", stage=STAGES[0], event_id="event",
+        tenant_id="tenant", user_id="user", policy_version="policy",
+        authorization_epoch="a" * 64, candidate_hash="b" * 64, content=source,
+    )
+    review_spec = StageInput(**{
+        **compile_spec.model_dump(), "stage": STAGES[1],
+        "content": source_review_input(compile_spec, compiled),
+    })
+    result = v43_review(source, source)
+    first = result["assertions"][0]
+    first.update({"draft_anchor_end": "draft:000001", "output_span": "设备已上线。",
+                  "source_anchor_end": "source:new:000001"})
+    result["assertions"].append({
+        **first, "draft_anchor_start": "draft:000002", "draft_anchor_end": "draft:000003",
+        "output_span": "计划明天扩容。", "source_anchor_start": "source:new:000002",
+        "source_anchor_end": "source:new:000003", "draft_modality": "plan",
+        "source_modality": "plan", "output_modality": "plan",
+    })
+    result["fact_classification"] = "mixed"
+    assert validate_source_review(review_spec, result) == result
+
+    result["assertions"][1].update({"draft_modality": "question", "source_modality": "question",
+                                    "output_modality": "question"})
+    assert validate_source_review(review_spec, result) == result
+    assert source_review_supports_projection(result) is False
+
+
+@pytest.mark.parametrize("mutation", [
+    "missing", "malformed", "ambiguous", "punctuation_gap", "wrong_hash",
+])
+def test_v43_missing_malformed_ambiguous_or_incomplete_anchors_fail_closed(mutation):
+    source = "Alpha ; Beta。"
+    compiled = {**COMPILE, "content": source}
+    compile_spec = StageInput(
+        version="knowledge-run-v4.3", stage=STAGES[0], event_id="event",
+        tenant_id="tenant", user_id="user", policy_version="policy",
+        authorization_epoch="a" * 64, candidate_hash="b" * 64, content=source,
+    )
+    review_spec = StageInput(**{
+        **compile_spec.model_dump(), "stage": STAGES[1],
+        "content": source_review_input(compile_spec, compiled),
+    })
+    result = v43_review(source, source)
+    if mutation == "missing":
+        result["assertions"][0].pop("draft_anchor_end")
+        with pytest.raises(ContractError, match="invalid knowledge stage output"):
+            parse_result(STAGES[1], encoded(result), version="knowledge-run-v4.3")
+        return
+    if mutation == "malformed":
+        result["assertions"][0]["source_anchor_end"] = "source:new:999999"
+    elif mutation == "ambiguous":
+        result["sanitized_content"] = "Alpha。 Alpha。"
+        result["assertions"][0]["output_span"] = "Alpha。"
+    elif mutation == "wrong_hash":
+        result["reviewed_source_hash"] = "0" * 64
+    else:
+        result["assertions"][0]["draft_anchor_end"] = "draft:000000"
+    parsed = parse_result(STAGES[1], encoded(result), version="knowledge-run-v4.3")
+    with pytest.raises(ContractError, match="invalid source assertion review"):
+        validate_source_review(review_spec, parsed)
+
+
+def test_v43_compact_review_package_accepts_6000_character_source_and_draft(harness):
+    _, adapter, execute, _ = harness
+    source = "a " * 3000
+    submit(adapter, version="knowledge-run-v4.3", content=source)
+    compiled = execute(encoded({**COMPILE, "content": source}))
+    review = advance(adapter, compiled)
+    spec = validate_execution(adapter.store.get_unchecked(review["run_id"]))
+    package = json.loads(spec.content)
+    assert len(source) == 6000
+    assert len(spec.content) < 200000
+    assert package["new_source"] == source
+    assert package["compiled"]["content"] == source
+
+
+def test_v43_existing_wiki_uses_bounded_review_only_budget_without_truncation():
+    source = "new source"
+    wiki_body = "wiki " * 10000
+    existing = ExistingWiki(
+        canonical_id="known", kind="concept", relative_path="wiki/known.md",
+        base_version="a" * 64, body_hash="b" * 64, body=wiki_body,
+        provenance=[{"event_id": "old"}],
+    )
+    compile_spec = StageInput(
+        version="knowledge-run-v4.3", stage=STAGES[0], event_id="event",
+        tenant_id="tenant", user_id="user", policy_version="policy",
+        authorization_epoch="a" * 64, candidate_hash="b" * 64, content=source,
+        existing_wiki=[existing],
+    )
+    content = source_review_input(compile_spec, {**COMPILE, "content": source})
+    review_spec = StageInput(**{**compile_spec.model_dump(), "stage": STAGES[1],
+                                "content": content, "existing_wiki": []})
+    package = json.loads(review_spec.content)
+    assert 200000 < len(content) <= SOURCE_REVIEW_PACKAGE_MAX_LENGTH
+    assert package["new_source"] == source
+    assert package["existing_wiki"][0]["body"] == wiki_body
+    assert package["review_anchors"]["existing_wiki"][0]["anchors"] == _anchors(
+        wiki_body, "source:wiki:000000")
+
+
+@pytest.mark.parametrize("version,stage", [
+    ("knowledge-run-v4.1", STAGES[1]),
+    ("knowledge-run-v4.2", STAGES[1]),
+    ("knowledge-run-v4.3", STAGES[0]),
+    ("knowledge-run-v4.3", STAGES[2]),
+])
+def test_200k_content_limit_remains_for_raw_legacy_and_other_stages(version, stage):
+    fields = dict(
+        version=version, stage=stage, event_id="event", tenant_id="tenant", user_id="user",
+        policy_version="policy", authorization_epoch="a" * 64, candidate_hash="b" * 64,
+        content="x" * 200001,
+    )
+    with pytest.raises(ValueError, match="content exceeds 200000"):
+        StageInput(**fields)
+    with pytest.raises(ValueError):
+        StageInput(**{**fields, "version": "knowledge-run-v4.3", "stage": STAGES[1],
+                      "content": "x" * (SOURCE_REVIEW_PACKAGE_MAX_LENGTH + 1)})
 
 
 def test_worker_rejects_stage_skip_and_content_swap(harness):
