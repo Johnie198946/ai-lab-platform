@@ -35,6 +35,11 @@ from backend.services.knowledge_publication_store import (
     PublicationStore,
     reader_sections,
 )
+from backend.services.owner_private_bookshelf import (
+    OwnerPrivateBookshelfError,
+    OwnerPrivateBookshelfStore,
+    OwnerPrivateContentUnavailable,
+)
 
 
 router = APIRouter(prefix="/api/v1", tags=["subscriptions"])
@@ -265,7 +270,12 @@ async def subscription_center(payload=Depends(require_auth)):
 @router.get("/knowledge-bookshelves")
 async def knowledge_bookshelves(payload=Depends(require_auth)):
     """Reader catalog independent of organization subscription state."""
-    return {"bookshelves": _public_bookshelves(await _visible_bookshelves(payload))}
+    tenant_key, user_id = _owner_reader_identity(payload)
+    collection = _owner_private_store(payload).collection(tenant_key, user_id) if tenant_key and user_id else None
+    return {
+        "bookshelves": _public_bookshelves(await _visible_bookshelves(payload)),
+        "owner_private_collections": [collection] if collection else [],
+    }
 
 
 def _reader_identity(payload: dict[str, Any]) -> tuple[str, str]:
@@ -275,14 +285,34 @@ def _reader_identity(payload: dict[str, Any]) -> tuple[str, str]:
     )
 
 
+def _owner_reader_identity(payload: dict[str, Any]) -> tuple[str, str]:
+    """Private imports never inherit the legacy development identity fallback."""
+    return (
+        str(payload.get("tenant_key") or ""),
+        str(payload.get("user_id") or payload.get("sub") or payload.get("username") or ""),
+    )
+
+
+def _owner_private_store(payload: dict[str, Any]) -> OwnerPrivateBookshelfStore:
+    del payload
+    return OwnerPrivateBookshelfStore()
+
+
 async def _visible_bookshelves(payload: dict[str, Any]) -> list[dict[str, Any]]:
     vault = knowledge._vault()
     documents = await filter_database_live_documents(
         list(bookshelf_document_index(vault).values()), vault
     )
-    return bookshelf_catalog(
+    shelves = bookshelf_catalog(
         payload["tenant_key"], vault, payload.get("visible_categories"), documents
     )
+    tenant_key, user_id = _owner_reader_identity(payload)
+    if user_id:
+        try:
+            shelves.extend(_owner_private_store(payload).catalog(tenant_key, user_id))
+        except OwnerPrivateBookshelfError:
+            pass
+    return shelves
 
 
 async def _available_books(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -296,6 +326,10 @@ _PUBLIC_BOOK_FIELDS = (
     "freshness", "source_count", "series_id", "series_title", "issue_id",
     "issue_date", "test_serial", "release_at", "actual_release_at", "edition_id",
     "edition", "source_urls",
+    "source_kind", "source_kind_label", "content_status", "canonical_url",
+    "published", "institution", "group_label",
+    "source_id", "body_origin", "completeness", "source_classification",
+    "readable", "unavailable_reason",
 )
 
 
@@ -308,6 +342,19 @@ def _public_bookshelves(shelves: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+    if book_id.startswith("follow-builders-source-"):
+        tenant_key, user_id = _owner_reader_identity(payload)
+        if not user_id:
+            raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
+                         action="refresh_catalog", retryable=True)
+        try:
+            return _owner_private_store(payload).read_book(tenant_key, user_id, book_id)
+        except OwnerPrivateContentUnavailable as exc:
+            raise _error(404, code="book_content_unavailable", message="该来源仅提供链接，或私有快照已失效",
+                         action="refresh_catalog", retryable=False) from exc
+        except OwnerPrivateBookshelfError as exc:
+            raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
+                         action="refresh_catalog", retryable=True) from exc
     visible_categories = payload.get("visible_categories")
     publication_id = book_id.startswith("publication-")
     publication = (

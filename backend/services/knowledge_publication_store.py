@@ -590,19 +590,26 @@ class PublicationStore:
         return value
 
 
-def reader_sections(markdown: str) -> list[dict[str, Any]]:
-    tokens, headings, lines = _MD.parse(markdown), [], markdown.splitlines()
+def reader_sections(markdown: str, *, preserve_source_whitespace: bool = False) -> list[dict[str, Any]]:
+    tokens, headings = _MD.parse(markdown), []
+    lines = markdown.splitlines(keepends=preserve_source_whitespace)
+    join = "".join if preserve_source_whitespace else "\n".join
     for index, token in enumerate(tokens[:-1]):
         if token.type == "heading_open" and token.map and tokens[index + 1].type == "inline":
-            headings.append((token.map[0], int(token.tag[1:]), tokens[index + 1].content))
+            headings.append((token.map[0], token.map[1], int(token.tag[1:]), tokens[index + 1].content))
     if not headings:
-        return [{"id": "section-1", "title": "正文", "level": 1, "markdown": markdown.strip()}] if markdown.strip() else []
+        content = markdown if preserve_source_whitespace else markdown.strip()
+        return [{"id": "section-1", "title": "正文", "level": 1, "markdown": content}] if markdown.strip() else []
     result = []
-    preamble = "\n".join(lines[:headings[0][0]]).strip()
-    if preamble:
+    preamble = join(lines[:headings[0][0]])
+    if not preserve_source_whitespace:
+        preamble = preamble.strip()
+    if preamble.strip():
         result.append({"id": "section-1", "title": "正文", "level": 0, "markdown": preamble})
-    for index, (start, level, title) in enumerate(headings):
+    for index, (start, heading_end, level, title) in enumerate(headings):
         end = headings[index + 1][0] if index + 1 < len(headings) else len(lines)
-        content = "\n".join(lines[start + 1:end]).strip()
+        content = join(lines[(heading_end if preserve_source_whitespace else start + 1):end])
+        if not preserve_source_whitespace:
+            content = content.strip()
         result.append({"id": f"section-{len(result) + 1}", "title": title, "level": level, "markdown": content})
     return result

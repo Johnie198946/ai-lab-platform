@@ -477,6 +477,7 @@ public struct SubscriptionCenterView: View {
     @State private var center: SubscriptionCenterResponse?
     @State private var knowledgeAccess: KnowledgeAccessResponse?
     @State private var bookshelves: [KnowledgeBookshelfDTO] = []
+    @State private var ownerPrivateCollections: [OwnerPrivateCollectionDTO] = []
     @State private var adminRequests: [SubscriptionRequestDTO] = []
     @State private var isLoading = true
     @State private var busyID: String?
@@ -655,6 +656,9 @@ public struct SubscriptionCenterView: View {
         return ScrollView {
             LazyVStack(spacing: AppTheme.Spacing.lg) {
                 bookshelfSearch(placeholder: "搜索分类或作者")
+                ForEach(ownerPrivateCollections) { collection in
+                    ownerPrivateRoster(collection)
+                }
                 HStack {
                     Text("全部收藏")
                         .font(AppTheme.Typography.micro.weight(.semibold))
@@ -712,6 +716,53 @@ public struct SubscriptionCenterView: View {
         .background(AppTheme.Colors.cardBackground)
         .clipShape(Capsule())
         .shadow(color: Color.black.opacity(0.08), radius: 12, y: 5)
+    }
+
+    private func ownerPrivateRoster(_ collection: OwnerPrivateCollectionDTO) -> some View {
+        let authorities = collection.authorities.filter {
+            bookshelfQuery.isEmpty || $0.handle.localizedStandardContains(bookshelfQuery)
+                || ($0.displayName?.localizedStandardContains(bookshelfQuery) ?? false)
+        }
+        return DisclosureGroup {
+            LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                ForEach(authorities) { authority in
+                    HStack(alignment: .top, spacing: AppTheme.Spacing.sm) {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(authority.displayName ?? "@\(authority.handle)")
+                                .font(AppTheme.Typography.supporting.weight(.semibold))
+                            Text("@\(authority.handle) · \(authority.identityAssessment == "identity_mismatch" ? "身份不匹配" : "按存档，未重新核验")")
+                                .font(AppTheme.Typography.micro)
+                                .foregroundStyle(authority.identityAssessment == "identity_mismatch" ? AppTheme.Icons.destructive : AppTheme.Colors.textSecondary)
+                            Text("与 \(collection.sourceCount) 条来源的关系：未知")
+                                .font(.caption2)
+                                .foregroundStyle(AppTheme.Colors.textTertiary)
+                            if let note = authority.identityNotes.last, authority.identityAssessment == "identity_mismatch" {
+                                Text(note).font(.caption2).foregroundStyle(AppTheme.Colors.textSecondary)
+                            }
+                        }
+                        Spacer()
+                        if let value = authority.officialEntry, let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                            Link(destination: url) { Image(systemName: "arrow.up.right.square") }
+                                .frame(width: 44, height: 44)
+                                .accessibilityLabel("打开 @\(authority.handle) 的存档入口")
+                        }
+                    }
+                }
+            }
+            .padding(.top, AppTheme.Spacing.sm)
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("跟踪账号名册 · \(collection.authorityCount)")
+                    .font(AppTheme.Typography.supporting.weight(.semibold))
+                Text("与下方 \(collection.sourceCount) 条来源分开展示；零关联表示未知，不代表确认无关联。")
+                    .font(.caption2)
+                    .foregroundStyle(AppTheme.Colors.textSecondary)
+            }
+        }
+        .padding(AppTheme.Spacing.md)
+        .background(AppTheme.Colors.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+        .accessibilityIdentifier("follow-builders-owner-private-roster")
     }
 
     private func bookshelfCollectionCard(_ shelf: KnowledgeBookshelfDTO) -> some View {
@@ -819,6 +870,9 @@ public struct SubscriptionCenterView: View {
     }
 
     private func shelfSubtitle(_ shelf: KnowledgeBookshelfDTO) -> String {
+        if shelf.id.hasPrefix("owner-private/follow-builders/") {
+            return "OWNER PRIVATE · 外部来源按原始署名收录"
+        }
         switch shelf.title {
         case "产品与方案": return "从问题到产品，理解一套完整解法"
         case "方法论": return "把复杂工作变成可重复的方法"
@@ -1752,7 +1806,9 @@ public struct SubscriptionCenterView: View {
         isLoading = true
         errorMessage = nil
         do {
-            bookshelves = try await api.fetchKnowledgeBookshelves()
+            let response = try await api.fetchKnowledgeBookshelves()
+            bookshelves = response.bookshelves
+            ownerPrivateCollections = response.ownerPrivateCollections ?? []
             if let subscriptions = try? await api.fetchBookSubscriptions() {
                 subscribedBookIDs = Set(subscriptions.map(\.book.id))
             }
@@ -1935,7 +1991,7 @@ struct KnowledgeBookReaderView: View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    Text("QUANTUM EDITIONS  /  01")
+                    Text(book.sourceKind == "owner_private_external" ? "FOLLOW BUILDERS  /  OWNER PRIVATE" : "QUANTUM EDITIONS  /  01")
                         .font(.caption2.weight(.bold))
                         .tracking(1.4)
                         .foregroundStyle(AppTheme.Colors.textTertiary)
@@ -1960,7 +2016,7 @@ struct KnowledgeBookReaderView: View {
                         Text(book.author)
                             .font(.title3.weight(.medium))
                             .foregroundStyle(AppTheme.Colors.textSecondary)
-                        Text(book.testSerial == true ? "已审核冻结发布" : (book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研"))
+                        Text(book.sourceKind == "owner_private_external" ? "外部来源原始署名 · 非 Quantumn 出版物" : (book.testSerial == true ? "已审核冻结发布" : (book.authorSource == "fallback" ? "QUANTUM 编研" : "原文署名  ·  QUANTUM 编研")))
                             .font(.caption.weight(.bold))
                             .tracking(0.7)
                             .foregroundStyle(AppTheme.Colors.primary)
@@ -1988,8 +2044,11 @@ struct KnowledgeBookReaderView: View {
                         .frame(maxWidth: 344, alignment: .leading)
 
                     HStack(spacing: 10) {
-                        readerPill(book.knowledgeLevel, icon: "checkmark.seal")
+                        readerPill(book.sourceKind == "owner_private_external" ? "外部来源" : book.knowledgeLevel, icon: "checkmark.seal")
                         readerPill("\(book.sourceCount) 个来源", icon: "link")
+                        if let status = book.contentStatus {
+                            readerPill(status == "snapshot" ? "快照正文" : (status == "summary" ? "来源摘要" : (status == "unavailable" ? "正文不可用" : "仅链接")), icon: status == "link_only" ? "link" : "doc.text")
+                        }
                     }
                     .padding(.top, 34)
                     .offset(x: 22)
@@ -1999,7 +2058,9 @@ struct KnowledgeBookReaderView: View {
                         .offset(x: 104)
 
                     Label(
-                        book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。",
+                        book.sourceKind == "owner_private_external"
+                            ? (book.contentStatus == "snapshot" ? "这是私有消费的外部快照；正文来源与完整性状态见上方，不表示已获公共再发布许可。" : (book.contentStatus == "summary" ? "这里只提供来源记录摘要，不表示完整原文。" : (book.unavailableReason ?? "这里只提供原始来源链接，没有可验证的正文。")))
+                            : (book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。"),
                         systemImage: "quote.opening"
                     )
                     .font(.footnote)
@@ -2023,6 +2084,25 @@ struct KnowledgeBookReaderView: View {
                         .frame(minHeight: 44)
                         .accessibilityHint("切换到 Chat，并绑定当前已发布版本")
                         .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
+                    } else if book.sourceKind == "owner_private_external", book.readable == true {
+                        Button("围绕这个私有来源向 Chat 提问") {
+                            appState.navigateToChatWithPrompt(
+                                "请只依据我选择的外部来源，区分快照、摘要与未知信息后回答。",
+                                contextScope: ChatContextScopeDTO(mode: .platformOnly, selectedBookId: book.id)
+                            )
+                            onDismiss()
+                        }
+                        .frame(minHeight: 44)
+                        .accessibilityHint("切换到 Chat，并绑定当前账号有权读取的来源版本")
+                        .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
+                    }
+
+                    if book.sourceKind == "owner_private_external",
+                       let value = book.canonicalUrl, let url = URL(string: value),
+                       ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                        Link("查看原始来源", destination: url)
+                            .font(.footnote.weight(.semibold))
+                            .padding(.top, 14)
                     }
 
                     Spacer(minLength: 80)
@@ -2045,8 +2125,8 @@ struct KnowledgeBookReaderView: View {
                     Button(action: isSubscribed ? { showingReading = true } : onToggleSubscription) {
                         HStack(spacing: 10) {
                             if isBusy { ProgressView().tint(.white) }
-                            Image(systemName: isSubscribed ? "book.pages.fill" : "plus")
-                            Text(isSubscribed ? "开始阅读" : "加入我的笔记书架")
+                            Image(systemName: book.readable == false ? "link" : (isSubscribed ? "book.pages.fill" : "plus"))
+                            Text(book.readable == false ? "正文不可用，查看来源" : (isSubscribed ? "开始阅读" : "加入我的笔记书架"))
                         }
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Color.white)
@@ -2054,9 +2134,9 @@ struct KnowledgeBookReaderView: View {
                         .background(AppTheme.Colors.textPrimary)
                         .clipShape(Capsule())
                     }
-                    .disabled(isBusy && !isSubscribed)
+                    .disabled(book.readable == false || (isBusy && !isSubscribed))
                     .buttonStyle(SoftButtonStyle())
-                    .accessibilityLabel(isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架")
+                    .accessibilityLabel(book.readable == false ? "《\(book.title)》正文不可用，仅可查看原始来源" : (isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架"))
                     .accessibilityValue(isSubscribed ? "subscribed" : "unsubscribed")
                     .accessibilityIdentifier("publication-subscription-control.\(book.id)")
                     HStack(spacing: 18) {

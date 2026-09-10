@@ -232,6 +232,19 @@ public struct KnowledgeBookDTO: Codable, Identifiable, Hashable {
     public var editionId: String? = nil
     public var edition: Int? = nil
     public var sourceUrls: [String]? = nil
+    public var sourceKind: String? = nil
+    public var sourceKindLabel: String? = nil
+    public var contentStatus: String? = nil
+    public var canonicalUrl: String? = nil
+    public var published: String? = nil
+    public var institution: String? = nil
+    public var groupLabel: String? = nil
+    public var sourceId: Int? = nil
+    public var bodyOrigin: String? = nil
+    public var completeness: String? = nil
+    public var sourceClassification: String? = nil
+    public var readable: Bool? = nil
+    public var unavailableReason: String? = nil
 }
 
 public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
@@ -244,6 +257,30 @@ public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
 
 public struct KnowledgeBookshelvesResponse: Codable {
     public let bookshelves: [KnowledgeBookshelfDTO]
+    public var ownerPrivateCollections: [OwnerPrivateCollectionDTO]? = nil
+}
+
+public struct OwnerPrivateAuthorityDTO: Codable, Identifiable, Hashable {
+    public var id: Int { rosterId }
+    public let rosterId: Int
+    public let handle: String
+    public let displayName: String?
+    public let organizationOrRole: String?
+    public let officialEntry: String?
+    public let verificationStatus: String?
+    public let identityStatus: String
+    public let identityAssessment: String
+    public let identityNotes: [String]
+    public let relationshipStatus: String
+}
+
+public struct OwnerPrivateCollectionDTO: Codable, Identifiable, Hashable {
+    public let id: String
+    public let title: String
+    public let visibility: String
+    public let authorityCount: Int
+    public let sourceCount: Int
+    public let authorities: [OwnerPrivateAuthorityDTO]
 }
 
 public struct KnowledgeBookSubscriptionDTO: Codable, Hashable {
@@ -283,6 +320,14 @@ public struct KnowledgeBookBodyDTO: Codable, Hashable {
     public var actualReleaseAt: String? = nil
     public var editionId: String? = nil
     public var sourceUrls: [String]? = nil
+    public var sourceKind: String? = nil
+    public var contentStatus: String? = nil
+    public var canonicalUrl: String? = nil
+    public var sourceSnapshotHash: String? = nil
+    public var readableBodyHash: String? = nil
+    public var bodyOrigin: String? = nil
+    public var completeness: String? = nil
+    public var sourceClassification: String? = nil
 }
 
 private struct KnowledgeBookSubscriptionWrite: Encodable {
@@ -2082,9 +2127,8 @@ public final class APIClient: ObservableObject {
         try await request(SubscriptionCenterResponse.self, path: "subscription-center")
     }
 
-    public func fetchKnowledgeBookshelves() async throws -> [KnowledgeBookshelfDTO] {
-        let response = try await request(KnowledgeBookshelvesResponse.self, path: "knowledge-bookshelves")
-        return response.bookshelves
+    public func fetchKnowledgeBookshelves() async throws -> KnowledgeBookshelvesResponse {
+        try await request(KnowledgeBookshelvesResponse.self, path: "knowledge-bookshelves")
     }
 
     public func fetchBookSubscriptions() async throws -> [KnowledgeBookSubscriptionDTO] {
