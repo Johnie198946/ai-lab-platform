@@ -218,7 +218,7 @@ def _dev_login_expiry(value: str) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
-def _dev_login_allowed(request: Request) -> bool:
+def dev_login_allowed(request: Request) -> bool:
     if os.environ.get("DEV_LOGIN_ENABLED", "false").strip().lower() != "true":
         return False
     allowed_ip = os.environ.get("DEV_LOGIN_ALLOWED_IP", "").strip()
@@ -232,21 +232,30 @@ def _dev_login_allowed(request: Request) -> bool:
     return hmac.compare_digest(_request_source_ip(request), allowed_ip)
 
 
+def dev_login_credentials_match(phone: str, code: str) -> bool:
+    expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
+    expected_code = os.environ.get("DEV_LOGIN_CODE", "").strip()
+    phone_matches = hmac.compare_digest(phone.strip(), expected_phone)
+    code_matches = hmac.compare_digest(code.strip(), expected_code)
+    return bool(expected_phone) & bool(expected_code) & phone_matches & code_matches
+
+
+def dev_login_principal() -> tuple[str, str]:
+    user_id = os.environ.get("DEV_LOGIN_USER_ID", "dev-user").strip() or "dev-user"
+    username = os.environ.get("DEV_LOGIN_USERNAME", "开发者").strip() or "开发者"
+    return user_id, username
+
+
 @router.post("/dev-login")
 async def dev_login(body: DevLoginRequest, request: Request):
     """受控开发账号免短信登录；只有服务端显式配置后才开放。"""
-    if not _dev_login_allowed(request):
+    if not dev_login_allowed(request):
         raise HTTPException(status_code=404, detail="开发者登录未启用")
 
-    expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
-    expected_code = os.environ.get("DEV_LOGIN_CODE", "").strip()
-    if not hmac.compare_digest(body.phone.strip(), expected_phone) or not hmac.compare_digest(
-        body.verification_code.strip(), expected_code
-    ):
+    if not dev_login_credentials_match(body.phone, body.verification_code):
         raise HTTPException(status_code=401, detail="开发者账号或验证码错误")
 
-    user_id = os.environ.get("DEV_LOGIN_USER_ID", "dev-user").strip() or "dev-user"
-    username = os.environ.get("DEV_LOGIN_USERNAME", "开发者").strip() or "开发者"
+    user_id, username = dev_login_principal()
     tenant_key = await _provision_tenant(user_id)
     token = _issue_jwt(user_id, username, auth_method="dev_code")
     if not token:

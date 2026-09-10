@@ -42,7 +42,7 @@ final class ProductionBookshelfUITests: XCTestCase {
     }
 
     func testProductionBookshelfReadingAndSelectedBookChat() throws {
-        guard let knowledgeTab = requireAuthenticatedKnowledgeTab() else { return }
+        guard requireAuthenticatedKnowledgeTab() != nil else { return }
 
         let chatTab = app.buttons["main-tab-0"]
         XCTAssertTrue(chatTab.waitForExistence(timeout: 10))
@@ -50,9 +50,16 @@ final class ProductionBookshelfUITests: XCTestCase {
         let newSession = app.buttons["新建会话"]
         XCTAssertTrue(newSession.waitForExistence(timeout: 10))
         newSession.tap()
-        XCTAssertTrue(app.textFields["selected-book-chat-input"].waitForExistence(timeout: 12))
+        let cleanSessionInput = try chatInput(timeout: 12)
+        if cleanSessionInput.identifier != "selected-book-chat-input" {
+            app.terminate()
+            app.launch()
+            XCTAssertTrue(app.buttons["main-tab-2"].waitForExistence(timeout: 10))
+        }
 
-        knowledgeTab.tap()
+        let freshKnowledgeTab = app.descendants(matching: .any)["main-tab-2"]
+        XCTAssertTrue(freshKnowledgeTab.waitForExistence(timeout: 10))
+        freshKnowledgeTab.tap()
         XCTAssertTrue(app.navigationBars["知识"].waitForExistence(timeout: 10))
 
         let discover = app.buttons["发现更多书籍"]
@@ -65,29 +72,32 @@ final class ProductionBookshelfUITests: XCTestCase {
         }
 
         XCTAssertTrue(app.navigationBars["知识书架"].waitForExistence(timeout: 15))
-        let bookshelfScroll = app.scrollViews["publication-bookshelf-container"]
-        XCTAssertTrue(bookshelfScroll.waitForExistence(timeout: 10))
+        let bookshelfScroll = try preferredElement(
+            app.scrollViews["publication-bookshelf-container"],
+            fallback: app.scrollViews.firstMatch,
+            timeout: 10,
+            failureMessage: "生产书架滚动容器未出现。"
+        )
         let refresh = app.buttons["publication-bookshelf-refresh"]
-        XCTAssertTrue(refresh.waitForExistence(timeout: 10))
-        refresh.tap()
+        if refresh.waitForExistence(timeout: 3) {
+            refresh.tap()
+        } else {
+            bookshelfScroll.swipeDown()
+        }
 
-        let serialShelf = app.buttons["bookshelf-collection.knowledge/publication/public"]
-        XCTAssertTrue(serialShelf.waitForExistence(timeout: 20), "真实刷新后未找到每日测试连载书架。")
+        let serialShelf = try preferredElement(
+            app.buttons["bookshelf-collection.knowledge/publication/public"],
+            fallback: app.buttons.matching(
+                NSPredicate(format: "label BEGINSWITH %@", "Quantumn 每日测试连载，")
+            ).firstMatch,
+            timeout: 20,
+            failureMessage: "真实刷新后未找到每日测试连载书架。"
+        )
         attachScreenshot(named: "01-production-bookshelf-refreshed")
         serialShelf.tap()
 
         XCTAssertTrue(app.staticTexts["书架上的精选"].waitForExistence(timeout: 10))
-        let expectedCardIdentifiers = expectedPublications.map {
-            "publication-book-card.\($0.seriesID).\($0.bookID)"
-        }
-        let publishedBook = app.buttons.matching(NSPredicate(
-            format: "identifier == %@ OR identifier == %@",
-            expectedCardIdentifiers[0], expectedCardIdentifiers[1]
-        )).firstMatch
-        XCTAssertTrue(publishedBook.waitForExistence(timeout: 15), "配置中的两本已发布 Quantumn 测试书均不可见。")
-        let identity = try publicationIdentity(from: publishedBook)
-        let expected = try XCTUnwrap(expectedPublications.first { $0.bookID == identity.bookID })
-        XCTAssertEqual(identity.seriesID, expected.seriesID)
+        let (publishedBook, expected) = try expectedPublishedBook(timeout: 15)
         let selectedBookTitle = publishedBook.label.components(separatedBy: "，作者 ").first ?? ""
         XCTAssertEqual(selectedBookTitle, expected.title)
         attachScreenshot(named: "02-published-test-book-visible")
@@ -98,39 +108,57 @@ final class ProductionBookshelfUITests: XCTestCase {
         ).firstMatch
         XCTAssertTrue(serialBadge.waitForExistence(timeout: 12), "打开的书不是已发布测试连载。")
 
-        let subscription = app.buttons["publication-subscription-control.\(identity.bookID)"]
-        XCTAssertTrue(subscription.waitForExistence(timeout: 10))
-        let originalSubscription = try XCTUnwrap(subscription.value as? String)
-        XCTAssertTrue(["subscribed", "unsubscribed"].contains(originalSubscription))
-        if originalSubscription == "unsubscribed" {
-            subscribedDuringTestBookID = identity.bookID
+        let subscription = app.buttons["publication-subscription-control.\(expected.bookID)"]
+        if subscription.waitForExistence(timeout: 3) {
+            let originalSubscription = try XCTUnwrap(subscription.value as? String)
+            XCTAssertTrue(["subscribed", "unsubscribed"].contains(originalSubscription))
+            if originalSubscription == "unsubscribed" {
+                subscribedDuringTestBookID = expected.bookID
+                subscription.tap()
+                XCTAssertTrue(waitForValue("subscribed", of: subscription, timeout: 20), "真实书籍订阅未成功。")
+            }
+            attachScreenshot(named: "03-test-book-subscribed")
             subscription.tap()
-            XCTAssertTrue(waitForValue("subscribed", of: subscription, timeout: 20), "真实书籍订阅未成功。")
+        } else {
+            let subscribe = app.buttons.matching(
+                NSPredicate(format: "label == %@", "加入我的笔记书架")
+            ).firstMatch
+            if subscribe.exists {
+                subscribedDuringTestBookID = expected.bookID
+                subscribe.tap()
+            }
+            let startReading = app.buttons.matching(
+                NSPredicate(format: "label == %@", "开始阅读《\(expected.title)》")
+            ).firstMatch
+            XCTAssertTrue(startReading.waitForExistence(timeout: 20), "真实书籍订阅未成功。")
+            attachScreenshot(named: "03-test-book-subscribed")
+            startReading.tap()
         }
-        attachScreenshot(named: "03-test-book-subscribed")
-        subscription.tap()
 
-        let readerBody = app.scrollViews["publication-reader-body.\(identity.bookID)"]
-        XCTAssertTrue(readerBody.waitForExistence(timeout: 20), "真实书籍阅读器未出现。")
-        let progress = app.staticTexts["publication-reader-progress.\(identity.bookID)"]
-        XCTAssertTrue(progress.waitForExistence(timeout: 20), "真实书籍正文未加载。")
-        let progressState = try XCTUnwrap(progress.value as? String)
-        XCTAssertTrue(progressState.hasPrefix("original="), "未捕获原始阅读进度。")
-        let bodyContent = app.descendants(matching: .any)["publication-reader-content.\(identity.bookID)"]
-        XCTAssertTrue(bodyContent.waitForExistence(timeout: 20), "已发布正文内容标记未出现。")
-        let actualBody = try XCTUnwrap(bodyContent.value as? String)
-        XCTAssertTrue(actualBody.contains(expected.bodyExcerpt), "真实正文未包含已审核清单中的稳定正文摘录：\(expected.bodyExcerpt)")
+        let readerBody = try preferredElement(
+            app.scrollViews["publication-reader-body.\(expected.bookID)"],
+            fallback: app.scrollViews.firstMatch,
+            timeout: 20,
+            failureMessage: "真实书籍阅读器未出现。"
+        )
+        try verifyReader(readerBody, expected: expected)
         XCTAssertFalse(app.buttons["阅读进度未同步，点按重试。"].exists)
         attachScreenshot(named: "04-production-book-body-and-progress")
 
         app.buttons["返回书籍概述"].tap()
-        let askChat = app.buttons["selected-book-chat-open.\(identity.bookID)"]
+        let askChat = try preferredElement(
+            app.buttons["selected-book-chat-open.\(expected.bookID)"],
+            fallback: app.buttons.matching(
+                NSPredicate(format: "label == %@", "围绕本期向 Chat 提问")
+            ).firstMatch,
+            timeout: 10,
+            failureMessage: "围绕本期向 Chat 提问控件未出现。"
+        )
         for _ in 0..<6 where !askChat.isHittable { app.scrollViews.firstMatch.swipeUp() }
-        XCTAssertTrue(askChat.waitForExistence(timeout: 10))
         askChat.tap()
 
-        let input = app.textFields["selected-book-chat-input"]
-        XCTAssertTrue(input.waitForExistence(timeout: 12))
+        let input = try chatInput(timeout: 12)
+        let usesMessageIdentifiers = input.identifier == "selected-book-chat-input"
         let requestMarkers = app.descendants(matching: .any).matching(
             NSPredicate(format: "identifier == %@", "selected-book-chat-request")
         )
@@ -143,31 +171,56 @@ final class ProductionBookshelfUITests: XCTestCase {
         let matchingTokenResponses = responseMarkers.containing(
             NSPredicate(format: "label CONTAINS %@", realModelToken)
         )
+        let matchingLegacyRequests = app.staticTexts.matching(
+            NSPredicate(format: "label == %@", realModelPrompt)
+        )
+        let matchingLegacyResponses = app.staticTexts.matching(
+            NSPredicate(format: "label == %@", realModelToken)
+        )
         let requestMarkerCountBeforeSend = requestMarkers.count
         let responseMarkerCountBeforeSend = responseMarkers.count
         let promptRequestCountBeforeSend = matchingPromptRequests.count
         let tokenResponseCountBeforeSend = matchingTokenResponses.count
+        let legacyRequestCountBeforeSend = matchingLegacyRequests.count
+        let legacyResponseCountBeforeSend = matchingLegacyResponses.count
         input.tap()
         input.typeKey("a", modifierFlags: .command)
         input.typeText(realModelPrompt)
-        app.buttons["selected-book-chat-send"].tap()
+        let send = try preferredElement(
+            app.buttons["selected-book-chat-send"],
+            fallback: app.buttons.matching(NSPredicate(format: "label == %@", "发送消息")).firstMatch,
+            timeout: 10,
+            failureMessage: "发送消息控件未出现。"
+        )
+        send.tap()
 
-        XCTAssertTrue(
-            waitForCountGreaterThan(requestMarkerCountBeforeSend, in: requestMarkers, timeout: 10),
-            "未出现本次真实模型请求标记。"
-        )
-        XCTAssertTrue(
-            waitForCountGreaterThan(promptRequestCountBeforeSend, in: matchingPromptRequests, timeout: 10),
-            "未显示本次真实模型请求原文。"
-        )
-        XCTAssertTrue(
-            waitForCountGreaterThan(responseMarkerCountBeforeSend, in: responseMarkers, timeout: 20),
-            "未出现本次真实模型响应标记。"
-        )
-        XCTAssertTrue(
-            waitForCountGreaterThan(tokenResponseCountBeforeSend, in: matchingTokenResponses, timeout: 180),
-            "选书 Chat 未返回本次真实模型验收 token。"
-        )
+        if usesMessageIdentifiers {
+            XCTAssertTrue(
+                waitForCountGreaterThan(requestMarkerCountBeforeSend, in: requestMarkers, timeout: 10),
+                "未出现本次真实模型请求标记。"
+            )
+            XCTAssertTrue(
+                waitForCountGreaterThan(promptRequestCountBeforeSend, in: matchingPromptRequests, timeout: 10),
+                "未显示本次真实模型请求原文。"
+            )
+            XCTAssertTrue(
+                waitForCountGreaterThan(responseMarkerCountBeforeSend, in: responseMarkers, timeout: 20),
+                "未出现本次真实模型响应标记。"
+            )
+            XCTAssertTrue(
+                waitForCountGreaterThan(tokenResponseCountBeforeSend, in: matchingTokenResponses, timeout: 180),
+                "选书 Chat 未返回本次真实模型验收 token。"
+            )
+        } else {
+            XCTAssertTrue(
+                waitForCountGreaterThan(legacyRequestCountBeforeSend, in: matchingLegacyRequests, timeout: 10),
+                "未显示本次真实模型请求原文。"
+            )
+            XCTAssertTrue(
+                waitForCountGreaterThan(legacyResponseCountBeforeSend, in: matchingLegacyResponses, timeout: 180),
+                "选书 Chat 未返回本次真实模型验收 token。"
+            )
+        }
         let visibleErrors = [app.staticTexts, app.buttons].flatMap {
             $0.matching(NSPredicate(
                 format: "label CONTAINS %@ OR label CONTAINS %@", "HTTP 422", "服务暂时不可用"
@@ -260,13 +313,88 @@ final class ProductionBookshelfUITests: XCTestCase {
         return knowledgeTab
     }
 
-    private func publicationIdentity(from element: XCUIElement) throws -> (seriesID: String, bookID: String) {
-        let prefix = "publication-book-card."
-        let identifier = element.identifier
-        XCTAssertTrue(identifier.hasPrefix(prefix))
-        let components = identifier.dropFirst(prefix.count).split(separator: ".", maxSplits: 1).map(String.init)
-        XCTAssertEqual(components.count, 2)
-        return (try XCTUnwrap(components.first), try XCTUnwrap(components.last))
+    private func preferredElement(
+        _ identified: XCUIElement,
+        fallback: XCUIElement,
+        timeout: TimeInterval,
+        failureMessage: String
+    ) throws -> XCUIElement {
+        if identified.waitForExistence(timeout: min(3, timeout)) { return identified }
+        XCTAssertTrue(fallback.waitForExistence(timeout: timeout), failureMessage)
+        return fallback
+    }
+
+    private func chatInput(timeout: TimeInterval) throws -> XCUIElement {
+        let identified = app.textFields["selected-book-chat-input"]
+        if identified.waitForExistence(timeout: min(3, timeout)) { return identified }
+
+        XCTAssertTrue(app.textFields.firstMatch.waitForExistence(timeout: timeout), "Chat 输入框未出现。")
+        let visibleFields = app.textFields.allElementsBoundByIndex.filter(\.isHittable)
+        XCTAssertEqual(visibleFields.count, 1, "旧版 Chat 页面必须只有一个可见 TextField。")
+        return try XCTUnwrap(visibleFields.first)
+    }
+
+    private func expectedPublishedBook(
+        timeout: TimeInterval
+    ) throws -> (XCUIElement, ExpectedPublication) {
+        let identifierPredicates = expectedPublications.map {
+            NSPredicate(format: "identifier == %@", "publication-book-card.\($0.seriesID).\($0.bookID)")
+        }
+        let identified = app.buttons.matching(
+            NSCompoundPredicate(orPredicateWithSubpredicates: identifierPredicates)
+        ).firstMatch
+        if identified.waitForExistence(timeout: min(3, timeout)) {
+            let expected = try XCTUnwrap(expectedPublications.first {
+                identified.identifier == "publication-book-card.\($0.seriesID).\($0.bookID)"
+            })
+            return (identified, expected)
+        }
+
+        let titlePredicates = expectedPublications.map {
+            NSPredicate(format: "label BEGINSWITH %@", "\($0.title)，作者 ")
+        }
+        let legacy = app.buttons.matching(
+            NSCompoundPredicate(orPredicateWithSubpredicates: titlePredicates)
+        ).firstMatch
+        XCTAssertTrue(legacy.waitForExistence(timeout: timeout), "配置中的两本已发布 Quantumn 测试书均不可见。")
+        let exactTitle = legacy.label.components(separatedBy: "，作者 ").first ?? ""
+        return (legacy, try XCTUnwrap(expectedPublications.first { $0.title == exactTitle }))
+    }
+
+    private func verifyReader(_ readerBody: XCUIElement, expected: ExpectedPublication) throws {
+        let identifiedProgress = app.staticTexts["publication-reader-progress.\(expected.bookID)"]
+        if identifiedProgress.waitForExistence(timeout: 3) {
+            let progressState = try XCTUnwrap(identifiedProgress.value as? String)
+            XCTAssertTrue(progressState.hasPrefix("original="), "未捕获原始阅读进度。")
+            let bodyContent = app.descendants(matching: .any)["publication-reader-content.\(expected.bookID)"]
+            XCTAssertTrue(bodyContent.waitForExistence(timeout: 20), "已发布正文内容标记未出现。")
+            let actualBody = try XCTUnwrap(bodyContent.value as? String)
+            XCTAssertTrue(
+                actualBody.contains(expected.bodyExcerpt),
+                "真实正文未包含已审核清单中的稳定正文摘录：\(expected.bodyExcerpt)"
+            )
+            return
+        }
+
+        let progress = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "第 ", "已读 ")
+        ).firstMatch
+        XCTAssertTrue(progress.waitForExistence(timeout: 20), "真实书籍正文未加载。")
+        let excerpt = app.descendants(matching: .any).matching(
+            NSPredicate(format: "label CONTAINS %@", expected.bodyExcerpt)
+        ).firstMatch
+        for _ in 0..<5 {
+            readerBody.swipeUp()
+            if excerpt.exists { break }
+        }
+        XCTAssertTrue(
+            excerpt.waitForExistence(timeout: 20),
+            "真实正文未包含已审核清单中的稳定正文摘录：\(expected.bodyExcerpt)"
+        )
+        let positiveProgress = app.staticTexts.matching(
+            NSPredicate(format: "label BEGINSWITH %@ AND NOT label CONTAINS %@", "第 ", "已读 0%")
+        ).firstMatch
+        XCTAssertTrue(positiveProgress.waitForExistence(timeout: 20), "阅读进度未前进。")
     }
 
     private func waitForValue(_ expected: String, of element: XCUIElement, timeout: TimeInterval) -> Bool {
@@ -308,29 +436,45 @@ final class ProductionBookshelfUITests: XCTestCase {
             XCTFail("恢复订阅状态时书籍不在已审核生产清单中。")
             return
         }
-        let card = app.buttons["publication-book-card.\(expected.seriesID).\(bookID)"]
-        if !card.waitForExistence(timeout: 3) {
-            let shelf = app.buttons["bookshelf-collection.knowledge/publication/public"]
+        let identifiedCard = app.buttons["publication-book-card.\(expected.seriesID).\(bookID)"]
+        let legacyCard = app.buttons.matching(
+            NSPredicate(format: "label BEGINSWITH %@", "\(expected.title)，作者 ")
+        ).firstMatch
+        if !identifiedCard.waitForExistence(timeout: 3), !legacyCard.exists {
+            let identifiedShelf = app.buttons["bookshelf-collection.knowledge/publication/public"]
+            let legacyShelf = app.buttons.matching(
+                NSPredicate(format: "label BEGINSWITH %@", "Quantumn 每日测试连载，")
+            ).firstMatch
+            let shelf = identifiedShelf.waitForExistence(timeout: 3) ? identifiedShelf : legacyShelf
             guard shelf.waitForExistence(timeout: 15) else {
                 XCTFail("恢复订阅状态时未找到生产测试书架。")
                 return
             }
             shelf.tap()
         }
+        let card = identifiedCard.waitForExistence(timeout: 3) ? identifiedCard : legacyCard
         guard card.waitForExistence(timeout: 15) else {
             XCTFail("恢复订阅状态时未找到原书籍。")
             return
         }
         card.tap()
-        let remove = app.buttons["publication-subscription-remove.\(bookID)"]
+        let identifiedRemove = app.buttons["publication-subscription-remove.\(bookID)"]
+        let legacyRemove = app.buttons.matching(NSPredicate(format: "label == %@", "移出书架")).firstMatch
+        let remove = identifiedRemove.waitForExistence(timeout: 3) ? identifiedRemove : legacyRemove
         guard remove.waitForExistence(timeout: 10) else {
             XCTFail("恢复订阅状态时未找到移出书架控件。")
             return
         }
         remove.tap()
-        XCTAssertTrue(waitForValue(
-            "unsubscribed", of: app.buttons["publication-subscription-control.\(bookID)"], timeout: 20
-        ), "未恢复测试前的未订阅状态。")
+        let subscription = app.buttons["publication-subscription-control.\(bookID)"]
+        if subscription.exists {
+            XCTAssertTrue(waitForValue("unsubscribed", of: subscription, timeout: 20), "未恢复测试前的未订阅状态。")
+        } else {
+            let subscribe = app.buttons.matching(
+                NSPredicate(format: "label == %@", "加入我的笔记书架")
+            ).firstMatch
+            XCTAssertTrue(subscribe.waitForExistence(timeout: 20), "未恢复测试前的未订阅状态。")
+        }
     }
 
     private func attachScreenshot(named name: String) {

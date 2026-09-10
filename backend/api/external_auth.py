@@ -19,7 +19,13 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 from sqlalchemy import delete, select
 
-from backend.api.register import _issue_jwt, _provision_tenant
+from backend.api.register import (
+    _issue_jwt,
+    _provision_tenant,
+    dev_login_allowed,
+    dev_login_credentials_match,
+    dev_login_principal,
+)
 from backend.db import SessionLocal
 from backend.models.external_auth import ExternalAuthFlow
 from backend.services.knowledge_contribution import SERVICE_AGREEMENT_VERSION
@@ -120,8 +126,9 @@ async def _authen_request(method: str, path: str, **kwargs) -> dict:
 def _session_payload(
     user_id: str, tenant_key: str, *, is_new_user: bool = False,
     auth_method: str = "interactive",
+    username: str = "",
 ) -> dict:
-    token = _issue_jwt(user_id, auth_method=auth_method)
+    token = _issue_jwt(user_id, username, auth_method=auth_method)
     if not token:
         raise HTTPException(status_code=503, detail="平台登录签名尚未配置")
     return {
@@ -135,11 +142,13 @@ def _session_payload(
 
 
 @router.get("/capabilities")
-async def capabilities():
+async def capabilities(request: Request):
     # Preserve the distinction between "not configured" and "temporarily
     # unavailable".  Masking an Authen 503 as all-disabled strands healthy SMS
     # and Alipay setups behind a misleading permanent-off UI.
     data = await _authen_request("GET", "/api/v1/auth/capabilities")
+    if dev_login_allowed(request):
+        data.setdefault("phone", {})["enabled"] = True
     https_ready = os.environ.get("AUTH_PUBLIC_BASE_URL", "").strip().startswith(
         "https://"
     )
@@ -169,7 +178,19 @@ async def send_phone_code(body: PhoneRequest):
 
 
 @router.post("/phone/login")
-async def phone_login(body: PhoneLoginRequest):
+async def phone_login(body: PhoneLoginRequest, request: Request):
+    if dev_login_allowed(request):
+        if not dev_login_credentials_match(body.phone, body.code):
+            raise HTTPException(status_code=401, detail="开发者账号或验证码错误")
+        user_id, username = dev_login_principal()
+        tenant_key = await _provision_tenant(user_id)
+        return _session_payload(
+            user_id,
+            tenant_key,
+            auth_method="dev_code",
+            username=username,
+        )
+
     phone = _normalize_phone(body.phone)
     if not re.fullmatch(r"\d{6}", body.code.strip()):
         raise HTTPException(status_code=422, detail="请输入 6 位短信验证码")
