@@ -995,6 +995,20 @@ def _session_exists(session_id: str, state_db: str | None = None) -> bool:
 
 # ---------- Hermes CLI 调用 ----------
 
+class HermesInvocationError(RuntimeError):
+    """Sanitized failure at the Hermes CLI boundary."""
+
+    category = "hermes_invocation_failed"
+
+    def __init__(self) -> None:
+        super().__init__(self.category)
+
+
+_HERMES_PROVIDER_FAILURE_RE = re.compile(
+    r"API call failed after [1-9]\d{0,2} retries: Connection error\."
+)
+
+
 def _run_hermes_with_usage(
     goal: str,
     session_id: str | None = None,
@@ -1027,13 +1041,15 @@ def _run_hermes_with_usage(
             cmd, capture_output=True, text=True, timeout=timeout_seconds,
             cwd=HERMES_CWD, env=env,
         )
-        reply = r.stdout.strip() if r.returncode == 0 else (
-            f"⚠️ Hermes 执行失败（exit {r.returncode}）: {r.stderr[:300]}"
-        )
-    except subprocess.TimeoutExpired:
-        reply = "⚠️ Hermes 执行超时"
-    except Exception as e:
-        reply = f"⚠️ Hermes 调用异常: {e}"
+        reply = r.stdout.strip()
+        if r.returncode != 0 or _HERMES_PROVIDER_FAILURE_RE.fullmatch(reply):
+            raise HermesInvocationError
+    except HermesInvocationError:
+        _extract_usage(usage_file)
+        raise
+    except Exception:
+        _extract_usage(usage_file)
+        raise HermesInvocationError from None
 
     # 从 --usage-file 提取真实 usage（原子捕获·并发安全）
     usage = _extract_usage(usage_file)
@@ -4221,6 +4237,10 @@ async def chat_stream(
                 "X-Session-ID": user_id,
             },
         )
+    except HermesInvocationError:
+        raise HTTPException(
+            status_code=502, detail=HermesInvocationError.category
+        ) from None
     finally:
         _clear_in_flight(user_id)
 
@@ -6595,6 +6615,10 @@ async def _legacy_nonstream_chat(body: GoalRequest, user_id: str) -> dict[str, A
                     "reasoning": reasoning,
                     "usage": _usage_delta(usage),
                 }
+    except HermesInvocationError:
+        raise HTTPException(
+            status_code=502, detail=HermesInvocationError.category
+        ) from None
     finally:
         _clear_in_flight(user_id)
 

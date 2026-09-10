@@ -12,6 +12,7 @@ import json
 import asyncio
 import os
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -205,6 +206,81 @@ class TestBridgeCLIParms(unittest.TestCase):
         usage_path = cmd[idx + 1]
         self.assertIn("hermes_usage_", usage_path)
         self.assertTrue(usage_path.endswith(".json"))
+
+    @patch("scripts.hermes_bridge.subprocess.run")
+    def test_exit_zero_provider_connection_failure_returns_502(self, mock_run):
+        import scripts.hermes_bridge as bridge
+        from fastapi import HTTPException
+
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout="API call failed after 3 retries: Connection error.",
+            stderr="sensitive provider diagnostics",
+        )
+        body = bridge.GoalRequest(goal="test", session_id="provider-failure")
+        with patch.object(bridge, "_resolve_hermes_session", return_value=None):
+            with self.assertRaises(HTTPException) as raised:
+                asyncio.run(bridge.chat(body, "test-internal-token"))
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(raised.exception.detail, "hermes_invocation_failed")
+
+    def test_cli_process_failures_raise_sanitized_invocation_error(self):
+        import scripts.hermes_bridge as bridge
+
+        failures = (
+            MagicMock(returncode=7, stdout="", stderr="credential-bearing stderr"),
+            subprocess.TimeoutExpired("hermes", 1),
+            OSError("secret subprocess detail"),
+        )
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), patch(
+                "scripts.hermes_bridge.subprocess.run"
+            ) as mock_run:
+                if isinstance(failure, MagicMock):
+                    mock_run.return_value = failure
+                else:
+                    mock_run.side_effect = failure
+                with self.assertRaisesRegex(
+                    bridge.HermesInvocationError, r"^hermes_invocation_failed$"
+                ):
+                    bridge._run_hermes_with_usage("test")
+
+    @patch("scripts.hermes_bridge.subprocess.run")
+    def test_successful_reply_and_usage_are_unchanged(self, mock_run):
+        import scripts.hermes_bridge as bridge
+
+        expected_usage = {
+            "session_id": "session-ok",
+            "input_tokens": 11,
+            "output_tokens": 7,
+            "model": "configured-model",
+            "provider": "configured-provider",
+        }
+
+        def succeed(cmd, **_kwargs):
+            Path(cmd[cmd.index("--usage-file") + 1]).write_text(
+                json.dumps(expected_usage)
+            )
+            return MagicMock(
+                returncode=0,
+                stdout=(
+                    "A postmortem quoted: API call failed after 3 retries: "
+                    "Connection error.\n"
+                ),
+                stderr="",
+            )
+
+        mock_run.side_effect = succeed
+        result = bridge._run_hermes_with_usage("test")
+        self.assertEqual(
+            result,
+            (
+                "A postmortem quoted: API call failed after 3 retries: Connection error.",
+                "session-ok",
+                expected_usage,
+            ),
+        )
 
     def test_deepseek_cache_parameters_are_filtered(self):
         from scripts.hermes_bridge import _cache_request_overrides
