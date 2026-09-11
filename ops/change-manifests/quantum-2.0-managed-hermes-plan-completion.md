@@ -37,7 +37,7 @@
 ## 交付状态
 
 - status: `COMMITTED`
-- commit_sha: 最终提交后回填。
+- commit_sha: `399b2b5c2cf433d061641d1a4046ffb6af3b35d1`（隔离实现）与 `b226851d1ebd47777f88ad2a0ef399295a2867ff`（最新代码校正、注册止血和方案更新）。
 - github_remote_ref_sha: 未授权、未执行 push；`origin` 当前无可见 refs。
 - server_before: 未授权、未执行部署。
 - server_after: 未授权、未执行部署。
