@@ -211,11 +211,12 @@ def test_backend_activity_uses_meaningful_blocks(event, expected):
 
 
 def test_knowledge_guidance_preserves_query_and_avoids_redundant_notes():
-    prompt = bridge.KB_RETRIEVAL_DISCIPLINE
+    prompt = bridge.KB_RETRIEVAL_DISCIPLINE + bridge.GENERAL_KNOWLEDGE_SPEED_DISCIPLINE
     for contract in (
         "默认实体/概念问答只调用 knowledge_search", "不机械追加 user_note_search",
         "来源缺口指向笔记", "Gateway 已覆盖同范围 notes，不重复检索",
         "query 保留用户原始问题", "entities/topics 只表达用户所需实体与主题",
         "不得把用户未请求的 PDT/TR 等词自行加入强制覆盖条件",
+        "默认先做一轮并行公开检索", "尚未覆盖的关键事实", "默认不超过600个汉字",
     ):
         assert contract in prompt

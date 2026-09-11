@@ -44,7 +44,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, cast
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -1815,7 +1815,7 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
         )
         registry.register(
             name="user_note_search",
-            toolset="knowledge_gateway",
+            toolset="user_notes_gateway",
             schema={
                 "name": "user_note_search",
                 "description": (
@@ -4817,6 +4817,8 @@ def _apply_triage_toolset_policy(
         denied.add("web")
     if not _knowledge_tools_eligible(triage):
         denied.add("knowledge_gateway")
+    if "user_note_search" not in evidence:
+        denied.add("user_notes_gateway")
     if not triage.get("skill_enabled"):
         denied.update({"skills", "tenant_skills"})
     return [item for item in selected if item not in denied]
@@ -4986,6 +4988,12 @@ KB_RETRIEVAL_DISCIPLINE = (
     "6. 默认实体/概念问答只调用 knowledge_search，不机械追加 user_note_search；仅问题明确"
     "涉及我的笔记/历史私有记录，或已识别来源缺口指向笔记时，才补查 user_note_search。"
     "若 Gateway 已覆盖同范围 notes，不重复检索；不得为了减少回合忽略真实证据缺口。"
+)
+
+GENERAL_KNOWLEDGE_SPEED_DISCIPLINE = (
+    "\n一般知识问答默认先做一轮并行公开检索；只有能明确写出尚未覆盖的关键事实时才做第二轮精查。"
+    "证据完整后立即作答，正文默认不超过600个汉字，先结论、后关键差异与来源；"
+    "用户明确要求深入、报告、方案、清单或长文时不适用该长度约束。"
 )
 
 CLARIFY_GATE_PROMPT = f"""【AI Lab 全局交互与对话规范】
@@ -5567,6 +5575,11 @@ def _build_in_process_agent(
         "allowed": sorted(candidate_names | pinned_skills),
     }
     public_knowledge_fallback = knowledge_tool_enabled and _knowledge_public_fallback_allowed(goal, agent_config, triage)
+    note_search_required = bool(
+        note_draft_request
+        or triage is None
+        or "user_note_search" in evidence_requirements
+    )
     network_tool_requested = bool(
         agent_config.get("allow_network")
         and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
@@ -5608,6 +5621,8 @@ def _build_in_process_agent(
         _ensure_knowledge_gateway_tool_registered()
         if "knowledge_gateway" not in toolsets_list:
             toolsets_list.append("knowledge_gateway")
+        if note_search_required and "user_notes_gateway" not in toolsets_list:
+            toolsets_list.append("user_notes_gateway")
     if tenant_skill_enabled:
         _ensure_tenant_skill_tool_registered()
         if "tenant_skills" not in toolsets_list:
@@ -5632,6 +5647,8 @@ def _build_in_process_agent(
             requested_toolsets.add("delegation")
         if knowledge_tool_enabled:
             requested_toolsets.add("knowledge_gateway")
+        if note_search_required:
+            requested_toolsets.add("user_notes_gateway")
         if legacy_client_context_enabled:
             requested_toolsets.add("client_context")
         if knowledge_action_enabled:
@@ -5845,6 +5862,7 @@ def _build_in_process_agent(
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         model=cfg_model,
+        max_tokens=1600 if route_class == GENERAL_QA and knowledge_tool_enabled else cast(int, None),
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
@@ -5881,6 +5899,8 @@ def _build_in_process_agent(
               "如果 web_search 已列入允许工具，必须继续检索公开网络；必要时用 web_extract 核实"
               "原文。回答中分开标注租户知识 [[path]] 与公开网络 URL，绝不能用公开网页猜测"
               "受限知识内容。仅在用户明确要求只用内部知识时停止于证据缺口。"
+            + (GENERAL_KNOWLEDGE_SPEED_DISCIPLINE
+               if route_class == GENERAL_QA and knowledge_tool_enabled else "")
             + "\n当用户要求洞察、比较、诊断或方案，且 delegate_task 已获授权时，"
               "应把当前回合已授权的 Wiki 素材作为 context 明确传给子 Agent；"
               "子 Agent 不继承父会话上下文，不得让它自行读取本地 Vault。"

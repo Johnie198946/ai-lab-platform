@@ -740,7 +740,7 @@ def test_bridge_applies_fail_closed_toolsets_from_server_triage():
 
 def test_note_route_keeps_note_tools_and_removes_agency_for_every_triage_class():
     selected = [
-        "memory", "knowledge_gateway", "client_context", "delegation",
+        "memory", "knowledge_gateway", "user_notes_gateway", "client_context", "delegation",
         "agency_agents", "ai_lab",
     ]
     triages = [
@@ -769,6 +769,7 @@ def test_note_route_keeps_note_tools_and_removes_agency_for_every_triage_class()
             selected, triage, note_draft_request=True
         )
         assert "knowledge_gateway" in routed
+        assert "user_notes_gateway" in routed
         assert "client_context" in routed
         assert "delegation" not in routed
         assert "agency_agents" not in routed
@@ -791,12 +792,28 @@ def test_user_note_evidence_keeps_private_note_gateway_and_directive():
     }})
 
     routed = _apply_triage_toolset_policy(
-        ["clarify", "knowledge_gateway", "web"], triage
+        ["clarify", "knowledge_gateway", "user_notes_gateway", "web"], triage
     )
     directive = _triage_system_directive(triage)
 
-    assert routed == ["clarify", "knowledge_gateway"]
+    assert routed == ["clarify", "knowledge_gateway", "user_notes_gateway"]
     assert "必须调用 user_note_search" in directive
+
+
+def test_general_wiki_question_cannot_call_private_note_search():
+    triage = _request_triage({"triage": {
+        "route_class": "GENERAL_QA",
+        "reason_code": "general_question",
+        "evidence_requirements": ["knowledge_search"],
+        "agency_enabled": False,
+        "skill_enabled": False,
+    }})
+
+    routed = _apply_triage_toolset_policy(
+        ["clarify", "knowledge_gateway", "user_notes_gateway", "web"], triage
+    )
+
+    assert routed == ["clarify", "knowledge_gateway"]
 
 
 def test_wechat_browser_fallback_is_host_scoped():
