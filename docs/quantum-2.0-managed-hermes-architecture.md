@@ -88,9 +88,9 @@ ai-lab-platform（1.0.3 代码与历史基线）
 
 - `ai-lab-platform/main`：`2af40baee98dc7e13bd9248a410f98a1e698f95d`；
 - 本任务最初的 Quantum 本地 HEAD：`5284db6f5090cde578b51656ad2d1ad9420a1748`；
-- 第一批隔离改造曾基于 `b5ad115`，随后已 rebase 到 `2af40ba`；新吸收 20 个上游提交、93 个变更文件；
+- 第一批隔离改造曾基于 `b5ad115`；当前分支已合并到 `source/main@f8281cfb5743ba428bc5be64c01bc9eb81f52cc5`；
 - 最新 iOS 已增加账号指纹 SQLite、durable answer 对账和书籍版本绑定；最新后端已增加 owner-private/public bookshelf、Wiki/OKF 双平面治理、受控输出和普通知识问答延迟上限；
-- CI 已固定 Hermes 源码提交 `63279301bcbdc185c1b07b98a9312eb0c862f26d`，不再以浮动 0.19.x 作为验证基线；
+- CI 与生产均固定 Hermes 0.21.1 源码提交 `c8aa5608c24e3636e77c267650c0f1f52e44adb0`，升级契约不再分叉；
 - 新的 `Quantum` GitHub 远端当时尚无 `refs/heads/main`，首次交付前必须再次核对，不能把“远端为空”误报为已推送。
 
 复用与改造边界：
@@ -404,7 +404,15 @@ state
 
 当前分支已同步到 `source/main@2af40ba`，并保留第一批可独立验证的隔离改造：SessionDB、个人 Skills 和 Agent 快照进入用户状态胶囊；平台模板保持租户内只读复用；来源不明的旧租户 custom Skills 原地隔离待审；普通聊天、工作流、预热和澄清四个 `AIAgent` 入口统一禁用宿主机 context、memory 与 SOUL identity。注册入口不再读取 `DEFAULT_TENANT_KEY` 把新用户压入共享租户。现有 iOS Chat/SSE API 未改变。
 
-这不是 2.0 全部完成。生产 TenantMapping 审计、状态分片租约、可信模型网关和 iOS 2.0 状态界面仍按下列阶段推进。
+该 2026-09-11 切片当时并非 2.0 全部完成；后续实施状态如下，阶段定义保持不变。
+
+### P2-P4 实施检查点（2026-09-12）
+
+- P2：CI、生产安装器和文档统一固定 Hermes 0.21.1 commit `c8aa5608c24e3636e77c267650c0f1f52e44adb0`。
+- P3：API 只下发 fast/balanced/reasoning 逻辑档位；Provider、模型、fallback、输出上限由服务端控制。新增按用户/request id 幂等的月度预占/结算账本，缺失 usage 进入 `pending_reconcile`，不记零；Bridge 使用 2 个执行槽、8 个等待槽和 30 秒超时的有界准入。
+- P4：数据库持久化 `tenant_user_hash -> shard_id/generation/lease`；API 仅解析路由，目标 durable worker 才领取写租约，Bridge 校验 shard/generation；迁移必须先冻结，再以 generation CAS 转移。单节点默认 `shard-1`，增加节点时由 `QUANTUM_RUNTIME_SHARDS` 与 `HERMES_RUNTIME_SHARD_URLS` 显式配置，缺失 URL 会拒绝而非随机回退。
+- 状态胶囊工具执行 SQLite checkpoint、逐文件 SHA-256、身份/generation/path/size 校验和原子恢复；容量脚本按真实认证账号运行 1/4/8/16 并发回答级批次。
+- 当前生产仍是单 Shard；“P4 已实现”指路由、租约、迁移和备份恢复契约已具备，不虚构尚未购买的第二台服务器或多节点生产故障演练。
 
 ### 阶段 P0：立即止血
 
@@ -437,7 +445,7 @@ state
 
 目标：在固定 upstream 上证明共享 Worker 的隔离与兼容，不把命名 Gateway Profile 引入消费者主链。
 
-- 固定 Hermes upstream commit `63279301bcbdc185c1b07b98a9312eb0c862f26d`；
+- 固定 Hermes 0.21.1 upstream commit `c8aa5608c24e3636e77c267650c0f1f52e44adb0`；
 - 对 `AIAgent`、SessionDB、runtime cwd、context/memory 跳过开关运行 golden tests；
 - 官方未来提供成熟 request-local profile context 时再评估替换平台状态胶囊；
 - 保留 AI Lab 的 Auth、policy、durable run 和 SSE 产品契约；
@@ -582,7 +590,7 @@ state
 
 ### Hermes 官方资料
 
-- [本方案固定的 Hermes upstream commit](https://github.com/NousResearch/hermes-agent/commit/63279301bcbdc185c1b07b98a9312eb0c862f26d)
+- [本方案固定的 Hermes upstream commit](https://github.com/NousResearch/hermes-agent/commit/c8aa5608c24e3636e77c267650c0f1f52e44adb0)
 - [Profiles：`HERMES_HOME` 与 Profile 状态边界](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/profiles.md)
 - [FAQ：Profile 的 memory/session/skills 隔离要求](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/reference/faq.md)
 - [Multi-profile gateways：命名 Profile/Gateway 的适用边界](https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/multi-profile-gateways.md)

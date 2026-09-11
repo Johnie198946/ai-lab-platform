@@ -15,9 +15,12 @@ import os
 from pathlib import Path
 import re
 import shutil
+import sqlite3
 import tempfile
 import threading
 from typing import Any
+import uuid
+import zipfile
 
 import yaml
 
@@ -402,3 +405,95 @@ def persist_agent_snapshot(
         )
         os.replace(temporary, destination)
     return destination
+
+
+def backup_sandbox_capsule(
+    sandbox: TenantHermesSandbox, archive: Path, *, generation: int,
+) -> dict[str, Any]:
+    """Create an atomic, hashed snapshot after checkpointing the user SessionDB."""
+    if generation < 1 or archive.exists() or archive.is_symlink():
+        raise ValueError("invalid_capsule_backup_target")
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    with _path_lock(sandbox.root):
+        if sandbox.state_db.is_file() and not sandbox.state_db.is_symlink():
+            with sqlite3.connect(sandbox.state_db) as connection:
+                connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        files: list[tuple[str, Path, str, int]] = []
+        for path in sorted(sandbox.root.rglob("*")):
+            if path.is_symlink():
+                raise ValueError("capsule_symlink_forbidden")
+            if not path.is_file() or path.name in {"state.db-wal", "state.db-shm"}:
+                continue
+            relative = path.relative_to(sandbox.root).as_posix()
+            raw = path.read_bytes()
+            files.append((relative, path, hashlib.sha256(raw).hexdigest(), len(raw)))
+        manifest = {
+            "version": 1,
+            "tenant_namespace": sandbox.tenant_namespace,
+            "user_namespace": sandbox.user_namespace,
+            "generation": generation,
+            "files": [
+                {"path": relative, "sha256": digest, "size": size}
+                for relative, _, digest, size in files
+            ],
+        }
+        temporary = archive.with_name(f".{archive.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as output:
+                output.writestr(
+                    "_capsule_manifest.json",
+                    json.dumps(manifest, ensure_ascii=False, sort_keys=True),
+                )
+                for relative, path, _, _ in files:
+                    output.write(path, relative)
+            os.replace(temporary, archive)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return manifest
+
+
+def restore_sandbox_capsule(
+    archive: Path,
+    destination: Path,
+    *,
+    tenant_namespace: str,
+    user_namespace: str,
+    expected_generation: int,
+) -> dict[str, Any]:
+    """Verify every entry before atomically publishing a restored capsule."""
+    if not archive.is_file() or archive.is_symlink() or destination.exists():
+        raise ValueError("invalid_capsule_restore_target")
+    staging = Path(tempfile.mkdtemp(prefix=".capsule-restore-", dir=destination.parent))
+    try:
+        with zipfile.ZipFile(archive) as source:
+            manifest = json.loads(source.read("_capsule_manifest.json"))
+            if (
+                manifest.get("version") != 1
+                or manifest.get("tenant_namespace") != tenant_namespace
+                or manifest.get("user_namespace") != user_namespace
+                or manifest.get("generation") != expected_generation
+            ):
+                raise ValueError("capsule_identity_or_generation_mismatch")
+            entries = manifest.get("files")
+            if not isinstance(entries, list) or len(entries) > 10_000:
+                raise ValueError("invalid_capsule_manifest")
+            total = 0
+            for entry in entries:
+                relative = Path(str(entry.get("path") or ""))
+                if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                    raise ValueError("invalid_capsule_path")
+                info = source.getinfo(relative.as_posix())
+                total += info.file_size
+                if total > 2 * 1024 * 1024 * 1024 or info.file_size != int(entry["size"]):
+                    raise ValueError("invalid_capsule_size")
+                raw = source.read(info)
+                if hashlib.sha256(raw).hexdigest() != entry.get("sha256"):
+                    raise ValueError("capsule_hash_mismatch")
+                target = staging / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+        staging.chmod(0o700)
+        os.replace(staging, destination)
+        return manifest
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)

@@ -88,7 +88,10 @@ class TestChatReasoningFlow(unittest.TestCase):
         steps = [ReasoningStep(type="tool_call", title="调用工具: read_file", detail="")]
         with patch("backend.api.chat.match_identity_rule", return_value=None), \
              patch("backend.api.chat._call_hermes", return_value=("答案", steps)):
-            resp = asyncio.run(chat(ChatRequest(question="hi"), payload={}))
+            resp = asyncio.run(chat(
+                ChatRequest(question="hi"),
+                payload={"tenant_key": "test", "sub": "test-user"},
+            ))
         self.assertEqual(resp.answer, "答案")
         self.assertEqual(len(resp.reasoning), 1)
         self.assertEqual(resp.reasoning[0].type, "tool_call")

@@ -199,3 +199,46 @@ class LLMUsageRecord(Base):
     called_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+class InferenceReservation(Base):
+    """Idempotent token reservation and settlement; never stores prompt text."""
+
+    __tablename__ = "inference_reservations"
+
+    user_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    request_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    tenant_key: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    policy_version: Mapped[str] = mapped_column(String(40), nullable=False)
+    tier: Mapped[str] = mapped_column(String(16), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    reserved_tokens: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    actual_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    usage_available: Mapped[bool] = mapped_column(Boolean, default=False)
+    provider: Mapped[str] = mapped_column(String(80), default="")
+    model: Mapped[str] = mapped_column(String(120), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RuntimePlacement(Base):
+    """Persistent user-capsule shard ownership; raw identities are not stored."""
+
+    __tablename__ = "runtime_placements"
+
+    tenant_user_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    shard_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1)
+    lease_owner: Mapped[str] = mapped_column(String(100), nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False, default="active", index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

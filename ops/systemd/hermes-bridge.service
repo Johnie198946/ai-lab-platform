@@ -19,7 +19,14 @@ Environment=PYTHONUNBUFFERED=1
 Environment=AI_LAB_AGENT_OS_MODE=cloud_multi_tenant
 Environment=HERMES_DURABLE_CHAT_WORKER=true
 Environment=HERMES_CHAT_RUN_DB=/opt/ai-lab-platform/data/hermes_chat_runs.sqlite3
-Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-sol
+Environment=HERMES_FAST_CHAT_MODEL=gpt-5.6-luna
+Environment=HERMES_BALANCED_CHAT_MODEL=gpt-5.6-sol
+Environment=HERMES_REASONING_CHAT_MODEL=gpt-5.6-sol
+Environment=HERMES_MAX_CONCURRENCY=2
+Environment=HERMES_MAX_QUEUE=8
+Environment=HERMES_QUEUE_TIMEOUT_SECONDS=30
+Environment=QUANTUM_RUNTIME_SHARD_ID=shard-1
+Environment=QUANTUM_RUNTIME_SHARDS=shard-1
 ExecStart=/var/lib/quantumn-hermes/bridge-worker-venv/bin/python scripts/hermes_bridge.py
 Restart=always
 RestartSec=5

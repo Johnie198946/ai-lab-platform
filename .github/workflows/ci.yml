@@ -42,11 +42,11 @@ jobs:
       - uses: actions/checkout@v5
         with:
           repository: NousResearch/hermes-agent
-          ref: 63279301bcbdc185c1b07b98a9312eb0c862f26d
+          ref: c8aa5608c24e3636e77c267650c0f1f52e44adb0
           path: .ci/hermes-agent
           persist-credentials: false
       - run: |
-          test "$(git -C .ci/hermes-agent rev-parse HEAD)" = "63279301bcbdc185c1b07b98a9312eb0c862f26d"
+          test "$(git -C .ci/hermes-agent rev-parse HEAD)" = "c8aa5608c24e3636e77c267650c0f1f52e44adb0"
           ln -s "$GITHUB_WORKSPACE/.ci/hermes-agent" "$HERMES_HOME/hermes-agent"
       - uses: actions/setup-python@v6
         with: { python-version: "3.11" }

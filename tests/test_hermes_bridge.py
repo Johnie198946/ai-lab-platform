@@ -25,6 +25,68 @@ os.environ.setdefault("HERMES_BRIDGE_INTERNAL_TOKEN", "test-internal-token")
 
 
 class TestBridgeCLIParms(unittest.TestCase):
+    def test_runtime_admission_rejects_an_overflowing_queue(self):
+        from scripts import hermes_bridge as bridge
+
+        async def run() -> None:
+            original = (
+                bridge._semaphore,
+                bridge.MAX_QUEUED_REQUESTS,
+                bridge._queued_requests,
+            )
+            bridge._semaphore = asyncio.Semaphore(1)
+            bridge.MAX_QUEUED_REQUESTS = 0
+            bridge._queued_requests = 0
+            await bridge._semaphore.acquire()
+            try:
+                with self.assertRaises(Exception) as raised:
+                    async with bridge._admit_request():
+                        pass
+                self.assertEqual(raised.exception.detail, "runtime_capacity_exceeded")
+            finally:
+                bridge._semaphore.release()
+                (
+                    bridge._semaphore,
+                    bridge.MAX_QUEUED_REQUESTS,
+                    bridge._queued_requests,
+                ) = original
+
+        asyncio.run(run())
+
+    def test_inference_policy_fails_closed_and_caps_budget(self):
+        from scripts import hermes_bridge as bridge
+
+        assert bridge._request_inference_policy({}) is None
+        policy = bridge._request_inference_policy({"inference_policy": {
+            "tier": "fast", "policy_version": "inference-v1",
+            "max_output_tokens": 1200, "allow_subagents": True,
+        }})
+        assert policy == {
+            "tier": "fast", "policy_version": "inference-v1",
+            "max_output_tokens": 1200, "allow_subagents": False,
+        }
+        with self.assertRaisesRegex(RuntimeError, "invalid_inference_budget"):
+            bridge._request_inference_policy({"inference_policy": {
+                "tier": "fast", "policy_version": "inference-v1",
+                "max_output_tokens": 1201,
+            }})
+
+    def test_runtime_placement_rejects_the_wrong_shard_or_generation(self):
+        from scripts import hermes_bridge as bridge
+
+        with patch.dict(os.environ, {"QUANTUM_RUNTIME_SHARD_ID": "shard-1"}):
+            assert bridge._request_runtime_placement({"runtime_placement": {
+                "shard_id": "shard-1", "generation": 3,
+            }}) == {"shard_id": "shard-1", "generation": 3}
+            with self.assertRaisesRegex(RuntimeError, "runtime_shard_mismatch"):
+                bridge._request_runtime_placement({"runtime_placement": {
+                    "shard_id": "shard-2", "generation": 3,
+                }})
+            with self.assertRaisesRegex(RuntimeError, "invalid_runtime_generation"):
+                bridge._request_runtime_placement({"runtime_placement": {
+                    "shard_id": "shard-1", "generation": 0,
+                }})
+
     """验收项 #2: CLI 参数与路径规范。"""
 
     def test_bridge_bind_address_accepts_only_rfc1918_ipv4(self):

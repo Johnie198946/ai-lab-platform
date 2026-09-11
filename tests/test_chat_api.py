@@ -29,6 +29,22 @@ def auth_headers() -> dict:
     return {"Authorization": f"Bearer {token}"}
 
 
+class TestRuntimeShardURL(unittest.TestCase):
+    def test_server_owned_shard_map_preserves_only_the_endpoint_path(self):
+        from backend.api.chat import _bridge_url_for_placement
+
+        with patch.dict(os.environ, {
+            "HERMES_RUNTIME_SHARD_URLS": '{"shard-2":"http://10.0.0.2:9118"}',
+        }):
+            self.assertEqual(
+                _bridge_url_for_placement(
+                    "http://host.docker.internal:9118/v1/chat/stream",
+                    {"shard_id": "shard-2"},
+                ),
+                "http://10.0.0.2:9118/v1/chat/stream",
+            )
+
+
 class TestBoilerplateTrimmer(unittest.TestCase):
     """首屏 60 字符单向滑动窗口熔断器测试。"""
 

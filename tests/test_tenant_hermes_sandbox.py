@@ -2,16 +2,59 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from backend.services.tenant_hermes_sandbox import (
+    backup_sandbox_capsule,
     delete_sandbox_skill,
     ensure_tenant_sandbox,
     list_sandbox_skills,
     namespace,
     persist_agent_snapshot,
     read_sandbox_skill,
+    restore_sandbox_capsule,
     write_sandbox_skill,
 )
+
+
+def test_capsule_backup_restore_preserves_state_and_rejects_wrong_identity(tmp_path: Path):
+    root = tmp_path / "sandboxes"
+    sandbox = ensure_tenant_sandbox(
+        tenant_key="tenant-a", user_id="user-a", root=root,
+        template_root=_template(tmp_path / "template"),
+    )
+    with sqlite3.connect(sandbox.state_db) as connection:
+        connection.execute("CREATE TABLE state (value TEXT)")
+        connection.execute("INSERT INTO state VALUES ('preserved')")
+    skill = sandbox.custom_skills / "private" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("private state", encoding="utf-8")
+    archive = tmp_path / "capsule.zip"
+    manifest = backup_sandbox_capsule(sandbox, archive, generation=7)
+    restored = tmp_path / "restored" / "profile"
+    restored.parent.mkdir(parents=True)
+
+    result = restore_sandbox_capsule(
+        archive,
+        restored,
+        tenant_namespace=sandbox.tenant_namespace,
+        user_namespace=sandbox.user_namespace,
+        expected_generation=7,
+    )
+    assert result == manifest
+    with sqlite3.connect(restored / "hermes-home" / "state.db") as connection:
+        assert connection.execute("SELECT value FROM state").fetchone() == ("preserved",)
+    assert (restored / "hermes-home" / "skills" / "custom" / "private" / "SKILL.md").read_text() == "private state"
+    with pytest.raises(ValueError, match="identity_or_generation"):
+        restore_sandbox_capsule(
+            archive,
+            tmp_path / "bad-restore",
+            tenant_namespace=sandbox.tenant_namespace,
+            user_namespace=sandbox.user_namespace,
+            expected_generation=8,
+        )
 
 
 def _template(root: Path) -> Path:
