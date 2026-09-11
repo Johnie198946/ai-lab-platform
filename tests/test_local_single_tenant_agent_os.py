@@ -111,6 +111,8 @@ def test_default_profile_registers_local_agent_os_lifecycle():
         "transform_llm_output",
         "transform_tool_result",
     }
+    # A default profile alone does not authorize research deposition on a server.
+    assert "research_deposit" not in context.tools["ai_lab_execute"]["schema"]["parameters"]["properties"]["capability"]["enum"]
 
 
 def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(monkeypatch):

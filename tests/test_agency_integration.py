@@ -306,6 +306,8 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
         "transform_tool_result",
     }
     assert not any("router" in name for name in context.tools)
+    # Unknown/non-default contexts do not disclose or install local deposition.
+    assert "research_deposit" not in context.tools["ai_lab_execute"]["schema"]["parameters"]["properties"]["capability"]["enum"]
 
 
 def test_capability_hook_abstains_without_installed_knowledge_method(monkeypatch):

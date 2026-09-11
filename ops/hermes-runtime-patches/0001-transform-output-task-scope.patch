@@ -1,0 +1,13 @@
+diff --git a/agent/turn_finalizer.py b/agent/turn_finalizer.py
+index 93506f680c..ca56a17d7d 100644
+--- a/agent/turn_finalizer.py
++++ b/agent/turn_finalizer.py
+@@ -624,6 +624,8 @@ def finalize_turn(
+                 "transform_llm_output",
+                 response_text=final_response,
+                 session_id=agent.session_id or "",
++                task_id=effective_task_id,
++                turn_id=turn_id,
+                 model=agent.model,
+                 platform=getattr(agent, "platform", None) or "",
+             )

@@ -605,7 +605,7 @@ def _score_capability(
     if (
         capability.get("kind") == "skill"
         and "knowledge/ingestion" in str(capability.get("skill_path") or "")
-        and not re.search(r"(?:保存|入库|知识库|归档|ingest|store|archive)", query, re.I)
+        and re.search(r"只看看|不(?:要)?(?:保存|入库|落盘)|do\s+not\s+(?:save|store)|don['’]t\s+save|no[ -]save", query, re.I)
     ):
         return 0.0, {"excluded": 1.0}
     query_tokens = _tokens(query)
@@ -2239,7 +2239,7 @@ def _compact_skill_manifest() -> None:
         run_agent_module.build_skills_system_prompt = _compact_skills_prompt
 
 
-def install(ctx: Any) -> None:
+def install(ctx: Any, deposition: Any = None) -> None:
     """Attach the router to Hermes' existing search, prompt, and hook lifecycle."""
     global _INSTALLED, _LOCAL_ENABLED
     if _INSTALLED:
@@ -2263,5 +2263,12 @@ def install(ctx: Any) -> None:
         ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
         ctx.register_hook("subagent_start", _subagent_start)
         ctx.register_hook("subagent_stop", _subagent_stop)
-        ctx.register_hook("transform_llm_output", _transform_llm_output)
+        def transform_with_deposition(response_text: str = "", **kwargs: Any):
+            # Native finalizer uses first-string-wins: keep ONE composed transform.
+            routed = _transform_llm_output(response_text, **kwargs)
+            if deposition is not None and deposition.enabled():
+                return deposition.transform(routed or response_text, **kwargs) or routed
+            return routed
+
+        ctx.register_hook("transform_llm_output", transform_with_deposition)
     _INSTALLED = True

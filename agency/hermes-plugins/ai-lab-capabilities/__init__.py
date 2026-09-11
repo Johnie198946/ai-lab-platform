@@ -5,9 +5,17 @@ import json
 from typing import Any
 
 from .capability_router import install as install_capability_router
+from .research_deposit import ResearchDeposit
+
+# Host lifecycle adapters can retain the registered instance, without model authority.
+research_deposition = None
 
 
 CAPABILITIES = {
+    "research_deposit": {
+        "description": "Deposit parent-adopted research into the authorized existing-sync user Vault. Inputs: title, FULL adopted research body or analysis (not the brief user-facing summary), source_urls, confidence (null if unreviewed), source_kind=research_analysis. Body requires >=800 characters, substantive Markdown headings ## 事实, ## 分析, ## 启示 with actual newlines (not literal backslash-n), >=20 characters per section and source URLs in body. One task supports multiple items: call once per item, keep primary source URL first and stable for corrections; quality rejection without durable raw permits corrected resubmission. Or action=status/recover with known session_id/turn_id/task_id and optional item_id from status. Recovery is bounded; completion requires all known items. Local owner default profile only; not a Wiki compilation receipt.",
+        "required": [],
+    },
     "knowledge_search": {
         "description": "Search tenant-authorized Wiki using query plus optional entities/topics; read chosen links with paths. No private-file fallback. Inspect retrieval_status and use authorized public web for gaps. Selected-book full text/TOC uses book_id, content_version, operation, section and page. Follow next until truncated=false.",
         "underlying_tool": "knowledge_search",
@@ -36,13 +44,19 @@ def _json(payload: dict[str, Any]) -> str:
 
 
 def register(ctx):
+    global research_deposition
+    deposition = ResearchDeposit(ctx)
+    research_deposition = deposition
+    deposition.install()
+    capabilities = {key: value for key, value in CAPABILITIES.items()
+                    if key != "research_deposit" or deposition.enabled()}
     if hasattr(ctx, "register_web_search_provider"):
         from .native_extract_provider import build_provider
 
         ctx.register_web_search_provider(build_provider())
     # Reuse Hermes' existing progressive disclosure and lifecycle hooks.  This
     # does not add another model-facing navigation tool.
-    install_capability_router(ctx)
+    install_capability_router(ctx, deposition=deposition)
 
     def list_capabilities(args: dict[str, Any], **kwargs) -> str:
         del args, kwargs
@@ -50,14 +64,13 @@ def register(ctx):
             "success": True,
             "provider": "ai-lab",
             "capabilities": [
-                {"id": key, **value} for key, value in CAPABILITIES.items()
+                {"id": key, **value} for key, value in capabilities.items()
             ],
         })
 
     def execute(args: dict[str, Any], **kwargs) -> str:
-        del kwargs
         capability_id = str(args.get("capability") or "").strip()
-        capability = CAPABILITIES.get(capability_id)
+        capability = capabilities.get(capability_id)
         if not capability:
             return _json({
                 "success": False,
@@ -67,6 +80,8 @@ def register(ctx):
         inputs = args.get("inputs") or {}
         if not isinstance(inputs, dict):
             return _json({"success": False, "error": "inputs_must_be_object"})
+        if capability_id == "research_deposit":
+            return _json(deposition.execute(inputs, **kwargs))
         missing = [key for key in capability["required"] if not inputs.get(key)]
         if missing:
             return _json({
@@ -75,7 +90,7 @@ def register(ctx):
                 "missing": missing,
             })
         try:
-            result = ctx.dispatch_tool(capability["underlying_tool"], inputs)
+            result = ctx.dispatch_tool(capability["underlying_tool"], inputs, **kwargs)
         except Exception as exc:  # pragma: no cover - depends on Hermes runtime
             return _json({
                 "success": False,
@@ -127,7 +142,7 @@ def register(ctx):
                 "properties": {
                     "capability": {
                         "type": "string",
-                        "enum": sorted(CAPABILITIES),
+                        "enum": sorted(capabilities),
                     },
                     "inputs": {"type": "object"},
                 },
