@@ -6800,6 +6800,8 @@ async def clarify_workflow(
             reply, usage = await asyncio.to_thread(_run_clarification_in_process, prompt)
         raw = json.loads(reply)
         decision = ClarificationDecision.model_validate(raw)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Hermes clarification response invalid") from exc
 

@@ -53,6 +53,28 @@ class TestBridgeCLIParms(unittest.TestCase):
 
         asyncio.run(run())
 
+    def test_clarification_preserves_capacity_retry_response(self):
+        from fastapi import HTTPException
+        from scripts import hermes_bridge as bridge
+
+        @bridge.asynccontextmanager
+        async def denied():
+            raise HTTPException(
+                status_code=503,
+                detail="runtime_capacity_exceeded",
+                headers={"Retry-After": "2"},
+            )
+            yield
+
+        body = bridge.ClarificationBridgeRequest(
+            tenant_id="tenant", workflow_id="workflow", goal="clear goal",
+        )
+        with patch.object(bridge, "_admit_request", denied):
+            with self.assertRaises(Exception) as raised:
+                asyncio.run(bridge.clarify_workflow(body, "test-internal-token"))
+        self.assertEqual(raised.exception.status_code, 503)
+        self.assertEqual(raised.exception.headers, {"Retry-After": "2"})
+
     def test_inference_policy_fails_closed_and_caps_budget(self):
         from scripts import hermes_bridge as bridge
 
