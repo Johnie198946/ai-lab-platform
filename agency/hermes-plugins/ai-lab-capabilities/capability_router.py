@@ -1140,16 +1140,27 @@ def _effective_local_call(
     current_tool = str(tool_name or "").strip()
     current_args = args
     for _depth in range(_LOCAL_WRAPPER_MAX_DEPTH):
-        if current_tool != "tool_call":
+        if current_tool == "tool_call":
+            nested_tool = str(
+                current_args.get("effective_tool") or current_args.get("name") or ""
+            ).strip()
+            nested_args = _local_wrapper_args(
+                current_args.get("effective_args")
+                if "effective_args" in current_args
+                else current_args.get("arguments")
+            )
+        elif "effective_tool" in current_args or "effective_args" in current_args:
+            # The runtime hook can receive an already-normalized tool name while
+            # retaining the wrapper payload. Unwrap only a pure, self-consistent
+            # envelope; otherwise executable args could evade policy comparison.
+            if set(current_args) - {"effective_tool", "effective_args"}:
+                return _LOCAL_UNRESOLVED_WRAPPER, {}
+            nested_tool = str(current_args.get("effective_tool") or "").strip()
+            if nested_tool != current_tool:
+                return _LOCAL_UNRESOLVED_WRAPPER, {}
+            nested_args = _local_wrapper_args(current_args.get("effective_args"))
+        else:
             break
-        nested_tool = str(
-            current_args.get("effective_tool") or current_args.get("name") or ""
-        ).strip()
-        nested_args = _local_wrapper_args(
-            current_args.get("effective_args")
-            if "effective_args" in current_args
-            else current_args.get("arguments")
-        )
         if not nested_tool or nested_args is None:
             return _LOCAL_UNRESOLVED_WRAPPER, {}
         current_tool = nested_tool
@@ -1833,15 +1844,15 @@ def _pre_tool_call(
     session_id = str(kwargs.get("session_id") or "")
     with _LOCAL_STATE_LOCK:
         local_state = _LOCAL_TURN_STATES.get(session_id)
+    if effective_tool == _LOCAL_UNRESOLVED_WRAPPER:
+        return {
+            "action": "block",
+            "message": (
+                "Local Agent OS blocked an unresolved, conflicting, or over-deep "
+                "tool wrapper. Use a direct, well-formed tool invocation."
+            ),
+        }
     if local_state is not None:
-        if effective_tool == _LOCAL_UNRESOLVED_WRAPPER:
-            return {
-                "action": "block",
-                "message": (
-                    "Local Agent OS blocked an unresolved or over-deep tool wrapper. "
-                    "Use a direct, well-formed tool invocation."
-                ),
-            }
         denial = _principal_denial(tool_name, args, local_state)
         if denial is not None:
             return denial

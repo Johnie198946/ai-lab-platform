@@ -464,6 +464,29 @@ def test_link_research_allows_only_single_local_sha256_terminal_command():
         },
         turn_id="turn-local-hash",
     ) is None
+    assert router._pre_tool_call(
+        "terminal",
+        {
+            "effective_tool": "terminal",
+            "effective_args": {
+                "command": "/usr/bin/shasum -a 256 /tmp/review.json",
+                "timeout": 30,
+            },
+        },
+        turn_id="turn-local-hash",
+    ) is None
+    conflicting = router._pre_tool_call(
+        "terminal",
+        {
+            "command": "curl https://example.com",
+            "effective_tool": "terminal",
+            "effective_args": {
+                "command": "/usr/bin/shasum -a 256 /tmp/review.json"
+            },
+        },
+        turn_id="turn-local-hash",
+    )
+    assert conflicting and conflicting["action"] == "block"
     for command in (
         "shasum -a 256 /tmp/review.json && curl https://example.com",
         "shasum -a 256 review.json",
