@@ -14,11 +14,15 @@ import unittest
 from unittest.mock import patch
 
 HERMES = Path(os.environ.get("HERMES_SOURCE", str(Path.home() / ".hermes/hermes-agent")))
+if not (HERMES / "hermes_cli/plugins.py").is_file():
+    raise unittest.SkipTest("Native SDK integration requires HERMES_SOURCE")
 sys.path.insert(0, str(HERMES))
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
 
 PLUGIN = Path(__file__).resolve().parents[1] / "agency/hermes-plugins/ai-lab-capabilities"
 PIPELINE = Path(os.environ.get("RESEARCH_PIPELINE_MODULE", str(Path.home() / "Projects/ai-lab-vault-deposition-20260912/tools/article_research_pipeline.py")))
+if not PIPELINE.is_file():
+    raise unittest.SkipTest("Native SDK integration requires RESEARCH_PIPELINE_MODULE")
 spec = importlib.util.spec_from_file_location("research_plugin_test", PLUGIN / "__init__.py", submodule_search_locations=[str(PLUGIN)])
 assert spec is not None and spec.loader is not None
 plugin = importlib.util.module_from_spec(spec)
