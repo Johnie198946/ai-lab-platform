@@ -437,6 +437,7 @@ def test_link_research_allows_only_single_local_sha256_terminal_command():
     )
     for command in (
         "shasum -a 256 /tmp/review.json",
+        "/usr/bin/shasum -a 256 /tmp/review.json",
         "sha256sum /tmp/review.json",
     ):
         assert router._pre_tool_call(

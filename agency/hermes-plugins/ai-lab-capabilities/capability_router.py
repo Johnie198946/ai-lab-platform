@@ -1807,9 +1807,10 @@ def _is_single_local_sha256_command(args: dict[str, Any]) -> bool:
         argv = shlex.split(command)
     except ValueError:
         return False
-    if len(argv) == 2 and argv[0] == "sha256sum":
+    executable = Path(argv[0]).name if argv else ""
+    if len(argv) == 2 and executable == "sha256sum":
         path = argv[1]
-    elif len(argv) == 4 and argv[:3] == ["shasum", "-a", "256"]:
+    elif len(argv) == 4 and executable == "shasum" and argv[1:3] == ["-a", "256"]:
         path = argv[3]
     else:
         return False
