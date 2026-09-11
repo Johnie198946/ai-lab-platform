@@ -111,6 +111,20 @@ def test_existing_explicit_mapping_is_unchanged(tenant_db):
     assert run(_default_resolve_tenant("org-user"))["tenant_key"] == "shared-org"
 
 
+def test_registration_does_not_collapse_new_users_into_legacy_default(
+    tenant_db, monkeypatch
+):
+    from backend.api import register
+
+    monkeypatch.setenv("DEFAULT_TENANT_KEY", "shared-legacy")
+    first = run(register._provision_tenant("consumer-a"))
+    second = run(register._provision_tenant("consumer-b"))
+
+    assert first != "shared-legacy"
+    assert second != "shared-legacy"
+    assert first != second
+
+
 def test_resolution_failure_fails_closed(monkeypatch):
     import backend.db as db
 
