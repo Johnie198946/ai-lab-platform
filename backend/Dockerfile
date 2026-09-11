@@ -2,9 +2,6 @@
 # Keep the deployed Python minor; immutable multi-platform base + hashed locks.
 FROM python:3.12.14-alpine3.23@sha256:167bc85084c9df34480efc26b4528fb68feaa8a79183b5658952137025b6f061
 
-ARG AI_LAB_SOURCE_SHA
-LABEL org.opencontainers.image.revision=$AI_LAB_SOURCE_SHA
-
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -37,6 +34,9 @@ COPY scripts /app/scripts
 # 预建 harness 运行目录（manifests/runtime 由 runtime.py 懒创建，预建保证契约审计第一天即通过）
 RUN mkdir -p /app/data/manifests /app/data/runtime /home/ailab/.hermes/skills /home/ailab/.hermes/profiles \
     && chown -R ailab:ailab /app/data /home/ailab
+
+ARG AI_LAB_SOURCE_SHA
+LABEL org.opencontainers.image.revision=$AI_LAB_SOURCE_SHA
 
 EXPOSE 8000
 
