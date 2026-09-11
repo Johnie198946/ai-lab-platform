@@ -42,6 +42,7 @@ _WEB_RESEARCH_TURNS: dict[str, int] = {}
 _LOCAL_STATE_LOCK = threading.RLock()
 _LOCAL_TURN_STATES: dict[str, dict[str, Any]] = {}
 _GATEWAY_IDENTITIES: dict[tuple[str, str, str], str] = {}
+_PUBLICATION_REVIEW_ATTESTATIONS: dict[str, dict[str, Any]] = {}
 _LOCAL_ENABLED = True
 logger = logging.getLogger(__name__)
 
@@ -1488,6 +1489,23 @@ def _verification_failure(
 def _transform_llm_output(response_text: str, session_id: str = "", **kwargs: Any) -> str:
     del kwargs
     with _LOCAL_STATE_LOCK:
+        attestation = _PUBLICATION_REVIEW_ATTESTATIONS.get(session_id)
+    if attestation:
+        try:
+            envelope = json.loads(response_text)
+            final = envelope["publication_review_result"]
+            if (
+                isinstance(final, dict)
+                and all(final.get(key) == attestation.get(key) for key in (
+                    "issue_id", "revision", "attempt_id", "editorial_target_hash", "decision"
+                ))
+            ):
+                final["review_file_hash"] = attestation["sha256"]
+                final["reviewer_session"] = attestation["reviewer_session"]
+                response_text = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+        except (KeyError, TypeError, ValueError):
+            pass
+    with _LOCAL_STATE_LOCK:
         state = _LOCAL_TURN_STATES.get(session_id)
         if not state or state.get("route_class") != "PROFESSIONAL_TASK":
             return response_text
@@ -2000,6 +2018,10 @@ def _post_tool_call(
     **kwargs: Any,
 ) -> None:
     session_id = str(kwargs.get("session_id") or "")
+    attestation = _bind_publication_review_write(tool_name, args, result, session_id)
+    if attestation:
+        with _LOCAL_STATE_LOCK:
+            _PUBLICATION_REVIEW_ATTESTATIONS[session_id] = attestation
     if tool_name == "skill_view":
         loaded_skill = str((args or {}).get("name") or "").strip()
         payload = _verified_skill_payload(result, loaded_skill)
@@ -2043,13 +2065,10 @@ def _post_tool_call(
         _write_stats(stats)
 
 
-def _attest_publication_review_write(
-    tool_name: str = "",
-    args: Any = None,
-    result: Any = None,
-    **kwargs: Any,
-) -> str | None:
-    """Bind a governed review write to its exact native session and bytes."""
+def _bind_publication_review_write(
+    tool_name: str, args: Any, result: Any, session_id: str
+) -> dict[str, Any] | None:
+    """Atomically bind a governed review file to its native session."""
     if tool_name != "write_file":
         return None
     try:
@@ -2061,7 +2080,7 @@ def _attest_publication_review_write(
     if payload.get("error") or payload.get("verified") is not True:
         return None
     raw_path = str(payload.get("resolved_path") or (args or {}).get("path") or "").strip()
-    session_id = str(kwargs.get("session_id") or "").strip()
+    session_id = str(session_id or "").strip()
     if not raw_path or not session_id:
         return None
     try:
@@ -2081,10 +2100,13 @@ def _attest_publication_review_write(
     temp_path: Path | None = None
     try:
         review = json.loads(candidate.read_bytes())
-        current = review.get("reviewer_session")
+        review_body = review.get("editorial_review", review)
+        if not isinstance(review_body, dict):
+            return None
+        current = review_body.get("reviewer_session")
         if current not in {"__RUNTIME_ATTESTED__", reviewer}:
             return None
-        review["reviewer_session"] = reviewer
+        review_body["reviewer_session"] = reviewer
         raw = json.dumps(
             review, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
@@ -2104,13 +2126,36 @@ def _attest_publication_review_write(
         except OSError:
             pass
         return None
+    return {
+        **{key: review_body.get(key) for key in (
+            "issue_id", "revision", "attempt_id", "editorial_target_hash", "decision"
+        )},
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "reviewer_session": reviewer,
+        "bytes_written": len(raw),
+    }
 
+
+def _attest_publication_review_write(
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    **kwargs: Any,
+) -> str | None:
+    session_id = str(kwargs.get("session_id") or "").strip()
+    attestation = _bind_publication_review_write(tool_name, args, result, session_id)
+    if not attestation:
+        return None
+    try:
+        payload = dict(result) if isinstance(result, dict) else json.loads(result)
+    except (TypeError, ValueError):
+        return None
     payload.update(
-        bytes_written=len(raw),
+        bytes_written=attestation["bytes_written"],
         verified=True,
         runtime_attestation={
-            "sha256": hashlib.sha256(raw).hexdigest(),
-            "reviewer_session": reviewer,
+            "sha256": attestation["sha256"],
+            "reviewer_session": attestation["reviewer_session"],
         },
     )
     return json.dumps(payload, ensure_ascii=False)

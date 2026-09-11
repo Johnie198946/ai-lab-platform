@@ -546,6 +546,49 @@ def test_publication_review_write_result_binds_hash_and_native_session(
     ) is None
 
 
+def test_publication_review_post_hook_rewrites_nested_review_and_final(tmp_path, monkeypatch):
+    router = load_capability_router()
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    review = home / "outputs/quantumn-editorial-v2/book/final-independent-review.json"
+    review.parent.mkdir(parents=True)
+    body = {
+        "editorial_review": {
+            "issue_id": "issue-1",
+            "revision": 1,
+            "attempt_id": "attempt-1",
+            "editorial_target_hash": "a" * 64,
+            "decision": "rejected",
+            "reviewer_session": "__RUNTIME_ATTESTED__",
+        }
+    }
+    review.write_text(json.dumps(body), encoding="utf-8")
+    router._post_tool_call(
+        "write_file",
+        {"path": str(review)},
+        {"verified": True, "resolved_path": str(review)},
+        session_id="cron_native_review",
+    )
+    persisted = json.loads(review.read_text(encoding="utf-8"))["editorial_review"]
+    assert persisted["reviewer_session"] == "hermes:cron_native_review"
+    final = {
+        "publication_review_result": {
+            "issue_id": "issue-1",
+            "revision": 1,
+            "attempt_id": "attempt-1",
+            "editorial_target_hash": "a" * 64,
+            "decision": "rejected",
+            "review_file_hash": "UNAVAILABLE",
+            "reviewer_session": "__RUNTIME_ATTESTED__",
+        }
+    }
+    transformed = json.loads(
+        router._transform_llm_output(json.dumps(final), session_id="cron_native_review")
+    )["publication_review_result"]
+    assert transformed["reviewer_session"] == "hermes:cron_native_review"
+    assert transformed["review_file_hash"] == hashlib.sha256(review.read_bytes()).hexdigest()
+
+
 def test_native_extract_html_parser_removes_scripts_and_keeps_readable_text():
     plugin = load_capability_plugin()
     path = ROOT / "agency/hermes-plugins/ai-lab-capabilities/native_extract_provider.py"
