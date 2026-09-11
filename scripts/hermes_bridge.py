@@ -44,7 +44,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal, Optional, cast
+from typing import Any, Literal, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -5862,7 +5862,6 @@ def _build_in_process_agent(
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
         model=cfg_model,
-        max_tokens=1600 if route_class == GENERAL_QA and knowledge_tool_enabled else cast(int, None),
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
