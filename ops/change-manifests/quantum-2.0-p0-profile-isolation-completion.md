@@ -30,7 +30,7 @@
 
 ## 最新代码调研与架构校正
 
-- 只读核对 `source/main` 最新 SHA 为 `20d06ca5f33a80a2b8ca9fc529ab26ae15deb65a`；相对初始 `b5ad115` 新增 19 个提交、变更 92 个文件。
+- 只读核对 `source/main` 最新 SHA 为 `2af40baee98dc7e13bd9248a410f98a1e698f95d`；相对初始 `b5ad115` 新增 20 个提交、变更 93 个文件。
 - 最新 iOS 已有账号指纹 SQLite 隔离、durable answer 对账和书籍版本绑定；后端已有 tenant+user 会话命名、durable owner hash、user hot memory、owner-private/public 知识双平面和有界 Agent/worker。
 - Hermes 固定源码提交为 `63279301bcbdc185c1b07b98a9312eb0c862f26d`。审计确认其 `HERMES_HOME` 并非安全的请求级切换点，官方 Multiplexer 也不是动态海量消费者调度器。
 - 因此方案从“每用户官方 Profile + Multiplexer”校正为“共享 durable Worker/AIAgent + 平台管理的用户状态胶囊”；不新建第二套 runtime。
@@ -50,7 +50,7 @@
 - Ruff（受影响 Python 文件）：通过。
 - `git diff --check`：通过。
 - 受影响后端集合：`296 passed, 39 warnings, 14 subtests passed`。
-- 后端全量：`2082 passed, 2 skipped, 290 warnings, 14 subtests passed`。
+- 后端全量：`2083 passed, 2 skipped, 290 warnings, 14 subtests passed`。
 - Web：`149 passed`；`npm run build` 成功。
 - iOS：`xcodebuild` 使用 iPhoneOS 26.1、Debug、关闭签名和隔离 DerivedData 编译成功，结果为 `BUILD SUCCEEDED`。
 - 重点覆盖：同租户 A/B 用户状态隔离、旧 DB 迁移、旧租户 Skill 隔离、四个 Agent 入口守卫、注册租户不再坍缩、durable run/知识/工作流/SSE 回归。
@@ -59,13 +59,13 @@
 ## 交付状态
 
 - status: `COMMITTED`
-- commit_sha: `399b2b5c2cf433d061641d1a4046ffb6af3b35d1`（隔离实现）与 `b226851d1ebd47777f88ad2a0ef399295a2867ff`（最新代码校正、注册止血和方案更新）。
+- commit_sha: `fce7126c702e3ea071f4e7dee3ada0e60dbf229a`（隔离实现）与 `0287f23481734703de5b4330410a1079b0b7ebf8`（最新代码校正、注册止血和方案更新）。
 - github_remote_ref_sha: `origin` 当前无可见 refs；未授权、未执行 push。
 - server_before: 未授权、未执行部署。
 - server_after: 未授权、未执行部署。
 - health_check: 不适用；未修改或启动服务器。
 - functional_check: 本地后端全量、Web 测试/构建和 iOS 编译通过；真实模型凭据端到端对话未执行。
-- rollback_point: `source/main@20d06ca5f33a80a2b8ca9fc529ab26ae15deb65a` 与本任务提交的父提交；未迁移生产数据。
+- rollback_point: `source/main@2af40baee98dc7e13bd9248a410f98a1e698f95d` 与本任务提交的父提交；未迁移生产数据。
 
 ## 风险与未完成项
 

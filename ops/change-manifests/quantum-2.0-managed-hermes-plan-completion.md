@@ -12,13 +12,13 @@
 - branch: `codex/quantum-2.0-managed-hermes`
 - head_before_sync: `5284db6f5090cde578b51656ad2d1ad9420a1748`
 - first_source_baseline: `b5ad115797d4edfa0e20d9c93afe64bdfb0659de`
-- latest_source_baseline: `20d06ca5f33a80a2b8ca9fc529ab26ae15deb65a`
+- latest_source_baseline: `2af40baee98dc7e13bd9248a410f98a1e698f95d`
 - remote:
   - `origin https://github.com/Johnie198946/Quantum.git`
   - `source https://github.com/Johnie198946/ai-lab-platform.git`
 - worktree: `/private/tmp/quantum-2.0-managed-hermes`
 - github_readonly_evidence:
-  - `git ls-remote source refs/heads/main` -> `20d06ca5f33a80a2b8ca9fc529ab26ae15deb65a`
+  - `git ls-remote source refs/heads/main` -> `2af40baee98dc7e13bd9248a410f98a1e698f95d`
   - `git ls-remote origin` -> 空结果；核对时 Quantum 远端尚无可见引用。
 
 ## 方案校正
@@ -37,13 +37,13 @@
 ## 交付状态
 
 - status: `COMMITTED`
-- commit_sha: `399b2b5c2cf433d061641d1a4046ffb6af3b35d1`（隔离实现）与 `b226851d1ebd47777f88ad2a0ef399295a2867ff`（最新代码校正、注册止血和方案更新）。
+- commit_sha: `fce7126c702e3ea071f4e7dee3ada0e60dbf229a`（隔离实现）与 `0287f23481734703de5b4330410a1079b0b7ebf8`（最新代码校正、注册止血和方案更新）。
 - github_remote_ref_sha: 未授权、未执行 push；`origin` 当前无可见 refs。
 - server_before: 未授权、未执行部署。
 - server_after: 未授权、未执行部署。
 - health_check: 不适用。
 - functional_check: 架构方案与本地实现一致，产品级验证见 P0 manifest。
-- rollback_point: `source/main@20d06ca5f33a80a2b8ca9fc529ab26ae15deb65a`。
+- rollback_point: `source/main@2af40baee98dc7e13bd9248a410f98a1e698f95d`。
 
 ## 风险与未完成项
 

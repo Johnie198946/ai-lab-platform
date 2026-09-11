@@ -86,9 +86,9 @@ ai-lab-platform（1.0.3 代码与历史基线）
 
 截至 2026-09-11 的核对结果：
 
-- `ai-lab-platform/main`：`20d06ca5f33a80a2b8ca9fc529ab26ae15deb65a`；
+- `ai-lab-platform/main`：`2af40baee98dc7e13bd9248a410f98a1e698f95d`；
 - 本任务最初的 Quantum 本地 HEAD：`5284db6f5090cde578b51656ad2d1ad9420a1748`；
-- 第一批隔离改造曾基于 `b5ad115`，随后已 rebase 到 `20d06ca`；新吸收 19 个上游提交、92 个变更文件；
+- 第一批隔离改造曾基于 `b5ad115`，随后已 rebase 到 `2af40ba`；新吸收 20 个上游提交、93 个变更文件；
 - 最新 iOS 已增加账号指纹 SQLite、durable answer 对账和书籍版本绑定；最新后端已增加 owner-private/public bookshelf、Wiki/OKF 双平面治理、受控输出和普通知识问答延迟上限；
 - CI 已固定 Hermes 源码提交 `63279301bcbdc185c1b07b98a9312eb0c862f26d`，不再以浮动 0.19.x 作为验证基线；
 - 新的 `Quantum` GitHub 远端当时尚无 `refs/heads/main`，首次交付前必须再次核对，不能把“远端为空”误报为已推送。
@@ -402,7 +402,7 @@ state
 
 ### 本地实施检查点（2026-09-11）
 
-当前分支已同步到 `source/main@20d06ca`，并保留第一批可独立验证的隔离改造：SessionDB、个人 Skills 和 Agent 快照进入用户状态胶囊；平台模板保持租户内只读复用；来源不明的旧租户 custom Skills 原地隔离待审；普通聊天、工作流、预热和澄清四个 `AIAgent` 入口统一禁用宿主机 context、memory 与 SOUL identity。注册入口不再读取 `DEFAULT_TENANT_KEY` 把新用户压入共享租户。现有 iOS Chat/SSE API 未改变。
+当前分支已同步到 `source/main@2af40ba`，并保留第一批可独立验证的隔离改造：SessionDB、个人 Skills 和 Agent 快照进入用户状态胶囊；平台模板保持租户内只读复用；来源不明的旧租户 custom Skills 原地隔离待审；普通聊天、工作流、预热和澄清四个 `AIAgent` 入口统一禁用宿主机 context、memory 与 SOUL identity。注册入口不再读取 `DEFAULT_TENANT_KEY` 把新用户压入共享租户。现有 iOS Chat/SSE API 未改变。
 
 这不是 2.0 全部完成。生产 TenantMapping 审计、状态分片租约、可信模型网关和 iOS 2.0 状态界面仍按下列阶段推进。
 
