@@ -30,7 +30,7 @@
 
 ## 最新代码调研与架构校正
 
-- 只读核对 `source/main` 最新 SHA 为 `2af40baee98dc7e13bd9248a410f98a1e698f95d`；相对初始 `b5ad115` 新增 20 个提交、变更 93 个文件。
+- 只读核对 `source/main` 最新 SHA 为 `c4bd5317c5e606dbe2ce10e293235f03c280af7e`；相对初始 `b5ad115` 新增 22 个提交、变更 93 个文件；新增两次 review lifecycle 修复仅触及 capability router 及其测试，与本任务文件不冲突。
 - 最新 iOS 已有账号指纹 SQLite 隔离、durable answer 对账和书籍版本绑定；后端已有 tenant+user 会话命名、durable owner hash、user hot memory、owner-private/public 知识双平面和有界 Agent/worker。
 - Hermes 固定源码提交为 `63279301bcbdc185c1b07b98a9312eb0c862f26d`。审计确认其 `HERMES_HOME` 并非安全的请求级切换点，官方 Multiplexer 也不是动态海量消费者调度器。
 - 因此方案从“每用户官方 Profile + Multiplexer”校正为“共享 durable Worker/AIAgent + 平台管理的用户状态胶囊”；不新建第二套 runtime。
@@ -51,21 +51,26 @@
 - `git diff --check`：通过。
 - 受影响后端集合：`296 passed, 39 warnings, 14 subtests passed`。
 - 后端全量：`2083 passed, 2 skipped, 290 warnings, 14 subtests passed`。
+- 同步最新 `source/main@c4bd531` 后最小回归：隔离、Bridge、Architect 与上游 agency integration 共 `101 passed, 8 warnings`。
 - Web：`149 passed`；`npm run build` 成功。
 - iOS：`xcodebuild` 使用 iPhoneOS 26.1、Debug、关闭签名和隔离 DerivedData 编译成功，结果为 `BUILD SUCCEEDED`。
+- 双账号本地 E2E：真实 Authen 服务完成两个账号的注册、登录和 JWT 签发；Quantum API 完成协议接受、可信 tenant/user 派生与三轮 SSE；Hermes Bridge 使用固定源码和本地 OpenAI-compatible 测试模型完成会话写入与恢复。
+- E2E 隔离结果：同一客户端 session id 派生出不同服务端 session；A 回忆到 `ALPHA-7Q9M-ONLY-A`，B 返回“无历史暗号”；两个 tenant key、Hermes Home 和 state.db 均不同且目录权限为 `0700`；B 的 state.db/WAL 中暗号命中数为 0。
+- 外部模型可达性：`openai-api` 与本机已有 `openai-codex` 路由均在模型网络阶段超时，未把该项误报为通过；临时凭据副本已删除。
+- 测试环境说明：手工启动 API 时未注入 `HERMES_CHAT_RUN_DB`，知识候选后台按默认 `/app/data` 写入被本地沙箱拒绝；该路径不影响本次聊天隔离结论，正式 Compose 使用可写 `./data:/app/data`，systemd 明确注入运行库路径。
 - 重点覆盖：同租户 A/B 用户状态隔离、旧 DB 迁移、旧租户 Skill 隔离、四个 Agent 入口守卫、注册租户不再坍缩、durable run/知识/工作流/SSE 回归。
 - warnings: 既有 FastAPI `on_event`、Pydantic 配置和测试短 HMAC key 警告；本任务未扩大处理范围。
 
 ## 交付状态
 
 - status: `COMMITTED`
-- commit_sha: `fce7126c702e3ea071f4e7dee3ada0e60dbf229a`（隔离实现）与 `0287f23481734703de5b4330410a1079b0b7ebf8`（最新代码校正、注册止血和方案更新）。
+- commit_sha: `68745061f14c3582b2f6fe29ea5b803e4613347b`（隔离实现）与 `e6f9a11fb2c137da08af868e9748a8d1fce94281`（最新代码校正、注册止血和方案更新）。
 - github_remote_ref_sha: `origin` 当前无可见 refs；未授权、未执行 push。
 - server_before: 未授权、未执行部署。
 - server_after: 未授权、未执行部署。
 - health_check: 不适用；未修改或启动服务器。
-- functional_check: 本地后端全量、Web 测试/构建和 iOS 编译通过；真实模型凭据端到端对话未执行。
-- rollback_point: `source/main@2af40baee98dc7e13bd9248a410f98a1e698f95d` 与本任务提交的父提交；未迁移生产数据。
+- functional_check: 本地后端全量、Web 测试/构建、iOS 编译及真实 Authen 双账号隔离 E2E 通过；外部模型网络可达性未通过。
+- rollback_point: `source/main@c4bd5317c5e606dbe2ce10e293235f03c280af7e` 与本任务提交的父提交；未迁移生产数据。
 
 ## 风险与未完成项
 
@@ -73,4 +78,5 @@
 - 生产 TenantMapping、旧共享目录与 `DEFAULT_TENANT_KEY` 实际值仍需只读盘点并在迁移前备份。
 - Worker shard placement/lease、可信模型网关、额度账本、容量压测和状态胶囊备份恢复尚未实现。
 - 旧租户 custom Skills 默认 fail closed，需管理员审核、签名和发布后才能成为共享模板。
-- 尚未使用真实 Authen/模型密钥执行双账号端到端对话；本地验证不等于生产验证。
+- 真实 Authen 已验证；外部模型 Provider 因连接超时未完成回答级验收，本地确定性模型的通过不替代该项。
+- 本地验证不等于生产验证；上线前仍需使用生产等价网络、Provider 和密钥复跑相同双账号场景。
