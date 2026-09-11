@@ -36,17 +36,17 @@
 
 ## 交付状态
 
-- status: `COMMITTED`
-- commit_sha: `68745061f14c3582b2f6fe29ea5b803e4613347b`（隔离实现）与 `e6f9a11fb2c137da08af868e9748a8d1fce94281`（最新代码校正、注册止血和方案更新）。
-- github_remote_ref_sha: 未授权、未执行 push；`origin` 当前无可见 refs。
-- server_before: 未授权、未执行部署。
-- server_after: 未授权、未执行部署。
-- health_check: 不适用。
-- functional_check: 架构方案与本地实现一致；真实 Authen 双账号隔离 E2E 已通过，外部模型可达性因超时未通过，详见 P0 manifest。
-- rollback_point: `source/main@c4bd5317c5e606dbe2ce10e293235f03c280af7e`。
+- status: `VERIFIED`
+- commit_sha: `45502b000cdedcb81bdbe5bab7317f4d8fdd9048`（生产部署目标）。
+- github_remote_ref_sha: `origin/main@45502b000cdedcb81bdbe5bab7317f4d8fdd9048`，部署前经 `git ls-remote` 核验一致。
+- server_before: `.deployed-sha=f8281cfb5743ba428bc5be64c01bc9eb81f52cc5`；release=`/opt/releases/ai-lab-platform-f8281cfb5743.pKcnkV`。
+- server_after: `.deployed-sha=45502b000cdedcb81bdbe5bab7317f4d8fdd9048`；release=`/opt/releases/ai-lab-platform-45502b000cde.X5NXRJ`。
+- health_check: API、HTTPS、Bridge、Worker 与八个 Compose 服务通过；详情见 P0 manifest。
+- functional_check: 架构方案与生产代码一致；runtime contract、匿名鉴权边界及本地真实 Authen 双账号隔离 E2E 通过；生产双账号回答级 E2E 尚未执行。
+- rollback_point: `/opt/releases/ai-lab-platform-f8281cfb5743.pKcnkV`（已确认存在）。
 
 ## 风险与未完成项
 
 - 该文档是演进基线，不等于 P2-P4 已实现。
-- 生产数据盘点、生产等价外部模型 E2E、容量压测、备份恢复与灰度发布仍待后续授权和实施。
-- Quantum 首次 push 前必须再次核对 `origin` 状态和目标引用，禁止覆盖未知远端历史。
+- 生产数据盘点、生产等价外部模型 E2E、容量压测和状态胶囊备份恢复仍待后续实施。
+- Quantum 已建立 `origin/main` 并按精确 SHA 完成首次不可变发布；后续仍须坚持普通快进和远端 SHA 核对。

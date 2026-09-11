@@ -7,6 +7,10 @@
   - `backend/services/tenant_hermes_sandbox.py`
   - `docker-compose.yml`
   - `scripts/hermes_bridge.py`
+  - `scripts/update.sh`
+  - `scripts/deploy_exact_sha.sh`
+  - `tests/test_server_deployment_contract.py`
+  - `frontend/tests/showroom-journey.test.mjs`
   - `tests/test_architect_slice.py`
   - `tests/test_hermes_bridge.py`
   - `tests/test_tenant_hermes_sandbox.py`
@@ -60,23 +64,24 @@
 - 测试环境说明：手工启动 API 时未注入 `HERMES_CHAT_RUN_DB`，知识候选后台按默认 `/app/data` 写入被本地沙箱拒绝；该路径不影响本次聊天隔离结论，正式 Compose 使用可写 `./data:/app/data`，systemd 明确注入运行库路径。
 - 重点覆盖：同租户 A/B 用户状态隔离、旧 DB 迁移、旧租户 Skill 隔离、四个 Agent 入口守卫、注册租户不再坍缩、durable run/知识/工作流/SSE 回归。
 - warnings: 既有 FastAPI `on_event`、Pydantic 配置和测试短 HMAC key 警告；本任务未扩大处理范围。
+- 发布链校验：Quantum 归档源契约 `114 passed`；Web 全量在 sudo transport 修正后 `149 passed`；exact-SHA 两项定向回归通过；两个部署脚本 `bash -n` 通过。
 
 ## 交付状态
 
-- status: `COMMITTED`
-- commit_sha: `68745061f14c3582b2f6fe29ea5b803e4613347b`（隔离实现）与 `e6f9a11fb2c137da08af868e9748a8d1fce94281`（最新代码校正、注册止血和方案更新）。
-- github_remote_ref_sha: `origin` 当前无可见 refs；未授权、未执行 push。
-- server_before: 未授权、未执行部署。
-- server_after: 未授权、未执行部署。
-- health_check: 不适用；未修改或启动服务器。
-- functional_check: 本地后端全量、Web 测试/构建、iOS 编译及真实 Authen 双账号隔离 E2E 通过；外部模型网络可达性未通过。
-- rollback_point: `source/main@c4bd5317c5e606dbe2ce10e293235f03c280af7e` 与本任务提交的父提交；未迁移生产数据。
+- status: `VERIFIED`
+- commit_sha: `45502b000cdedcb81bdbe5bab7317f4d8fdd9048`（生产部署目标；包含隔离实现、最新代码校正、Quantum 归档源与受控 sudo transport）。
+- github_remote_ref_sha: `origin/main@45502b000cdedcb81bdbe5bab7317f4d8fdd9048`，部署前经 `git ls-remote` 核验一致。
+- server_before: `.deployed-sha=f8281cfb5743ba428bc5be64c01bc9eb81f52cc5`；release=`/opt/releases/ai-lab-platform-f8281cfb5743.pKcnkV`；API health/ready 通过；Bridge 与 Worker active；根分区使用 48%。
+- server_after: `.deployed-sha=45502b000cdedcb81bdbe5bab7317f4d8fdd9048`；release=`/opt/releases/ai-lab-platform-45502b000cde.X5NXRJ`；本地与远端三个关键文件 SHA-256 一致。
+- health_check: API `/health=ok`、`/ready=ready`；公网 HTTPS `/health=ok`；Bridge 在安全绑定 `172.18.0.1:9118` 返回 ok，API 容器可达；Bridge/Worker active；八个 Compose 服务均 running/healthy。公网直连 `:8000` 不开放。
+- functional_check: 部署器 runtime contract audit 通过；匿名 `/api/v1/me` 返回 401；本地后端全量、Web 测试/构建、iOS 编译及真实 Authen 双账号隔离 E2E 通过。生产双账号回答级 E2E 尚未执行。
+- rollback_point: `/opt/releases/ai-lab-platform-f8281cfb5743.pKcnkV`（已确认存在）；代码基线 `source/main@c4bd5317c5e606dbe2ce10e293235f03c280af7e`。
 
 ## 风险与未完成项
 
-- 当前切片完成 P0/P1 隔离基础，不代表 Quantum 2.0 已全部完成或已上线。
+- 当前 P0/P1 隔离切片已部署并验证，不代表 Quantum 2.0 的 P2-P4 已完成。
 - 生产 TenantMapping、旧共享目录与 `DEFAULT_TENANT_KEY` 实际值仍需只读盘点并在迁移前备份。
 - Worker shard placement/lease、可信模型网关、额度账本、容量压测和状态胶囊备份恢复尚未实现。
 - 旧租户 custom Skills 默认 fail closed，需管理员审核、签名和发布后才能成为共享模板。
 - 真实 Authen 已验证；外部模型 Provider 因连接超时未完成回答级验收，本地确定性模型的通过不替代该项。
-- 本地验证不等于生产验证；上线前仍需使用生产等价网络、Provider 和密钥复跑相同双账号场景。
+- 仍需使用生产网络、Provider 和独立测试账号复跑回答级双账号场景；本次未为验收创建生产用户或业务数据。
