@@ -299,7 +299,12 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
     router._INSTALLED = False
     module.register(context)
     assert set(context.tools) == {"ai_lab_capabilities", "ai_lab_execute"}
-    assert set(context.hooks) == {"pre_llm_call", "pre_tool_call", "post_tool_call"}
+    assert set(context.hooks) == {
+        "pre_llm_call",
+        "pre_tool_call",
+        "post_tool_call",
+        "transform_tool_result",
+    }
     assert not any("router" in name for name in context.tools)
 
 
@@ -495,6 +500,46 @@ def test_link_research_allows_only_single_local_sha256_terminal_command():
             "terminal", {"command": command}, turn_id="turn-local-hash"
         )
         assert denial and denial["action"] == "block"
+
+
+def test_publication_review_write_result_binds_hash_and_native_session(
+    tmp_path, monkeypatch
+):
+    router = load_capability_router()
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    review = (
+        home
+        / "outputs"
+        / "quantumn-editorial-v2"
+        / "book"
+        / "final-independent-review.json"
+    )
+    review.parent.mkdir(parents=True)
+    review.write_text('{"decision":"rejected"}\n', encoding="utf-8")
+    raw = json.dumps(
+        {"verified": True, "resolved_path": str(review)}, ensure_ascii=False
+    )
+    transformed = router._attest_publication_review_write(
+        "write_file",
+        {"path": str(review)},
+        raw,
+        session_id="cron_review_20260911",
+    )
+    payload = json.loads(transformed)
+    assert payload["runtime_attestation"] == {
+        "sha256": hashlib.sha256(review.read_bytes()).hexdigest(),
+        "reviewer_session": "hermes:cron_review_20260911",
+    }
+
+    outside = tmp_path / "final-independent-review.json"
+    outside.write_text("{}", encoding="utf-8")
+    assert router._attest_publication_review_write(
+        "write_file",
+        {"path": str(outside)},
+        json.dumps({"verified": True, "resolved_path": str(outside)}),
+        session_id="cron_review_20260911",
+    ) is None
 
 
 def test_native_extract_html_parser_removes_scripts_and_keeps_readable_text():

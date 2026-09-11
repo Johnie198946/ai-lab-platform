@@ -2043,6 +2043,49 @@ def _post_tool_call(
         _write_stats(stats)
 
 
+def _attest_publication_review_write(
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    **kwargs: Any,
+) -> str | None:
+    """Attach the exact review hash and native session to a verified write.
+
+    This removes the need for a second shell call after writing the immutable
+    review while preserving the native final-response binding requirement.
+    The attestation is intentionally limited to the one publication-review
+    filename under the governed Hermes output root.
+    """
+    if tool_name != "write_file" or not isinstance(result, str):
+        return None
+    try:
+        payload = json.loads(result)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or payload.get("error") or payload.get("verified") is not True:
+        return None
+    raw_path = str(payload.get("resolved_path") or (args or {}).get("path") or "").strip()
+    session_id = str(kwargs.get("session_id") or "").strip()
+    if not raw_path or not session_id:
+        return None
+    try:
+        candidate = Path(raw_path).expanduser().resolve(strict=True)
+        hermes_home = Path(
+            os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
+        ).expanduser().resolve()
+        governed_root = (hermes_home / "outputs" / "quantumn-editorial-v2").resolve()
+        candidate.relative_to(governed_root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if candidate.name != "final-independent-review.json" or not candidate.is_file():
+        return None
+    payload["runtime_attestation"] = {
+        "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
+        "reviewer_session": f"hermes:{session_id}",
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _compact_skills_prompt(*args: Any, **kwargs: Any) -> str:
     del args, kwargs
     skills = _skill_capabilities()
@@ -2140,6 +2183,7 @@ def install(ctx: Any) -> None:
     ctx.register_hook("pre_llm_call", pre_llm_with_runtime_skill)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
+    ctx.register_hook("transform_tool_result", _attest_publication_review_write)
     if _LOCAL_ENABLED:
         ctx.register_hook("pre_gateway_dispatch", _pre_gateway_dispatch)
         ctx.register_hook("subagent_start", _subagent_start)

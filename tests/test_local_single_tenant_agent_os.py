@@ -109,6 +109,7 @@ def test_default_profile_registers_local_agent_os_lifecycle():
         "subagent_start",
         "subagent_stop",
         "transform_llm_output",
+        "transform_tool_result",
     }
 
 
