@@ -1074,6 +1074,10 @@ class OwnerPrivateBookshelfStore:
         if not sections:
             raise OwnerPrivateContentUnavailable("readable artifact is empty")
         book = self._book(source)
+        # Internal model guard is derived from the hash-verified live artifact,
+        # never public request flags; ordinary owner-private reading is unchanged.
+        from backend.services.knowledge_catalog import markdown_model_control
+        book["_model_disclosure_controlled"] = markdown_model_control(markdown)
         body = {"book_id": book_id, "title": book["title"], "author": book["author"],
                 "content_version": source["content_version"], "edition": 1,
                 "citation": source["canonical_url"], "sections": sections,

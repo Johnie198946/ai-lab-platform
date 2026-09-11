@@ -47,7 +47,9 @@ logger = logging.getLogger(__name__)
 # On a single-user Mac, Feishu/Lark reaches the same owner-controlled Hermes
 # gateway and is an owner surface. Cloud multi-tenant deployments keep their
 # scoped identity policy even though they load the same plugin.
-_LOCAL_OWNER_PLATFORMS = {"cli", "desktop", "local", "hermes-desktop"}
+# Preserve the installed Mac's internal cron owner surface; cloud identity
+# isolation is still enforced by the deployment-mode check below.
+_LOCAL_OWNER_PLATFORMS = {"cli", "cron", "desktop", "local", "hermes-desktop"}
 _LOCAL_DIRECT_OWNER_PLATFORMS = {"feishu", "lark"}
 _LOCAL_SAFE_TOOLS = {
     "agency_agents_load",
@@ -910,6 +912,8 @@ def _identity_key(platform: str, sender_id: str, message: str) -> tuple[str, str
 
 
 def _configured_owner(platform: str, sender_id: str) -> bool:
+    if os.environ.get("AI_LAB_AGENT_OS_MODE", "local_single_tenant").strip().casefold() == "cloud_multi_tenant":
+        return False
     configured = {
         value.strip()
         for value in os.environ.get("AI_LAB_LOCAL_OWNER_IDS", "").split(",")
@@ -926,10 +930,10 @@ def _configured_owner(platform: str, sender_id: str) -> bool:
 
 def _owner_surface(platform: str) -> bool:
     platform = platform.casefold()
-    if platform in _LOCAL_OWNER_PLATFORMS:
-        return True
     mode = os.environ.get("AI_LAB_AGENT_OS_MODE", "local_single_tenant").strip().casefold()
-    return platform in _LOCAL_DIRECT_OWNER_PLATFORMS and mode != "cloud_multi_tenant"
+    if mode == "cloud_multi_tenant":
+        return False
+    return platform in _LOCAL_OWNER_PLATFORMS or platform in _LOCAL_DIRECT_OWNER_PLATFORMS
 
 
 def _configured_vault_roots() -> tuple[Path, ...]:
@@ -1023,7 +1027,8 @@ def _resolve_principal(platform: str, sender_id: str, message: str) -> str:
             _identity_key(platform, sender_id, message),
             None,
         )
-    if hinted:
+    cloud = os.environ.get("AI_LAB_AGENT_OS_MODE", "local_single_tenant").strip().casefold() == "cloud_multi_tenant"
+    if hinted and not (cloud and hinted == "local_owner"):
         return hinted
     if _owner_surface(platform):
         return "local_owner"
@@ -1564,6 +1569,14 @@ def _ordinary_knowledge_context(query: str) -> str:
         "if evidence would help, load the candidate with native skill_view. This is only "
         "a recommendation: no Skill or source has been read by this hook. Hermes remains "
         "the only runtime; no Agency/expert selection or delegation is required.\n"
+        "First identify the entity and required topic, then form a knowledge need. Use "
+        "Wiki titles/aliases as entries and follow only task-relevant links. Matrix is a "
+        "locator, not evidence. Where knowledge_search is available, supply entities/topics "
+        "and use paths for chosen follow-up reads; an IPD question needs IPD evidence, not "
+        "generic company facts. Distinguish no_match, insufficient and error; if public web "
+        "is permitted, use existing web_search for gaps and cite public URLs separately. "
+        "Quality labels are not permissions; only independently authorized summary versions "
+        "may substitute for restricted detail. Never derive external summaries from private raw.\n"
         "Preserve the user's source constraints: only-my-notes/只看我的笔记 excludes "
         "platform Wiki and other sources; offline/离线/不要联网 forbids network calls, "
         "including platform APIs. Use only allowed local copies when offline. "

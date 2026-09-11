@@ -1,7 +1,7 @@
 # AI Lab Platform
 
 > 0.8.0 起，平台从“只解释 wiki 编译链”升级为“知识层 + 机读层 + runtime harness”三位一体架构。
-> `knowledge_matrix.json` 是唯一机读接口；编译后的知识层是人类使用的知识真相源。
+> Wiki 是唯一知识主干，OKF 是格式契约，Hermes 是唯一运行时。Catalog 承载授权投影；`knowledge_matrix.json` 仅作兼容定位索引，不是事实或授权真源。
 
 ## 核心架构
 
@@ -15,7 +15,7 @@
   ├── 研究系统/专题档案 / 来源卡片 / 综合报告
   ├── wiki/实体视图
   └── wikilinks / 标签 / frontmatter
-      ↓ 唯一机读压缩
+      ↓ 可重建的辅助定位索引
 knowledge_matrix.json
   ├── categories
   ├── entity_index
@@ -31,7 +31,8 @@ Knowledge API / Chat API / Runtime Harness
 
 1. `人机分层`
    - 人类看编译后的知识层
-   - 机器读 `knowledge_matrix.json`
+   - Hermes 按实体/别名/标题定位已授权 Wiki，再按任务选择链接追读正文
+   - Catalog 与活读策略先授权；Matrix 只定位，不累加相关性或扩大权限
 2. `契约先于流程`
    - 先统一任务对象、知识接口、策略边界
    - 再做复杂调度与多租户 runtime
@@ -144,10 +145,11 @@ ai-lab-platform/
 
 ## 检索链 (当前实现)
 
-1. **先读 matrix**——`knowledge_matrix.json` 是唯一机读入口
-2. **再做实体与摘要命中**——标题 / tags / entity_index / summary 共同参与打分
-3. **wiki 视图保留**——用于兼容既有实体条目与 1 跳 wikilinks 展开
-4. **跨条目合成**——读多个文档后由 LLM 合成答案
+1. **Hermes 形成取知要求**——原 query 兼容；可显式传 entities（入口提示）、topics（全部必需的字面主题）和 paths（下一步精确读取路径）。不是后端语义推断。
+2. **先授权再读取 Wiki**——Catalog、租户 capability、DB/文件活读与披露版本边界不被质量标签取代。Legacy confidence 标签作为质量元数据保留。
+3. **链接和 Matrix 仅定位**——标题/aliases 入口优先；只返回授权链接，不自动扩散为证据。Matrix-only 命中标记 index_only，不能代表问题已被回答。
+4. **Hermes 核验与合成**——matched/no_match/insufficient/error 不混用；matched 不等于证据充分。已有联网授权且没有来源限制时，可用原 web_search 补公开证据。
+5. **受控材料 fail closed**——显式禁止跨租户的 detail 不因 green/public 标签被放行；只有现有独立发布 summary 可替代，不能即时读取私有 raw 生成外部摘要。
 
 ## API 设计
 
@@ -155,7 +157,7 @@ ai-lab-platform/
 - `POST   /api/knowledge`         — 上传文档 (raw)
 - `GET    /api/knowledge/:id`     — 读取原文
 - `GET    /api/knowledge/contract` — 查询机读知识契约
-- `GET    /api/knowledge/search`  — 实体检索 (走 matrix)
+- `GET    /api/knowledge/search`  — 实体检索 (已授权 Wiki；Matrix 仅定位)
 - `GET    /api/knowledge/wikilinks/:id` — 双向链接
 
 ### 编译

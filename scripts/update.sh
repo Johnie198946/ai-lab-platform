@@ -1511,11 +1511,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CURRENT_DIR="$(readlink -f "$APP_LINK")"
-if [ ! -d "$CURRENT_DIR" ]; then
-  echo "ERROR: 当前 release 不存在: $CURRENT_DIR" >&2
-  exit 1
-fi
 if ! command -v flock >/dev/null 2>&1; then
   echo "ERROR: flock is required for serialized deployment" >&2
   exit 1
@@ -1526,6 +1521,24 @@ if ! flock -n 9; then
   echo "ERROR: another AI Lab deployment is already running" >&2
   exit 1
 fi
+# Re-read the active release only after acquiring the deployment lock.
+CURRENT_DIR="$(readlink -f "$APP_LINK")"
+if [ ! -d "$CURRENT_DIR" ]; then
+  echo "ERROR: 当前 release 不存在: $CURRENT_DIR" >&2
+  exit 1
+fi
+if [ -n "${AI_LAB_EXPECTED_CURRENT_SHA:-}" ]; then
+  if [[ ! "$AI_LAB_EXPECTED_CURRENT_SHA" =~ ^[0-9a-f]{40}$ ]] || [ ! -f "$CURRENT_DIR/.deployed-sha" ]; then
+    echo "ERROR: invalid expected current SHA or missing active marker" >&2
+    exit 1
+  fi
+  CURRENT_SHA="$(< "$CURRENT_DIR/.deployed-sha")"
+  if [ "$CURRENT_SHA" != "$AI_LAB_EXPECTED_CURRENT_SHA" ]; then
+    echo "ERROR: active release changed since preflight; refusing deployment" >&2
+    exit 1
+  fi
+fi
+# End active-release CAS: no Docker/data/release mutation precedes this check.
 cd "$CURRENT_DIR"
 docker compose -p "$COMPOSE_PROJECT" config >/dev/null
 preflight_hermes_bridge_network

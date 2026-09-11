@@ -25,6 +25,13 @@ def router(monkeypatch, tmp_path):
     return module
 
 
+@pytest.mark.parametrize("surface", ["cron", "cli", "desktop", "local", "hermes-desktop", "feishu", "lark"])
+def test_owner_surface_preserved_on_mac_never_inherited_by_cloud(router, monkeypatch, surface):
+    assert router._owner_surface(surface)
+    monkeypatch.setenv("AI_LAB_AGENT_OS_MODE", "cloud_multi_tenant")
+    assert not router._owner_surface(surface)
+
+
 @pytest.mark.parametrize("question", [
     "豆包和 DeepSeek 有什么区别？", "我们上次为什么选了这个供应商？",
     "What did we decide about the vendor?", "什么是 API", "简单解释一下什么是 API",
@@ -74,6 +81,10 @@ def test_guidance_retains_source_constraints_and_read_only_boundary(router, ques
     assert "read-only recommendation grants no permissions or writes" in context
     assert "Do not force rereads" in context
     assert "restricted data" in context
+    assert "entities/topics" in context
+    assert "Matrix is a locator, not evidence" in context
+    assert "no_match, insufficient and error" in context
+    assert "Never derive external summaries from private raw" in context
 
 
 @pytest.mark.parametrize("marked", [False, True])

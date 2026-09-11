@@ -32,6 +32,7 @@ from backend.services.knowledge_contribution_artifacts import (
 )
 from backend.services.knowledge_run_adapter import (
     KnowledgeRunAdapter, SOURCE_REVIEW_VERSIONS, STAGES, SourceReviewPackageTooLarge, digest,
+    PURPOSE_VERSION, PURPOSE_CONTRACT, purpose_display, text_digest,
     source_review_supports_projection, source_review_supports_public, validate_source_review,
 )
 from backend.services.knowledge_catalog import authorized_compile_candidates
@@ -305,6 +306,11 @@ async def _write_reviewed_private(store, adapter: KnowledgeRunAdapter, *, compil
     if (not source_review_supports_projection(review) or compiled["confidence"] == 0
             or any(str(compiled.get(field) or "").strip().casefold() in non_knowledge
                    for field in ("type", "claim_status", "evidence_type"))):
+        if compile_spec.version == PURPOSE_VERSION:
+            await _set_event_status(compile_spec.event_id, "quarantined", "source review found no supported purpose/activity evidence")
+            await _settle_run(review_run_id, "quarantined")
+            return {"status": "quarantined", "run_id": review_run_id,
+                    "reason": "unsupported_source_assertions"}
         await _set_event_status(compile_spec.event_id, "no_increment", "source review found no supported increment")
         await _settle_run(review_run_id, "accepted")
         return {"status": "no_increment", "run_id": review_run_id,
@@ -602,6 +608,7 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     compile_spec, compiled = adapter.verified_result(
         compile_run_id, tenant_id=spec.tenant_id, user_id=spec.user_id,
     )
+    display = purpose_display(sanitized) if spec.version == PURPOSE_VERSION else None
     publication_confidence = min(compiled["confidence"], sanitized["confidence"])
     if (compiled["claim_status"] != "fact" or sanitized["fact_classification"] != "fact"
             or (compiled.get("incremental") or {}).get("claim_status", "fact") != "fact"):
@@ -665,8 +672,9 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
     if operation["status"] in {"prepared", "file_published"}:
         try:
             artifact_ref = stage_green_projection(
-                vault, projection_id=projection_id, title=compiled["title"],
-                knowledge_type=compiled["type"], knowledge_level=compiled["knowledge_level"],
+                vault, projection_id=projection_id, title=display["title"] if display else compiled["title"],
+                knowledge_type=display["knowledge_type"] if display else compiled["type"],
+                knowledge_level=display["knowledge_level"] if display else compiled["knowledge_level"],
                 confidence=publication_confidence,
                     content=(sanitized["sanitized_content"] if compile_spec.version in SOURCE_REVIEW_VERSIONS
                              else sanitized["content"]),
@@ -705,6 +713,16 @@ async def advance_completed(store, *, run_id: str, vault: Path) -> dict[str, Any
         "authorized_public_inputs": public_references,
         "result_digest": result_digest,
     }
+    if display is not None:
+        governance.update({
+            "disclosure_contract": PURPOSE_CONTRACT,
+            "disclosure_contract_version": PURPOSE_VERSION,
+            "published_title_hash": text_digest(display["title"]),
+            "reviewed_display_hash": digest(display),
+            "purpose_activity_display": display,
+            "purpose_activity_review": result,
+            "purpose_activity_review_hash": digest(result),
+        })
     projection = None
     if operation["status"] in {"prepared", "file_published"}:
         projection = await accept_contribution_result(

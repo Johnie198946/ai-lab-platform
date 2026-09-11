@@ -26,7 +26,7 @@ from backend.services.knowledge_contribution import (
     unfinished_projection_operations, quarantine_projection_operations,
 )
 from backend.services.knowledge_contribution_artifacts import quarantine_projection_artifact
-from backend.services.knowledge_run_adapter import validate_execution, STAGES, ContractError
+from backend.services.knowledge_run_adapter import validate_execution, STAGES, ContractError, PURPOSE_VERSION
 from scripts.chat_run_store import DurableChatRunStore
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ async def reconcile_once(store: DurableChatRunStore) -> int:
         if content is None:
             continue
         try:
-            await submit_compile(store, event_id=event.event_id, content=content)
+            await submit_compile(store, event_id=event.event_id, content=content, version=PURPOSE_VERSION)
         except Exception:
             logger.exception("Pending note scheduling deferred: %s", event.event_id)
     async with SessionLocal() as db:
@@ -158,11 +158,12 @@ async def reconcile_once(store: DurableChatRunStore) -> int:
                     and spec.source_revision == event.source_revision
                     and spec.candidate_hash == event.content_hash
                     and hashlib.sha256(spec.content.encode()).hexdigest() == event.content_hash):
-                sources.append((float(durable.get("created_at") or 0), spec.content))
+                sources.append((float(durable.get("created_at") or 0), spec.content, spec.version))
         if sources:
             try:
+                _, content, version = max(sources, key=lambda item: item[0])
                 fresh = await submit_compile(store, event_id=event.event_id,
-                                             content=max(sources, key=lambda item: item[0])[1])
+                                             content=content, version=version)
                 old_ids = {row.run_id for row in known_runs
                            if event.event_id in (row.event_ids or []) and row.run_id != fresh["run_id"]
                            and row.status == "registered"}

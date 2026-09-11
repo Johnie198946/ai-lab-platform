@@ -9,7 +9,7 @@ from .capability_router import install as install_capability_router
 
 CAPABILITIES = {
     "knowledge_search": {
-        "description": "Search tenant-authorized AI Lab knowledge; selected-book full text/TOC uses book_id, content_version, operation, section and page. Follow next until truncated=false.",
+        "description": "Search tenant-authorized Wiki using query plus optional entities/topics; read chosen links with paths. No private-file fallback. Inspect retrieval_status and use authorized public web for gaps. Selected-book full text/TOC uses book_id, content_version, operation, section and page. Follow next until truncated=false.",
         "underlying_tool": "knowledge_search",
         "required": ["query"],
     },
@@ -83,11 +83,23 @@ def register(ctx):
                 "error": "execution_failed",
                 "detail": str(exc),
             })
+        inner = result
+        if isinstance(inner, str):
+            try:
+                inner = json.loads(inner)
+            except ValueError:
+                inner = None
+        # Dispatch completion is not knowledge retrieval success. Preserve the
+        # underlying result contract, but propagate failures and fallback state.
+        status = {key: inner[key] for key in (
+            "error", "retrieval_status", "fallback_recommended", "fallback_source", "fallback_instruction"
+        ) if isinstance(inner, dict) and key in inner} if capability_id == "knowledge_search" else {}
         return _json({
-            "success": True,
+            "success": not (isinstance(inner, dict) and (inner.get("success") is False or inner.get("error"))),
             "provider": "ai-lab",
             "capability": capability_id,
             "result": result,
+            **status,
         })
 
     ctx.register_tool(

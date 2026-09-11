@@ -157,17 +157,16 @@ async def test_real_pipeline_gateway_summary_and_revocation(tmp_path, monkeypatc
     assert summary["disclosure_granularity"] == "summary"
     scopes = frozenset([summary["pack_id"]])
     assert resolve_authorized_version(summary["summary_of"], {d["path"]: d for d in live}, scopes)["path"] == summary["path"]
-    # Authenticated production Gateway: non-owner only gets independently reviewed text.
+    # Legacy generic review remains readable, but is not purpose-level model permission.
     async with SessionLocal() as db:
         policy, _ = await resolve_policy(db, tenant_key="ordinary-reader", catalog=compute_catalog(tmp_path))
     capability = mint_capability(policy, subject_id="chat", entry_point="chat")
     response = await capability_search(GatewaySearchRequest(query="验收", include_content=True), capability)
-    assert len(response["docs"]) == 1
+    assert response["docs"] == []
     payload = json.dumps(response, ensure_ascii=False)
     assert "SECRET-original" not in payload and "private-note" not in payload
     assert "source_dependencies" not in payload and "summary_of" not in payload
-    assert response["docs"][0]["markdown"].strip() == SANITIZE["content"]
-    assert response["docs"][0]["citation"] == "knowledge:" + summary["path"]
+    assert resolve_authorized_version(summary["path"], {d["path"]: d for d in live}, scopes, for_model=True) is None
     # Actual detail route resolves restricted path to the published summary identity.
     token = current_visibility.set(scopes)
     proof = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(d["path"] for d in live))

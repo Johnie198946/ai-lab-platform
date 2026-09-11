@@ -90,7 +90,11 @@ def _read_endpoint(function):
         # and link labels, rather than leaking a partially filtered projection.
         candidates = _candidate_documents(_vault())
         live = await filter_database_live_documents(list(candidates.values()), _vault())
-        if {item["path"] for item in live} != set(candidates):
+        before_scope = {path for path, item in candidates.items()
+                        if resolve_authorized_version(path, {path: item}, _visibility())}
+        after_scope = {item["path"] for item in live if resolve_authorized_version(
+            item["path"], {item["path"]: item}, _visibility())}
+        if {item["path"] for item in live} != set(candidates) or before_scope != after_scope:
             raise HTTPException(status_code=409, detail="knowledge changed during read; retry")
         return result
     return endpoint
@@ -171,10 +175,59 @@ def _frontmatter(text: str) -> Dict[str, Any]:
         return {}
 
 
+def _markdown_links(text: str) -> list[tuple[str, str]]:
+    """Use the already installed CommonMark parser, including reference links.
+
+    Record exact source fragments instead of re-rendering the evidence body.
+    Parsing permits every URI so unsafe schemes are identified and denied by
+    our own authorization boundary, not left behind as unparsed literal text.
+    """
+    from markdown_it import MarkdownIt
+    from markdown_it.rules_inline import autolink, image, link
+    parser = MarkdownIt("commonmark")
+    parser.validateLink = lambda url: True
+    found: list[tuple[str, str]] = []
+
+    def capture(rule):
+        def wrapped(state, silent):
+            start, count = state.pos, len(state.tokens)
+            accepted = rule(state, silent)
+            if accepted and not silent:
+                for token in state.tokens[count:]:
+                    if token.type in {"link_open", "image"}:
+                        target = token.attrGet("href" if token.type == "link_open" else "src")
+                        if target:
+                            found.append((state.src[start:state.pos], target))
+                            break
+            return accepted
+        return wrapped
+
+    for name, rule in (("link", link), ("image", image), ("autolink", autolink)):
+        parser.inline.ruler.at(name, capture(rule))
+    env: dict = {}
+    tokens = parser.parse(text, env)
+    lines = text.splitlines(keepends=True)
+    # Raw HTML is outside the Wiki/OKF link contract. Remove its entire block,
+    # not just the tags, so private labels and attributes cannot survive.
+    for token in tokens:
+        has_html = token.type == "html_block" or any(
+            child.type == "html_inline" for child in (token.children or [])
+        )
+        if has_html and token.map:
+            found.append(("".join(lines[token.map[0]:token.map[1]]), ""))
+    for definition in env.get("references", {}).values():
+        start, end = definition["map"]
+        found.append(("".join(lines[start:end]), definition["href"]))
+    return sorted(found, key=lambda item: len(item[0]), reverse=True)
+
+
+
 def _wikilinks(text: str) -> List[str]:
-    """提取 [[target]] 链接，去掉锚点和别名。"""
-    links = re.findall(r"\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]", text)
-    return [link.strip() for link in links if link.strip()]
+    """Extract Wiki and Markdown destinations; public URLs are not Wiki edges."""
+    from urllib.parse import urlsplit
+    links = re.findall(r"\[\[([^\]|]+)(?:\|[^\]]*)?\]\]", text)
+    links.extend(target for _, target in _markdown_links(text) if not urlsplit(target).scheme)
+    return [link.split("#", 1)[0].strip() for link in links if link.split("#", 1)[0].strip()]
 
 
 def _safe_vault_file(vault: Path, relative: str) -> Path | None:
@@ -185,16 +238,50 @@ def _safe_vault_file(vault: Path, relative: str) -> Path | None:
         return None
 
 
+def _resolve_wiki_target(target: str, vault: Path, source: str = "", *, markdown: bool = False) -> str | None:
+    from urllib.parse import unquote, urlsplit
+    import posixpath
+    target = unquote(target).split("#", 1)[0].strip()
+    if not target or urlsplit(target).scheme or target.startswith(("/", "\\")) or "\\" in target:
+        return None
+    target = target.removesuffix(".md")
+    documents = _candidate_documents(vault)
+    if "/" in target or markdown:
+        if target.startswith("wiki/"):
+            relative = posixpath.normpath(target) + ".md"
+        elif source:
+            relative = posixpath.normpath(posixpath.join(posixpath.dirname(source), target)) + ".md"
+            # Root-relative Obsidian folder paths remain compatible.
+            if not markdown and not target.startswith(".") and relative not in documents:
+                relative = posixpath.normpath("wiki/" + target) + ".md"
+        else:
+            relative = posixpath.normpath("wiki/" + target) + ".md"
+        if not relative.startswith("wiki/") or relative not in documents:
+            return None
+        return relative if _rel_visible(relative, _visibility()) else None
+    matches = []
+    for path, meta in documents.items():
+        if not path.startswith("wiki/"):
+            continue
+        aliases = meta.get("aliases") or []
+        if isinstance(aliases, str):
+            aliases = [aliases]
+        names = [Path(path).stem, str(meta.get("title") or ""), *aliases]
+        if any(str(name).casefold() == target.casefold() for name in names) and _rel_visible(path, _visibility()):
+            matches.append(path)
+    return matches[0] if len(matches) == 1 else None
+
+
 @_with_candidates
-def _visible_wikilinks(text: str, vault: Path) -> List[str]:
-    """Return only links whose target is inside the current authorization scope."""
-    vis = _visibility()
+def _visible_wikilinks(text: str, vault: Path, source: str = "") -> List[str]:
+    """Only authorized, unambiguous destinations; links never grant access."""
     visible: List[str] = []
+    markdown_targets = {target.split("#", 1)[0] for _, target in _markdown_links(text)}
     for link in _wikilinks(text):
-        relative = f"wiki/{link}.md"
-        if _rel_visible(relative, vis) and _safe_vault_file(vault, relative):
-            visible.append(link)
-    return visible
+        relative = _resolve_wiki_target(link, vault, source, markdown=link in markdown_targets)
+        if relative and _safe_vault_file(vault, relative):
+            visible.append(relative.removeprefix("wiki/").removesuffix(".md"))
+    return list(dict.fromkeys(visible))
 
 
 @_with_candidates
@@ -229,8 +316,13 @@ def _model_text(text: str, relative: str, vault: Path) -> str:
     # Omit unauthorized link labels and targets as well as links_out metadata.
     def link(match):
         target = match.group(1).split("|")[0].split("#")[0].strip()
-        return match.group(0) if _rel_visible(f"wiki/{target}.md", _visibility()) else ""
-    return re.sub(r"\[\[([^\]]+)\]\]", link, body)
+        return match.group(0) if _resolve_wiki_target(target, vault, relative) else ""
+    body = re.sub(r"\[\[([^\]]+)\]\]", link, body)
+    from urllib.parse import urlsplit
+    for fragment, target in _markdown_links(body):
+        if urlsplit(target).scheme.lower() not in {"http", "https"} and not _resolve_wiki_target(target, vault, relative, markdown=True):
+            body = body.replace(fragment, "")
+    return body
 
 
 def _doc_title(text: str) -> str:
@@ -264,9 +356,9 @@ def _tokenize_query(text: str) -> List[str]:
     try:
         import jieba
 
-        tokens = [t.strip() for t in jieba.cut(normalized)]
+        tokens = [t.strip() for t in jieba.cut(cleaned)]
     except ModuleNotFoundError:
-        tokens = re.findall(r"[\w\u4e00-\u9fff]{2,}", normalized)
+        tokens = re.findall(r"[\w\u4e00-\u9fff]{2,}", cleaned)
     candidates.extend(
         token for token in tokens
         if len(token) >= 2 and token not in _QUERY_NOISE
@@ -304,160 +396,88 @@ def _matrix_doc_entries(m: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return out
 
 
+def _term_in(term: str, text: str) -> bool:
+    """Literal topic matching, not semantic inference or an authorization rule."""
+    term, text = term.strip().casefold(), text.casefold()
+    if not term:
+        return False
+    if re.fullmatch(r"[a-z0-9_.-]+", term):
+        return re.search(r"(?<![a-z0-9_])" + re.escape(term) + r"(?![a-z0-9_])", text) is not None
+    return term in text
+
+
 @_with_candidates
-def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
-    """检索 v4 —— wiki 优先（对齐 Karpathy：wiki 是唯一真理源）。
+def _search_docs(vault: Path, q: str, limit: int, *, entities: list[str] | None = None,
+                 topics: list[str] | None = None, paths: list[str] | None = None) -> List[Dict[str, Any]]:
+    """Locate authorized Wiki evidence; Hermes supplies intent and chooses links.
 
-    检索顺序：
-    1. wiki/ 目录定位: 实体名 → wiki/ 下对应条目（标题/文件名匹配优先）
-    2. wikilinks 追读: 命中条目的 [[wikilinks]] 关联条目计入候选
-    3. 矩阵辅助: knowledge_matrix 实体反查补充（仅索引层，不主导）
-    4. 内容兜底: 未收录文档按 jieba 词项扫描（raw/ 等）
-    上下文片段优先取 wiki 条目正文。
+    Entities are entry hints, topics are required literal terms (including live
+    aliases). Explicit paths select subsequent reads, never grant access. Matrix
+    and links cannot manufacture relevance or add evidence to a result set.
     """
-    ql = q.lower()
-    qtokens = _tokenize_query(ql)
-    m = _matrix()
-    entries = _matrix_doc_entries(m)
-    scored: Dict[str, Dict[str, Any]] = {}
-
-    # 1) wiki/ 优先: 实体名 → wiki/ 目录定位（wiki 是唯一真理源）
+    qtokens = _tokenize_query(q)
+    terms: list[str] = list(dict.fromkeys([*(entities or []), *(topics or []), *qtokens]))
     vis = _visibility()
-    wiki_root = vault / "wiki"
-    wiki_targets: Dict[str, str] = {}
-    if wiki_root.exists():
-        for wf, rel in _iter_md_files(vault):
-            if not rel.startswith("wiki/"):
-                continue
-            text = wf.read_text(encoding="utf-8", errors="ignore")
-            title = _doc_title(text)
-            aliases = _aliases(text)
-            title_low = title.lower()
-            searchable_names = [
-                title_low,
-                wf.stem.lower(),
-                *[alias.lower() for alias in aliases],
-            ]
-            for name in searchable_names:
-                wiki_targets.setdefault(name, rel)
-            logical_path = rel.removeprefix("wiki/").removesuffix(".md").lower()
-            wiki_targets.setdefault(logical_path, rel)
-            wscore = 0
-            for t in qtokens:
-                if any(t in name or name in t for name in searchable_names):
-                    wscore += 6  # wiki 命中高权重
-            if any(ql in name or name in ql for name in searchable_names):
-                wscore += 4
-            if wscore > 0:
-                scored[rel] = {
-                    "path": rel,
-                    "title": title,
-                    "score": wscore,
-                    "snippet": _snippet(text, qtokens),
-                }
-
-    # 1.5) wikilinks 追读: 命中 wiki 条目的关联条目计入候选（Karpathy 知识网）
-    import re
-
-    hit_paths = [p for p, e in scored.items() if p.startswith("wiki/")]
-    for hp in hit_paths:
-        try:
-            htext = (vault / hp).read_text(encoding="utf-8", errors="ignore")
-        except OSError:
+    scored: Dict[str, Dict[str, Any]] = {}
+    selected = set(paths or [])
+    # Legacy matrix callers retain locator recall, never additive relevance.
+    try:
+        matrix = _matrix()
+    except (OSError, ValueError):
+        matrix = {}  # Optional locator failure cannot disable live Wiki reads.
+    located = {str(path) for entity, targets in (matrix.get("entity_index") or {}).items()
+               if any(_term_in(term, str(entity)) for term in terms)
+               for path in targets}
+    for path, rel in _iter_md_files(vault):
+        if selected and rel not in selected:
             continue
-        for link in re.findall(r"\[\[([^\]]+)\]\]", htext):
-            target = link.split("|")[0].split("#")[0].strip()
-            rel = wiki_targets.get(target.lower())
-            if rel is None:
-                continue
-            if not _rel_visible(rel, vis):
-                continue
-            if rel in scored:
-                scored[rel]["score"] += 3  # wikilinks 关联加分
-            else:
-                scored[rel] = {
-                    "path": rel,
-                    "title": _doc_title(
-                        (vault / rel).read_text(encoding="utf-8", errors="ignore")
-                    ),
-                    "score": 3,
-                    "snippet": "",
-                }
-
-    # 2) 矩阵打分（辅助: 补 wiki 未覆盖的分类/文档）
-    for path, e in entries.items():
-        if not _rel_visible(path, vis) or _safe_vault_file(vault, path) is None:
-            continue
-        title_low = (e.get("title") or "").lower()
-        ents = [str(x).lower() for x in (e.get("entities") or [])]
-        tags = [str(x).lower() for x in (e.get("tags") or [])]
-        score = 0
-        for t in qtokens:
-            if t in title_low:
-                score += 2  # 矩阵命中降权（wiki 为主）
-        for t in qtokens:
-            if any(t in ent or ent in t for ent in ents):
-                score += 1
-        for t in qtokens:
-            if any(t in tag for tag in tags):
-                score += 1
-        if ql in title_low:
-            score += 2
-        if score <= 0:
-            continue
-        if path in scored:
-            scored[path]["score"] += score  # 合并加分
-        else:
-            scored[path] = {
-                "path": path,
-                "title": e.get("title") or path,
-                "score": score,
-                "snippet": (e.get("summary") or "")[:_SNIPPET_CHARS],
-            }
-
-    # 2) entity_index 反查
-    ei = m.get("entity_index", {})
-    for ent, paths in ei.items():
-        ent_low = str(ent).lower()
-        if ent_low in ql or any(ent_low in t or t in ent_low for t in qtokens):
-            for p in paths:
-                if not _rel_visible(p, vis) or _safe_vault_file(vault, p) is None:
-                    continue
-                if p not in scored:
-                    scored[p] = {
-                        "path": p,
-                        "title": p,
-                        "score": 1,
-                        "snippet": "",
-                    }
-
-    # 3) 内容兜底（矩阵未收录的文档，如 raw/）
-    for p, rel in _iter_md_files(vault):
-        if rel in scored:
-            continue
-        text = p.read_text(encoding="utf-8", errors="ignore")
-        low = text.lower()
-        matched = [t for t in qtokens if t in low]
-        if not matched:
-            continue
+        text = path.read_text(encoding="utf-8")
         title = _doc_title(text)
-        score = len(matched) * 2
-        if any(t in title.lower() for t in matched):
-            score += 4
-        idx = low.find(matched[0])
+        names = "\n".join([title, path.stem, *_aliases(text)])
+        body = _model_text(text, rel, vault)
+        is_summary = _candidate_documents(vault)[rel].get("disclosure_granularity") == "summary"
+        if is_summary:
+            # Only the published body is hash-bound by the existing review.
+            # Unreviewed frontmatter titles/aliases/links cannot become evidence.
+            title = _doc_title(body)[:200]
+            names = title
+        # Metadata/lineage and unauthorized link labels are never search evidence.
+        lexical_body = re.sub(r"\[\[[^\]]+\]\]", "", body)
+        for fragment, _ in _markdown_links(body):
+            lexical_body = lexical_body.replace(fragment, "")
+        searchable = names + "\n" + lexical_body
+        if topics and not all(_term_in(topic, searchable) for topic in topics):
+            continue
+        name_hits = sum(_term_in(term, names) for term in terms)
+        body_hits = sum(_term_in(term, lexical_body) for term in terms)
+        if not selected and not name_hits and not body_hits and rel not in located:
+            continue
+        # Check the residual question against this entry, not other entities.
+        # Tokenize only after removing matched entry names: compound names must
+        # not be mistaken for missing topics, nor erase an unrequested topic.
+        residual = q.casefold()
+        for name in sorted(names.splitlines(), key=len, reverse=True):
+            if name.strip():
+                residual = residual.replace(name.casefold(), " ")
+        residual_terms = _tokenize_query(residual)
+        atomic_terms = [t for t in residual_terms if not any(
+            other != t and other in t for other in residual_terms)]
+        topic_gap = not topics and not selected and name_hits and any(
+            not _term_in(t, searchable) for t in atomic_terms)
         scored[rel] = {
-            "path": rel,
-            "title": title,
-            "score": score,
-            "snippet": text[max(0, idx - 40) : idx + _SNIPPET_CHARS].replace("\n", " "),
+            "path": rel, "title": title,
+            "score": name_hits * 6 + body_hits,
+            "snippet": _snippet(body, terms),
+            "match_basis": "topic_gap" if topic_gap else "selected_path" if selected else "entry" if name_hits else "body" if body_hits else "index_only",
+            "wikilinks": _visible_wikilinks(body if is_summary else text, vault, rel),
         }
 
     documents = _candidate_documents(vault)
     ranked = sorted(
         (item for item in scored.values() if _safe_vault_file(vault, item["path"])
          and _rel_visible(item["path"], vis)),
-        key=lambda d: (-d["score"], d["path"]),
-    )
+        key=lambda d: (not d["path"].startswith("wiki/"), d.get("match_basis") not in {"entry", "selected_path"}, -d["score"], d["path"]),
+    )[:limit]
     for item in ranked:
         meta = documents.get(item["path"], {})
         # Search snippets obey the same link/body boundary, never index lineage.
@@ -476,6 +496,9 @@ def _search_docs(vault: Path, q: str, limit: int) -> List[Dict[str, Any]]:
             "classification_status": meta.get("classification_status", "approved"),
             "security_level": meta.get("security_level", ""),
             "freshness": meta.get("freshness", "unknown"),
+            "confidence": meta.get("confidence", "unknown"),
+            "quality_status": meta.get("quality_status", "unrated"),
+            "disclosure_granularity": meta.get("disclosure_granularity", "detail"),
             "source_count": int(meta.get("source_count") or 0),
             "version": hashlib.sha256(raw).hexdigest(),
             "source_kind": meta.get("source_kind") or "governed_wiki",
@@ -520,15 +543,18 @@ def get_matrix() -> Dict[str, Any]:
 def get_contract() -> Dict[str, Any]:
     """暴露当前机读知识接口契约，明确已实现边界。"""
     m = _matrix()
-    if not m:
-        raise HTTPException(status_code=404, detail="knowledge_matrix.json not found")
     return {
+        # Keep the legacy identifier for clients; the role fields below are the
+        # current authority. Matrix presence is not a prerequisite for Wiki reads.
         "machine_interface": "knowledge_catalog+knowledge_matrix",
+        "retrieval_interface": "wiki_entries_and_relevant_links",
+        "matrix_role": "rebuildable_compatibility_projection_not_truth_or_admission",
+        "matrix_available": bool(m),
         "matrix_version": m.get("version", "unknown"),
         "generated_at": m.get("generated_at"),
         "source_of_truth": {
-            "human": "wiki/ 已批准 K5 frontmatter",
-            "machine": "knowledge_catalog.json（权限投影）+ knowledge_matrix.json（实体索引）",
+            "human": "Wiki正文与元数据；原始资料保留来源真值",
+            "machine": "既有授权与治理记录；目录和实体索引是Wiki的可重建投影",
         },
         "implemented": [
             "matrix",
@@ -639,7 +665,7 @@ def list_wiki() -> Dict[str, Any]:
                 "title": fm.get("title", p.stem),
                 "status": fm.get("status", "unknown"),
                 "tags": fm.get("tags", []),
-                "links_out": _visible_wikilinks(text, vault),
+                "links_out": _visible_wikilinks(text, vault, rel),
             }
         )
     return {"total": len(entries), "entries": entries}
@@ -682,7 +708,7 @@ def get_wiki(slug: str) -> Dict[str, Any]:
             "disclosure_granularity", "conditions", "effective_at") if key in fm},
         "citation": f"knowledge:{rel}",
         "version": hashlib.sha256(text.encode()).hexdigest(),
-        "wikilinks": _visible_wikilinks(text, vault),
+        "wikilinks": _visible_wikilinks(text, vault, rel),
         "content": _model_text(text, rel, vault),
     }
 

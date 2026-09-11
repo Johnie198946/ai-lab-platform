@@ -20,6 +20,7 @@ from backend.models.knowledge_contribution import (
 from backend.services.knowledge_catalog import (
     CONTRIBUTION_PUBLICATION_POLICY,
     _live_frontmatter,
+    _published_display,
     _vault,
     clear_knowledge_caches,
 )
@@ -89,7 +90,7 @@ async def validate_green_contribution(*, relative_path: str, projection_id: str)
                 or _receipt_value(ordered[2], "predecessor_run_id") != run_ids[1]
                 or any(item.get("validated") is not True or item.get("simulated") is not False
                        or item.get("type") != "knowledge_stage_receipt"
-                       or item.get("version") not in {"knowledge-run-v4.1", "knowledge-run-v4.2", "knowledge-run-v4.3"}
+                       or item.get("version") not in {"knowledge-run-v4.1", "knowledge-run-v4.2", "knowledge-run-v4.3", "knowledge-run-v4.4"}
                        or item.get("version") != ordered[0].get("version")
                        or item.get("tenant_id") != projection.tenant_key
                        or item.get("user_id") != projection.user_id for item in ordered)
@@ -123,6 +124,8 @@ async def validate_green_contribution(*, relative_path: str, projection_id: str)
                 or any(event.business_state.get("synthetic_hypothesis")
                        or event.business_state.get("simulated") for event in events if event)):
             raise ValueError("non-synthetic active real-world evidence required")
+        from backend.services.knowledge_run_adapter import validate_purpose_publication
+        validate_purpose_publication(governance, **_published_display(_vault(), relative_path))
         return projection
 
 

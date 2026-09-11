@@ -194,6 +194,7 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
             sources=["tenant_knowledge"],
             limit=3,
             include_content=True,
+            with_status=True,
         )
 
     def test_search_ignores_non_path_scope_and_uses_capability_default(self):
@@ -210,7 +211,7 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
         self.assertTrue(payload["success"])
         search.assert_called_once_with(
             "signed-capability", query="产品 A", category_scope=None,
-            sources=["tenant_knowledge"], limit=5, include_content=True,
+            sources=["tenant_knowledge"], limit=5, include_content=True, with_status=True,
         )
 
     def test_search_filters_only_with_complete_authorized_path(self):
@@ -231,7 +232,7 @@ class TestKnowledgeGatewayTool(unittest.TestCase):
         search.assert_called_once_with(
             "signed-capability", query="产品 A",
             category_scope=[entitlement_scope, public_scope],
-            sources=["tenant_knowledge"], limit=5, include_content=True,
+            sources=["tenant_knowledge"], limit=5, include_content=True, with_status=True,
         )
 
     def test_search_rejects_complete_path_scope_escalation_and_recommends_web(self):

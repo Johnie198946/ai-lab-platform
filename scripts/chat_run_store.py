@@ -171,12 +171,12 @@ class DurableChatRunStore:
             offset += len(line)
             if fence is None and (line.strip() == "" or (terminal and offset == len(text))):
                 content = text[start:offset]
-                if content:
+                if content.strip():
                     kind = "code" if content.lstrip().startswith(("```", "~~~")) else (
                         "table" if "\n|" in content and "|" in content.splitlines()[0] else "markdown"
                     )
                     blocks.append((kind, content))
-                start = offset
+                    start = offset
         if terminal and start < len(text):
             blocks.append(("markdown", text[start:]))
             start = len(text)
@@ -407,6 +407,7 @@ class DurableChatRunStore:
         max_blocks = min(max(1, int(max_blocks)), _PAGE_MAX_BLOCKS)
         max_bytes = min(max(_BLOCK_MAX_BYTES, int(max_bytes)), _PAGE_MAX_BYTES)
         with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             run = conn.execute("SELECT * FROM chat_runs WHERE run_id=?", (run_id,)).fetchone()
             if run is None or run["tenant_user_hash"] != tenant_user_hash:
                 raise KeyError(run_id)
@@ -417,7 +418,6 @@ class DurableChatRunStore:
             if not run["message_id"] or (
                 existing_count == 0 and run["status"] == "completed" and run["final_answer"]
             ):
-                conn.execute("BEGIN IMMEDIATE")
                 if not run["message_id"]:
                     conn.execute("UPDATE chat_runs SET message_id=? WHERE run_id=?", (run_id, run_id))
                 run = conn.execute("SELECT * FROM chat_runs WHERE run_id=?", (run_id,)).fetchone()
@@ -425,8 +425,19 @@ class DurableChatRunStore:
                     self._project_blocks(
                         conn, run, str(run["final_answer"]), terminal=True, now=time.time()
                     )
-                conn.execute("COMMIT")
                 run = conn.execute("SELECT * FROM chat_runs WHERE run_id=?", (run_id,)).fetchone()
+                existing_count = conn.execute(
+                    "SELECT COUNT(*) FROM chat_message_blocks WHERE run_id=? AND revision=?",
+                    (run_id, int(run["answer_revision"])),
+                ).fetchone()[0]
+            # Read persisted, sink-accepted text only. The unfinished Markdown
+            # tail is a replacement preview, never a raw provider delta. Cursors
+            # that include it must expire when it changes or becomes stable.
+            tail = str(run["block_buffer"])
+            tail_blocks = self._bounded_block("markdown", tail) if tail.strip() else []
+            tail_version = hashlib.sha256(
+                f"{existing_count}\0{tail}".encode()
+            ).hexdigest()
             next_index = 0
             if cursor:
                 claims = self._verify_cursor(cursor)
@@ -436,12 +447,20 @@ class DurableChatRunStore:
                 }
                 if any(claims.get(key) != value for key, value in expected.items()):
                     raise ValueError("stale_block_cursor")
+                if claims.get("tail_version") not in (None, tail_version):
+                    raise ValueError("stale_block_cursor")
                 next_index = max(0, int(claims.get("next") or 0))
             rows = conn.execute(
                 """SELECT block_index,kind,content FROM chat_message_blocks
                    WHERE run_id=? AND revision=? AND block_index>=? ORDER BY block_index LIMIT ?""",
                 (run_id, int(run["answer_revision"]), next_index, max_blocks + 1),
             ).fetchall()
+            rows = [dict(item) for item in rows]
+            rows.extend(
+                {"block_index": existing_count + index, "kind": kind, "content": content}
+                for index, (kind, content) in enumerate(tail_blocks)
+                if existing_count + index >= next_index
+            )
             selected, used = [], 0
             for item in rows[:max_blocks]:
                 size = len(item["content"].encode())
@@ -456,10 +475,13 @@ class DurableChatRunStore:
                 "SELECT COUNT(*) FROM chat_message_blocks WHERE run_id=? AND revision=?",
                 (run_id, int(run["answer_revision"])),
             ).fetchone()[0]
+            stable_total = total
+            total += len(tail_blocks)
             has_more = following < total or run["status"] not in _TERMINAL
             next_cursor = self._sign_cursor({
                 "v": 1, "owner": tenant_user_hash, "message_id": run["message_id"],
                 "revision": int(run["answer_revision"]), "next": following,
+                **({"tail_version": tail_version} if following > stable_total else {}),
             }) if has_more else None
             return {
                 "run_id": run_id, "message_id": run["message_id"],

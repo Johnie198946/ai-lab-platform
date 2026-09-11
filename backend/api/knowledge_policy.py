@@ -8,7 +8,7 @@ import json
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Annotated
 
 from fastapi import APIRouter, Header, HTTPException, Request
 from pydantic import BaseModel, Field
@@ -41,7 +41,8 @@ def _read_model_content(relative, documents, scopes):
     paths_token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(documents))
     try:
         with knowledge._candidate_scope(vault, documents):
-            if not knowledge._rel_visible(relative, scopes):
+            resolved = resolve_authorized_version(relative, documents, scopes, for_model=True)
+            if resolved is None or resolved["path"] != relative or not knowledge._rel_visible(relative, scopes):
                 raise OSError("knowledge document revoked")
             path = knowledge._safe_vault_file(vault, relative)
             if path is None:
@@ -91,6 +92,9 @@ class GatewaySearchRequest(BaseModel):
     sources: list[str] = Field(default_factory=list)
     limit: int = Field(default=10, ge=1, le=20)
     include_content: bool = False
+    entities: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=8)
+    topics: list[Annotated[str, Field(min_length=1, max_length=120)]] = Field(default_factory=list, max_length=8)
+    paths: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(default_factory=list, max_length=10)
     book_id: str | None = Field(None, min_length=1, max_length=384)
     content_version: str | None = Field(None, min_length=1, max_length=256)
     operation: str = Field(default="read", pattern="^(toc|read)$")
@@ -105,6 +109,37 @@ def _require_book_text(book: dict[str, Any]) -> None:
         raise HTTPException(status_code=422, detail={"code": "book_fulltext_unavailable"})
 
 
+async def _model_book(metadata, book, scopes):
+    """Reader authorization is prerequisite, not model disclosure permission."""
+    from backend.services.knowledge_catalog import bookshelf_document_index, explicit_model_control
+    from backend.services.knowledge_publication_store import reader_sections
+    relative = str(metadata.get("source_path") or "")
+    if not relative:
+        # Private reader computes this marker from its hash-verified artifact.
+        if metadata.get("_model_disclosure_controlled") or explicit_model_control(metadata):
+            return {"book_id": book["book_id"], "content_version": book["content_version"],
+                    "title": "", "citation": "", "sections": [],
+                    "content_status": "disclosure_limited"}
+        return book
+    vault = knowledge._vault()
+    candidates = bookshelf_document_index(vault)
+    candidates.update(knowledge.document_index(vault))
+    live = await filter_database_live_documents(list(candidates.values()), vault)
+    index = {item["path"]: item for item in live}
+    source = index.get(relative)
+    if source and not explicit_model_control(source) and source.get("disclosure_granularity") != "summary":
+        return book
+    resolved = resolve_authorized_version(relative, index, scopes, for_model=True) if source else None
+    if resolved is None:
+        return {"book_id": book["book_id"], "content_version": book["content_version"],
+                "title": "", "citation": "", "sections": [],
+                "content_status": "disclosure_limited"}
+    text = await run_knowledge_read(_read_model_content, resolved["path"], index, scopes)
+    return {"book_id": book["book_id"], "content_version": book["content_version"],
+            "title": knowledge._doc_title(text), "citation": f"knowledge:{resolved['path']}",
+            "sections": reader_sections(text), "content_status": "approved_summary"}
+
+
 async def _selected_book_search(body, claims, policy, requested):
     """Every page re-enters the reader authorization chain; no body cache."""
     binding = claims.get("book_scope") or {}
@@ -112,13 +147,17 @@ async def _selected_book_search(body, claims, policy, requested):
             or not body.content_version or body.content_version != binding.get("content_version")):
         raise HTTPException(status_code=403, detail={"code": "book_scope_denied"})
     from backend.api.subscriptions import _available_book_body
-    _, book = await _available_book_body({
+    metadata, book = await _available_book_body({
         "tenant_key": policy.tenant_key, "user_id": claims["user_id"],
         "visible_categories": frozenset(requested) & policy.effective_categories,
     }, body.book_id)
     _require_book_text(book)
     if book["content_version"] != body.content_version:
         raise HTTPException(status_code=409, detail={"code": "book_version_changed"})
+    book = await _model_book(metadata, book, frozenset(requested))
+    if book.get("content_status") == "disclosure_limited":
+        return {"success": True, "retrieval_status": "insufficient", "docs": [],
+                "content_status": "disclosure_limited", "fallback_recommended": False}
     sections = book["sections"]
     if body.section:
         matched = [s for s in sections if s["id"] == body.section]
@@ -273,6 +312,10 @@ async def capability_search(
             ))
             await db.commit()
         raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
+    if body.book_id and (body.entities or body.topics or body.paths):
+        raise HTTPException(status_code=422, detail="Wiki selectors cannot be combined with book_id")
+    if (body.entities or body.topics or body.paths) and requested_sources != {"tenant_knowledge"}:
+        raise HTTPException(status_code=422, detail="Wiki selectors require tenant_knowledge only")
     if body.book_id:
         if "tenant_knowledge" not in requested_sources:
             raise HTTPException(status_code=403, detail={"code": "book_scope_denied"})
@@ -280,6 +323,7 @@ async def capability_search(
     if body.content_version or body.section or body.operation != "read" or body.page != 1:
         raise HTTPException(status_code=422, detail="book_id required for book selectors")
     docs: list[dict[str, Any]] = []
+    disclosure_limited = False
     if "tenant_knowledge" in requested_sources:
         key = _cache_key(
             tenant_key, policy.policy_version, requested, body.query,
@@ -288,11 +332,23 @@ async def capability_search(
         candidates = await run_knowledge_read(knowledge.document_index, knowledge._vault())
         live = await filter_database_live_documents(list(candidates.values()), knowledge._vault())
         live_index = {item["path"]: item for item in live}
-        visible_index = {path: item for path, item in live_index.items()
-                         if resolve_authorized_version(path, {path: item}, frozenset(requested))}
-        visible_index = {path: item for path, item in visible_index.items()
-                         if item.get("disclosure_granularity") != "summary"
-                         or item.get("summary_of") not in visible_index}
+        # Model disclosure is narrower than internal read authorization. Never
+        # send controlled detail upstream and hope a later SSE/final filter hides it.
+        visible_index = {resolved["path"]: resolved for path in live_index
+                         if (resolved := resolve_authorized_version(
+                             path, live_index, frozenset(requested), for_model=True)) is not None}
+        selected_paths = [resolved["path"] for path in body.paths
+                          if (resolved := resolve_authorized_version(
+                              path, live_index, frozenset(requested), for_model=True)) is not None]
+        # Only report the gap for a path the caller can already read internally.
+        # Never infer hidden-document existence from an unscoped index.
+        disclosure_limited = any(
+            resolve_authorized_version(path, live_index, frozenset(requested)) is not None
+            and resolve_authorized_version(path, live_index, frozenset(requested), for_model=True) is None
+            for path in body.paths)
+        # An unresolved explicit path must not broaden back to a normal search.
+        if body.paths and not selected_paths:
+            selected_paths = ["__unavailable__"]
         token = current_visibility.set(frozenset(requested))
         read_token = AUTHORIZED_DOCUMENT_PATHS.set(frozenset(visible_index))
         try:
@@ -300,7 +356,9 @@ async def capability_search(
             # from currently approved versions instead of trusting lexical cache.
             with knowledge._candidate_scope(knowledge._vault(), visible_index):
                 wiki_docs = await run_knowledge_read(
-                    knowledge._search_docs, knowledge._vault(), body.query, body.limit)
+                    knowledge._search_docs, knowledge._vault(), body.query, body.limit,
+                    **({"entities": body.entities, "topics": body.topics, "paths": selected_paths}
+                       if body.entities or body.topics or body.paths else {}))
         finally:
             AUTHORIZED_DOCUMENT_PATHS.reset(read_token)
             current_visibility.reset(token)
@@ -331,12 +389,21 @@ async def capability_search(
                 remaining_chars -= len(markdown)
                 item["markdown"] = markdown
                 item["content_status"] = "complete" if len(markdown) == len(text) else "truncated"
-        private_fields = {"summary_of", "source_dependencies", "publication_audience",
-                          "contribution_projection_id", "publication_policy"}
-        docs.extend({**{k: v for k, v in item.items() if k not in private_fields},
-                     "source": "tenant_knowledge"} for item in wiki_docs)
+        evidence_fields = {"path", "title", "score", "snippet", "markdown", "content_status",
+                           "knowledge_id", "category", "knowledge_level", "classification_status",
+                           "security_level", "freshness", "source_count", "version", "source_kind",
+                           "citation", "conditions", "effective_at", "confidence", "quality_status",
+                           "disclosure_granularity", "match_basis", "wikilinks"}
+        for item in wiki_docs:
+            if item.get("disclosure_granularity") == "summary":
+                item["title"] = knowledge._doc_title(str(item.get("markdown") or item.get("snippet") or ""))[:200]
+                item["source_kind"] = "approved_summary"
+                item["conditions"] = []
+                item["effective_at"] = None
+            docs.append({**{key: value for key, value in item.items() if key in evidence_fields},
+                         "source": "tenant_knowledge"})
         from backend.services.knowledge_publication_store import PUBLICATION_CATEGORY, PublicationStore
-        if PUBLICATION_CATEGORY in requested:
+        if PUBLICATION_CATEGORY in requested and not (body.entities or body.topics or body.paths):
             publication_docs = await run_knowledge_read(PublicationStore().search, body.query, body.limit)
             if not body.include_content:
                 for item in publication_docs:
@@ -360,6 +427,9 @@ async def capability_search(
         )
         remaining_note_chars = 60_000
         for item in notes:
+            if item.get("content_status") == "disclosure_limited":
+                disclosure_limited = True
+                continue
             markdown = str(item.get("markdown") or "")[: min(20_000, remaining_note_chars)]
             remaining_note_chars -= len(markdown)
             docs.append({
@@ -377,6 +447,8 @@ async def capability_search(
     if "tenant_knowledge" in requested_sources:
         # Cover content and linked labels too, after all disk/model processing.
         final_live = await filter_database_live_documents(list(visible_index.values()), knowledge._vault())
+        final_live = [item for item in final_live if resolve_authorized_version(
+            item["path"], {item["path"]: item}, frozenset(requested), for_model=True)]
         if {item["path"] for item in final_live} != set(visible_index):
             raise HTTPException(status_code=409, detail="knowledge changed during read; retry")
         checked = await filter_database_live_documents(
@@ -407,5 +479,11 @@ async def capability_search(
         "policy_version": policy.policy_version,
         "category_scope": sorted(requested),
         "sources": sorted(requested_sources),
+        "retrieval_status": "insufficient" if disclosure_limited else "no_match" if not docs else "insufficient" if not any(
+            item.get("match_basis") in {"entry", "selected_path"}
+            and item.get("content_status") not in {"truncated", "unavailable", "revoked", "budget_exhausted"}
+            for item in docs) else "matched",
+        "evidence_sufficiency": "not_assessed",
+        "disclosure_limited": disclosure_limited,
         "docs": docs,
     }

@@ -144,8 +144,15 @@ def _assertion_admitted(labels: dict[str, Any], *, require_confidence: bool = Fa
     try:
         if "confidence" not in labels:
             return not require_confidence
+        # Legacy editorial labels describe evidence quality, not permission.
+        # Generated/publication artifacts retain their numeric quality gate.
+        if (not require_confidence and isinstance(labels["confidence"], str)
+                and labels["confidence"].strip().casefold() in {"high", "medium", "low", "unknown"}):
+            return True
+        if isinstance(labels["confidence"], bool):
+            return False
         confidence = float(labels["confidence"])
-        return math.isfinite(confidence) and confidence > 0
+        return math.isfinite(confidence) and 0 < confidence <= 1
     except (TypeError, ValueError):
         return False
 
@@ -245,9 +252,19 @@ def _apply_file_read_barrier(vault: Path, item: dict[str, Any]) -> dict[str, Any
     result = {**item, **result_scope, "security_level": labels["security_level"], **{key: metadata[key] for key in (
         "disclosure_granularity", "summary_of", "publication_audience", "source_dependencies",
         "version", "conditions", "effective_at", "source_kind", "publication_suitable",
+        "effective_actions", "enforced_export_allowed", "enforced_external_publish_allowed", "noexport",
     ) if key in metadata}}
+    # This marker is minted only from trusted SQL governance on each read.
+    result.pop("purpose_publication_validated", None)
+    result["confidence"] = labels.get("confidence", "unknown")
+    result["quality_status"] = (
+        "unrated" if str(result["confidence"]).strip().casefold() == "unknown"
+        else "legacy_label" if isinstance(result["confidence"], str)
+        and result["confidence"].strip().casefold() in {"high", "medium", "low"}
+        else "rated"
+    )
     # Editorial fields are live source facts, never durable cache authority.
-    for key in ("book_title", "book_author", "book_summary", "author", "author_source", "title"):
+    for key in ("book_title", "book_author", "book_summary", "author", "author_source", "title", "aliases"):
         result.pop(key, None)
         if key in metadata:
             result[key] = metadata[key]
@@ -310,13 +327,23 @@ def bookshelf_document_index(vault: Path | None = None) -> dict[str, dict[str, A
     }
 
 
-def _published_body_hash(vault, relative):
+def _published_display(vault, relative):
     path = (vault / relative).resolve()
     if vault.resolve() not in path.parents:
         raise OSError("knowledge path escape")
     text = path.read_text(encoding="utf-8")
-    body = re.sub(r"^---\s*\n.*?\n---\s*\n?", "", text, count=1, flags=re.DOTALL).strip()
-    return hashlib.sha256(body.encode()).hexdigest()
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, flags=re.DOTALL)
+    metadata = yaml.safe_load(match[1]) if match else {}
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid publication metadata")
+    return {"title": metadata.get("title", ""),
+            "body": (text[match.end():] if match else text).strip(),
+            "knowledge_type": metadata.get("type", ""),
+            "knowledge_level": metadata.get("knowledge_level", "")}
+
+
+def _published_body_hash(vault, relative):
+    return hashlib.sha256(_published_display(vault, relative)["body"].encode()).hexdigest()
 
 
 def _file_live_documents(documents, vault):
@@ -410,8 +437,10 @@ async def filter_database_live_documents(
                 if valid:
                     valid_ids.add(row.projection_id)
         by_id = {row.projection_id: row for row in rows if row.projection_id in valid_ids}
-    except Exception:
-        return []
+    except Exception as exc:
+        # Fail closed, but do not misrepresent a failed authorization read as a
+        # successful lexical no-match (callers may safely retry or use public web).
+        raise HTTPException(status_code=503, detail="knowledge authorization unavailable") from exc
     for item, projection_id, relative in guarded:
         row = by_id.get(projection_id)
         snapshot = row.metadata_snapshot if row is not None else {}
@@ -438,16 +467,20 @@ async def filter_database_live_documents(
                         or not all(r.get("validated") is True for r in receipts)
                         or receipts[-1].get("decision") != "approve"):
                     continue
-            expected_hash = governance.get("published_body_hash")
-            if expected_hash:
-                try:
-                    body_hash = await run_knowledge_read(_published_body_hash, vault, relative)
-                except OSError:
-                    continue
-                if body_hash != expected_hash:
-                    continue
-            elif item.get("disclosure_granularity") == "summary":
+            from backend.services.knowledge_run_adapter import validate_purpose_publication, ContractError
+            try:
+                display = await run_knowledge_read(_published_display, vault, relative)
+                is_purpose = validate_purpose_publication(governance, **display)
+            except (OSError, UnicodeError, ValueError, yaml.YAMLError, ContractError):
                 continue
+            expected_hash = governance.get("published_body_hash")
+            if expected_hash and hashlib.sha256(display["body"].encode()).hexdigest() != expected_hash:
+                continue
+            if not expected_hash and item.get("disclosure_granularity") == "summary":
+                continue
+            item = {**item, "title": display["title"], "type": display["knowledge_type"],
+                    "knowledge_level": display["knowledge_level"],
+                    "purpose_publication_validated": is_purpose}
             live.append(item)
     return live
 
@@ -533,8 +566,31 @@ def projection_state_fingerprint() -> str | None:
     ).encode()).hexdigest() if rows is not None else None
 
 
+def markdown_model_control(markdown: str) -> bool:
+    """Read explicit controls from source bytes; malformed headers fail closed."""
+    if not markdown.startswith("---"):
+        return False
+    try:
+        parts = re.split(r"^---\s*$", markdown, maxsplit=2, flags=re.MULTILINE)
+        metadata = yaml.safe_load(parts[1]) if len(parts) == 3 else None
+        return not isinstance(metadata, dict) or explicit_model_control(metadata)
+    except (ValueError, yaml.YAMLError):
+        return True
+
+
+def explicit_model_control(item: dict[str, Any]) -> bool:
+    """Explicit disclosure restrictions, not private ownership or color alone."""
+    actions = item.get("effective_actions") or {}
+    return (item.get("enforced_export_allowed") is False
+            or item.get("enforced_external_publish_allowed") is False
+            or item.get("noexport") is True
+            or isinstance(actions, dict) and any(actions.get(k) is False
+                                                for k in ("export", "external_publish")))
+
+
 def resolve_authorized_version(
     relative: str, documents: dict[str, dict[str, Any]], scopes: set[str] | frozenset[str] | None,
+    *, for_model: bool = False,
 ) -> dict[str, Any] | None:
     """Resolve detail first; ONLY an independently published summary may substitute.
 
@@ -542,6 +598,22 @@ def resolve_authorized_version(
     is read to produce, rank, or label a substitute.
     """
     def allowed(item):
+        if for_model and item.get("disclosure_granularity") == "summary":
+            if item.get("purpose_publication_validated") is not True:
+                return False
+        elif for_model and (
+            item.get("security_level") in {"red", "yellow"}
+            or explicit_model_control(item)
+        ):
+            return False
+        # An explicit no-cross-tenant rule cannot be erased by a legacy green
+        # color/public owner label. Owner-only private packs still work; ownerless
+        # public records require review, not an invented tenant or public grant.
+        actions = item.get("effective_actions") or {}
+        if scopes is not None and isinstance(actions, dict) and actions.get("cross_tenant") is False:
+            owner = str(item.get("owner_tenant") or "").strip()
+            if not owner or owner == "public" or not str(item.get("pack_id") or "").endswith("/private/" + owner):
+                return False
         if scopes is not None and item.get("pack_id") not in scopes:
             return False
         if item.get("disclosure_granularity") == "summary":

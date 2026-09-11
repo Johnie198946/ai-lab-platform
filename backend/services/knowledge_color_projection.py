@@ -186,11 +186,11 @@ def _scan_approved_color_documents(vault: Path) -> list[dict[str, Any]]:
         owner = str(metadata.get("owner_tenant") or metadata.get("tenant") or "").strip()
         entitlement = str(metadata.get("entitlement_key") or "").strip()
         if security == "green":
-            owner, entitlement = "public", ""
-        elif security == "yellow":
-            if not _exact_entitlement(entitlement):
+            if owner != "public" or entitlement:
                 continue
-            owner = "public"
+        elif security == "yellow":
+            if owner != "public" or not _exact_entitlement(entitlement):
+                continue
         elif not owner or owner == "public":
             continue
 

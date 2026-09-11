@@ -291,10 +291,14 @@ async def test_pending_note_scan_rotates_past_32_unresolvable_rows(tmp_path, mon
     await supervisor.reconcile_once(store)
     async with SessionLocal() as db:
         assert (await db.get(Event, target["event_id"])).status == "compiling"
+    from backend.services.knowledge_run_adapter import validate_execution, PURPOSE_VERSION
+    queued = store.claim_next("purpose-recovery-test")
+    assert validate_execution(queued).version == PURPOSE_VERSION
 
 
 @pytest.mark.asyncio
-async def test_recompile_scan_rotates_past_32_unresolvable_rows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version", ["knowledge-run-v4.1", "knowledge-run-v4.2", "knowledge-run-v4.3", "knowledge-run-v4.4"])
+async def test_recompile_scan_rotates_past_32_unresolvable_rows(tmp_path, monkeypatch, version):
     import backend.services.knowledge_pipeline_supervisor as supervisor
 
     monkeypatch.setenv("AI_LAB_HOME", str(tmp_path))
@@ -310,7 +314,7 @@ async def test_recompile_scan_rotates_past_32_unresolvable_rows(tmp_path, monkey
         events.append((event, text))
     target, target_text = max(events, key=lambda item: item[0]["event_id"])
     store = DurableChatRunStore(tmp_path / "runs.db")
-    old = await submit_compile(store, event_id=target["event_id"], content=target_text)
+    old = await submit_compile(store, event_id=target["event_id"], content=target_text, version=version)
     async with SessionLocal() as db:
         for event, _ in events:
             row = await db.get(Event, event["event_id"])
@@ -326,5 +330,5 @@ async def test_recompile_scan_rotates_past_32_unresolvable_rows(tmp_path, monkey
     monkeypatch.setattr(supervisor, "submit_compile", capture)
     await supervisor.reconcile_once(store)
     await supervisor.reconcile_once(store)
-    assert (target["event_id"], target_text, "knowledge-run-v4.3") in seen
+    assert (target["event_id"], target_text, version) in seen
     assert old["run_id"]

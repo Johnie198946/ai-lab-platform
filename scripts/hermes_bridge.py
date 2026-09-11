@@ -1298,6 +1298,8 @@ def _knowledge_gateway_search(
     limit: int = 10,
     include_content: bool = False,
     book_request: dict[str, Any] | None = None,
+    wiki_request: dict[str, Any] | None = None,
+    with_status: bool = False,
 ) -> list[dict[str, Any]] | dict[str, Any]:
     request_body: dict[str, Any] = {
         "query": query[:200],
@@ -1305,6 +1307,9 @@ def _knowledge_gateway_search(
         "limit": limit,
         "include_content": include_content,
     }
+    if wiki_request:
+        request_body.update({key: value for key, value in wiki_request.items()
+                             if key in {"entities", "topics", "paths"}})
     if book_request is not None:
         request_body.update({key: value for key, value in book_request.items()
                              if key in {"book_id", "content_version", "operation", "section", "page"}})
@@ -1322,7 +1327,9 @@ def _knowledge_gateway_search(
     payload = response.json()
     if book_request is not None:
         return payload
-    return payload.get("docs") if isinstance(payload.get("docs"), list) else []
+    if not isinstance(payload, dict) or not isinstance(payload.get("docs"), list):
+        raise ValueError("invalid knowledge gateway response")
+    return payload if with_status else payload["docs"]
 
 
 # Hermes tool registry is process-global while chat authorization is request-local.
@@ -1423,6 +1430,7 @@ def _knowledge_fallback_payload(error: str, *, query: str) -> dict[str, Any]:
     return {
         "success": False,
         "error": error,
+        "retrieval_status": "error",
         "query": query,
         "fallback_recommended": True,
         "fallback_source": "public_web",
@@ -1437,6 +1445,7 @@ def _knowledge_fallback_payload(error: str, *, query: str) -> dict[str, Any]:
 def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     """Hermes-facing knowledge_search handler backed by the platform Gateway."""
     query = str((args or {}).get("query") or "").strip()
+    wiki_request = {key: args[key] for key in ("entities", "topics", "paths") if key in (args or {})}
     book_request = {key: args[key] for key in ("book_id", "content_version", "operation", "section", "page")
                     if key in (args or {})}
     if not query:
@@ -1476,8 +1485,12 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             ),
             sources=["tenant_knowledge"],
             limit=max(1, min(10, int((args or {}).get("limit") or 5))),
-            include_content=True,
+            # New intent-search is lightweight; explicit follow-up paths read bodies.
+            # Preserve legacy query-only and selected-book response behavior.
+            include_content=bool(book_request or not wiki_request or wiki_request.get("paths")),
             **({"book_request": book_request} if book_request else {}),
+            **({"wiki_request": wiki_request} if wiki_request else {}),
+            with_status=True,
         )
     except PermissionError:
         if book_request:
@@ -1502,16 +1515,33 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
         return json.dumps(payload, ensure_ascii=False)
     if book_request:
         return json.dumps(docs, ensure_ascii=False)
+    gateway_status = docs.get("retrieval_status") if isinstance(docs, dict) else None
+    if isinstance(docs, dict):
+        docs = docs.get("docs", [])
+    # An exact acronym absent from every result is a deterministic coverage gap,
+    # not semantic proof that an entity-only hit answers the question.
+    required_acronyms = re.findall(r"(?<![A-Za-z0-9])[A-Z][A-Z0-9-]{1,23}(?![A-Za-z0-9])", query)
+    evidence_text = "\n".join(str(item.get(key) or "") for item in docs
+                              for key in ("title", "snippet", "markdown", "path"))
+    acronym_gap = any(not re.search(r"(?<![A-Za-z0-9])" + re.escape(term) + r"(?![A-Za-z0-9])", evidence_text, re.I)
+                      for term in required_acronyms)
+    insufficient = gateway_status == "insufficient" or bool(docs) and (acronym_gap or not any(
+        item.get("match_basis") in {"entry", "selected_path"}
+        and item.get("content_status") not in {"truncated", "unavailable", "revoked", "budget_exhausted"}
+        for item in docs))
     return json.dumps(
         {
             "success": True,
             "query": query,
-            "fallback_recommended": not bool(docs),
-            "fallback_source": "public_web" if not docs else None,
+            "retrieval_status": "insufficient" if insufficient else "no_match" if not docs else "matched",
+            "evidence_sufficiency": "not_assessed",
+            "fallback_recommended": not docs or insufficient,
+            "fallback_source": "public_web" if not docs or insufficient else None,
             "fallback_instruction": (
-                "No authorized tenant knowledge matched. If web_search is "
-                "authorized, search public sources and label them clearly."
-                if not docs else None
+                "Authorized Wiki evidence is missing or insufficient. Refine entities/topics, "
+                "read task-relevant Wiki links via paths; if web_search is authorized, "
+                "search public sources and label URLs separately. Do not reconstruct restricted details."
+                if not docs or insufficient else None
             ),
             "docs": [
                 {
@@ -1526,6 +1556,11 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
                     "version": item.get("version", ""),
                     "citation": item.get("citation", ""),
                     "source_kind": item.get("source_kind", "governed_wiki"),
+                    "match_basis": item.get("match_basis", "unknown"),
+                    "wikilinks": item.get("wikilinks") or [],
+                    "confidence": item.get("confidence", "unknown"),
+                    "quality_status": item.get("quality_status", "unrated"),
+                    "disclosure_granularity": item.get("disclosure_granularity", "detail"),
                     "conditions": item.get("conditions") or [],
                     "effective_at": item.get("effective_at"),
                 }
@@ -1743,8 +1778,14 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "A concise semantic search query.",
+                            "description": "Original knowledge need. First identify entities and required topics; do not conflate a company with its process.",
                         },
+                        "entities": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
+                                     "description": "Entity/title/alias entry hints, e.g. Huawei or 超聚变. Not permission scopes."},
+                        "topics": {"type": "array", "items": {"type": "string"}, "maxItems": 8,
+                                   "description": "Required literal topics, all must occur in live title/aliases/body, e.g. IPD. Not synonyms inferred by the server."},
+                        "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 10,
+                                  "description": "Exact authorized Wiki paths for task-relevant follow-up reads (wiki/<link>.md). Links and Matrix are locators, not evidence; do not expand all links."},
                         "book_id": {"type": "string", "description": "Selected book id from authorized chat context."},
                         "content_version": {"type": "string", "description": "Exact selected edition version from chat context."},
                         "operation": {"type": "string", "enum": ["toc", "read"], "default": "read"},
@@ -3868,7 +3909,7 @@ def _durable_replay_sse(run_id: str, owner_hash: str, *, blocks_v1: bool = False
         yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
     if blocks_v1:
         page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
-        if page["blocks"]:
+        if any(str(block.get("content") or "").strip() for block in page["blocks"]):
             yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
     if snapshot["status"] in {"queued", "running", "stalled"} and not _durable_worker_is_live():
         yield f"data: {json.dumps({'type': 'error', **_WORKER_MAINTENANCE, 'run_id': run_id, 'event_sequence': snapshot['event_sequence']}, ensure_ascii=False)}\n\n"
@@ -3884,8 +3925,7 @@ async def _durable_subscribe_sse(
     """Replay and follow a persisted Run; disconnecting never owns its lifecycle."""
     cursor = max(0, int(after))
     yielded_any = False
-    page_sent = False
-    terminal_page_sent = False
+    last_page_signature = None
     while True:
         if _chat_run_store is None:
             yield f"data: {json.dumps({'type': 'error', 'code': 'run_store_unavailable', 'message': '持久任务存储不可用'}, ensure_ascii=False)}\n\n"
@@ -3908,18 +3948,24 @@ async def _durable_subscribe_sse(
                 _chat_run_store.mark_consumed(
                     run_id, tenant_user_hash=owner_hash
                 )
-        if blocks_v1 and not page_sent:
+        if blocks_v1:
+            # answer_page is a bounded replacement snapshot (not an append).
+            # Compare content/metadata, not the time-dependent signed cursor.
             page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
-            if page["blocks"]:
-                page_sent = True
-                terminal_page_sent = page["status"] in {"completed", "failed", "cancelled"}
+            signature = json.dumps({key: value for key, value in page.items()
+                                    if key != "next_cursor"}, sort_keys=True)
+            meaningful = any(str(block.get("content") or "").strip() for block in page["blocks"])
+            terminal_reset = (last_page_signature is not None
+                              and page["status"] in {"completed", "failed", "cancelled"})
+            if (meaningful or terminal_reset) and signature != last_page_signature:
+                last_page_signature = signature
                 yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
         status = str(snapshot.get("status") or "")
         if status in {"completed", "failed", "cancelled"}:
-            if blocks_v1 and not terminal_page_sent:
-                page = _chat_run_store.block_page(run_id, tenant_user_hash=owner_hash)
-                if page["blocks"]:
-                    yield f"data: {json.dumps({'type': 'answer_page', **page}, ensure_ascii=False)}\n\n"
+            # A worker can commit done between events_after() and get(). Drain
+            # that event before closing, including for legacy delta subscribers.
+            if cursor < int(snapshot.get("event_sequence") or 0):
+                continue
             return
         if not _durable_worker_is_live():
             yield f"data: {json.dumps({'type': 'error', **_WORKER_MAINTENANCE, 'run_id': run_id, 'event_sequence': cursor}, ensure_ascii=False)}\n\n"
@@ -4726,11 +4772,27 @@ def _knowledge_tools_eligible(triage: dict[str, Any] | None) -> bool:
     )
 
 
+def _knowledge_public_fallback_allowed(goal: str, agent_config: dict, triage: dict | None) -> bool:
+    """Retain an existing web grant for Wiki gaps, never create network authority."""
+    if not agent_config.get("allow_network") or "web_search" not in set(agent_config.get("allowed_tools") or []):
+        return False
+    if not _knowledge_tools_eligible(triage):
+        return False
+    if "user_note_search" in set((triage or {}).get("evidence_requirements") or []):
+        return False
+    return not re.search(
+        r"离线|不要联网|禁止联网|不联网|仅内部|只[看用查].{0,8}(?:笔记|内部|知识库)|"
+        r"offline|no (?:web|network|internet)|do not (?:browse|search)|only.{0,20}(?:notes|internal)",
+        _routing_user_goal(goal), re.I,
+    )
+
+
 def _apply_triage_toolset_policy(
     selected: list[str],
     triage: dict[str, Any] | None,
     *,
     note_draft_request: bool = False,
+    public_knowledge_fallback: bool = False,
 ) -> list[str]:
     """Final fail-closed filter after all legacy/plugin toolset assembly."""
     if note_draft_request:
@@ -4751,7 +4813,7 @@ def _apply_triage_toolset_policy(
         })
     elif not triage.get("agency_enabled"):
         denied.update({"agency_agents", "ai_lab", "delegation"})
-    if not evidence & {"web_search", "web_extract"}:
+    if not evidence & {"web_search", "web_extract"} and not public_knowledge_fallback:
         denied.add("web")
     if not _knowledge_tools_eligible(triage):
         denied.add("knowledge_gateway")
@@ -4911,12 +4973,19 @@ KB_RETRIEVAL_DISCIPLINE = (
     "3. 调用 knowledge_search 时默认只传 query，不传 category_scope，让签名 capability 提供"
     "当前租户全部已授权分类；只有已知完整的 knowledge/.../public 或 "
     "knowledge/.../entitlement/... 路径时才可传 category_scope，禁止猜测 green、yellow、"
-    "公司名或短分类。\n"
-    "4. 若 knowledge_search 零命中、权限不可用或 Gateway 暂时不可用，且当前 Agent 已获"
+    "公司名或短分类。先理解实体与主题、形成取知要求；明确主题时在 query 之外传 "
+    "entities/topics（例如 entities=[超聚变,华为], topics=[IPD]），后端只做字面匹配，"
+    "不替你推断同义词。query 保留用户原始问题；entities/topics 只表达用户所需实体与主题，"
+    "不得把用户未请求的 PDT/TR 等词自行加入强制覆盖条件。按任务选取返回 wikilinks，再用 paths 追读；链接和 Matrix "
+    "只定位，不自动成为证据。matched 也不代表证据充分，须核对任务所需事实。\n"
+    "4. 若 knowledge_search 零命中、证据不足、权限不可用或 Gateway 暂时不可用，且当前 Agent 已获"
     "联网权限，必须继续调用 web_search；需要核实正文时再调用 web_extract。公开网络结果"
     "必须标注为“公开网络资料”并引用 URL，不得伪装成租户知识，也不得借联网推测或重构"
     "red/yellow 受限内容。若未获联网权限，才明确说明证据缺口。\n"
-    "5. 租户知识结果必须保留 [[path]] 引用；公开网络结果必须保留 URL，不得伪造来源。"
+    "5. 租户知识结果必须保留 [[path]] 引用；公开网络结果必须保留 URL，不得伪造来源。\n"
+    "6. 默认实体/概念问答只调用 knowledge_search，不机械追加 user_note_search；仅问题明确"
+    "涉及我的笔记/历史私有记录，或已识别来源缺口指向笔记时，才补查 user_note_search。"
+    "若 Gateway 已覆盖同范围 notes，不重复检索；不得为了减少回合忽略真实证据缺口。"
 )
 
 CLARIFY_GATE_PROMPT = f"""【AI Lab 全局交互与对话规范】
@@ -5497,12 +5566,14 @@ def _build_in_process_agent(
         "enforced": tenant_skill_enabled,
         "allowed": sorted(candidate_names | pinned_skills),
     }
+    public_knowledge_fallback = knowledge_tool_enabled and _knowledge_public_fallback_allowed(goal, agent_config, triage)
     network_tool_requested = bool(
         agent_config.get("allow_network")
         and allowed_tools & {"web_search", "web_extract", "browser_navigate"}
         and (
             triage is None
             or evidence_requirements & {"web_search", "web_extract"}
+            or public_knowledge_fallback
         )
     )
     browser_fallback_requested = bool(
@@ -5574,6 +5645,7 @@ def _build_in_process_agent(
         toolsets_list,
         triage,
         note_draft_request=note_draft_request,
+        public_knowledge_fallback=public_knowledge_fallback,
     )
     fast_general = bool(
         route_class == GENERAL_QA
@@ -5666,7 +5738,7 @@ def _build_in_process_agent(
         nonlocal first_delta_emitted
         if text:
             accepted = _qput(stream_q, {"type": "delta", "content": text})
-            if accepted and not first_delta_emitted:
+            if accepted and str(text).strip() and not first_delta_emitted:
                 flush = getattr(stream_q, "flush_delta", None)
                 if callable(flush):
                     flush()
@@ -5803,7 +5875,8 @@ def _build_in_process_agent(
             + (candidate_prompt(skill_candidates) if tenant_skill_enabled else "")
             + "\n知识来源路由：当前对话以 Hermes SessionDB 已恢复的原生消息历史为准；"
               "session_context_read 仅用于首次迁移、灾难恢复或一致性核验；当前用户笔记用"
-              " user_note_search；租户内部 Wiki/业务资料用 knowledge_search；"
+              " user_note_search（仅明确笔记需求或来源缺口指向笔记时补查，Gateway 已覆盖同范围 notes 则不重复查）；"
+              "默认实体/概念问答只调用 knowledge_search；租户内部 Wiki/业务资料用 knowledge_search；"
               "互联网公开信息用 web_search。租户知识检索零命中、被权限策略拒绝或暂时不可用时，"
               "如果 web_search 已列入允许工具，必须继续检索公开网络；必要时用 web_extract 核实"
               "原文。回答中分开标注租户知识 [[path]] 与公开网络 URL，绝不能用公开网页猜测"

@@ -24,7 +24,8 @@ def test_hermes_knowledge_tool_uses_query_and_capability_default_scope():
     }
     captured = {}
 
-    def fake_search(token, *, query, category_scope, sources, limit, include_content):
+    def fake_search(token, *, query, category_scope, sources, limit, include_content, with_status=False):
+        assert with_status is True
         captured.update({
             "token": token,
             "query": query,

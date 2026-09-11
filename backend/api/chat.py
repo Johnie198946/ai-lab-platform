@@ -717,13 +717,17 @@ async def _resolve_source_context(
         if mode == "local_only":
             raise HTTPException(status_code=422, detail="selected book is not allowed in local_only mode")
         from backend.api.subscriptions import _available_book_body
-        _, book = await _available_book_body(
+        metadata, book = await _available_book_body(
             {**payload, "visible_categories": policy.effective_categories}, scope.selected_book_id
         )
         from backend.api.knowledge_policy import _require_book_text
         _require_book_text(book)
         if scope.selected_book_version and scope.selected_book_version != book["content_version"]:
             raise HTTPException(status_code=409, detail={"code": "book_version_changed"})
+        from backend.api.knowledge_policy import _model_book
+        book = await _model_book(metadata, book, policy.effective_categories)
+        if book.get("content_status") == "disclosure_limited":
+            raise HTTPException(status_code=422, detail={"code": "book_disclosure_insufficient"})
         if scope.selected_book_section_id:
             if scope.selected_book_section_id not in {s["id"] for s in book["sections"]}:
                 raise HTTPException(status_code=422, detail={"code": "book_section_missing"})
@@ -1415,6 +1419,19 @@ async def _call_bridge_stream(
                 yield line + "\n"
 
 
+def _is_meaningful_stream_activity(event: dict[str, Any] | None) -> bool:
+    if not event:
+        return False
+    event_type = event.get("type")
+    if event_type in {"tool_start", "tool_complete", "clarify"}:
+        return True
+    if event_type == "delta":
+        return bool(str(event.get("content") or "").strip())
+    if event_type == "answer_page":
+        return any(str(block.get("content") or "").strip() for block in event.get("blocks", []))
+    return False
+
+
 def _stream_event(frame: str) -> dict[str, Any] | None:
     line = frame.strip()
     if not line.startswith("data:"):
@@ -1870,12 +1887,7 @@ async def stream_chat(
                         role="user", content=req.question,
                     )
                     user_contribution_enqueued = True
-                if event and event.get("type") in {
-                    "delta",
-                    "tool_start",
-                    "tool_complete",
-                    "clarify",
-                }:
+                if event and _is_meaningful_stream_activity(event):
                     if not first_activity_seen:
                         print(
                             f"[chat-stream] first_activity_ms="
