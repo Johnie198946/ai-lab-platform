@@ -1581,11 +1581,21 @@ public final class TenantSessionCoordinator: ObservableObject {
                         updateReasoningSteps(for: idx) { steps in
                             for i in steps.indices { steps[i].status = "done" }
                         }
-                        // The terminal answer is authoritative. Replacing the
-                        // accumulated transport snapshot prevents truncated or
-                        // stale deltas from winning the final persistence race.
                         if let answer, !answer.isEmpty {
                             messages[idx].content = answer
+                        }
+                        // The stream's terminal snapshot can contain only the first
+                        // transport fragment. Reconcile once with the durable answer
+                        // projection before persisting completion.
+                        if let status = try? await fetchChatStatusRequest(
+                            req.sessionId, false, req.agentId
+                        ), status.status == "completed" {
+                            applyRecoveredAnswer(
+                                status.loadedAnswer,
+                                answerProjection: status.answerProjection,
+                                reasoningSteps: status.reasoning,
+                                outputMessageId: outputId
+                            )
                         }
                         markMissingKnowledgeProposalIfNeeded(
                             userText: req.text, messageIndex: idx

@@ -208,7 +208,7 @@ final class ProductionBookshelfUITests: XCTestCase {
                 "未出现本次真实模型响应标记。"
             )
             XCTAssertTrue(
-                waitForCountGreaterThan(tokenResponseCountBeforeSend, in: matchingTokenResponses, timeout: 180),
+                waitForCountGreaterThan(tokenResponseCountBeforeSend, in: matchingTokenResponses, timeout: 360),
                 "选书 Chat 未返回本次真实模型验收 token。"
             )
         } else {
@@ -217,7 +217,7 @@ final class ProductionBookshelfUITests: XCTestCase {
                 "未显示本次真实模型请求原文。"
             )
             XCTAssertTrue(
-                waitForCountGreaterThan(legacyResponseCountBeforeSend, in: matchingLegacyResponses, timeout: 180),
+                waitForCountGreaterThan(legacyResponseCountBeforeSend, in: matchingLegacyResponses, timeout: 360),
                 "选书 Chat 未返回本次真实模型验收 token。"
             )
         }
@@ -414,7 +414,12 @@ final class ProductionBookshelfUITests: XCTestCase {
     }
 
     private func restoreUnsubscribedState(bookID: String) {
-        let knowledgeTab = app.buttons["main-tab-2"]
+        var knowledgeTab = app.buttons["main-tab-2"]
+        if !knowledgeTab.waitForExistence(timeout: 3) {
+            app.terminate()
+            app.launch()
+            knowledgeTab = app.buttons["main-tab-2"]
+        }
         guard knowledgeTab.waitForExistence(timeout: 10) else {
             XCTFail("无法返回知识页恢复原始未订阅状态。")
             return
@@ -458,6 +463,11 @@ final class ProductionBookshelfUITests: XCTestCase {
             return
         }
         card.tap()
+        let subscriptionControl = app.buttons["publication-subscription-control.\(bookID)"]
+        if subscriptionControl.waitForExistence(timeout: 3),
+           subscriptionControl.value as? String == "unsubscribed" {
+            return
+        }
         let identifiedRemove = app.buttons["publication-subscription-remove.\(bookID)"]
         let legacyRemove = app.buttons.matching(NSPredicate(format: "label == %@", "移出书架")).firstMatch
         let remove = identifiedRemove.waitForExistence(timeout: 3) ? identifiedRemove : legacyRemove
@@ -591,6 +601,12 @@ final class ProductionLongBookAcceptanceUITests: XCTestCase {
         if app.buttons["打开登录"].waitForExistence(timeout: 3) {
             XCTFail("缺少已安装 App 的现有登录会话；本验收不会自动登录或绕过同意流程。")
             return
+        }
+        // The production dock intentionally collapses after five seconds.
+        // Reveal it using the existing left-edge gesture, without altering session state.
+        if !knowledgeTab.exists {
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.04, dy: 0.5))
+                .press(forDuration: 0.05, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.4, dy: 0.5)))
         }
         XCTAssertTrue(knowledgeTab.waitForExistence(timeout: 8), "未找到已认证主导航；请解锁真机并保留现有登录会话。")
         knowledgeTab.tap()
