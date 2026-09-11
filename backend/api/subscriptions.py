@@ -331,7 +331,8 @@ _PUBLIC_BOOK_FIELDS = (
     "source_kind", "source_kind_label", "content_status", "canonical_url",
     "published", "institution", "group_label",
     "source_id", "body_origin", "completeness", "source_classification",
-    "readable", "unavailable_reason",
+    "readable", "unavailable_reason", "content_version",
+    "publication_format", "publication_type_label",
 )
 
 
@@ -379,14 +380,19 @@ async def _available_book_body(payload: dict[str, Any], book_id: str) -> tuple[d
                      action="refresh_catalog", retryable=True)
     if book.get("source_kind") == "publication":
         item = publication
-        sections = reader_sections(item["body"]) if item and item.get("artifact_valid") else []
+        if item is None:
+            raise _error(404, code="book_not_found", message="这本书已下架或当前无权阅读",
+                         action="refresh_catalog", retryable=True)
+        sections = reader_sections(item["body"]) if item.get("artifact_valid") else []
         body = ({
             "book_id": book_id, "title": book["title"], "author": book["author"],
             "content_version": item["content_hash"], "edition": item["edition"],
             "citation": item["bundle"]["references"][0]["url"], "sections": sections,
             "series_id": item["series_id"], "series_title": book["series_title"],
             "issue_id": item["issue_id"], "issue_date": item["issue_date"],
-            "test_serial": True, "release_at": item["release_at"],
+            "test_serial": book["test_serial"], "release_at": item["release_at"],
+            "publication_format": book["publication_format"],
+            "publication_type_label": book["publication_type_label"],
             "actual_release_at": item["actual_release_at"], "edition_id": item["edition_id"],
             "source_urls": [ref["url"] for ref in item["bundle"]["references"]],
         } if sections else None)

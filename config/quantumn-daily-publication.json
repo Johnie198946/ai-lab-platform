@@ -24,18 +24,51 @@
       "daily_slot": false,
       "requires_source_publication_id": true,
       "requires_verified_redistribution_evidence": true
+    },
+    {
+      "id": "quantumn-originals",
+      "title": "Quantumn 原创书籍",
+      "daily_slot": false,
+      "requires_source_publication_id": true,
+      "requires_local_owner_policy_evidence": true,
+      "requires_editorial_contract": true
     }
   ],
   "writer_job": {
-    "schedule": "0 8 * * *",
+    "schedule": "0 8,14,18 * * *",
     "no_agent": false,
-    "prompt_template": "docs/prompts/quantumn-daily-publication.md",
-    "deadline": "11:30:00",
+    "prompt_template": "docs/prompts/quantumn-editorial-v2.md",
     "required_issue_count": 2
   },
   "release_job": {
-    "schedule": "*/5 * * * *",
+    "schedule": "0 12 * * *",
     "no_agent": true,
-    "command": "scripts/publication_release_due.sh"
+    "command": "scripts/publication_release_remote.py",
+    "finalize_native_review_before_release": true
+  },
+  "editorial_contract": {
+    "protocol": "editorial-v1",
+    "prompt": "docs/prompts/quantumn-editorial-v2.md",
+    "automatic_format": "chapter",
+    "book_min_effective_cjk": 20000,
+    "book_min_chapters": 8,
+    "chapter_min_effective_cjk": 3000,
+    "max_failed_reviews_per_issue": 3,
+    "legacy_published": "preserve_immutable_body_and_label_article",
+    "legacy_pending": "new_contract_and_review_required",
+    "proof": "native-editorial-review-v1",
+    "semantic_review_required": true
+  },
+  "reviewer_job": {
+    "schedule": "0,30 10,16,20 * * *",
+    "no_agent": false,
+    "prompt_template": "docs/prompts/quantumn-editorial-v2.md",
+    "input_command": "scripts/publication_editorial_remote.py review-input",
+    "max_items_per_session": 1
+  },
+  "release_retry_job": {
+    "schedule": "15 12,17,21 * * *",
+    "no_agent": true,
+    "command": "scripts/publication_release_remote.py"
   }
 }

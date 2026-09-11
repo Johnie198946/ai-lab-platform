@@ -70,12 +70,15 @@ public struct AIPlatformApp: App {
 #if DEBUG
 private struct BookshelfPreviewHost: View {
     @State private var showingBookshelf = true
+    private let center = ProcessInfo.processInfo.arguments.contains("-bookshelfSourcePreview")
+        ? SubscriptionCenterResponse.sourcePreview
+        : .bookshelfPreview
 
     var body: some View {
         if showingBookshelf {
             NavigationStack {
                 SubscriptionCenterView(
-                    previewCenter: .bookshelfPreview,
+                    previewCenter: center,
                     onBack: { showingBookshelf = false }
                 )
             }

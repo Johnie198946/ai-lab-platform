@@ -125,6 +125,7 @@ def test_pending_public_index_is_hidden_then_shared_without_private_body(monkeyp
 
     books, collections = store.public_source_catalog(now=NOW)
     assert books[0]["id"] == source["book_id"] and books[0]["content_status"] == "metadata_only"
+    assert books[0]["readable"] is False
     assert collections[0]["authorities"][0]["admission_status"] == authority["admission_status"]
     _, body = store.get_public_source(source["book_id"], now=NOW)
     markdown = "".join(section["markdown"] for section in body["sections"])

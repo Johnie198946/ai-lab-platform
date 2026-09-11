@@ -226,6 +226,7 @@ def mint_capability(
     user_id: str | None = None,
     sources: Iterable[str] | None = None,
     ttl_seconds: int | None = None,
+    book_scope: dict[str, str] | None = None,
 ) -> str:
     scopes = sorted(policy.restrict(requested_scopes))
     allowed_sources = {"tenant_knowledge", "user_notes"}
@@ -243,6 +244,12 @@ def mint_capability(
         "iat": int(time.time()),
         "exp": int(time.time()) + (ttl_seconds or CAPABILITY_TTL_SECONDS),
     }
+    if book_scope is not None:
+        if not user_id or "tenant_knowledge" not in requested_sources:
+            raise ValueError("book capability requires reader identity and tenant_knowledge source")
+        if set(book_scope) != {"book_id", "content_version"} or not all(book_scope.values()):
+            raise ValueError("invalid book scope")
+        payload["book_scope"] = dict(book_scope)
     if user_id:
         payload["user_id"] = str(user_id)
     raw = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode()

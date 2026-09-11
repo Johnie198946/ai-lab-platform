@@ -91,6 +91,84 @@ class GatewaySearchRequest(BaseModel):
     sources: list[str] = Field(default_factory=list)
     limit: int = Field(default=10, ge=1, le=20)
     include_content: bool = False
+    book_id: str | None = Field(None, min_length=1, max_length=384)
+    content_version: str | None = Field(None, min_length=1, max_length=256)
+    operation: str = Field(default="read", pattern="^(toc|read)$")
+    section: str | None = Field(None, min_length=1, max_length=512)
+    page: int = Field(default=1, ge=1, le=1_000_000)
+
+
+def _require_book_text(book: dict[str, Any]) -> None:
+    if (book.get("content_status") == "metadata_only"
+            or book.get("completeness") == "metadata_only"
+            or not book.get("sections")):
+        raise HTTPException(status_code=422, detail={"code": "book_fulltext_unavailable"})
+
+
+async def _selected_book_search(body, claims, policy, requested):
+    """Every page re-enters the reader authorization chain; no body cache."""
+    binding = claims.get("book_scope") or {}
+    if (not claims.get("user_id") or body.book_id != binding.get("book_id")
+            or not body.content_version or body.content_version != binding.get("content_version")):
+        raise HTTPException(status_code=403, detail={"code": "book_scope_denied"})
+    from backend.api.subscriptions import _available_book_body
+    _, book = await _available_book_body({
+        "tenant_key": policy.tenant_key, "user_id": claims["user_id"],
+        "visible_categories": frozenset(requested) & policy.effective_categories,
+    }, body.book_id)
+    _require_book_text(book)
+    if book["content_version"] != body.content_version:
+        raise HTTPException(status_code=409, detail={"code": "book_version_changed"})
+    sections = book["sections"]
+    if body.section:
+        matched = [s for s in sections if s["id"] == body.section]
+        if not matched:
+            matched = [s for s in sections if s["title"] == body.section]
+        if len(matched) != 1:
+            raise HTTPException(status_code=422, detail={"code": "book_section_ambiguous_or_missing"})
+        start = sections.index(matched[0])
+        end = start + 1
+        level = int(matched[0].get("level", 2))
+        while end < len(sections) and int(sections[end].get("level", 2)) > level:
+            end += 1
+        sections = sections[start:end]
+    if body.operation == "toc":
+        units = [{"id": s["id"], "title": s["title"], "level": s.get("level", 2), "characters": len(s["markdown"])} for s in sections]
+        size = 100
+        total = len(units)
+        content = {"toc": units[(body.page - 1) * size:body.page * size]}
+    else:
+        # Character pages preserve all body bytes, including chapter beginnings,
+        # middles and tails. A single chapter may span arbitrarily many pages.
+        text = "\n\n".join(f"{'#' * max(1, int(s.get('level', 2)))} {s['title']}\n{s['markdown']}" for s in sections)
+        size = 12_000
+        total = len(text)
+        content = {"markdown": text[(body.page - 1) * size:body.page * size]}
+    pages = max(1, (total + size - 1) // size)
+    if body.page > pages:
+        raise HTTPException(status_code=422, detail={"code": "book_page_out_of_range"})
+    truncated = body.page < pages
+    continuation = {"query": body.query, "book_id": body.book_id,
+                    "content_version": body.content_version, "operation": body.operation,
+                    "section": body.section, "page": body.page + 1} if truncated else None
+    async with SessionLocal() as db:
+        final_policy, _ = await resolve_policy(
+            db, tenant_key=policy.tenant_key, org_id=policy.org_id,
+            catalog=await run_knowledge_read(compute_catalog))
+        if final_policy.policy_version != policy.policy_version:
+            raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
+        db.add(KnowledgeAccessAudit(
+            tenant_key=policy.tenant_key, entry_point=str(claims.get("entry_point") or "gateway"),
+            category=",".join(sorted(requested))[:128], resource_id=body.book_id[:255],
+            decision="allow", policy_version=policy.policy_version, reason="selected book authorized page",
+        ))
+        await db.commit()
+    return {"success": True, "book_id": book["book_id"], "title": book["title"],
+            "content_version": book["content_version"], "citation": book["citation"],
+            "content_status": book.get("content_status", "approved"),
+            "operation": body.operation, "section": body.section, "page": body.page,
+            "total_pages": pages, "truncated": truncated, "next": continuation,
+            "fallback_recommended": False, **content}
 
 
 def _verify_authen_signature(body: bytes, signature: str) -> None:
@@ -195,6 +273,12 @@ async def capability_search(
             ))
             await db.commit()
         raise HTTPException(status_code=403, detail={"code": KnowledgeScopeDenied.code})
+    if body.book_id:
+        if "tenant_knowledge" not in requested_sources:
+            raise HTTPException(status_code=403, detail={"code": "book_scope_denied"})
+        return await _selected_book_search(body, claims, policy, requested)
+    if body.content_version or body.section or body.operation != "read" or body.page != 1:
+        raise HTTPException(status_code=422, detail="book_id required for book selectors")
     docs: list[dict[str, Any]] = []
     if "tenant_knowledge" in requested_sources:
         key = _cache_key(

@@ -100,6 +100,7 @@
 		7A0179B18110033BC1CA0851 /* QuantumAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuantumAvatarView.swift; sourceTree = "<group>"; };
 		7CE0824746D5B06C3C2B035E /* AIPlatformApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = AIPlatformApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7F8D52A373AED7411BC20AF3 /* WorkflowLifecycleDTOTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowLifecycleDTOTests.swift; sourceTree = "<group>"; };
+		813DB031876CEDFE50599942 /* AIPlatformApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = AIPlatformApp.entitlements; sourceTree = "<group>"; };
 		83AE56DBEAAD443368B0DC9F /* ProductionBookshelfUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProductionBookshelfUITests.swift; sourceTree = "<group>"; };
 		865230675174544683A40C47 /* WorkflowDashboardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkflowDashboardView.swift; sourceTree = "<group>"; };
 		8CC0682A56D72BAAB4097CFA /* WeChatLinkValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WeChatLinkValidator.swift; sourceTree = "<group>"; };
@@ -294,6 +295,7 @@
 		B8DAEDBECC4DC10057CD9C1C /* AIPlatformApp */ = {
 			isa = PBXGroup;
 			children = (
+				813DB031876CEDFE50599942 /* AIPlatformApp.entitlements */,
 				964A9F3CAD461856EAF48590 /* AIPlatformApp.swift */,
 				D1E31A390B5DA9F45A4E7E6F /* Assets.xcassets */,
 				B4C9371EEE0A71253EADCED7 /* Info.plist */,
@@ -593,9 +595,10 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
+				CODE_SIGN_ENTITLEMENTS = AIPlatformApp/AIPlatformApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = AALA948YY5;
 				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -721,9 +724,10 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS = YES;
+				CODE_SIGN_ENTITLEMENTS = AIPlatformApp/AIPlatformApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 31;
+				CURRENT_PROJECT_VERSION = 32;
 				DEVELOPMENT_TEAM = AALA948YY5;
 				INFOPLIST_FILE = AIPlatformApp/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;

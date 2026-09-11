@@ -484,3 +484,232 @@ final class ProductionBookshelfUITests: XCTestCase {
         add(attachment)
     }
 }
+
+final class ReaderFixtureUITests: XCTestCase {
+    private var app: XCUIApplication!
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app = XCUIApplication(bundleIdentifier: "com.ailab.AIPlatformApp")
+    }
+
+    func testMetadataBadgeAndSourceActionStayAvailable() {
+        app.launchArguments = ["-bookshelfPreview", "-bookshelfSourcePreview", "-bookshelfBookPreview"]
+        app.launch()
+
+        XCTAssertTrue(app.descendants(matching: .any)["publication-type.source-preview"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["资料来源"].exists)
+        let source = app.buttons["publication-source-open.source-preview"]
+        XCTAssertTrue(source.waitForExistence(timeout: 10))
+        XCTAssertTrue(source.isEnabled)
+        XCTAssertTrue(source.isHittable)
+        attachScreenshot(named: "fixture-metadata-source-action")
+    }
+
+    func testLongReaderSurvivesSubscriptionFailureAndNavigatesExactSections() {
+        app.launchArguments = [
+            "-bookshelfPreview", "-bookshelfBookPreview", "-bookshelfSubscribedPreview",
+            "-bookReadingPreview", "-bookReadingLongFixture"
+        ]
+        app.launch()
+
+        XCTAssertTrue(app.scrollViews["publication-reader-body.product-map"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["publication-reader-content.product-map"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["publication-reader-progress-warning.product-map"].exists)
+        let body = app.descendants(matching: .any)["publication-reader-content.product-map"]
+        XCTAssertTrue((body.value as? String)?.contains("正文存活和章节导航") == true)
+
+        openTableOfContentsAndTap("server-section-first")
+        XCTAssertTrue(app.staticTexts["第一章 起点"].waitForExistence(timeout: 5))
+        attachScreenshot(named: "fixture-reader-first-subscription-failed")
+
+        openTableOfContentsAndTap("server-section-middle")
+        XCTAssertTrue(app.staticTexts["第五十一节 中段"].waitForExistence(timeout: 5))
+        attachScreenshot(named: "fixture-reader-middle")
+
+        openTableOfContentsAndTap("server-section-last")
+        XCTAssertTrue(app.staticTexts["第一百零一节 终章"].waitForExistence(timeout: 5))
+        attachScreenshot(named: "fixture-reader-last")
+
+        app.buttons["返回书籍概述"].tap()
+        let ask = app.buttons["selected-book-chat-open.product-map"]
+        XCTAssertTrue(ask.waitForExistence(timeout: 5))
+        XCTAssertTrue(ask.label.contains("AI 产品全景图"))
+        XCTAssertTrue(ask.label.contains("最近定位章节：第一百零一节 终章"))
+    }
+
+    private func openTableOfContentsAndTap(_ sectionID: String) {
+        let tableOfContents = app.buttons["publication-reader-toc.product-map"]
+        XCTAssertTrue(tableOfContents.waitForExistence(timeout: 5))
+        tableOfContents.tap()
+        let section = app.buttons["publication-reader-nav.\(sectionID)"]
+        let menu = app.collectionViews.firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        for _ in 0..<40 where !section.exists || !section.isHittable {
+            menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+                .press(forDuration: 0.05, thenDragTo: menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)))
+        }
+        XCTAssertTrue(section.exists)
+        XCTAssertTrue(section.isHittable)
+        section.tap()
+    }
+
+    private func attachScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}
+
+final class ProductionLongBookAcceptanceUITests: XCTestCase {
+    private let app = XCUIApplication(bundleIdentifier: "com.ailab.AIPlatformApp")
+
+    override func setUpWithError() throws {
+        continueAfterFailure = false
+        app.launchArguments = []
+        app.launchEnvironment.removeValue(forKey: "AI_LAB_E2E_TOKEN")
+        app.launchEnvironment.removeValue(forKey: "QUANTUMN_UI_DEV_PHONE")
+        app.launchEnvironment.removeValue(forKey: "QUANTUMN_UI_DEV_CODE")
+        app.launch()
+    }
+
+    func testExistingSessionReadsConfiguredLongBookTOC() throws {
+        let environment = ProcessInfo.processInfo.environment
+        let bookID = try XCTUnwrap(environment["QUANTUMN_UI_BOOK_ID"]?.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard !bookID.isEmpty else {
+            XCTFail("QUANTUMN_UI_BOOK_ID 不能为空。")
+            return
+        }
+        guard environment["SIMULATOR_DEVICE_NAME"] == nil else {
+            XCTFail("此验收只允许在保留现有登录会话的真机上运行。")
+            return
+        }
+        XCTAssertEqual(app.state, .runningForeground, "Quantumn 未在前台运行；真机可能仍锁定。")
+
+        let knowledgeTab = app.buttons["main-tab-2"]
+        if app.buttons["打开登录"].waitForExistence(timeout: 3) {
+            XCTFail("缺少已安装 App 的现有登录会话；本验收不会自动登录或绕过同意流程。")
+            return
+        }
+        XCTAssertTrue(knowledgeTab.waitForExistence(timeout: 8), "未找到已认证主导航；请解锁真机并保留现有登录会话。")
+        knowledgeTab.tap()
+        XCTAssertTrue(app.navigationBars["知识"].waitForExistence(timeout: 10))
+
+        let discover = app.buttons["发现更多书籍"]
+        if discover.waitForExistence(timeout: 8) {
+            discover.tap()
+        } else {
+            let emptyShelf = app.buttons.containing(.staticText, identifier: "空书架也该被看见").firstMatch
+            XCTAssertTrue(emptyShelf.waitForExistence(timeout: 8), "现有知识页未提供书架入口。")
+            emptyShelf.tap()
+        }
+        XCTAssertTrue(app.navigationBars["知识书架"].waitForExistence(timeout: 15))
+
+        let book = try findBook(id: bookID)
+        book.tap()
+        let readingControl = app.buttons["publication-subscription-control.\(bookID)"]
+        XCTAssertTrue(readingControl.waitForExistence(timeout: 10), "目标书没有可阅读正文。")
+        guard readingControl.value as? String == "subscribed" else {
+            XCTFail("目标书必须已在现有书架；本验收不会更改订阅。")
+            return
+        }
+        readingControl.tap()
+
+        XCTAssertTrue(app.scrollViews["publication-reader-body.\(bookID)"].waitForExistence(timeout: 20), "真实阅读器未出现。")
+        let content = app.descendants(matching: .any)["publication-reader-content.\(bookID)"]
+        XCTAssertTrue(content.waitForExistence(timeout: 20), "真实正文标记未出现。")
+        XCTAssertFalse(((content.value as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "真实正文为空。")
+
+        let sections = try tableOfContentsSections(bookID: bookID)
+        guard sections.count >= 3 else {
+            XCTFail("真实目录不足 3 节，无法验收前/中/末导航。")
+            return
+        }
+        let targets = [sections[0], sections[sections.count / 2], sections[sections.count - 1]]
+        for (index, target) in targets.enumerated() {
+            navigate(bookID: bookID, sectionID: target.id, openMenu: index != 0)
+            attachScreenshot(named: String(format: "real-long-book-%02d-%@", index + 1, target.id))
+        }
+
+        guard environment["QUANTUMN_UI_ALLOW_TEST_QUESTION"] == "1" else { return }
+        app.buttons["返回书籍概述"].tap()
+        let ask = app.buttons["selected-book-chat-open.\(bookID)"]
+        XCTAssertTrue(ask.waitForExistence(timeout: 10), "现有选书提问入口未出现。")
+        for _ in 0..<8 where !ask.isHittable { app.scrollViews.firstMatch.swipeUp() }
+        XCTAssertTrue(ask.isHittable)
+        ask.tap()
+        let input = app.textFields["selected-book-chat-input"]
+        XCTAssertTrue(input.waitForExistence(timeout: 12), "选书 Chat 输入框未出现。")
+        input.tap()
+        input.typeText("请概括我最近定位章节的核心论点，并说明证据边界。")
+        let send = app.buttons["selected-book-chat-send"]
+        XCTAssertTrue(send.waitForExistence(timeout: 8), "选书 Chat 发送按钮未出现。")
+        send.tap()
+        attachScreenshot(named: "real-long-book-04-authorized-question")
+    }
+
+    private func findBook(id bookID: String) throws -> XCUIElement {
+        let target = app.buttons.matching(
+            NSPredicate(format: "identifier ENDSWITH %@", ".\(bookID)")
+        ).firstMatch
+        let shelves = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "bookshelf-collection.")
+        )
+        var visited = Set<String>()
+        let container = app.scrollViews["publication-bookshelf-container"]
+
+        for _ in 0..<50 {
+            if let shelf = shelves.allElementsBoundByIndex.first(where: {
+                $0.isHittable && !visited.contains($0.identifier)
+            }) {
+                visited.insert(shelf.identifier)
+                shelf.tap()
+                for _ in 0..<25 {
+                    if target.waitForExistence(timeout: 1), target.isHittable { return target }
+                    app.scrollViews.firstMatch.swipeUp()
+                }
+                app.buttons["返回分类"].tap()
+                continue
+            }
+            container.swipeUp()
+        }
+        XCTFail("在现有真实书架中未找到 QUANTUMN_UI_BOOK_ID=\(bookID)。")
+        throw NSError(domain: "ProductionLongBookAcceptanceUITests", code: 1)
+    }
+
+    private func tableOfContentsSections(bookID: String) throws -> [(id: String, title: String)] {
+        let menu = app.buttons["publication-reader-toc.\(bookID)"]
+        XCTAssertTrue(menu.waitForExistence(timeout: 8), "真实阅读器目录按钮未出现。")
+        menu.tap()
+        let entries = app.buttons.matching(
+            NSPredicate(format: "identifier BEGINSWITH %@", "publication-reader-nav.")
+        )
+        XCTAssertTrue(entries.firstMatch.waitForExistence(timeout: 5), "真实目录为空。")
+        let result = entries.allElementsBoundByIndex.map {
+            (id: String($0.identifier.dropFirst("publication-reader-nav.".count)), title: $0.label)
+        }
+        return result
+    }
+
+    private func navigate(bookID: String, sectionID: String, openMenu: Bool) {
+        if openMenu { app.buttons["publication-reader-toc.\(bookID)"].tap() }
+        let entry = app.buttons["publication-reader-nav.\(sectionID)"]
+        let menu = app.collectionViews.firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        for _ in 0..<40 where !entry.exists || !entry.isHittable {
+            menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.4))
+                .press(forDuration: 0.05, thenDragTo: menu.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.1)))
+        }
+        XCTAssertTrue(entry.exists, "目录缺少章节 \(sectionID)。")
+        XCTAssertTrue(entry.isHittable, "目录章节不可点击：\(sectionID)。")
+        entry.tap()
+    }
+
+    private func attachScreenshot(named name: String) {
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+}

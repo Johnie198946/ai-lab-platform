@@ -49,7 +49,7 @@ from typing import Any, Literal, Optional
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import uvicorn
 
 # Hermes 与本仓库都包含顶级 ``tools`` 包。Python 总把当前工作目录
@@ -491,7 +491,7 @@ class GoalRequest(BaseModel):
     # pure/standard/kb 时必须显式失败，不能静默忽略后造成“看似隔离”的假象。
     model_config = ConfigDict(extra="forbid")
 
-    goal: str = Field(..., max_length=MAX_INPUT)
+    goal: str = Field(..., max_length=262_144)
     request_id: str | None = Field(None, min_length=8, max_length=100)
     session_id: str | None = None  # 前端传入的 user_id（用于映射 Hermes 原生 session）
     skill_id: str | None = Field(None, max_length=80)
@@ -509,6 +509,13 @@ class GoalRequest(BaseModel):
     qws_business_context: dict[str, Any] | None = None
     qws_context_capability: str | None = None
     client_capabilities: list[str] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def _long_goal_requires_selected_book(self):
+        if len(self.goal) > MAX_INPUT:
+            if not self.knowledge_capability or not verify_capability(self.knowledge_capability).get("book_scope"):
+                raise ValueError("long chat context requires signed selected book")
+        return self
 
     @field_validator("agent_config")
     @classmethod
@@ -1290,13 +1297,17 @@ def _knowledge_gateway_search(
     sources: list[str] | None = None,
     limit: int = 10,
     include_content: bool = False,
-) -> list[dict[str, Any]]:
+    book_request: dict[str, Any] | None = None,
+) -> list[dict[str, Any]] | dict[str, Any]:
     request_body: dict[str, Any] = {
         "query": query[:200],
         "sources": list(sources or ["tenant_knowledge"]),
         "limit": limit,
         "include_content": include_content,
     }
+    if book_request is not None:
+        request_body.update({key: value for key, value in book_request.items()
+                             if key in {"book_id", "content_version", "operation", "section", "page"}})
     if category_scope is not None:
         request_body["category_scope"] = category_scope
     response = httpx.post(
@@ -1309,6 +1320,8 @@ def _knowledge_gateway_search(
         raise PermissionError("knowledge_scope_denied")
     response.raise_for_status()
     payload = response.json()
+    if book_request is not None:
+        return payload
     return payload.get("docs") if isinstance(payload.get("docs"), list) else []
 
 
@@ -1424,6 +1437,8 @@ def _knowledge_fallback_payload(error: str, *, query: str) -> dict[str, Any]:
 def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     """Hermes-facing knowledge_search handler backed by the platform Gateway."""
     query = str((args or {}).get("query") or "").strip()
+    book_request = {key: args[key] for key in ("book_id", "content_version", "operation", "section", "page")
+                    if key in (args or {})}
     if not query:
         return json.dumps(
             {"success": False, "error": "query_required"}, ensure_ascii=False
@@ -1431,14 +1446,16 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     context = getattr(_knowledge_tool_context, "value", None)
     if not isinstance(context, dict) or not context.get("capability"):
         return json.dumps(
-            _knowledge_fallback_payload("knowledge_scope_unavailable", query=query),
+            ({"success": False, "error": "knowledge_scope_unavailable", "fallback_recommended": False}
+             if book_request else _knowledge_fallback_payload("knowledge_scope_unavailable", query=query)),
             ensure_ascii=False,
         )
     if "tenant_knowledge" not in set(
         context.get("sources") or ["tenant_knowledge"]
     ):
         return json.dumps(
-            _knowledge_fallback_payload("knowledge_source_denied", query=query),
+            ({"success": False, "error": "knowledge_source_denied", "fallback_recommended": False}
+             if book_request else _knowledge_fallback_payload("knowledge_source_denied", query=query)),
             ensure_ascii=False,
         )
     allowed_scope = set(str(item) for item in context.get("scopes") or [])
@@ -1446,7 +1463,8 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
     requested_scope = set(explicit_scope or [])
     if explicit_scope is not None and not requested_scope.issubset(allowed_scope):
         return json.dumps(
-            _knowledge_fallback_payload("knowledge_scope_denied", query=query),
+            ({"success": False, "error": "knowledge_scope_denied", "fallback_recommended": False}
+             if book_request else _knowledge_fallback_payload("knowledge_scope_denied", query=query)),
             ensure_ascii=False,
         )
     try:
@@ -1459,18 +1477,31 @@ def _knowledge_search_tool(args: dict[str, Any], **_kwargs) -> str:
             sources=["tenant_knowledge"],
             limit=max(1, min(10, int((args or {}).get("limit") or 5))),
             include_content=True,
+            **({"book_request": book_request} if book_request else {}),
         )
     except PermissionError:
+        if book_request:
+            return json.dumps({"success": False, "error": "book_scope_denied", "fallback_recommended": False})
         return json.dumps(
             _knowledge_fallback_payload("knowledge_scope_denied", query=query),
             ensure_ascii=False,
         )
     except Exception as exc:
+        if book_request:
+            error = "book_gateway_unavailable"
+            if isinstance(exc, httpx.HTTPStatusError):
+                try:
+                    error = exc.response.json().get("detail", error)
+                except ValueError:
+                    pass
+            return json.dumps({"success": False, "error": error, "fallback_recommended": False}, ensure_ascii=False)
         payload = _knowledge_fallback_payload(
             "knowledge_gateway_unavailable", query=query
         )
         payload["detail"] = str(exc)[:160]
         return json.dumps(payload, ensure_ascii=False)
+    if book_request:
+        return json.dumps(docs, ensure_ascii=False)
     return json.dumps(
         {
             "success": True,
@@ -1701,7 +1732,11 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
                 "name": "knowledge_search",
                 "description": (
                     "Search tenant-authorized AI Lab knowledge through the platform "
-                    "Knowledge Gateway. Use only when the answer needs internal evidence."
+                    "Knowledge Gateway. For a selected book, pass book_id and content_version "
+                    "from chat context; operation=toc lists sections, operation=read reads complete "
+                    "text in bounded character pages (not printed page numbers). Follow next until "
+                    "truncated=false. Section accepts an exact id or title, including Chinese numerals. "
+                    "Omit section to read the entire book sequentially. Never substitute web evidence for selected-book text."
                 ),
                 "parameters": {
                     "type": "object",
@@ -1710,6 +1745,11 @@ def _ensure_knowledge_gateway_tool_registered() -> None:
                             "type": "string",
                             "description": "A concise semantic search query.",
                         },
+                        "book_id": {"type": "string", "description": "Selected book id from authorized chat context."},
+                        "content_version": {"type": "string", "description": "Exact selected edition version from chat context."},
+                        "operation": {"type": "string", "enum": ["toc", "read"], "default": "read"},
+                        "section": {"type": "string", "description": "Exact section id or full title; omit for entire book."},
+                        "page": {"type": "integer", "minimum": 1, "default": 1},
                         "category_scope": {
                             "type": "array",
                             "items": {"type": "string"},

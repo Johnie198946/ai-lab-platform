@@ -1286,12 +1286,10 @@ def _canonical_local_receipt(
             """,
             (parent_session_id,),
         ).fetchall()
-        marker = f"AI_LAB_AGENCY_SPECIALIST={requested_agent}"
         for row in rows:
             if delegation_id and str(row["delegation_id"] or "") != delegation_id:
                 continue
-            task = json.loads(row["task_json"] or "{}")
-            task_marker_present = marker in str(task.get("context") or "")
+            json.loads(row["task_json"] or "{}")  # Preserve malformed-task rejection.
             result_payload = json.loads(row["result_json"] or "{}")
             results = result_payload.get("results") or []
             if len(results) != 1 or not isinstance(results[0], dict):

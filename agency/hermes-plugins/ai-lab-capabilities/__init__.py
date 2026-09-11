@@ -9,7 +9,7 @@ from .capability_router import install as install_capability_router
 
 CAPABILITIES = {
     "knowledge_search": {
-        "description": "Search tenant-authorized AI Lab knowledge.",
+        "description": "Search tenant-authorized AI Lab knowledge; selected-book full text/TOC uses book_id, content_version, operation, section and page. Follow next until truncated=false.",
         "underlying_tool": "knowledge_search",
         "required": ["query"],
     },

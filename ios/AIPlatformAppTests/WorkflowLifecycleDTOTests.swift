@@ -689,16 +689,32 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
     }
 
     func testDailyPublicationDTOFieldsDecode() throws {
-        let data = Data(#"{"id":"publication-1","title":"第一期","author":"Quantumn","summary":"测试","security_level":"green","knowledge_level":"editorial","freshness":"daily","source_count":1,"series_id":"ai-history","series_title":"AI的前世今生","issue_id":"issue-1","issue_date":"2026-09-08","test_serial":true,"release_at":"2026-09-08T04:00:00+00:00","actual_release_at":"2026-09-08T04:00:01+00:00","edition_id":"edition-1","edition":1,"source_urls":["https://example.com/source"]}"#.utf8)
+        let data = Data(#"{"id":"publication-1","title":"第一期","author":"Quantumn","summary":"测试","security_level":"green","knowledge_level":"editorial","freshness":"daily","source_count":1,"series_id":"ai-history","series_title":"AI的前世今生","issue_id":"issue-1","issue_date":"2026-09-08","test_serial":true,"release_at":"2026-09-08T04:00:00+00:00","actual_release_at":"2026-09-08T04:00:01+00:00","edition_id":"edition-1","edition":1,"source_urls":["https://example.com/source"],"publication_format":"chapter","completeness":"full"}"#.utf8)
         let book = try decoder().decode(KnowledgeBookDTO.self, from: data)
         XCTAssertEqual(book.seriesId, "ai-history")
         XCTAssertEqual(book.issueDate, "2026-09-08")
         XCTAssertEqual(book.testSerial, true)
         XCTAssertEqual(book.sourceUrls, ["https://example.com/source"])
+        XCTAssertEqual(book.publicationFormat, "chapter")
+        XCTAssertEqual(book.publicationTypeLabel, "连载章节")
+    }
+
+    func testPublicationFormatLabelsDoNotInferFromCompleteness() throws {
+        func decoded(_ fields: String) throws -> KnowledgeBookDTO {
+            try decoder().decode(KnowledgeBookDTO.self, from: Data("""
+            {"id":"kn","title":"Title","author":"Author","summary":"Summary","security_level":"green","knowledge_level":"K5","freshness":"current","source_count":1\(fields.isEmpty ? "" : ",\(fields)")}
+            """.utf8))
+        }
+
+        XCTAssertEqual(try decoded(#""publication_format":"book""#).publicationTypeLabel, "完整书")
+        XCTAssertEqual(try decoded(#""publication_format":"article""#).publicationTypeLabel, "历史短文")
+        XCTAssertEqual(try decoded(#""publication_format":"source""#).publicationTypeLabel, "资料来源")
+        XCTAssertNil(try decoded(#""completeness":"full""#).publicationTypeLabel)
+        XCTAssertNil(try decoded("").publicationFormat)
     }
 
     func testPublicFollowBuildersMetadataAndQuarantinedRosterDecode() throws {
-        let data = Data(#"{"bookshelves":[{"id":"knowledge/publication/follow-builders","title":"Follow Builders 公开来源索引","security_level":"green","book_count":1,"books":[{"id":"follow-builders-public-source-0123456789abcdef01234567","title":"Stored title","author":"Stored attribution","summary":"Recorded metadata; unverified","security_level":"green","knowledge_level":"source_metadata","freshness":"unknown","source_count":1,"source_kind":"public_source_index","content_status":"metadata_only","canonical_url":"https://example.com/source","readable":true}]}],"public_collections":[{"id":"follow-builders-public","title":"Follow Builders 公开来源索引","visibility":"public","authority_count":1,"source_count":1,"admission_decision":"conditional","authorities":[{"roster_id":21,"recorded_handle":"palantir","recorded_display_name":"Palantir Technologies","recorded_website_url":"https://www.palantir.com/insights/","identity_status":"conflicting_identity_do_not_treat_as_official_x_account","website_status":"recorded website","source_relationship_status":"not established","admission_status":"website_entry_only_x_mapping_quarantined","specific_qualifications":["wrong X profile"]}]}],"owner_private_collections":[]}"#.utf8)
+        let data = Data(#"{"bookshelves":[{"id":"knowledge/publication/follow-builders","title":"Follow Builders 公开来源索引","security_level":"green","book_count":1,"books":[{"id":"follow-builders-public-source-0123456789abcdef01234567","title":"Stored title","author":"Stored attribution","summary":"Recorded metadata; unverified","security_level":"green","knowledge_level":"source_metadata","freshness":"unknown","source_count":1,"source_kind":"public_source_index","content_status":"metadata_only","canonical_url":"https://example.com/source","completeness":"full","publication_format":"source","readable":false}]}],"public_collections":[{"id":"follow-builders-public","title":"Follow Builders 公开来源索引","visibility":"public","authority_count":1,"source_count":1,"admission_decision":"conditional","authorities":[{"roster_id":21,"recorded_handle":"palantir","recorded_display_name":"Palantir Technologies","recorded_website_url":"https://www.palantir.com/insights/","identity_status":"conflicting_identity_do_not_treat_as_official_x_account","website_status":"recorded website","source_relationship_status":"not established","admission_status":"website_entry_only_x_mapping_quarantined","specific_qualifications":["wrong X profile"]}]}],"owner_private_collections":[]}"#.utf8)
         let response = try decoder().decode(KnowledgeBookshelvesResponse.self, from: data)
         let book = try XCTUnwrap(response.bookshelves.first?.books.first)
         let collection = try XCTUnwrap(response.publicCollections?.first)
@@ -707,11 +723,43 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(book.knowledgeLevel, "source_metadata")
         XCTAssertEqual(book.contentStatus, "metadata_only")
         XCTAssertEqual(book.canonicalUrl, "https://example.com/source")
+        XCTAssertEqual(book.publicationTypeLabel, "资料来源")
+        XCTAssertFalse(book.readable ?? true)
+        XCTAssertEqual(book.canonicalHTTPURL?.absoluteString, "https://example.com/source")
         XCTAssertTrue(book.isBodyUnavailable)
+        XCTAssertTrue(response.bookshelves[0].isSourceShelf)
+        var unsafeBook = book
+        unsafeBook.canonicalUrl = "javascript:alert(1)"
+        XCTAssertNil(unsafeBook.canonicalHTTPURL)
         XCTAssertEqual(collection.visibility, "public")
         XCTAssertEqual(authority.identityStatus, "conflicting_identity_do_not_treat_as_official_x_account")
         XCTAssertEqual(authority.sourceRelationshipStatus, "not established")
         XCTAssertEqual(authority.admissionStatus, "website_entry_only_x_mapping_quarantined")
+    }
+
+    func testReaderBodySurvivesSubscriptionFailure() async throws {
+        let body = try decoder().decode(
+            KnowledgeBookBodyDTO.self,
+            from: Data(#"{"book_id":"kn-1","title":"Readable","author":"Author","content_version":"v1","edition":1,"citation":"source","sections":[{"id":"s1","title":"One","level":1,"markdown":"Body"}]}"#.utf8)
+        )
+
+        let loaded = try await loadKnowledgeBookReaderData(
+            fetchBody: { body },
+            fetchSubscriptions: { throw URLError(.cannotConnectToHost) }
+        )
+
+        XCTAssertEqual(loaded.body, body)
+        XCTAssertNil(loaded.subscriptions)
+
+        do {
+            _ = try await loadKnowledgeBookReaderData(
+                fetchBody: { throw URLError(.badServerResponse) },
+                fetchSubscriptions: { [] }
+            )
+            XCTFail("Primary body failure must remain fatal")
+        } catch {
+            XCTAssertEqual((error as? URLError)?.code, .badServerResponse)
+        }
     }
 
     func testKnowledgeBookSubscriptionDecodesBookAndProgress() throws {
@@ -743,6 +791,41 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertEqual(scope["mode"] as? String, "local_only")
         let notes = try XCTUnwrap(scope["local_notes"] as? [[String: Any]])
         XCTAssertEqual(notes.first?["title"] as? String, "本地会议")
+    }
+
+    func testChatRequestEncodesCurrentServerBookSectionScope() throws {
+        let request = ChatRequestDTO(
+            question: "解释当前章节",
+            contextScope: ChatContextScopeDTO(
+                mode: .platformOnly,
+                selectedBookId: "book-server-id",
+                selectedBookVersion: "content-version-server-value",
+                selectedBookSectionId: "server-section-middle"
+            )
+        )
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: JSONEncoder().encode(request)) as? [String: Any]
+        )
+        let scope = try XCTUnwrap(object["context_scope"] as? [String: Any])
+        XCTAssertEqual(scope["selected_book_id"] as? String, "book-server-id")
+        XCTAssertEqual(scope["selected_book_version"] as? String, "content-version-server-value")
+        XCTAssertEqual(scope["selected_book_section_id"] as? String, "server-section-middle")
+    }
+
+    func testLegacySelectedBookScopeStillDecodes() throws {
+        // Request DTOs own snake_case CodingKeys; do not apply a second key conversion.
+        let scope = try JSONDecoder().decode(
+            ChatContextScopeDTO.self,
+            from: Data(#"{"mode":"platform_only","selected_book_id":"legacy-book"}"#.utf8)
+        )
+        XCTAssertEqual(scope.localNotes, [])
+        XCTAssertEqual(scope.selectedBookId, "legacy-book")
+        XCTAssertNil(scope.selectedBookVersion)
+        XCTAssertNil(scope.selectedBookSectionId)
+        XCTAssertThrowsError(try JSONDecoder().decode(
+            ChatContextScopeDTO.self,
+            from: Data(#"{"mode":"platform_only","local_notes":null}"#.utf8)
+        ))
     }
 
     func testChatRequestEncodesClientSessionContextWithoutTenantClaims() throws {

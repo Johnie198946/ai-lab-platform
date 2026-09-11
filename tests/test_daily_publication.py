@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import pytest
+from test_publication_editorial import synthetic_fixture
+from publication_editorial_fixture import approve_fixture
 from fastapi import HTTPException
 
 from backend.api import chat, knowledge, knowledge_publication, subscriptions
@@ -23,7 +25,7 @@ def at(hour=4, minute=0, second=0, day=8):
 
 
 def bundle(*, series="ai-history", day="2026-09-08", body=None, **changes):
-    body = body or ("# 合成测试正文\n\n" + "这是合成 fixture，不代表真实来源或执行结果。" * 12
+    body = body or ("# 合成测试正文\n\n" + synthetic_fixture("chapter")[0]
                     + "\n\n[公开来源](https://example.com/source)\n\n```python\nprint('file: is inert here')\n```\n")
     digest = hashlib.sha256(body.encode()).hexdigest()
     value = {
@@ -44,7 +46,7 @@ def bundle(*, series="ai-history", day="2026-09-08", body=None, **changes):
     return value
 
 
-def ready(store: PublicationStore, value: dict, *, execution=False) -> dict:
+def ready(store: PublicationStore, value: dict, *, execution=False, editorial=True) -> dict:
     inputs = store.root / "fixture-inputs"
     inputs.mkdir(parents=True, exist_ok=True)
     digest = hashlib.sha256(value["body"].encode()).hexdigest()
@@ -68,6 +70,8 @@ def ready(store: PublicationStore, value: dict, *, execution=False) -> dict:
         log = inputs / "execution.log"
         log.write_text("synthetic executed fixture", encoding="utf-8")
         value["execution_evidence"] = [store.ingest_file(log, "log")]
+    if editorial and value["content_kind"] == "commentary":
+        value = approve_fixture(store, value)
     return value
 
 
@@ -170,11 +174,11 @@ def test_newest_due_edition_wins_and_review_retry_is_same_edition(tmp_path):
     blocked = store.stage(invalid, now=at(3))
     recovered = stage(store, now=at(3))
     assert recovered["edition_id"] == blocked["edition_id"] and recovered["state"] == "scheduled"
-    changed = bundle(body=bundle()["body"] + "\n## 修订\n新增内容")
+    changed = bundle(body=bundle()["body"] + "\n### 修订\n新增内容")
     newer = stage(store, changed, now=at(3))
     result = store.release_due(now=at(4))
     assert result["released"] == [newer["edition_id"]]
-    assert result["superseded"] == [recovered["edition_id"]]
+    assert store.status()[1]["state"] == "blocked"
 
 
 def test_hash_receipt_tamper_and_rights_expiry_hide_at_access(tmp_path):
@@ -189,7 +193,7 @@ def test_hash_receipt_tamper_and_rights_expiry_hide_at_access(tmp_path):
     store2 = PublicationStore(tmp_path / "tamper")
     item2 = stage(store2, now=at(3))
     (store2.root / item2["body_ref"]).write_text("tampered", encoding="utf-8")
-    assert store2.release_due(now=at(4))["blocked"][0]["reasons"] == ["artifact_missing_or_hash_mismatch"]
+    assert "artifact_missing_or_hash_mismatch" in store2.release_due(now=at(4))["blocked"][0]["reasons"]
 
 
 def test_rights_evidence_and_external_link_only_gate(tmp_path):

@@ -242,11 +242,21 @@ public struct KnowledgeBookDTO: Codable, Identifiable, Hashable {
     public var sourceId: Int? = nil
     public var bodyOrigin: String? = nil
     public var completeness: String? = nil
+    public var publicationFormat: String? = nil
     public var sourceClassification: String? = nil
     public var readable: Bool? = nil
     public var unavailableReason: String? = nil
 
     public var isBodyUnavailable: Bool { readable == false || contentStatus == "metadata_only" }
+    public var publicationTypeLabel: String? {
+        ["book": "完整书", "chapter": "连载章节", "article": "历史短文", "source": "资料来源"][publicationFormat ?? ""]
+    }
+    public var canonicalHTTPURL: URL? {
+        guard let canonicalUrl, let url = URL(string: canonicalUrl),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host?.isEmpty == false else { return nil }
+        return url
+    }
 }
 
 public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
@@ -255,6 +265,12 @@ public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {
     public let securityLevel: String
     public let bookCount: Int
     public let books: [KnowledgeBookDTO]
+
+    public var isSourceShelf: Bool {
+        id == "knowledge/publication/follow-builders"
+            || id.hasPrefix("owner-private/follow-builders/")
+            || books.contains { ["public_source_index", "owner_private_external"].contains($0.sourceKind ?? "") }
+    }
 }
 
 public struct KnowledgeBookshelvesResponse: Codable {
@@ -664,17 +680,38 @@ public struct ChatContextScopeDTO: Codable, Hashable, Sendable {
     public let mode: ChatContextMode
     public let localNotes: [ChatLocalNoteDTO]
     public let selectedBookId: String?
+    public let selectedBookVersion: String?
+    public let selectedBookSectionId: String?
 
-    public init(mode: ChatContextMode = .auto, localNotes: [ChatLocalNoteDTO] = [], selectedBookId: String? = nil) {
+    public init(
+        mode: ChatContextMode = .auto,
+        localNotes: [ChatLocalNoteDTO] = [],
+        selectedBookId: String? = nil,
+        selectedBookVersion: String? = nil,
+        selectedBookSectionId: String? = nil
+    ) {
         self.mode = mode
         self.localNotes = localNotes
         self.selectedBookId = selectedBookId
+        self.selectedBookVersion = selectedBookVersion
+        self.selectedBookSectionId = selectedBookSectionId
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        mode = container.contains(.mode) ? try container.decode(ChatContextMode.self, forKey: .mode) : .auto
+        localNotes = container.contains(.localNotes) ? try container.decode([ChatLocalNoteDTO].self, forKey: .localNotes) : []
+        selectedBookId = try container.decodeIfPresent(String.self, forKey: .selectedBookId)
+        selectedBookVersion = try container.decodeIfPresent(String.self, forKey: .selectedBookVersion)
+        selectedBookSectionId = try container.decodeIfPresent(String.self, forKey: .selectedBookSectionId)
     }
 
     enum CodingKeys: String, CodingKey {
         case mode
         case localNotes = "local_notes"
         case selectedBookId = "selected_book_id"
+        case selectedBookVersion = "selected_book_version"
+        case selectedBookSectionId = "selected_book_section_id"
     }
 }
 

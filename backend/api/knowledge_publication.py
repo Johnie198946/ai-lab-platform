@@ -83,6 +83,9 @@ class SerialBundle(BaseModel):
     warnings: list[str] = Field(default_factory=list, max_length=20)
     source_index: dict | None = None
     source_index_review_hash: str | None = Field(default=None, min_length=64, max_length=64)
+    quality_contract: dict | None = None
+    editorial_proof_file: str | None = None
+    editorial_proof_sha256: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 def _super(payload: dict) -> None:
@@ -279,7 +282,7 @@ async def candidates(payload=Depends(require_auth)):
 async def stage_serial(body: SerialBundle, payload=Depends(require_auth)):
     _super(payload)
     try:
-        item = PublicationStore().stage(body.model_dump(), vault=_vault())
+        item = PublicationStore().stage(body.model_dump(exclude_none=True), vault=_vault())
     except PublicationError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     _invalidate_publication_caches()

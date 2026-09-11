@@ -830,7 +830,7 @@ public struct SubscriptionCenterView: View {
                 HStack {
                     Label("刚刚更新", systemImage: "clock")
                     Spacer()
-                    Label("\(shelf.bookCount)", systemImage: "books.vertical")
+                    Label(shelf.isSourceShelf ? "\(shelf.bookCount) 条来源" : "\(shelf.bookCount) 本书", systemImage: shelf.isSourceShelf ? "link" : "books.vertical")
                 }
                 .font(.caption2)
                 .foregroundStyle(AppTheme.Colors.textTertiary)
@@ -867,7 +867,7 @@ public struct SubscriptionCenterView: View {
             .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
         }
         .buttonStyle(SoftButtonStyle())
-        .accessibilityLabel("\(shelf.title)，\(shelf.bookCount) 本书")
+        .accessibilityLabel("\(shelf.title)，\(shelf.bookCount) \(shelf.isSourceShelf ? "条来源" : "本书")")
         .accessibilityHint("点按打开分类书架")
         .accessibilityIdentifier("bookshelf-collection.\(shelf.id)")
     }
@@ -886,10 +886,10 @@ public struct SubscriptionCenterView: View {
                     .foregroundStyle(AppTheme.Colors.textSecondary)
                 bookshelfSearch(placeholder: "搜索这个书架")
                 HStack {
-                    Text("书架上的精选")
+                    Text(shelf.isSourceShelf ? "资料来源" : "书架上的精选")
                         .font(AppTheme.Typography.micro.weight(.semibold))
                     Spacer()
-                    Text("\(books.count) 本")
+                    Text("\(books.count) \(shelf.isSourceShelf ? "条" : "本")")
                         .font(AppTheme.Typography.micro)
                         .foregroundStyle(AppTheme.Colors.textTertiary)
                 }
@@ -2034,6 +2034,7 @@ public struct SubscriptionCenterView: View {
 struct KnowledgeBookReaderView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var api: APIClient
 
     let book: KnowledgeBookDTO
     let isSubscribed: Bool
@@ -2044,6 +2045,9 @@ struct KnowledgeBookReaderView: View {
 
     @State private var appeared = false
     @State private var showingReading = ProcessInfo.processInfo.arguments.contains("-bookReadingPreview")
+    @State private var selectedBookVersion: String?
+    @State private var selectedBookSectionID: String?
+    @State private var selectedBookSectionTitle: String?
 
     var body: some View {
         NavigationStack {
@@ -2090,7 +2094,7 @@ struct KnowledgeBookReaderView: View {
                         .padding(.vertical, 38)
                         .offset(x: 36)
 
-                    Text("ABOUT  /  本书概述")
+                    Text(["owner_private_external", "public_source_index"].contains(book.sourceKind ?? "") ? "SOURCE  /  资料来源" : "ABOUT  /  本书概述")
                         .font(.caption.weight(.bold))
                         .tracking(1.1)
                         .foregroundStyle(AppTheme.Colors.textTertiary)
@@ -2111,6 +2115,13 @@ struct KnowledgeBookReaderView: View {
                     .padding(.top, 34)
                     .offset(x: 22)
 
+                    if let label = book.publicationTypeLabel {
+                        readerPill(label, icon: "book.closed")
+                            .padding(.top, 10)
+                            .offset(x: 64)
+                            .accessibilityIdentifier("publication-type.\(book.id)")
+                    }
+
                     readerPill(book.testSerial == true ? "冻结期次" : (book.freshness == "current" ? "持续更新" : book.freshness), icon: "clock")
                         .padding(.top, 10)
                         .offset(x: 104)
@@ -2118,7 +2129,7 @@ struct KnowledgeBookReaderView: View {
                     Label(
                         book.sourceKind == "owner_private_external"
                             ? (book.contentStatus == "snapshot" ? "这是私有消费的外部快照；正文来源与完整性状态见上方，不表示已获公共再发布许可。" : (book.contentStatus == "summary" ? "这里只提供来源记录摘要，不表示完整原文。" : (book.unavailableReason ?? "这里只提供原始来源链接，没有可验证的正文。")))
-                            : (book.sourceKind == "public_source_index" ? "这里只展示原样保存的元数据与字面来源 URL；不包含第三方全文、快照或编辑摘要。" : (book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。")),
+                            : (book.sourceKind == "public_source_index" ? "仅来源信息，未发布全文。这里只展示原样保存的元数据与字面来源 URL。" : (book.testSerial == true ? "正文为已审核的冻结发布版本；作者、来源与适用边界见正文。" : "正文为已批准的 Wiki 编研版；Raw 仅用于署名、引用与溯源。")),
                         systemImage: "quote.opening"
                     )
                     .font(.footnote)
@@ -2132,32 +2143,17 @@ struct KnowledgeBookReaderView: View {
                             .font(.footnote.weight(.semibold))
                             .foregroundStyle(AppTheme.Colors.primary)
                             .padding(.top, 18)
-                        Button("围绕本期向 Chat 提问") {
-                            appState.navigateToChatWithPrompt(
-                                "请结合我选择的本期内容，先说明证据与适用边界，再回答我的问题。",
-                                contextScope: ChatContextScopeDTO(mode: .platformOnly, selectedBookId: book.id)
-                            )
-                            onDismiss()
-                        }
-                        .frame(minHeight: 44)
-                        .accessibilityHint("切换到 Chat，并绑定当前已发布版本")
-                        .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
-                    } else if book.sourceKind == "owner_private_external", book.readable == true {
-                        Button("围绕这个私有来源向 Chat 提问") {
-                            appState.navigateToChatWithPrompt(
-                                "请只依据我选择的外部来源，区分快照、摘要与未知信息后回答。",
-                                contextScope: ChatContextScopeDTO(mode: .platformOnly, selectedBookId: book.id)
-                            )
-                            onDismiss()
-                        }
-                        .frame(minHeight: 44)
-                        .accessibilityHint("切换到 Chat，并绑定当前账号有权读取的来源版本")
-                        .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
+                    }
+                    if !book.isBodyUnavailable, book.sourceKind != "public_source_index" {
+                        Button(chatButtonLabel) { openSelectedBookChat() }
+                            .frame(minHeight: 44)
+                            .accessibilityHint("切换到 Chat，并绑定当前已发布版本")
+                            .accessibilityIdentifier("selected-book-chat-open.\(book.id)")
                     }
 
-                    if ["owner_private_external", "public_source_index"].contains(book.sourceKind ?? ""),
-                       let value = book.canonicalUrl, let url = URL(string: value),
-                       ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
+                    if !book.isBodyUnavailable,
+                       ["owner_private_external", "public_source_index"].contains(book.sourceKind ?? ""),
+                       let url = book.canonicalHTTPURL {
                         Link("查看原始来源", destination: url)
                             .font(.footnote.weight(.semibold))
                             .padding(.top, 14)
@@ -2180,23 +2176,40 @@ struct KnowledgeBookReaderView: View {
             )
             .safeAreaInset(edge: .bottom) {
                 VStack(spacing: 4) {
-                    Button(action: isSubscribed ? { showingReading = true } : onToggleSubscription) {
-                        HStack(spacing: 10) {
-                            if isBusy { ProgressView().tint(.white) }
-                            Image(systemName: book.isBodyUnavailable ? "link" : (isSubscribed ? "book.pages.fill" : "plus"))
-                            Text(book.isBodyUnavailable ? "正文不可用，查看来源" : (isSubscribed ? "开始阅读" : "加入我的笔记书架"))
+                    if book.isBodyUnavailable, let url = book.canonicalHTTPURL {
+                        Link(destination: url) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "arrow.up.right.square")
+                                Text("打开原始来源")
+                            }
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Color.white)
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .background(AppTheme.Colors.textPrimary)
+                            .clipShape(Capsule())
                         }
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(Color.white)
-                        .frame(maxWidth: .infinity, minHeight: 52)
-                        .background(AppTheme.Colors.textPrimary)
-                        .clipShape(Capsule())
+                        .buttonStyle(SoftButtonStyle())
+                        .accessibilityLabel("打开《\(book.title)》的原始来源")
+                        .accessibilityIdentifier("publication-source-open.\(book.id)")
+                    } else if !book.isBodyUnavailable {
+                        Button(action: isSubscribed ? { showingReading = true } : onToggleSubscription) {
+                            HStack(spacing: 10) {
+                                if isBusy { ProgressView().tint(.white) }
+                                Image(systemName: isSubscribed ? "book.pages.fill" : "plus")
+                                Text(isSubscribed ? "开始阅读" : "加入我的笔记书架")
+                            }
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(Color.white)
+                            .frame(maxWidth: .infinity, minHeight: 52)
+                            .background(AppTheme.Colors.textPrimary)
+                            .clipShape(Capsule())
+                        }
+                        .disabled(isBusy && !isSubscribed)
+                        .buttonStyle(SoftButtonStyle())
+                        .accessibilityLabel(isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架")
+                        .accessibilityValue(isSubscribed ? "subscribed" : "unsubscribed")
+                        .accessibilityIdentifier("publication-subscription-control.\(book.id)")
                     }
-                    .disabled(book.isBodyUnavailable || (isBusy && !isSubscribed))
-                    .buttonStyle(SoftButtonStyle())
-                    .accessibilityLabel(book.isBodyUnavailable ? "《\(book.title)》正文不可用，仅可查看原始来源" : (isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架"))
-                    .accessibilityValue(isSubscribed ? "subscribed" : "unsubscribed")
-                    .accessibilityIdentifier("publication-subscription-control.\(book.id)")
                     HStack(spacing: 18) {
                         if isSubscribed {
                             Button("移出书架", action: onToggleSubscription)
@@ -2234,7 +2247,39 @@ struct KnowledgeBookReaderView: View {
             }
         }
         .fullScreenCover(isPresented: $showingReading) {
-            KnowledgeBookReadingView(book: book) { showingReading = false }
+            KnowledgeBookReadingView(
+                book: book,
+                onScopeChange: { body, section in
+                    selectedBookVersion = body.contentVersion
+                    selectedBookSectionID = section.id
+                    selectedBookSectionTitle = section.title
+                },
+                onDismiss: { showingReading = false }
+            )
+        }
+    }
+
+    private var chatButtonLabel: String {
+        "围绕《\(book.title)》\(selectedBookSectionTitle.map { " · 最近定位章节：\($0)" } ?? "")向 Chat 提问"
+    }
+
+    private func openSelectedBookChat() {
+        Task { @MainActor in
+            var version = selectedBookVersion
+            if version == nil { version = try? await api.fetchKnowledgeBookBody(id: book.id).contentVersion }
+            guard let version else { return }
+            appState.navigateToChatWithPrompt(
+                book.sourceKind == "owner_private_external"
+                    ? "请只依据我选择的外部来源，区分快照、摘要与未知信息后回答。"
+                    : "请结合我选择的本期内容，先说明证据与适用边界，再回答我的问题。",
+                contextScope: ChatContextScopeDTO(
+                    mode: .platformOnly,
+                    selectedBookId: book.id,
+                    selectedBookVersion: version,
+                    selectedBookSectionId: selectedBookSectionID
+                )
+            )
+            onDismiss()
         }
     }
 
@@ -2282,6 +2327,22 @@ struct KnowledgeBookReaderView: View {
     }
 }
 
+struct KnowledgeBookReaderLoad {
+    let body: KnowledgeBookBodyDTO
+    let subscriptions: [KnowledgeBookSubscriptionDTO]?
+}
+
+func loadKnowledgeBookReaderData(
+    fetchBody: () async throws -> KnowledgeBookBodyDTO,
+    fetchSubscriptions: () async throws -> [KnowledgeBookSubscriptionDTO]
+) async throws -> KnowledgeBookReaderLoad {
+    async let subscriptions = try? await fetchSubscriptions()
+    let body = try await fetchBody()
+    let loadedSubscriptions = await subscriptions
+    try Task.checkCancellation()
+    return KnowledgeBookReaderLoad(body: body, subscriptions: loadedSubscriptions)
+}
+
 private struct KnowledgeBookReadingView: View {
     @EnvironmentObject private var api: APIClient
     @State private var bookBody: KnowledgeBookBodyDTO?
@@ -2291,11 +2352,13 @@ private struct KnowledgeBookReadingView: View {
     @State private var progress = 0.0
     @State private var originalProgress = 0.0
     @State private var lastSentProgress = 0.0
+    @State private var hasProgressBaseline = false
     @State private var pendingProgressIndex: Int?
     @State private var selectedExcerpt = ""
     @State private var selectedSection: KnowledgeBookSectionDTO?
     @State private var saveMessage: String?
     let book: KnowledgeBookDTO
+    let onScopeChange: (KnowledgeBookBodyDTO, KnowledgeBookSectionDTO) -> Void
     let onDismiss: () -> Void
 
     @MainActor
@@ -2303,24 +2366,43 @@ private struct KnowledgeBookReadingView: View {
         let account = KnowledgeNoteStore.shared.accountFingerprint
         isLoading = true
         loadError = nil
+        hasProgressBaseline = false
         do {
-            async let bodyRequest = api.fetchKnowledgeBookBody(id: book.id)
-            async let subscriptionsRequest = api.fetchBookSubscriptions()
-            let (loaded, subscriptions) = try await (bodyRequest, subscriptionsRequest)
-            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
-            bookBody = loaded
-            if let subscription = subscriptions.first(where: { $0.book.id == book.id }),
-               subscription.contentVersion == loaded.contentVersion {
-                progress = subscription.progress
-                originalProgress = subscription.progress
-                lastSentProgress = subscription.progress
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-bookReadingLongFixture") {
+                let loaded = KnowledgeBookReaderLoad.longPreview
+                bookBody = loaded.body
+                progressError = "正文已加载，但阅读进度暂时无法同步。"
+                isLoading = false
+                return
+            }
+            #endif
+            let loaded = try await loadKnowledgeBookReaderData(
+                fetchBody: { try await api.fetchKnowledgeBookBody(id: book.id) },
+                fetchSubscriptions: { try await api.fetchBookSubscriptions() }
+            )
+            guard !Task.isCancelled, account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            bookBody = loaded.body
+            if let subscriptions = loaded.subscriptions {
+                hasProgressBaseline = true
+                progressError = nil
+                pendingProgressIndex = nil
+                if let subscription = subscriptions.first(where: { $0.book.id == book.id }),
+                   subscription.contentVersion == loaded.body.contentVersion {
+                    progress = subscription.progress
+                    originalProgress = subscription.progress
+                    lastSentProgress = subscription.progress
+                } else {
+                    progress = 0
+                    originalProgress = 0
+                    lastSentProgress = 0
+                }
             } else {
-                progress = 0
-                originalProgress = 0
-                lastSentProgress = 0
+                progressError = "正文已加载，但阅读进度暂时无法同步。"
+                pendingProgressIndex = nil
             }
         } catch {
-            guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
+            guard !Task.isCancelled, account == KnowledgeNoteStore.shared.accountFingerprint else { return }
             loadError = "正文暂时无法读取，请重试。"
         }
         isLoading = false
@@ -2328,7 +2410,7 @@ private struct KnowledgeBookReadingView: View {
 
     @MainActor
     private func recordReading(sectionIndex: Int) async {
-        guard let bookBody else { return }
+        guard let bookBody, hasProgressBaseline else { return }
         let account = KnowledgeNoteStore.shared.accountFingerprint
         let next = Double(sectionIndex + 1) / Double(bookBody.sections.count)
         guard next > lastSentProgress else { return }
@@ -2375,7 +2457,7 @@ private struct KnowledgeBookReadingView: View {
         let credentialGeneration = api.currentCredentialGeneration()
         Task {
             guard account == KnowledgeNoteStore.shared.accountFingerprint else { return }
-            try? await api.syncKnowledgeNote(
+            _ = try? await api.syncKnowledgeNote(
                 id: note.id, markdown: markdown, updatedAt: note.updatedAt,
                 credentialGeneration: credentialGeneration
             )
@@ -2383,91 +2465,130 @@ private struct KnowledgeBookReadingView: View {
         saveMessage = "已保存到当前账号的笔记"
     }
 
+    @ToolbarContentBuilder
+    private func readerToolbar(bookBody: KnowledgeBookBodyDTO?, proxy: ScrollViewProxy) -> some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button(action: onDismiss) {
+                Image(systemName: "chevron.left")
+                    .frame(width: 44, height: 44)
+                    .background(Color.white.opacity(0.34), in: Circle())
+            }
+            .accessibilityLabel("返回书籍概述")
+        }
+        if let bookBody {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    ForEach(bookBody.sections) { section in
+                        Button(section.title) {
+                            onScopeChange(bookBody, section)
+                            withAnimation { proxy.scrollTo(section.id, anchor: .top) }
+                        }
+                        .accessibilityIdentifier("publication-reader-nav.\(section.id)")
+                    }
+                } label: {
+                    Label("目录", systemImage: "list.bullet")
+                        .frame(minHeight: 44)
+                }
+                .accessibilityIdentifier("publication-reader-toc.\(book.id)")
+            }
+        }
+    }
+
+    private var readerPage: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("QUANTUM LIBRARY  ·  卷一")
+                .font(.caption2.weight(.bold))
+                .tracking(1.5)
+                .foregroundStyle(Color.brown.opacity(0.62))
+            Text(book.title)
+                .font(.system(.largeTitle, design: .serif, weight: .bold))
+                .foregroundStyle(Color(red: 0.20, green: 0.15, blue: 0.10))
+                .padding(.top, 48)
+            Text(book.author)
+                .font(.system(.title3, design: .serif))
+                .foregroundStyle(Color.brown.opacity(0.78))
+                .padding(.top, 12)
+
+            HStack(spacing: 12) {
+                Rectangle().frame(width: 54, height: 1)
+                Image(systemName: "leaf.fill")
+                Rectangle().frame(width: 54, height: 1)
+            }
+            .foregroundStyle(Color.brown.opacity(0.42))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 52)
+
+            if isLoading {
+                ProgressView("正在读取已批准正文…")
+                    .frame(maxWidth: .infinity, minHeight: 180)
+            } else if let loadError {
+                ContentUnavailableView(
+                    "正文不可用", systemImage: "book.closed",
+                    description: Text(loadError)
+                )
+                Button("重新加载") { Task { await loadBody() } }
+                    .frame(minHeight: 44)
+            } else if let bookBody {
+                Text("第 \(bookBody.edition) 版 · 已读 \(Int(progress * 100))%")
+                    .font(.system(.footnote, design: .serif, weight: .semibold))
+                    .foregroundStyle(Color.brown.opacity(0.72))
+                    .accessibilityValue("original=\(originalProgress);current=\(progress)")
+                    .accessibilityIdentifier("publication-reader-progress.\(book.id)")
+                if let progressError {
+                    if let index = pendingProgressIndex {
+                        Button(progressError) { Task { await recordReading(sectionIndex: index) } }
+                            .padding(.top, 12)
+                    } else {
+                        Label(progressError, systemImage: "exclamationmark.arrow.triangle.2.circlepath")
+                            .font(.footnote.weight(.semibold))
+                            .padding(.top, 12)
+                            .accessibilityIdentifier("publication-reader-progress-warning.\(book.id)")
+                    }
+                }
+                LazyVStack(alignment: .leading, spacing: 36) {
+                    ForEach(Array(bookBody.sections.enumerated()), id: \.element.id) { index, section in
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text(section.title)
+                                .font(.system(section.level == 1 ? .title2 : .title3, design: .serif, weight: .semibold))
+                            SelectableBookText(markdown: section.markdown) { excerpt in
+                                selectedExcerpt = excerpt
+                                selectedSection = section
+                                onScopeChange(bookBody, section)
+                            }
+                        }
+                        .id(section.id)
+                        .onAppear { Task { await recordReading(sectionIndex: index) } }
+                    }
+                }
+                .padding(.top, 22)
+                .accessibilityElement(children: .contain)
+                .accessibilityLabel("已发布正文内容")
+                .accessibilityValue(String(
+                    ([bookBody.title] + bookBody.sections.flatMap { [$0.title, $0.markdown] })
+                        .joined(separator: "\n").prefix(1_000)
+                ))
+                .accessibilityIdentifier("publication-reader-content.\(book.id)")
+                if !selectedExcerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("将所选文字摘录到笔记", action: saveExcerpt)
+                        .buttonStyle(.borderedProminent)
+                        .padding(.top, 28)
+                }
+                if let saveMessage {
+                    Text(saveMessage).font(.footnote).foregroundStyle(Color.green)
+                }
+            }
+            Spacer(minLength: 120)
+        }
+        .frame(maxWidth: 560, alignment: .leading)
+        .padding(.horizontal, 34)
+        .padding(.top, 42)
+    }
+
     var body: some View {
         NavigationStack {
+            ScrollViewReader { proxy in
             ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    Text("QUANTUM LIBRARY  ·  卷一")
-                        .font(.caption2.weight(.bold))
-                        .tracking(1.5)
-                        .foregroundStyle(Color.brown.opacity(0.62))
-                    Text(book.title)
-                        .font(.system(.largeTitle, design: .serif, weight: .bold))
-                        .foregroundStyle(Color(red: 0.20, green: 0.15, blue: 0.10))
-                        .padding(.top, 48)
-                    Text(book.author)
-                        .font(.system(.title3, design: .serif))
-                        .foregroundStyle(Color.brown.opacity(0.78))
-                        .padding(.top, 12)
-
-                    HStack(spacing: 12) {
-                        Rectangle().frame(width: 54, height: 1)
-                        Image(systemName: "leaf.fill")
-                        Rectangle().frame(width: 54, height: 1)
-                    }
-                    .foregroundStyle(Color.brown.opacity(0.42))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 52)
-
-                    if isLoading {
-                        ProgressView("正在读取已批准正文…")
-                            .frame(maxWidth: .infinity, minHeight: 180)
-                    } else if let loadError {
-                        ContentUnavailableView(
-                            "正文不可用", systemImage: "book.closed",
-                            description: Text(loadError)
-                        )
-                        Button("重新加载") { Task { await loadBody() } }
-                            .frame(minHeight: 44)
-                    } else if let bookBody {
-                        Text("第 \(bookBody.edition) 版 · 已读 \(Int(progress * 100))%")
-                            .font(.system(.footnote, design: .serif, weight: .semibold))
-                            .foregroundStyle(Color.brown.opacity(0.72))
-                            .accessibilityValue("original=\(originalProgress);current=\(progress)")
-                            .accessibilityIdentifier("publication-reader-progress.\(book.id)")
-                        LazyVStack(alignment: .leading, spacing: 36) {
-                            ForEach(Array(bookBody.sections.enumerated()), id: \.element.id) { index, section in
-                                VStack(alignment: .leading, spacing: 14) {
-                                    Text(section.title)
-                                        .font(.system(section.level == 1 ? .title2 : .title3, design: .serif, weight: .semibold))
-                                    SelectableBookText(markdown: section.markdown) { excerpt in
-                                        selectedExcerpt = excerpt
-                                        selectedSection = section
-                                    }
-                                }
-                                .onAppear { Task { await recordReading(sectionIndex: index) } }
-                            }
-                        }
-                        .padding(.top, 22)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityLabel("已发布正文内容")
-                        .accessibilityValue(String(
-                            ([bookBody.title] + bookBody.sections.flatMap { [$0.title, $0.markdown] })
-                                .joined(separator: "\n").prefix(1_000)
-                        ))
-                        .accessibilityIdentifier("publication-reader-content.\(book.id)")
-                        if !selectedExcerpt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                            Button("将所选文字摘录到笔记", action: saveExcerpt)
-                                .buttonStyle(.borderedProminent)
-                                .padding(.top, 28)
-                        }
-                        if let saveMessage {
-                            Text(saveMessage).font(.footnote).foregroundStyle(Color.green)
-                        }
-                    }
-                    if let progressError {
-                        Button(progressError) {
-                            if let index = pendingProgressIndex {
-                                Task { await recordReading(sectionIndex: index) }
-                            }
-                        }
-                            .padding(.top, 20)
-                    }
-                    Spacer(minLength: 120)
-                }
-                .frame(maxWidth: 560, alignment: .leading)
-                .padding(.horizontal, 34)
-                .padding(.top, 42)
+                readerPage
             }
             .accessibilityIdentifier("publication-reader-body.\(book.id)")
             .foregroundStyle(Color(red: 0.23, green: 0.17, blue: 0.11))
@@ -2485,16 +2606,10 @@ private struct KnowledgeBookReadingView: View {
             )
             .toolbarBackground(.hidden, for: .navigationBar)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(action: onDismiss) {
-                        Image(systemName: "chevron.left")
-                            .frame(width: 44, height: 44)
-                            .background(Color.white.opacity(0.34), in: Circle())
-                    }
-                    .accessibilityLabel("返回书籍概述")
-                }
+                readerToolbar(bookBody: bookBody, proxy: proxy)
             }
             .task(id: book.id) { await loadBody() }
+            }
         }
     }
 }
@@ -2553,7 +2668,8 @@ extension SubscriptionCenterResponse {
             _ summary: String,
             theme: String,
             variant: Int,
-            sources: Int
+            sources: Int,
+            format: String
         ) -> KnowledgeBookDTO {
             KnowledgeBookDTO(
                 id: id,
@@ -2567,24 +2683,25 @@ extension SubscriptionCenterResponse {
                 securityLevel: "green",
                 knowledgeLevel: "K5",
                 freshness: "current",
-                sourceCount: sources
+                sourceCount: sources,
+                publicationFormat: format
             )
         }
 
         let product = [
-            book("product-map", "AI 产品全景图", author: "Quantum 研究团队", "从用户问题、能力边界到商业闭环，理解 AI 产品的完整结构。", theme: "product", variant: 0, sources: 18),
-            book("subscription", "AI 原生研发手册", author: "Louis Claxton · Anthropic", "把意图、规格、验证和部署重组为 Agent 可执行的研发闭环。", theme: "product", variant: 1, sources: 12),
-            book("agent-os", "LLM Knowledge Bases", author: "Andrej Karpathy", "从 Raw 原始材料到 Wiki 增量编译，理解面向 LLM 的知识库工作方式。", theme: "product", variant: 2, sources: 23),
+            book("product-map", "AI 产品全景图", author: "Quantum 研究团队", "从用户问题、能力边界到商业闭环，理解 AI 产品的完整结构。", theme: "product", variant: 0, sources: 18, format: "book"),
+            book("subscription", "AI 原生研发手册", author: "Louis Claxton · Anthropic", "把意图、规格、验证和部署重组为 Agent 可执行的研发闭环。", theme: "product", variant: 1, sources: 12, format: "chapter"),
+            book("agent-os", "LLM Knowledge Bases", author: "Andrej Karpathy", "从 Raw 原始材料到 Wiki 增量编译，理解面向 LLM 的知识库工作方式。", theme: "product", variant: 2, sources: 23, format: "article"),
         ]
         let strategy = [
-            book("signals", "战略信号手册", author: "Quantum 研究团队", "识别市场变化、技术拐点与竞争动作中的高价值信号。", theme: "strategic-signal", variant: 3, sources: 31),
-            book("competitor", "Claude 工程实践", author: "Anthropic", "从官方案例中提炼 Claude Code 的工程化方法与适用边界。", theme: "competitor", variant: 4, sources: 27),
-            book("decision", "高质量决策框架", author: "Quantum 研究团队", "用假设、反例与证据强度降低复杂决策中的判断偏差。", theme: "methodology", variant: 5, sources: 16),
+            book("signals", "战略信号手册", author: "Quantum 研究团队", "识别市场变化、技术拐点与竞争动作中的高价值信号。", theme: "strategic-signal", variant: 3, sources: 31, format: "book"),
+            book("competitor", "Claude 工程实践", author: "Anthropic", "从官方案例中提炼 Claude Code 的工程化方法与适用边界。", theme: "competitor", variant: 4, sources: 27, format: "chapter"),
+            book("decision", "高质量决策框架", author: "Quantum 研究团队", "用假设、反例与证据强度降低复杂决策中的判断偏差。", theme: "methodology", variant: 5, sources: 16, format: "article"),
         ]
         let methodology = [
-            book("effective-agents", "Building Effective AI Agents", author: "Anthropic", "从可组合工作流到自主 Agent，选择足够简单且可验证的构建方式。", theme: "methodology", variant: 0, sources: 14),
-            book("qwen-agent", "千问 Agent 工程演进", author: "储旭（槿柏）", "梳理 Agent 平台从单体工具调用到工程化交付的演进路径。", theme: "methodology", variant: 2, sources: 9),
-            book("harness", "Harness Engineering", author: "Louis Claxton · Anthropic", "用确定性约束、验证与反馈环路提升 Agent 交付质量。", theme: "methodology", variant: 4, sources: 17),
+            book("effective-agents", "Building Effective AI Agents", author: "Anthropic", "从可组合工作流到自主 Agent，选择足够简单且可验证的构建方式。", theme: "methodology", variant: 0, sources: 14, format: "book"),
+            book("qwen-agent", "千问 Agent 工程演进", author: "储旭（槿柏）", "梳理 Agent 平台从单体工具调用到工程化交付的演进路径。", theme: "methodology", variant: 2, sources: 9, format: "chapter"),
+            book("harness", "Harness Engineering", author: "Louis Claxton · Anthropic", "用确定性约束、验证与反馈环路提升 Agent 交付质量。", theme: "methodology", variant: 4, sources: 17, format: "article"),
         ]
         var center = SubscriptionCenterResponse(
             organizationId: "preview",
@@ -2604,6 +2721,48 @@ extension SubscriptionCenterResponse {
         center.activePackGrants = []
         center.packAllowance = 0
         return center
+    }
+
+    static var sourcePreview: Self {
+        var center = bookshelfPreview
+        var source = KnowledgeBookDTO(
+            id: "source-preview", title: "原始资料索引", author: "Stored attribution",
+            authorSource: "raw", summary: "仅展示来源元数据，不包含正文。",
+            coverTheme: "source", coverVariant: 0, coverVersion: 1,
+            securityLevel: "green", knowledgeLevel: "source_metadata",
+            freshness: "unknown", sourceCount: 1, sourceKind: "public_source_index",
+            contentStatus: "metadata_only", canonicalUrl: "https://example.com/original",
+            completeness: "full", publicationFormat: "source", readable: false
+        )
+        source.unavailableReason = "此条目只提供来源地址。"
+        center.bookshelves = [KnowledgeBookshelfDTO(
+            id: "knowledge/publication/follow-builders", title: "资料来源",
+            securityLevel: "green", bookCount: 1, books: [source]
+        )]
+        return center
+    }
+}
+
+extension KnowledgeBookReaderLoad {
+    static var longPreview: Self {
+        let paragraph = String(repeating: "这是用于验证长文阅读结构、正文存活和章节导航的明确演示段落。", count: 24)
+        let sections = (0...100).map { index in
+            KnowledgeBookSectionDTO(
+                id: index == 0 ? "server-section-first" : (index == 50 ? "server-section-middle" : (index == 100 ? "server-section-last" : "server-section-\(index + 1)")),
+                title: index == 0 ? "第一章 起点" : (index == 50 ? "第五十一节 中段" : (index == 100 ? "第一百零一节 终章" : "第\(index + 1)节 大型目录条目")),
+                level: index.isMultiple(of: 2) ? 2 : 3,
+                markdown: paragraph
+            )
+        }
+        return Self(
+            body: KnowledgeBookBodyDTO(
+                bookId: "product-map", title: "AI 产品全景图", author: "Quantum 研究团队",
+                contentVersion: "fixture-content-version-20260911", edition: 2,
+                citation: "fixture://reader-long",
+                sections: sections
+            ),
+            subscriptions: nil
+        )
     }
 }
 #endif

@@ -7,7 +7,8 @@ final class SignedKeychainAcceptanceTests: XCTestCase {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: "com.ailab.acceptance.\(UUID())",
-            kSecAttrAccount as String: "noncredential-probe"
+            kSecAttrAccount as String: "noncredential-probe",
+            kSecAttrAccessGroup as String: "AALA948YY5.com.ailab.AIPlatformApp"
         ]
         defer { SecItemDelete(query as CFDictionary) }
         let expected = Data("keychain-acceptance-not-a-token".utf8)

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import sqlite3
+import uuid
 from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -15,11 +16,13 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from markdown_it import MarkdownIt
+from backend.services.publication_editorial import editorial_target_hash, make_editorial_contract, validate_editorial
 
 SHANGHAI = ZoneInfo("Asia/Shanghai")
 SERIES = {
     "ai-history": {"title": "AI的前世今生", "cover_theme": "history", "kind": "daily"},
     "ai-practice": {"title": "趣味AI落地经历", "cover_theme": "practice", "kind": "daily"},
+    "quantumn-originals": {"title": "Quantumn 原创书籍", "cover_theme": "original", "kind": "original_collection"},
     "anthropic-originals": {"title": "Anthropic 原作", "cover_theme": "original", "kind": "original_collection"},
     "follow-builders-sources": {"title": "Follow Builders 公开来源索引", "cover_theme": "external", "kind": "source_index"},
 }
@@ -289,11 +292,14 @@ def validate_bundle(bundle: dict[str, Any], *, now: datetime | None = None) -> t
         "execution_evidence", "warnings",
         "source_index",
         "source_index_review_hash",
+        "quality_contract", "editorial_proof_file", "editorial_proof_sha256",
     }
     if not isinstance(bundle, dict):
         raise PublicationError("bundle must be an object")
     if set(bundle) - allowed:
         raise PublicationError(f"unknown fields: {', '.join(sorted(set(bundle) - allowed))}")
+    if "quality_contract" in bundle and not isinstance(bundle["quality_contract"], dict):
+        raise PublicationError("quality_contract must be an object")
     series_id = _text(bundle.get("series_id"), "series_id", 96)
     series = SERIES.get(series_id)
     if not series:
@@ -431,9 +437,9 @@ def validate_bundle(bundle: dict[str, Any], *, now: datetime | None = None) -> t
         blocked.append("quantumn_commentary_cannot_impersonate_institution")
     if review.get("decision") != "approved" or review.get("content_hash") != review_target_hash or not str(review.get("reviewed_by") or "").startswith("hermes:"):
         blocked.append("review_missing_or_hash_mismatch")
-    if series_id == "ai-practice" and claim in {"success", "failed"} and not execution:
+    if series_id in {"ai-practice", "quantumn-originals"} and claim in {"success", "failed"} and not execution:
         blocked.append("tutorial_execution_evidence_required")
-    if series_id != "ai-practice" and claim != "not_run":
+    if series_id not in {"ai-practice", "quantumn-originals"} and claim != "not_run":
         blocked.append("execution_claim_not_applicable")
     if bundle.get("state", "staged") not in {"draft", "staged", "scheduled"}:
         raise PublicationError("invalid staging state")
@@ -472,7 +478,28 @@ class PublicationStore:
           body_ref TEXT NOT NULL, bundle_json TEXT NOT NULL, blocked_reasons TEXT NOT NULL, created_at TEXT NOT NULL,
           withdrawn_at TEXT, UNIQUE(series_id, issue_key, edition), UNIQUE(issue_id, content_hash));
         CREATE INDEX IF NOT EXISTS editions_public ON editions(state, release_at);
+        CREATE TABLE IF NOT EXISTS editorial_attempts (
+          issue_id TEXT NOT NULL, revision INTEGER NOT NULL, attempt_id TEXT NOT NULL UNIQUE,
+          input_hash TEXT NOT NULL, target_hash TEXT NOT NULL, body_hash TEXT NOT NULL,
+          contract_json TEXT NOT NULL, state TEXT NOT NULL, gaps_json TEXT NOT NULL,
+          review_hash TEXT, proof_json TEXT, created_at TEXT NOT NULL, closed_at TEXT,
+          PRIMARY KEY(issue_id, revision));
+        CREATE TABLE IF NOT EXISTS publication_migrations (name TEXT PRIMARY KEY);
+        CREATE TABLE IF NOT EXISTS legacy_published_editions (
+          edition_id TEXT PRIMARY KEY, content_hash TEXT NOT NULL, bundle_hash TEXT NOT NULL);
         """)
+        db.execute("BEGIN IMMEDIATE")
+        try:
+            if not db.execute("SELECT 1 FROM publication_migrations WHERE name='editorial-v1'").fetchone():
+                for row in db.execute("SELECT edition_id,content_hash,bundle_json FROM editions WHERE state='published'").fetchall():
+                    db.execute("INSERT OR IGNORE INTO legacy_published_editions VALUES (?,?,?)",
+                               (row["edition_id"], row["content_hash"], hashlib.sha256(row["bundle_json"].encode()).hexdigest()))
+                db.execute("INSERT INTO publication_migrations VALUES ('editorial-v1')")
+            db.commit()
+        except Exception:
+            db.rollback()
+            db.close()
+            raise
         columns = {row[1] for row in db.execute("PRAGMA table_info(editions)")}
         if "issue_key" not in columns:
             db.execute("ALTER TABLE editions ADD COLUMN issue_key TEXT NOT NULL DEFAULT ''")
@@ -590,6 +617,13 @@ class PublicationStore:
             artifact_bytes = b""
         if hashlib.sha256(artifact_bytes).hexdigest() != row["content_hash"]:
             reasons.append("artifact_missing_or_hash_mismatch")
+        legacy = db.execute("SELECT 1 FROM legacy_published_editions WHERE edition_id=? AND content_hash=? AND bundle_hash=?",
+                            (row["edition_id"], row["content_hash"], hashlib.sha256(row["bundle_json"].encode()).hexdigest())).fetchone()
+        if bundle.get("content_kind") == "commentary" and not (row["state"] == "published" and legacy):
+            try:
+                reasons.extend(self._editorial_check(db, {**bundle, "body": artifact_bytes.decode("utf-8")}, frozen=row["state"] == "published"))
+            except UnicodeError:
+                reasons.append("editorial_body_invalid")
         if bundle.get("content_kind") == "source_index":
             try:
                 runtime_bundle = {key: value for key, value in bundle.items() if key != "issue_key"}
@@ -616,11 +650,206 @@ class PublicationStore:
             reasons.append("review_hash_mismatch")
         return sorted(set(reasons))
 
+    @staticmethod
+    def _attempt_record(row):
+        value = dict(row)
+        value["quality_contract"] = json.loads(value.pop("contract_json"))
+        value["gaps"] = json.loads(value.pop("gaps_json"))
+        value.pop("proof_json", None)
+        return value
+
+    def prepare_editorial(self, bundle: dict[str, Any]) -> dict[str, Any]:
+        normalized, _ = validate_bundle(bundle)
+        if normalized["content_kind"] != "commentary":
+            raise PublicationError("editorial workflow requires commentary")
+        draft = bundle.get("quality_contract")
+        if not isinstance(draft, dict):
+            raise PublicationError("quality_contract draft required")
+        _, issue_id, _ = self.ids(normalized["series_id"], normalized["issue_key"], 1)
+        options = {k: draft.get(k) for k in ("format", "writer_sessions", "learning_objectives", "research_gaps")}
+        if (not isinstance(options["format"], str) or options["format"] not in {"book", "chapter"}
+                or not isinstance(options["writer_sessions"], list) or not options["writer_sessions"]
+                or any(not isinstance(w, str) or not w.startswith("hermes:") for w in options["writer_sessions"])
+                or not isinstance(options["learning_objectives"], list) or not options["learning_objectives"]
+                or any(not isinstance(o, str) or len(o.strip()) < 10 for o in options["learning_objectives"])
+                or not isinstance(options["research_gaps"], (list, type(None)))):
+            raise PublicationError("invalid editorial draft options")
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            if not self._bundle_receipts_valid(db, normalized):
+                raise PublicationError("intake_receipt_missing_or_hash_mismatch")
+            current = db.execute("SELECT * FROM editorial_attempts WHERE issue_id=? ORDER BY revision DESC LIMIT 1", (issue_id,)).fetchone()
+            proposed = options["research_gaps"] or []
+            if any(not isinstance(g, dict) or not isinstance(g.get("id"), str) for g in proposed):
+                raise PublicationError("invalid research gaps")
+            by_id = {g["id"]: g for g in proposed}
+            if len(by_id) != len(proposed):
+                raise PublicationError("duplicate research gaps")
+            if current:
+                for gap in json.loads(current["gaps_json"]):
+                    if gap["id"] in by_id and by_id[gap["id"]].get("question") != gap.get("question"):
+                        raise PublicationError("research gap question cannot be replaced")
+                    by_id.setdefault(gap["id"], gap)
+            options["research_gaps"] = list(by_id.values())
+            input_hash = _metadata_hash({"body_hash": normalized["body_hash"], "options": options,
+                                         "source_receipts": normalized["source_receipts"]})
+            assigned = any(k in draft for k in ("revision", "attempt_id", "issue_id", "target_hash"))
+            if current and current["input_hash"] == input_hash and current["state"] in {"await_review", "approved"}:
+                if assigned and draft != json.loads(current["contract_json"]):
+                    raise PublicationError("caller-assigned revision or identity")
+                db.commit()
+                return self._attempt_record(current)
+            if assigned:
+                raise PublicationError("prepare requires draft options, not caller-assigned revision or identity")
+            if current and current["state"] == "await_review":
+                raise PublicationError("current await_review attempt must reach a terminal review before changing target")
+            failures = db.execute("SELECT COUNT(*) FROM editorial_attempts WHERE issue_id=? AND state IN ('failed','rejected')", (issue_id,)).fetchone()[0]
+            if failures >= 3:
+                raise PublicationError("editorial retry limit reached")
+            contract = make_editorial_contract(normalized["body"], **options,
+                revision=current["revision"] + 1 if current else 1,
+                issue_id=issue_id, attempt_id="attempt-" + uuid.uuid4().hex,
+                previous_body_hash=current["body_hash"] if current else None,
+                source_receipts=normalized["source_receipts"])
+
+            db.execute("INSERT INTO editorial_attempts VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (issue_id, contract["revision"], contract["attempt_id"], input_hash, contract["target_hash"], normalized["body_hash"],
+                 json.dumps(contract, ensure_ascii=False), "await_review", json.dumps(contract["research_gaps"], ensure_ascii=False), None, None, _iso(_now()), None))
+            db.execute("UPDATE editions SET state='blocked',blocked_reasons=? WHERE issue_id=? AND state NOT IN ('published','withdrawn')",
+                       (json.dumps(["editorial_attempt_superseded"]), issue_id))
+            row = db.execute("SELECT * FROM editorial_attempts WHERE attempt_id=?", (contract["attempt_id"],)).fetchone()
+            db.commit()
+            return self._attempt_record(row)
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def _editorial_check(self, db, bundle, *, require_approved=True, frozen=False, verified=None):
+        if bundle.get("content_kind") != "commentary":
+            return []
+        contract = bundle.get("quality_contract")
+        if not isinstance(contract, dict):
+            return ["editorial_contract_required"]
+        _, issue_id, _ = self.ids(bundle["series_id"], bundle["issue_key"], 1)
+        row = (db.execute("SELECT * FROM editorial_attempts WHERE issue_id=? AND attempt_id=?", (issue_id, contract.get("attempt_id"))).fetchone()
+               if frozen else db.execute("SELECT * FROM editorial_attempts WHERE issue_id=? ORDER BY revision DESC LIMIT 1", (issue_id,)).fetchone())
+        if not row or contract != json.loads(row["contract_json"]):
+            return ["editorial_attempt_not_current"]
+        if row["state"] not in ({"approved"} if require_approved else {"await_review", "approved"}):
+            return ["editorial_attempt_not_approved"]
+        try:
+            receipt = bundle["review"]["receipt"]
+            evidence = db.execute("SELECT private_ref FROM evidence WHERE artifact_id=?", (receipt["artifact_id"],)).fetchone()
+            raw = self._path(evidence["private_ref"]).read_bytes()
+            review_hash = hashlib.sha256(raw).hexdigest()
+            if review_hash != receipt["sha256"]:
+                return ["editorial_review_hash_mismatch"]
+            review = json.loads(raw)
+            if (bundle["review"].get("reviewed_by") != review.get("reviewer_session")
+                    or bundle["review"].get("reviewed_at") != review.get("reviewed_at")
+                    or bundle["review"].get("decision") != review.get("decision")):
+                return ["editorial_review_envelope_mismatch"]
+            proof_path = Path(bundle["editorial_proof_file"])
+            if not proof_path.is_absolute():
+                proof_path = self._path(str(proof_path))
+            proof_raw = proof_path.read_bytes()
+            if hashlib.sha256(proof_raw).hexdigest() != bundle["editorial_proof_sha256"]:
+                return ["editorial_proof_hash_mismatch"]
+            proof = json.loads(proof_raw)
+            from backend.services.publication_review_provenance import verify_review_proof
+            reasons = verify_review_proof(proof, (self.root / "editorial-review-public.pem").read_bytes(),
+                issue_id=issue_id, revision=contract["revision"], attempt_id=contract["attempt_id"],
+                target_hash=contract["target_hash"], review_file_hash=review_hash,
+                reviewer_session=review.get("reviewer_session"), writer_sessions=contract["writer_sessions"])
+            reasons += validate_editorial(bundle["body"], contract, review, bundle["source_receipts"])
+            if proof.get("decision") != review.get("decision"):
+                reasons.append("editorial_proof_decision_mismatch")
+            if review.get("content_hash") != bundle["body_hash"]:
+                reasons.append("editorial_review_body_hash")
+            if require_approved and (row["review_hash"] != review_hash or row["proof_json"] != _canonical(proof).decode()):
+                reasons.append("editorial_review_not_recorded")
+            if not reasons and verified is not None:
+                verified["proof_json"] = _canonical(proof).decode()
+            return sorted(set(reasons))
+        except (OSError, ValueError, TypeError, KeyError, AttributeError, ImportError):
+            return ["editorial_proof_or_review_invalid"]
+
+    def record_editorial_review(self, bundle: dict[str, Any], review_file: Path) -> dict[str, Any]:
+        review_raw = review_file.read_bytes()
+        review = json.loads(review_raw)
+        if not isinstance(review, dict):
+            raise PublicationError("invalid editorial review")
+        receipt = self.ingest_file(review_file, "content_review")
+        working = {**bundle, "review": {"content_hash": review.get("content_hash"), "decision": "approved",
+            "reviewed_by": review.get("reviewer_session"), "reviewed_at": review.get("reviewed_at"), "receipt": receipt}}
+        # Rejections still use the original pending envelope for structural intake validation.
+        if review.get("decision") != "approved":
+            working["review"] = {"content_hash": "", "decision": "pending", "reviewed_by": "", "reviewed_at": "", "receipt": None}
+        normalized, _ = validate_bundle(working)
+        if normalized["content_kind"] != "commentary":
+            raise PublicationError("editorial workflow requires commentary")
+        contract = normalized.get("quality_contract") or {}
+        if editorial_target_hash(normalized["body"], contract, normalized["source_receipts"]) != contract.get("target_hash"):
+            raise PublicationError("editorial target mismatch")
+        _, issue_id, _ = self.ids(normalized["series_id"], normalized["issue_key"], 1)
+        db = self._connect()
+        try:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute("SELECT * FROM editorial_attempts WHERE issue_id=? AND attempt_id=?", (issue_id, contract.get("attempt_id"))).fetchone()
+            if previous and previous["state"] in {"approved", "rejected", "failed"}:
+                if previous["review_hash"] == receipt["sha256"] and contract == json.loads(previous["contract_json"]):
+                    if previous["state"] == "approved" and self._editorial_check(db, normalized, frozen=True):
+                        raise PublicationError("recorded approval proof no longer valid")
+                    db.commit()
+                    result = self._attempt_record(previous)
+                    result["review"] = working["review"]
+                    result.update({k: normalized[k] for k in ("editorial_proof_file", "editorial_proof_sha256") if k in normalized})
+                    return result
+                raise PublicationError("terminal editorial attempt cannot be overwritten")
+            row = db.execute("SELECT * FROM editorial_attempts WHERE issue_id=? ORDER BY revision DESC LIMIT 1", (issue_id,)).fetchone()
+            if not row or contract != json.loads(row["contract_json"]) or row["state"] != "await_review":
+                raise PublicationError("review requires current await_review attempt")
+            if editorial_target_hash(normalized["body"], contract, normalized["source_receipts"]) != row["target_hash"]:
+                raise PublicationError("editorial target mismatch")
+            if (review.get("editorial_target_hash") != row["target_hash"]
+                    or type(review.get("revision")) is not int or review["revision"] != row["revision"]
+                    or review.get("content_hash") != normalized["body_hash"]):
+                raise PublicationError("review identity or body hash mismatch")
+            verified = {}
+            reasons = self._editorial_check(db, normalized, require_approved=False, verified=verified) if review.get("decision") == "approved" else ["review.rejected"]
+            gaps = review.get("research_gaps", [])
+            if not isinstance(gaps, list) or any(not isinstance(g, dict) or not isinstance(g.get("id"), str)
+                    or not isinstance(g.get("question"), str) or len(g["question"].strip()) < 10 for g in gaps):
+                raise PublicationError("review research_gaps must be structured objects")
+            gaps = [{**g, "state": "open", "resolution": "", "source_urls": []} for g in gaps]
+            gaps = list({g["id"]: g for g in [*contract["research_gaps"], *gaps,
+                *[{"id": r, "question": "需要补充研究并解决审核失败项：" + r, "state": "open", "resolution": "", "source_urls": []} for r in reasons]]}.values())
+            state = "approved" if not reasons else ("rejected" if review.get("decision") in {"reject", "rejected"} else "failed")
+            proof = verified.get("proof_json") if state == "approved" else None
+            db.execute("UPDATE editorial_attempts SET state=?,gaps_json=?,review_hash=?,proof_json=?,closed_at=? WHERE attempt_id=?",
+                (state, json.dumps(gaps, ensure_ascii=False), receipt["sha256"], proof, _iso(_now()), row["attempt_id"]))
+            if reasons:
+                db.execute("UPDATE editions SET state='blocked',blocked_reasons=? WHERE issue_id=? AND state NOT IN ('published','withdrawn')", (json.dumps(reasons), issue_id))
+            result = self._attempt_record(db.execute("SELECT * FROM editorial_attempts WHERE attempt_id=?", (row["attempt_id"],)).fetchone())
+            result["review"] = working["review"]
+            result.update({k: normalized[k] for k in ("editorial_proof_file", "editorial_proof_sha256") if k in normalized})
+            db.commit()
+            return result
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
     def stage(self, bundle: dict[str, Any], *, now: datetime | None = None, vault: Path | None = None) -> dict[str, Any]:
         normalized, blocked = validate_bundle(bundle, now=now)
         db = self._connect()
         try:
             db.execute("BEGIN IMMEDIATE")
+            blocked.extend(self._editorial_check(db, normalized))
             if not self._bundle_receipts_valid(db, normalized):
                 blocked.append("intake_receipt_missing_or_hash_mismatch")
             if normalized["review"].get("decision") == "approved" and not self._review_receipt_valid(db, normalized, normalized["body_hash"]):
@@ -634,6 +863,11 @@ class PublicationStore:
             state = "blocked" if blocked else normalized.get("state", "staged")
             payload = json.dumps({key: value for key, value in normalized.items() if key != "body"}, ensure_ascii=False, sort_keys=True)
             if existing:
+                if existing["state"] in {"published", "withdrawn"}:
+                    frozen = json.loads(existing["bundle_json"])
+                    if any(frozen.get(k) != normalized.get(k) for k in
+                           ("quality_contract", "review", "content_kind", "authored_by", "editorial_proof_sha256")):
+                        raise PublicationError("frozen edition cannot change review, contract or publication type")
                 if existing["state"] not in {"published", "withdrawn"}:
                     db.execute("UPDATE editions SET source_snapshot_hash=?,title=?,summary=?,author=?,institution=?,release_at=?,state=?,bundle_json=?,blocked_reasons=? WHERE edition_id=?",
                                (normalized["source_snapshot_hash"], normalized["title"], normalized["summary"], normalized["author"], normalized["institution"], normalized["release_at"], state, payload, json.dumps(sorted(set(blocked))), existing["edition_id"]))
@@ -739,7 +973,17 @@ class PublicationStore:
         return result
 
     def status_report(self, publication_id: str | None = None, *, now: datetime | None = None) -> dict[str, Any]:
-        return {"items": self.status(publication_id), "missing": self.missing(now)}
+        db = self._connect()
+        try:
+            attempts = [self._attempt_record(r) for r in db.execute("SELECT * FROM editorial_attempts ORDER BY issue_id,revision")]
+            if publication_id:
+                attempts = [a for a in attempts if "publication-" + a["issue_id"][6:] == publication_id]
+            latest = {a["issue_id"]: a for a in attempts}
+            gaps = [{"issue_id": a["issue_id"], "revision": a["revision"], **g}
+                    for a in latest.values() for g in a["gaps"] if g.get("state") != "resolved"]
+            return {"items": self.status(publication_id), "missing": self.missing(now), "editorial_attempts": attempts, "open_gaps": gaps}
+        finally:
+            db.close()
 
     def published(
         self, *, now: datetime | None = None, vault: Path | None = None,
@@ -784,10 +1028,11 @@ class PublicationStore:
             "security_level": "green", "knowledge_level": "source_metadata",
             "freshness": "unknown", "source_count": 1,
             "content_status": "metadata_only", "canonical_url": source["literal_url"],
+            "publication_format": "source", "publication_type_label": "来源元数据",
             "published": None, "source_kind_label": "external source metadata",
             "content_version": source["metadata_sha256"], "source_id": source["source_id"],
             "body_origin": "public_metadata_index", "completeness": "metadata_only",
-            "source_classification": source["admission_status"], "readable": True,
+            "source_classification": source["admission_status"], "readable": False,
             "unavailable_reason": "第三方全文未获准公开再发布；这里只展示元数据和原始链接。",
             "edition": edition["edition"], "edition_id": edition["edition_id"],
         }
@@ -836,6 +1081,7 @@ class PublicationStore:
                 "content_version": source["metadata_sha256"], "edition": edition["edition"],
                 "citation": source["literal_url"], "sections": reader_sections(markdown, preserve_source_whitespace=True),
                 "source_kind": "public_source_index", "content_status": "metadata_only",
+                "publication_format": "source", "publication_type_label": "来源元数据",
                 "canonical_url": source["literal_url"], "body_origin": "public_metadata_index",
                 "completeness": "metadata_only", "source_classification": source["admission_status"],
             }
@@ -878,6 +1124,10 @@ class PublicationStore:
     def _record(self, row: sqlite3.Row, *, body: bool = False) -> dict[str, Any]:
         value = dict(row)
         value["bundle"] = json.loads(value.pop("bundle_json"))
+        kind = value["bundle"].get("content_kind")
+        value["publication_format"] = ("source" if kind == "source_index" else
+                                       (value["bundle"].get("quality_contract") or {}).get("format", "article"))
+        value["publication_type_label"] = {"book": "书籍", "chapter": "章节", "article": "文章", "source": "来源元数据"}.get(value["publication_format"], "文章")
         value["blocked_reasons"] = json.loads(value["blocked_reasons"])
         if body:
             value.update({"body": self._path(value["body_ref"], ".md").read_text(encoding="utf-8"), "artifact_valid": True})

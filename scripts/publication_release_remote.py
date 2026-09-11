@@ -34,6 +34,7 @@ def _args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--identity-file")
     parser.add_argument("--known-hosts-file")
     parser.add_argument("--status-only", action="store_true")
+    parser.add_argument("--editorial-root", help="opt-in v2 manifest relay before release (or AI_LAB_PUBLICATION_EDITORIAL_ROOT)")
     return parser.parse_args(argv)
 
 
@@ -105,8 +106,10 @@ def _json(stdout: str, label: str) -> tuple[bool | None, dict]:
 
 
 def _status(stdout: str, returncode: int, label: str = "status") -> dict:
+    if returncode != 0:
+        raise ValueError(f"{label} command failed (exit {returncode})")
     ok, result = _json(stdout, label)
-    if returncode != 0 or ok is not True:
+    if ok is not True:
         raise ValueError(f"{label} command failed")
     items, missing = result.get("items"), result.get("missing")
     if not isinstance(items, list) or not isinstance(missing, list):
@@ -145,6 +148,8 @@ def _status(stdout: str, returncode: int, label: str = "status") -> dict:
 
 
 def _release(stdout: str, returncode: int) -> dict:
+    if returncode not in {0, 3}:
+        raise ValueError(f"release-due command failed (exit {returncode})")
     ok, result = _json(stdout, "release-due")
     expected_status = {0: "ok", 3: "attention_required"}.get(returncode)
     if expected_status is None:
@@ -286,6 +291,13 @@ def main(argv: list[str] | None = None) -> int:
             summary = _summary(status)
             summary["released_edition_ids"] = []
         else:
+            editorial_root = args.editorial_root or os.environ.get("AI_LAB_PUBLICATION_EDITORIAL_ROOT")
+            if editorial_root:
+                try:
+                    from scripts.publication_editorial_remote import Remote, finalize
+                except ImportError:
+                    from publication_editorial_remote import Remote, finalize
+                finalize(Path(editorial_root), Remote(identity, known_hosts))
             pre_status = _ssh(identity, known_hosts, _command("status"))
             exit_code = pre_status.returncode or 1
             before = _status(pre_status.stdout, pre_status.returncode, "pre-release status")
