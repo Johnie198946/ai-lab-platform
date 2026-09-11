@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi import HTTPException
 
 from backend.services.knowledge_catalog import bookshelf_catalog, compute_catalog, document_index
@@ -64,6 +69,169 @@ def test_projection_scan_is_reused_inside_document_filter_loops(tmp_path, monkey
     for _ in range(200):
         assert approved_color_documents(tmp_path)[0]["security_level"] == "green"
     assert calls == 1
+
+
+def test_stale_projection_cache_cannot_bypass_live_withdrawal_barrier(tmp_path):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "wiki/example.md"
+    _note(path, security="green", classification="approved")
+    projection.clear_color_projection_cache()
+    assert approved_color_documents(tmp_path)
+
+    path.write_text(
+        path.read_text(encoding="utf-8").replace("status: active", "status: withdrawn"),
+        encoding="utf-8",
+    )
+    assert approved_color_documents(tmp_path)  # Existing five-second projection cache is stale.
+    assert document_index(tmp_path) == {}
+    assert compute_catalog(tmp_path) == []
+
+
+def test_frontmatter_cache_reuses_exact_text_and_returns_isolated_values(tmp_path, monkeypatch):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "wiki/example.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ntitle: Example\ntags: [one]\n---\nSECRET BODY\n", encoding="utf-8")
+    projection.clear_color_projection_cache()
+    calls = 0
+    original = yaml.safe_load
+
+    def counted(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(projection.yaml, "safe_load", counted)
+    first = projection._frontmatter(path)
+    first["tags"].append("mutated")
+    second = projection._frontmatter(path)
+    assert second == {"title": "Example", "tags": ["one"]}
+    assert calls == 1
+
+
+def test_frontmatter_parse_failures_and_oversized_values_are_not_cached(tmp_path, monkeypatch):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "wiki/example.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ntitle: Example\n---\nbody\n", encoding="utf-8")
+    projection.clear_color_projection_cache()
+    calls = 0
+    original = yaml.safe_load
+
+    def fail_once(value):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise yaml.YAMLError("transient")
+        return original(value)
+
+    monkeypatch.setattr(projection.yaml, "safe_load", fail_once)
+    assert projection._frontmatter(path) == {}
+    assert projection._frontmatter(path)["title"] == "Example"
+    assert calls == 2
+
+    large = "x" * (projection._FRONTMATTER_CACHE_MAX_BYTES + 1)
+    path.write_text(f"---\ntitle: Example\nsummary: {large}\n---\nbody\n", encoding="utf-8")
+    calls = 0
+
+    def counted(value):
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(projection.yaml, "safe_load", counted)
+    assert projection._frontmatter(path)["title"] == "Example"
+    assert projection._frontmatter(path)["title"] == "Example"
+    assert calls == 2
+
+
+def test_frontmatter_cache_expires_and_coalesces_concurrent_misses(tmp_path, monkeypatch):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "wiki/example.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ntitle: Example\n---\nbody\n", encoding="utf-8")
+    clock = [0.0]
+    monkeypatch.setattr(projection.time, "monotonic", lambda: clock[0])
+    projection.clear_color_projection_cache()
+    calls = 0
+    calls_lock = threading.Lock()
+    original = yaml.safe_load
+
+    def counted(value):
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        time.sleep(0.005)
+        return original(value)
+
+    monkeypatch.setattr(projection.yaml, "safe_load", counted)
+    with ThreadPoolExecutor(max_workers=32) as executor:
+        values = list(executor.map(lambda _: projection._frontmatter(path), range(32)))
+    assert all(value == {"title": "Example"} for value in values)
+    assert calls == 1
+    clock[0] = projection._FRONTMATTER_CACHE_SECONDS
+    assert projection._frontmatter(path) == {"title": "Example"}
+    assert calls == 2
+
+
+def test_cache_clear_prevents_inflight_old_text_from_repopulating(tmp_path, monkeypatch):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "wiki/example.md"
+    path.parent.mkdir(parents=True)
+    path.write_text("---\ntitle: Old\n---\nbody\n", encoding="utf-8")
+    projection.clear_color_projection_cache()
+    started = threading.Event()
+    release = threading.Event()
+    original_read = projection._read_frontmatter
+
+    def paused_read(target):
+        text = original_read(target)
+        started.set()
+        assert release.wait(timeout=5)
+        return text
+
+    monkeypatch.setattr(projection, "_read_frontmatter", paused_read)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(projection._frontmatter, path)
+        assert started.wait(timeout=5)
+        path.write_text("---\ntitle: New\n---\nbody\n", encoding="utf-8")
+        projection.clear_color_projection_cache()
+        release.set()
+        assert pending.result(timeout=5) == {"title": "Old"}
+
+    monkeypatch.setattr(projection, "_read_frontmatter", original_read)
+    assert projection._frontmatter(path) == {"title": "New"}
+    assert projection._cached_frontmatter.cache_info().currsize == 1
+
+
+@pytest.mark.parametrize("text", [
+    "plain body\n",
+    "---\n---\n",
+    "---\n\n---\nbody\n",
+    "---  \nname: value\n---  \nbody\n",
+    "---\r\nname: value\r\n---\r\nbody\r\n",
+    "---\nname: [invalid\n---\nbody\n",
+    "---\nname: value\n",
+])
+def test_streamed_frontmatter_preserves_legacy_parser_results(tmp_path, text):
+    import backend.services.knowledge_color_projection as projection
+
+    path = tmp_path / "example.md"
+    path.write_bytes(text.encode("utf-8"))
+    normalized = path.read_text(encoding="utf-8", errors="replace")
+    match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", normalized, re.DOTALL)
+    try:
+        legacy = yaml.safe_load(match.group(1)) if match else {}
+    except yaml.YAMLError:
+        legacy = {}
+    legacy = legacy if isinstance(legacy, dict) else {}
+    projection.clear_color_projection_cache()
+    assert projection._frontmatter(path) == legacy
 
 
 def test_projection_uses_raw_original_author_then_quantum_fallback(tmp_path):

@@ -1,6 +1,6 @@
 ---
 title: Knowledge quality-first performance observability
-status: tested
+status: ready-to-release
 ---
 
 # Knowledge quality-first performance observability
@@ -48,4 +48,17 @@ Five adversarial rounds rejected speculative new indexing, request authorization
 
 ## Deferred until evidence
 
-No performance logic change is authorized by this manifest. Any later DB batching, transaction change, cache/index, Web convergence or generation change requires a new attacked design and quality-equivalence gates.
+DB batching, transaction changes, authorization snapshots, Web convergence and generation changes remain deferred.
+
+## Phase 2: frontmatter parsing optimization
+
+- Production observation on `f6190fcc4481454e980cf85fd2ef8483f1dd40c6`: 20 successful tenant-Wiki requests measured Gateway p50 `1.353 s`, observed p95 `3.058 s`; lexical search p50 `8.9 ms`. Long-tail work was catalog/candidate construction, including recurring full YAML parsing.
+- Production isolated-process benchmark: the legacy metadata scan was about `1.52–1.58 s`; the proposed exact-text parser cache retained real frontmatter reads and measured warm p50 `134.9 ms`, max `158.3 ms` after a `1.76 s` cold scan.
+- Scope is limited to `knowledge_color_projection._frontmatter`: stream only the first YAML frontmatter block; cache parsed metadata for 30 seconds with `lru_cache(maxsize=384)` only when the UTF-8 frontmatter is at most 16 KiB; return a deep copy; parse failures and oversized values are not cached. A generation fence prevents a read that started before an administrator cache clear from repopulating the new generation.
+- Current corpus bound: local 284 and production 277 frontmatters; maximum `4568 B`, p95 about `2.3 KiB`, zero over 16 KiB.
+- Existing uncached `_live_frontmatter`, database authorization checks, policy resolution, final recheck, retrieval, Web, model, SSE, cursor and final-answer behavior are unchanged.
+- Five additional adversarial rounds rejected catalog/live-candidate reuse and stat/inode-keyed caching. Accepted risks are bounded metadata retention until the first parse in the next 30-second bucket, and the unchanged legacy behavior for malformed unclosed frontmatter.
+- New tests cover exact-text reuse, deep-copy isolation, transient parse failure, oversized bypass, 30-second expiry, concurrent misses, administrator-clear generation fencing, legacy parser variants, and stale level-one projection data failing the live withdrawal barrier.
+- Targeted Phase 2 gate: **130 passed, 1 skipped**.
+- Full Phase 2 suite on the final static tree: **2093 passed, 3 skipped, 14 subtests passed** in 101.31 s.
+- Independent Phase 2 review: **APPROVE — no blocker**. It independently passed 200 generation/clear races, lock/clear deadlock stress, 5,000 legacy-parser differential cases, strict 384-entry LRU/body-exclusion checks and focused authorization boundaries. Its own full-suite attempt used a mismatched system environment and is not counted; the parent project-environment full suite above is the release gate.
