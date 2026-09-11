@@ -6,6 +6,8 @@ import hashlib
 import hmac
 import json
 import os
+import queue
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Annotated
@@ -33,6 +35,50 @@ router = APIRouter(tags=["knowledge-policy"])
 AUTHEN_WEBHOOK_SECRET = os.environ.get("AUTHEN_ENTITLEMENT_WEBHOOK_SECRET", "")
 _SEARCH_CACHE = SEARCH_CACHE
 _SEARCH_CACHE_TTL = int(os.environ.get("KNOWLEDGE_GATEWAY_CACHE_SECONDS", "300"))
+_PERF_OBSERVE = os.environ.get("KNOWLEDGE_GATEWAY_PERF_OBSERVE", "").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+_PERF_LOG_QUEUE: queue.Queue[bytes] = queue.Queue(maxsize=1024)
+
+
+def _perf_log_worker() -> None:
+    while True:
+        line = _PERF_LOG_QUEUE.get()
+        try:
+            os.write(2, line)
+        except OSError:
+            pass
+        finally:
+            _PERF_LOG_QUEUE.task_done()
+
+
+if _PERF_OBSERVE:
+    threading.Thread(
+        target=_perf_log_worker,
+        name="knowledge-perf-log",
+        daemon=True,
+    ).start()
+
+
+def _emit_tenant_wiki_timing(timings: dict[str, float]) -> None:
+    """Emit one bounded, non-identifying record during controlled benchmarks."""
+    if not _PERF_OBSERVE:
+        return
+    phases = (
+        "capability_ms", "catalog_ms", "initial_policy_ms",
+        "candidate_authorization_ms", "lexical_search_ms",
+        "content_assembly_ms", "final_authorization_ms",
+        "final_policy_audit_ms", "total_ms",
+    )
+    line = "knowledge_gateway_perf_v1 route=tenant_wiki_success " + " ".join(
+        f"{phase}={max(0.0, float(timings.get(phase, 0.0))):.3f}"
+        for phase in phases
+    ) + "\n"
+    try:
+        _PERF_LOG_QUEUE.put_nowait(line.encode("ascii"))
+    except queue.Full:
+        # Observability is never allowed to backpressure knowledge availability.
+        pass
 
 
 def _read_model_content(relative, documents, scopes):
@@ -270,12 +316,25 @@ async def capability_search(
     body: GatewaySearchRequest,
     x_knowledge_capability: str = Header(default=""),
 ):
+    perf_started = perf_previous = time.perf_counter() if _PERF_OBSERVE else 0.0
+    perf_timings: dict[str, float] = {}
+
+    def mark_perf(name: str) -> None:
+        nonlocal perf_previous
+        if not _PERF_OBSERVE:
+            return
+        now = time.perf_counter()
+        perf_timings[name] = (now - perf_previous) * 1000
+        perf_previous = now
+
     try:
         claims = verify_capability(x_knowledge_capability)
     except KnowledgeScopeDenied as exc:
         raise HTTPException(status_code=403, detail={"code": exc.code}) from exc
+    mark_perf("capability_ms")
     tenant_key = str(claims["tenant_key"])
     catalog = await run_knowledge_read(compute_catalog)
+    mark_perf("catalog_ms")
     async with SessionLocal() as db:
         mapping = (
             await db.execute(
@@ -288,6 +347,7 @@ async def capability_search(
             org_id=mapping.org_id if mapping else "",
             catalog=catalog,
         )
+    mark_perf("initial_policy_ms")
     if claims.get("policy_version") != policy.policy_version:
         raise HTTPException(
             status_code=403,
@@ -324,6 +384,7 @@ async def capability_search(
         raise HTTPException(status_code=422, detail="book_id required for book selectors")
     docs: list[dict[str, Any]] = []
     disclosure_limited = False
+    publication_included = False
     if "tenant_knowledge" in requested_sources:
         key = _cache_key(
             tenant_key, policy.policy_version, requested, body.query,
@@ -331,6 +392,7 @@ async def capability_search(
         )
         candidates = await run_knowledge_read(knowledge.document_index, knowledge._vault())
         live = await filter_database_live_documents(list(candidates.values()), knowledge._vault())
+        mark_perf("candidate_authorization_ms")
         live_index = {item["path"]: item for item in live}
         # Model disclosure is narrower than internal read authorization. Never
         # send controlled detail upstream and hope a later SSE/final filter hides it.
@@ -362,6 +424,7 @@ async def capability_search(
         finally:
             AUTHORIZED_DOCUMENT_PATHS.reset(read_token)
             current_visibility.reset(token)
+        mark_perf("lexical_search_ms")
         _SEARCH_CACHE.pop(key, None)
         # A lexical cache cannot authorize a document. Recheck durable
         # contribution lifecycle after both cache hits and fresh searches.
@@ -404,6 +467,7 @@ async def capability_search(
                          "source": "tenant_knowledge"})
         from backend.services.knowledge_publication_store import PUBLICATION_CATEGORY, PublicationStore
         if PUBLICATION_CATEGORY in requested and not (body.entities or body.topics or body.paths):
+            publication_included = True
             publication_docs = await run_knowledge_read(PublicationStore().search, body.query, body.limit)
             if not body.include_content:
                 for item in publication_docs:
@@ -415,6 +479,7 @@ async def capability_search(
                 tenant_docs + publications,
                 key=lambda item: (-int(item.get("score") or 0), str(item.get("path") or "")),
             )
+        mark_perf("content_assembly_ms")
     if "user_notes" in requested_sources:
         user_id = str(claims.get("user_id") or "")
         if not user_id:
@@ -461,6 +526,7 @@ async def capability_search(
         )
         docs = [item for item in docs if item.get("source") != "tenant_knowledge"
                 or item["path"] in checked_paths]
+        mark_perf("final_authorization_ms")
     docs = docs[: body.limit]
     async with SessionLocal() as db:
         final_policy, _ = await resolve_policy(
@@ -474,7 +540,8 @@ async def capability_search(
             reason=f"{len(docs)} authorized results",
         ))
         await db.commit()
-    return {
+    mark_perf("final_policy_audit_ms")
+    response = {
         "query": body.query,
         "policy_version": policy.policy_version,
         "category_scope": sorted(requested),
@@ -487,3 +554,8 @@ async def capability_search(
         "disclosure_limited": disclosure_limited,
         "docs": docs,
     }
+    if (_PERF_OBSERVE and requested_sources == {"tenant_knowledge"}
+            and not publication_included):
+        perf_timings["total_ms"] = (time.perf_counter() - perf_started) * 1000
+        _emit_tenant_wiki_timing(perf_timings)
+    return response

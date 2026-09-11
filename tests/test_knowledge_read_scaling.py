@@ -350,3 +350,76 @@ async def test_gateway_rechecks_withdrawal_after_content(vault, tmp_path, monkey
     assert error.value.status_code == 409
     assert k._CANDIDATE_INDEX.get() is None
     assert catalog.AUTHORIZED_DOCUMENT_PATHS.get() is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_perf_observability_is_internal_optional_and_fail_open(vault, monkeypatch):
+    vault(1)
+    fake_gateway_policy(monkeypatch)
+    writes = []
+    class Sink:
+        def put_nowait(self, payload):
+            writes.append(payload)
+    monkeypatch.setattr(gateway, "_PERF_LOG_QUEUE", Sink())
+
+    request = gateway.GatewaySearchRequest(
+        query="PRIVATE_QUERY_MUST_NOT_ENTER_LOGS",
+        sources=["tenant_knowledge"],
+        book_id=None,
+        content_version=None,
+        section=None,
+    )
+    monkeypatch.setattr(gateway, "_PERF_OBSERVE", False)
+    baseline = await gateway.capability_search(request, "fixture")
+    assert writes == []
+
+    monkeypatch.setattr(gateway, "_PERF_OBSERVE", True)
+    observed = await gateway.capability_search(request, "fixture")
+    assert observed == baseline
+    assert len(writes) == 1
+    line = writes[0].decode("ascii")
+    assert line.startswith("knowledge_gateway_perf_v1 route=tenant_wiki_success ")
+    assert "PRIVATE_QUERY_MUST_NOT_ENTER_LOGS" not in line
+    assert "synthetic-reader" not in line
+    for phase in (
+        "capability_ms", "catalog_ms", "initial_policy_ms",
+        "candidate_authorization_ms", "lexical_search_ms",
+        "content_assembly_ms", "final_authorization_ms",
+        "final_policy_audit_ms", "total_ms",
+    ):
+        assert f"{phase}=" in line
+
+    class FullSink:
+        def put_nowait(self, _payload):
+            raise gateway.queue.Full
+    monkeypatch.setattr(gateway, "_PERF_LOG_QUEUE", FullSink())
+    assert await gateway.capability_search(request, "fixture") == baseline
+
+    monkeypatch.setattr(gateway, "_PERF_LOG_QUEUE", Sink())
+    monkeypatch.setattr(gateway, "search_user_notes", lambda **_: [])
+    await gateway.capability_search(
+        gateway.GatewaySearchRequest(
+            query="note", sources=["user_notes"],
+            book_id=None, content_version=None, section=None,
+        ),
+        "fixture",
+    )
+    assert len(writes) == 1
+
+    from backend.services.knowledge_publication_store import PUBLICATION_CATEGORY, PublicationStore
+    monkeypatch.setattr(gateway, "verify_capability", lambda _: {
+        "tenant_key": "synthetic-reader", "user_id": "fixture-user",
+        "policy_version": "fixture-v1",
+        "scopes": ["public", PUBLICATION_CATEGORY],
+        "sources": ["tenant_knowledge"],
+    })
+    monkeypatch.setattr(PublicationStore, "search", lambda *_: [])
+    await gateway.capability_search(
+        gateway.GatewaySearchRequest(
+            query="publication", category_scope=[PUBLICATION_CATEGORY],
+            sources=["tenant_knowledge"], book_id=None,
+            content_version=None, section=None,
+        ),
+        "fixture",
+    )
+    assert len(writes) == 1

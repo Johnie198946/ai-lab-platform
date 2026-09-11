@@ -7,9 +7,11 @@ always fail-closed.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 from functools import lru_cache
@@ -36,21 +38,58 @@ OFFICIAL_AUTHORS = {
     "karpathy.ai": "Andrej Karpathy",
     "openai.com": "OpenAI",
 }
+_FRONTMATTER_CACHE_MAX_BYTES = 16 * 1024
+_FRONTMATTER_CACHE_SECONDS = 30
+_frontmatter_cache_lock = threading.RLock()
+_frontmatter_cache_bucket = int(time.monotonic() // _FRONTMATTER_CACHE_SECONDS)
+_frontmatter_cache_generation = 0
+
+
+def _read_frontmatter(path: Path) -> str | None:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            if not re.fullmatch(r"---\s*\n", handle.readline()):
+                return None
+            lines: list[str] = []
+            for line in handle:
+                if re.fullmatch(r"---\s*(?:\n|$)", line):
+                    text = "".join(lines)
+                    return text[:-1] if text.endswith("\n") else text
+                lines.append(line)
+    except OSError:
+        return None
+    return None
+
+
+@lru_cache(maxsize=384)
+def _cached_frontmatter(_bucket: int, text: str) -> dict[str, Any]:
+    value = yaml.safe_load(text)
+    return value if isinstance(value, dict) else {}
 
 
 def _frontmatter(path: Path) -> dict[str, Any]:
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+    global _frontmatter_cache_bucket
+    with _frontmatter_cache_lock:
+        generation = _frontmatter_cache_generation
+    text = _read_frontmatter(path)
+    if text is None:
         return {}
-    match = re.match(r"^---\s*\n(.*?)\n---\s*(?:\n|$)", text, re.DOTALL)
-    if not match:
-        return {}
     try:
-        value = yaml.safe_load(match.group(1))
+        if len(text.encode("utf-8")) > _FRONTMATTER_CACHE_MAX_BYTES:
+            value = yaml.safe_load(text)
+        else:
+            with _frontmatter_cache_lock:
+                if generation != _frontmatter_cache_generation:
+                    value = yaml.safe_load(text)
+                else:
+                    bucket = int(time.monotonic() // _FRONTMATTER_CACHE_SECONDS)
+                    if bucket != _frontmatter_cache_bucket:
+                        _cached_frontmatter.cache_clear()
+                        _frontmatter_cache_bucket = bucket
+                    value = _cached_frontmatter(bucket, text)
     except yaml.YAMLError:
         return {}
-    return value if isinstance(value, dict) else {}
+    return copy.deepcopy(value) if isinstance(value, dict) else {}
 
 
 def _values(value: Any) -> list[str]:
@@ -233,6 +272,11 @@ def _cached_approved_color_documents(
 
 
 def clear_color_projection_cache() -> None:
+    global _frontmatter_cache_bucket, _frontmatter_cache_generation
+    with _frontmatter_cache_lock:
+        _frontmatter_cache_generation += 1
+        _cached_frontmatter.cache_clear()
+        _frontmatter_cache_bucket = int(time.monotonic() // _FRONTMATTER_CACHE_SECONDS)
     _cached_approved_color_documents.cache_clear()
 
 
