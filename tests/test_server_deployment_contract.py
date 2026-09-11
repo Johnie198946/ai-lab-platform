@@ -16,6 +16,12 @@ SYSTEMD_DIR = UPDATE_SCRIPT.parents[1] / "ops" / "systemd"
 BRIDGE_SCRIPT = UPDATE_SCRIPT.parents[1] / "scripts" / "hermes_bridge.py"
 EGRESS_TUNNEL_SCRIPT = UPDATE_SCRIPT.parents[1] / "ops" / "scripts" / "clash-verge-egress-tunnel.sh"
 
+
+def test_server_deploy_downloads_quantum_release_archive() -> None:
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert "https://codeload.github.com/Johnie198946/Quantum/tar.gz/$EXPECTED_SHA" in script
+    assert "codeload.github.com/Johnie198946/ai-lab-platform" not in script
+
 HERMES_ACCOUNT_HOME = "/var/lib/quantumn-hermes"
 HERMES_HOME = f"{HERMES_ACCOUNT_HOME}/.hermes"
 HERMES_AGENT_ROOT = f"{HERMES_HOME}/hermes-agent"

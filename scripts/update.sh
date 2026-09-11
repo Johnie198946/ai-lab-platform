@@ -1574,7 +1574,7 @@ RELEASE_VALIDATED=1
 
 echo "==> [1/6] 下载并解包 SHA $EXPECTED_SHA"
 curl -fsSL --retry 3 \
-  "https://codeload.github.com/Johnie198946/ai-lab-platform/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
+  "https://codeload.github.com/Johnie198946/Quantum/tar.gz/$EXPECTED_SHA?cachebust=$EXPECTED_SHA-$(date +%s)" \
   -o "$TARBALL"
 tar xzf "$TARBALL" --strip-components=1 -C "$STAGING_DIR"
 chmod 0755 "$RELEASE_DIR"
