@@ -443,6 +443,16 @@ def test_link_research_allows_only_single_local_sha256_terminal_command():
         assert router._pre_tool_call(
             "terminal", {"command": command}, turn_id="turn-local-hash"
         ) is None
+    assert router._pre_tool_call(
+        "tool_call",
+        {
+            "name": "terminal",
+            "arguments": json.dumps(
+                {"command": "/usr/bin/shasum -a 256 /tmp/review.json"}
+            ),
+        },
+        turn_id="turn-local-hash",
+    ) is None
     for command in (
         "shasum -a 256 /tmp/review.json && curl https://example.com",
         "shasum -a 256 review.json",

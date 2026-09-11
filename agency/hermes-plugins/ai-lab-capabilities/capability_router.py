@@ -1931,7 +1931,9 @@ def _pre_tool_call(
     with _WEB_POLICY_LOCK:
         if turn_key not in _WEB_RESEARCH_TURNS:
             return None
-        if tool_name == "terminal" and not _is_single_local_sha256_command(args):
+        if effective_tool == "terminal" and not _is_single_local_sha256_command(
+            effective_args
+        ):
             return {
                 "action": "block",
                 "message": (
