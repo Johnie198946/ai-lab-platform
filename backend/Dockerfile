@@ -2,6 +2,9 @@
 # Keep the deployed Python minor; immutable multi-platform base + hashed locks.
 FROM python:3.12.14-alpine3.23@sha256:167bc85084c9df34480efc26b4528fb68feaa8a79183b5658952137025b6f061
 
+ARG AI_LAB_SOURCE_SHA
+LABEL org.opencontainers.image.revision=$AI_LAB_SOURCE_SHA
+
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \

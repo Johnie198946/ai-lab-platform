@@ -24,6 +24,15 @@ def test_server_deploy_downloads_quantum_release_archive() -> None:
     assert "codeload.github.com/Johnie198946/ai-lab-platform" not in script
 
 
+def test_backend_images_are_bound_to_the_exact_release_sha() -> None:
+    dockerfile = (UPDATE_SCRIPT.parents[1] / "backend" / "Dockerfile").read_text()
+    script = UPDATE_SCRIPT.read_text(encoding="utf-8")
+    assert "ARG AI_LAB_SOURCE_SHA" in dockerfile
+    assert "LABEL org.opencontainers.image.revision=$AI_LAB_SOURCE_SHA" in dockerfile
+    assert "backend image revision mismatch" in script
+    assert 'revision" != "$EXPECTED_SHA"' in script
+
+
 def test_ci_and_production_pin_the_same_hermes_source() -> None:
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
     commit = "c8aa5608c24e3636e77c267650c0f1f52e44adb0"
@@ -1798,10 +1807,11 @@ docker() {{
   image="${{@: -1}}"
   service="${{image#registry.local/}}"; service="${{service%:release}}"
   [ "$CHECK" = missing ] && [ "$service" = redis ] && return 1
-  operating_system=linux; architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'
+  operating_system=linux; architecture=amd64; user=1000; health='{{"Test":["CMD","true"]}}'; actual='{digest}'; revision="$EXPECTED_SHA"
   [ "$CHECK" = os ] && [ "$service" = postgres ] && operating_system=windows
   [ "$CHECK" = architecture ] && [ "$service" = redis ] && architecture=arm64
   [ "$CHECK" = hash ] && [ "$service" = postgres ] && actual='sha256:{'b' * 64}'
+  [ "$CHECK" = revision ] && [ "$service" = api ] && revision='wrong-sha'
   case "$CHECK" in root|0|00|00:1000) [ "$service" = postgres ] && user="$CHECK" ;; esac
   [ "$CHECK" = health ] && [ "$service" = redis ] && health=null
   [ "$CHECK" = disabled-health ] && [ "$service" = redis ] && health='{{"Test":["NONE"]}}'
@@ -1813,6 +1823,7 @@ docker() {{
     '{{{{.Architecture}}}}') printf '%s\n' "$architecture" ;;
     '{{{{.Config.User}}}}') printf '%s\n' "$user" ;;
     '{{{{json .Config.Healthcheck}}}}') printf '%s\n' "$health" ;;
+    '{{{{index .Config.Labels "org.opencontainers.image.revision"}}}}') printf '%s\n' "$revision" ;;
     *'\\t'*) printf '%s\\\\t%s\\\\t%s\\\\t%s\n' "$actual" "$architecture" "$user" "$health" ;;
     *) return 98 ;;
   esac
@@ -1820,10 +1831,12 @@ docker() {{
 SHARED_ROOT='{tmp_path}'
 COMPOSE_PROJECT=contract-test
 AI_LAB_OFFLINE_IMAGE_ATTESTATIONS='{attestations}'
+EXPECTED_SHA='{'c' * 40}'
 verify_offline_images
 '''
     cases = (
         ("valid", 0), ("missing", 1), ("os", 1), ("architecture", 1), ("hash", 1),
+        ("revision", 1),
         ("root", 1), ("0", 1), ("00", 1), ("00:1000", 1), ("health", 1),
         ("disabled-health", 1), ("empty-health", 1), ("missing-health-command", 1),
         ("missing-record", 1), ("duplicate", 1),

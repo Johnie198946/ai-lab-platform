@@ -1040,7 +1040,7 @@ for root in (data, data / "vault/raw/dialogues/tenants"):
 }
 
 verify_offline_images() {
-  local config service image operating_system architecture user healthcheck actual expected count
+  local config service image operating_system architecture user healthcheck revision actual expected count
   local services=(postgres redis api workflow-worker planning-worker agent-evaluation-worker taskboard frontend)
   local attestations="${AI_LAB_OFFLINE_IMAGE_ATTESTATIONS:-$SHARED_ROOT/offline-images.attested}"
   if [ -L "$attestations" ] || [ ! -f "$attestations" ]; then
@@ -1108,6 +1108,15 @@ PY
       echo "ERROR: offline image hash mismatch: $service=$image" >&2
       return 1
     fi
+    case "$service" in
+      api|workflow-worker|planning-worker|agent-evaluation-worker)
+        revision="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" || return 1
+        if [ "$revision" != "$EXPECTED_SHA" ]; then
+          echo "ERROR: backend image revision mismatch: $service=${revision:-<missing>} expected=$EXPECTED_SHA" >&2
+          return 1
+        fi
+        ;;
+    esac
     if [ "$operating_system" != "linux" ] || [ "$architecture" != "amd64" ]; then
       echo "ERROR: offline image must use linux/amd64: $service=$image" >&2
       return 1
