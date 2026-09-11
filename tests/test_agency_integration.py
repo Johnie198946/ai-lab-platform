@@ -516,10 +516,11 @@ def test_publication_review_write_result_binds_hash_and_native_session(
         / "final-independent-review.json"
     )
     review.parent.mkdir(parents=True)
-    review.write_text('{"decision":"rejected"}\n', encoding="utf-8")
-    raw = json.dumps(
-        {"verified": True, "resolved_path": str(review)}, ensure_ascii=False
+    review.write_text(
+        '{"decision":"rejected","reviewer_session":"__RUNTIME_ATTESTED__"}\n',
+        encoding="utf-8",
     )
+    raw = {"verified": True, "resolved_path": str(review)}
     transformed = router._attest_publication_review_write(
         "write_file",
         {"path": str(review)},
@@ -527,6 +528,9 @@ def test_publication_review_write_result_binds_hash_and_native_session(
         session_id="cron_review_20260911",
     )
     payload = json.loads(transformed)
+    persisted = json.loads(review.read_text(encoding="utf-8"))
+    assert persisted["reviewer_session"] == "hermes:cron_review_20260911"
+    assert payload["bytes_written"] == len(review.read_bytes())
     assert payload["runtime_attestation"] == {
         "sha256": hashlib.sha256(review.read_bytes()).hexdigest(),
         "reviewer_session": "hermes:cron_review_20260911",

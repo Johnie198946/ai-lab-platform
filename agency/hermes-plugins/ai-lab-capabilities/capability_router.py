@@ -2049,20 +2049,16 @@ def _attest_publication_review_write(
     result: Any = None,
     **kwargs: Any,
 ) -> str | None:
-    """Attach the exact review hash and native session to a verified write.
-
-    This removes the need for a second shell call after writing the immutable
-    review while preserving the native final-response binding requirement.
-    The attestation is intentionally limited to the one publication-review
-    filename under the governed Hermes output root.
-    """
-    if tool_name != "write_file" or not isinstance(result, str):
+    """Bind a governed review write to its exact native session and bytes."""
+    if tool_name != "write_file":
         return None
     try:
-        payload = json.loads(result)
+        payload = dict(result) if isinstance(result, dict) else json.loads(result)
     except (TypeError, ValueError):
         return None
-    if not isinstance(payload, dict) or payload.get("error") or payload.get("verified") is not True:
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("error") or payload.get("verified") is not True:
         return None
     raw_path = str(payload.get("resolved_path") or (args or {}).get("path") or "").strip()
     session_id = str(kwargs.get("session_id") or "").strip()
@@ -2073,16 +2069,50 @@ def _attest_publication_review_write(
         hermes_home = Path(
             os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")
         ).expanduser().resolve()
-        governed_root = (hermes_home / "outputs" / "quantumn-editorial-v2").resolve()
-        candidate.relative_to(governed_root)
+        candidate.relative_to(
+            (hermes_home / "outputs" / "quantumn-editorial-v2").resolve()
+        )
     except (OSError, RuntimeError, ValueError):
         return None
     if candidate.name != "final-independent-review.json" or not candidate.is_file():
         return None
-    payload["runtime_attestation"] = {
-        "sha256": hashlib.sha256(candidate.read_bytes()).hexdigest(),
-        "reviewer_session": f"hermes:{session_id}",
-    }
+
+    reviewer = f"hermes:{session_id}"
+    temp_path: Path | None = None
+    try:
+        review = json.loads(candidate.read_bytes())
+        current = review.get("reviewer_session")
+        if current not in {"__RUNTIME_ATTESTED__", reviewer}:
+            return None
+        review["reviewer_session"] = reviewer
+        raw = json.dumps(
+            review, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        mode = candidate.stat().st_mode
+        with tempfile.NamedTemporaryFile(dir=candidate.parent, delete=False) as handle:
+            temp_path = Path(handle.name)
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, candidate)
+        raw = candidate.read_bytes()
+    except (OSError, TypeError, ValueError):
+        try:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    payload.update(
+        bytes_written=len(raw),
+        verified=True,
+        runtime_attestation={
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "reviewer_session": reviewer,
+        },
+    )
     return json.dumps(payload, ensure_ascii=False)
 
 
