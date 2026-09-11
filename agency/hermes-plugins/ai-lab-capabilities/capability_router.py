@@ -1142,8 +1142,14 @@ def _effective_local_call(
     for _depth in range(_LOCAL_WRAPPER_MAX_DEPTH):
         if current_tool != "tool_call":
             break
-        nested_tool = str(current_args.get("name") or "").strip()
-        nested_args = _local_wrapper_args(current_args.get("arguments"))
+        nested_tool = str(
+            current_args.get("effective_tool") or current_args.get("name") or ""
+        ).strip()
+        nested_args = _local_wrapper_args(
+            current_args.get("effective_args")
+            if "effective_args" in current_args
+            else current_args.get("arguments")
+        )
         if not nested_tool or nested_args is None:
             return _LOCAL_UNRESOLVED_WRAPPER, {}
         current_tool = nested_tool
