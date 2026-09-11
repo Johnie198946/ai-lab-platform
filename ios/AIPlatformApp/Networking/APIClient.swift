@@ -245,6 +245,8 @@ public struct KnowledgeBookDTO: Codable, Identifiable, Hashable {
     public var sourceClassification: String? = nil
     public var readable: Bool? = nil
     public var unavailableReason: String? = nil
+
+    public var isBodyUnavailable: Bool { readable == false || contentStatus == "metadata_only" }
 }
 
 public struct KnowledgeBookshelfDTO: Codable, Identifiable, Hashable {

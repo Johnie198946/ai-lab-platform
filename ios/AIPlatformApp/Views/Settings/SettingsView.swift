@@ -2183,8 +2183,8 @@ struct KnowledgeBookReaderView: View {
                     Button(action: isSubscribed ? { showingReading = true } : onToggleSubscription) {
                         HStack(spacing: 10) {
                             if isBusy { ProgressView().tint(.white) }
-                            Image(systemName: book.readable == false ? "link" : (isSubscribed ? "book.pages.fill" : "plus"))
-                            Text(book.readable == false ? "正文不可用，查看来源" : (isSubscribed ? "开始阅读" : "加入我的笔记书架"))
+                            Image(systemName: book.isBodyUnavailable ? "link" : (isSubscribed ? "book.pages.fill" : "plus"))
+                            Text(book.isBodyUnavailable ? "正文不可用，查看来源" : (isSubscribed ? "开始阅读" : "加入我的笔记书架"))
                         }
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Color.white)
@@ -2192,9 +2192,9 @@ struct KnowledgeBookReaderView: View {
                         .background(AppTheme.Colors.textPrimary)
                         .clipShape(Capsule())
                     }
-                    .disabled(book.readable == false || (isBusy && !isSubscribed))
+                    .disabled(book.isBodyUnavailable || (isBusy && !isSubscribed))
                     .buttonStyle(SoftButtonStyle())
-                    .accessibilityLabel(book.readable == false ? "《\(book.title)》正文不可用，仅可查看原始来源" : (isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架"))
+                    .accessibilityLabel(book.isBodyUnavailable ? "《\(book.title)》正文不可用，仅可查看原始来源" : (isSubscribed ? "开始阅读《\(book.title)》" : "加入我的笔记书架"))
                     .accessibilityValue(isSubscribed ? "subscribed" : "unsubscribed")
                     .accessibilityIdentifier("publication-subscription-control.\(book.id)")
                     HStack(spacing: 18) {
