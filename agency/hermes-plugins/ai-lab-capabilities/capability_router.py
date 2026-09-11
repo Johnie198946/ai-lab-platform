@@ -20,6 +20,7 @@ import json
 import logging
 import math
 import os
+import shlex
 import sqlite3
 import re
 import sys
@@ -1799,6 +1800,22 @@ def _pre_llm_with_runtime_skill(
     return result
 
 
+def _is_single_local_sha256_command(args: dict[str, Any]) -> bool:
+    """Allow one read-only local SHA-256 operation in a web-marked turn."""
+    command = str((args or {}).get("command") or "").strip()
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    if len(argv) == 2 and argv[0] == "sha256sum":
+        path = argv[1]
+    elif len(argv) == 4 and argv[:3] == ["shasum", "-a", "256"]:
+        path = argv[3]
+    else:
+        return False
+    return Path(path).expanduser().is_absolute()
+
+
 def _pre_tool_call(
     tool_name: str,
     args: dict[str, Any] | None = None,
@@ -1913,7 +1930,7 @@ def _pre_tool_call(
     with _WEB_POLICY_LOCK:
         if turn_key not in _WEB_RESEARCH_TURNS:
             return None
-        if tool_name == "terminal":
+        if tool_name == "terminal" and not _is_single_local_sha256_command(args):
             return {
                 "action": "block",
                 "message": (

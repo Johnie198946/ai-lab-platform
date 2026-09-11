@@ -428,6 +428,30 @@ def test_link_research_blocks_terminal_and_duplicate_extract():
     assert terminal and terminal["action"] == "block"
 
 
+def test_link_research_allows_only_single_local_sha256_terminal_command():
+    router = load_capability_router()
+    router._WEB_RESEARCH_TURNS.clear()
+    router._pre_llm_call(
+        "审核包含来源 https://example.com/report 的本地文件",
+        turn_id="turn-local-hash",
+    )
+    for command in (
+        "shasum -a 256 /tmp/review.json",
+        "sha256sum /tmp/review.json",
+    ):
+        assert router._pre_tool_call(
+            "terminal", {"command": command}, turn_id="turn-local-hash"
+        ) is None
+    for command in (
+        "shasum -a 256 /tmp/review.json && curl https://example.com",
+        "shasum -a 256 review.json",
+    ):
+        denial = router._pre_tool_call(
+            "terminal", {"command": command}, turn_id="turn-local-hash"
+        )
+        assert denial and denial["action"] == "block"
+
+
 def test_native_extract_html_parser_removes_scripts_and_keeps_readable_text():
     plugin = load_capability_plugin()
     path = ROOT / "agency/hermes-plugins/ai-lab-capabilities/native_extract_provider.py"
