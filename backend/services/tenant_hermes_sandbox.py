@@ -1,8 +1,9 @@
-"""Filesystem boundary for tenant-scoped Hermes runtime state.
+"""Filesystem boundary for user-scoped Hermes runtime state.
 
 The Hermes installation is treated as a read-only template.  Agent snapshots,
-Skill copies and writable SessionDB files live below hashed tenant/user
-namespaces; raw identity values are never used as path segments.
+personal Skills and writable SessionDB files live in one hashed user profile.
+Unreviewed legacy tenant Skills remain quarantined in place. Raw identity values
+are never used as path segments.
 """
 
 from __future__ import annotations
@@ -116,31 +117,6 @@ def _copy_template_version(source: Path, destination: Path) -> None:
         shutil.copy2(source_file, target, follow_symlinks=False)
 
 
-def _copy_legacy_custom_skills(source_root: Path, tenant_key: str, target: Path) -> None:
-    # Compatibility import only. Raw tenant values are accepted solely when
-    # they are one safe legacy directory segment; they never become new paths.
-    if not _SAFE_SKILL_NAME.fullmatch(tenant_key):
-        return
-    legacy = source_root / "tenants" / tenant_key
-    if not legacy.is_dir() or legacy.is_symlink():
-        return
-    for skill_md in sorted(legacy.glob("*/SKILL.md")):
-        name = skill_md.parent.name
-        if not _SAFE_SKILL_NAME.fullmatch(name):
-            continue
-        destination = target / name
-        if destination.exists():
-            continue
-        destination.mkdir(parents=True, exist_ok=False)
-        for source_file in sorted(skill_md.parent.rglob("*")):
-            if not source_file.is_file() or source_file.is_symlink():
-                continue
-            relative = source_file.relative_to(skill_md.parent)
-            copied = destination / relative
-            copied.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_file, copied, follow_symlinks=False)
-
-
 def ensure_tenant_sandbox(
     *,
     tenant_key: str,
@@ -152,19 +128,24 @@ def ensure_tenant_sandbox(
         raise ValueError("tenant_key and user_id are required")
     tenant_ns = namespace(tenant_key)
     user_ns = namespace(user_id)
-    base = (root or sandbox_root()) / "tenants" / tenant_ns
-    hermes_home = base / "hermes-home"
+    tenant_root = (root or sandbox_root()) / "tenants" / tenant_ns
+    profile_root = tenant_root / "users" / user_ns
+    hermes_home = profile_root / "hermes-home"
     skills_root = hermes_home / "skills"
-    templates_root = skills_root / "templates"
+    templates_root = tenant_root / "skills" / "templates"
+    legacy_tenant_skills = tenant_root / "hermes-home" / "skills" / "custom"
     custom_root = skills_root / "custom"
     agents_root = hermes_home / "agents"
-    state_db = base / "users" / user_ns / "state.db"
+    state_db = hermes_home / "state.db"
+    legacy_state_db = profile_root / "state.db"
     source = template_root or template_skills_root()
     version = _template_version(source)
     active_template = templates_root / (version or "empty")
-    manifest_path = base / "sandbox.json"
+    manifest_path = hermes_home / "profile.json"
 
-    with _path_lock(base):
+    # Provisioning is rare. One tenant lock keeps its shared immutable template
+    # release atomic while user profiles remain independent at runtime.
+    with _path_lock(tenant_root):
         previous_manifest: dict[str, Any] = {}
         if manifest_path.is_file() and not manifest_path.is_symlink():
             try:
@@ -173,13 +154,16 @@ def ensure_tenant_sandbox(
                 previous_manifest = {}
         for directory in (
             active_template.parent,
+            hermes_home,
             custom_root,
             agents_root,
             state_db.parent,
         ):
             directory.mkdir(parents=True, exist_ok=True)
         try:
-            base.chmod(0o700)
+            tenant_root.chmod(0o700)
+            profile_root.chmod(0o700)
+            hermes_home.chmod(0o700)
             state_db.parent.chmod(0o700)
         except OSError:
             pass
@@ -193,13 +177,21 @@ def ensure_tenant_sandbox(
                 os.replace(payload, active_template)
             finally:
                 shutil.rmtree(staging, ignore_errors=True)
-        if not previous_manifest.get("legacy_custom_import_completed"):
-            _copy_legacy_custom_skills(source, tenant_key, custom_root)
+        migrated_state_db = bool(previous_manifest.get("legacy_state_db_migrated"))
+        if (
+            not state_db.exists()
+            and legacy_state_db.is_file()
+            and not legacy_state_db.is_symlink()
+        ):
+            os.replace(legacy_state_db, state_db)
+            migrated_state_db = True
         manifest = {
-            "version": 2,
+            "version": 3,
             "tenant_namespace": tenant_ns,
+            "user_namespace": user_ns,
             "active_template_version": version or "empty",
-            "legacy_custom_import_completed": True,
+            "legacy_state_db_migrated": migrated_state_db,
+            "legacy_tenant_skills_quarantined": legacy_tenant_skills.is_dir(),
         }
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(
@@ -210,7 +202,7 @@ def ensure_tenant_sandbox(
     return TenantHermesSandbox(
         tenant_namespace=tenant_ns,
         user_namespace=user_ns,
-        root=base,
+        root=profile_root,
         hermes_home=hermes_home,
         skills_root=skills_root,
         template_skills=active_template,
@@ -250,7 +242,7 @@ def write_sandbox_skill(
     *,
     replace: bool = False,
 ) -> Path:
-    """Atomically create/update one tenant-owned SKILL.md after routing gates."""
+    """Atomically create/update one profile-owned SKILL.md after routing gates."""
     if not _SAFE_SKILL_NAME.fullmatch(name):
         raise ValueError("invalid_skill_name")
     encoded = content.encode("utf-8")

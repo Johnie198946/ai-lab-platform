@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import ast
 import os
 import sqlite3
 import subprocess
@@ -36,6 +37,32 @@ class TestBridgeCLIParms(unittest.TestCase):
                 with patch.dict(os.environ, {"HERMES_BRIDGE_BIND_ADDRESS": invalid}):
                     with self.assertRaises(RuntimeError):
                         bridge._private_bridge_bind_address()
+
+    def test_every_agent_constructor_uses_the_shared_profile_isolation_guard(self):
+        import scripts.hermes_bridge as bridge
+
+        source = Path(bridge.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        constructors = [
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "AIAgent"
+        ]
+        self.assertEqual(len(constructors), 4)
+        for constructor in constructors:
+            self.assertTrue(any(
+                keyword.arg is None
+                and isinstance(keyword.value, ast.Call)
+                and isinstance(keyword.value.func, ast.Name)
+                and keyword.value.func.id == "_isolated_agent_context_kwargs"
+                for keyword in constructor.keywords
+            ))
+        self.assertEqual(bridge._isolated_agent_context_kwargs(), {
+            "skip_context_files": True,
+            "skip_memory": True,
+            "load_soul_identity": False,
+        })
 
     def test_goal_request_accepts_only_the_bounded_trusted_agent_shape(self):
         import scripts.hermes_bridge as bridge

@@ -113,6 +113,15 @@ app = FastAPI(title="Hermes Bridge v6.0")
 SKILL_ROUTING_OVERRIDES = _REPO_ROOT / "config" / "skill-routing-overrides.yaml"
 
 
+def _isolated_agent_context_kwargs() -> dict[str, bool]:
+    """Never let a cloud tenant inherit the service account's Hermes profile."""
+    return dict(
+        skip_context_files=True,
+        skip_memory=True,
+        load_soul_identity=False,
+    )
+
+
 def _routed_skill_catalog(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
     return apply_routing_overrides(
         list_sandbox_skills(sandbox),
@@ -2679,6 +2688,9 @@ def _run_workflow_node_in_process(
     _ensure_tenant_skill_tool_registered()
     _sandbox_tool_context.value = sandbox
     session_db = _create_sandbox_session_db(sandbox)
+    from agent.runtime_cwd import set_session_cwd
+
+    set_session_cwd(str(sandbox.root))
     agent = None
     timeout_fired = threading.Event()
     timeout_timer = None
@@ -2738,6 +2750,7 @@ def _run_workflow_node_in_process(
             ),
             tool_start_callback=_tool_start,
             tool_complete_callback=_tool_complete,
+            **_isolated_agent_context_kwargs(),
         )
         if execution_id:
             with _workflow_runs_lock:
@@ -4864,8 +4877,7 @@ def _prewarm_bridge_agent() -> threading.Thread:
                 quiet_mode=True,
                 platform="cli",
                 ephemeral_system_prompt="warmup",
-                skip_context_files=True,
-                skip_memory=True,
+                **_isolated_agent_context_kwargs(),
             )
             warm_agent.close()
             print(f"[bridge] 实例池预热完成 · 耗时 {(time.monotonic() - t0)*1000:.1f}ms")
@@ -5868,8 +5880,7 @@ def _build_in_process_agent(
         # The Bridge injects a server-owned tenant prompt below. Loading the
         # host profile's MEMORY/USER files or workspace AGENTS.md here would
         # cross the tenant boundary and can expose operator-only context.
-        skip_context_files=True,
-        skip_memory=True,
+        **_isolated_agent_context_kwargs(),
         session_id=hermes_sid,
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
@@ -6622,9 +6633,7 @@ def _run_clarification_in_process(prompt: str) -> tuple[str, dict[str, Any]]:
                 "你是隔离的需求澄清判断器。你没有工具、技能、文件、知识库、记忆或会话访问权。"
                 "只根据本次输入判断下一条最关键问题，或判断信息已足够。严格输出JSON。"
             ),
-            skip_context_files=True,
-            skip_memory=True,
-            load_soul_identity=False,
+            **_isolated_agent_context_kwargs(),
         )
 
         def _interrupt() -> None:
