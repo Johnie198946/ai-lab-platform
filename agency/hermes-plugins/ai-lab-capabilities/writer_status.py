@@ -1,5 +1,6 @@
 """Read-only projection of sole-Writer evidence, never a second writer/store."""
 from pathlib import Path
+import builtins
 import fcntl
 import hashlib
 import importlib.util
@@ -12,21 +13,57 @@ _LOAD_LOCK = threading.RLock()
 
 
 def _writer(pipeline_path):
+    """Load the existing Writer without claiming the host's ``tools`` package.
+
+    Its CLI modules use absolute sibling imports and bootstrap sys.path. Give
+    only these modules a local importer and a private path list; never replace
+    sys.modules['tools'], builtins.__import__, or the host import search path.
+    """
     path = Path(pipeline_path).resolve(strict=True).with_name("wiki_contract_apply.py")
-    name = "_research_status_writer_" + hashlib.sha256(str(path).encode()).hexdigest()[:16]
+    prefix = "_research_status_writer_" + hashlib.sha256(str(path).encode()).hexdigest()[:16] + "_"
     with _LOAD_LOCK:
-        if name not in sys.modules:
-            spec = importlib.util.spec_from_file_location(name, path)
-            if spec is None or spec.loader is None:
-                raise ValueError("writer_module_unavailable")
-            module = importlib.util.module_from_spec(spec)
-            sys.modules[name] = module
-            try:
-                spec.loader.exec_module(module)
-            except Exception:
-                sys.modules.pop(name, None)
-                raise
-        return sys.modules[name]
+        name = prefix + "wiki_contract_apply"
+        if name in sys.modules:
+            return sys.modules[name]
+        local_sys = type(sys)("sys")
+        local_sys.__dict__.update(vars(sys), path=list(sys.path))
+        created = []
+
+        def local_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if level == 0 and name == "sys":
+                return local_sys
+            if level == 0 and (name == "tools" or name.startswith("tools.")):
+                sibling = name.removeprefix("tools.")
+                # ponytail: support the Writer's flat from-tools imports only;
+                # fail closed if its dependency layout changes.
+                if not fromlist or name == "tools" or not sibling.isidentifier():
+                    raise ImportError("unsupported_writer_import")
+                return load(sibling)
+            return builtins.__import__(name, globals, locals, fromlist, level)
+
+        def load(sibling):
+            qualified = prefix + sibling
+            if qualified not in sys.modules:
+                source = path.with_name(sibling + ".py")
+                spec = importlib.util.spec_from_file_location(qualified, source)
+                if spec is None or spec.loader is None:
+                    raise ValueError("writer_module_unavailable")
+                module = importlib.util.module_from_spec(spec)
+                module.__dict__["__builtins__"] = dict(vars(builtins), __import__=local_import)
+                sys.modules[qualified] = module
+                created.append(qualified)
+                # Compile directly: a status read must not create Vault pyc files.
+                exec(compile(source.read_bytes(), str(source), "exec"), module.__dict__)
+            return sys.modules[qualified]
+
+        try:
+            module = load("wiki_contract_apply")
+            module.__dict__["_status_dir_for_type"] = load("contract_validator").dir_for_type
+            return module
+        except BaseException:
+            for qualified in reversed(created):
+                sys.modules.pop(qualified, None)
+            raise
 
 
 def read_compilation(vault, pipeline_path, receipt, revision, task_id):
@@ -103,8 +140,7 @@ def read_compilation(vault, pipeline_path, receipt, revision, task_id):
                     if not applied:
                         candidates.append(False)
                         continue
-                    from tools.contract_validator import dir_for_type
-                    subdir = dir_for_type(meta.get("type"))
+                    subdir = writer._status_dir_for_type(meta.get("type"))
                     target = meta.get("target")
                     if not subdir or not isinstance(target, str) or Path(target).name != target or target in {".", ".."}:
                         raise ValueError("unsafe_target")
