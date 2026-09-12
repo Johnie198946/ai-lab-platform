@@ -75,9 +75,16 @@ release_date: 2026-09-12
 - An independent read-only review returned `PASS`: approved-outline binding and extracted-text integrity were both closed; its own gates were 41 backend contract tests, 75 workflow projection/API tests, iOS build, frontend light-theme tests, compileall, and `git diff --check`.
 - Production-container LibreOffice rendering and Quick Look visual inspection confirmed Chinese glyphs rendered after adding Noto CJK fonts.
 
+## TestFlight
+
+- App Store Connect build `1.0.3 (34)` was archived from convergence commit `45c502e28dea35515883820e0feea64c14178eea`; Git ancestry verification confirms task commit `79ba8f330344567782ae6636540560c5bf3fbbfa` is included in that archive source.
+- Archive: `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-13/Quantumn-1.0.3-34.xcarchive`; binary SHA-256 `d56014f51f7b67d7f1c4ab005bad0a80a2393a58d881946d5548492715eafcdd`.
+- Xcode/App Store Connect returned `Upload succeeded`, `Uploaded package is processing`, and `EXPORT SUCCEEDED`.
+- App Store Connect processing and test-group visibility could not be independently read back because the automation browser remained in an authentication-failed state after the manual login attempt. Upload is verified; tester visibility remains pending Apple/session readback.
+
 ## Evidence boundaries and remaining non-blockers
 
-- The simulator build is not a TestFlight/App Store distribution artifact; no TestFlight upload is claimed in this record.
+- No duplicate TestFlight build was uploaded; build 34 already contains the document-to-PPT task. Processing/test-group visibility remains pending readback.
 - Current text extraction intentionally excludes legacy `.doc` and image-only/scanned PDF OCR. Complex equations and pixel-perfect recreation of arbitrary source graphics remain outside this acceptance scope.
 - The selected local full-suite environment exposed unrelated pre-existing research-deposition integration failures; task-scoped backend, workflow, frontend, container, iOS, and production E2E gates passed. This record does not relabel those unrelated failures as task success.
 - Concurrent unrelated commits and deployments continued during the task. Every task deployment re-read the active SHA and used compare-before-switch checks; the final production SHA is reported separately from the moving GitHub tip.
