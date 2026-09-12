@@ -24,6 +24,7 @@ POLICY_VERSION = "local-research-v1"
 STORAGE_SCOPE = "user_vault_existing_sync"
 _IMPORT_LOCK = threading.Lock()
 NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)|no[ -]save|view\s+only", re.I)
+EVIDENCE_REVIEW = re.compile(r"核验|核实|验证|比较|选型|是否可靠|证据|verify|fact.check|compare|recommend", re.I)
 RESEARCH = re.compile(r"https?://|研究|调研|研读|research|investigate|literature review", re.I)
 NOT_RESEARCH = re.compile(r"^\s*(?:请(?:帮我)?\s*|please\s+)?(?:翻译|仅摘要|只(?:做)?摘要|仅(?:做)?总结|只回答|仅回答|translate\b|translation\b|summari[sz]e\b|answer\s+only)", re.I)
 CONTINUATION = re.compile(r"^(?:继续|接着|接续|continue\b|carry on\b)", re.I)
@@ -171,6 +172,8 @@ class ResearchDeposit:
                 if CONTINUATION.search(user_message or ""):
                     self.ctx.state.set(key, {"stage": "blocked", "reason": "continuation_scope_required"})
                     return {"context": "[Research deposit blocked] Continuation lacks a canonical task relationship; do not reuse another task's receipt. Continue the useful answer without claiming saved."}
+                if EVIDENCE_REVIEW.search(user_message or "") and not NOT_RESEARCH.search(user_message or ""):
+                    return {"context": self.evidence_context()}
                 return None
             if NOT_RESEARCH.search(user_message or ""):
                 # An unrelated request cannot destroy an existing obligation.
@@ -186,18 +189,37 @@ class ResearchDeposit:
                 old = {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
                        "stage": "research", "obligation": True, "schema_version": 2, "items": {}}
             self.ctx.state.set(key, old)
-        return {"context": "[Local research contract] Before final delivery call ai_lab_execute "
-                "capability=research_deposit with title, body (or analysis), source_urls, confidence "
-                "(null if unreviewed), source_kind=research_analysis. Submit the FULL adopted research "
-                "body directly, separately from the brief user-facing summary: at least 800 characters, "
-                "Markdown headings ## 事实, ## 分析, ## 启示 with actual newline characters (not literal "
-                "backslash-n), substantive sections of at least 20 characters, source URLs in body. "
-                "One task supports multiple research items: call once per item, keep its primary source "
-                "URL first and stable across corrections. A quality rejection with no durable raw can "
-                "be corrected and resubmitted; an immutable saved revision cannot be replaced. "
-                "Parent adopts evidence; child "
-                "execution receipts are NOT storage receipts. Report research/saved/queued separately; "
-                "never claim compiled without Writer verification. Missing handoff remains pending, not done."}
+        return {"context": self.evidence_context() + "[Local research contract] Before final delivery call ai_lab_execute "
+                "capability=research_deposit with title, full body, source_urls, confidence (null if unreviewed), "
+                "source_kind=research_analysis. Submit the FULL adopted research body, not a brief summary; "
+                "at least 800 characters, Markdown headings ## 事实, ## 分析, ## 启示 with actual newline characters "
+                "(not literal backslash-n), substantive sections of at least 20 characters, source URLs in body. "
+                "One task supports multiple research items. Keep primary source URL first and stable. "
+                "A quality rejection with no durable raw can be corrected and resubmitted. "
+                "To append a saved revision supply item_id and expected_revision from status. "
+                "An immutable saved revision cannot be replaced. Query old receipts with action=status, item_id, "
+                "source_revision. Parent adopts evidence; child execution receipts are NOT storage receipts. "
+                "Report research/saved/queued separately; never claim compiled without Writer verification."}
+
+    def evidence_context(self):
+        return ("[Task evidence review] Field completeness is not factual verification. "
+                "For each conclusion-changing claim, check traceable support, source independence, "
+                "date/version, scope and the strongest counterexample. Missing support, conflicting "
+                "evidence, stale facts, inaccessible originals or user requests to verify trigger "
+                "active gap closure using existing authorized tools, not a new runtime or Writer. "
+                "Respect offline/read-only/noexport/source permissions; search permission never grants save permission. "
+                "When network access is allowed, default to at most 3 search rounds and 6 source-body reads "
+                "per task, prioritize primary sources and one independent counter-source; syndicated URLs "
+                "are one evidence family, not independent corroboration. Adapt only to an explicit task budget. "
+                "Stop when decisive claims are bounded by read evidence and counterexamples, the budget "
+                "is exhausted, two consecutive rounds add no material evidence, or access/authorization "
+                "blocks progress. Record queries, read sources, failures, remaining gaps and stop reason. "
+                "Do not fabricate inaccessible video/PDF content, authority or confidence to pass quality. "
+                "Synthesize supported limited conclusions separately from source claims, inference and unknowns; "
+                "an unresolved claim need not invalidate other supported findings. A failed capture is pending "
+                "evidence, not proof of absence. No promise that every unknown can be resolved. "
+                "These are agent instructions, not an automatic retrieval engine or universal completion gate. "
+                )
 
     def pipeline(self):
         with _IMPORT_LOCK:
@@ -389,7 +411,8 @@ class ResearchDeposit:
                 source_revision=record["source_revision"], title=payload["title"], body=payload["body"],
                 source_urls=payload["source_urls"], confidence=confidence,
                 policy_version=POLICY_VERSION, profile="default", owner="local_owner",
-                evidence_status="research_analysis", no_save=False)
+                evidence_status="research_analysis", no_save=False,
+                **({"revision_link": record["revision_link"]} if record.get("revision_link") else {}))
             record["receipt"] = dict(receipt, binding={"scope": record["scope"],
                 "policy_version": POLICY_VERSION, "source_revision": record["source_revision"]},
                 storage_scope=STORAGE_SCOPE)
@@ -445,12 +468,15 @@ class ResearchDeposit:
             return result
         if record.get("requested_revision", record.get("source_revision")) != record.get("source_revision"):
             return {"success": False, "complete": False, "stage": "pending", "receipt": None,
-                    "reason": "source_revision_conflict", "storage_scope": STORAGE_SCOPE, "wiki_compiled": False}
+                    "reason": "source_revision_conflict", "source_revision": record.get("source_revision"),
+                    "revision_history": list(record.get("history", {})), "storage_scope": STORAGE_SCOPE, "wiki_compiled": False}
         valid = self.verify_receipt(record) if record.get("receipt") else False
         stage = record.get("stage", "pending") if valid or not record.get("receipt") else "pending"
         complete = valid and record.get("explicit_receipt") is True
         return {"success": valid, "complete": complete, "stage": stage,
                 "storage_scope": STORAGE_SCOPE,
+                "source_revision": record.get("source_revision"),
+                "revision_history": list(record.get("history", {})),
                 **{k: record[k] for k in ("quality_reason", "required_structure", "minchars") if k in record},
                 "admission_state": (record.get("receipt") or {}).get("admission_state"),
                 "reason": record.get("reason") or (None if complete else "missing_explicit_verified_receipt"),
@@ -475,22 +501,60 @@ class ResearchDeposit:
                     return {"success": False, "stage": "blocked", "error": "research_task_association_required"}
                 if not record.get("obligation") or record.get("scope") != scope or not self.allowed(kw, stored=record):
                     return {"success": False, "stage": "blocked", "error": "no_authorized_task_scope"}
-                payload = self.payload(inputs)
+                expected = inputs.get("expected_revision")
+                supplied_item = inputs.get("item_id")
+                if expected is not None and (not isinstance(expected, str) or not re.fullmatch(r"[a-f0-9]{64}", expected)):
+                    raise ValueError("invalid_expected_revision")
+                payload = self.payload({k: v for k, v in inputs.items() if k not in {"expected_revision", "item_id"}})
                 revision = digest(payload)
                 self.migrate(record)
                 identity = self.item_id(payload)
                 item = record["items"].get(identity)
+                if supplied_item is not None and supplied_item != identity:
+                    raise ValueError("primary_source_binding_mismatch")
+                if expected is not None and (not item or supplied_item != identity):
+                    raise ValueError("revision_item_id_required")
+                # Replaying an old payload proves its old receipt, never rolls back latest.
+                if item and revision in item.get("history", {}):
+                    historical = self.status(item["history"][revision])
+                    return dict(historical, item_id=identity, latest_revision=item["source_revision"],
+                                historical=True, task_complete=self.status(record)["complete"])
                 if item and item.get("source_revision") != revision:
                     receipt = item.get("receipt") or {}
                     # Only a definite pre-write quality rejection may be corrected.
                     # Even a failed manifest receipt can point to immutable durable raw.
                     rejected = receipt.get("reason") == "quality_rejected"
                     if not rejected or receipt.get("raw_path") or item.get("body_ref"):
-                        item["requested_revision"] = revision
-                        self.ctx.state.set(key, record)
-                        return {"success": False, "complete": False, "stage": "blocked",
-                                "error": "source_revision_conflict", "item_id": identity}
-                    item = None
+                        if expected != item.get("source_revision"):
+                            if expected is None:
+                                item["requested_revision"] = revision
+                                self.ctx.state.set(key, record)
+                            return {"success": False, "complete": False, "stage": "blocked",
+                                    "error": "source_revision_conflict", "item_id": identity,
+                                    "latest_revision": item.get("source_revision")}
+                        if not self.verify_receipt(item):
+                            raise ValueError("previous_revision_recovery_required")
+                        history = dict(item.get("history", {}))
+                        if len(history) >= 19:
+                            raise ValueError("item_revision_limit_20")
+                        old = {k: v for k, v in item.items() if k not in {"history", "requested_revision"}}
+                        history[item["source_revision"]] = old
+                        link = {"previous_raw_path": receipt["raw_path"], "previous_sha256": receipt["sha256"],
+                                "previous_revision": item["source_revision"], "item_id": identity,
+                                "supersedes": {old["receipt"]["raw_path"]: old["receipt"]["sha256"]
+                                               for old in history.values()}}
+                        item = {"scope": scope, "owner": record["owner"], "policy_version": record["policy_version"],
+                                "item_id": identity, "payload": payload, "source_revision": revision,
+                                "history": history, "revision_link": link, "stage": "pending",
+                                "recovery_attempts": old.get("recovery_attempts", 0)}
+                        record["items"][identity] = item
+                    else:
+                        # Keep all durable history when correcting a rejected append.
+                        retained = {k: item[k] for k in ("history", "revision_link", "recovery_attempts") if k in item}
+                        item = {"scope": scope, "owner": record["owner"], "policy_version": record["policy_version"],
+                                "item_id": identity, "payload": payload, "source_revision": revision,
+                                "stage": "pending", **retained}
+                        record["items"][identity] = item
                 if item:
                     item.pop("requested_revision", None)  # Explicit identical content acknowledges this revision.
                 if item and self.verify_receipt(item):
@@ -520,7 +584,7 @@ class ResearchDeposit:
         cron). Tool callers without an owner surface can only use their exact
         canonical host scope. At most three recovery attempts per item lifetime.
         """
-        if set(inputs) - {"action", "session_id", "turn_id", "task_id", "limit", "item_id", "cursor"}:
+        if set(inputs) - {"action", "session_id", "turn_id", "task_id", "limit", "item_id", "cursor", "source_revision"}:
             raise ValueError("unsupported_recovery_fields")
         read_only = inputs["action"] == "status"
         if not read_only and not self.enabled():
@@ -548,6 +612,17 @@ class ResearchDeposit:
             identity = inputs.get("item_id")
             if identity is not None and identity not in record["items"]:
                 return {"success": False, "complete": False, "error": "unknown_item_id", "stage": "blocked"}
+            requested = inputs.get("source_revision")
+            if requested is not None:
+                if not read_only or not identity:
+                    raise ValueError("source_revision_requires_item_status")
+                current_item = record["items"][identity]
+                selected = current_item if requested == current_item.get("source_revision") else current_item.get("history", {}).get(requested)
+                if selected is None:
+                    raise ValueError("unknown_source_revision")
+                result = self.status({k: v for k, v in selected.items() if k != "requested_revision"})
+                return dict(result, item_id=identity, latest_revision=current_item["source_revision"],
+                            historical=requested != current_item["source_revision"])
             if inputs["action"] == "status":
                 return self.status(record["items"][identity] if identity else record)
             targets = [record["items"][identity]] if identity else list(record["items"].values())
