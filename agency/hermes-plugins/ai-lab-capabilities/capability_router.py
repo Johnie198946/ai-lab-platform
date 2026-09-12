@@ -512,6 +512,9 @@ def research_stage(user_message: str, *, conversation_history: Any = None) -> st
     if initial or research_routing_excluded(user_message):
         return initial
     def continuation(text: str) -> bool:
+        # A write veto is not a veto on reading/research. Consent enforcement
+        # still receives the original text; only this intent test strips it.
+        text = re.sub(r"(?:不要|不必|无需|不)(?:保存|入库)|no[_ -]save", "", text, flags=re.I)
         return bool(len(text) <= 160 and not re.search(r"https?://", text, re.I)
                     and not research_routing_excluded(text)
                     and re.match(r"^(?:请|那就|那|好的[，, ]*)?(?:继续|深挖|深入|深研|"
@@ -529,10 +532,30 @@ def research_stage(user_message: str, *, conversation_history: Any = None) -> st
     saw_answer = False
     for message in reversed(history[-80:]):
         content = message.get("content")
+        if content is None and message.get("role") == "assistant":
+            content = ""
         if not isinstance(content, str):
             continue
-        if message.get("role") == "assistant" and content.strip() and not message.get("tool_calls"):
-            saw_answer = True
+        if message.get("role") == "assistant":
+            if content.strip():
+                saw_answer = True
+            # Native Codex history can retain an intermediate preview only in
+            # message items on the accompanying tool-call row.
+            items = message.get("codex_message_items") or []
+            if isinstance(items, str):
+                try:
+                    items = json.loads(items)
+                except (ValueError, TypeError):
+                    items = []
+            if isinstance(items, list):
+                saw_answer = saw_answer or any(
+                    isinstance(item, dict) and item.get("role") == "assistant"
+                    and item.get("phase") == "commentary"
+                    and isinstance(item.get("content"), list)
+                    and any(isinstance(part, dict) and isinstance(part.get("text"), str)
+                            and bool(part["text"].strip()) for part in item["content"])
+                    for item in items
+                )
         if message.get("role") != "user":
             continue
         # Ignore appended hook metadata, never interpret tool/page text as intent.
@@ -564,8 +587,11 @@ def _research_stage_context(stage: str) -> str:
             "Follow the requested direction; bare '继续' means investigate the most important "
             "previously identified gap. If original evidence was compressed away, disclose this "
             "and recover only the needed source. Research only relevant gaps with independent "
-            "sources, counterevidence and explicit uncertainties. Never reuse another task's "
-            "storage receipt or infer save authorization from continuation."
+            "sources, counterevidence and explicit uncertainties. The final answer MUST attach "
+            "direct clickable source URLs to checked claims and distinguish confirmed, corrected, "
+            "and still-unknown conclusions. Scope searches to the requested question and necessary "
+            "premises; do not automatically re-audit every numerical claim in the article. "
+            "Never reuse another task's storage receipt or infer save authorization from continuation."
         )
     return common + (
         "FIRST produce a short source-only quick read: identify the source, faithfully summarize "

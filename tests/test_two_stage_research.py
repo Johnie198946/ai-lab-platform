@@ -175,6 +175,43 @@ def test_real_full_catalog_cannot_force_preview_into_specialist():
         ctx.dispatch_tool.assert_not_called()
 
 
+@pytest.mark.parametrize("suffix", ["不要保存", "不要入库", "no_save", "no-save", "不保存"])
+def test_followup_write_veto_does_not_cancel_reading(native, suffix):
+    manager, ctx, deposit, scope = native
+    text = "我对成本感兴趣，继续。" + suffix
+    history = HISTORY + [{"role": "user", "content": text}]
+    assert router.research_stage(text, conversation_history=history) == "deep_followup"
+    context = invoke(manager, scope, text, history)
+    assert "SOURCE_FIRST_RESEARCH" in context
+    assert "clickable source URLs" in context
+    assert ctx.state.get(deposit.key(scope))["veto"]
+    assert deposit.execute({}, **scope)["error"] == "no_save"
+
+
+@pytest.mark.parametrize("encoded", [False, True])
+def test_native_commentary_is_a_valid_interrupted_study_antecedent(encoded):
+    items = [{"role": "assistant", "phase": "commentary", "content": [
+        {"type": "output_text", "text": "原文主张成本下降；尚未核验，以下核验负载与成本边界。"}]}]
+    history = [{"role": "user", "content": "完整研究 " + URL},
+               {"role": "assistant", "content": None, "tool_calls": [{"id": "synthetic"}],
+                "codex_message_items": json.dumps(items) if encoded else items}]
+    assert router.research_stage("继续完成刚才的完整研究，不要保存。", conversation_history=history) == "deep_followup"
+    history[-1]["role"] = "tool"
+    assert router.research_stage("继续", conversation_history=history) == ""
+
+
+@pytest.mark.parametrize("items", ["not json", [None], [{"role": "assistant", "phase": "commentary", "content": [None, 7, {"text": 8}]}]])
+def test_malformed_commentary_never_crashes_or_establishes_context(items):
+    history = [{"role": "user", "content": QUICK},
+               {"role": "assistant", "content": None, "codex_message_items": items}]
+    assert router.research_stage("继续", conversation_history=history) == ""
+
+
+def test_stop_still_stops_when_no_save_is_also_present():
+    for text in ["继续？不要继续，不要保存", "不要继续，不要保存", "停止研究，不要入库"]:
+        assert router.research_stage(text, conversation_history=HISTORY) == ""
+
+
 def test_native_host_actually_passes_conversation_history():
     tree = ast.parse((HERMES / "agent/turn_context.py").read_text())
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
