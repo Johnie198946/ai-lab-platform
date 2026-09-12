@@ -1,0 +1,16 @@
+{
+  "status": "CONFIG_DEPLOYED_VERIFIED",
+  "config_commit": "01e57a33abe2d9ac95c25da3ae8a5273c5635af7",
+  "application_sha_unchanged": "50ee79f20adc56b717b761e57937ba7fd0bf86a5",
+  "scope": "Existing uniform per-user quota; no new role exemptions. Ordinary users verified at 10000000.",
+  "config_sha256": "1cc211b025d98220f34a343bb9dbc23159f18b22d0cfda2ec1d3496a819cace1",
+  "checkpoint": "/opt/ai-lab-shared/deployment-checkpoints/quota-10m-20260912T143444Z",
+  "runtime_quota_tokens": 10000000,
+  "quota_environment_verified": ["api", "workflow-worker", "planning-worker", "agent-evaluation-worker"],
+  "images_unchanged": true,
+  "tests_passed": 8,
+  "services_running_healthy": "8/8",
+  "public_health": "ok, verified from Mac and server after nginx reload",
+  "account_quota_snapshot": {"used_tokens": 262561, "remaining_tokens": 9737439, "is_exhausted": false, "period_end": "2026-10-01T00:00:00+00:00"},
+  "notes": "Production config-only rollout; .deployed-sha intentionally not advanced to config commit. Shared .env persisted QUANTUM_MONTHLY_TOKEN_LIMIT=10000000. Ledger was not reset. Frontend nginx reload resolved post-recreation upstream 502. iOS binary not published in this change."
+}

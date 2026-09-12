@@ -18,3 +18,11 @@ An already-applied patch is detected with `git apply --reverse --check`; never a
 Rollback: first disable the local plugin's `research_deposit.enabled` setting, then reverse this exact patch. Do not reset the runtime checkout or restore an entire config file over unrelated changes.
 
 Existing processes cache imported Python modules. Files on disk are not proof of activation: verify a newly started native Hermes process and the target serving process separately. Hook exceptions remain Hermes' existing fail-open behavior; a failed observer is not a successfully completed deposit.
+
+## Browser resolver budget
+
+`0003-browser-deadline.patch` targets the same exact base. It passes one monotonic budget through the existing resolver, profile snapshot, startup and CLI; no new runtime. Consent and profile pins remain required. Expiry stops fallback; only newly owned resources are cleaned. Synchronous filesystem/configuration and process-creation boundaries remain cooperative, not an absolute hard whole-call guarantee.
+
+Independent Python 3.11 macOS gate after the supervisor fix: 305 passed, 0 failed, 2 OS-specific skips across eight browser/dependency files; real-browser integration tests excluded. Apply/reverse and live consumer acceptance are separate release gates; retain backups and verify hashes.
+
+`0003` does not depend on the unpublished `0002` DDGS experiment. Search recovery uses the existing Keenable provider configuration. Bing is unavailable in installed DDGS 9.16.0; Exa free search was observed rate-limited. Neither failure path is claimed repaired.
