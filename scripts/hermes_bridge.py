@@ -3225,6 +3225,14 @@ def _merge_workflow_usage(total: dict[str, Any], delta: dict[str, Any]) -> dict[
     return merged
 
 
+def _normalize_presentation_contract_reply(render_type: str, reply: str) -> str:
+    if render_type in {"presentation", "presentation_design"}:
+        return _normalize_presentation_reply(reply)
+    if render_type.startswith("presentation"):
+        return json.dumps(_extract_json_object(reply), ensure_ascii=False, separators=(",", ":"))
+    return reply
+
+
 def _workflow_run_sync(execution_id: str) -> None:
     """Hermes 层推进整份 DAG；平台只消费事件，不参与节点调度。"""
     with _workflow_runs_lock:
@@ -3304,6 +3312,18 @@ def _workflow_run_sync(execution_id: str) -> None:
                         reply = "## 已授权知识证据\n\n" + "\n".join(rows)
                     else:
                         reply = "## 证据缺口\n\n当前授权知识范围内未检索到相关条目，且本节点未获联网权限。"
+            def _node_event(event_type: str, **event_payload: Any) -> None:
+                with _workflow_runs_lock:
+                    _workflow_event(
+                        run,
+                        event_type,
+                        node_id=node_id,
+                        category=event_type,
+                        source="hermes_bridge",
+                        detail="",
+                        **event_payload,
+                    )
+
             for completion_attempt in range(0 if gateway_completed else 2):
                 attempt_prompt = node_prompt
                 if completion_attempt:
@@ -3313,18 +3333,6 @@ def _workflow_run_sync(execution_id: str) -> None:
                         "这次必须立即使用已授权工具完成检索，并直接返回含来源 URL、"
                         "证据摘要和缺口标记的完整可落盘成果；禁止输出工具切换标签。"
                     )[:MAX_INPUT]
-                def _node_event(event_type: str, **event_payload: Any) -> None:
-                    with _workflow_runs_lock:
-                        _workflow_event(
-                            run,
-                            event_type,
-                            node_id=node_id,
-                            category=event_type,
-                            source="hermes_bridge",
-                            detail="",
-                            **event_payload,
-                        )
-
                 reply, new_sid, raw_usage = _run_workflow_node_in_process(
                     attempt_prompt,
                     node,
@@ -3355,13 +3363,42 @@ def _workflow_run_sync(execution_id: str) -> None:
             contract = _workflow_artifact_contract(node)
             approved_design = None
             approved_outline = None
-            if contract["render_type"] == "presentation":
-                reply = _normalize_presentation_reply(reply)
+            render_type = str(contract["render_type"])
+            if render_type.startswith("presentation"):
+                try:
+                    reply = _normalize_presentation_contract_reply(render_type, reply)
+                except (RuntimeError, ValueError, json.JSONDecodeError) as exc:
+                    with _workflow_runs_lock:
+                        _workflow_event(
+                            run,
+                            "node_repairing",
+                            node_id=node_id,
+                            usage=node_usage,
+                            message=f"Hermes 返回的演示结构无效，正在受控修复：{str(exc)[:240]}",
+                        )
+                    repair_prompt = (
+                        node_prompt
+                        + "\n\n上一次响应不是符合格式契约的有效 JSON。"
+                        "这次只返回一个完整 JSON 对象，不要 Markdown 代码围栏、解释或运行状态；"
+                        "字段与 layout 必须严格遵守格式契约。"
+                    )[:MAX_INPUT]
+                    reply, new_sid, raw_usage = _run_workflow_node_in_process(
+                        repair_prompt,
+                        node,
+                        str(hermes_sid) if hermes_sid else None,
+                        execution_id,
+                        event_callback=_node_event,
+                        sandbox=sandbox,
+                    )
+                    if new_sid:
+                        hermes_sid = new_sid
+                    delta = _accumulate_usage(run, raw_usage)
+                    node_usage = _merge_workflow_usage(node_usage, delta)
+                    if reply.startswith("⚠️"):
+                        raise RuntimeError(reply)
+                    reply = _normalize_presentation_contract_reply(render_type, reply)
+            if render_type == "presentation":
                 reply, approved_design, approved_outline = _bind_approved_presentation_inputs(run, reply)
-            elif contract["render_type"] == "presentation_design":
-                reply = _normalize_presentation_reply(reply)
-            elif contract["render_type"].startswith("presentation"):
-                reply = json.dumps(_extract_json_object(reply), ensure_ascii=False, separators=(",", ":"))
             with _workflow_runs_lock:
                 run["hermes_session_id"] = hermes_sid
                 state.update({"status": "succeeded", "output": reply, "usage": node_usage})
