@@ -209,11 +209,24 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
             tokenTotalBasis: "verified_requests_only", legacyUnverifiedTotalTokens: 0,
             legacyUnverifiedCalls: 0, unverifiedCalls: 0,
             reconciliationRequired: false, usageState: "complete",
-            daily: [], models: [], quota: nil
+            daily: [
+                UsageDailyDTO(date: "2026-09-08", calls: 1, inputTokens: 18, outputTokens: 7, cacheReadTokens: 12, cacheWriteTokens: 2, totalTokens: 39),
+                UsageDailyDTO(date: "2026-09-09", calls: 2, inputTokens: 34, outputTokens: 9, cacheReadTokens: 21, cacheWriteTokens: 4, totalTokens: 68),
+                UsageDailyDTO(date: "2026-09-10", calls: 1, inputTokens: 14, outputTokens: 5, cacheReadTokens: 8, cacheWriteTokens: 1, totalTokens: 28),
+                UsageDailyDTO(date: "2026-09-11", calls: 3, inputTokens: 48, outputTokens: 13, cacheReadTokens: 30, cacheWriteTokens: 6, totalTokens: 97),
+                UsageDailyDTO(date: "2026-09-12", calls: 2, inputTokens: 29, outputTokens: 10, cacheReadTokens: 17, cacheWriteTokens: 3, totalTokens: 59)
+            ], models: [], quota: nil
         )
         attachScreenshot(
             TokenSummaryCard(summary: summary).preferredColorScheme(.light).padding(),
             name: "token-summary-cache-breakdown-light-fixture",
+            height: 760
+        )
+        attachScreenshot(
+            TokenSummaryCard(summary: summary, selectedDate: "2026-09-11")
+                .preferredColorScheme(.light)
+                .padding(),
+            name: "token-summary-line-bar-selected-light-fixture",
             height: 760
         )
         attachScreenshot(
