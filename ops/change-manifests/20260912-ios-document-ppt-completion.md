@@ -77,14 +77,14 @@ release_date: 2026-09-12
 
 ## TestFlight
 
-- App Store Connect build `1.0.3 (34)` was archived from convergence commit `45c502e28dea35515883820e0feea64c14178eea`; Git ancestry verification confirms task commit `79ba8f330344567782ae6636540560c5bf3fbbfa` is included in that archive source.
-- Archive: `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-13/Quantumn-1.0.3-34.xcarchive`; binary SHA-256 `d56014f51f7b67d7f1c4ab005bad0a80a2393a58d881946d5548492715eafcdd`.
+- App Store Connect build `1.0.3 (35)` was archived from commit `d2266e468b0af032d2c5cbf5a114f0cec89b1354`; Git ancestry verification confirms task commit `79ba8f330344567782ae6636540560c5bf3fbbfa` is included in that archive source.
+- Archive: `/Users/dengzhaoyu/Library/Developer/Xcode/Archives/2026-09-13/Quantumn-1.0.3-35.xcarchive`; binary SHA-256 `7b052291755bc0965d1a1be4cf595c86ea7645891840a67eeaddf2bffc88a4c6`.
 - Xcode/App Store Connect returned `Upload succeeded`, `Uploaded package is processing`, and `EXPORT SUCCEEDED`.
 - App Store Connect processing and test-group visibility could not be independently read back because the automation browser remained in an authentication-failed state after the manual login attempt. Upload is verified; tester visibility remains pending Apple/session readback.
 
 ## Evidence boundaries and remaining non-blockers
 
-- No duplicate TestFlight build was uploaded; build 34 already contains the document-to-PPT task. Processing/test-group visibility remains pending readback.
+- No duplicate TestFlight build was uploaded by this task; build 35 supersedes build 34 and contains the document-to-PPT task. Processing/test-group visibility remains pending readback.
 - Current text extraction intentionally excludes legacy `.doc` and image-only/scanned PDF OCR. Complex equations and pixel-perfect recreation of arbitrary source graphics remain outside this acceptance scope.
 - The selected local full-suite environment exposed unrelated pre-existing research-deposition integration failures; task-scoped backend, workflow, frontend, container, iOS, and production E2E gates passed. This record does not relabel those unrelated failures as task success.
 - Concurrent unrelated commits and deployments continued during the task. Every task deployment re-read the active SHA and used compare-before-switch checks; the final production SHA is reported separately from the moving GitHub tip.
