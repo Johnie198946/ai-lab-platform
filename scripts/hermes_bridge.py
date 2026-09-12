@@ -45,7 +45,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Callable, Literal, Optional
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException, Query
@@ -121,6 +121,98 @@ def _isolated_agent_context_kwargs() -> dict[str, bool]:
         skip_memory=True,
         load_soul_identity=False,
     )
+
+
+def _with_sandbox_memory(
+    sandbox: TenantHermesSandbox, action: Callable[[Any], Any]
+) -> Any:
+    """Run one native Hermes memory operation inside its user profile."""
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+    from tools.memory_tool import MemoryStore
+
+    token = set_hermes_home_override(_sandbox_hermes_home(sandbox))
+    try:
+        store = MemoryStore()
+        store.load_from_disk()
+        return action(store)
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _sandbox_hermes_home(sandbox: TenantHermesSandbox) -> Path:
+    """Resolve the profile path while supporting existing lightweight test doubles."""
+    configured = getattr(sandbox, "hermes_home", None)
+    if configured is not None:
+        return Path(configured)
+    return Path(sandbox.state_db).parent / "hermes-home"
+
+
+def _memory_id(target: str, content: str) -> str:
+    return "mem_" + hashlib.sha256(f"{target}\0{content}".encode()).hexdigest()[:24]
+
+
+def _sandbox_memory_payload(sandbox: TenantHermesSandbox) -> dict[str, Any]:
+    def read(store: Any) -> dict[str, Any]:
+        items = [
+            {"id": _memory_id(target, content), "target": target, "content": content}
+            for target in ("user", "memory")
+            for content in store._entries_for(target)
+        ]
+        return {
+            "items": items,
+            "limits": {"user": store.user_char_limit, "memory": store.memory_char_limit},
+            "usage": {
+                target: len("\n§\n".join(store._entries_for(target)))
+                for target in ("user", "memory")
+            },
+            "review_interval_turns": 10,
+        }
+
+    return _with_sandbox_memory(sandbox, read)
+
+
+def _mutate_sandbox_memory(
+    sandbox: TenantHermesSandbox,
+    *,
+    action: str,
+    target: str | None = None,
+    content: str = "",
+    memory_id: str = "",
+) -> dict[str, Any]:
+    def mutate(store: Any) -> None:
+        resolved_target = target
+        old_content = ""
+        if action != "add":
+            match = next(
+                (
+                    (candidate, entry)
+                    for candidate in ("user", "memory")
+                    for entry in store._entries_for(candidate)
+                    if _memory_id(candidate, entry) == memory_id
+                ),
+                None,
+            )
+            if match is None:
+                raise KeyError(memory_id)
+            resolved_target, old_content = match
+        if resolved_target not in {"user", "memory"}:
+            raise ValueError("invalid_memory_target")
+        if action == "add":
+            result = store.add(resolved_target, content)
+        elif action == "replace":
+            result = store.replace(resolved_target, old_content, content)
+        elif action == "remove":
+            result = store.remove(resolved_target, old_content)
+        else:
+            raise ValueError("invalid_memory_action")
+        if not result.get("success"):
+            raise ValueError(str(result.get("error") or "memory_write_rejected"))
+
+    _with_sandbox_memory(sandbox, mutate)
+    return _sandbox_memory_payload(sandbox)
 
 
 def _routed_skill_catalog(sandbox: TenantHermesSandbox) -> list[dict[str, Any]]:
@@ -4899,7 +4991,7 @@ def _apply_triage_toolset_policy(
     route_class = triage["route_class"]
     evidence = set(triage.get("evidence_requirements") or [])
     if route_class == CASUAL:
-        return []
+        return [item for item in selected if item in {"memory", "session_search"}]
 
     denied = set()
     if route_class == GENERAL_QA:
@@ -5775,8 +5867,10 @@ def _build_in_process_agent(
         and not delegation_tool_enabled
     )
     if fast_general:
-        # Hermes remains the only Runtime; this only selects its minimal prompt/tool lane.
-        toolsets_list = []
+        # Keep only native profile continuity on the fast lane.
+        toolsets_list = [
+            item for item in toolsets_list if item in {"memory", "session_search"}
+        ]
     if not allow_local_files:
         toolsets_list = [item for item in toolsets_list if item not in {"file", "terminal"}]
     _fb = (
@@ -5978,9 +6072,8 @@ def _build_in_process_agent(
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",
-        # The Bridge injects a server-owned tenant prompt below. Loading the
-        # host profile's MEMORY/USER files or workspace AGENTS.md here would
-        # cross the tenant boundary and can expose operator-only context.
+        # Context files and external memory providers stay disabled. The explicit
+        # memory toolset loads only MEMORY/USER from the ContextVar-bound sandbox.
         **_isolated_agent_context_kwargs(),
         session_id=hermes_sid,
         session_db=session_db,
@@ -6122,6 +6215,7 @@ def _run_agent_sync(
     route_context: dict[str, Any] = {}
     cache_keep = False
     original_goal = goal
+    hermes_home_token: Any = None
     try:
         # This SSE request is finite: once ``done`` is emitted there is no
         # Hermes gateway consumer that can re-enter a detached child result.
@@ -6141,6 +6235,9 @@ def _run_agent_sync(
         }
         if sandbox is None:
             raise RuntimeError("tenant_sandbox_unavailable")
+        from hermes_constants import set_hermes_home_override
+
+        hermes_home_token = set_hermes_home_override(_sandbox_hermes_home(sandbox))
         _sandbox_tool_context.value = sandbox
         note_draft_request = not (agent_config or {}).get("knowledge_stage_only") and _is_note_draft_request(goal)
         note_context_claims = client_context_claims or knowledge_claims
@@ -6414,14 +6511,20 @@ def _run_agent_sync(
         _client_context_tool_context.value = None
         _sandbox_tool_context.value = None
         _skill_route_context.value = None
-        cache_key = route_context.get("agent_cache_key")
-        cache_signature = route_context.get("agent_cache_signature")
-        if agent is not None and session_db is not None and cache_key and cache_signature:
-            _finish_cached_agent(
-                str(cache_key), str(cache_signature), agent, session_db, keep=cache_keep
-            )
-        else:
-            _close_agent_resources(agent, session_db)
+        try:
+            cache_key = route_context.get("agent_cache_key")
+            cache_signature = route_context.get("agent_cache_signature")
+            if agent is not None and session_db is not None and cache_key and cache_signature:
+                _finish_cached_agent(
+                    str(cache_key), str(cache_signature), agent, session_db, keep=cache_keep
+                )
+            else:
+                _close_agent_resources(agent, session_db)
+        finally:
+            if hermes_home_token is not None:
+                from hermes_constants import reset_hermes_home_override
+
+                reset_hermes_home_override(hermes_home_token)
 
 
 def _busy_sse(user_id: str):
@@ -7497,6 +7600,99 @@ async def retry_workflow_run(
         _workflow_event(run, "retry_queued", node_id=target, message="失败节点已重新入队")
         _start_workflow_thread(execution_id)
         return {"ok": True, "status": "queued", "from_node_id": target}
+
+
+class MemoryWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target: Literal["user", "memory"]
+    content: str = Field(..., min_length=1, max_length=2_200)
+
+
+class MemoryReplaceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(..., min_length=1, max_length=2_200)
+
+
+def _memory_sandbox(capability: str) -> TenantHermesSandbox:
+    try:
+        claims = verify_capability(capability)
+    except KnowledgeScopeDenied as exc:
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied") from exc
+    if str(claims.get("entry_point") or "") != "memory":
+        raise HTTPException(status_code=403, detail="sandbox_identity_denied")
+    return _tenant_sandbox_from_claims(
+        subject_id=str(claims.get("subject_id") or "memory"),
+        knowledge_claims=claims,
+        client_claims=None,
+    )
+
+
+def _memory_write_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail="memory_not_found")
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "MEMORY_WRITE_REJECTED",
+            "message": str(exc)[:500],
+            "retryable": False,
+        },
+    )
+
+
+@app.get("/v1/memory")
+async def list_native_memory(x_knowledge_capability: str = Header(default="")):
+    return _sandbox_memory_payload(_memory_sandbox(x_knowledge_capability))
+
+
+@app.post("/v1/memory")
+async def add_native_memory(
+    body: MemoryWriteRequest,
+    x_knowledge_capability: str = Header(default=""),
+):
+    try:
+        return _mutate_sandbox_memory(
+            _memory_sandbox(x_knowledge_capability),
+            action="add",
+            target=body.target,
+            content=body.content,
+        )
+    except (KeyError, ValueError) as exc:
+        raise _memory_write_error(exc) from exc
+
+
+@app.put("/v1/memory/{memory_id}")
+async def replace_native_memory(
+    memory_id: str,
+    body: MemoryReplaceRequest,
+    x_knowledge_capability: str = Header(default=""),
+):
+    try:
+        return _mutate_sandbox_memory(
+            _memory_sandbox(x_knowledge_capability),
+            action="replace",
+            content=body.content,
+            memory_id=memory_id,
+        )
+    except (KeyError, ValueError) as exc:
+        raise _memory_write_error(exc) from exc
+
+
+@app.delete("/v1/memory/{memory_id}")
+async def delete_native_memory(
+    memory_id: str,
+    x_knowledge_capability: str = Header(default=""),
+):
+    try:
+        return _mutate_sandbox_memory(
+            _memory_sandbox(x_knowledge_capability),
+            action="remove",
+            memory_id=memory_id,
+        )
+    except (KeyError, ValueError) as exc:
+        raise _memory_write_error(exc) from exc
 
 
 @app.get("/v1/skills")

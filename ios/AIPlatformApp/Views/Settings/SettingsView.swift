@@ -42,11 +42,15 @@ public struct SettingsView: View {
                         tenantProfileCard
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
-                        // 2. 知识订阅与套餐
+                        // 2. Hermes 原生长期记忆
+                        memoryCenterEntryCard
+                            .padding(.horizontal, AppTheme.Metrics.contentGutter)
+
+                        // 3. 知识订阅与套餐
                         subscriptionEntryCard
                             .padding(.horizontal, AppTheme.Metrics.contentGutter)
 
-                        // 3. 我创建的智能体 + 我制作的技能（纯云端真实数据）
+                        // 4. 我创建的智能体 + 我制作的技能（纯云端真实数据）
                         VStack(spacing: AppTheme.Spacing.md) {
                             createdAgentsSection()
                             createdSkillsSection()
@@ -145,6 +149,40 @@ public struct SettingsView: View {
         }
         .buttonStyle(SoftButtonStyle())
         .accessibilityLabel("知识订阅与套餐，\(subscriptionSummary?.subscription?.planName ?? "未选择套餐")")
+    }
+
+    private var memoryCenterEntryCard: some View {
+        NavigationLink {
+            MemoryCenterView()
+        } label: {
+            HStack(spacing: AppTheme.Spacing.md) {
+                Image(systemName: "brain.head.profile")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(AppTheme.Icons.onAccent)
+                    .frame(width: 48, height: 48)
+                    .background(AppTheme.Colors.actionGradient)
+                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("记忆中心")
+                        .font(.headline.weight(.bold))
+                        .foregroundStyle(AppTheme.Colors.textPrimary)
+                    Text("查看和管理 Hermes 对你的长期理解")
+                        .font(AppTheme.Typography.supporting)
+                        .foregroundStyle(AppTheme.Colors.textSecondary)
+                }
+
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(AppTheme.Icons.tertiary)
+            }
+            .padding(AppTheme.Spacing.lg)
+            .frame(minHeight: 88)
+            .quantumCard()
+        }
+        .buttonStyle(SoftButtonStyle())
+        .accessibilityLabel("记忆中心，查看和管理 Hermes 对你的长期理解")
     }
 
     private var settingsOverviewHeader: some View {

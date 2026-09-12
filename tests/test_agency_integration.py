@@ -816,7 +816,7 @@ def test_bridge_applies_fail_closed_toolsets_from_server_triage():
         "agency_enabled": True,
     }})
     assert casual is not None
-    assert _apply_triage_toolset_policy(all_tools, casual) == []
+    assert _apply_triage_toolset_policy(all_tools, casual) == ["memory"]
 
     general = _request_triage({"triage": {
         "route_class": "GENERAL_QA",
@@ -1211,7 +1211,9 @@ def test_bridge_declares_finite_session_before_running_agent(monkeypatch, tmp_pa
     monkeypatch.setattr("scripts.hermes_bridge._update_session_mapping", lambda *_: None)
 
     events: queue.Queue = queue.Queue()
-    sandbox = types.SimpleNamespace(state_db=tmp_path / "state.db")
+    sandbox = types.SimpleNamespace(
+        state_db=tmp_path / "state.db", hermes_home=tmp_path / "hermes-home"
+    )
     _run_agent_sync(
         "professional task",
         "client-session",

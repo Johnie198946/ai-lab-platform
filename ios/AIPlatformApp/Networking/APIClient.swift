@@ -55,34 +55,22 @@ public struct ProfileDTO: Codable {
     public let hasSessions: Bool
 }
 
-public struct HotMemoryDTO: Codable, Identifiable, Hashable, Sendable {
-    public let memoryId: String
-    public let tenantKey: String
-    public let userId: String
-    public let kind: String
+public struct HermesMemoryDTO: Codable, Identifiable, Hashable, Sendable {
+    public let id: String
+    public let target: String
     public let content: String
-    public let status: String
-    public let confidence: String
-    public let sourceSessionId: String?
-    public let createdAt: String
-    public let updatedAt: String
-    public let expiresAt: String?
-
-    public var id: String { memoryId }
 }
 
-public struct HotMemoryWriteRequest: Encodable, Sendable {
-    public let kind: String
-    public let content: String
-    public let status: String
-    public let confidence: String
-    public let sourceSessionId: String?
-    public let expiresAt: String?
+public struct HermesMemoryCenterDTO: Codable, Hashable, Sendable {
+    public let items: [HermesMemoryDTO]
+    public let limits: [String: Int]
+    public let usage: [String: Int]
+    public let reviewIntervalTurns: Int
 }
 
-public struct HotMemoryCompactResponse: Decodable, Sendable {
-    public let removed: Int
-    public let maxChars: Int
+public struct HermesMemoryWriteRequest: Encodable, Sendable {
+    public let target: String
+    public let content: String
 }
 
 public struct CloudKnowledgeNoteDTO: Codable, Identifiable, Hashable, Sendable {
@@ -2125,48 +2113,37 @@ public final class APIClient: ObservableObject {
         try await request(KnowledgeAccessResponse.self, path: "me/knowledge-access")
     }
 
-    // MARK: - Hermes USER PROFILE memory actions
+    // MARK: - Native Hermes memory
 
-    public func fetchHotMemory() async throws -> [HotMemoryDTO] {
-        struct Response: Decodable { let items: [HotMemoryDTO] }
-        return try await request(Response.self, path: "me/hot-memory").items
+    public func fetchHermesMemory() async throws -> HermesMemoryCenterDTO {
+        try await request(HermesMemoryCenterDTO.self, path: "me/memory")
     }
 
-    /// Hermes-style add: on MEMORY_OVERFLOW, remove only candidates/expired entries once, then retry.
-    /// Confirmed entries are never silently deleted or truncated.
-    public func addHotMemory(
-        kind: String = "general",
-        content: String,
-        status: String = "candidate",
-        confidence: String = "medium",
-        sourceSessionId: String? = nil,
-        expiresAt: String? = nil
-    ) async throws -> HotMemoryDTO {
-        let body = HotMemoryWriteRequest(
-            kind: kind, content: content, status: status, confidence: confidence,
-            sourceSessionId: sourceSessionId, expiresAt: expiresAt
+    public func addHermesMemory(target: String, content: String) async throws -> HermesMemoryCenterDTO {
+        try await request(
+            HermesMemoryCenterDTO.self,
+            path: "me/memory",
+            method: "POST",
+            body: HermesMemoryWriteRequest(target: target, content: content)
         )
-        do {
-            return try await request(HotMemoryDTO.self, path: "me/hot-memory", method: "POST", body: body)
-        } catch let error as APIError {
-            guard error.actionable?.code == "MEMORY_OVERFLOW", error.actionable?.retryable == true else { throw error }
-            _ = try await compactHotMemory()
-            return try await request(HotMemoryDTO.self, path: "me/hot-memory", method: "POST", body: body)
-        }
     }
 
-    public func replaceHotMemory(memoryId: String, content: String) async throws -> HotMemoryDTO {
+    public func replaceHermesMemory(memoryId: String, content: String) async throws -> HermesMemoryCenterDTO {
         struct Body: Encodable { let content: String }
-        return try await request(HotMemoryDTO.self, path: "me/hot-memory/\(encodedPath(memoryId))", method: "PUT", body: Body(content: content))
+        return try await request(
+            HermesMemoryCenterDTO.self,
+            path: "me/memory/\(encodedPath(memoryId))",
+            method: "PUT",
+            body: Body(content: content)
+        )
     }
 
-    public func removeHotMemory(memoryId: String) async throws {
-        struct Response: Decodable { let deleted: Bool }
-        _ = try await request(Response.self, path: "me/hot-memory/\(encodedPath(memoryId))", method: "DELETE")
-    }
-
-    public func compactHotMemory() async throws -> HotMemoryCompactResponse {
-        try await request(HotMemoryCompactResponse.self, path: "me/hot-memory/compact", method: "POST")
+    public func removeHermesMemory(memoryId: String) async throws -> HermesMemoryCenterDTO {
+        try await request(
+            HermesMemoryCenterDTO.self,
+            path: "me/memory/\(encodedPath(memoryId))",
+            method: "DELETE"
+        )
     }
 
     public func subscribe(category: String) async throws -> [String] {

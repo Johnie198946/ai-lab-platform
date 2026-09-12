@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.models.agent_registry import AGENT_NODES, DEFAULT_AGENT_ID, system_prompt_for
 from backend.models.tenant_agent import TenantAgentModel
 SAFE_GLOBAL_TOOLS = (
+    "memory",
+    "session_search",
     "web_search",
     "web_extract",
     "knowledge_search",

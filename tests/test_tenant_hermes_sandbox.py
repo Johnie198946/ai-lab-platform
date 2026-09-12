@@ -31,6 +31,9 @@ def test_capsule_backup_restore_preserves_state_and_rejects_wrong_identity(tmp_p
     skill = sandbox.custom_skills / "private" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("private state", encoding="utf-8")
+    memories = sandbox.hermes_home / "memories"
+    memories.mkdir(parents=True)
+    (memories / "USER.md").write_text("偏好结论先行", encoding="utf-8")
     archive = tmp_path / "capsule.zip"
     manifest = backup_sandbox_capsule(sandbox, archive, generation=7)
     restored = tmp_path / "restored" / "profile"
@@ -47,6 +50,7 @@ def test_capsule_backup_restore_preserves_state_and_rejects_wrong_identity(tmp_p
     with sqlite3.connect(restored / "hermes-home" / "state.db") as connection:
         assert connection.execute("SELECT value FROM state").fetchone() == ("preserved",)
     assert (restored / "hermes-home" / "skills" / "custom" / "private" / "SKILL.md").read_text() == "private state"
+    assert (restored / "hermes-home" / "memories" / "USER.md").read_text() == "偏好结论先行"
     with pytest.raises(ValueError, match="identity_or_generation"):
         restore_sandbox_capsule(
             archive,
