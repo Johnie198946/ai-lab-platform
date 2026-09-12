@@ -97,7 +97,10 @@ def test_analytical_readout_and_video_guidance_preserve_boundaries(native, text)
                         "Stop at a genuine login/access wall", "Never infer a full transcript",
                         "do not assume a Python workspace variable", "Validate the first captured frame",
                         "clickable URLs", "Search snippets are discovery evidence",
-                        "execute_code for any recalculation", "another call dismissing, seeking"]:
+                        "print(NUMERIC_EXPRESSION)", "another call dismissing, seeking",
+                        "大胆假设（未验证）", "observable prediction", "falsifier",
+                        "Defer external factual audits", "do not dump script bodies",
+                        "unit, denominator", "No forced contrarianism"]:
         assert requirement in context
     assert "No broad search" in context
     assert not ctx.state.get(deposit.key(scope), {}).get("obligation")
@@ -195,6 +198,20 @@ def test_native_observability_binding_keeps_scope_and_veto(native, session, turn
         assert result["error"] == error
     finally:
         reset_current_observability_context(tokens)
+
+
+def test_guided_arithmetic_is_executable_without_widening_gate(native):
+    import shlex
+    import subprocess
+    manager, ctx, deposit, scope = native
+    context = invoke(manager, scope, QUICK)
+    assert "print(NUMERIC_EXPRESSION)" in context
+    assert "Do not loosen approvals" in context
+    command = "python3 -c 'print(12_000_000/1_000_000*45)'"
+    assert router._pre_tool_call("terminal", {"command": command}, **scope) is None
+    run = subprocess.run(shlex.split(command), capture_output=True, text=True, timeout=5, check=True)
+    assert run.stdout.strip() == "540.0"
+    assert router._pre_tool_call("terminal", {"command": "python3 -c 'x=12; print(x)'"}, **scope)["action"] == "block"
 
 
 def test_arithmetic_allowed_but_network_or_arbitrary_python_not(native):
