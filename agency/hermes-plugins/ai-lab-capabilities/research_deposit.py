@@ -355,10 +355,10 @@ class ResearchDeposit:
 
     def wake_writer(self, record):
         # Only trusted host config chooses the job; tool inputs cannot select it.
-        cfg = self.config()
-        if not self.enabled() or cfg.get("writer_events_enabled") is not True:
-            return
         try:
+            cfg = self.config()
+            if not self.enabled() or cfg.get("writer_events_enabled") is not True:
+                return
             from .writer_events import request
             record["writer_trigger"] = request(
                 self.ctx.state.data_dir / "writer-events.sqlite3",

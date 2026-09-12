@@ -21,7 +21,7 @@ A native no-agent once-per-minute script retries pending requests. It does not c
 
 ## Tests
 
-- Research plugin: 56 tests passed.
+- Research plugin: 57 tests passed (includes trigger configuration read failure isolation).
 - Native event integration: 13 tests passed, including independent-process retry script.
 - git diff --check: passed before publication.
 

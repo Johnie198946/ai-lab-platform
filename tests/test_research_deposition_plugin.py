@@ -81,6 +81,13 @@ class ResearchDepositionTests(unittest.TestCase):
         self.deposit = plugin.research_deposition
         self.scope = dict(session_id="session-a", turn_id="turn-a", task_id="task-a", platform="desktop")
 
+    def test_wake_config_failure_is_observational(self):
+        record = {"stage": "queued"}
+        with patch.object(self.deposit, "config", side_effect=OSError("synthetic config failure")):
+            self.deposit.wake_writer(record)
+        self.assertEqual(record["stage"], "queued")
+        self.assertEqual(record["writer_trigger"]["state"], "trigger_failed")
+
     def test_verified_save_emits_writer_wake(self):
         from research_plugin_test import writer_events
         self.cfg.update(writer_events_enabled=True, writer_job_id="synthetic-writer")
