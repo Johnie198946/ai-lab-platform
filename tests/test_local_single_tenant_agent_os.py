@@ -102,6 +102,8 @@ def test_default_profile_registers_local_agent_os_lifecycle():
     context = LocalPluginContext()
     plugin.register(context)
     assert set(context.hooks) == {
+        "post_llm_call",
+        "on_session_end",
         "pre_gateway_dispatch",
         "pre_llm_call",
         "pre_tool_call",
@@ -111,8 +113,8 @@ def test_default_profile_registers_local_agent_os_lifecycle():
         "transform_llm_output",
         "transform_tool_result",
     }
-    # A default profile alone does not authorize research deposition on a server.
-    assert "research_deposit" not in context.tools["ai_lab_execute"]["schema"]["parameters"]["properties"]["capability"]["enum"]
+    # Stable schema is independent from runtime authorization and write-enable.
+    assert "research_deposit" in context.tools["ai_lab_execute"]["schema"]["parameters"]["properties"]["capability"]["enum"]
 
 
 def test_runtime_reads_selected_skill_and_preserves_original_url_before_model(monkeypatch):

@@ -2266,7 +2266,7 @@ def install(ctx: Any, deposition: Any = None) -> None:
         def transform_with_deposition(response_text: str = "", **kwargs: Any):
             # Native finalizer uses first-string-wins: keep ONE composed transform.
             routed = _transform_llm_output(response_text, **kwargs)
-            if deposition is not None and deposition.enabled():
+            if deposition is not None:
                 return deposition.transform(routed or response_text, **kwargs) or routed
             return routed
 

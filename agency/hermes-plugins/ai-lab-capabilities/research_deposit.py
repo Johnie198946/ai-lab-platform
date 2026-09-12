@@ -56,9 +56,9 @@ class ResearchDeposit:
                 and cfg.get("deployment_mode") == "local_single_tenant"
                 and os.environ.get("AI_LAB_AGENT_OS_MODE") != "cloud_multi_tenant")
 
-    def allowed(self, scope, *, stored=None):
+    def allowed(self, scope, *, stored=None, read_only=False):
         cfg = self.config()
-        if not self.enabled():
+        if getattr(self.ctx, "profile_name", "") != "default" or (not read_only and not self.enabled()):
             return False
         if cfg.get("deployment_mode") != "local_single_tenant":
             return False
@@ -141,28 +141,32 @@ class ResearchDeposit:
             old = self.ctx.state.get(key, {})
             # Opt-out BEFORE copying any title, URL, body or message digest.
             if NO_SAVE.search(user_message or ""):
-                self.ctx.state.set(key, {"veto": True, "stage": "blocked", "reason": "no_save"})
-                return {"context": "[Research deposit] This task is permanently no-save; do not call deposit."}
+                old.update(veto=True, stage="blocked", reason="no_save")
+                self.ctx.state.set(key, old)
+                return {"context": "[Research deposit blocked: no_save] No save permitted. Lifting requires verified same-material host consent; this host has no supported consent association."}
             if old.get("veto"):
-                return {"context": "[Research deposit] Persistent task no-save veto; do not save."}
-            if not self.allowed(dict(kw, user_message=user_message)):
-                if is_research(user_message) or old:
-                    self.ctx.state.set(key, {"stage": "blocked", "reason": "policy_denied"})
-                return None
+                return {"context": "[Research deposit blocked: no_save] Same-material consent association unavailable; explicit text alone cannot lift this veto."}
+            if not self.allowed(dict(kw, user_message=user_message), read_only=True):
+                return None  # Policy is an overlay, never replace recovery evidence.
             platform = str(getattr(kw.get("platform"), "value", kw.get("platform")) or "").casefold()
-            if (kw.get("task_purpose") in {"wiki_compile", "research_recovery"}
+            if (old.get("control") or kw.get("task_purpose") in {"wiki_compile", "research_recovery"}
                     or (platform == "cron" and WRITER_CONTROL.search(re.split(r"[\n。；;，,]", (user_message or "").strip(), maxsplit=1)[0]))
                     or DEPOSIT_CONTROL.search(user_message or "")):
-                self.ctx.state.set(key, {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
-                                        "control": True, "stage": "not_applicable"})
-                return {"context": "[Research maintenance] This is Writer/recovery work, not a research-save obligation. Use research_deposit action=status for bounded pending scope references, then action=recover. Writer remains manifest-only."}
+                if not old.get("obligation"):
+                    self.ctx.state.set(key, {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
+                                            "control": True, "stage": "not_applicable"})
+                return {"context": "[Research maintenance] This is Writer/recovery work, not a research-save obligation. Use research_deposit action=status for bounded pending scope references, then action=recover. Writer remains manifest-only. New evidence is blocked (research_task_association_required): a separate host-authorized research task must explicitly hand off adopted material; control text cannot grant it."}
+            if not self.enabled():
+                return None
             if not is_research(user_message) and not old.get("obligation"):
                 if CONTINUATION.search(user_message or ""):
                     self.ctx.state.set(key, {"stage": "blocked", "reason": "continuation_scope_required"})
                     return {"context": "[Research deposit blocked] Continuation lacks a canonical task relationship; do not reuse another task's receipt. Continue the useful answer without claiming saved."}
                 return None
             if NOT_RESEARCH.search(user_message or ""):
-                self.ctx.state.set(key, {"stage": "not_applicable", "reason": "nonresearch_request"})
+                # An unrelated request cannot destroy an existing obligation.
+                if not old.get("obligation"):
+                    self.ctx.state.set(key, {"stage": "not_applicable", "reason": "nonresearch_request"})
                 return None
             if old.get("obligation"):
                 if not self.allowed(kw, stored=old):
@@ -342,6 +346,8 @@ class ResearchDeposit:
 
     def _write(self, key, record, *, explicit, task=None):
         try:
+            if not self.enabled():
+                return {"success": False, "complete": False, "stage": "blocked", "error": "policy_denied"}
             payload = self.materialize(record)
             confidence = payload["confidence"]
             previous = record.get("receipt") or {}
@@ -438,6 +444,10 @@ class ResearchDeposit:
                 record = self.ctx.state.get(key, {})
                 if record.get("veto"):
                     return {"success": False, "stage": "blocked", "error": "no_save"}
+                if not self.enabled():
+                    return {"success": False, "stage": "blocked", "error": "policy_denied"}
+                if record.get("control") and record.get("scope") == scope and self.allowed(kw, stored=record):
+                    return {"success": False, "stage": "blocked", "error": "research_task_association_required"}
                 if not record.get("obligation") or record.get("scope") != scope or not self.allowed(kw, stored=record):
                     return {"success": False, "stage": "blocked", "error": "no_authorized_task_scope"}
                 payload = self.payload(inputs)
@@ -456,8 +466,9 @@ class ResearchDeposit:
                         return {"success": False, "complete": False, "stage": "blocked",
                                 "error": "source_revision_conflict", "item_id": identity}
                     item = None
+                if item:
+                    item.pop("requested_revision", None)  # Explicit identical content acknowledges this revision.
                 if item and self.verify_receipt(item):
-                    item.pop("requested_revision", None)
                     item.update(explicit_receipt=True, explicit_attempt=True)
                 else:
                     if item is None:
@@ -481,14 +492,17 @@ class ResearchDeposit:
 
         A trusted owner callback may target known IDs (e.g. the existing Writer
         cron). Tool callers without an owner surface can only use their exact
-        canonical host scope. At most three failed recovery attempts per turn.
+        canonical host scope. At most three recovery attempts per item lifetime.
         """
-        if set(inputs) - {"action", "session_id", "turn_id", "task_id", "limit", "item_id"}:
+        if set(inputs) - {"action", "session_id", "turn_id", "task_id", "limit", "item_id", "cursor"}:
             raise ValueError("unsupported_recovery_fields")
+        read_only = inputs["action"] == "status"
+        if not read_only and not self.enabled():
+            return {"success": False, "stage": "blocked", "error": "policy_denied"}
         current_scope = self.scope(kw)
         current = self.ctx.state.get(self.key(current_scope), {}) if all(current_scope.values()) else {}
-        control_authorized = self.allowed(kw) or (current.get("scope") == current_scope
-            and (current.get("control") or current.get("obligation")) and self.allowed(kw, stored=current))
+        control_authorized = self.allowed(kw, read_only=read_only) or (current.get("scope") == current_scope
+            and (current.get("control") or current.get("obligation")) and self.allowed(kw, stored=current, read_only=read_only))
         has_target = any(inputs.get(k) for k in ("session_id", "turn_id", "task_id"))
         if not has_target and (current.get("control") or not current.get("obligation")):
             if not control_authorized:
@@ -501,11 +515,10 @@ class ResearchDeposit:
             if record.get("veto"):
                 return {"success": False, "stage": "blocked", "error": "no_save"}
             if (not record.get("obligation") or record.get("scope") != scope
-                    or not self.allowed(kw, stored=record)
-                    or (scope != current_scope and not control_authorized)):
+                    or not self.allowed(kw, stored=record, read_only=read_only)
+                    or not control_authorized):
                 return {"success": False, "stage": "blocked", "error": "no_authorized_task_scope"}
-            self.migrate(record)
-            self.ctx.state.set(key, record)
+            self.migrate(record)  # Status migration stays in memory.
             identity = inputs.get("item_id")
             if identity is not None and identity not in record["items"]:
                 return {"success": False, "complete": False, "error": "unknown_item_id", "stage": "blocked"}
@@ -514,10 +527,10 @@ class ResearchDeposit:
             targets = [record["items"][identity]] if identity else list(record["items"].values())
             attempts = 0
             exhausted = False
-            for item in targets:
+            for item in sorted(targets, key=lambda item: item.get("recovery_attempts", 0)):
                 if self.verify_receipt(item):
                     continue
-                if item.get("recovery_attempts", 0) >= 3 or not item.get("payload"):
+                if self.recovery_blocker(item):
                     exhausted = True
                     continue
                 if attempts >= 3:
@@ -531,12 +544,33 @@ class ResearchDeposit:
                 result["error"] = "recovery_exhausted_or_missing_payload"
             return result
 
+    def recovery_blocker(self, item):
+        if self.verify_receipt(item):
+            return "explicit_acknowledgement_required"
+        if item.get("requested_revision", item.get("source_revision")) != item.get("source_revision"):
+            return "source_revision_conflict"
+        if (item.get("receipt") or {}).get("reason") == "quality_rejected":
+            return "explicit_quality_correction_required"
+        if not item.get("payload"):
+            return "explicit_handoff_required"
+        if item.get("recovery_attempts", 0) >= 3:
+            return "recovery_exhausted"
+        return None
+
     def pending_projection_batch(self, inputs, **kw):
-        """Read only native PluginState research projections; never session text."""
+        """Bounded pages of native projections; no session content or new index."""
         limit = inputs.get("limit", 3)
         if type(limit) is not int or not 1 <= limit <= 20:
             raise ValueError("limit_must_be_1_to_20")
-        if inputs["action"] == "recover":
+        cursor = inputs.get("cursor", "")
+        if not isinstance(cursor, str) or len(cursor) > 200:
+            raise ValueError("invalid_cursor")
+        read_only = inputs["action"] == "status"
+        if not read_only:
+            if cursor:
+                raise ValueError("cursor_status_only")
+            if not self.enabled():
+                return {"success": False, "stage": "blocked", "error": "policy_denied"}
             limit = min(limit, 3)
         from hermes_cli.plugins import _locked_plugin_state
         with _locked_plugin_state(self.ctx.state.path):
@@ -546,26 +580,36 @@ class ResearchDeposit:
         for key, record in sorted(snapshot.items()):
             if not key.startswith("research:") or not isinstance(record, dict):
                 continue
-            if record.get("obligation") and not record.get("veto") and self.allowed(kw, stored=record):
-                self.migrate(record)  # Snapshot only; target recovery persists migration under its task lock.
-                for identity, item in (record["items"] or {None: record}).items():
+            if record.get("obligation") and not record.get("veto") and self.allowed(kw, stored=record, read_only=read_only):
+                self.migrate(record)
+                for identity, item in sorted((record["items"] or {"": record}).items()):
                     status = self.status(item)
                     if not status["complete"]:
-                        pending.append({"scope": record["scope"], "item_id": identity, "stage": status["stage"],
-                                        "reason": status["reason"], "recovery_attempts": item.get("recovery_attempts", 0)})
-        selected = pending[:limit]
-        if inputs["action"] == "recover":
+                        blocker = self.recovery_blocker(item)
+                        pending.append({"scope": record["scope"], "item_id": identity or None,
+                            "cursor": key + "/" + identity, "stage": status["stage"],
+                            "reason": status["reason"], "recoverable": blocker is None,
+                            "recovery_blocked_reason": blocker,
+                            "recovery_attempts": item.get("recovery_attempts", 0)})
+        actionable = [item for item in pending if item["recoverable"]]
+        candidates = ([item for item in pending if item["cursor"] > cursor] if read_only else
+                      sorted(actionable, key=lambda item: (item["recovery_attempts"], item["cursor"])))
+        selected = candidates[:limit]
+        if not read_only:
             for item in selected:
                 item["result"] = self.recover(dict(action="recover", item_id=item["item_id"], **item["scope"]), **kw)
-        success = inputs["action"] != "recover" or all(item["result"].get("success") for item in selected)
+        success = read_only or all(item["result"].get("success") for item in selected)
         return {"success": success, "storage_scope": STORAGE_SCOPE, "pending": selected,
-                "total": len(pending), "returned": len(selected), "has_more": len(pending) > len(selected)}
+                "total": len(pending), "actionable_total": len(actionable),
+                "blocked_total": len(pending) - len(actionable), "returned": len(selected),
+                "has_more": len(candidates) > len(selected),
+                "next_cursor": selected[-1]["cursor"] if read_only and len(candidates) > len(selected) else None}
 
     def verify_completion(self, response_text="", **kw):
         """Generic lifecycle adapter: returns status + response, never swallows answer.
 
-        Pass canonical session_id/turn_id/task_id, interrupted/failed. Invoke
-        before delivery; native transform currently omits turn/task and fails open.
+        Pass canonical session_id/turn_id/task_id. No writes, even when the
+        host omits failed/interrupted flags or invokes both transform and post.
         """
         try:
             scope = self.scope(kw)
@@ -576,27 +620,9 @@ class ResearchDeposit:
                     return {"complete": not record, "stage": record.get("stage", "not_applicable"), "response_text": response_text}
                 if record.get("scope") != scope or not self.allowed(kw, stored=record):
                     return {"complete": False, "stage": "blocked", "response_text": response_text + "\n\n[研究沉淀 blocked：任务或策略不匹配；未进 Wiki。]"}
+                # Observational only: native finalizer does not reliably supply failed.
+                # Explicit deposit/recover owns all persistence and compensation.
                 self.migrate(record)
-                if not kw.get("interrupted") and not kw.get("failed"):
-                    if not record["items"] and response_text.strip():
-                        # Legacy unreviewed fallback only when NO item was handed off.
-                        # Never substitute the user's summary for explicit research bodies.
-                        payload = self.payload({"title": "Unreviewed research result", "body": response_text,
-                            "source_urls": list(dict.fromkeys(re.findall(r"https?://[^\s<>\[\]()\"']+", response_text)))[:32],
-                            "confidence": None, "source_kind": "research_analysis"})
-                        identity = self.item_id(payload)
-                        record["items"][identity] = {"scope": scope, "owner": record["owner"],
-                            "policy_version": record["policy_version"], "item_id": identity,
-                            "payload": payload, "source_revision": digest(payload), "stage": "pending"}
-                    attempts = 0
-                    for item in record["items"].values():
-                        if (not self.verify_receipt(item) and item.get("payload")
-                                and item.get("recovery_attempts", 0) < 3 and attempts < 3):
-                            item["recovery_attempts"] = item.get("recovery_attempts", 0) + 1
-                            self.ctx.state.set(key, record)
-                            self._write(key, item, explicit=item.get("explicit_attempt", False), task=record)
-                            attempts += 1
-                self.ctx.state.set(key, record)
                 result = self.status(record)
                 note = ("已保存并排队；尚未编译 Wiki。" if result["stage"] == "queued" else
                         "已保存为待审研究；未进 Wiki。" if result["stage"] == "saved" else "保存待恢复；未进 Wiki。")
@@ -619,8 +645,6 @@ class ResearchDeposit:
         return self.verify_completion(response_text, **kw)["response_text"]
 
     def install(self):
-        if not self.enabled():
-            return
         self.ctx.register_hook("pre_llm_call", self.pre)
         self.ctx.register_hook("post_llm_call", self.post)
         self.ctx.register_hook("on_session_end", self.session_end)
@@ -632,7 +656,8 @@ class ResearchDeposit:
             key = self.key(scope)
             with self.lock(key):
                 record = self.ctx.state.get(key, {})
-                if record.get("obligation") and record.get("scope") == scope and not record.get("veto"):
+                if (record.get("obligation") and record.get("scope") == scope and not record.get("veto")
+                        and self.allowed(kw, stored=record)):
                     if kw.get("interrupted") or kw.get("failed") or not kw.get("completed", True):
                         record["reason"] = "interrupted_or_failed"
                         self.migrate(record)

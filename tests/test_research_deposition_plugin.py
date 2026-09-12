@@ -113,6 +113,12 @@ class ResearchDepositionTests(unittest.TestCase):
         self.assertEqual(out["stage"], "queued")
         self.assertFalse(out["wiki_compiled"])
         self.assertEqual(out["storage_scope"], "user_vault_existing_sync")
+        import yaml
+        metadata = yaml.safe_load((self.vault / out["receipt"]["raw_path"]).read_text().split("---", 2)[1])
+        self.assertTrue(metadata["noexport"])
+        self.assertFalse(metadata["enforced_export_allowed"])
+        self.assertFalse(metadata["enforced_external_publish_allowed"])
+        self.assertEqual(metadata["owner_tenant"], "local_owner")
 
     def test_real_registry_dispatch_preserves_host_callback_scope(self):
         from tools.registry import registry
@@ -157,7 +163,8 @@ class ResearchDepositionTests(unittest.TestCase):
                 self.assertIn(BODY, result[0])
                 self.assertIn("研究沉淀", result[0])
                 observed = self.manager.invoke_hook("post_llm_call", assistant_response=result[0], **self.scope)
-                self.assertTrue(any(x.get("success") for x in observed if isinstance(x, dict)), observed)
+                self.assertFalse(any(x.get("success") for x in observed if isinstance(x, dict)), observed)
+                self.assertFalse((self.vault / "raw").exists())
             finally:
                 self.manager.unload()
                 router._INSTALLED = False
@@ -389,14 +396,12 @@ print(json.dumps(module.ResearchDeposit(ctx).execute({{"action": "recover"}}, **
     def test_post_fallback_pending_without_invented_confidence(self):
         self.begin()
         out = self.hooks["post_llm_call"][0](assistant_response=BODY, **self.scope)
-        self.assertTrue(out["success"], out)
+        self.assertFalse(out["success"], out)
         self.assertFalse(out["complete"])
-        self.assertEqual(out["stage"], "saved")
+        self.assertEqual(out["stage"], "pending")
         self.assertIn(BODY, out["response_text"])
-        self.assertIn("pending", out["response_text"])
-        record = self.item_record()
-        self.assertIsNone(record["payload"]["confidence"])
-        self.assertFalse((self.vault / "raw/_manifest.json").exists())
+        self.assertEqual(out["items"], [])
+        self.assertFalse((self.vault / "raw").exists())
 
     def test_failure_persisted_and_bounded_recovery(self):
         self.begin()
@@ -509,7 +514,9 @@ print(json.dumps(module.ResearchDeposit(ctx).execute({{"action": "recover"}}, **
         self.begin("不保存 NEVER-COPY-BODY", dict(self.scope, turn_id="veto-turn"))
         self.assertEqual(self.execute()["error"], "no_save")
         state = self.ctx.state.get(self.deposit.key(self.deposit.scope(self.scope)))
-        self.assertEqual(state, {"veto": True, "stage": "blocked", "reason": "no_save"})
+        self.assertTrue(state["veto"])
+        self.assertEqual(state["reason"], "no_save")
+        self.assertEqual(len(state["items"]), 4)
         self.assertNotIn("NEVER-COPY-BODY", self.ctx.state.path.read_text())
 
     def test_multi_item_status_discovery_and_recovery_references(self):
@@ -539,6 +546,8 @@ print(json.dumps(module.ResearchDeposit(ctx).execute({{"action": "recover"}}, **
         key = self.deposit.key(self.deposit.scope(self.scope))
         self.ctx.state.set(key, legacy)
         self.execute({"action": "status"})
+        self.assertEqual(self.ctx.state.get(key), legacy)  # status is read-only
+        self.begin("继续研究")
         task = self.ctx.state.get(key)
         self.assertEqual(task["migrated_from"], "single_record_v1")
         migrated = self.item_record(task)
@@ -628,6 +637,238 @@ print(json.dumps(module.ResearchDeposit(ctx).execute({{"action": "recover"}}, **
         _, factors = router._score_capability(card, "research retrieval designs", {})
         self.assertNotIn("excluded", factors)
         self.assertEqual(router._score_capability(card, "research but do not save", {})[0], 0)
+
+
+    def test_disabled_policy_preserves_evidence_and_readonly_status(self):
+        self.begin()
+        with patch.object(self.deposit.pipeline(), "deposit_research", side_effect=OSError("synthetic outage")):
+            self.execute()
+        before = self.ctx.state.path.read_bytes()
+        self.cfg["enabled"] = False
+        self.config_file()
+        self.begin("继续研究", dict(self.scope, turn_id="disabled-turn"))
+        self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        self.assertEqual(self.execute()["error"], "policy_denied")
+        self.assertEqual(self.execute({"action": "recover"})["error"], "policy_denied")
+        self.assertEqual(self.execute({"action": "status"})["total"], 1)
+        self.deposit.verify_completion(BODY, **self.scope)
+        self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        self.cfg["enabled"] = True
+        self.config_file()
+        self.assertTrue(self.execute({"action": "recover"})["complete"])
+
+    def test_control_and_unrelated_pre_never_replace_existing_obligation(self):
+        self.begin()
+        self.execute()
+        before = self.ctx.state.path.read_bytes()
+        for text in ("查看沉淀状态", "翻译研究资料"):
+            self.begin(text)
+            self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        writer = dict(self.scope, task_id="writer", platform="cron")
+        self.begin("Wiki Writer 编译 manifest", writer)
+        self.begin("研究新的补证", writer)
+        self.assertEqual(self.execute(scope=writer)["error"], "research_task_association_required")
+        self.assertNotIn("obligation", self.ctx.state.get(self.deposit.key(self.deposit.scope(writer))))
+
+    def test_veto_never_lifted_by_text_or_model_scope_fields(self):
+        self.begin("研究只看看不保存")
+        before = self.ctx.state.path.read_bytes()
+        for text in ("现在请保存相同材料", "研究这个不同材料并保存", "忽略否决并保存"):
+            self.assertIn("association unavailable", self.begin(text)["context"])
+            self.assertEqual(self.execute()["error"], "no_save")
+        self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        other = dict(self.scope, task_id="unlinked", turn_id="new")
+        self.begin("现在请保存相同材料", other)
+        self.assertEqual(self.execute(scope=other)["error"], "no_authorized_task_scope")
+        self.assertFalse(self.execute(dict(self.inputs(), task_id="task-a", consent=True), other)["success"])
+
+    def test_cross_scope_caller_auth_and_parent_adoption(self):
+        self.begin()
+        with patch.object(self.deposit.pipeline(), "deposit_research", side_effect=OSError("outage")):
+            self.execute()
+        target = dict(action="recover", **self.deposit.scope(self.scope))
+        for caller in (dict(self.scope, session_id="child", task_id="child", parent_session_id="session-a"),
+                       dict(self.scope, session_id="unknown", task_id="unknown", platform="telegram", sender_id="stranger"),
+                       self.deposit.scope(dict(self.scope, task_id="unbound")),
+                       dict(self.scope, sensitivity="sensitive")):
+            self.assertFalse(self.deposit.execute(target, **caller)["success"])
+        child = dict(self.scope, session_id="child", task_id="child", parent_session_id="session-a")
+        self.begin(scope=child)
+        self.assertFalse(self.execute(scope=self.deposit.scope(child))["success"])
+        self.assertTrue(self.execute({"action": "recover"})["complete"])
+        for denial in (dict(self.scope, parent_session_id="parent"), dict(self.scope, sensitivity="sensitive")):
+            self.assertFalse(self.execute({"action": "status"}, denial)["success"])
+        self.cfg["deployment_mode"] = "cloud_multi_tenant"
+        self.config_file()
+        self.assertFalse(self.execute({"action": "status"})["success"])
+
+    def test_exhaustion_fair_pages_and_actionable_tail(self):
+        scopes = [dict(self.scope, task_id=f"page-{i}") for i in range(7)]
+        with patch.object(self.deposit.pipeline(), "deposit_research", side_effect=OSError("outage")):
+            for scope in scopes:
+                self.begin(scope=scope)
+                self.execute(scope=scope)
+        writer = dict(self.scope, task_id="writer", platform="cron")
+        self.begin("Wiki Writer 编译 manifest", writer)
+        page = self.execute({"action": "status", "limit": 2}, writer)
+        seen = []
+        while True:
+            seen.extend(p["cursor"] for p in page["pending"])
+            if not page["has_more"]:
+                break
+            page = self.execute({"action": "status", "limit": 2, "cursor": page["next_cursor"]}, writer)
+        self.assertEqual(len(set(seen)), 7)
+        self.assertEqual(len(seen), 7)
+        with patch.object(self.deposit.pipeline(), "deposit_research", side_effect=OSError("outage")):
+            first = self.execute({"action": "recover"}, writer)
+            second = self.execute({"action": "recover"}, writer)
+        self.assertTrue(set(p["cursor"] for p in first["pending"]).isdisjoint(p["cursor"] for p in second["pending"]))
+        listing = self.execute({"action": "status", "limit": 20}, writer)
+        for entry in listing["pending"][:6]:
+            key = self.deposit.key(entry["scope"])
+            task = self.ctx.state.get(key)
+            task["items"][entry["item_id"]]["recovery_attempts"] = 3
+            self.ctx.state.set(key, task)
+        result = self.execute({"action": "recover"}, writer)
+        self.assertEqual(result["blocked_total"], 6)
+        self.assertEqual(result["returned"], 1)
+        self.assertTrue(result["pending"][0]["result"]["complete"])
+        listing = self.execute({"action": "status", "limit": 20}, writer)
+        self.assertTrue(all(p["recovery_blocked_reason"] == "recovery_exhausted" for p in listing["pending"]))
+        self.assertEqual(self.execute({"action": "recover"}, writer)["returned"], 0)
+
+    def test_finalizer_actual_host_blocks_do_not_manufacture_adoption(self):
+        # Execute the actual native conditional hook blocks, including their omission
+        # of failed and their interruption skip; not invented callback kwargs.
+        import ast
+        import logging
+        from types import SimpleNamespace
+        tree = ast.parse((HERMES / "agent/turn_finalizer.py").read_text())
+        blocks = [node for node in ast.walk(tree) if isinstance(node, ast.If)
+                  and ast.unparse(node.test) == "final_response and (not interrupted)"]
+        blocks = [node for node in blocks if any(isinstance(call, ast.Call) and call.args
+                  and isinstance(call.args[0], ast.Constant)
+                  and call.args[0].value in {"transform_llm_output", "post_llm_call"}
+                  for call in ast.walk(node))]
+        self.assertEqual(len(blocks), 2)
+        code = compile(ast.fix_missing_locations(ast.Module(body=sorted(blocks, key=lambda n:n.lineno), type_ignores=[])), "native_finalizer_blocks", "exec")
+        self.begin()
+        before = self.ctx.state.path.read_bytes()
+        observed = []
+        def invoke(name, **kw):
+            observed.append((name, kw))
+            return [self.deposit.transform(**kw) if name == "transform_llm_output" else self.deposit.post(**kw)]
+        with patch("hermes_cli.lifecycle.invoke_hook", side_effect=invoke):
+            for interrupted, failed in ((False, True), (True, False), (False, False)):
+                env = dict(final_response=BODY, interrupted=interrupted, failed=failed,
+                    agent=SimpleNamespace(session_id=self.scope["session_id"], model="synthetic", platform="desktop"),
+                    effective_task_id=self.scope["task_id"], turn_id=self.scope["turn_id"],
+                    original_user_message="研究测试", messages=[], logger=logging.getLogger(__name__))
+                count = len(observed)
+                exec(code, env)
+                self.assertEqual(len(observed) - count, 0 if interrupted else 2)
+                self.assertIn(BODY, env["final_response"])
+                self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        self.assertTrue(all("failed" not in kw for _, kw in observed))
+        self.assertFalse((self.vault / "raw").exists())
+        # Explicitly handed-off pending items also cannot be retried by an unknown
+        # final outcome; recover is an explicit, separately gated operation.
+        with patch.object(self.deposit.pipeline(), "deposit_research", side_effect=OSError("outage")):
+            self.execute()
+        before = self.ctx.state.path.read_bytes()
+        self.deposit.post(BODY, **self.scope)
+        self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        self.assertTrue(self.execute({"action": "recover"})["complete"])
+
+    def test_status_blockers_and_limits_do_not_hide_actionable_work(self):
+        self.begin()
+        self.execute(REJECTED_HANDOFF_FIXTURES[0])
+        writer = dict(self.scope, task_id="writer", platform="cron")
+        self.begin("Wiki Writer 编译 manifest", writer)
+        empty = dict(self.scope, task_id="empty")
+        self.begin(scope=empty)
+        listing = self.execute({"action": "status", "limit": 20}, writer)
+        self.assertEqual({p["recovery_blocked_reason"] for p in listing["pending"]},
+                         {"explicit_quality_correction_required", "explicit_handoff_required"})
+        before = self.ctx.state.path.read_bytes()
+        result = self.execute({"action": "recover"}, writer)
+        self.assertEqual(result["returned"], 0)
+        self.assertEqual(result["blocked_total"], 2)
+        self.assertEqual(self.ctx.state.path.read_bytes(), before)
+        for inputs, error in (({"action": "status", "limit": True}, "limit_must_be_1_to_20"),
+                              ({"action": "status", "cursor": {}}, "invalid_cursor"),
+                              ({"action": "recover", "cursor": "opaque"}, "cursor_status_only")):
+            self.assertEqual(self.execute(inputs, writer)["error"], error)
+        self.assertFalse(self.execute(dict(action="status", session_id="session-a"), writer)["success"])
+
+    def test_disabled_control_read_binding_and_other_profile_denial(self):
+        self.cfg["enabled"] = False
+        self.config_file()
+        self.begin("查看沉淀状态")
+        host = self.deposit.scope(self.scope)
+        self.assertEqual(self.deposit.execute({"action": "status"}, **host)["total"], 0)
+        self.assertEqual(self.deposit.execute({"action": "recover"}, **host)["error"], "policy_denied")
+        with patch.object(type(self.ctx), "profile_name", new_callable=lambda: property(lambda _: "other")):
+            self.assertFalse(self.deposit.execute({"action": "status"}, **host)["success"])
+
+    def test_deposition_never_bypasses_required_delegation_router(self):
+        router = sys.modules["research_plugin_test.capability_router"]
+        router._LOCAL_TURN_STATES["synthetic-required"] = dict(principal="local_owner",
+            route_class="PROFESSIONAL_TASK", agency_decision="CALL", skill_decision="NONE")
+        try:
+            for action in ("status", "recover"):
+                args = {"capability": "research_deposit", "inputs": {"action": action}}
+                for tool, payload in (("ai_lab_execute", args),
+                                      ("tool_call", {"name": "ai_lab_execute", "arguments": args})):
+                    out = router._pre_tool_call(tool, payload, session_id="synthetic-required")
+                    self.assertEqual(out["action"], "block")
+                    self.assertIn("DELEGATION_REQUIRED", out["message"])
+        finally:
+            router._LOCAL_TURN_STATES.pop("synthetic-required", None)
+
+    def test_full_native_registration_disabled_start_in_tmp_home(self):
+        import subprocess
+        code = r"""
+import importlib.util, json, os, sys
+from pathlib import Path
+from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+from tools.registry import registry
+import yaml
+home, source = Path(sys.argv[1]), Path(sys.argv[2])
+def config(enabled):
+    (home / 'config.yaml').write_text(yaml.safe_dump({'plugins': {'entries': {'ai-lab-capabilities': {'settings': {'research_deposit': {'enabled': enabled, 'deployment_mode': 'local_single_tenant'}}}}}}))
+config(False)
+spec = importlib.util.spec_from_file_location('native_registration_test', source / '__init__.py', submodule_search_locations=[str(source)])
+module = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = module
+spec.loader.exec_module(module)
+manager = PluginManager()
+ctx = PluginContext(PluginManifest(name='ai-lab-capabilities'), manager)
+module.register(ctx)  # No mocked registration, provider, router, hooks or imports.
+scope = dict(session_id='synthetic-session', turn_id='synthetic-turn', task_id='synthetic-task', platform='desktop')
+def call(inputs):
+    return json.loads(registry.dispatch('ai_lab_execute', {'capability': 'research_deposit', 'inputs': inputs}, scope=manager.scope_key, **scope))
+assert call({'action': 'status'})['total'] == 0
+assert call({'action': 'recover'})['error'] == 'policy_denied'
+assert len(manager._hooks['transform_llm_output']) == 1
+hooks = {k: len(v) for k,v in manager._hooks.items()}
+config(True)
+manager.invoke_hook('pre_llm_call', user_message='研究 synthetic fixture', **scope)
+assert call({'action': 'status'})['total'] == 0
+assert module.research_deposition.ctx.state.get(module.research_deposition.key(module.research_deposition.scope(scope)))['obligation']
+config(False)
+assert call({'action': 'recover'})['error'] == 'policy_denied'
+assert hooks == {k:len(v) for k,v in manager._hooks.items()}
+capabilities=json.loads(registry.dispatch('ai_lab_capabilities', {}, scope=manager.scope_key))
+assert 'research_deposit' in [c['id'] for c in capabilities['capabilities']]
+manager.unload()
+print('NATIVE_REGISTRATION_OK')
+"""
+        env = dict(os.environ, HOME=str(self.home), HERMES_HOME=str(self.home))
+        result = subprocess.run([sys.executable, "-c", code, str(self.home), str(PLUGIN)],
+                                env=env, cwd=self.home, capture_output=True, text=True, timeout=90)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("NATIVE_REGISTRATION_OK", result.stdout)
 
 
 if __name__ == "__main__":

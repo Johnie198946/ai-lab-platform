@@ -300,14 +300,16 @@ def test_capability_plugin_reuses_hermes_hooks_instead_of_registering_router_too
     module.register(context)
     assert set(context.tools) == {"ai_lab_capabilities", "ai_lab_execute"}
     assert set(context.hooks) == {
+        "post_llm_call",
+        "on_session_end",
         "pre_llm_call",
         "pre_tool_call",
         "post_tool_call",
         "transform_tool_result",
     }
     assert not any("router" in name for name in context.tools)
-    # Unknown/non-default contexts do not disclose or install local deposition.
-    assert "research_deposit" not in context.tools["ai_lab_execute"]["schema"]["parameters"]["properties"]["capability"]["enum"]
+    # Stable discovery does not grant unknown/non-default contexts write access.
+    assert "research_deposit" in context.tools["ai_lab_execute"]["schema"]["parameters"]["properties"]["capability"]["enum"]
 
 
 def test_capability_hook_abstains_without_installed_knowledge_method(monkeypatch):
