@@ -32,6 +32,7 @@
 - 新增额度配置测试与 Hermes native dispatch 单项复验：各 `1 passed`。
 - Release Archive：`ARCHIVE SUCCEEDED`；`com.ailab.AIPlatformApp`、`1.0.3 (33)`、arm64、Team `AALA948YY5`，`codesign --verify --deep --strict` 通过；二进制 SHA-256 `015eb8367d759563d470f62bb047eeba67f4111839a440d71ab71f24fac5256c`。
 - App Store Connect：`Upload succeeded`，回执为 `Uploaded package is processing`，`EXPORT SUCCEEDED`。
+- 上传后 `source/main` 新增纯后端 PPT 小标题规范化提交 `52bb57e`；已合入且 `tests/test_document_presentation.py` 为 `24 passed, 1 skipped`。该提交不修改 iOS 工程，因此不重传已接受的 Build 33；它不属于 IPA 二进制 SHA。
 - `head/local_commit`: Archive/上传源提交 `5d46e9403c75d2ee0dfad7b5114962aa1bd9eb84`；最终清单提交将后置。
 - `remote_sha`: 上传前已用 `git ls-remote` 核对两个 `main` 均为 `5d46e9403c75d2ee0dfad7b5114962aa1bd9eb84`。
 - `server_before`: 不适用，本任务不部署服务器。
