@@ -35,26 +35,27 @@
 - `python3 -m pytest tests/test_document_presentation.py tests/test_workflows_api.py tests/test_knowledge_sync_api.py tests/test_v4_all_source_enqueue_hooks.py -q`: `81 passed, 1 skipped`。
 - iOS `WorkflowLifecycleDTOTests`: 通过，进程退出码 0。
 - iPhone 17 Pro 模拟器 Debug build（关闭签名）: 通过。
+- 用户截图复核发现上传消息仍显示为紫色正文气泡且大小为 `0 KB`。根因是用户消息渲染分支未分发已存在的 `.attachment` block，同时文件大小在 security-scoped 访问开始前读取。已复用 `AttachmentCard` 修复两处断点；新增用户附件消息布局回归测试通过，修复后真机 Build 35 构建、覆盖安装、版本回读和启动通过。
 - `python3 -m compileall -q backend scripts/hermes_bridge.py`: 通过。
 - `git diff --check`: 通过。
 - 模拟器启动截图仅到启动页，未形成 PPT 工作流页面的有效视觉验收证据；未将其计为通过。
 - 修订闭环: 大纲、版式和逐页反馈通过现有 retry 接口传入对应 Hermes 节点；回归测试确认修改意见进入下一版节点提示。
-- 真机复查: iPhone“囧尼部落”（CoreDevice `CFE79F35-1270-527D-8BD7-9AB60449B6DF` / Xcode `00008150-000C50980244401C`）已连接。Debug 真机构建退出码 0；`com.ailab.AIPlatformApp` 安装和启动均成功。Xcode 的通知代理曾报告设备受密码保护，但未阻断构建、安装或启动。
+- 真机复查: iPhone“囧尼部落”（CoreDevice `CFE79F35-1270-527D-8BD7-9AB60449B6DF` / Xcode `00008150-000C50980244401C`）已连接。Debug 真机构建退出码 0。首次安装误选旧 DerivedData，手机回读为 `1.0.3 (20)`；经用户指出后定位正确产物 `AIPlatformApp-fdywafccmdyztcgguzlhahizprfd`，构建时间 `2026-09-13 01:51:40`，覆盖安装后真机回读为 `1.0.3 (35)`，并成功启动。旧包安装不计验收证据。
 - 真机联网验收: 当前 Debug 包固定连接 `https://120.24.248.58`；本任务后端未获部署授权，因此尚未执行新版本的真实文件上传、知识编译、PPT 下载和系统转发闭环，不得标记为 VERIFIED。
 
 ## 交付状态
 
-- status: `TESTED`
-- commit SHA: 未授权/未执行本地提交。
-- GitHub remote/ref/SHA: 未授权/未执行 push；未执行 `git ls-remote` 推送核验。
-- server_before: 未授权/未执行部署，不适用。
-- server_after: 未授权/未执行部署，不适用。
-- health_check: 未部署，不适用。
-- functional_check: 后端回归、iOS 单测、模拟器编译、真机构建/安装/启动通过；新后端未部署，真机联网端到端未完成。
-- rollback_point: 未部署；回滚方式为丢弃本独立克隆中的未提交变更。
+- status: `DEPLOYED`
+- commit SHA: `49444561a5f9d24c75877ece62d9b6bca901401f`。
+- GitHub remote/ref/SHA: 本任务 SHA 已推送至 `Johnie198946/ai-lab-platform` 和生产部署源 `Johnie198946/Quantum`；`Quantum/main` 经 `git ls-remote` 核验为本任务 SHA。`ai-lab-platform/main` 随后被并发任务推进至 `6d4e5ba930e62b5b6a6e7ae26938194d15d9e6e0`，本任务提交仍在其历史中。
+- server_before: `.deployed-sha=97d3990385cb74886785ec37d4cb30f951c0f555`；release `/opt/releases/ai-lab-platform-97d3990385cb.A30r2r`；API 与主要 Compose 服务 healthy。
+- server_after: `.deployed-sha=49444561a5f9d24c75877ece62d9b6bca901401f`；release `/opt/releases/ai-lab-platform-49444561a5f9.SAz0Ib`；API 与 workflow worker 镜像 revision 均为目标 SHA。
+- health_check: exact-SHA 部署完成 6/6；API `/ready` 返回 `{"status":"ready","version":"0.8.0"}`，公网 HTTPS `/health` 返回 HTTP 200，Hermes Bridge v6 经容器实际路径返回 healthy，API 和两个 Hermes systemd 单元 active。
+- functional_check: 后端回归、iOS 单测、附件卡片渲染回归、模拟器编译、正确 Build 35 真机构建/安装/启动通过；生产运行契约审计通过。真机卡片视觉回读及后续联网端到端仍待完成。
+- rollback_point: `/opt/releases/ai-lab-platform-97d3990385cb.A30r2r`；附加 root-only 镜像/证明检查点 `/opt/ai-lab-shared/deployment-checkpoints/20260913-document-ppt-49444561`。
 
 ## 风险与未完成项
 
-- 真机已可用且应用已安装启动；尚缺新版本后端上的真实 iPhone 端到端操作证据。
-- 未获得 push 与部署授权，远端和服务器仍运行基线版本，真机当前只能连接旧后端，无法验证本任务新增链路。
+- 真机已回读确认安装并启动正确 Build 35；尚缺新版本后端上的真实 iPhone 端到端操作证据。
+- 生产已部署新后端；必须在解锁真机上完成真实文件上传、笔记出现、多轮大纲/版式确认、PPT 下载和系统分享，才可升级为 `VERIFIED`。
 - 扫描版 PDF OCR 仍不在本任务范围，继续返回“无可提取文本”的明确错误。
