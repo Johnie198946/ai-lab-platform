@@ -1963,6 +1963,7 @@ def _pre_llm_call(user_message: str = "", **kwargs: Any) -> dict[str, Any] | Non
     vault_context = _vault_owner_context() if principal == "vault_owner" else ""
     if stage:
         state.update(research_stage=stage, route_class="GENERAL_QA",
+                     research_turn_id=str(kwargs.get("turn_id") or ""),
                      skill_decision="NONE", agency_decision="SKIP")
         return {"context": "\n".join(part for part in (
             _research_stage_context(stage), vault_context) if part)}
@@ -2599,6 +2600,32 @@ def _compact_skill_manifest() -> None:
         run_agent_module.build_skills_system_prompt = _compact_skills_prompt
 
 
+def _research_server_parity(request: dict[str, Any], **kwargs: Any) -> dict[str, Any] | None:
+    """Native request-only tuning; never mutate the Agent or deep/code budgets."""
+    if (not _LOCAL_ENABLED or kwargs.get("provider") != "openai-codex"
+            or kwargs.get("api_mode") != "codex_responses"
+            or not str(kwargs.get("model") or "").startswith("gpt-5.6")):
+        return None
+    with _LOCAL_STATE_LOCK:
+        state = dict(_LOCAL_TURN_STATES.get(str(kwargs.get("session_id") or "")) or {})
+    turn_id = str(kwargs.get("turn_id") or "")
+    if (not turn_id or state.get("research_turn_id") != turn_id
+            or state.get("research_stage") != "quick_read"
+            or state.get("principal") != "local_owner"):
+        return None
+    reasoning = dict(request.get("reasoning") or {})
+    # Preserve explicit high/off/low settings and nonstandard service tiers.
+    if reasoning.get("effort") not in {None, "medium"}:
+        return None
+    if request.get("service_tier") not in {None, "auto", "default", "priority"}:
+        return None
+    from agent.reasoning_effort import clamp_effort, codex_supported_efforts
+    # Keep nonzero reasoning: the current native minimal clamp can resolve to none.
+    reasoning["effort"] = clamp_effort("low", codex_supported_efforts(kwargs.get("model")))
+    tuned = dict(request, reasoning=reasoning, service_tier="priority")
+    return {"request": tuned, "source": "research_server_parity"}
+
+
 def install(ctx: Any, deposition: Any = None) -> None:
     """Attach the router to Hermes' existing search, prompt, and hook lifecycle."""
     global _INSTALLED, _LOCAL_ENABLED
@@ -2616,6 +2643,10 @@ def install(ctx: Any, deposition: Any = None) -> None:
         return _pre_llm_with_runtime_skill(ctx, user_message, **kwargs)
 
     ctx.register_hook("pre_llm_call", pre_llm_with_runtime_skill)
+    if (_LOCAL_ENABLED and callable(getattr(ctx, "register_middleware", None))
+            and callable(getattr(ctx, "get_config", None))
+            and ctx.get_config("research_delivery.server_parity", False) is True):
+        ctx.register_middleware("llm_request", _research_server_parity)
     ctx.register_hook("pre_tool_call", _pre_tool_call)
     ctx.register_hook("post_tool_call", _post_tool_call)
     ctx.register_hook("transform_tool_result", _attest_publication_review_write)
