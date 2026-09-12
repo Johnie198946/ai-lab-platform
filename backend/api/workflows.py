@@ -500,9 +500,33 @@ CLARIFICATION_STEPS: tuple[dict[str, Any], ...] = (
     },
 )
 
+PRESENTATION_CLARIFICATION_STEPS: tuple[dict[str, Any], ...] = (
+    {
+        "dimension": "用途与受众",
+        "question": "这份 PPT 准备给谁看，主要用于什么场景？",
+        "choices": ["管理层汇报，突出结论与决策", "客户提案，突出价值与方案", "内部分享，突出知识与方法"],
+    },
+    {
+        "dimension": "篇幅与重点",
+        "question": "期望多少页，哪些内容必须保留？",
+        "choices": ["8–12 页，保留核心结论", "12–20 页，完整讲清逻辑", "20–30 页，保留更多细节"],
+    },
+    {
+        "dimension": "视觉方向与验收",
+        "question": "希望采用什么视觉方向，最终如何验收？",
+        "choices": ["简洁专业，逐页确认后输出", "品牌一致，先确认代表页再铺开", "数据优先，重点检查图表与引用"],
+    },
+)
 
-def clarification_payload(index: int) -> dict[str, Any]:
-    step = CLARIFICATION_STEPS[index]
+
+def _clarification_steps(workflow: WorkflowDefinition | None) -> tuple[dict[str, Any], ...]:
+    if workflow and (workflow.requirements_snapshot or {}).get("scenario_id") == "document-to-presentation":
+        return PRESENTATION_CLARIFICATION_STEPS
+    return CLARIFICATION_STEPS
+
+
+def clarification_payload(index: int, workflow: WorkflowDefinition | None = None) -> dict[str, Any]:
+    step = _clarification_steps(workflow)[index]
     return {
         "question": step["question"],
         "choices": step["choices"],
@@ -558,12 +582,13 @@ def requirement_is_explicit(description: str) -> bool:
 def requirement_confirmation_payload(
     workflow: WorkflowDefinition, answers: list[str]
 ) -> dict[str, Any]:
+    steps = _clarification_steps(workflow)
     details = [
         f"目标：{workflow.description.split('已确认需求：', 1)[0].strip()}",
         f"交付物：{workflow.desired_output}",
     ]
     core_answers = answers[:3] if len(answers) >= 3 else []
-    for index, step in enumerate(CLARIFICATION_STEPS):
+    for index, step in enumerate(steps):
         answer = core_answers[index] if index < len(core_answers) else "按当前描述与平台默认建议"
         details.append(f"{step['dimension']}：{answer}")
     revision_source = answers[3:] if core_answers else answers
@@ -572,7 +597,12 @@ def requirement_confirmation_payload(
         details.append(f"补充修改：{'；'.join(revisions)}")
     return {
         "question": "请确认需求单：\n" + "\n".join(details),
-        "choices": ["确认，进入方案设计", "需要修改"],
+        "choices": [
+            "确认，开始分析文档"
+            if steps is PRESENTATION_CLARIFICATION_STEPS
+            else "确认，进入方案设计",
+            "需要修改",
+        ],
         "multi_select": False,
         "dimension": "最终确认",
         "submit_label": "确认选择",
@@ -769,7 +799,7 @@ async def create_workflow(body: WorkflowCreate, payload: dict = Depends(require_
             first = (
                 requirement_confirmation_payload(row, [])
                 if explicit
-                else clarification_payload(0)
+                else clarification_payload(0, row)
             )
             first_message_type = "requirement_confirmation" if explicit else "clarify"
             first_event_type = "requirement_summary_ready" if explicit else "clarify_requested"
@@ -884,7 +914,7 @@ async def respond_to_clarification(
             await db.refresh(workflow)
             await db.refresh(session)
             stop_requested = requested_clarification_stop(response)
-            max_rounds_reached = session.round_number >= len(CLARIFICATION_STEPS)
+            max_rounds_reached = session.round_number >= len(_clarification_steps(workflow))
             if decision["status"] == "READY" or stop_requested or max_rounds_reached:
                 session.phase = "awaiting_requirement_confirmation"
                 workflow.status = "clarifying"
@@ -944,6 +974,7 @@ async def respond_to_clarification(
                 revision_answers = [
                     answer for answer in revision_source if answer != "需要修改"
                 ]
+                steps = _clarification_steps(workflow)
                 spec = {
                     "goal": workflow.description,
                     "deliverable": workflow.desired_output,
@@ -952,7 +983,7 @@ async def respond_to_clarification(
                             "name": step["dimension"],
                             "answer": core_answers[index] if index < len(core_answers) else "按默认建议",
                         }
-                        for index, step in enumerate(CLARIFICATION_STEPS)
+                        for index, step in enumerate(steps)
                     ],
                     "revision_notes": revision_answers,
                 }
@@ -1029,9 +1060,9 @@ async def respond_to_clarification(
                 await append_lifecycle_event(
                     db, workflow, session, "clarify_requested", payload_out["question"], payload_out
                 )
-        elif session.round_number < len(CLARIFICATION_STEPS):
+        elif session.round_number < len(_clarification_steps(workflow)):
             session.round_number += 1
-            question = clarification_payload(session.round_number - 1)
+            question = clarification_payload(session.round_number - 1, workflow)
             await append_session_message(
                 db,
                 session,
@@ -1891,7 +1922,7 @@ async def reopen_clarification(workflow_id: str, payload: dict = Depends(require
         if session.phase not in {"needs_attention", "clarifying_pending"}:
             raise HTTPException(status_code=409, detail="当前阶段不能继续澄清")
         session.phase = "clarifying"
-        session.round_number = len(CLARIFICATION_STEPS)
+        session.round_number = len(_clarification_steps(workflow))
         workflow.status = "clarifying"
         question = {
             "question": "方案生成未完成。请补充或修正需求，我们会据此重新生成需求确认单。",
@@ -2723,7 +2754,7 @@ async def request_revision(
             raise HTTPException(status_code=409, detail="只有待复核成果可以退回修改")
         await _reset_from_node(db, execution, body.node_id)
         try:
-            await retry_remote(execution.id, body.node_id)
+            await retry_remote(execution.id, body.node_id, body.comment)
         except Exception:
             pass
         db.add(
@@ -2781,7 +2812,7 @@ async def review_presentation_stage(execution_id: str, body: StageReviewRequest,
         if body.decision == "revise":
             await _reset_from_node(db, execution, node.node_id)
             try:
-                await retry_remote(execution.id, node.node_id)
+                await retry_remote(execution.id, node.node_id, comment)
             except Exception as exc:
                 raise HTTPException(status_code=503, detail=f"Hermes 修订暂不可用：{str(exc)[:200]}") from exc
         elif gate:

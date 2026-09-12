@@ -160,6 +160,11 @@ public struct UsageSummaryDTO: Codable, Hashable {
 
     public var hasVerifiedTokenBasis: Bool { tokenTotalBasis == "verified_requests_only" }
 
+    public var verifiedCalls: Int? {
+        guard hasVerifiedTokenBasis, let unverifiedCalls else { return nil }
+        return max(0, totalCalls - unverifiedCalls)
+    }
+
     public var usageTitle: String {
         hasVerifiedTokenBasis ? "已核验用量" : "服务端用量账本"
     }
@@ -1610,6 +1615,7 @@ public struct WorkflowArtifactDTO: Codable, Identifiable, Hashable {
 }
 
 public struct WorkflowArtifactMetadataDTO: Codable, Hashable {
+    public let renderType: String?
     public let approvalGate: String?
     public let artifactVersion: Int?
     public let previewStatus: String?
@@ -1632,6 +1638,9 @@ public struct DocumentReceiptDTO: Codable, Hashable {
     public let status: String
     public let textAvailable: Bool
     public let contributionStatus: String
+    public let contributionError: String?
+    public let noteId: String?
+    public let noteStatus: String?
     public let parseError: DocumentParseErrorDTO?
 }
 
@@ -2769,6 +2778,13 @@ public final class APIClient: ObservableObject {
         applyClientContract(to: &request)
         let response = try await perform(request, session: session, canRetry: false)
         return try decoder.decode(DocumentReceiptDTO.self, from: response)
+    }
+
+    public func fetchDocument(sourceId: String) async throws -> DocumentReceiptDTO {
+        try await request(
+            DocumentReceiptDTO.self,
+            path: "documents/\(encodedPath(sourceId))"
+        )
     }
 
     public func downloadAuthenticated(path: String, expectedHash: String) async throws -> Data {

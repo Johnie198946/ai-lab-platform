@@ -10,6 +10,7 @@
 //
 
 import Foundation
+import QuickLookThumbnailing
 import UIKit
 
 public final class InboxFileManager {
@@ -47,6 +48,18 @@ public final class InboxFileManager {
         try FileManager.default.createDirectory(at: privateCacheDirectory, withIntermediateDirectories: true)
         try data.write(to: url, options: [.atomic, .completeFileProtection])
         return url
+    }
+
+    @MainActor public func thumbnailData(at url: URL) async -> Data? {
+        let request = QLThumbnailGenerator.Request(
+            fileAt: url,
+            size: CGSize(width: 180, height: 240),
+            scale: UIScreen.main.scale,
+            representationTypes: .thumbnail
+        )
+        return try? await QLThumbnailGenerator.shared
+            .generateBestRepresentation(for: request)
+            .uiImage.jpegData(compressionQuality: 0.72)
     }
 
     private var privateCacheDirectory: URL {

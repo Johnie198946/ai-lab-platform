@@ -747,6 +747,7 @@ class ClarificationDecision(BaseModel):
 
 class WorkflowRetryRequest(BaseModel):
     from_node_id: str | None = Field(None, max_length=80)
+    revision_comment: str | None = Field(None, max_length=2000)
 
 
 class WorkflowGateApprovalRequest(BaseModel):
@@ -3051,9 +3052,9 @@ def _workflow_artifact_instruction(contract: dict[str, str]) -> str:
     if render_type == "word":
         return "只输出 Word 正文纯文本，用空行分段；平台将生成真实 DOCX，不要使用 Markdown 标记。"
     if render_type == "presentation_outline":
-        return '只输出合法 JSON：{"title":"标题","slides":[{"layout":"title|section|bullets|two_column|chart|table|conclusion","title":"页标题","key_points":["要点"]}]}。'
+        return '只输出合法 JSON：{"title":"标题","slides":[{"layout":"title|section|bullets|two_column|chart|table|conclusion","title":"页标题","purpose":"本页作用","key_points":["要点"],"evidence":["源文档依据"],"visual":"建议视觉"}]}；每页必须有明确作用与证据，数据不足时明确写出缺口。'
     if render_type == "presentation_design":
-        return '只输出合法 JSON：{"title":"设计样稿","theme":{"colors":{"primary":"#8057E8","text":"#191521","muted":"#686275","pale":"#F1EEFA","background":"#FFFFFF","inverse":"#FFFFFF"},"fonts":{"title":"Aptos","body":"Aptos"}},"slides":[{"layout":"title","title":"代表页标题","subtitle":"可选"}]}；theme 字段和值必须完整，slides 给出 2 至 3 张可真实渲染的代表页，每页仅保留所选版式需要的字段。'
+        return '只输出合法 JSON：{"title":"设计样稿","theme":{"colors":{"primary":"#8057E8","text":"#191521","muted":"#686275","pale":"#F1EEFA","background":"#FFFFFF","inverse":"#FFFFFF"},"fonts":{"title":"Aptos","body":"Aptos"}},"slides":[{"layout":"title|section|bullets|two_column|chart|table|conclusion","title":"代表页标题","subtitle":"可选","bullets":["真实内容"]}]}；theme 字段和值必须完整，slides 给出 3 至 5 张带真实内容、可渲染的代表页，每页仅保留所选版式需要的字段，不得使用占位符或虚构数据。'
     if render_type == "presentation":
         return '只输出合法 JSON：{"title":"标题","slides":[{"layout":"title|section|bullets|two_column|chart|table|conclusion","title":"页标题","subtitle":"可选","bullets":["要点"],"left":[],"right":[],"headers":[],"rows":[],"categories":[],"series":[{"name":"系列","values":[1]}]}]}；仅保留所选版式需要的字段。'
     return "输出可直接渲染的 Markdown 正文。"
@@ -3178,6 +3179,7 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
     presentation_output = str(params.get("output_format") or "").startswith("presentation")
     completed = []
     current_id = str(node.get("id") or "")
+    revision_comment = str((run.get("revision_feedback") or {}).get(current_id) or "").strip()
     dependency_ids = {
         str(edge.get("source") or "")
         for edge in run.get("plan", {}).get("edges") or []
@@ -3209,7 +3211,12 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
     upstream = chr(10).join(completed) if completed else "无直接依赖或上游暂无成果"
     source = run.get("source_document") or {}
     source_text = str(source.get("text") or "")
-    if source_text and current_id == "presentation_outline":
+    source_node_id = (
+        "presentation_analysis"
+        if any(str(item.get("id") or "") == "presentation_analysis" for item in run.get("plan", {}).get("nodes") or [])
+        else "presentation_outline"
+    )
+    if source_text and current_id == source_node_id:
         if len(source_text) > 8_000:
             raise RuntimeError("私有源文档超过 8000 字符；当前演示工作流禁止静默截断")
         upstream += f"\n\n私有源文档（{source.get('filename', 'document')}，共 {len(source_text)} 字符）：\n{source_text}"
@@ -3238,6 +3245,7 @@ def _workflow_node_prompt(run: dict[str, Any], node: dict[str, Any]) -> str:
         f"当前节点：{node.get('name') or node.get('id')} ({node.get('node_type')})\n"
         f"指定 Agent：{requested_agent}\n"
         f"节点要求：{params.get('instruction') or params.get('query') or ''}\n"
+        f"本轮用户修改意见：{revision_comment or '无'}\n"
         f"输出格式：{artifact_contract['render_type']} / {artifact_contract['extension']}\n"
         f"格式契约：{_workflow_artifact_instruction(artifact_contract)}\n"
         f"篇幅约束：最终可落盘正文不超过 {output_char_limit} 个中文字符，优先保留事实、引用与未解决缺口。\n"
@@ -7890,12 +7898,19 @@ async def retry_workflow_run(
         start = order.index(target)
         for node_id in order[start:]:
             run["nodes"][node_id] = {"status": "pending", "attempt": run["nodes"].get(node_id, {}).get("attempt", 0)}
+        if body.revision_comment:
+            run.setdefault("revision_feedback", {})[target] = body.revision_comment.strip()
         run["approved_gates"] = [node_id for node_id in (run.get("approved_gates") or []) if node_id not in set(order[start:])]
         run["approved_gate_artifacts"] = {node_id: value for node_id, value in (run.get("approved_gate_artifacts") or {}).items() if node_id not in set(order[start:])}
         run["status"] = "queued"
         run["error"] = None
         run["cancel_requested"] = False
-        _workflow_event(run, "retry_queued", node_id=target, message="失败节点已重新入队")
+        _workflow_event(
+            run,
+            "retry_queued",
+            node_id=target,
+            message="已按用户反馈重新生成" if body.revision_comment else "失败节点已重新入队",
+        )
         _start_workflow_thread(execution_id)
         return {"ok": True, "status": "queued", "from_node_id": target}
 

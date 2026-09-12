@@ -180,7 +180,18 @@ public enum AttachmentFileType: String, Codable, Sendable, Hashable {
     case generic
 }
 
-public enum AttachmentTransferState: String, Codable, Sendable, Hashable { case uploading, ready, parseFailed, failed }
+public enum AttachmentTransferState: String, Codable, Sendable, Hashable {
+    case uploading, compiling, ready, parseFailed, failed
+
+    public static func documentStatus(_ contributionStatus: String) -> Self {
+        switch contributionStatus {
+        case "queued", "pending", "compiling", "sanitizing", "privacy_reviewing", "recompile_pending":
+            return .compiling
+        default:
+            return .ready
+        }
+    }
+}
 
 public struct AttachmentBlock: Identifiable, Codable, Sendable, Hashable {
     public let id: String
@@ -192,8 +203,10 @@ public struct AttachmentBlock: Identifiable, Codable, Sendable, Hashable {
     public var contentHash: String?
     public var sourceRevision: Int?
     public var statusMessage: String?
+    public var previewImageData: Data?
+    public var noteId: String?
 
-    public init(id: String = UUID().uuidString, fileName: String, fileType: AttachmentFileType, fileSize: String, state: AttachmentTransferState = .ready, sourceId: String? = nil, contentHash: String? = nil, sourceRevision: Int? = nil, statusMessage: String? = nil) {
+    public init(id: String = UUID().uuidString, fileName: String, fileType: AttachmentFileType, fileSize: String, state: AttachmentTransferState = .ready, sourceId: String? = nil, contentHash: String? = nil, sourceRevision: Int? = nil, statusMessage: String? = nil, previewImageData: Data? = nil, noteId: String? = nil) {
         self.id = id
         self.fileName = fileName
         self.fileType = fileType
@@ -203,6 +216,8 @@ public struct AttachmentBlock: Identifiable, Codable, Sendable, Hashable {
         self.contentHash = contentHash
         self.sourceRevision = sourceRevision
         self.statusMessage = statusMessage
+        self.previewImageData = previewImageData
+        self.noteId = noteId
     }
 }
 

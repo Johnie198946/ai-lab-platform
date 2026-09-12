@@ -3225,6 +3225,9 @@ public final class TenantSessionCoordinator: ObservableObject {
                 guard sizeBytes <= InboxFileManager.maxFileSizeBytes else { throw APIError.network("文档超过 25 MB 上限") }
                 let ext = url.pathExtension.lowercased()
                 guard ["pdf", "docx"].contains(ext) else { throw APIError.network("仅支持 PDF 或 DOCX；旧版 .doc 暂不支持") }
+                if let preview = await InboxFileManager.shared.thumbnailData(at: url) {
+                    updateAttachmentPreview(messageId: msg.id, attachmentId: attachment.id, data: preview)
+                }
                 let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                 let mime = ext == "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 let receipt = try await APIClient.shared.uploadDocument(data: data, filename: name, contentType: mime)
@@ -3233,13 +3236,15 @@ public final class TenantSessionCoordinator: ObservableObject {
                 do {
                     let workflow = try await APIClient.shared.createWorkflow(
                         title: "\(name) 演示文稿",
-                        description: "将已上传私有文档《\(name)》转换为结构清晰、可编辑且可逐页修订的演示文稿。先确认大纲，再确认代表页设计，最后生成完整 PPTX。",
+                        description: "将已上传私有文档《\(name)》转换为结构清晰、可编辑且可逐页修订的演示文稿。先确认受众、用途、篇幅和视觉方向，再分析文档，确认逐页大纲与带真实内容的代表页，最后生成完整 PPTX 并逐页验收。",
                         desiredOutput: "可编辑 PPTX 与同源渲染预览",
                         sourceDocumentId: receipt.sourceId
                     )
-                    messages.append(ChatMessage(role: .assistant, content: "原件已安全保存并完成文本提取（未编译为知识）。文档转演示工作流已创建（\(workflow.workflow.id)），请在工作流中确认需求、大纲和代表页设计。"))
+                    messages.append(ChatMessage(role: .assistant, content: "原件已安全保存，私有笔记已生成，知识编译正在后台进行。PPT 工作流已创建（\(workflow.workflow.id)）：需求确认、文档分析、逐页大纲、代表页设计、全稿验收。每个确认阶段都可以反复退回修改。"))
                     appState?.pendingWorkflowId = workflow.workflow.id
                     commitSession()
+                    await KnowledgeNoteStore.shared.restoreFromCloud()
+                    await monitorDocumentCompilation(messageId: msg.id, attachmentId: attachment.id, sourceId: receipt.sourceId)
                 } catch {
                     updateAttachmentFailure(messageId: msg.id, attachmentId: attachment.id, message: "原件已保存，但演示工作流未创建：\(error.localizedDescription)", state: .ready)
                 }
@@ -3253,10 +3258,44 @@ public final class TenantSessionCoordinator: ObservableObject {
         guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
               let blockIndex = messages[messageIndex].blocks.firstIndex(where: { if case .attachment(let item) = $0 { return item.id == attachmentId }; return false }),
               case .attachment(var item) = messages[messageIndex].blocks[blockIndex] else { return }
-        item.state = receipt.status == "ready" ? .ready : .parseFailed
+        item.state = receipt.status == "ready" ? .documentStatus(receipt.contributionStatus) : .parseFailed
         item.sourceId = receipt.sourceId; item.sourceRevision = receipt.sourceRevision; item.contentHash = receipt.contentHash
-        item.statusMessage = receipt.status == "ready" ? "原件已保存 · 文本已提取" : (receipt.parseError?.message ?? "原件已保存 · 文本提取失败")
+        item.noteId = receipt.noteId
+        item.statusMessage = receipt.status == "ready" ? documentStatusMessage(receipt.contributionStatus) : (receipt.parseError?.message ?? "原件已保存 · 文本提取失败")
         messages[messageIndex].blocks[blockIndex] = .attachment(item); commitSession()
+    }
+
+    private func updateAttachmentPreview(messageId: String, attachmentId: String, data: Data) {
+        guard let messageIndex = messages.firstIndex(where: { $0.id == messageId }),
+              let blockIndex = messages[messageIndex].blocks.firstIndex(where: { if case .attachment(let item) = $0 { return item.id == attachmentId }; return false }),
+              case .attachment(var item) = messages[messageIndex].blocks[blockIndex] else { return }
+        item.previewImageData = data
+        messages[messageIndex].blocks[blockIndex] = .attachment(item); commitSession()
+    }
+
+    private func documentStatusMessage(_ status: String) -> String {
+        switch status {
+        case "queued", "pending", "compiling", "sanitizing", "privacy_reviewing", "recompile_pending":
+            return "私有笔记已入库 · 知识编译中"
+        case "published": return "已编译入库 · 已同步平台知识"
+        case "denied": return "私有笔记已入库 · 平台同步未授权"
+        case "excluded": return "私有笔记已入库 · 未参与平台同步"
+        case "failed": return "私有笔记已入库 · 平台同步失败，可稍后重试"
+        default: return "私有笔记已入库 · 知识审核已完成"
+        }
+    }
+
+    private func monitorDocumentCompilation(messageId: String, attachmentId: String, sourceId: String) async {
+        for _ in 0..<90 {
+            guard !Task.isCancelled else { return }
+            try? await Task.sleep(for: .seconds(2))
+            guard let receipt = try? await APIClient.shared.fetchDocument(sourceId: sourceId) else { continue }
+            updateAttachment(messageId: messageId, attachmentId: attachmentId, receipt: receipt)
+            if receipt.contributionStatus == "published" || ["denied", "excluded", "failed", "no_increment", "quarantined", "rejected", "stale"].contains(receipt.contributionStatus) {
+                await KnowledgeNoteStore.shared.restoreFromCloud()
+                return
+            }
+        }
     }
 
     private func updateAttachmentFailure(messageId: String, attachmentId: String, message: String, state: AttachmentTransferState = .failed) {

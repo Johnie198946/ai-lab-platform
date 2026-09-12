@@ -139,6 +139,12 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
+    func testDocumentContributionStatusMapsToVisibleTransferState() {
+        XCTAssertEqual(AttachmentTransferState.documentStatus("queued"), .compiling)
+        XCTAssertEqual(AttachmentTransferState.documentStatus("privacy_reviewing"), .compiling)
+        XCTAssertEqual(AttachmentTransferState.documentStatus("published"), .ready)
+        XCTAssertEqual(AttachmentTransferState.documentStatus("quarantined"), .ready)
+    }
     func testUsageSummaryDecodesCacheBreakdownWithoutInference() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
@@ -197,6 +203,36 @@ final class WorkflowLifecycleDTOTests: XCTestCase {
         XCTAssertTrue(summary.coverageNotices.contains("3 次历史记录待核验、不计入该数值"))
         XCTAssertTrue(summary.coverageNotices.contains("3 次调用缺少 Token usage，未计入该数值"))
         XCTAssertTrue(summary.coverageNotices.contains("当前范围没有已核验覆盖；0 仅表示已核验子集，不代表整体用量为 0"))
+    }
+
+    func testUsageSummaryDerivesVerifiedCallsFromExplicitCoverage() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"days":30,"total_calls":227,"success_calls":227,"failed_calls":0,"input_tokens":0,"output_tokens":0,"total_tokens":0,"missing_usage_calls":3,"token_total_basis":"verified_requests_only","legacy_unverified_calls":219,"unverified_calls":219,"daily":[],"models":[]}"#.utf8)
+
+        let summary = try decoder.decode(UsageSummaryDTO.self, from: payload)
+
+        XCTAssertEqual(summary.verifiedCalls, 8)
+    }
+
+    func testUsageSummaryKeepsVerifiedCallsUnknownWithoutCoverage() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"days":30,"total_calls":227,"success_calls":227,"failed_calls":0,"input_tokens":0,"output_tokens":0,"total_tokens":0,"missing_usage_calls":3,"token_total_basis":"verified_requests_only","legacy_unverified_calls":219,"daily":[],"models":[]}"#.utf8)
+
+        let summary = try decoder.decode(UsageSummaryDTO.self, from: payload)
+
+        XCTAssertNil(summary.verifiedCalls)
+    }
+
+    func testUsageSummaryKeepsVerifiedCallsUnknownForLegacyBasis() throws {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let payload = Data(#"{"days":30,"total_calls":227,"success_calls":227,"failed_calls":0,"input_tokens":0,"output_tokens":0,"total_tokens":0,"missing_usage_calls":3,"legacy_unverified_calls":219,"unverified_calls":219,"daily":[],"models":[]}"#.utf8)
+
+        let summary = try decoder.decode(UsageSummaryDTO.self, from: payload)
+
+        XCTAssertNil(summary.verifiedCalls)
     }
 
     @MainActor

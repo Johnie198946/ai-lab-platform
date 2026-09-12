@@ -12,7 +12,11 @@ from pathlib import Path
 from typing import Any
 
 from backend.services.upload_text_extractor import extract_uploaded_text
-from backend.services.user_note_context import namespace, note_directory
+from backend.services.user_note_context import (
+    namespace,
+    note_directory,
+    update_private_note_index,
+)
 
 MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
 MAX_PRESENTATION_SOURCE_CHARACTERS = 8_000
@@ -54,6 +58,51 @@ def _atomic_write(path: Path, data: bytes) -> None:
 def _safe_filename(filename: str) -> str:
     value = Path(filename.replace("\\", "/")).name.strip()
     return value[:240] or "document"
+
+
+def _materialize_private_note(
+    tenant_key: str, user_id: str, receipt: dict[str, Any], text: str
+) -> str:
+    note_id = str(receipt["source_id"])
+    directory = note_directory(tenant_key, user_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    title = Path(str(receipt["filename"])).stem or "上传文档"
+    now = str(receipt["created_at"])
+    markdown = (
+        "---\n"
+        f"id: {note_id}\n"
+        f"title: {json.dumps(title, ensure_ascii=False)}\n"
+        f"created: {now}\nupdated: {now}\n"
+        "pinned: false\narchived_at:\nmerged_into:\n"
+        "tags:\n  - uploaded-document\n"
+        f"  - {Path(str(receipt['filename'])).suffix.lower().lstrip('.')}\n"
+        "aliases: []\n"
+        f"source_document_id: {note_id}\n"
+        f"source_content_hash: {receipt['content_hash']}\n"
+        "---\n\n"
+        f"> [!info] 上传文档\n> 原件：{receipt['filename']}\n\n{text}\n"
+    ).encode("utf-8")
+    note_path = directory / f"{note_id}.md"
+    _atomic_write(note_path, markdown)
+    _atomic_write(
+        directory / f"{note_id}.sync.json",
+        json.dumps(
+            {
+                "version": 1,
+                "note_id": note_id,
+                "owner_user_id": user_id,
+                "content_hash": hashlib.sha256(markdown).hexdigest(),
+                "synced_at": now,
+                "source": "uploaded_document",
+                "source_document_id": note_id,
+                "ingest_target": "private_user_knowledge",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ).encode("utf-8"),
+    )
+    update_private_note_index(tenant_key, user_id, note_path)
+    return note_id
 
 
 def save_document_source(
@@ -117,6 +166,12 @@ def save_document_source(
             extracted_characters=len(text),
             extracted_hash=hashlib.sha256(encoded_text).hexdigest(),
         )
+        receipt.update(
+            note_id=_materialize_private_note(
+                tenant_key, user_id, receipt, text
+            ),
+            note_status="ready",
+        )
     except Exception as exc:
         message = str(exc)
         code = "document_parse_failed"
@@ -128,7 +183,10 @@ def save_document_source(
                 "PDF 没有可提取文字；暂不支持扫描件 OCR",
             )
         receipt.update(
-            status="parse_failed", parse_error={"code": code, "message": message[:300]}
+            status="parse_failed",
+            parse_error={"code": code, "message": message[:300]},
+            note_id=None,
+            note_status="unavailable",
         )
     _atomic_write(
         directory / "receipt.json",

@@ -39,7 +39,7 @@ def native(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("AI_LAB_AGENT_OS_MODE", "local_single_tenant")
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({"plugins": {"entries": {
-        "ai-lab-capabilities": {"settings": {"research_deposit": {
+        "ai-lab-capabilities": {"settings": {"research_delivery": {"server_parity": True}, "research_deposit": {
             "enabled": True, "deployment_mode": "local_single_tenant",
             "vault_root": str(tmp_path / "vault"),
         }}}
@@ -74,7 +74,8 @@ def test_native_preview_has_no_dispatch_or_deposit_obligation(native, text):
         dispatch.assert_not_called()
     assert "SOURCE_FIRST_RESEARCH" in context
     assert "作者主张 / 未外部核验" in context
-    assert "2–3" in context and "unmeasured latency goal" in context
+    assert "2–3" in context and "latency goal" in context
+    assert "NOT a hard deadline" in context
     assert "silence never" in context and "No broad search" in context
     assert "Task evidence review" not in context and "Before final delivery" not in context
     assert not ctx.state.get(deposit.key(scope), {}).get("obligation")
@@ -83,6 +84,31 @@ def test_native_preview_has_no_dispatch_or_deposit_obligation(native, text):
     assert final == ["Synthetic preview"]
     assert router._LOCAL_TURN_STATES[scope["session_id"]]["agency_decision"] == "SKIP"
     assert router._pre_tool_call("web_extract", {"urls": [URL]}, **scope) is None
+
+
+@pytest.mark.parametrize("text", [QUICK, "分析 https://v.douyin.com/synthetic-video/ 不要保存"])
+def test_analytical_readout_and_video_guidance_preserve_boundaries(native, text):
+    manager, ctx, deposit, scope = native
+    context = invoke(manager, scope, text)
+    assert "analytical quick read" in context
+    for requirement in ["mechanism/causal chain", "counterexamples", "actionable advice",
+                        "Never pad thin source", "analytical inference",
+                        "go directly to browser_exec", "ONE call",
+                        "Stop at a genuine login/access wall", "Never infer a full transcript",
+                        "do not assume a Python workspace variable", "Validate the first captured frame",
+                        "clickable URLs", "Search snippets are discovery evidence",
+                        "print(NUMERIC_EXPRESSION)", "another call dismissing, seeking",
+                        "大胆假设（未验证）", "observable prediction", "falsifier",
+                        "Defer external factual audits", "do not dump script bodies",
+                        "unit, denominator", "No forced contrarianism"]:
+        assert requirement in context
+    assert "No broad search" in context
+    assert not ctx.state.get(deposit.key(scope), {}).get("obligation")
+
+
+@pytest.mark.parametrize("text", ["不要分析 " + URL, "无需解读 " + URL, "分析抖音链接太慢了，排查 " + URL])
+def test_analysis_veto_and_video_troubleshooting_are_not_readouts(text):
+    assert router.research_stage(text) == ""
 
 
 @pytest.mark.parametrize("text", ["完整研究 " + URL, "深入调研 " + URL, "全面研究并交叉验证 " + URL])
@@ -172,6 +198,39 @@ def test_native_observability_binding_keeps_scope_and_veto(native, session, turn
         assert result["error"] == error
     finally:
         reset_current_observability_context(tokens)
+
+
+def test_server_parity_is_native_request_only_and_turn_scoped(native):
+    manager, ctx, deposit, scope = native
+    invoke(manager, scope, QUICK)
+    payload = {"model": "gpt-5.6-sol", "reasoning": {"effort": "medium", "summary": "auto"}, "input": []}
+    call = dict(scope, provider="openai-codex", api_mode="codex_responses", model="gpt-5.6-sol")
+    result = manager.invoke_middleware("llm_request", request=payload, **call)
+    tuned = next(r["request"] for r in result if r)
+    assert tuned["reasoning"] == {"effort": "low", "summary": "auto"}
+    assert tuned["service_tier"] == "priority"
+    assert payload["reasoning"]["effort"] == "medium" and "service_tier" not in payload
+    for override in [{"turn_id": "other"}, {"session_id": "other"}, {"provider": "anthropic"}, {"model": "another-model"}]:
+        assert router._research_server_parity(payload, **dict(call, **override)) is None
+    for effort in ["high", "xhigh", "none", "low"]:
+        assert router._research_server_parity(dict(payload, reasoning={"effort": effort}), **call) is None
+    for text in ["写一个分页函数", "完整研究 " + URL, "继续"]:
+        invoke(manager, scope, text, HISTORY)
+        assert router._research_server_parity(payload, **call) is None
+
+
+def test_guided_arithmetic_is_executable_without_widening_gate(native):
+    import shlex
+    import subprocess
+    manager, ctx, deposit, scope = native
+    context = invoke(manager, scope, QUICK)
+    assert "print(NUMERIC_EXPRESSION)" in context
+    assert "Do not loosen approvals" in context
+    command = "python3 -c 'print(12_000_000/1_000_000*45)'"
+    assert router._pre_tool_call("terminal", {"command": command}, **scope) is None
+    run = subprocess.run(shlex.split(command), capture_output=True, text=True, timeout=5, check=True)
+    assert run.stdout.strip() == "540.0"
+    assert router._pre_tool_call("terminal", {"command": "python3 -c 'x=12; print(x)'"}, **scope)["action"] == "block"
 
 
 def test_arithmetic_allowed_but_network_or_arbitrary_python_not(native):
