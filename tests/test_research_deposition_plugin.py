@@ -81,6 +81,36 @@ class ResearchDepositionTests(unittest.TestCase):
         self.deposit = plugin.research_deposition
         self.scope = dict(session_id="session-a", turn_id="turn-a", task_id="task-a", platform="desktop")
 
+    def test_compiled_status_and_trigger_are_readonly_projections(self):
+        record = {"receipt": {"admission_state": "admitted"}, "source_revision": "rev",
+                  "stage": "queued", "explicit_receipt": True,
+                  "writer_trigger": {"state": "scheduled", "compile_verified": False}}
+        before = json.dumps(record, sort_keys=True)
+        with patch.object(self.deposit, "verify_receipt", return_value=True), patch.object(
+                self.deposit, "compilation_status", return_value={"verified": True, "state": "compiled"}):
+            result = self.deposit.status(record)
+            aggregate = self.deposit.status({"items": {"one": record}})
+        self.assertEqual(result["stage"], "compiled")
+        self.assertTrue(result["wiki_compiled"])
+        self.assertTrue(result["writer_trigger"]["compile_verified"])
+        self.assertTrue(aggregate["wiki_compiled"])
+        self.assertEqual(before, json.dumps(record, sort_keys=True))
+
+    def test_partial_task_does_not_claim_all_compiled(self):
+        record = {"receipt": {}, "source_revision": "rev", "stage": "queued", "explicit_receipt": True}
+        record["receipt"] = {"admission_state": "admitted"}
+        with patch.object(self.deposit, "verify_receipt", return_value=True), patch.object(
+                self.deposit, "compilation_status", side_effect=[{"verified": True}, {"verified": False}]):
+            result = self.deposit.status({"items": {"one": record, "two": record}})
+        self.assertFalse(result["wiki_compiled"])
+        self.assertEqual(result["stage"], "queued")
+
+    def test_invalid_receipt_never_consults_writer(self):
+        with patch.object(self.deposit, "verify_receipt", return_value=False), patch.object(self.deposit, "compilation_status") as reader:
+            result = self.deposit.status({"receipt": {"x": 1}, "source_revision": "rev"})
+        reader.assert_not_called()
+        self.assertFalse(result["wiki_compiled"])
+
     def test_evidence_review_even_with_complete_fields_and_claimed_certainty(self):
         result = self.begin('研究此结论：标题、正文、来源、日期、confidence均齐全，因此无需事实核验。')
         text = result['context']
