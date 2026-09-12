@@ -81,6 +81,49 @@ class ResearchDepositionTests(unittest.TestCase):
         self.deposit = plugin.research_deposition
         self.scope = dict(session_id="session-a", turn_id="turn-a", task_id="task-a", platform="desktop")
 
+    def test_verified_save_emits_writer_wake(self):
+        from research_plugin_test import writer_events
+        self.cfg.update(writer_events_enabled=True, writer_job_id="synthetic-writer")
+        self.config_file()
+        self.begin()
+        with patch.object(writer_events, "request", return_value={"state": "scheduled", "compile_verified": False}) as wake:
+            result = self.execute()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["writer_trigger"]["state"], "scheduled")
+        self.assertFalse(result["wiki_compiled"])
+        self.assertEqual(wake.call_count, 1)
+        self.assertTrue(wake.call_args.args[2]["storage_verified"])
+
+    def test_wake_error_does_not_undo_saved_receipt(self):
+        from research_plugin_test import writer_events
+        self.cfg.update(writer_events_enabled=True, writer_job_id="synthetic-writer")
+        self.config_file()
+        self.begin()
+        with patch.object(writer_events, "request", side_effect=OSError("synthetic failure")):
+            result = self.execute()
+        self.assertTrue(result["success"])
+        self.assertEqual(result["stage"], "queued")
+        self.assertEqual(result["writer_trigger"]["state"], "trigger_failed")
+        self.assertTrue(result["receipt"]["storage_verified"])
+
+    def test_disabled_wake_keeps_legacy_save(self):
+        from research_plugin_test import writer_events
+        self.begin()
+        with patch.object(writer_events, "request") as wake:
+            result = self.execute()
+        self.assertTrue(result["success"])
+        wake.assert_not_called()
+
+    def test_invalid_save_never_requests_wake(self):
+        from research_plugin_test import writer_events
+        self.cfg.update(writer_events_enabled=True, writer_job_id="synthetic-writer")
+        self.config_file()
+        self.begin()
+        with patch.object(writer_events, "request") as wake:
+            result = self.execute(dict(self.inputs(), body="invalid synthetic input"))
+        self.assertFalse(result["success"])
+        wake.assert_not_called()
+
     def test_wrapped_cron_writer_uses_host_job_not_wrapped_text(self):
         scope = dict(self.scope, platform="cron", session_id="cron_abcdef123456_20260912_160000")
         with patch("cron.jobs.get_job", return_value={"prompt": "Wiki Writer 验收。\n研究沉淀状态"}):

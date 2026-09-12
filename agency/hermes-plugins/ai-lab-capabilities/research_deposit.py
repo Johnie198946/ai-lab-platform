@@ -353,6 +353,20 @@ class ResearchDeposit:
         except (OSError, ValueError, KeyError, TypeError, AttributeError, IndexError):
             return False
 
+    def wake_writer(self, record):
+        # Only trusted host config chooses the job; tool inputs cannot select it.
+        cfg = self.config()
+        if not self.enabled() or cfg.get("writer_events_enabled") is not True:
+            return
+        try:
+            from .writer_events import request
+            record["writer_trigger"] = request(
+                self.ctx.state.data_dir / "writer-events.sqlite3",
+                cfg["writer_job_id"], record.get("receipt") or {})
+        except Exception as exc:
+            record["writer_trigger"] = {"state": "trigger_failed",
+                "error_type": type(exc).__name__, "fallback": "existing_periodic_writer"}
+
     def _write(self, key, record, *, explicit, task=None):
         try:
             if not self.enabled():
@@ -403,6 +417,7 @@ class ResearchDeposit:
                 raise ValueError(receipt.get("reason") or "fixed_version_readback_failed")
             self.compact(record, payload)
             record["stage"] = "queued" if receipt.get("compile_eligible") else "saved"
+            self.wake_writer(record)
             record["explicit_receipt"] = explicit
             for field in ("reason", "quality_reason", "required_structure", "minchars"):
                 record.pop(field, None)
@@ -440,6 +455,7 @@ class ResearchDeposit:
                 "admission_state": (record.get("receipt") or {}).get("admission_state"),
                 "reason": record.get("reason") or (None if complete else "missing_explicit_verified_receipt"),
                 "receipt": record.get("receipt") if valid else None,
+                "writer_trigger": record.get("writer_trigger") if valid else None,
                 "wiki_compiled": False}
 
     def execute(self, inputs, **kw):
@@ -479,6 +495,7 @@ class ResearchDeposit:
                     item.pop("requested_revision", None)  # Explicit identical content acknowledges this revision.
                 if item and self.verify_receipt(item):
                     item.update(explicit_receipt=True, explicit_attempt=True)
+                    self.wake_writer(item)
                 else:
                     if item is None:
                         if identity not in record["items"] and len(record["items"]) >= 20:
