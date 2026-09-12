@@ -17,6 +17,7 @@ from backend.services.document_sources import DocumentSourceError
 from backend.services.presentation_renderer import build_pptx, render_pptx_pdf
 from backend.services.presentation_scenario import build_presentation_plan
 from backend.services.dsl_safety_compiler import DSLSafetyCompiler
+from backend.services.workflow_executor import trusted_task_agent_config
 from backend.api.auth import require_auth
 from backend.api.documents import router as documents_router
 
@@ -132,6 +133,27 @@ def test_private_document_is_tenant_bound_and_original_survives_parse_failure(
         encrypted["status"] == "parse_failed"
         and encrypted["parse_error"]["code"] == "encrypted_pdf"
     )
+
+
+def test_task_agent_manifest_is_projected_to_strict_bridge_schema():
+    agent = type("Agent", (), {
+        "id": "agent-private",
+        "private_prompt_delta": "approved prompt",
+        "composition_manifest": {
+            "capability_agent_ids": ["main_agent"],
+            "invoked_agent_ids": ["tenant_specialist"],
+            "delegation": {"max_concurrent_children": 3, "max_spawn_depth": 1},
+            "knowledge_scope": ["knowledge/product/public"],
+            "plan_id": "must-not-cross-runtime-boundary",
+        },
+    })()
+    assert trusted_task_agent_config(agent) == {  # type: ignore[arg-type]
+        "id": "agent-private",
+        "prompt": "approved prompt",
+        "capability_agent_ids": ["main_agent", "tenant_specialist"],
+        "knowledge_scope": ["knowledge/product/public"],
+        "delegation": {"max_concurrent_children": 3, "max_spawn_depth": 1},
+    }
 
 
 def test_document_rejects_legacy_and_oversize(tmp_path, monkeypatch):

@@ -207,6 +207,35 @@ def executable_plan_projection(plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def trusted_task_agent_config(task_agent: TenantAgentModel | None) -> dict[str, Any]:
+    """Project persisted composition metadata to the Bridge's strict schema."""
+    if task_agent is None:
+        return {}
+    manifest = task_agent.composition_manifest or {}
+    capability_ids = sorted({
+        str(value)
+        for key in ("capability_agent_ids", "invoked_agent_ids")
+        for value in (manifest.get(key) or [])
+        if str(value)
+    })
+    config: dict[str, Any] = {
+        "id": task_agent.id,
+        "prompt": task_agent.private_prompt_delta,
+        "capability_agent_ids": capability_ids,
+        "knowledge_scope": list(manifest.get("knowledge_scope") or []),
+    }
+    delegation = manifest.get("delegation")
+    if isinstance(delegation, dict):
+        config["delegation"] = {
+            key: delegation[key]
+            for key in ("max_concurrent_children", "max_spawn_depth")
+            if key in delegation
+        }
+    if manifest.get("business_surface") == "agency":
+        config["composition"] = {"business_surface": "agency"}
+    return config
+
+
 async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> dict[str, Any]:
     async with SessionLocal() as policy_db:
         mapping = (
@@ -253,11 +282,7 @@ async def dispatch(execution: WorkflowExecution, plan: WorkflowPlanVersion) -> d
         "knowledge_capability": capability,
         "knowledge_policy_version": policy.policy_version,
         "max_tokens": plan.max_tokens,
-        "agent_config": {
-            "id": task_agent.id,
-            "prompt": task_agent.private_prompt_delta,
-            "composition": task_agent.composition_manifest or {},
-        } if task_agent else {},
+        "agent_config": trusted_task_agent_config(task_agent),
     }
     source = ((workflow.requirements_snapshot or {}).get("source_document") if workflow else None)
     if source:
