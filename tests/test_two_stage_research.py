@@ -95,7 +95,9 @@ def test_analytical_readout_and_video_guidance_preserve_boundaries(native, text)
                         "Never pad thin source", "analytical inference",
                         "go directly to browser_exec", "ONE call",
                         "Stop at a genuine login/access wall", "Never infer a full transcript",
-                        "do not assume a Python workspace variable", "Validate the first captured frame"]:
+                        "do not assume a Python workspace variable", "Validate the first captured frame",
+                        "clickable URLs", "Search snippets are discovery evidence",
+                        "execute_code for any recalculation", "another call dismissing, seeking"]:
         assert requirement in context
     assert "No broad search" in context
     assert not ctx.state.get(deposit.key(scope), {}).get("obligation")
