@@ -203,7 +203,7 @@ def test_runtime_skill_failure_degrades_without_blocking_main(monkeypatch):
     })
     plugin.register(context)
     context.hooks["pre_llm_call"](
-        "请研究 https://example.com/report",
+        "请使用技能研究 https://example.com/report",
         session_id="runtime-skill-failure",
         turn_id="runtime-skill-failure-turn",
         platform="feishu",
@@ -234,7 +234,7 @@ def test_runtime_skill_context_stays_below_hook_spill_limit(monkeypatch):
     })
     plugin.register(context)
     result = context.hooks["pre_llm_call"](
-        "请研究 https://example.com/report",
+        "请使用技能研究 https://example.com/report",
         session_id="runtime-skill-spill",
         turn_id="runtime-skill-spill-turn",
         platform="feishu",
@@ -305,7 +305,7 @@ def test_optional_delegate_failure_is_diagnostic_not_task_failure(monkeypatch):
     monkeypatch.setattr(router, "_skill_capabilities", lambda: [])
     monkeypatch.setattr(router, "_agency_capabilities", lambda: agency(router))
     router._pre_llm_call(
-        "深入研究这个链接 https://example.com/report",
+        "深入研究行业格局并核验来源",
         session_id="optional-research",
         turn_id="optional-research-turn",
         platform="desktop",

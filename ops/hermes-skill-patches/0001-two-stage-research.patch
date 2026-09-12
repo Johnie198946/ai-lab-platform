@@ -1,0 +1,109 @@
+--- a/research/evidence-first-content-research/SKILL.md
++++ b/research/evidence-first-content-research/SKILL.md
+@@ -1,11 +1,38 @@
+ ---
+ name: evidence-first-content-research
+-description: Use when researching links or topics. Preserve evidence and route authorized local research deposits.
++description: "Use when reading articles or deepening source research. Start with source readout; do not use for runtime troubleshooting or workflow design."
++skill_path: research/source-analysis
++skill_level: professional
++trigger_phrases: ["研究这篇文章", "原文速读", "继续核验这篇文章"]
++negative_phrases: ["链接研究太慢排查代码", "设计研究工作流", "修改研究路由"]
+ ---
+ 
+ # Evidence-First Content Research
+ 
+ Use this class skill for WeChat articles, web essays, reports, and other externally supplied links when the user may want either analysis or durable knowledge ingestion.
++
++## Two-stage research delivery contract
++
++This stage contract governs the detailed verification and ingestion recipes below; those recipes are not prerequisites for an initial source readout. It changes execution order, not evidence or authorization standards.
++
++### Stage 1 — 原文速读
++
++- Default for a single article/link with “研究一下 / 调研一下 / 怎么看 / 看看”: use the current Hermes agent, acquire the actual source via existing extraction/cache, and give a short source readout. No automatic specialist delegation or broad external search campaign. A user explicitly requesting a specialist still controls that choice.
++- Target the first useful readout within 60 seconds when source access permits. This is a service target, not a measured guarantee or permission to invent content. Use bounded extraction and a necessary fallback; if inaccessible, report the real access/coverage blocker promptly, not a fabricated summary or a bare started acknowledgement.
++- Include title/source, one-sentence thesis, 3–5 author claims, a bounded preliminary assessment, material evidence gaps and 2–3 recommended research directions. Mark “基于原文，未完成外部交叉核验”. Do not call author statements independently verified facts. Preserve dates, units and scope; check obvious load-bearing arithmetic with execute_code. High-risk advice and current actionable recommendations need appropriate verification, not an unverified affirmative recommendation with a disclaimer.
++- Do not search an opaque URL identifier, load unrelated history, produce a long hidden report before summarizing, or invoke research_deposit/recover/status solely to finish this readout. A quick readout is not an adopted complete research artifact and creates no pre-answer deposit requirement. Keep no_save and all host consent boundaries intact.
++- End with useful continuation choices, then stop. Silence does not authorize deeper work. This stage is not the completion of an explicitly requested full investigation.
++
++### Stage 2 — 按需深研
++
++- A follow-up naming an interest point investigates that point plus its necessary premises. A clear “继续 / 深入” associated with this source follows the highest-impact gaps without another clarification. Unrelated “继续” must not be inferred as research; use only relevant Hermes conversation context and ask if the source is genuinely ambiguous.
++- An initial explicit request for full/deep research receives the short source readout as an intermediate commentary and continues the original task, without asking again. Never stop at a quick readout or claim background work exists unless Hermes actually started it.
++- Reuse the source, checked claims, citations and pending questions already available through Hermes conversation and existing cache. Retrieve missing context selectively; do not manufacture a second research runtime, writer, memory store or full-history copy.
++- Verify load-bearing facts with primary sources, test the strongest relevant counterexample and competing explanations, and classify unsupported claims honestly. Search independent questions in bounded parallel batches; read relevant passages rather than dumping every candidate page. Stop when the core conclusion and material counterevidence are covered and remaining limits are explicit, not at an arbitrary citation count.
++- Report confirmed / revised / still unknown compared with the readout. Reuse one adopted analysis rather than serially generating a child report, a near-identical deposit essay and another full answer. Independent review is risk-triggered or user-requested, not automatic for every link.
++- When authorized ingestion is part of the deep task, deliver the substantive result before administrative deposit processing (commentary if the same turn must continue), then reuse the existing adopted body through the existing research_deposit contract. Do not silently drop an authorized deep-research deposit or claim an asynchronous writer was scheduled without a real receipt. Report only actual storage/compile states. no_save forbids research persistence throughout both stages and cannot be lifted by a phase transition.
++
++Performance acceptance measures intake-to-useful-readout and intake-to-final-delivery separately. Browser smoke tests, acknowledgements, unit tests and summed parallel durations are not end-to-end latency evidence. Test source fidelity, unsupported certainty, continuation relevance and high-risk boundaries alongside speed.
+ 
+ ## Operating contract
+ 
+@@ -61,7 +88,7 @@
+ 
+ When an article introduces a new industry label (for example, “Token Factory”), do not treat the label as an established industry category. Decompose it into the underlying layers and verify each separately: compute and inference production, TokenOps metering/pricing/settlement, model/API distribution, Agent/runtime consumption, and business outcomes. Keep the article’s framing distinct from the already-established capabilities it renames.
+ 
+-When the user asks whether an expert/professional reviewed the work, be explicit about the review topology. A loaded skill or the main agent is not an independent expert. For consequential synthesis, dispatch at least one independent specialist with a self-contained brief covering the article’s claims, evidence classes, and the user’s existing knowledge context; report the specialist as corroboration, not as proof. Reconcile disagreements against primary sources and mark the specialist’s result as unverified self-report until it returns a concrete review summary.
++When the user asks whether an expert/professional reviewed the work, be explicit about the review topology. A loaded skill or the main agent is not an independent expert. For explicitly requested or risk-justified consequential deep synthesis, dispatch an independent specialist with a self-contained brief covering the article’s claims, evidence classes, and the user’s existing knowledge context; report the specialist as corroboration, not as proof. Reconcile disagreements against primary sources and mark the specialist’s result as unverified self-report until it returns a concrete review summary.
+ 
+ For “how has my knowledge base grown?” requests, inspect the canonical local Vault/Wiki when an exact path is known. If broad filesystem search is blocked or times out, do not infer absence; use only verifiable session/compiler records as secondary evidence, state the search boundary, and separate current-source inspection from historical context. Map new material onto an explicit growth ladder: concept/measurement → economics/production → runtime execution → governance/business outcome.
+ 
+@@ -91,7 +118,7 @@
+ - 工具修复必须分别验证代码测试、远端版本、部署Hash、常驻进程实际加载和真实来源获取。合成PDF通过不代表取得招股书；子任务中断不代表已部署的改动不存在。读取真实产物再决定剩余工作，不补造最终回执。
+ - 简报只说新增核实结果、尚未关闭的具体门禁和保存/编译状态；不反复把部分完成包装成交付。
+ 
+-For research or consequential factual judgments with missing, conflicting, stale or unread support—even with complete metadata—load `references/evidence-gap-closure.md` before acquisition/adoption. It defines a task-wide finite primary/counter-source budget, objective stopping, bounded synthesis, immutable correction limitations and sole-Writer readback. This is reusable agent guidance, not a universal automatic evidence-search/save engine; simple translation/chat/read-only boundaries remain unchanged.
++During Stage 2 research or consequential factual judgments with missing, conflicting, stale or unread support—even with complete metadata—load `references/evidence-gap-closure.md` before acquisition/adoption. It defines a task-wide finite primary/counter-source budget, objective stopping, bounded synthesis, immutable correction limitations and sole-Writer readback. This is reusable agent guidance, not a universal automatic evidence-search/save engine; simple translation/chat/read-only boundaries remain unchanged.
+ 
+ ## Async research completion
+ 
+--- a/research/article-research-summary/SKILL.md
++++ b/research/article-research-summary/SKILL.md
+@@ -1,6 +1,10 @@
+ ---
+ name: article-research-summary
+-description: "Use when researching articles. Summarize, verify evidence and route authorized local deposits."
++description: "Use when reading articles or deepening source research. Start with source readout; do not use for runtime troubleshooting or workflow design."
++skill_path: research/source-analysis
++skill_level: simple
++trigger_phrases: ["研究这篇文章", "原文速读", "继续核验这篇文章"]
++negative_phrases: ["链接研究太慢排查代码", "设计研究工作流", "修改研究路由"]
+ version: 1.0.0
+ metadata:
+   hermes:
+@@ -12,10 +16,33 @@
+ 
+ Use this class-level workflow when the user sends an article or asks to research an external piece. The default deliverable is a concise, decision-useful summary; a long decode/benchmark/convert report is an expansion mode, not the default.
+ 
++## Two-stage research delivery contract
++
++This stage contract governs the detailed verification and ingestion recipes below; those recipes are not prerequisites for an initial source readout. It changes execution order, not evidence or authorization standards.
++
++### Stage 1 — 原文速读
++
++- Default for a single article/link with “研究一下 / 调研一下 / 怎么看 / 看看”: use the current Hermes agent, acquire the actual source via existing extraction/cache, and give a short source readout. No automatic specialist delegation or broad external search campaign. A user explicitly requesting a specialist still controls that choice.
++- Target the first useful readout within 60 seconds when source access permits. This is a service target, not a measured guarantee or permission to invent content. Use bounded extraction and a necessary fallback; if inaccessible, report the real access/coverage blocker promptly, not a fabricated summary or a bare started acknowledgement.
++- Include title/source, one-sentence thesis, 3–5 author claims, a bounded preliminary assessment, material evidence gaps and 2–3 recommended research directions. Mark “基于原文，未完成外部交叉核验”. Do not call author statements independently verified facts. Preserve dates, units and scope; check obvious load-bearing arithmetic with execute_code. High-risk advice and current actionable recommendations need appropriate verification, not an unverified affirmative recommendation with a disclaimer.
++- Do not search an opaque URL identifier, load unrelated history, produce a long hidden report before summarizing, or invoke research_deposit/recover/status solely to finish this readout. A quick readout is not an adopted complete research artifact and creates no pre-answer deposit requirement. Keep no_save and all host consent boundaries intact.
++- End with useful continuation choices, then stop. Silence does not authorize deeper work. This stage is not the completion of an explicitly requested full investigation.
++
++### Stage 2 — 按需深研
++
++- A follow-up naming an interest point investigates that point plus its necessary premises. A clear “继续 / 深入” associated with this source follows the highest-impact gaps without another clarification. Unrelated “继续” must not be inferred as research; use only relevant Hermes conversation context and ask if the source is genuinely ambiguous.
++- An initial explicit request for full/deep research receives the short source readout as an intermediate commentary and continues the original task, without asking again. Never stop at a quick readout or claim background work exists unless Hermes actually started it.
++- Reuse the source, checked claims, citations and pending questions already available through Hermes conversation and existing cache. Retrieve missing context selectively; do not manufacture a second research runtime, writer, memory store or full-history copy.
++- Verify load-bearing facts with primary sources, test the strongest relevant counterexample and competing explanations, and classify unsupported claims honestly. Search independent questions in bounded parallel batches; read relevant passages rather than dumping every candidate page. Stop when the core conclusion and material counterevidence are covered and remaining limits are explicit, not at an arbitrary citation count.
++- Report confirmed / revised / still unknown compared with the readout. Reuse one adopted analysis rather than serially generating a child report, a near-identical deposit essay and another full answer. Independent review is risk-triggered or user-requested, not automatic for every link.
++- When authorized ingestion is part of the deep task, deliver the substantive result before administrative deposit processing (commentary if the same turn must continue), then reuse the existing adopted body through the existing research_deposit contract. Do not silently drop an authorized deep-research deposit or claim an asynchronous writer was scheduled without a real receipt. Report only actual storage/compile states. no_save forbids research persistence throughout both stages and cannot be lifted by a phase transition.
++
++Performance acceptance measures intake-to-useful-readout and intake-to-final-delivery separately. Browser smoke tests, acknowledgements, unit tests and summed parallel durations are not end-to-end latency evidence. Test source fidelity, unsupported certainty, continuation relevance and high-risk boundaries alongside speed.
++
+ ## Intent and user-visible delivery
+ 
+ - A complaint that link research is slow or unresponsive is a runtime troubleshooting request, not an instruction to research the article again. Do not choose or delegate an article specialist solely because the complaint contains “链接/研究/分析”. Follow the user's latest intent and investigate the affected request rather than adding another research round.
+-- For ordinary “研究一下”, deliver the evidence-backed compact analysis as soon as the required verification is complete. Do not make optional expansion or administrative deposit prose a prerequisite for the first useful answer. Preserve all required evidence, authorization and deposit gates; distinguish an initial result from pending verification or storage, and never claim unsupported background work has started.
++- For ordinary “研究一下”, deliver Stage 1 source-faithful readout before external deep verification. Do not make optional expansion or administrative deposit prose a prerequisite for the first useful answer. Preserve all required evidence, authorization and deposit gates; distinguish an initial result from pending verification or storage, and never claim unsupported background work has started.
+ - A started acknowledgement is not a useful result. When diagnosing delays, separately measure intake, acknowledgement, source acquisition, analysis, child-result return, parent processing and platform delivery. A fast browser smoke test does not validate the full research workflow.
+ - When blocked for a long time, explain the actual observed blocker briefly rather than leaving the user waiting or repeatedly ending with “not yet located”. Do not invent progress or attribute another concurrent session's metrics to this request.
+ 

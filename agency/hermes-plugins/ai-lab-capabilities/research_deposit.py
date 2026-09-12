@@ -23,7 +23,7 @@ from urllib.parse import urlsplit, parse_qsl, unquote
 POLICY_VERSION = "local-research-v1"
 STORAGE_SCOPE = "user_vault_existing_sync"
 _IMPORT_LOCK = threading.Lock()
-NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)|no[ -]save|view\s+only", re.I)
+NO_SAVE = re.compile(r"只看看|(?:先)?不(?:要)?(?:保存|入库|落盘|归档|存储|存(?!在)|记录)|别(?:保存|入库)|do\s+not\s+(?:save|store|archive|record)|don['’]t\s+(?:save|store|record)|no[ _-]save|view\s+only", re.I)
 EVIDENCE_REVIEW = re.compile(r"核验|核实|验证|比较|选型|是否可靠|证据|verify|fact.check|compare|recommend", re.I)
 RESEARCH = re.compile(r"https?://|研究|调研|研读|research|investigate|literature review", re.I)
 NOT_RESEARCH = re.compile(r"^\s*(?:请(?:帮我)?\s*|please\s+)?(?:翻译|仅摘要|只(?:做)?摘要|仅(?:做)?总结|只回答|仅回答|translate\b|translation\b|summari[sz]e\b|answer\s+only)", re.I)
@@ -168,6 +168,24 @@ class ResearchDeposit:
                 return {"context": "[Research maintenance] This is Writer/recovery work, not a research-save obligation. Use research_deposit action=status for bounded pending scope references, then action=recover. Writer remains manifest-only. New evidence is blocked (research_task_association_required): a separate host-authorized research task must explicitly hand off adopted material; control text cannot grant it."}
             if not self.enabled():
                 return None
+            from .capability_router import research_stage, research_routing_excluded
+            stage = (research_stage(user_message, conversation_history=kw.get("conversation_history"))
+                     if platform != "cron" else "")
+            if stage == "quick_read" or (platform != "cron" and research_routing_excluded(user_message)):
+                # A preview/meta request creates no write obligation. Never erase
+                # an older obligation or veto; its finalizer remains truthful.
+                return {"context": (
+                    "[Source-only preview / nonresearch request] No new research-save obligation. "
+                    "Do not call research_deposit or generate a storage body for this preview. "
+                    "Any previously authorized pending handoff remains separate and unchanged."
+                )}
+            if stage == "deep_followup" and not old.get("obligation"):
+                return {"context": (
+                    "[Research continuation] Reuse native conversation evidence for the requested "
+                    "deeper answer. No canonical host relationship to the earlier storage task is "
+                    "available: do not reuse its receipt, create save authority from history, or "
+                    "claim saved. Continue useful research without claiming storage completion."
+                )}
             if not is_research(user_message) and not old.get("obligation"):
                 if CONTINUATION.search(user_message or ""):
                     self.ctx.state.set(key, {"stage": "blocked", "reason": "continuation_scope_required"})
@@ -189,7 +207,14 @@ class ResearchDeposit:
                 old = {"scope": scope, "owner": "local_owner", "policy_version": POLICY_VERSION,
                        "stage": "research", "obligation": True, "schema_version": 2, "items": {}}
             self.ctx.state.set(key, old)
-        return {"context": self.evidence_context() + "[Local research contract] Before final delivery call ai_lab_execute "
+        stage_prefix = (
+            "[Full research sequencing] First emit the source-only quick read as commentary. "
+            "Only AFTER that preview apply the following verification and final handoff contract; "
+            "continue in this same turn without another permission question. Reuse the adopted "
+            "research body for handoff, do not regenerate a separate long storage essay. "
+            if stage == "quick_read_then_deep" else ""
+        )
+        return {"context": stage_prefix + self.evidence_context() + "[Local research contract] Before final delivery call ai_lab_execute "
                 "capability=research_deposit with title, full body, source_urls, confidence (null if unreviewed), "
                 "source_kind=research_analysis. Submit the FULL adopted research body, not a brief summary; "
                 "at least 800 characters, Markdown headings ## 事实, ## 分析, ## 启示 with actual newline characters "
