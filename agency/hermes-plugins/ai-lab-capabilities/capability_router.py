@@ -471,7 +471,7 @@ def research_routing_excluded(query: str) -> bool:
     """Operational/meta requests are not studies of the URL they mention."""
     text = re.sub(r"https?://[^\s<>]+", "", query or "", flags=re.I)
     return _local_code_debug_intent(text) or bool(re.search(
-        r"排障|排查|调试|报错|故障|性能投诉|怎么这么慢|为什么这么慢|太慢了|"
+        r"排障|排查|调试|报错|故障(?!恢复)|性能投诉|怎么这么慢|为什么这么慢|太慢了|"
         r"(?:研究|调研|回复|回答|任务).{0,12}(?:耗时|变慢|太慢|速度下降)|"
         r"(?:这次|本次|上述|当前|两阶段|速读).{0,12}(?:方案|路由|改造|流程|实现)|"
         r"(?:修改|实现|讨论|优化).{0,12}(?:研究流程|研究路由|速读流程)|"

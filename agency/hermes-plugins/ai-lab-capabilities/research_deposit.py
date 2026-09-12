@@ -83,9 +83,16 @@ class ResearchDeposit:
         scope = self.scope(kw)
         from tools import approval
         getter = getattr(approval, "get_current_observability_context", None)
-        # Current SDK only exposes set/reset, so read its native contextvars.
-        observed = getter() if getter else {"session_id": approval._approval_session_id.get(),
-                                            "turn_id": approval._approval_turn_id.get()}
+        if getter:
+            observed = getter()
+        else:
+            # Older SDKs own these here; the split SDK moved the same native
+            # contextvars to approval_context without re-exporting private names.
+            context = approval
+            if not hasattr(context, "_approval_session_id"):
+                from tools import approval_context as context
+            observed = {"session_id": context._approval_session_id.get(),
+                        "turn_id": context._approval_turn_id.get()}
         if observed.get("session_id"):
             if observed["session_id"] != scope["session_id"]:
                 raise ValueError("host_observability_session_mismatch")

@@ -6,7 +6,7 @@ status: TESTED_NOT_DEPLOYED
 
 - Task: `token-usage-reconciliation-20260912`.
 - User authorized correction and continuation; ordinary-user quota remains **10,000,000 per UTC calendar month**, without resetting usage.
-- Main base: `67d6f15ed575fa4f3dd561eef81413ea6e1d6238`. Concurrent upstream fixes were fast-forwarded and task patches reapplied cleanly from retained local stash checkpoints.
+- Main integration base: `6c50ae187443a33c0ae43e0b10d9f72b335c7fd8`. Concurrent upstream fixes were preserved. User explicitly authorized rebasing only this task's unpublished CI-fix commit; no published history was rewritten and no force push was used.
 - Public repository: actual account identities, raw receipts, historical plans and production database backups remain outside source history.
 
 ## Accounting boundary
@@ -26,13 +26,17 @@ Quota settlement and request-identified usage are one database transaction. Dura
 
 ## Verified before release
 
-- Python regression: **2288 passed, 17 skipped, 13 deselected, 14 subtests passed**; 293 warnings. The 13 deselected checks require a locally installed full skill catalog and are not claimed as passed. Test HOME was isolated and native Hermes source pinned to the CI revision.
+- Final full Python regression: **2344 passed, 31 skipped, 14 subtests passed**; 295 warnings, no deselection. Skipped optional integrations are not claimed as passed. Test HOME was isolated and native Hermes source pinned to the CI revision.
 - Full target Ruff and `git diff --check`: passed.
-- iOS simulator build and DTO tests: **132 tests, 0 failures; TEST SUCCEEDED**. No real-user login or new TestFlight release claimed.
+- Latest iOS simulator build and DTO tests: **133 tests, 0 failures; TEST SUCCEEDED**. Verified and unverified call counts are separately labeled. No independent real-user login or TestFlight-package verification claimed.
 - Three historical run receipts were reread on production; exact user/tenant/request identity, cold/prior-turn cache evidence, same worker/session and absence of an intervening run were verified. Private evidence remains outside Git.
 - Native dispatch fixture now follows Hermes' inline deferred-tool resolver before registry dispatch. CI installs its already-pinned stemming dependency; this fixes a baseline-reproduced test setup error, not production tool permissions.
 - First CI run exposed 13 opt-in full-catalog fixtures being invoked in an empty CI home. Their opt-in requirement is now explicit (`AI_LAB_TEST_INSTALLED_CATALOG=1`); assertions remain intact when enabled. The portable module ran with 30 passes; 13 installation integrations remained skipped because that interpreter could not import the installed skill tool. They are not reported as passed.
 
 ## Remaining release gates
+
+Release integration also corrected a narrow `故障恢复` routing false positive while retaining operational exclusions, made an old link-research assertion explicitly request the new deep stage, preserved native approval-context lookup across SDK module splits, and made the additional installed-catalog test opt-in. No source-first preview, authorization or no-save veto was bypassed.
+
+An isolated local PostgreSQL container exercised the actual historical-application script, original-value snapshots, replay and legacy-row preservation. This was explicitly synthetic, with zero provider calls; it is not a production accounting receipt.
 
 Exact commit/image/source rollout, health and live accounting acceptance, evidence-bound historical application with unchanged-legacy and replay checks, HTTP summary readback. iOS distribution and complete verification of older anonymous history remain separate limitations.

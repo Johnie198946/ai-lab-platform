@@ -356,7 +356,7 @@ def test_mac_native_direct_response_and_simple_qa_never_enter_agent_os(question,
     }
 
 
-def test_mac_native_link_research_shortlists_governed_skill(monkeypatch):
+def test_mac_native_explicit_skill_research_shortlists_governed_skill(monkeypatch):
     router = load_capability_router()
     inventory = [
         router._govern_skill({
@@ -383,7 +383,7 @@ def test_mac_native_link_research_shortlists_governed_skill(monkeypatch):
         }),
     ]
     cards = router.recommend(
-        "帮我研究这个链接 https://example.com/report 并核验外部资料",
+        "使用技能深入研究这个链接 https://example.com/report 并核验外部资料",
         capabilities=inventory,
         stats={},
     )

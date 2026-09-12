@@ -113,8 +113,13 @@ public struct TokenSummaryCard: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 3) {
-                    Text("\(grouped(summary.totalCalls)) 次调用")
-                    Text("成功 \(grouped(summary.successCalls)) · 失败 \(grouped(summary.failedCalls))")
+                    if summary.hasVerifiedTokenBasis {
+                        Text("\(grouped(max(0, summary.totalCalls - summary.missingUsageCalls))) 次已核验调用")
+                        Text("\(grouped(summary.missingUsageCalls)) 次待核验")
+                    } else {
+                        Text("\(grouped(summary.totalCalls)) 次调用")
+                        Text("成功 \(grouped(summary.successCalls)) · 失败 \(grouped(summary.failedCalls))")
+                    }
                 }
                 .font(AppTheme.Typography.micro)
                 .foregroundColor(AppTheme.Colors.textSecondary)
