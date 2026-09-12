@@ -24,6 +24,7 @@ from backend.api.register import (
     _provision_tenant,
     dev_login_allowed,
     dev_login_credentials_match,
+    dev_login_phone_matches,
     dev_login_principal,
 )
 from backend.db import SessionLocal
@@ -179,7 +180,7 @@ async def send_phone_code(body: PhoneRequest):
 
 @router.post("/phone/login")
 async def phone_login(body: PhoneLoginRequest, request: Request):
-    if dev_login_allowed(request):
+    if dev_login_allowed(request) and dev_login_phone_matches(body.phone):
         if not dev_login_credentials_match(body.phone, body.code):
             raise HTTPException(status_code=401, detail="开发者账号或验证码错误")
         user_id, username = dev_login_principal()

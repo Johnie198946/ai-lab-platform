@@ -165,11 +165,37 @@ async def test_phone_login_rejects_dev_mismatch_without_authen(monkeypatch):
 
     with pytest.raises(HTTPException) as exc:
         await external_auth.phone_login(
-            external_auth.PhoneLoginRequest(phone="wrong", code="wrong"),
+            external_auth.PhoneLoginRequest(phone="configured-phone", code="wrong"),
             _request(source="203.0.113.10"),
         )
 
     assert exc.value.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_phone_login_routes_real_phone_to_authen_from_allowed_dev_source(monkeypatch):
+    _enable_dev_login(monkeypatch)
+    calls = []
+
+    async def fake_authen(method, path, **kwargs):
+        calls.append((method, path, kwargs))
+        return {"user": {"id": "real-phone-user"}, "is_new_user": False}
+
+    async def fake_provision(user_id):
+        assert user_id == "real-phone-user"
+        return "real-phone-tenant"
+
+    monkeypatch.setattr(external_auth, "_authen_request", fake_authen)
+    monkeypatch.setattr(external_auth, "_provision_tenant", fake_provision)
+
+    payload = await external_auth.phone_login(
+        external_auth.PhoneLoginRequest(phone="13800138000", code="123456"),
+        _request(source="203.0.113.10"),
+    )
+
+    assert payload["user_id"] == "real-phone-user"
+    assert payload["tenant_key"] == "real-phone-tenant"
+    assert calls[0][:2] == ("POST", "/api/v1/auth/login/phone-code")
 
 
 @pytest.mark.asyncio

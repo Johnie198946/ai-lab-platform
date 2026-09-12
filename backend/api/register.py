@@ -233,11 +233,14 @@ def dev_login_allowed(request: Request) -> bool:
 
 
 def dev_login_credentials_match(phone: str, code: str) -> bool:
-    expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
     expected_code = os.environ.get("DEV_LOGIN_CODE", "").strip()
-    phone_matches = hmac.compare_digest(phone.strip(), expected_phone)
     code_matches = hmac.compare_digest(code.strip(), expected_code)
-    return bool(expected_phone) & bool(expected_code) & phone_matches & code_matches
+    return dev_login_phone_matches(phone) & bool(expected_code) & code_matches
+
+
+def dev_login_phone_matches(phone: str) -> bool:
+    expected_phone = os.environ.get("DEV_LOGIN_PHONE", "").strip()
+    return bool(expected_phone) & hmac.compare_digest(phone.strip(), expected_phone)
 
 
 def dev_login_principal() -> tuple[str, str]:
