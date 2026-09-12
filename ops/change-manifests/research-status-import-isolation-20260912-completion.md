@@ -4,7 +4,14 @@
 - scope: platform plugin `writer_status.py`, `tests/test_writer_status.py`, this manifest; default Mac deployment of `writer_status.py` only
 - branch: main
 - base: 31357f63164fa7d36802b86b2e9eca6745d8f0bd
-- status at code commit: TESTED; publication/deployment receipts retained privately, resident verification delegated to parent
+- status: DEPLOYED; resident activation/acceptance remains pending parent
+- code_commit / remote_sha_at_deploy: 1536e34e2e2c19ece70c35a93e56177f9a8d9d3c
+- server_before (plugin file SHA-256): 33f2d7cd282a16d94bb378bb3fc5d7027b31b9ce680e4ddba297de71d0fbceec
+- server_after (plugin file SHA-256): 9671381bb573192cfdaa713c010fccd84301b200848472b812b5f1a8ffc1b70d
+- rollback_point: default-profile private backup, `status-projection/import-isolation-1536e34/writer_status.py.before` (bytes verified before replacement)
+- health_check: deployed file bytes exactly match the published code commit; actual Writer load succeeds without touching host tools/search path
+- functional_check: deployed-file new-process private receipt is compiled/verified; Vault raw/wiki/knowledge metadata snapshot unchanged across the read
+- resident_acceptance: pending; Desktop was not restarted, stopped, or hot-patched
 
 ## Root cause and minimal correction
 
