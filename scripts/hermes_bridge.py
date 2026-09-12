@@ -3027,6 +3027,12 @@ def _normalize_presentation_reply(reply: str) -> str:
                     heading = slide.pop(f"{side}_title", None)
                     if side not in slide and isinstance(points, list):
                         slide[side] = ([str(heading)] if heading else []) + points
+                    current = slide.get(side)
+                    if isinstance(current, dict):
+                        nested_heading = current.get("heading") or current.get("title")
+                        nested_points = current.get("points") or current.get("bullets") or current.get("items") or []
+                        if isinstance(nested_points, list):
+                            slide[side] = ([str(nested_heading)] if nested_heading else []) + nested_points
             if layout in {"bullets", "conclusion"} and "bullets" not in slide and "key_points" in slide:
                 slide["bullets"] = slide.pop("key_points")
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
