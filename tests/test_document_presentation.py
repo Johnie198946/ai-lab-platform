@@ -619,11 +619,15 @@ def test_bridge_normalizes_outline_style_points_for_renderable_slides():
         "slides": [
             {"layout": "bullets", "title": "goals", "key_points": ["one"]},
             {"layout": "section", "title": "flow", "subtitle": "one → two"},
+            {"layout": "process", "title": "steps", "steps": ["one", "two"]},
         ],
     })))
     assert normalized["slides"][0]["bullets"] == ["one"]
     assert "key_points" not in normalized["slides"][0]
     assert normalized["slides"][1]["layout"] == "title"
+    assert normalized["slides"][2]["layout"] == "bullets"
+    assert normalized["slides"][2]["bullets"] == ["one", "two"]
+    assert "steps" not in normalized["slides"][2]
     build_pptx(json.dumps(normalized))
 
 
