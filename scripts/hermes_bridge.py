@@ -3021,6 +3021,12 @@ def _normalize_presentation_reply(reply: str) -> str:
                 slide["layout"] = "bullets"
                 slide["bullets"] = slide.pop("steps")
                 layout = "bullets"
+            if layout == "two_column":
+                for side in ("left", "right"):
+                    points = slide.pop(f"{side}_points", None)
+                    heading = slide.pop(f"{side}_title", None)
+                    if side not in slide and isinstance(points, list):
+                        slide[side] = ([str(heading)] if heading else []) + points
             if layout in {"bullets", "conclusion"} and "bullets" not in slide and "key_points" in slide:
                 slide["bullets"] = slide.pop("key_points")
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
