@@ -31,6 +31,7 @@ Quota settlement and request-identified usage are one database transaction. Dura
 - iOS simulator build and DTO tests: **132 tests, 0 failures; TEST SUCCEEDED**. No real-user login or new TestFlight release claimed.
 - Three historical run receipts were reread on production; exact user/tenant/request identity, cold/prior-turn cache evidence, same worker/session and absence of an intervening run were verified. Private evidence remains outside Git.
 - Native dispatch fixture now follows Hermes' inline deferred-tool resolver before registry dispatch. CI installs its already-pinned stemming dependency; this fixes a baseline-reproduced test setup error, not production tool permissions.
+- First CI run exposed 13 opt-in full-catalog fixtures being invoked in an empty CI home. Their opt-in requirement is now explicit (`AI_LAB_TEST_INSTALLED_CATALOG=1`); assertions remain intact when enabled. The portable module ran with 30 passes; 13 installation integrations remained skipped because that interpreter could not import the installed skill tool. They are not reported as passed.
 
 ## Remaining release gates
 

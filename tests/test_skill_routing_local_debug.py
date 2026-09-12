@@ -1,6 +1,7 @@
 """Synthetic boundary fixtures; real session text is kept out of this public repo."""
 from collections import Counter
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -137,6 +138,8 @@ def test_class_gate_blocks_entire_catalog_not_named_skills(router, query):
 
 @pytest.fixture(scope="module")
 def installed_catalog(router):
+    if os.environ.get("AI_LAB_TEST_INSTALLED_CATALOG") != "1":
+        pytest.skip("opt-in installed catalog: set AI_LAB_TEST_INSTALLED_CATALOG=1")
     # Opt-in real installation integration, not a three-name mock. Run with the
     # installed Hermes interpreter and its source on PYTHONPATH. CI without
     # Hermes still exercises all portable class and adversarial tests above.
