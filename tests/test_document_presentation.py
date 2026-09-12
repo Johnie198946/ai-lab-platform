@@ -616,10 +616,14 @@ def test_bridge_normalizes_outline_style_points_for_renderable_slides():
     normalized = json.loads(bridge._normalize_presentation_reply(json.dumps({
         "title": "design",
         "theme": THEME_A,
-        "slides": [{"layout": "bullets", "title": "goals", "key_points": ["one"]}],
+        "slides": [
+            {"layout": "bullets", "title": "goals", "key_points": ["one"]},
+            {"layout": "section", "title": "flow", "subtitle": "one → two"},
+        ],
     })))
     assert normalized["slides"][0]["bullets"] == ["one"]
     assert "key_points" not in normalized["slides"][0]
+    assert normalized["slides"][1]["layout"] == "title"
     build_pptx(json.dumps(normalized))
 
 
