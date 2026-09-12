@@ -35,9 +35,9 @@
 
 ## 交付状态
 
-- `status`: `TESTED`
-- `commit SHA`: 未授权、未执行。
-- `GitHub remote/ref/SHA`: 未授权 push，未执行远端 SHA 核验。
+- `status`: `PUSHED`
+- `commit SHA`: 功能提交 `f29583f0435569ea0aeb92e15f7ddb350e625621`；同步远端后的推送提交 `ef868a4d3a149bc97444b92f84d1cc37a9be5813`。
+- `GitHub remote/ref/SHA`: `source` / `refs/heads/main` / `ef868a4d3a149bc97444b92f84d1cc37a9be5813`；已执行 `git ls-remote source refs/heads/main`，返回 SHA 与本地 HEAD 一致。
 - `server_before`: 不适用，未授权部署。
 - `server_after`: 不适用，未部署。
 - `health_check`: 不适用，未部署。
@@ -48,4 +48,4 @@
 
 - 未在真机上用生产 Token 数据执行手指滑动验收；原生选择链路已通过编译和 Simulator 渲染。
 - 未单独跑横屏、最大 Dynamic Type 和深色模式截图；当前 App 主题声明为 light-only。
-- 未提交、未 push、未发布 TestFlight。
+- 未部署、未发布 TestFlight。
