@@ -23,37 +23,49 @@ public struct AttachmentCard: View {
 
     public var body: some View {
         VStack(spacing: AppTheme.Spacing.sm) {
-            HStack(spacing: AppTheme.Spacing.md) {
-                // 文档类型图标
-                Image(systemName: block.fileType.iconName)
-                    .font(.system(size: 22))
-                    .foregroundColor(AppTheme.Icons.interactive)
-                    .frame(width: 40, height: 40)
-                    .background(AppTheme.Colors.primary.opacity(0.08))
-                    .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.sm, style: .continuous))
+            Button { Task { await loadOriginal() } } label: {
+                HStack(alignment: .top, spacing: AppTheme.Spacing.md) {
+                    cover
 
-                // 文件名 + 大小
                 VStack(alignment: .leading, spacing: 2) {
                     Text(block.fileName)
-                        .font(.system(size: 13, weight: .medium))
+                            .font(.system(size: 14, weight: .semibold))
                         .foregroundColor(AppTheme.Colors.textPrimary)
-                        .lineLimit(1)
+                            .lineLimit(2)
                     Text(block.statusMessage ?? block.fileSize)
-                        .font(.system(size: 11))
-                        .foregroundColor(AppTheme.Icons.tertiary)
-                }
+                            .font(.system(size: 12))
+                            .foregroundColor(AppTheme.Colors.textSecondary)
+                            .lineLimit(3)
+                        Text(block.fileSize)
+                            .font(.caption2)
+                            .foregroundColor(AppTheme.Colors.textTertiary)
+                    }
 
                 Spacer()
 
-                // 打开提示（触觉反馈后短暂显示）
-                if isLoading { ProgressView().tint(AppTheme.Colors.primary) }
-                else { Image(systemName: stateIcon).foregroundColor(stateColor) }
+                    if isLoading || block.state == .uploading || block.state == .compiling {
+                        ProgressView().tint(AppTheme.Colors.primary)
+                    } else {
+                        Image(systemName: stateIcon).foregroundColor(stateColor)
+                    }
+                }
             }
+            .buttonStyle(SoftButtonStyle())
+            .disabled(block.sourceId == nil || isLoading)
+            .accessibilityLabel("预览 \(block.fileName)")
+            .accessibilityHint(block.sourceId == nil ? "文档仍在处理" : "打开原件预览")
             if block.sourceId != nil {
                 HStack {
-                    Button("原件预览 / 下载") { Task { await loadOriginal() } }
-                    if block.state == .ready { Button("查看提取文本") { Task { await loadText() } } }
-                    if let localURL { ShareLink(item: localURL) { Label("存储或分享", systemImage: "square.and.arrow.up") } }
+                    Button("预览原件") { Task { await loadOriginal() } }
+                        .frame(minHeight: 44)
+                    if block.state == .ready {
+                        Button("查看提取文本") { Task { await loadText() } }
+                            .frame(minHeight: 44)
+                    }
+                    if let localURL {
+                        ShareLink(item: localURL) { Label("存储或分享", systemImage: "square.and.arrow.up") }
+                            .frame(minHeight: 44)
+                    }
                 }.font(.system(size: 11, weight: .semibold)).foregroundColor(AppTheme.Colors.primary)
             }
             if let errorMessage { Text(errorMessage).font(.caption).foregroundColor(AppTheme.Colors.securityRed) }
@@ -71,7 +83,28 @@ public struct AttachmentCard: View {
         }
     }
 
-    private var stateIcon: String { switch block.state { case .uploading: return "arrow.up.circle"; case .parseFailed, .failed: return "exclamationmark.triangle"; default: return "checkmark.circle" } }
+    @ViewBuilder private var cover: some View {
+        if let data = block.previewImageData, let image = UIImage(data: data) {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 66, height: 88)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 6).stroke(AppTheme.Colors.border))
+                .accessibilityHidden(true)
+        } else {
+            Image(systemName: block.fileType.iconName)
+                .font(.system(size: 24))
+                .foregroundColor(AppTheme.Icons.interactive)
+                .frame(width: 66, height: 88)
+                .background(AppTheme.Colors.primary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .accessibilityHidden(true)
+        }
+    }
+
+    private var stateIcon: String { switch block.state { case .uploading: return "arrow.up.circle"; case .compiling: return "gearshape.2"; case .parseFailed, .failed: return "exclamationmark.triangle"; default: return "checkmark.circle" } }
     private var stateColor: Color { block.state == .parseFailed || block.state == .failed ? AppTheme.Colors.securityRed : AppTheme.Colors.primary }
 
     @MainActor private func loadOriginal() async {

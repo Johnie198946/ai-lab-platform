@@ -139,6 +139,12 @@ private final class APIContractURLProtocol: URLProtocol, @unchecked Sendable {
 }
 
 final class WorkflowLifecycleDTOTests: XCTestCase {
+    func testDocumentContributionStatusMapsToVisibleTransferState() {
+        XCTAssertEqual(AttachmentTransferState.documentStatus("queued"), .compiling)
+        XCTAssertEqual(AttachmentTransferState.documentStatus("privacy_reviewing"), .compiling)
+        XCTAssertEqual(AttachmentTransferState.documentStatus("published"), .ready)
+        XCTAssertEqual(AttachmentTransferState.documentStatus("quarantined"), .ready)
+    }
     func testUsageSummaryDecodesCacheBreakdownWithoutInference() throws {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase

@@ -1564,6 +1564,32 @@ private struct WorkflowPlanNodeEditor: View {
 
 // MARK: - 执行与成果复核
 
+private struct PresentationWorkflowStageHeader: View {
+    let currentIndex: Int
+    private let stages = ["分析", "大纲", "版式", "生成", "验收"]
+
+    var body: some View {
+        HStack(spacing: AppTheme.Spacing.xs) {
+            ForEach(Array(stages.enumerated()), id: \.offset) { index, title in
+                VStack(spacing: 4) {
+                    Image(systemName: index < currentIndex ? "checkmark.circle.fill" : (index == currentIndex ? "circle.inset.filled" : "circle"))
+                        .foregroundStyle(index <= currentIndex ? AppTheme.Colors.quantumBlue : AppTheme.Colors.textTertiary)
+                    Text(title).font(AppTheme.Typography.micro)
+                        .foregroundStyle(index <= currentIndex ? AppTheme.Colors.textPrimary : AppTheme.Colors.textTertiary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                if index < stages.count - 1 {
+                    Rectangle()
+                        .fill(index < currentIndex ? AppTheme.Colors.quantumBlue : AppTheme.Colors.border)
+                        .frame(height: 1)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("PPT 工作流，第 \(currentIndex + 1) 步，共 5 步：\(stages[currentIndex])")
+    }
+}
+
 private struct WorkflowExecutionView: View {
     let workflow: WorkflowDTO
     @State private var execution: WorkflowExecutionDTO
@@ -1587,6 +1613,7 @@ private struct WorkflowExecutionView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: AppTheme.Spacing.xl) {
+                if isPresentation { PresentationWorkflowStageHeader(currentIndex: presentationStageIndex) }
                 executionHeader
                 ReasoningCard(
                     steps: executionReasoningSteps,
@@ -1608,8 +1635,41 @@ private struct WorkflowExecutionView: View {
             await monitor()
         }
         .sheet(item: $selectedArtifact) { artifact in
-            WorkflowArtifactPreview(executionId: execution.id, artifact: artifact)
+            WorkflowArtifactPreview(
+                executionId: execution.id,
+                artifact: artifact,
+                currentPage: $slideNumber,
+                allowsDownload: execution.status == "completed"
+            )
         }
+    }
+
+    private var activePresentationGate: String? {
+        artifacts.last(where: { $0.metadata.approvalGate != nil })?.metadata.approvalGate
+    }
+
+    private var presentationStageIndex: Int {
+        if execution.status == "completed" || execution.status == "awaiting_review" { return 4 }
+        if execution.status == "awaiting_approval" { return activePresentationGate == "design" ? 2 : 1 }
+        if let status = execution.nodes.first(where: { $0.nodeId == "presentation_deck" })?.status, status != "pending" { return 3 }
+        if let status = execution.nodes.first(where: { $0.nodeId == "presentation_design" })?.status, status != "pending" { return 2 }
+        if let status = execution.nodes.first(where: { $0.nodeId == "presentation_outline" })?.status, status != "pending" { return 1 }
+        if execution.nodes.first(where: { $0.nodeId == "presentation_analysis" })?.status == "succeeded" { return 1 }
+        return 0
+    }
+
+    private var visibleArtifacts: [WorkflowArtifactDTO] {
+        guard isPresentation else { return artifacts }
+        if execution.status == "awaiting_approval" {
+            let gate = activePresentationGate
+            return artifacts.filter {
+                $0.metadata.approvalGate == gate || (gate == "outline" && $0.metadata.renderType == "markdown")
+            }
+        }
+        if execution.status == "awaiting_review" || execution.status == "completed" {
+            return artifacts.filter { $0.extension == "pptx" && $0.sourceKind != "design_sample" }
+        }
+        return artifacts
     }
 
     private var executionHeader: some View {
@@ -1732,11 +1792,11 @@ private struct WorkflowExecutionView: View {
 
     private var artifactReview: some View {
         VStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
-            Text(isPresentation ? "演示文稿成果" : "成果与入库素材").font(AppTheme.Typography.sectionTitle)
-            Text(isPresentation ? "大纲与代表页设计需逐轮确认；最终确认仅完成交付，不会发布到平台知识库。" : "所有内容已保存到工作流档案。勾选后批准，才会进入正式知识库。")
+            Text(isPresentation ? presentationReviewTitle : "成果与入库素材").font(AppTheme.Typography.sectionTitle)
+            Text(isPresentation ? presentationReviewHelp : "所有内容已保存到工作流档案。勾选后批准，才会进入正式知识库。")
                 .font(AppTheme.Typography.supporting)
                 .foregroundStyle(AppTheme.Colors.textSecondary)
-            ForEach(artifacts) { artifact in
+            ForEach(visibleArtifacts) { artifact in
                 HStack(spacing: AppTheme.Spacing.md) {
                     if !isPresentation { Button {
                         if selectedArtifacts.contains(artifact.id) { selectedArtifacts.remove(artifact.id) }
@@ -1763,17 +1823,40 @@ private struct WorkflowExecutionView: View {
                 .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
             }
             if isPresentation && ["awaiting_approval", "awaiting_review"].contains(execution.status) {
-                TextField("填写整体修改意见（退回时必填）", text: $feedback, axis: .vertical).textFieldStyle(.roundedBorder)
+                TextField(presentationFeedbackPrompt, text: $feedback, axis: .vertical)
+                    .textFieldStyle(.roundedBorder)
+                    .accessibilityLabel(presentationFeedbackPrompt)
                 if execution.status == "awaiting_review" {
-                    Stepper("逐页反馈：第 \(slideNumber) 页", value: $slideNumber, in: 1...60)
+                    Stepper("反馈页：第 \(slideNumber) 页", value: $slideNumber, in: 1...60)
+                    Text("打开全稿预览时，页码会自动同步到这里。")
+                        .font(AppTheme.Typography.micro)
+                        .foregroundStyle(AppTheme.Colors.textTertiary)
                 }
             }
         }
     }
 
+    private var presentationReviewTitle: String {
+        if execution.status == "awaiting_review" || execution.status == "completed" { return "逐页验收全稿" }
+        return activePresentationGate == "design" ? "确认版式与真实内容" : "确认故事线与逐页大纲"
+    }
+
+    private var presentationReviewHelp: String {
+        if execution.status == "awaiting_review" { return "先打开全稿逐页检查。退回时会从指定页修订；确认后开放 PPTX 下载与系统分享。" }
+        if execution.status == "completed" { return "全稿已确认，可打开预览并下载可编辑 PPTX。" }
+        if activePresentationGate == "design" { return "检查代表页的配色、字体、信息密度和真实内容。可以反复退回，确认后才会铺开整份 PPT。" }
+        return "先查看文档分析，再检查每页的作用、标题、证据和视觉建议。可以反复退回，确认后才进入版式设计。"
+    }
+
+    private var presentationFeedbackPrompt: String {
+        if execution.status == "awaiting_review" { return "说明这一页要如何修改（退回时必填）" }
+        return activePresentationGate == "design" ? "说明版式或内容要如何调整（退回时必填）" : "说明大纲要如何调整（退回时必填）"
+    }
+
     @ViewBuilder
     private var actionBar: some View {
         HStack(spacing: AppTheme.Spacing.md) {
+            if isWorking { ProgressView().controlSize(.small) }
             if execution.status == "queued" || execution.status == "running" {
                 Button("取消执行", role: .destructive) { cancel() }
                     .buttonStyle(.bordered)
@@ -1783,11 +1866,11 @@ private struct WorkflowExecutionView: View {
                     .buttonStyle(.borderedProminent)
                     .pressBorderGlow(cornerRadius: AppTheme.Radius.sm)
             } else if execution.status == "awaiting_approval" && isPresentation {
-                Button("退回修改") { reviewPresentation(decision: "revise") }.buttonStyle(.bordered)
-                Button("确认本阶段") { reviewPresentation(decision: "approve") }.buttonStyle(.borderedProminent)
+                Button(activePresentationGate == "design" ? "修改版式" : "修改大纲") { reviewPresentation(decision: "revise") }.buttonStyle(.bordered)
+                Button(activePresentationGate == "design" ? "确认并生成全稿" : "确认大纲") { reviewPresentation(decision: "approve") }.buttonStyle(.borderedProminent)
             } else if execution.status == "awaiting_review" && isPresentation {
-                Button("退回指定页") { reviewPresentation(decision: "revise", perSlide: true) }.buttonStyle(.bordered)
-                Button("确认并完成") { reviewPresentation(decision: "approve") }.buttonStyle(.borderedProminent)
+                Button("修改第 \(slideNumber) 页") { reviewPresentation(decision: "revise", perSlide: true) }.buttonStyle(.bordered)
+                Button("确认并下载") { reviewPresentation(decision: "approve") }.buttonStyle(.borderedProminent)
             } else if execution.status == "awaiting_review" {
                 Button("退回修改") { requestRevision() }
                     .buttonStyle(.bordered)
@@ -1865,13 +1948,15 @@ private struct WorkflowExecutionView: View {
     }
     private func reviewPresentation(decision: String, perSlide: Bool = false) {
         guard let artifact = artifacts.last(where: { item in
-            if execution.status == "awaiting_approval" { return item.metadata.approvalGate != nil }
-            return item.extension == "pptx"
+            if execution.status == "awaiting_approval" { return item.metadata.approvalGate == activePresentationGate }
+            return item.extension == "pptx" && item.sourceKind != "design_sample"
         }) else { errorMessage = "待确认成果尚未同步"; return }
         if decision == "revise" && feedback.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { errorMessage = "请填写修改意见"; return }
         perform {
             execution = try await APIClient.shared.reviewPresentationStage(executionId: execution.id, artifact: artifact, decision: decision, comment: feedback, slideNumber: perSlide ? slideNumber : nil)
-            feedback = ""; await monitor()
+            feedback = ""
+            if decision == "approve" && execution.status == "completed" { selectedArtifact = artifact }
+            else { await monitor() }
         }
     }
     private func perform(_ operation: @escaping () async throws -> Void) {
@@ -1903,10 +1988,11 @@ private struct WorkflowExecutionView: View {
 private struct WorkflowArtifactPreview: View {
     let executionId: String
     let artifact: WorkflowArtifactDTO
+    @Binding var currentPage: Int
+    let allowsDownload: Bool
     @State private var content: String?
     @State private var errorMessage: String?
     @State private var pdfDocument: PDFDocument?
-    @State private var currentPage = 1
     @State private var downloadURL: URL?
     @Environment(\.dismiss) private var dismiss
 
@@ -1917,11 +2003,17 @@ private struct WorkflowArtifactPreview: View {
                     Text("第 \(currentPage) / \(pdfDocument.pageCount) 页").font(AppTheme.Typography.supporting)
                     PDFDeckView(document: pdfDocument, currentPage: $currentPage).frame(minHeight: 620)
                 } else if let content {
-                    Text(content)
-                        .font(.body)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
-                        .padding(AppTheme.Metrics.contentGutter)
+                    if artifact.metadata.renderType == "presentation_outline",
+                       let outline = PresentationOutlinePreview.decode(content) {
+                        PresentationOutlinePreview(outline: outline)
+                            .padding(AppTheme.Metrics.contentGutter)
+                    } else {
+                        Text(content)
+                            .font(.body)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: AppTheme.Metrics.readableContentWidth, alignment: .leading)
+                            .padding(AppTheme.Metrics.contentGutter)
+                    }
                 } else if let errorMessage {
                     WorkflowErrorBanner(message: errorMessage).padding()
                 } else {
@@ -1932,7 +2024,12 @@ private struct WorkflowArtifactPreview: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { Button("完成") { dismiss() } }
             .safeAreaInset(edge: .bottom) {
-                if let downloadURL { ShareLink(item: downloadURL) { Label("下载可编辑 \(artifact.extension.uppercased()) / 存储到文件 / 分享", systemImage: "square.and.arrow.up") }.buttonStyle(.borderedProminent).padding() }
+                if allowsDownload, let downloadURL {
+                    ShareLink(item: downloadURL) { Label("下载可编辑 \(artifact.extension.uppercased()) / 存储到文件 / 分享", systemImage: "square.and.arrow.up") }
+                        .buttonStyle(.borderedProminent)
+                        .frame(minHeight: 44)
+                        .padding()
+                }
             }
             .task {
                 do {
@@ -1955,6 +2052,57 @@ private struct WorkflowArtifactPreview: View {
             }
         }
         .preferredColorScheme(.light)
+    }
+}
+
+private struct PresentationOutlinePreview: View {
+    struct Outline: Decodable { let title: String?; let slides: [Slide] }
+    struct Slide: Decodable {
+        let layout: String?
+        let title: String?
+        let purpose: String?
+        let keyPoints: [String]?
+        let evidence: [String]?
+        let visual: String?
+
+        enum CodingKeys: String, CodingKey {
+            case layout, title, purpose, evidence, visual
+            case keyPoints = "key_points"
+        }
+    }
+
+    let outline: Outline
+
+    static func decode(_ content: String) -> Outline? {
+        try? JSONDecoder().decode(Outline.self, from: Data(content.utf8))
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: AppTheme.Spacing.md) {
+            if let title = outline.title { Text(title).font(AppTheme.Typography.screenTitle) }
+            ForEach(Array(outline.slides.enumerated()), id: \.offset) { index, slide in
+                VStack(alignment: .leading, spacing: AppTheme.Spacing.sm) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(String(format: "%02d", index + 1))
+                            .font(AppTheme.Typography.micro.monospacedDigit())
+                            .foregroundStyle(AppTheme.Colors.quantumBlue)
+                        Text(slide.title ?? "第 \(index + 1) 页").font(AppTheme.Typography.cardTitle)
+                        Spacer()
+                        Text(slide.layout ?? "").font(AppTheme.Typography.micro).foregroundStyle(AppTheme.Colors.textTertiary)
+                    }
+                    if let purpose = slide.purpose { Text(purpose).font(AppTheme.Typography.supporting).foregroundStyle(AppTheme.Colors.textSecondary) }
+                    if let points = slide.keyPoints, !points.isEmpty { Label(points.joined(separator: "\n"), systemImage: "text.alignleft") }
+                    if let evidence = slide.evidence, !evidence.isEmpty { Label(evidence.joined(separator: "\n"), systemImage: "checkmark.shield") }
+                    if let visual = slide.visual, !visual.isEmpty { Label(visual, systemImage: "photo.on.rectangle") }
+                }
+                .font(AppTheme.Typography.supporting)
+                .padding(AppTheme.Spacing.md)
+                .background(AppTheme.Colors.cardBackground)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.Radius.md))
+                .overlay { RoundedRectangle(cornerRadius: AppTheme.Radius.md).stroke(AppTheme.Colors.border) }
+            }
+        }
+        .textSelection(.enabled)
     }
 }
 

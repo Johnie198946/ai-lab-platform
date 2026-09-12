@@ -755,12 +755,16 @@ async def cancel_remote(execution_id: str) -> None:
     response.raise_for_status()
 
 
-async def retry_remote(execution_id: str, from_node_id: str | None = None) -> None:
+async def retry_remote(
+    execution_id: str,
+    from_node_id: str | None = None,
+    revision_comment: str | None = None,
+) -> None:
     async with httpx.AsyncClient(timeout=15) as client:
         response = await client.post(
             f"{bridge_base_url()}/v1/workflow-runs/{execution_id}/retry",
             headers=bridge_headers(),
-            json={"from_node_id": from_node_id},
+            json={"from_node_id": from_node_id, "revision_comment": revision_comment},
         )
     response.raise_for_status()
 

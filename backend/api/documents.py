@@ -9,6 +9,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 
 from backend.api.auth import require_auth
+from backend.db import SessionLocal
+from backend.models.knowledge_contribution import KnowledgeContributionOutbox
 from backend.services.document_sources import (
     DocumentSourceError,
     MAX_DOCUMENT_BYTES,
@@ -44,6 +46,23 @@ def _error(exc: DocumentSourceError) -> HTTPException:
     return HTTPException(
         status_code=status, detail={"code": exc.code, "message": str(exc)}
     )
+
+
+async def _with_current_contribution_status(
+    receipt: dict, tenant_key: str, user_id: str
+) -> dict:
+    event_id = str(receipt.get("contribution_event_id") or "")
+    if not event_id:
+        return receipt
+    async with SessionLocal() as db:
+        event = await db.get(KnowledgeContributionOutbox, event_id)
+    if event and (event.tenant_key, event.user_id) == (tenant_key, user_id):
+        return {
+            **receipt,
+            "contribution_status": event.status,
+            "contribution_error": event.last_error,
+        }
+    return receipt
 
 
 @router.post("", status_code=201)
@@ -151,10 +170,12 @@ async def upload_document(
 
 @router.get("/{source_id}")
 async def get_document(source_id: str, payload: dict = Depends(require_auth)):
+    tenant_key, user_id = _identity(payload)
     try:
-        return read_document_receipt(*_identity(payload), source_id)
+        receipt = read_document_receipt(tenant_key, user_id, source_id)
     except DocumentSourceError as exc:
         raise _error(exc) from exc
+    return await _with_current_contribution_status(receipt, tenant_key, user_id)
 
 
 @router.get("/{source_id}/text", response_class=PlainTextResponse)

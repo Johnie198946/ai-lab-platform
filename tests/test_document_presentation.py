@@ -82,6 +82,13 @@ def test_private_document_is_tenant_bound_and_original_survives_parse_failure(
         expected_hash=hashlib.sha256(data).hexdigest(),
     )
     assert receipt["status"] == "ready"
+    assert receipt["note_id"] == receipt["source_id"]
+    note_path = (
+        document_sources.note_directory("tenant-a", "user-a")
+        / f"{receipt['source_id']}.md"
+    )
+    assert note_path.is_file()
+    assert "季度收入增长" in note_path.read_text(encoding="utf-8")
     assert document_sources.document_text("tenant-a", "user-a", receipt["source_id"])[
         0
     ].startswith("季度收入")
@@ -273,6 +280,10 @@ def test_authorized_default_upload_uses_authenticated_identity_and_real_queue_re
     )
     receipt = response.json()
     assert response.status_code == 201 and receipt["contribution_status"] == "queued"
+    current = _request(app, "GET", f"/api/v1/documents/{receipt['source_id']}")
+    assert current.status_code == 200
+    assert current.json()["contribution_status"] == "compiling"
+    assert current.json()["note_id"] == receipt["source_id"]
 
     async def load_event():
         async with SessionLocal() as db:
@@ -909,7 +920,10 @@ def test_hermes_gate_rejects_stale_version_and_records_current_approval(monkeypa
         retried = asyncio.run(
             bridge.retry_workflow_run(
                 "exec-gate",
-                bridge.WorkflowRetryRequest(from_node_id="outline"),
+                bridge.WorkflowRetryRequest(
+                    from_node_id="outline",
+                    revision_comment="第二页标题需要更具体",
+                ),
                 "secret",
             )
         )
@@ -918,11 +932,14 @@ def test_hermes_gate_rejects_stale_version_and_records_current_approval(monkeypa
             and run["approved_gates"] == []
             and run["approved_gate_artifacts"] == {}
         )
+        assert "第二页标题需要更具体" in bridge._workflow_node_prompt(
+            run, run["plan"]["nodes"][0]
+        )
     finally:
         bridge._workflow_runs.pop("exec-gate", None)
 
 
-def test_presentation_scenario_has_two_business_gates_before_binary_deck():
+def test_presentation_scenario_analyzes_source_before_two_business_gates_and_binary_deck():
     workflow = type(
         "Workflow",
         (),
@@ -940,13 +957,48 @@ def test_presentation_scenario_has_two_business_gates_before_binary_deck():
     )()
     plan = build_presentation_plan(workflow, plan_id="plan", knowledge_scope=[])
     assert [node["parameters"].get("approval_gate") for node in plan["nodes"]] == [
+        None,
         "outline",
         "design",
         None,
     ]
+    assert plan["version"] == "2.0.0"
+    assert plan["nodes"][0]["id"] == "presentation_analysis"
     assert plan["nodes"][-1]["parameters"]["output_format"] == "presentation"
     assert {tuple(edge.values()) for edge in plan["edges"]} >= {
+        ("presentation_analysis", "presentation_outline"),
         ("presentation_outline", "presentation_deck"),
         ("presentation_design", "presentation_deck"),
     }
-    assert len(DSLSafetyCompiler.compile_and_validate(plan).nodes) == 3
+    assert len(DSLSafetyCompiler.compile_and_validate(plan).nodes) == 4
+
+
+def test_presentation_workflow_uses_presentation_questions_and_reads_source_in_analysis():
+    import scripts.hermes_bridge as bridge
+    from backend.api.workflows import clarification_payload, requirement_confirmation_payload
+
+    workflow = type(
+        "Workflow",
+        (),
+        {
+            "title": "Deck",
+            "description": "把文档做成 PPT",
+            "desired_output": "可编辑 PPTX",
+            "requirements_snapshot": {"scenario_id": "document-to-presentation"},
+        },
+    )()
+    assert clarification_payload(0, workflow)["dimension"] == "用途与受众"
+    assert requirement_confirmation_payload(workflow, [])["choices"][0] == "确认，开始分析文档"
+
+    plan = build_presentation_plan(workflow, plan_id="plan", knowledge_scope=[])
+    run = {
+        "goal": "deck",
+        "deliverable": "pptx",
+        "plan": plan,
+        "nodes": {},
+        "source_document": {"filename": "private.docx", "text": "只应进入分析节点的私有原文"},
+    }
+    analysis_prompt = bridge._workflow_node_prompt(run, plan["nodes"][0])
+    outline_prompt = bridge._workflow_node_prompt(run, plan["nodes"][1])
+    assert "只应进入分析节点的私有原文" in analysis_prompt
+    assert "只应进入分析节点的私有原文" not in outline_prompt
